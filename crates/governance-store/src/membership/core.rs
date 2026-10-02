@@ -1,5 +1,5 @@
 use crate::{CapabilitiesRepository, MetadataRepository};
-use crate::{DenyListRepository, MetaRepository, NamespaceRepository};
+use crate::{DenyListRepository, MetaRepository, NamespaceRepository, ReentryRepository};
 use calimero_account::AccountId;
 use calimero_governance_types::NamespaceId;
 use std::collections::BTreeSet;
@@ -338,6 +338,24 @@ impl<'a> MembershipRepository<'a> {
             self.check_path(group_id, identity)?,
             MembershipPath::None
         ))
+    }
+
+    /// Whether `identity` is a member of `group_id` today: a direct row, or an
+    /// inheritance not ended by a deny-list entry or a re-entry block.
+    pub fn is_live_member(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+    ) -> EyreResult<bool> {
+        match self.check_path(group_id, identity)? {
+            MembershipPath::None => Ok(false),
+            MembershipPath::Direct => Ok(true),
+            MembershipPath::Inherited { .. } => Ok(!DenyListRepository::new(self.store)
+                .is_denied(group_id, identity)?
+                && ReentryRepository::new(self.store)
+                    .block_of(group_id, identity)?
+                    .is_none()),
+        }
     }
 
     /// Returns the capability bitmask `identity` holds as an *effective*

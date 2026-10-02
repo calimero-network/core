@@ -435,7 +435,8 @@ pub(crate) fn is_signed_context_member(
 /// Resolves the context's owning group and asks the governance store whether
 /// `public_key` is a member — directly or by inheritance through an `Open`-
 /// subgroup ancestor (the parent-walk implemented by
-/// [`MembershipRepository::is_member`] / `check_path`). Returns `false` when
+/// [`MembershipRepository::is_live_member`] / `check_path`), unless it was
+/// removed from the subgroup since. Returns `false` when
 /// the context is not registered to any group (no group binding to inherit
 /// through) or when the identity is not a member at any level.
 ///
@@ -456,7 +457,7 @@ fn is_inherited_context_member(
     else {
         return Ok(false);
     };
-    MembershipRepository::new(store).is_member(&group_id, &account)
+    MembershipRepository::new(store).is_live_member(&group_id, &account)
 }
 
 #[cfg(test)]
@@ -800,6 +801,40 @@ mod tests {
         assert!(
             !is_signed_context_member(&store, &request, &libp2p::PeerId::random()).unwrap(),
             "the same signed request arriving from another peer must be rejected"
+        );
+    }
+
+    /// Removing a member from an Open subgroup it only inherits into leaves no
+    /// row to delete: the removal is the deny-list entry and the re-entry block.
+    #[test]
+    fn signed_request_from_an_inherited_member_removed_from_the_subgroup_is_rejected() {
+        use calimero_store::key::GroupExitReason;
+
+        let (alice_sk, alice_pk) = keypair(0x06);
+        let (store, _ctx, subgroup) = open_subgroup_with_inherited_member(&alice_pk);
+        let request = signed_request(&alice_sk, alice_pk, now_secs());
+        assert!(
+            is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
+            "control: before the removal the inherited member is authorized"
+        );
+
+        let account = calimero_context::test_support::account_for(&alice_pk);
+        calimero_governance_store::DenyListRepository::new(&store)
+            .mark(&subgroup, &account)
+            .unwrap();
+        calimero_governance_store::ReentryRepository::new(&store)
+            .block(&subgroup, &account, GroupExitReason::Removed)
+            .unwrap();
+        assert!(
+            MembershipRepository::new(&store)
+                .is_member(&subgroup, &account)
+                .unwrap(),
+            "precondition: the inheritance walk is untouched by the removal"
+        );
+
+        assert!(
+            !is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
+            "a member removed from the subgroup must not be served its blobs"
         );
     }
 

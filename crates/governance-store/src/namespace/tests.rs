@@ -7237,9 +7237,8 @@ fn groups_member_but_keyless_skips_an_open_chain_subgroup() {
 ///
 /// Two ways to reach the state, both ordinary:
 ///
-/// * a subgroup flips `Open -> Restricted` (`SubgroupVisibilitySet` distributes
-///   no key — the handler only writes the visibility row and queues an event),
-///   so a direct member that never needed the group's own key now does;
+/// * a subgroup flips `Open -> Restricted` and a direct member misses the
+///   rotation riding the flip, so it needs the group's own key and lacks it;
 /// * a `KeyDelivery` for a Restricted subgroup is simply missed — the node was
 ///   offline, or the op arrived before its account binding folded — and the
 ///   pull is what recovers it.
@@ -7540,9 +7539,10 @@ fn groups_member_but_keyless_reports_every_keyless_restricted_subgroup_once() {
 /// members become keyless for it.
 ///
 /// `SubgroupVisibilitySet`'s handler writes the visibility row and queues an
-/// event and nothing else — it distributes no key. So a direct member holding
-/// only the namespace key, which covered the group while it was Open, now needs
-/// the group's own key and has no way to notice. `set_subgroup_visibility` here
+/// event and nothing else; the new key rides the flip as a rotation, which a
+/// direct member can miss. Holding only the namespace key, which covered the
+/// group while it was Open, it now needs the group's own key and has no way to
+/// notice. `set_subgroup_visibility` here
 /// is the same store mutation that handler performs.
 ///
 /// Before the fix this asserted empty on both sides of the flip: the scan
@@ -11200,6 +11200,487 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
         !sub_bytes.is_empty(),
         "precondition: the same requester IS served its own subgroup's key, so \
          the refusal above is the membership gate and not a broken fixture"
+    );
+}
+
+/// An Open subgroup under a Restricted parent, two members that reach it only by
+/// inheritance (each with a live device), and a responder holding its own key.
+struct InheritedSubgroup {
+    store: Store,
+    namespace_id: [u8; 32],
+    subgroup: ContextGroupId,
+    kicked: (calimero_account::AccountId, crate::KeyRequester),
+    kept: (calimero_account::AccountId, crate::KeyRequester),
+}
+
+fn inherited_subgroup_fixture() -> InheritedSubgroup {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let namespace_id = [0x81u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let parent = ContextGroupId::from([0x82u8; 32]);
+    let subgroup = ContextGroupId::from([0x83u8; 32]);
+
+    let responder_sk_bytes = [0x84u8; 32];
+    let responder_pk = PrivateKey::from(responder_sk_bytes).public_key();
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
+
+    let store = test_store();
+    let _ = enrol_member(&store, &ns_gid, &responder_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
+        .unwrap();
+    for group in [ns_gid, parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(responder_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &parent)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x85; 32])
+        .unwrap();
+
+    let member = |seed: u8| {
+        let pk = PrivateKey::from([seed; 32]).public_key();
+        let account = enrol_member(&store, &ns_gid, &pk);
+        let device = crate::test_fixtures::device_secret_for(&pk).device;
+        MembershipRepository::new(&store)
+            .add_member(&parent, &account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &parent,
+                &account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .unwrap();
+        (
+            account,
+            crate::KeyRequester {
+                identity: pk,
+                device: Some(device),
+            },
+        )
+    };
+    let kicked = member(0x86);
+    let kept = member(0x87);
+
+    InheritedSubgroup {
+        store,
+        namespace_id,
+        subgroup,
+        kicked,
+        kept,
+    }
+}
+
+fn subgroup_key_served(fixture: &InheritedSubgroup, requester: crate::KeyRequester) -> bool {
+    let (bytes, _) = crate::build_group_key_delivery(
+        &fixture.store,
+        fixture.namespace_id.into(),
+        fixture.subgroup.to_bytes(),
+        requester,
+        None,
+    )
+    .unwrap();
+    !bytes.is_empty()
+}
+
+/// A member removed from an Open subgroup it only inherits into has no row to
+/// delete: the removal is the deny-list entry plus the re-entry block.
+#[test]
+fn kicked_inherited_member_is_served_no_key_for_the_subgroup_it_was_removed_from() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (kicked_account, kicked) = f.kicked;
+    let (_, kept) = f.kept;
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .is_member(&f.subgroup, &kicked_account)
+            .unwrap(),
+        "precondition: the member reaches the subgroup by inheritance"
+    );
+    assert!(
+        subgroup_key_served(&f, kicked),
+        "precondition: before the removal the member is served the subgroup key"
+    );
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &kicked_account)
+        .unwrap();
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &kicked_account, GroupExitReason::Removed)
+        .unwrap();
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .check_path(&f.subgroup, &kicked_account)
+            .unwrap()
+            != crate::MembershipPath::None,
+        "precondition: the removal leaves the inheritance walk untouched"
+    );
+    assert!(
+        !subgroup_key_served(&f, kicked),
+        "a member removed from the subgroup must not be served its key"
+    );
+    assert!(
+        subgroup_key_served(&f, kept),
+        "control: another inherited member is still served"
+    );
+}
+
+/// The re-entry block alone is enough: an exit by any route ends inheritance.
+#[test]
+fn an_inherited_member_who_left_the_subgroup_is_served_no_key_for_it() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    assert!(subgroup_key_served(&f, requester));
+
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Left)
+        .unwrap();
+
+    assert!(!subgroup_key_served(&f, requester));
+}
+
+/// A direct row is the membership: an exit record left from before the member was
+/// added back does not take the key away.
+#[test]
+fn a_direct_member_with_an_older_exit_record_is_still_served_the_subgroup_key() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Left)
+        .unwrap();
+    assert!(!subgroup_key_served(&f, requester));
+
+    MembershipRepository::new(&f.store)
+        .add_member(&f.subgroup, &account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(subgroup_key_served(&f, requester));
+}
+
+/// A snapshot source is admitted only while it is a live member.
+#[test]
+fn a_removed_inherited_member_is_not_admitted_as_a_snapshot_source() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let context = ContextId::from([0x8F; 32]);
+    crate::register_context_in_group(&f.store, &f.subgroup, &context).unwrap();
+    let (account, kicked) = f.kicked;
+    let (_, kept) = f.kept;
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kicked.identity).unwrap(),
+        Some(true),
+        "precondition: before the removal the member is admitted"
+    );
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Removed)
+        .unwrap();
+
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kicked.identity).unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kept.identity).unwrap(),
+        Some(true),
+        "control: another inherited member is still admitted"
+    );
+}
+
+/// The deny-list entry alone is enough as well.
+#[test]
+fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    assert!(subgroup_key_served(&f, requester));
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
+
+    assert!(!subgroup_key_served(&f, requester));
+}
+
+/// The admin role is an invitation's to grant only when its inviter is an admin.
+#[test]
+fn an_invitation_admits_at_its_role_and_the_admin_role_needs_an_admin_inviter() {
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0x95u8; 32]);
+    let ((admin_sk, _), _admin_account) =
+        crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_gid.to_bytes());
+    let inviter_sk = PrivateKey::from([0x96u8; 32]);
+    let inviter_account = enrol_member(&store, &ns_gid, &inviter_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &inviter_account, GroupMemberRole::Member)
+        .unwrap();
+    let svc = NamespaceMembershipService::new(&store, ns_gid.to_bytes().into());
+    let invited_at = |sk: &PrivateKey, role: u8| {
+        let mut signed = test_signed_invitation(sk, ns_gid, 0);
+        signed.invitation.invited_role = role;
+        signed
+    };
+
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 1), false)
+            .unwrap(),
+        GroupMemberRole::Member
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 2), false)
+            .unwrap(),
+        GroupMemberRole::ReadOnly
+    );
+    assert!(
+        svc.admission_role(&invited_at(&inviter_sk, 0), false)
+            .is_err(),
+        "a plain member cannot invite an admin"
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&admin_sk, 0), false)
+            .unwrap(),
+        GroupMemberRole::Admin
+    );
+    assert_eq!(
+        svc.admission_role(&invited_at(&inviter_sk, 0), true)
+            .unwrap(),
+        GroupMemberRole::Admin,
+        "the node that authored the join holds none of the state the lookup reads"
+    );
+}
+
+/// On an Open chain the namespace key covers the subgroup, and its own current
+/// row is not for members who only inherit it.
+#[test]
+fn a_member_is_served_no_subgroup_key_while_the_namespace_key_covers_it() {
+    use calimero_context_config::VisibilityMode;
+
+    let f = inherited_subgroup_fixture();
+    let (_, requester) = f.kept;
+    assert!(
+        subgroup_key_served(&f, requester),
+        "precondition: behind a Restricted parent the subgroup key covers it and is served"
+    );
+
+    let parent = NamespaceRepository::new(&f.store)
+        .parent(&f.subgroup)
+        .unwrap()
+        .expect("the subgroup is nested");
+    CapabilitiesRepository::new(&f.store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Open)
+        .unwrap();
+
+    assert!(
+        !subgroup_key_served(&f, requester),
+        "a subgroup covered by the namespace key must not hand out its own key"
+    );
+
+    let (key_id, _) = GroupKeyring::new(&f.store, f.subgroup)
+        .load_current_key()
+        .unwrap()
+        .expect("the subgroup holds a key row");
+    let (bytes, _) = crate::build_group_key_delivery(
+        &f.store,
+        f.namespace_id.into(),
+        f.subgroup.to_bytes(),
+        requester,
+        Some(key_id),
+    )
+    .unwrap();
+    assert!(
+        !bytes.is_empty(),
+        "control: a key named by id, as a buffered op from a Restricted era names it, is served"
+    );
+}
+
+/// A direct member applies a flip sealed under the namespace key and adopts the
+/// key riding it in place of the subgroup's birth key.
+#[test]
+fn a_direct_member_adopts_the_key_riding_a_flip_to_restricted() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xC1; 32]);
+    let sub = ContextGroupId::from([0xC2; 32]);
+    let admin_sk = PrivateKey::from([0xC3; 32]);
+    let admin = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    let local_sk_bytes = [0xC4; 32];
+    let local_pk = PrivateKey::from(local_sk_bytes).public_key();
+    let (local, _, _) = crate::test_fixtures::enrol_local_device(&store, &ns_gid, &local_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &local_pk, &local_sk_bytes)
+        .unwrap();
+    let members = MembershipRepository::new(&store);
+    for group in [ns_gid, sub] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(admin))
+            .unwrap();
+        members
+            .add_member(&group, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        members
+            .add_member(&group, &local, GroupMemberRole::Member)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &sub)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&sub, VisibilityMode::Open)
+        .unwrap();
+    let ns_key = [0x97; 32];
+    let ns_key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&ns_key)
+        .unwrap();
+    let _ = GroupKeyring::new(&store, sub)
+        .store_key(&[0x98; 32])
+        .unwrap();
+
+    let new_key = [0x42; 32];
+    let keyring = GroupKeyring::new(&store, sub);
+    let recipients: Vec<crate::KeyRecipient> = keyring
+        .current_key_recipients()
+        .unwrap()
+        .into_iter()
+        .map(|entitled| entitled.recipient)
+        .collect();
+    let flip = GroupOp::SubgroupVisibilitySet {
+        mode: VisibilityMode::Restricted,
+    };
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_gid.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: sub.to_bytes().into(),
+            key_id: ns_key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&ns_key, &flip).unwrap(),
+            key_rotation: Some(
+                keyring
+                    .build_rotation(&new_key, &admin_sk, &recipients)
+                    .unwrap(),
+            ),
+        },
+    )
+    .unwrap();
+    NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
+        .apply_signed_op(&op)
+        .expect("the flip applies");
+
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&sub)
+            .unwrap(),
+        VisibilityMode::Restricted
+    );
+    assert_eq!(
+        GroupKeyring::new(&store, sub)
+            .load_current_key()
+            .unwrap()
+            .map(|(_, key)| key),
+        Some(new_key),
+        "the key riding the flip outranks the birth key"
+    );
+}
+
+/// A relay carrying an admin's flip to Restricted rotates on the admin's
+/// authority, as it does for the admin's removal.
+#[test]
+fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
+    use calimero_account::{
+        GovernanceDelegation, GovernanceOpKind, GovernanceTerms, GovernanceWarrant,
+    };
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+
+    use crate::test_fixtures::{account_for, real_join_account};
+
+    let store = test_store();
+    let group = ContextGroupId::from([0x91; 32]);
+    let author_sk = PrivateKey::from([0x92; 32]);
+    let relay_sk = PrivateKey::from([0x93; 32]);
+    let author = account_for(&author_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&group, &author, GroupMemberRole::Admin)
+        .unwrap();
+
+    let relayed = |mode| {
+        let inner = GroupOp::SubgroupVisibilitySet { mode };
+        let kind = GovernanceOpKind::Group;
+        let form = borsh::to_vec(&inner).unwrap();
+        let terms = GovernanceTerms {
+            scope: group.to_bytes(),
+            kind,
+            author_account: author,
+            executor: account_for(&relay_sk.public_key()),
+            op_hash: GovernanceWarrant::op_hash(kind, &form),
+            account_heads: vec![],
+            governance_floor: vec![],
+            nonce: 1,
+            not_after: u64::MAX,
+        };
+        GroupOp::OnBehalf {
+            delegation: Box::new(GovernanceDelegation {
+                warrant: Box::new(GovernanceWarrant::sign(&author_sk, terms).unwrap()),
+                author_proof: real_join_account(&author_sk.public_key()),
+                executor_proof: real_join_account(&relay_sk.public_key()),
+                executor_key: relay_sk.public_key(),
+            }),
+            op: Box::new(inner),
+        }
+    };
+    let carrier = SignedNamespaceOp::sign(
+        &relay_sk,
+        [0x90; 32].into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: group.to_bytes().into(),
+            key_id: [0; 32].into(),
+            encrypted: GroupKeyring::encrypt_op(&[0; 32], &relayed(VisibilityMode::Restricted))
+                .unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let permissions = crate::PermissionChecker::new(&store, group);
+    let rotator_is_admin = |mode| {
+        super::governance::delegated_rotator_is_admin(&permissions, &carrier, Some(&relayed(mode)))
+            .unwrap()
+    };
+
+    assert!(rotator_is_admin(VisibilityMode::Restricted));
+    assert!(
+        !rotator_is_admin(VisibilityMode::Open),
+        "opening a subgroup carries no rotation"
     );
 }
 
