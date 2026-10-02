@@ -17,5 +17,8 @@ cp Cargo.lock fuzz/Cargo.lock
 mkdir -p "fuzz/corpus/$target"
 seeds=()
 [ -d "fuzz/seeds/$target" ] && seeds=("fuzz/seeds/$target")
-cargo +nightly fuzz run "$target" "fuzz/corpus/$target" ${seeds[@]+"${seeds[@]}"} -- \
-    -max_total_time="$seconds" "${@:3}"
+cargo +nightly fuzz build "$target"
+run=(cargo +nightly fuzz run "$target" "fuzz/corpus/$target" ${seeds[@]+"${seeds[@]}"} --
+    -max_total_time="$seconds" "${@:3}")
+# With FUZZ_LOG set, the run's output, which shows any failing input, goes there instead.
+if [ -n "${FUZZ_LOG:-}" ]; then "${run[@]}" >"$FUZZ_LOG" 2>&1; else "${run[@]}"; fi

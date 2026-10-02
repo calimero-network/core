@@ -11,6 +11,7 @@ on:
       - "tools/mero-sign/**"
       - "fuzz/**"
       - "scripts/fuzz.sh"
+      - "scripts/fuzz-ci.sh"
       - ".github/workflows/fuzz.yml"
   schedule:
     - cron: "0 3 * * *"
@@ -40,6 +41,7 @@ jobs:
             shared: &shared
               - "fuzz/Cargo.toml"
               - "scripts/fuzz.sh"
+              - "scripts/fuzz-ci.sh"
               - ".github/workflows/fuzz.yml"
             bundle_open:
               - *shared
@@ -90,14 +92,7 @@ jobs:
       - name: Fuzz for a minute
         env:
           TARGET: ${{ matrix.target }}
-        run: scripts/fuzz.sh "$TARGET" 60
-      - name: Upload the crashing input
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: fuzz-crash-${{ matrix.target }}
-          path: fuzz/artifacts/${{ matrix.target }}/
-          retention-days: 7
+        run: scripts/fuzz-ci.sh "$TARGET" 60
 
   nightly:
     name: Nightly (${{ matrix.target }})
@@ -124,11 +119,4 @@ jobs:
       - name: Fuzz for 30 minutes
         env:
           TARGET: ${{ matrix.target }}
-        run: scripts/fuzz.sh "$TARGET" 1800
-      - name: Upload the crashing input
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: fuzz-crash-${{ matrix.target }}
-          path: fuzz/artifacts/${{ matrix.target }}/
-          retention-days: 7
+        run: scripts/fuzz-ci.sh "$TARGET" 1800
