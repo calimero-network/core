@@ -1,6 +1,1 @@
-[
-  {
-    "route": "POST /admin-api/contexts/{context_id}/presence-intents",
-    "reason": "Added by #4306 (presence for accounts on relays); mero-js has no client or e2e for it yet. It takes a device-signed PresenceStatement with a borsh AccountProof<DeviceCert> for a nodeless account, so a test needs SDK support first. Drop this entry when the mero-js e2e lands."
-  }
-]
+[]
