@@ -717,8 +717,8 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
 /// ANCESTORS, so an inherited member of a descendant is caught by a removal
 /// that names only the parent.
 ///
-/// Node-owner and no-auth connections are unaffected — the gates admit them
-/// unconditionally, so they never appear in a revocation.
+/// Node-owner and identity-less no-auth connections are unaffected; the gates
+/// admit them, so they never appear in a revocation.
 async fn prune_stale_grants(state: &ServiceState, group_id: &Hash) {
     // Snapshot under the read lock, re-authorize without it. The membership
     // lookups touch the store, and holding either lock across them would stall

@@ -1499,10 +1499,9 @@ mod tests {
     /// sender handed back.
     ///
     /// Both differences are what the revocation test needs and neither is
-    /// incidental: with auth disabled every observation gate returns true, so
-    /// nothing is ever revoked and the test would pass against no
-    /// implementation at all; and driving a prune means publishing a real
-    /// `MemberRemoved` onto the channel `handle_node_events` listens to.
+    /// incidental: an armed guard is the deployment the gate is written for;
+    /// and driving a prune means publishing a real `MemberRemoved` onto the
+    /// channel `handle_node_events` listens to.
     async fn sse_state_authed() -> (
         Arc<ServiceState>,
         tokio::sync::broadcast::Sender<calimero_primitives::events::NodeEvent>,
