@@ -162,7 +162,7 @@ fn verify_fetched_parent(
             delta_id = ?delta_id,
             author = %fetched.author_id,
             parent_count = fetched.delta.parents.len(),
-            "DAG-catchup parent-pull: delta id does not content-address its              parents/actions, dropping"
+            "DAG-catchup parent-pull: delta id does not content-address its              parents/actions/events, dropping"
         );
         return VerifiedParent::Skip;
     }
@@ -329,6 +329,7 @@ fn verify_fetched_parent(
                 datastore,
                 group,
                 &fetched.author_id,
+                fetched.delegation.as_ref(),
                 heads,
             )
         },
@@ -603,6 +604,12 @@ impl SyncManager {
                                 envelope,
                             );
                         }
+                        crate::handlers::state_delta::record_accepted_events_hash(
+                            &datastore,
+                            &context_id,
+                            &missing_id,
+                            fetched.delta.events_hash.as_ref(),
+                        );
                         if delta_batch.len() >= crate::delta_store::DELTA_BATCH_MAX {
                             flush_delta_batch(
                                 &delta_store,
@@ -830,16 +837,24 @@ impl SyncManager {
                     let actions: Vec<calimero_storage::interface::Action> =
                         borsh::from_slice(&stored_delta.actions)?;
 
+                    let datastore = self.context_client.datastore_handle().into_inner();
+                    // The id covers it, and the row's events may already be cleared.
+                    let events_hash = calimero_context_client::delta_events::events_hash(
+                        &datastore,
+                        &context_id,
+                        &delta_id,
+                    )?;
                     let causal_delta = CausalDelta {
                         id: stored_delta.delta_id,
                         parents: stored_delta.parents,
                         actions,
                         hlc: stored_delta.hlc,
+                        events_hash,
                     };
 
                     let serialized = borsh::to_vec(&causal_delta)?;
                     let tee_trigger = calimero_context_client::tee_trigger::delta_trigger(
-                        &self.context_client.datastore_handle().into_inner(),
+                        &datastore,
                         &context_id,
                         &delta_id,
                     )?;
@@ -1002,10 +1017,11 @@ mod tests {
         let hlc = HybridTimestamp::default();
         FetchedDelta {
             delta: CausalDelta {
-                id: CausalDelta::compute_id(&parents, &[], &hlc),
+                id: CausalDelta::compute_id(&parents, &[], None, &hlc),
                 parents,
                 actions: vec![],
                 hlc,
+                events_hash: None,
             },
             author_id: genesis_author_sentinel(),
             governance_position_blob: None,

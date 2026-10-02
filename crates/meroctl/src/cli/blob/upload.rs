@@ -24,7 +24,7 @@ pub struct UploadCommand {
         short = 'c',
         long = "context-id",
         value_name = "CONTEXT_ID",
-        help = "Optional context ID to announce the blob to for network discovery"
+        help = "Context to share the blob in; without one, peers are never served it"
     )]
     pub context_id: Option<ContextId>,
 }

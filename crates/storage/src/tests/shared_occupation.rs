@@ -72,6 +72,7 @@ fn add(
             signature: [0; 64],
             nonce,
             signer: Some(pubkey_of(signer)),
+            on_behalf: None,
         })
     };
     let nonce = *metadata.updated_at;

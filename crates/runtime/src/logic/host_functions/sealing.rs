@@ -7,9 +7,13 @@
 //! only the TEE may read — the rest of the deck — is sealed to every TEE
 //! authority's attested key instead (the SDK's `TeeSecret<T>`).
 //!
-//! An envelope proves confidentiality, never authorship: anyone who knows a key
-//! can seal to it. What makes a dealt card genuine is that it sits in `TeeOnly`
-//! state, which only the TEE authority can write.
+//! An envelope opens only in the context that sealed it, and proves
+//! confidentiality, never authorship: anyone who knows a key can seal to it.
+//! What makes a dealt card genuine is that it sits in `TeeOnly` state, which
+//! only the TEE authority can write.
+
+use calimero_crypto::Purpose;
+use calimero_primitives::identity::PublicKey;
 
 use crate::errors::HostError;
 use crate::logic::{sys, VMHostFunctions, VMLogicResult, DIGEST_SIZE};
@@ -42,12 +46,13 @@ impl VMHostFunctions<'_> {
         // SAFETY: as above.
         let plaintext_buf =
             unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(src_plaintext_ptr)? };
-        let key = calimero_primitives::identity::PublicKey::from(
-            *self.read_guest_memory_sized::<32>(&key_buf)?,
-        );
+        let key = PublicKey::from(*self.read_guest_memory_sized::<32>(&key_buf)?);
         let plaintext = self.read_guest_memory_slice(&plaintext_buf)?.to_vec();
 
-        let Ok(envelope) = calimero_crypto::seal_to_root(&mut rand::rng(), &key, plaintext) else {
+        let purpose = self.app_purpose(key);
+        let Ok(envelope) =
+            calimero_crypto::seal_to_root(&mut rand::rng(), &key, plaintext, purpose)
+        else {
             return Ok(0);
         };
         self.with_logic_mut(|logic| {
@@ -99,7 +104,10 @@ impl VMHostFunctions<'_> {
         let vault_keys = self.borrow_logic().context.sealing.vault_keys.clone();
         let Some(plaintext) = core::iter::once(&opener)
             .chain(&vault_keys)
-            .find_map(|key| calimero_crypto::open_sealed(key, &envelope).ok())
+            .find_map(|key| {
+                let purpose = self.app_purpose(key.public_key());
+                calimero_crypto::open_sealed(key, &envelope, purpose).ok()
+            })
         else {
             return Ok(0);
         };
@@ -172,6 +180,14 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, dest_register_id, keys))?;
         Ok(1)
     }
+
+    /// An app envelope binds the context that sealed it, so it opens in no other.
+    fn app_purpose(&self, recipient: PublicKey) -> Purpose {
+        Purpose::App {
+            context_id: self.borrow_logic().context.context_id,
+            recipient,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -194,9 +210,17 @@ mod tests {
     const REGISTER: u64 = 1;
 
     fn context(tee_trigger: bool, sealing: SealingContext) -> VMContext<'static> {
+        in_context([0u8; DIGEST_SIZE], tee_trigger, sealing)
+    }
+
+    fn in_context(
+        context_id: [u8; DIGEST_SIZE],
+        tee_trigger: bool,
+        sealing: SealingContext,
+    ) -> VMContext<'static> {
         let mut context = VMContext::new(
             Cow::Owned(vec![]),
-            [0u8; DIGEST_SIZE],
+            context_id,
             [0u8; DIGEST_SIZE],
             calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
         );
@@ -268,6 +292,31 @@ mod tests {
             put(host, TEXT_DESC, TEXT_AT, sealed);
             Ok((host.open_sealed(TEXT_DESC, REGISTER)? == 1).then(|| register(host)))
         })
+    }
+
+    /// The player's own key does not open, in another context, a card dealt in this one.
+    #[test]
+    fn an_envelope_sealed_in_one_context_does_not_open_in_another() {
+        let player = PrivateKey::random(&mut rand::rng());
+        let sealed = seal(&player, b"queen of hearts");
+        let sealing = SealingContext {
+            opener: Some(Arc::new(PrivateKey::from(*player.as_bytes()))),
+            ..SealingContext::default()
+        };
+
+        let opened = with_host(in_context([1u8; DIGEST_SIZE], false, sealing), |host| {
+            put(host, TEXT_DESC, TEXT_AT, &sealed);
+            host.open_sealed(TEXT_DESC, REGISTER).unwrap()
+        });
+        assert_eq!(
+            opened, 0,
+            "an envelope opened in a context that did not seal it"
+        );
+        assert_eq!(
+            open(Some(&player), false, &sealed).unwrap().as_deref(),
+            Some(b"queen of hearts".as_ref()),
+            "control: it opens in the context that sealed it"
+        );
     }
 
     /// A card sealed to a player opens on that player's key, for nobody else,

@@ -224,6 +224,81 @@ fn extract_author_from_leaf_authorization(
     }
 }
 
+/// The account a signed leaf says it was written on behalf of, if any.
+///
+/// Such a leaf is signed by a relay's key (its `signer`) for the account named
+/// here; storage judges it against that account once the node has resolved the
+/// leaf to it, and the node does so only when the signer may write for it
+/// (`calimero_governance_store::on_behalf_standing`).
+fn on_behalf_of_leaf(authorization: Option<&StorageType>) -> Option<calimero_account::AccountId> {
+    match authorization? {
+        StorageType::User { signature_data, .. }
+        | StorageType::Shared { signature_data, .. }
+        | StorageType::SharedMember { signature_data, .. } => {
+            signature_data.as_ref().and_then(|sd| sd.on_behalf)
+        }
+        StorageType::Public | StorageType::Frozen => None,
+    }
+}
+
+/// [`is_leaf_currently_authorized`] for a leaf written on an account's behalf.
+///
+/// The signer is a relay, whose role (`RelayTee`) is read-only, so the
+/// author-based gate would drop every such leaf. The question is instead the
+/// on-behalf rule, asked of the live rows as the rest of repair is: the signer's
+/// account a `RelayTee` here, and the account written for a current member who
+/// may write. A `User` leaf must then be owned by that account. A signer whose
+/// binding has not folded here is dropped, like a non-member, and the leaf is
+/// re-driven by the next repair round.
+fn on_behalf_leaf_currently_authorized(
+    store: &Store,
+    context_id: &ContextId,
+    leaf: &TreeLeafData,
+    signer: &PublicKey,
+    on_behalf: calimero_account::AccountId,
+) -> bool {
+    let standing =
+        calimero_governance_store::get_group_for_context(store, context_id).and_then(|group| {
+            // A context in no group has no namespace a relay could stand in.
+            let Some(group_id) = group else {
+                return Ok(None);
+            };
+            let Some(relay) =
+                calimero_governance_store::member_account_in_namespace(store, &group_id, signer)?
+            else {
+                return Ok(None);
+            };
+            calimero_governance_store::on_behalf_standing_live(store, &group_id, relay, on_behalf)
+                .map(|verdict| Some(verdict.is_ok()))
+        });
+    match standing {
+        Ok(Some(true)) => {
+            let owns = match leaf.metadata.authorization.as_ref() {
+                Some(StorageType::User { owner, .. }) => *owner == on_behalf,
+                _ => true,
+            };
+            if !owns {
+                crate::node_metrics::record_hc_leaf_drop("not-entry-owner");
+            }
+            owns
+        }
+        Ok(Some(false) | None) => {
+            crate::node_metrics::record_hc_leaf_drop("unauthorized");
+            false
+        }
+        Err(err) => {
+            tracing::error!(
+                %context_id,
+                %signer,
+                error = %err,
+                "is_leaf_currently_authorized: on-behalf standing lookup failed; dropping entity"
+            );
+            crate::node_metrics::record_hc_leaf_drop("lookup_error");
+            false
+        }
+    }
+}
+
 /// Does a `User` leaf's author actually own it?
 ///
 /// The ownership half of the authored-entry gate, and it lives here rather than
@@ -232,7 +307,7 @@ fn extract_author_from_leaf_authorization(
 /// storage answers it itself, from the account the node resolved at the action's
 /// causal cut. The sync repair paths (HashComparison, level-wise) carry no cut,
 /// so storage defers there and this runs instead; see
-/// `Interface::user_action_authorized`. Snapshot apply runs
+/// `Interface::user_action_verdict`. Snapshot apply runs
 /// [`snapshot_leaf_authorship`], which asks the same question of every binding
 /// ever folded rather than only the live ones.
 ///
@@ -311,6 +386,9 @@ pub fn is_leaf_currently_authorized(
             return authorless_write_allowed(store, folded, context_id, session_peer);
         }
     };
+    if let Some(on_behalf) = on_behalf_of_leaf(leaf.metadata.authorization.as_ref()) {
+        return on_behalf_leaf_currently_authorized(store, context_id, leaf, &author, on_behalf);
+    }
     match calimero_governance_store::is_currently_authorized_for_context(
         store, folded, context_id, &author,
     ) {
@@ -501,6 +579,17 @@ pub(crate) fn signer_account_for(
     let account = calimero_governance_store::member_account_in_namespace(store, &group_id, &signer)
         .ok()
         .flatten()?;
+    // Written on an account's behalf: the leaf is that account's, provided its
+    // signer may write for it, and nobody's otherwise. Never the TEE-authority
+    // mapping below, which is about a TEE writing as itself.
+    if let Some(on_behalf) = on_behalf_of_leaf(authorization) {
+        return calimero_governance_store::on_behalf_standing_live(
+            store, &group_id, account, on_behalf,
+        )
+        .ok()?
+        .ok()
+        .map(|()| on_behalf);
+    }
     // The same TEE-authority mapping the delta path's resolver applies. Without
     // it, a TEE's `TeeOnly` writes reach a peer by delta but are refused when
     // they arrive by repair, so a peer that catches up by repair never gets them.
@@ -637,6 +726,7 @@ pub(crate) fn snapshot_leaf_authorship(
             calimero_governance_store::writer_account(store, folded, &group_id, signer, account)
                 .unwrap_or(account)
         },
+        |relay, on_behalf| snapshot_relay_may_write_for(store, &group_id, relay, on_behalf),
         |cell| {
             ever_writers(cell).inspect_err(|unavailable| {
                 if *unavailable == WritersUnavailable::OverBudget {
@@ -650,6 +740,36 @@ pub(crate) fn snapshot_leaf_authorship(
             })
         },
     )
+}
+
+/// Whether a snapshot leaf written on `on_behalf`'s behalf was signed by a party
+/// that may write for it, `None` on a lookup error.
+///
+/// Only the signer half of the on-behalf rule decides here: its account must be
+/// a `RelayTee` (live, there being no cut). Whether the account written for may
+/// write *now* does not, for the reason [`snapshot_leaf_authorship`] gives for
+/// any author: a member who has since left keeps the state written for them.
+///
+/// The relay half is live because the snapshot carries no cut and the projection
+/// keeps no history of roles. So the state a relay wrote is dropped from a cold
+/// joiner once that relay stops being a `RelayTee` (removed, or switched back to
+/// a replica); the relay that wrote it vouched for it, and a forger signing as a
+/// member could otherwise serve anyone's entries.
+fn snapshot_relay_may_write_for(
+    store: &Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    relay: calimero_account::AccountId,
+    on_behalf: calimero_account::AccountId,
+) -> Option<bool> {
+    use calimero_governance_store::OnBehalfRefusal;
+
+    match calimero_governance_store::on_behalf_standing_live(store, group_id, relay, on_behalf) {
+        Ok(
+            Ok(()) | Err(OnBehalfRefusal::AccountNotAMember | OnBehalfRefusal::AccountIsReadOnly),
+        ) => Some(true),
+        Ok(Err(OnBehalfRefusal::SignerNotARelay)) => Some(false),
+        Err(_) => None,
+    }
 }
 
 /// A snapshot leaf's signer as a writer set names it: by its account, or by the account the
@@ -674,12 +794,17 @@ impl<F: Fn() -> calimero_account::AccountId> SignerAccounts<F> {
 /// can be tested without a store. `signer_account` returns `None` when the key
 /// has no certified account here; `ever_writers` is asked for a cell only when its
 /// genesis writers do not already name the signer.
+///
+/// `may_write_for(signer_account, on_behalf)` answers for a leaf written on an
+/// account's behalf, `None` when it cannot be read; such a leaf is the account's
+/// when it does, and a forgery when it does not.
 fn authorship_verdict<W>(
     storage_type: &StorageType,
     leaf_id: Id,
     anchor_writers: Option<&std::collections::BTreeMap<calimero_account::AccountId, W>>,
     signer_account: impl FnOnce(&PublicKey) -> Option<calimero_account::AccountId>,
     writer_account: impl Fn(&PublicKey, calimero_account::AccountId) -> calimero_account::AccountId,
+    may_write_for: impl FnOnce(calimero_account::AccountId, calimero_account::AccountId) -> Option<bool>,
     ever_writers: impl FnOnce(Id) -> Result<CellWriters, WritersUnavailable>,
 ) -> SnapshotAuthorship {
     let Some(signer) = extract_author_from_leaf_authorization(Some(storage_type)) else {
@@ -688,16 +813,33 @@ fn authorship_verdict<W>(
     let Some(account) = signer_account(&signer) else {
         return SnapshotAuthorship::Unknown;
     };
+    let on_behalf = on_behalf_of_leaf(Some(storage_type));
+    let author = match on_behalf {
+        None => account,
+        Some(on_behalf) => match may_write_for(account, on_behalf) {
+            Some(true) => on_behalf,
+            Some(false) => return SnapshotAuthorship::Forged,
+            None => return SnapshotAuthorship::Unknown,
+        },
+    };
+    // A direct write may also name the writer as the TEE authority; an
+    // on-behalf one is its account's and nobody else's.
     let signer_as = SignerAccounts {
-        account,
+        account: author,
         mapped: std::cell::OnceCell::new(),
-        map: || writer_account(&signer, account),
+        map: || {
+            if on_behalf.is_none() {
+                writer_account(&signer, account)
+            } else {
+                author
+            }
+        },
     };
     // The genesis writers a leaf carries settle the question when they name the signer;
     // otherwise the cell's ever-writers do, since a rotation may have added it.
     let (cell, genesis_names_signer) = match storage_type {
         StorageType::User { owner, .. } => {
-            return if *owner == account {
+            return if *owner == author {
                 SnapshotAuthorship::Authored
             } else {
                 SnapshotAuthorship::Forged
@@ -761,17 +903,45 @@ pub enum LeafDisposition {
 /// An **opaque** root is the exception and applies directly: the synthetic
 /// `Opaque` marker means there is no `Mergeable` to dispatch to, so LWW is the
 /// only rule available and also the right one.
+///
+/// A custom entry defers only when `stored_locally` says this node holds a value
+/// to merge it with. With nothing stored there is nothing to merge, and the
+/// deferred pass skips such an entry ([`dispatch_deferred_custom_merges`]
+/// leaves it "to the plain apply path"), so deferring it would deliver it
+/// nowhere: a receiver that missed the entry — its delta's signed actions were
+/// refused before the author's binding folded here — would never get it, and
+/// the replicas would stay divergent on the same DAG heads. The plain apply
+/// stores an entry it has no bytes for as it arrives, which is the only merge
+/// one side admits.
+///
+/// [`dispatch_deferred_custom_merges`]: crate::sync::protocol_selector::dispatch_deferred_custom_merges
 #[must_use]
-pub fn classify_leaf(entity_id: Id, crdt_type: &CrdtType) -> LeafDisposition {
+pub fn classify_leaf(
+    entity_id: Id,
+    crdt_type: &CrdtType,
+    stored_locally: impl FnOnce() -> bool,
+) -> LeafDisposition {
     if calimero_storage::collections::is_app_root_entry(entity_id) && !crdt_type.is_opaque_leaf() {
         return LeafDisposition::DeferRoot;
     }
 
     if let CrdtType::Custom(type_id) = crdt_type {
-        return LeafDisposition::DeferCustom(*type_id);
+        if stored_locally() {
+            return LeafDisposition::DeferCustom(*type_id);
+        }
     }
 
     LeafDisposition::Apply
+}
+
+/// Whether this node stores a value for `entity_id`: the [`classify_leaf`]
+/// question of whether a custom entry has anything to merge with here. Reads
+/// the current runtime env's storage, so call it inside `with_runtime_env`.
+pub fn stores_value(entity_id: Id) -> bool {
+    <MainStorage as calimero_storage::store::StorageAdaptor>::storage_read(
+        calimero_storage::store::Key::Entry(entity_id),
+    )
+    .is_some()
 }
 
 pub fn apply_leaf_with_crdt_merge_gated(
@@ -1665,6 +1835,7 @@ mod tests {
                 signer: Some(signer),
                 signature: [0u8; 64],
                 nonce: 0,
+                on_behalf: None,
             }),
         };
         assert_eq!(
@@ -1700,6 +1871,7 @@ mod tests {
                 signer: Some(signer),
                 signature: [0u8; 64],
                 nonce: 0,
+                on_behalf: None,
             }),
         };
         assert_eq!(
@@ -1722,6 +1894,7 @@ mod tests {
                 signer: None,
                 signature: [0u8; 64],
                 nonce: 0,
+                on_behalf: None,
             }),
         };
         assert_eq!(extract_author_from_leaf_authorization(Some(&st)), None);
@@ -1951,6 +2124,7 @@ mod tests {
                 signer: Some(mallory),
                 signature: [0u8; 64],
                 nonce: 0,
+                on_behalf: None,
             }),
         };
         let verdict = |metadata: &Metadata| {
@@ -2101,11 +2275,43 @@ mod classify_leaf_tests {
     fn a_custom_entry_defers_and_carries_its_id() {
         let id = CustomTypeId::of("team::Stats");
         assert_eq!(
-            classify_leaf(Id::random(), &CrdtType::Custom(id)),
+            classify_leaf(Id::random(), &CrdtType::Custom(id), || true),
             LeafDisposition::DeferCustom(id),
             "the id must survive classification — the dispatcher has no other \
              way to know which rule to run"
         );
+    }
+
+    /// A custom entry this node holds nothing for applies, because a merge of
+    /// one side is not a merge and the deferred pass skips it. Deferring it
+    /// anyway is calimero-network/core#4310: a receiver that refused the
+    /// entry's delta (the author's binding had not folded yet) is offered it on
+    /// every sync and drops it every time, and the replicas never converge.
+    #[test]
+    fn a_custom_entry_with_nothing_stored_applies() {
+        assert_eq!(
+            classify_leaf(
+                Id::random(),
+                &CrdtType::Custom(CustomTypeId::of("app::Read")),
+                || false
+            ),
+            LeafDisposition::Apply,
+            "with nothing to merge, the plain apply is the only path that stores it"
+        );
+    }
+
+    /// The stored-value probe reads storage, so it runs only for a custom entry.
+    #[test]
+    fn only_a_custom_entry_asks_what_is_stored() {
+        for (entity_id, crdt_type) in [
+            (Id::random(), CrdtType::UnorderedMap),
+            (Id::random(), CrdtType::lww_register()),
+            (Id::root(), CrdtType::lww_register()),
+        ] {
+            let _ = classify_leaf(entity_id, &crdt_type, || {
+                panic!("{crdt_type:?} must not probe storage")
+            });
+        }
     }
 
     /// Built-ins merge in the storage layer and must NOT be deferred; deferring
@@ -2120,7 +2326,7 @@ mod classify_leaf_tests {
             CrdtType::lww_register(),
         ] {
             assert_eq!(
-                classify_leaf(Id::random(), &crdt_type),
+                classify_leaf(Id::random(), &crdt_type, || true),
                 LeafDisposition::Apply,
                 "{crdt_type:?} merges in the storage layer"
             );
@@ -2132,7 +2338,7 @@ mod classify_leaf_tests {
     #[test]
     fn an_app_root_defers_as_a_root() {
         assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::lww_register()),
+            classify_leaf(Id::root(), &CrdtType::lww_register(), || true),
             LeafDisposition::DeferRoot
         );
     }
@@ -2144,7 +2350,7 @@ mod classify_leaf_tests {
     #[test]
     fn an_opaque_root_applies_rather_than_deferring() {
         assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::opaque_leaf()),
+            classify_leaf(Id::root(), &CrdtType::opaque_leaf(), || true),
             LeafDisposition::Apply
         );
     }
@@ -2155,7 +2361,9 @@ mod classify_leaf_tests {
     #[test]
     fn a_root_stamped_custom_still_defers_as_a_root() {
         assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::Custom(CustomTypeId::of("x"))),
+            classify_leaf(Id::root(), &CrdtType::Custom(CustomTypeId::of("x")), || {
+                true
+            }),
             LeafDisposition::DeferRoot
         );
     }
@@ -2234,6 +2442,7 @@ mod snapshot_authorship_tests {
             signature: [0x77; 64],
             nonce: 1,
             signer: Some(PublicKey::from(SIGNER)),
+            on_behalf: None,
         })
     }
 
@@ -2279,6 +2488,7 @@ mod snapshot_authorship_tests {
                 signer_is.map(AccountId::from)
             },
             |_, account| account,
+            |_, _| panic!("a direct write is not asked the on-behalf rule"),
             ever_writers,
         )
     }
@@ -2377,6 +2587,7 @@ mod snapshot_authorship_tests {
                 None,
                 |_| Some(AccountId::from(ALICE)),
                 |_, account| account,
+                |_, _| panic!("a direct write is not asked the on-behalf rule"),
                 never_asked,
             ),
             SnapshotAuthorship::Forged,
@@ -2444,6 +2655,7 @@ mod snapshot_authorship_tests {
             None,
             |_| Some(AccountId::from(ALICE)),
             |_, _| AccountId::TEE_AUTHORITY,
+            |_, _| panic!("a direct write is not asked the on-behalf rule"),
             never_asked,
         );
         assert_eq!(verdict, SnapshotAuthorship::Authored);
@@ -2457,8 +2669,323 @@ mod snapshot_authorship_tests {
             None,
             |_| panic!("a leaf with no signer must not be resolved"),
             |_, _| panic!("a leaf with no signer must not be resolved"),
+            |_, _| panic!("a leaf with no signer must not be resolved"),
             |_| panic!("a leaf with no signer must not be resolved"),
         );
         assert_eq!(verdict, SnapshotAuthorship::Authored);
+    }
+
+    const RELAY: [u8; 32] = [0x7E; 32];
+
+    /// Signed by the relay's key, written for `on_behalf`.
+    fn signed_for(on_behalf: [u8; 32]) -> Option<SignatureData> {
+        signed().map(|sd| SignatureData {
+            on_behalf: Some(AccountId::from(on_behalf)),
+            ..sd
+        })
+    }
+
+    /// `may` is the on-behalf rule's answer for the relay writing for the
+    /// account; the signer always resolves to the relay's account.
+    fn verdict_for(
+        storage_type: &StorageType,
+        anchor: Option<&BTreeMap<AccountId, ()>>,
+        may: Option<bool>,
+    ) -> SnapshotAuthorship {
+        authorship_verdict(
+            storage_type,
+            leaf_of(storage_type),
+            anchor,
+            |_| Some(AccountId::from(RELAY)),
+            |_, _| AccountId::TEE_AUTHORITY,
+            |relay, _| {
+                assert_eq!(
+                    relay,
+                    AccountId::from(RELAY),
+                    "asked of the signer's account"
+                );
+                may
+            },
+            |_| Ok(CellWriters::Genesis),
+        )
+    }
+
+    /// A relay's leaf for alice is alice's: judged against her ownership, not
+    /// the relay's, and only when the relay may write for her.
+    #[test]
+    fn an_on_behalf_user_entry_is_its_accounts_when_the_relay_may_write_for_it() {
+        let entry = |owner| StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
+            owner: AccountId::from(owner),
+            signature_data: signed_for(ALICE),
+        };
+        assert_eq!(
+            verdict_for(&entry(ALICE), None, Some(true)),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(
+            verdict_for(&entry(ALICE), None, Some(false)),
+            SnapshotAuthorship::Forged,
+            "a signer that may not write for alice forged her entry"
+        );
+        assert_eq!(
+            verdict_for(&entry(BOB), None, Some(true)),
+            SnapshotAuthorship::Forged,
+            "an entry written for alice cannot be bob's"
+        );
+        assert_eq!(
+            verdict_for(&entry(ALICE), None, None),
+            SnapshotAuthorship::Unknown,
+            "an unreadable rule fails the snapshot rather than dropping the leaf"
+        );
+    }
+
+    /// Writer sets are asked about the account written for, never the relay's
+    /// own account, and never the TEE authority the relay's key may map to.
+    #[test]
+    fn an_on_behalf_shared_entry_is_checked_against_the_account_written_for() {
+        let entry = |writers: &[[u8; 32]]| StorageType::Shared {
+            writers: writers
+                .iter()
+                .map(|a| (AccountId::from(*a), Default::default()))
+                .collect(),
+            signature_data: signed_for(ALICE),
+        };
+        assert_eq!(
+            verdict_for(&entry(&[ALICE]), None, Some(true)),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(
+            verdict_for(&entry(&[RELAY]), None, Some(true)),
+            SnapshotAuthorship::Forged,
+            "the relay's own place in the set does not let it write for alice"
+        );
+        let tee_only = StorageType::Shared {
+            writers: [(AccountId::TEE_AUTHORITY, Default::default())]
+                .into_iter()
+                .collect(),
+            signature_data: signed_for(ALICE),
+        };
+        assert_eq!(
+            verdict_for(&tee_only, None, Some(true)),
+            SnapshotAuthorship::Forged
+        );
+
+        let member = StorageType::SharedMember {
+            anchor: Id::new([0x0C; 32]),
+            signature_data: signed_for(ALICE),
+        };
+        assert_eq!(
+            verdict_for(&member, Some(&writers(&[ALICE])), Some(true)),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(
+            verdict_for(&member, Some(&writers(&[RELAY])), Some(true)),
+            SnapshotAuthorship::Forged
+        );
+    }
+}
+
+/// How the node resolves a leaf a relay wrote on an account's behalf, on the
+/// repair and snapshot paths, against real governance rows.
+#[cfg(test)]
+mod on_behalf_resolution_tests {
+    use calimero_account::AccountId;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::MemberCapabilities;
+    use calimero_governance_store::test_fixtures::{enrolled, sample_meta_with_admin, test_store};
+    use calimero_governance_store::{
+        CapabilitiesRepository, MembershipRepository, MetaRepository, NotFolded,
+    };
+    use calimero_node_primitives::sync::{LeafMetadata, TreeLeafData};
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::crdt::CrdtType;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::{EntryRules, Metadata, SignatureData, StorageType};
+    use calimero_storage::shared_writers::CellWriters;
+    use calimero_store::Store;
+
+    use super::{
+        is_leaf_currently_authorized, signer_account_for, snapshot_leaf_authorship,
+        SnapshotAuthorship,
+    };
+
+    const ALICE: [u8; 32] = [0xA1; 32];
+    const BOB: [u8; 32] = [0xB0; 32];
+
+    /// A group holding a context, a `RelayTee` relay, alice and bob as members
+    /// with no key here, and mallory, a member holding `CAN_AUTHOR_ON_BEHALF`.
+    struct World {
+        store: Store,
+        group: ContextGroupId,
+        context: ContextId,
+        relay_pk: PublicKey,
+        relay: AccountId,
+        mallory_pk: PublicKey,
+    }
+
+    fn world() -> World {
+        let store = test_store();
+        let group = ContextGroupId::from([0x7A; 32]);
+        let context = ContextId::from([0x7B; 32]);
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(AccountId::from([0xEE; 32])))
+            .expect("save meta");
+        calimero_governance_store::register_context_in_group(&store, &group, &context)
+            .expect("register");
+        let membership = MembershipRepository::new(&store);
+        let (relay_pk, relay) = enrolled(&store, &group, 0x7E);
+        membership
+            .add_member(&group, &relay, GroupMemberRole::RelayTee)
+            .expect("seat the relay");
+        let (mallory_pk, mallory) = enrolled(&store, &group, 0x3D);
+        membership
+            .add_member(&group, &mallory, GroupMemberRole::Member)
+            .expect("seat mallory");
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &group,
+                &mallory,
+                MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+            )
+            .expect("mallory holds the authorship bit");
+        for account in [ALICE, BOB] {
+            membership
+                .add_member(&group, &AccountId::from(account), GroupMemberRole::Member)
+                .expect("seat a member");
+        }
+        World {
+            store,
+            group,
+            context,
+            relay_pk,
+            relay,
+            mallory_pk,
+        }
+    }
+
+    /// A `User` entry owned by `owner`, signed by `signer` for `on_behalf`.
+    fn owned(owner: [u8; 32], signer: PublicKey, on_behalf: Option<[u8; 32]>) -> StorageType {
+        StorageType::User {
+            rules: EntryRules::OWNED,
+            owner: AccountId::from(owner),
+            signature_data: Some(SignatureData {
+                signature: [0x77; 64],
+                nonce: 1,
+                signer: Some(signer),
+                on_behalf: on_behalf.map(AccountId::from),
+            }),
+        }
+    }
+
+    fn leaf(storage_type: StorageType) -> TreeLeafData {
+        TreeLeafData::new(
+            [0x01; 32],
+            vec![1],
+            LeafMetadata::new(CrdtType::lww_register(), 1, [0; 32])
+                .with_authorization(storage_type),
+        )
+    }
+
+    fn repaired(w: &World, storage_type: StorageType) -> bool {
+        is_leaf_currently_authorized(&w.store, &NotFolded, &w.context, &leaf(storage_type), None)
+    }
+
+    fn snapshot(w: &World, storage_type: StorageType) -> SnapshotAuthorship {
+        let mut metadata = Metadata::new(1, 1);
+        metadata.storage_type = storage_type;
+        snapshot_leaf_authorship(
+            &w.store,
+            &NotFolded,
+            &w.context,
+            Id::new([0x01; 32]),
+            &metadata,
+            None,
+            &|_| Ok(CellWriters::Genesis),
+        )
+    }
+
+    /// A relay's entry for alice resolves to alice, so storage judges it as
+    /// hers. Signed by anyone else, or for a stranger, it resolves to nobody.
+    #[test]
+    fn a_relay_entry_resolves_to_the_account_it_was_written_for() {
+        let w = world();
+        let resolve =
+            |st: StorageType| signer_account_for(&w.store, &NotFolded, &w.context, Some(&st));
+
+        assert_eq!(
+            resolve(owned(ALICE, w.relay_pk, Some(ALICE))),
+            Some(AccountId::from(ALICE))
+        );
+        assert_eq!(
+            resolve(owned(ALICE, w.mallory_pk, Some(ALICE))),
+            None,
+            "a member holding the authorship bit is no relay"
+        );
+        assert_eq!(
+            resolve(owned([0x51; 32], w.relay_pk, Some([0x51; 32]))),
+            None,
+            "a relay writes for members only"
+        );
+        assert_eq!(
+            resolve(owned(ALICE, w.relay_pk, None)),
+            Some(w.relay),
+            "control: a direct write still resolves to its signer's account"
+        );
+    }
+
+    /// The repair gate asks the on-behalf rule instead of the signer's own
+    /// standing: the relay is read-only, so the signer gate alone drops every
+    /// entry it wrote for someone.
+    #[test]
+    fn repair_admits_a_relay_entry_for_its_owner_and_nothing_else() {
+        let w = world();
+        assert!(repaired(&w, owned(ALICE, w.relay_pk, Some(ALICE))));
+        assert!(
+            !repaired(&w, owned(ALICE, w.relay_pk, None)),
+            "control: the relay may not write as itself"
+        );
+        assert!(
+            !repaired(&w, owned(BOB, w.relay_pk, Some(ALICE))),
+            "an entry written for alice cannot overwrite bob's"
+        );
+        assert!(!repaired(&w, owned(ALICE, w.mallory_pk, Some(ALICE))));
+
+        MembershipRepository::new(&w.store)
+            .set_role(&w.group, &w.relay, GroupMemberRole::ReadOnlyTee)
+            .expect("the relay is switched back to a replica");
+        assert!(
+            !repaired(&w, owned(ALICE, w.relay_pk, Some(ALICE))),
+            "repair reads the relay's standing now"
+        );
+    }
+
+    /// A snapshot keeps what a relay wrote for a member who has since left, as
+    /// it keeps any departed author's state, and drops what a non-relay signed.
+    #[test]
+    fn a_snapshot_keeps_a_relay_entry_and_drops_a_forgery() {
+        let w = world();
+        assert_eq!(
+            snapshot(&w, owned(ALICE, w.relay_pk, Some(ALICE))),
+            SnapshotAuthorship::Authored
+        );
+        assert_eq!(
+            snapshot(&w, owned(ALICE, w.mallory_pk, Some(ALICE))),
+            SnapshotAuthorship::Forged
+        );
+
+        MembershipRepository::new(&w.store)
+            .remove_member(&w.group, &AccountId::from(ALICE))
+            .expect("alice leaves");
+        assert_eq!(
+            snapshot(&w, owned(ALICE, w.relay_pk, Some(ALICE))),
+            SnapshotAuthorship::Authored,
+            "a cold joiner keeps the state written for a member who left"
+        );
+        assert!(
+            !repaired(&w, owned(ALICE, w.relay_pk, Some(ALICE))),
+            "while repair, which asks about now, drops it"
+        );
     }
 }

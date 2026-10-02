@@ -38,6 +38,11 @@ pub enum StorageError {
     #[error("Deserialization error: {0}")]
     DeserializationError(IoError),
 
+    /// A walk up the tree from this entity took more steps than an entity may
+    /// have ancestors: its parent chain loops or is too long.
+    #[error("The parent chain above {0} loops or is too long")]
+    ParentChainTooLong(Id),
+
     /// An index entry was not found for the specified entity. This would
     /// indicate a bug in the system.
     #[error("Index not found for ID: {0}")]
@@ -133,7 +138,8 @@ impl Serialize for StorageError {
             Self::DeserializationError(ref err) | Self::SerializationError(ref err) => {
                 serializer.serialize_str(&err.to_string())
             }
-            Self::CannotCreateOrphan(id)
+            Self::ParentChainTooLong(id)
+            | Self::CannotCreateOrphan(id)
             | Self::IndexNotFound(id)
             | Self::UnexpectedId(id)
             | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),

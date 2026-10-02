@@ -1243,6 +1243,14 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: refusal.to_string(),
         };
     }
+    // A delegated run or creation this relay may not sign for the member: it is
+    // not a `RelayTee`, or the member may not write. About authority, not health.
+    if let Some(refusal) = err.downcast_ref::<calimero_governance_store::OnBehalfRefusal>() {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: refusal.to_string(),
+        };
+    }
     // The member signed against an application the group no longer targets.
     // Nothing is wrong with the node or the signature; the member re-signs.
     if let Some(
@@ -2631,6 +2639,10 @@ mod parse_api_error_tests {
                     DelegatedWriteRefusal::AuthorIsReadOnly,
                     "the author's role in this context is read-only",
                 ),
+                (
+                    DelegatedWriteRefusal::ExecutorIsNotARelay,
+                    "this node is not a RelayTee in this namespace",
+                ),
             ] {
                 let api = parse_api_error(
                     eyre::Report::new(ExecuteError::DelegatedWriteRefused {
@@ -2642,6 +2654,21 @@ mod parse_api_error_tests {
                 assert_eq!(api.status_code, StatusCode::FORBIDDEN);
                 assert!(api.message.contains(says), "got: {}", api.message);
             }
+        }
+
+        /// A delegated creation this relay may not sign for the member is about
+        /// authority, so it is a 403 that says why, not the opaque 500.
+        #[test]
+        fn an_on_behalf_refusal_is_a_403_with_its_reason() {
+            let api = parse_api_error(eyre::Report::new(
+                calimero_governance_store::OnBehalfRefusal::SignerNotARelay,
+            ));
+            assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+            assert!(
+                api.message.contains("not a RelayTee"),
+                "got: {}",
+                api.message
+            );
         }
 
         #[test]

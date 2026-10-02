@@ -154,6 +154,8 @@ The projection answers this by folding only the **causal cut**: the operation's 
 A write authored _before_ a member was revoked is judged against the access-control state that existed _before_ the revocation — so it stays valid regardless of the order in which a peer happens to receive the write and the revocation. Authority is evaluated at the author's cut, never at the receiver's present. [Governance](/protocol/governance/) builds the full membership and capability rules on top of this primitive.
 :::
 
+One exception narrows a cut: an op of a signer whose removal is concurrent with it carries no authority, and the node's projection leaves it out of every view. The set of such ops is a function of the op set, so the views and the scope root are the same in any arrival order.
+
 ## Specification
 
 The exact composition of the scope root. Every node must hash identical bytes in identical order, so the rules below are normative for interop. All integers are **little-endian**; every map is iterated in **ascending key order** (the determinism source).

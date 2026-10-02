@@ -204,6 +204,8 @@ mod tests {
             issuer: "test_issuer".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 86400,
+            client_access_token_expiry: crate::config::default_client_access_token_expiry(),
+            client_refresh_token_expiry: crate::config::default_client_refresh_token_expiry(),
             node_host: None,
         };
 

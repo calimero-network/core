@@ -31,7 +31,7 @@ cargo test -p calimero-build-utils git_details_or_unknown_returns_unknown_outsid
 | `git_details_or_unknown(pkg_dir)` | fn | Same as above but swallows errors into `GitInfo { describe: "unknown", commit: "unknown" }` and emits `cargo:warning` instead of failing the build |
 | `GitInfo` | struct | `{ describe: String, commit: String }` |
 | `run_command(cmd, args, cwd)` | fn | Thin wrapper over `std::process::Command`; returns stdout as `String`, error includes stderr on non-zero exit |
-| `fetch_and_extract(client, src, cache_dir, freshness, force, expected_sha256)` | fn | `fetch` feature. Downloads (or reads, for a local path) a zip and returns the directory it was extracted into; reuses a cached extraction younger than `freshness` unless `force`. With `Some(hex)`, refuses an archive whose sha256 differs |
+| `fetch_and_extract(client, src, cache_dir, freshness, force, expected_sha256)` | fn | `fetch` feature. Downloads (or reads, for a local path) a zip and returns the directory it was extracted into; reuses a cached extraction younger than `freshness` unless `force`. With `Some(hex)`, refuses an archive whose sha256 differs. A remote `src` must be `https` (plain `http` only for a loopback host, also after redirects), and a download over 128 MiB is refused |
 
 `read_workspace_version_for_dir` and `parse_workspace_metadata_version` are private helpers used only by `read_workspace_version` and the test suite.
 

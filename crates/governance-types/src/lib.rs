@@ -2286,6 +2286,9 @@ pub struct SignedNamespaceOp {
 ///   node decodes the wrapper but refuses it at its delegation gate. As at v12
 ///   and v13, refusing at this gate keeps them from sharing a namespace.
 ///
+/// v21: an op concurrent with its signer's removal is void; nothing moves on the wire.
+/// An older node applies it, so the two disagree: a coordinated upgrade.
+///
 /// v22: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's writer-set
 /// rotation. Appended after `RootGuarded`, so no discriminant moves; an older node
 /// cannot decode it. A coordinated upgrade.

@@ -22,7 +22,7 @@
 //! ```ignore
 //! DeltaSignaturePayload {
 //!     context_id,        // pins to the context (cross-context replay)
-//!     delta_id,          // hash(parents || actions); commits to the content
+//!     delta_id,          // hash(events_hash || parents || actions); commits to the content
 //!     author_id,         // claimed author
 //!     governance_position, // cited cut for the membership check
 //! }
@@ -61,6 +61,8 @@ pub enum SignatureDomain {
     Tee = 2,
     /// [`TeeFiredPayload`]: a TEE ran a trigger that wrote nothing.
     TeeFired = 3,
+    /// [`StateBeaconPayload`]: a member's state as of its last heartbeat.
+    StateBeacon = 4,
 }
 
 /// Canonical payload for the delta-envelope signature. Borsh-serialized
@@ -295,6 +297,67 @@ pub fn verify_tee_fired(
     author_id
         .verify_raw_signature(&payload, signature)
         .map_err(|err| eyre::eyre!("TEE fired statement signature verification failed: {err}"))
+}
+
+/// What a member signs to say "this is my state": the DAG heads it has applied
+/// and the root hash they produced.
+///
+/// Tombstone GC collects a delete only once every member device has shown,
+/// with one of these, a state equal to this node's own at a moment after the
+/// delete was applied here (`calimero-node`'s `tombstone_stability`). Equal
+/// heads mean the member holds no delta this node lacks — none of its offline
+/// writes is still to come — and equal roots mean it holds no live copy of
+/// what was deleted. Signed, because a forged one would let a non-member
+/// release tombstones a stale replica still needs.
+///
+/// `dag_heads` must be sorted, so the signer and every verifier encode the same
+/// bytes for the same set.
+#[derive(BorshSerialize)]
+pub struct StateBeaconPayload<'a> {
+    pub domain: SignatureDomain,
+    pub context_id: ContextId,
+    pub signer: PublicKey,
+    pub root_hash: [u8; 32],
+    pub dag_heads: &'a [[u8; 32]],
+}
+
+/// Borsh-encode the beacon `signer` signs for its state (`root_hash` over the
+/// sorted `dag_heads`).
+///
+/// # Errors
+/// Borsh encoding error (unreachable for these field types).
+pub fn state_beacon_payload(
+    context_id: ContextId,
+    signer: PublicKey,
+    root_hash: [u8; 32],
+    dag_heads: &[[u8; 32]],
+) -> Result<Vec<u8>, borsh::io::Error> {
+    borsh::to_vec(&StateBeaconPayload {
+        domain: SignatureDomain::StateBeacon,
+        context_id,
+        signer,
+        root_hash,
+        dag_heads,
+    })
+}
+
+/// Verify that `signer` signed the beacon for this state. Whether `signer` is
+/// a member is the caller's check.
+///
+/// # Errors
+/// The beacon does not verify under `signer`.
+pub fn verify_state_beacon(
+    context_id: ContextId,
+    signer: PublicKey,
+    root_hash: [u8; 32],
+    dag_heads: &[[u8; 32]],
+    signature: &[u8; 64],
+) -> eyre::Result<()> {
+    let payload = state_beacon_payload(context_id, signer, root_hash, dag_heads)
+        .map_err(|err| eyre::eyre!("failed to serialize a state beacon: {err}"))?;
+    signer
+        .verify_raw_signature(&payload, signature)
+        .map_err(|err| eyre::eyre!("state beacon signature verification failed: {err}"))
 }
 
 // NOT in this payload, deliberately: `producing_bytecode_id`.
@@ -1224,6 +1287,28 @@ mod tests {
         };
         assert!(verify_tee_fired(ctx, pk, &other, &sig).is_err());
         assert!(verify_tee_fired(ContextId::from([1; 32]), pk, &deal(), &sig).is_err());
+    }
+
+    /// A state beacon verifies for exactly the state it was signed over: not
+    /// another root, other heads, another context, or under another key, and a
+    /// delta envelope's signature is not one.
+    #[test]
+    fn a_state_beacon_verifies_for_its_state_only() {
+        let (ctx, delta, sk, pk) = fixture();
+        let heads = [[1; 32], [2; 32]];
+        let payload = state_beacon_payload(ctx, pk, [9; 32], &heads).unwrap();
+        assert_eq!(payload[0], SignatureDomain::StateBeacon as u8);
+        let sig = sk.sign(&payload).unwrap().to_bytes();
+        verify_state_beacon(ctx, pk, [9; 32], &heads, &sig).unwrap();
+
+        assert!(verify_state_beacon(ctx, pk, [8; 32], &heads, &sig).is_err());
+        assert!(verify_state_beacon(ctx, pk, [9; 32], &heads[..1], &sig).is_err());
+        assert!(verify_state_beacon(ContextId::from([1; 32]), pk, [9; 32], &heads, &sig).is_err());
+        let other = PrivateKey::from([0x42; 32]).public_key();
+        assert!(verify_state_beacon(ctx, other, [9; 32], &heads, &sig).is_err());
+
+        let envelope = sign_tee(ctx, delta, &sk, &deal());
+        assert!(verify_state_beacon(ctx, pk, [9; 32], &heads, &envelope).is_err());
     }
 
     /// A fired statement is not a delta envelope, nor the reverse.

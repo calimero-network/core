@@ -375,6 +375,7 @@ where
                 actions,
                 effective_writers,
                 signer_account,
+                on_behalf_accounts,
                 ..
             } => Self::apply_actions(actions, |action| crate::interface::ApplyContext {
                 effective_writers: effective_writers.get(&action.id()).cloned(),
@@ -385,7 +386,13 @@ where
                 // from anything a sender chose: a peer cannot put this variant on
                 // the wire at all, because the gossip path accepts only `Actions`
                 // and the sync path's wire type carries none of this.
-                signer_account,
+                //
+                // An action written on someone's behalf that the node found
+                // entitled is that account's, whoever authored the delta.
+                signer_account: on_behalf_accounts
+                    .get(&action.id())
+                    .copied()
+                    .or(signer_account),
             }),
         }
         .inspect_err(|e| {

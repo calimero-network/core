@@ -1,0 +1,28 @@
+error: (calimero)> `on_touched` is named as an event handler but not marked `#[app::handler]`, so no peer would run it
+  --> tests/macros/error_handler_not_marked.rs:21:37
+   |
+21 |         app::emit!((Event::Touched, "on_touched"));
+   |                                     ^^^^^^^^^^^^
+
+error: (calimero)> `on_tee` is named as an event handler but not marked `#[app::handler]`, so no peer would run it
+  --> tests/macros/error_handler_not_marked.rs:22:37
+   |
+22 |         app::emit!((Event::Touched, "tee:on_tee"));
+   |                                     ^^^^^^^^^^^^
+
+error[E0277]: (calimero)> no method named `#[app::init]` found for type `S`
+  --> tests/macros/error_handler_not_marked.rs:11:8
+   |
+11 | struct S;
+   |        ^ add an `#[app::init]` method to this type
+   |
+help: the trait `AppStateInit` is not implemented for `S`
+  --> tests/macros/error_handler_not_marked.rs:11:1
+   |
+11 | struct S;
+   | ^^^^^^^^
+note: required by a bound in `AppState`
+  --> src/state.rs
+   |
+   | pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
+   |                                                         ^^^^^^^^^^^^ required by this bound in `AppState`

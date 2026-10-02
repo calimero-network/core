@@ -56,6 +56,7 @@ calimero-tee-attestation = { workspace = true, features = ["mock-attestation"] }
 # (`calimero-op` is now a regular dependency — used by `unified_op_decode` —
 # so it no longer needs a dev-dependency entry.)
 calimero-projection.workspace = true
+calimero-authz.workspace = true
 # Serializes the op-event tests, which observe a process-global broadcast bus
 # (`op_events`) and would otherwise cross-talk / flood under parallel execution.
 serial_test.workspace = true

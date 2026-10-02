@@ -154,18 +154,14 @@ pub enum SnapshotRecord {
         schema_bytecode_id: Option<[u8; 32]>,
     },
     /// Auxiliary state keyed under the same context but not
-    /// signature-verifiable per record. Currently used for:
+    /// signature-verifiable per record. No kind is in use, and the receiver
+    /// refuses every one:
     ///
-    /// * `kind = 2`: `Key::SyncState(id)` — last-sync-with-peer
-    ///   pointers. Local-state-adjacent; preserved on snapshot
-    ///   to avoid resetting receiver-side sync timers.
+    /// * `kind = 2` named a sync-state key nothing ever wrote.
+    /// * `kind = 3` was a per-entity rotation log that older peers shipped. It
+    ///   is retired: a cell's writers come from the governance fold.
     ///
-    /// `kind = 3` was a per-entity rotation log that older peers shipped. It
-    /// is retired: a cell's writers come from the governance fold, and the
-    /// number is not reused.
-    ///
-    /// The receiver re-derives the storage key via
-    /// `Key::SyncState(id).to_bytes()` and writes through.
+    /// Neither number is reused.
     Auxiliary {
         /// Discriminator byte from `calimero_storage::store::Key`.
         kind: u8,
@@ -238,8 +234,6 @@ pub mod snapshot_record_kind {
     /// `Key::Entry(id)` — not used in `Auxiliary` (Entry is shipped
     /// inside `Entity`); kept here for completeness.
     pub const ENTRY: u8 = 1;
-    /// `Key::SyncState(id)` — last-sync timestamps.
-    pub const SYNC_STATE: u8 = 2;
 }
 
 /// Cursor for resuming snapshot pagination.
@@ -687,9 +681,9 @@ pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 /// borsh-encoded storage delta).
 ///
 /// This is a defense-in-depth backstop, NOT the primary limit: an inbound
-/// gossip message is already capped at gossipsub's default
-/// `max_transmit_size` (64 KiB), so a network-delivered delta's plaintext is
-/// bounded well below this before it reaches decryption. The cap matters for
+/// gossip message is already capped at the network's gossipsub
+/// `max_transmit_size` (1 MiB), so a network-delivered delta's plaintext
+/// cannot exceed this before it reaches decryption. The cap matters for
 /// the buffered-replay path (which decrypts payloads loaded from local
 /// storage) and as a hard ceiling against a malicious group-key holder, who
 /// can seal an arbitrarily large payload that still passes AEAD.
@@ -698,7 +692,8 @@ pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 /// *compressed* snapshot pages and is intentionally looser to absorb
 /// compression expansion. A state-delta plaintext is uncompressed, so it gets
 /// its own, tighter, named bound. Sized generously above any legitimate delta
-/// (16× the gossip transmit cap) but far below a memory-exhaustion payload.
+/// (the same size as the gossip transmit cap) but far below a memory-exhaustion
+/// payload.
 pub const MAX_STATE_DELTA_PLAINTEXT_BYTES: usize = 1024 * 1024;
 
 /// Plaintext that gets encrypted into the `artifact` field of a
@@ -968,6 +963,28 @@ pub enum BroadcastMessage<'a> {
         trigger: Box<super::delta_auth::TeeTriggerCause>,
         /// By `author_id`, over
         /// [`super::delta_auth::tee_fired_payload`].
+        signature: [u8; 64],
+    },
+
+    /// A member's state: the DAG heads it has applied and the root hash they
+    /// produced, signed by the member's device key. Sent with every heartbeat.
+    ///
+    /// Tombstone GC collects a delete only once every member device has shown
+    /// a state equal to this node's own after the delete (see
+    /// [`super::delta_auth::StateBeaconPayload`]), so this is what lets a
+    /// tombstone go. Gossip-only and never persisted: a node that misses one
+    /// waits for the next.
+    ///
+    /// **Borsh ordering**: appended at the tail so every existing variant
+    /// discriminant is unchanged. An older node drops it as undecodable.
+    StateBeacon {
+        context_id: ContextId,
+        /// The member device key that signed it.
+        signer: PublicKey,
+        root_hash: Hash,
+        /// Sorted.
+        dag_heads: Vec<[u8; 32]>,
+        /// By `signer`, over [`super::delta_auth::state_beacon_payload`].
         signature: [u8; 64],
     },
 }
@@ -1704,7 +1721,7 @@ mod tests {
 
         // Auxiliary is unaffected by the new trailing field.
         let aux = SnapshotRecord::Auxiliary {
-            kind: snapshot_record_kind::SYNC_STATE,
+            kind: 3,
             id: [3u8; 32],
             value: vec![1],
         };

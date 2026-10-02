@@ -16,7 +16,7 @@ use crate::source::{AppRequest, AppSource};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Outcome {
     AlreadyInstalled, // the row already named these bytes, and they were local
-    Installed,        // now local and bound to the application row
+    Installed,        // now local; bound to the row unless the row's release is newer
     Unavailable,      // the source had nothing yet; never a fault, callers retry
 }
 
@@ -34,7 +34,7 @@ impl<A: ApplicationStore + Debug + Send + Sync + 'static> ApplicationDownloader<
     }
 
     /// Acquire what `req` names from this node's one configured source. On
-    /// either installed outcome the row names the blob and it is local.
+    /// either installed outcome the blob is local; the store decides the row.
     pub async fn download(&self, req: &AppRequest<'_>) -> eyre::Result<Outcome> {
         let Some(application_id) = req.application_id else {
             bail!(
@@ -51,7 +51,7 @@ impl<A: ApplicationStore + Debug + Send + Sync + 'static> ApplicationDownloader<
         }
 
         if self.store.has_bytecode(&bytecode_id)? {
-            // A row pointing at an older blob still has to be rebound.
+            // A row naming another blob is offered these bytes; the store decides.
             if self
                 .store
                 .installed_application(&application_id)?

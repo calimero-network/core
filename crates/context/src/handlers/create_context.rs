@@ -129,6 +129,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                 .boxed_local(),
             None => self
                 .get_module(application.id, context_meta.service_name.clone())
+                .map_ok(|(_blob, module), _act, _ctx| module)
                 .boxed_local(),
         };
 
@@ -308,6 +309,20 @@ impl Prepared<'_> {
                     },
                     delegation,
                 )?;
+                // `init` writes for the member, signed by this node, and peers
+                // accept those entries only from a `RelayTee` writing for a
+                // member. The creation gate is wider (an `Admin` or `Member`
+                // holding `CAN_AUTHOR_ON_BEHALF` passes it), so refuse here,
+                // before anything runs or publishes.
+                let relay = calimero_governance_store::account_for_group(datastore, &group_id)?;
+                if let Err(refusal) = calimero_governance_store::on_behalf_standing_live(
+                    datastore,
+                    &group_id,
+                    relay,
+                    warrant.author_account,
+                )? {
+                    bail!(refusal);
+                }
             }
         }
 
@@ -552,7 +567,10 @@ async fn create_context(
         // cleanup pass that walks `ContextStateKey` for this
         // context_id and deletes orphan entries) is a follow-up.
         if !actions.is_empty() {
-            if let Err(e) = sign_authorized_actions(&mut actions, &identity_secret) {
+            // A delegated creation's `init` writes for the author, signed by
+            // this node; see `sign_authorized_actions`.
+            let on_behalf = delegation.is_some().then_some(account);
+            if let Err(e) = sign_authorized_actions(&mut actions, &identity_secret, on_behalf) {
                 error!(?e, %context.id, "Failed to sign init actions");
                 bail!("Failed to sign init actions: {:?}", e);
             }
@@ -569,7 +587,8 @@ async fn create_context(
         let hlc = calimero_storage::env::hlc_timestamp();
         // Genesis parent
         let parents = vec![[0u8; 32]];
-        let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+        // The genesis delta carries no events (its row stores none).
+        let delta_id = CausalDelta::compute_id(&parents, &actions, None, &hlc);
 
         context.dag_heads = vec![delta_id];
 

@@ -31,6 +31,21 @@ pub fn get_group_for_context(
     ContextTreeService::new(store, ContextGroupId::from([0u8; 32])).group_for_context(context_id)
 }
 
+/// Whether `account` is a member of the group owning `context_id`, directly or by
+/// an inheritance no deny-list entry ended. A context owned by no group has none.
+pub fn account_is_context_member(
+    store: &Store,
+    context_id: &ContextId,
+    account: &AccountId,
+) -> EyreResult<bool> {
+    let Some(group_id) = get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    Ok(MembershipRepository::new(store)
+        .effective_capabilities(&group_id, account)?
+        .is_some())
+}
+
 /// Returns `true` if `author` is currently an authorized **writer** for
 /// `context_id`'s owning group, or if `context_id` is not registered to any
 /// group (no group-membership constraint applies). The check includes the
@@ -391,11 +406,11 @@ mod tests {
     use calimero_primitives::context::GroupMemberRole;
 
     use super::{
-        find_local_signing_identities, find_local_signing_identity,
+        account_is_context_member, find_local_signing_identities, find_local_signing_identity,
         is_currently_authorized_for_context, register_context_in_group,
     };
     use crate::test_fixtures::{nest_for_test, sample_meta_with_admin};
-    use crate::{CapabilitiesRepository, MembershipRepository, MetaRepository};
+    use crate::{CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository};
 
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
@@ -559,5 +574,45 @@ mod tests {
                 .unwrap(),
             "a surviving join row must not confer authorization after the wall is back up"
         );
+    }
+
+    /// An inherited member of an Open subgroup reads its contexts until it is
+    /// removed there; a context owned by no group has no members.
+    #[test]
+    fn a_removed_inherited_member_is_not_a_context_member() {
+        let store = store();
+        let parent = ContextGroupId::from([0xa1; 32]);
+        let child = ContextGroupId::from([0xa2; 32]);
+        let context = ContextId::from([0xa3; 32]);
+        let me = AccountId::from([0x01; 32]);
+
+        MetaRepository::new(&store)
+            .save(
+                &parent,
+                &sample_meta_with_admin(AccountId::from([0x09; 32])),
+            )
+            .unwrap();
+        nest_for_test(&store, &parent, &child);
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&child, VisibilityMode::Open)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&parent, &me, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &parent,
+                &me,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .unwrap();
+        register_context_in_group(&store, &child, &context).unwrap();
+
+        assert!(account_is_context_member(&store, &context, &me).unwrap());
+        assert!(!account_is_context_member(&store, &ContextId::from([0xa4; 32]), &me).unwrap());
+
+        DenyListRepository::new(&store).mark(&child, &me).unwrap();
+
+        assert!(!account_is_context_member(&store, &context, &me).unwrap());
     }
 }

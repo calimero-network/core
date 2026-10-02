@@ -19,12 +19,12 @@ This page cross-links [Identities & Keys](/protocol/identities/) (which key is w
 
 ## The two primitives
 
-All payload-layer encryption goes through a single type, `calimero_crypto::SharedKey` (`crates/crypto/src/lib.rs`). It is always AES-256-GCM (via `ring`), always a 12-byte nonce, and — importantly — always **empty AAD**. There are two ways to construct it, and conflating them is the most common source of confusion:
+All payload-layer encryption goes through a single type, `calimero_crypto::SharedKey` (`crates/crypto/src/lib.rs`). It is always AES-256-GCM (via `ring`), always a 12-byte nonce, and, for the group-bulk and device-KEM paths, **empty AAD**. There are two ways to construct the group-bulk and delivery keys, and conflating them is the most common source of confusion:
 
 | Constructor | Key material | Used for |
 | --- | --- | --- |
 | `SharedKey::from_sk(sk)` | The 32 bytes *are* the symmetric key, used directly. | Bulk data encrypted under a **group key**: state-delta artifacts and group governance ops. |
-| `SharedKey::new(sk, pk)` | ECDH on the Ed25519 identity keys (`sk` × `pk`), producing a shared secret. | **Key delivery** only: wrapping a group key so a specific recipient can unwrap it. |
+| `SharedKey::new(sk, pk, purpose)` | ECDH on the Ed25519 identity keys (`sk` × `pk`), producing a shared secret; the `Purpose` selects the HKDF label and binds its identifiers as AAD. | **Key delivery** and sealing: wrapping a group key or the namespace TEE key for a recipient, app `seal_to`, account seals, blob stream keys. |
 
 So the symmetric variant moves *data* under a key the whole group already shares, and the ECDH variant moves *the key itself* to one recipient. Both call the identical `encrypt`/`decrypt` methods underneath.
 
@@ -222,7 +222,7 @@ The broadcast path wraps the storage delta, the post-apply `root_hash`, and the 
 :::
 
 :::caution[Empty AAD — envelope fields are not cipher-bound]
-Every `SharedKey` call uses `aead::Aad::empty()`. Nothing in the cleartext envelope (`author_id`, `key_id`, `parent_ids`, `governance_position`) is bound into the AES-GCM tag. The ciphertext authenticates *only itself*. Integrity of the envelope-to-payload binding rests on the separate `delta_signature`, which covers `(context_id, delta_id, author_id, governance_position)`. The field is still typed `Option` on the wire for the roll-out transition, but the receive path now **rejects a delta whose signature is missing** (`crates/node/src/handlers/state_delta/mod.rs` — "a missing signature cannot prove authorship"), so a group-key holder can no longer re-label a foreign delta's author or DAG position and have it accepted.
+Every `SharedKey` call except `SharedKey::new` uses `aead::Aad::empty()`; `SharedKey::new` binds its purpose's identifiers (see `Purpose` in `crates/crypto`). Nothing in the cleartext envelope (`author_id`, `key_id`, `parent_ids`, `governance_position`) is bound into the AES-GCM tag. The ciphertext authenticates *only itself*. Integrity of the envelope-to-payload binding rests on the separate `delta_signature`, which covers `(context_id, delta_id, author_id, governance_position)`. The field is still typed `Option` on the wire for the roll-out transition, but the receive path now **rejects a delta whose signature is missing** (`crates/node/src/handlers/state_delta/mod.rs` - "a missing signature cannot prove authorship"), so a group-key holder can no longer re-label a foreign delta's author or DAG position and have it accepted.
 :::
 
 :::caution[Metadata leaks even when payloads are confidential]
@@ -230,7 +230,7 @@ Because the whole envelope is cleartext (see the observer section above), confid
 :::
 
 :::caution[The two `SharedKey` semantics are easy to conflate]
-`from_sk` (symmetric, group key) and `new` (ECDH, key delivery) are different trust models that share one API, so read which one a call site uses before assuming its trust model. The broadcast path used to make this harder than it needed to be by calling its group key `sender_key`; it is `encryption_key` now, and nothing on that path implies an ECDH agreement with a "sender".
+`from_sk` (symmetric, group key) and `new` (ECDH, purpose-bound key delivery and sealing) are different trust models that share one API, so read which one a call site uses before assuming its trust model. The broadcast path used to make this harder than it needed to be by calling its group key `sender_key`; it is `encryption_key` now, and nothing on that path implies an ECDH agreement with a "sender".
 :::
 
 :::caution[At-rest encryption is off unless KMS is wired up]
@@ -239,7 +239,7 @@ Store-value encryption only happens when the `EncryptedDatabase` wrapper (backed
 
 ## Summary
 
-- Two crypto modes, one API: `from_sk` (symmetric, group key, bulk data) and `new` (ECDH, key delivery). Both AES-256-GCM, 12-byte nonce, empty AAD.
+- Two crypto modes, one API: `from_sk` (symmetric, group key, bulk data) and `new` (ECDH, key delivery and sealing). Both AES-256-GCM with a 12-byte nonce; `new` also binds its purpose's identifiers as AAD.
 - Encrypted: state-delta artifacts, the post-apply `root_hash`, and execution events (all sealed together in `SealedDeltaPayload`), group governance ops, key envelopes; optionally store values (KMS); always the transport.
 - **Not** encrypted: the delta/governance envelope routing metadata (`parent_ids`, `hlc`, `author_id`, `key_id`, `governance_position`, …), store keys, blobs. Gossip is signed, not encrypted.
 - Confidentiality covers *content*, not *metadata or membership*. Plan your threat model around the cleartext envelope and the off-by-default at-rest layer.

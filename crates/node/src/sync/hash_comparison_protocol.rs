@@ -479,6 +479,11 @@ async fn run_initiator_impl<T: SyncTransport>(
                     match crate::sync::helpers::classify_leaf(
                         entity_id,
                         &leaf_data.metadata.crdt_type,
+                        || {
+                            with_runtime_env(runtime_env.clone(), || {
+                                crate::sync::helpers::stores_value(entity_id)
+                            })
+                        },
                     ) {
                         LeafDisposition::DeferRoot => {
                             stats.deferred_root_merges.push((

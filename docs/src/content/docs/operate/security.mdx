@@ -130,10 +130,14 @@ session. WebSockets cannot cross a POST; the node answers a sealed upgrade with
 a `501` inside the envelope, so subscribe over SSE instead.
 
 **Limits.** A sealed request body is capped at 64 MiB, and the node buffers it
-before it can tell whether the request opens, so size your proxy's concurrency
-and body limits with that in mind. Responses have no cap: they stream in frames
-of at most 64 KiB. Session and request ids travel in the clear, so a proxy can
-tell which requests share a session, though not what they contain.
+before it can tell whether the request opens. It checks the session named in the
+header first: a body for no open session is refused, and the rest of it is read
+and discarded rather than held. A `Content-Length` over
+the cap is refused before any of the body is read. A session needs no
+credential, so any client can still send a 64 MiB body: size your proxy's
+concurrency and body limits for that. Responses have no cap: they stream in
+frames of at most 64 KiB. Session and request ids travel in the clear, so a
+proxy can tell which requests share a session, though not what they contain.
 
 **Behind `NODE_PATH_PREFIX`.** The envelope is served both at the root
 (`/sealed/v2`) and under the prefix (`{prefix}/sealed/v2`), and a request opened
@@ -198,6 +202,15 @@ handshakes a second (after a burst of 200), node-wide, and refuses the rest with
 node-wide because the node cannot tell clients apart: behind a proxy every
 connection comes from the proxy. Put per-client limits where client addresses are
 known.
+
+Failed logins at `/auth/token` are throttled in two ways. A caller (by the address
+the node sees) gets 5 failures a minute against one account, after which it
+receives `429` with `Retry-After`; other callers are unaffected, so one caller's
+bad guesses cannot lock the owner out. Separately, an account locks for everyone
+after 100 failures an hour from all addresses together, which stops a guess
+spread over many sources. Behind a proxy every caller shares the proxy's address
+and so one per-account bucket; the node does not trust a forwarded header for
+this. Counters are in memory and reset when the node restarts.
 
 When the session table is full, the node drops sessions that never carried a
 request before any that did, so a flood of handshakes displaces its own sessions

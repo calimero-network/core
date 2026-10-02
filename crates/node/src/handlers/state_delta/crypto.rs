@@ -272,6 +272,7 @@ mod tests {
             delta_hlc: HybridTimestamp::default(),
             effective_writers,
             signer_account: Some(attacker_account),
+            on_behalf_accounts: Default::default(),
         };
         let sealed = SealedDeltaPayload {
             root_hash: Hash::from([0u8; 32]),

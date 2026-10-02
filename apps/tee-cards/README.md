@@ -51,6 +51,10 @@ the deck down. A game that must meter draws per player needs a request record
 in owned state (an `Authored` or `WriteOnce` entry per draw) that `deal` reads
 and checks, instead of trusting the event.
 
+This is a demo of TEE authorship, not a game to deploy as is: if two TEE
+authorities deal at once, each pops the same top card and one card can be dealt
+twice.
+
 ## Building
 
 ```bash

@@ -992,9 +992,8 @@ impl SyncManager {
                                     //   verified Entity could
                                     //   clobber the just-verified
                                     //   index/entry blobs.
-                                    // * `SYNC_STATE` — not written
-                                    //   by the current codebase
-                                    //   (grep `Key::SyncState`); a
+                                    // * kind 2 — once a sync-state
+                                    //   key nothing ever wrote; a
                                     //   peer emitting one is
                                     //   misbehaving.
                                     // * kind 3 - the retired rotation
@@ -1311,13 +1310,8 @@ impl SyncManager {
             return;
         };
 
-        // A resynced peer runs the recovered bytecode but never ran the install,
-        // so its `ApplicationMeta` (the version migration-status reads) still
-        // reflects the version it last installed — it lingers below-target. Run
-        // the SAME in-place install the normal blob-share path runs
-        // (`install_bundle_after_blob_sharing`) against the blob the activation
-        // marker now points at, so the peer's installed version matches the
-        // adopted one — exactly as a normally-upgraded peer ends up.
+        // A resynced peer never ran the install for the bytecode it recovered, so
+        // install the marker's blob; one older than the row's release leaves the row.
         if let Some(bound) = calimero_context::activation::activated_bytecode(
             self.context_client.datastore(),
             &context_id,
@@ -2136,16 +2130,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // so the operator-visible warning stays stable across
     // pagination.
     //
-    // **Note on `SyncState`:** the sender doesn't look up
-    // `Key::SyncState(id)` — no production codebase path actually
-    // writes that key (it's defined in the storage layer but
-    // unused). The receiver mirrors this and rejects
-    // `Auxiliary { kind: SYNC_STATE, .. }` as misbehaving. If
-    // SyncState ever does start being written, replicating it
-    // safely will require per-record authentication (it's not
-    // bound to an entity signature) — track as a follow-up if /
-    // when that need arises.
-    //
     // Cursor support: skip any entity ids ≤ cursor.last_key. The
     // `≤` (not `<`) is correct because the cursor records the
     // last fully-committed entity, not "next to emit."
@@ -2759,11 +2743,8 @@ mod tests {
     use calimero_store::Store;
 
     use super::*;
-    // Wire-codec round-trip tests below use the `SYNC_STATE` auxiliary kind
-    // as a sample `SnapshotRecord::Auxiliary`; the constant lives in
-    // node-primitives and is exercised only here (the sender never emits an
-    // auxiliary record).
-    use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
+
+    const AUX_KIND: u8 = 3; // a retired auxiliary kind, as an older peer ships it
 
     /// Grouping siblings behind one row cache must be invisible in the result.
     ///
@@ -3566,7 +3547,7 @@ mod tests {
                 schema_bytecode_id: Some([7u8; 32]),
             },
             SnapshotRecord::Auxiliary {
-                kind: snapshot_record_kind::SYNC_STATE,
+                kind: AUX_KIND,
                 id: [4u8; 32],
                 value: vec![5, 6, 7],
             },
@@ -3586,7 +3567,7 @@ mod tests {
         assert!(matches!(
             &records[1],
             SnapshotRecord::Auxiliary { kind, id, value }
-                if *kind == snapshot_record_kind::SYNC_STATE
+                if *kind == AUX_KIND
                     && *id == [4u8; 32]
                     && value == &vec![5, 6, 7]
         ));
@@ -3606,7 +3587,7 @@ mod tests {
             schema_bytecode_id: None,
         };
         let aux = SnapshotRecord::Auxiliary {
-            kind: snapshot_record_kind::SYNC_STATE,
+            kind: AUX_KIND,
             id: [2u8; 32],
             value: vec![30, 31],
         };
@@ -3622,7 +3603,7 @@ mod tests {
         assert!(matches!(
             &records[1],
             SnapshotRecord::Auxiliary { kind, id, .. }
-                if *kind == snapshot_record_kind::SYNC_STATE && *id == [2u8; 32]
+                if *kind == AUX_KIND && *id == [2u8; 32]
         ));
     }
 
@@ -4107,6 +4088,7 @@ mod snapshot_trust_tests {
             signature: [0x5A; 64],
             nonce: 1,
             signer: Some(*key),
+            on_behalf: None,
         })
     }
 
@@ -4221,6 +4203,7 @@ mod snapshot_trust_tests {
                     signature: [0; 64],
                     nonce: 1,
                     signer: Some(signer.public_key()),
+                    on_behalf: None,
                 }),
             };
             let payload = Action::Add {
@@ -4278,6 +4261,7 @@ mod snapshot_trust_tests {
             signature: [0; 64],
             nonce,
             signer: Some(key.public_key()),
+            on_behalf: None,
         })
     }
 

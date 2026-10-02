@@ -5,7 +5,7 @@
 //! in-memory replicas (each backed by its own store, with its own executor
 //! identity), applies the registered operations on every replica in a
 //! per-replica randomized order, gossips the resulting `StorageDelta`s between
-//! replicas in randomized order, and asserts every replica ends on the **same
+//! replicas in a randomized causal order, and asserts every replica ends on the **same
 //! Merkle root hash**.
 //!
 //! This is the app-author-facing surface of the runtime CRDT-conformance
@@ -33,7 +33,10 @@
 //! hash match — mirroring how a real joiner bootstraps from a leader). Every
 //! replica then applies the full op list locally under its own executor id, in
 //! a shuffled order, and broadcasts one delta per op. Each replica then applies
-//! every *other* replica's deltas, also in shuffled order. Convergence =
+//! every *other* replica's deltas, in a shuffled interleaving of the authors
+//! that keeps each author's deltas in the order it wrote them, which is every
+//! order a DAG can deliver them in: a delta applies only after its parents.
+//! Convergence =
 //! identical root hash across all replicas, regardless of interleaving.
 //!
 //! "Its own executor id" holds at **both** layers an app can observe: the
@@ -599,16 +602,28 @@ where
         }
 
         // Gossip: every replica applies every *other* replica's deltas, in a
-        // shuffled order, then we record its converged root hash.
+        // shuffled causal order, then we record its converged root hash.
         let mut hashes: Vec<Option<[u8; 32]>> = Vec::with_capacity(n);
         for (r, store) in stores.iter().enumerate() {
-            let mut foreign: Vec<(usize, usize)> = (0..n)
+            // A random interleaving of the authors, each author's deltas in
+            // the order it wrote them: a DAG applies a delta only after its
+            // parents, and each of an author's deltas follows its previous one.
+            let mut authors: Vec<usize> = (0..n)
                 .filter(|&s| s != r)
-                .flat_map(|s| (0..deltas[s].len()).map(move |k| (s, k)))
+                .flat_map(|s| core::iter::repeat_n(s, deltas[s].len()))
                 .collect();
-            foreign.shuffle(&mut StdRng::seed_from_u64(
+            authors.shuffle(&mut StdRng::seed_from_u64(
                 self.seed ^ 0xDEAD_BEEF ^ (r as u64).wrapping_mul(0x85EB_CA77),
             ));
+            let mut next = vec![0; n];
+            let foreign: Vec<(usize, usize)> = authors
+                .into_iter()
+                .map(|s| {
+                    let k = next[s];
+                    next[s] += 1;
+                    (s, k)
+                })
+                .collect();
 
             reset_dropped_action_count();
             let failed = with_identity(executor_for(r), self.account_of(r), || {

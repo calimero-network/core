@@ -153,49 +153,10 @@ impl BindingRejected {
     }
 }
 
-/// The account `sign_pk` speaks for in `group`, if it is a **live device of an
-/// account a member endorsed** — the entitlement a paired device participates on.
-///
-/// A paired device is a member of nothing by design: its whole right to take part
-/// comes from the account its certificate binds it to. Every membership-shaped
-/// question therefore needs this fallback, or the device gets keys and the right to
-/// author and still cannot be selected as the executing identity for a context —
-/// which is a "no owned identity found for this context" at the RPC boundary, long
-/// before authorization is consulted.
-///
-/// Answered from **live** rows, deliberately. This decides what *this node*
-/// follows, not whether an op was authorized, so it needs no causal cut: it is the
-/// same shape as the authorization rule (device → account → is any endorser a
-/// member) evaluated against current state. The at-cut version lives on the apply
-/// path, where two replicas must agree.
-///
-/// Reads live bindings, so a revoked or superseded device resolves to `None`.
-///
-/// # Errors
-/// Propagates the store scan failure.
-pub fn member_account_for_device_key(
-    store: &Store,
-    group: &ContextGroupId,
-    sign_pk: &PublicKey,
-) -> EyreResult<Option<AccountId>> {
-    let bindings = AccountBindingRepository::new(store);
-    let Some(binding) = bindings.binding_for_sign_pk(group, sign_pk)? else {
-        return Ok(None);
-    };
-
-    let membership = crate::MembershipRepository::new(store);
-    for endorser in bindings.endorsers_of(group, binding.account)? {
-        if membership.check_path(group, &endorser)? != crate::membership::MembershipPath::None {
-            return Ok(Some(binding.account));
-        }
-    }
-    Ok(None)
-}
-
 /// The account a **member key** speaks for in the namespace owning `group`.
 ///
 /// The resolution the governance planes need when they stop naming keys and
-/// start naming accounts. Distinct from [`member_account_for_device_key`] in two
+/// start naming accounts. Distinct from a lookup by group in two
 /// ways that both matter:
 ///
 /// * **It resolves at the NAMESPACE, not at `group`.** Bindings are
@@ -303,13 +264,35 @@ impl<'a> AccountBindingRepository<'a> {
             .map(|value| (value.epoch, PublicKey::from(value.root_pk))))
     }
 
-    /// Is this device's id spent?
+    /// Is this device's id spent? `group` must be the namespace: tombstones are
+    /// recorded under it, so most callers want [`Self::device_is_withdrawn`].
     ///
     /// # Errors
     /// Propagates the store read failure.
     pub fn is_revoked(&self, group: &ContextGroupId, device: DeviceId) -> EyreResult<bool> {
         let key = GroupRevokedDevice::new(group.to_bytes(), *device.as_bytes());
         Ok(self.store.handle().has(&key)?)
+    }
+
+    /// Has the namespace owning `group` withdrawn `device` of `account`: revoked
+    /// it, or narrowed it out and not widened it since? Bindings and tombstones
+    /// are keyed by the namespace, so a subgroup is asked through its root.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn device_is_withdrawn(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<bool> {
+        let namespace = crate::NamespaceRepository::new(self.store).resolve(group)?;
+        if self.is_revoked(&namespace, device)? {
+            return Ok(true);
+        }
+        // A floor with no binding row left: narrowed out, and not widened since.
+        Ok(self.scope_floor(&namespace, account, device)?.is_some()
+            && self.raw_binding(&namespace, device)?.is_none())
     }
 
     /// Did `sign_pk` sign for a device that was revoked in `group`?
@@ -579,26 +562,6 @@ impl<'a> AccountBindingRepository<'a> {
             .live_bindings(group)?
             .into_iter()
             .find(|binding| binding.sign_pk == *sign_pk))
-    }
-
-    /// Every member key that has vouched for `account` in `group`.
-    ///
-    /// # Errors
-    /// Propagates the store scan failure.
-    pub fn endorsers_of(
-        &self,
-        group: &ContextGroupId,
-        account: AccountId,
-    ) -> EyreResult<Vec<AccountId>> {
-        let gid = group.to_bytes();
-        let account_bytes = *account.as_bytes();
-        let keys = collect_keys_with_prefix(
-            self.store,
-            GroupAccountEndorser::new(gid, account_bytes, AccountId::from([0u8; 32])),
-            calimero_store::key::GROUP_ACCOUNT_ENDORSER_PREFIX,
-            |k| k.group_id() == gid && k.account_id() == account_bytes,
-        )?;
-        Ok(keys.into_iter().map(|k| k.member()).collect())
     }
 
     /// Whether `device` has a live binding in `group`.
@@ -1040,6 +1003,49 @@ impl<'a> AccountBindingRepository<'a> {
         }
     }
 
+    /// Record that `account`'s own root withdrew `device` here, when this group
+    /// holds no binding that ties the two.
+    ///
+    /// The device-wide tombstone ([`apply_revocation`](Self::apply_revocation))
+    /// cannot be written from a root-signed proof alone: the proof names a
+    /// `DeviceId` its signer chose, so honouring it would let any account spend
+    /// any other account's device for good. This records the withdrawal in the
+    /// slot keyed by account AND device instead — the scope floor, raised to
+    /// [`WITHDRAWN_SCOPE_FLOOR`], which no scope epoch outranks. A proof from
+    /// another account names another slot, so it withdraws nothing of anyone
+    /// else's. A later link of this device for this account is refused by the
+    /// floor check in [`apply_link`](Self::apply_link), whatever order the two
+    /// arrive in.
+    ///
+    /// # Errors
+    /// Propagates the store failure.
+    pub fn withdraw_for_account(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<()> {
+        let _dropped = self.narrow(group, account, device, WITHDRAWN_SCOPE_FLOOR)?;
+        Ok(())
+    }
+
+    /// Did `account`'s own root withdraw `device` in `group`?
+    ///
+    /// True after [`withdraw_for_account`](Self::withdraw_for_account). A device
+    /// the group revoked outright reads [`is_revoked`](Self::is_revoked) instead;
+    /// a caller deciding whether a device may still act for its account asks both.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn is_withdrawn_for_account(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<bool> {
+        Ok(self.scope_floor(group, account, device)? == Some(WITHDRAWN_SCOPE_FLOOR))
+    }
+
     /// Withdraw a device.
     ///
     /// Writes the tombstone **unconditionally**, even for a device this group
@@ -1074,6 +1080,11 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(())
     }
 }
+
+/// The scope floor a device's own account leaves it at when it withdraws it:
+/// no scope epoch outranks it, so the withdrawal is terminal for that account.
+/// See [`AccountBindingRepository::withdraw_for_account`].
+pub const WITHDRAWN_SCOPE_FLOOR: u32 = u32::MAX;
 
 /// Account and device hashed into one slot: a statement from another account's
 /// root names a different slot, so it cannot raise this device's floor.
@@ -1149,6 +1160,90 @@ mod tests {
         // id is spent. That is enforced by the revocation check on link, not here.
         repo.apply_revocation(&gid, bound.device).expect("revoke");
         assert!(!repo.is_device_linked(&gid, bound.device).expect("query"));
+    }
+
+    /// A namespace with one subgroup and a device of an account bound in the
+    /// namespace, which is where bindings and revocations are recorded.
+    fn bound_in_a_namespace() -> (
+        Store,
+        ContextGroupId,
+        ContextGroupId,
+        AccountGenesis,
+        DeviceCert,
+    ) {
+        let store = test_store();
+        let ns = test_group_id();
+        let sub = ContextGroupId::from([0x7B; 32]);
+        crate::test_fixtures::nest_for_test(&store, &ns, &sub);
+        let g = genesis_for(1);
+        let cert = cert_for(&g, &key(1), 5, 0, 0);
+        AccountBindingRepository::new(&store)
+            .apply_link(&ns, &g, &[], &cert, 0)
+            .expect("store")
+            .expect("admitted");
+        (store, ns, sub, g, cert)
+    }
+
+    #[test]
+    fn a_live_device_is_not_withdrawn_anywhere_in_its_namespace() {
+        let (store, ns, sub, g, cert) = bound_in_a_namespace();
+        let repo = AccountBindingRepository::new(&store);
+        for group in [&ns, &sub] {
+            assert!(!repo
+                .device_is_withdrawn(group, g.account_id(), cert.device)
+                .expect("read"));
+        }
+        let unknown = DeviceId::mint(g.account_id(), [0x77; 16]);
+        assert!(
+            !repo
+                .device_is_withdrawn(&sub, g.account_id(), unknown)
+                .expect("read"),
+            "a device no row names has not been withdrawn"
+        );
+    }
+
+    #[test]
+    fn a_revocation_made_for_the_namespace_withdraws_the_device_in_a_subgroup() {
+        let (store, ns, sub, g, cert) = bound_in_a_namespace();
+        let repo = AccountBindingRepository::new(&store);
+        repo.apply_revocation(&ns, cert.device).expect("revoke");
+
+        for group in [&ns, &sub] {
+            assert!(
+                repo.device_is_withdrawn(group, g.account_id(), cert.device)
+                    .expect("read"),
+                "the tombstone is keyed by the namespace and covers every group in it"
+            );
+        }
+        let elsewhere = ContextGroupId::from([0x7C; 32]);
+        assert!(
+            !repo
+                .device_is_withdrawn(&elsewhere, g.account_id(), cert.device)
+                .expect("read"),
+            "a revocation in one namespace does not reach another"
+        );
+    }
+
+    #[test]
+    fn a_device_narrowed_out_is_withdrawn_until_a_newer_scope_binds_it_again() {
+        let (store, ns, sub, g, cert) = bound_in_a_namespace();
+        let repo = AccountBindingRepository::new(&store);
+        let account = g.account_id();
+        repo.narrow(&ns, account, cert.device, 1).expect("narrow");
+
+        assert!(repo
+            .device_is_withdrawn(&sub, account, cert.device)
+            .expect("read"));
+
+        repo.apply_link(&ns, &g, &[], &cert, 2)
+            .expect("store")
+            .expect("a link under a newer scope is admitted");
+        assert!(
+            !repo
+                .device_is_withdrawn(&sub, account, cert.device)
+                .expect("read"),
+            "widened again, the device is bound and acts"
+        );
     }
 
     #[test]
@@ -1782,64 +1877,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_paired_device_key_resolves_to_the_account_a_member_endorsed() {
-        // The entitlement a paired device participates on, and the one every
-        // membership-shaped question has to consult. Without it a paired device
-        // holds scope keys and the right to author yet cannot follow a context,
-        // surfacing as a bare "no owned identity found for this context" from the
-        // RPC layer — a message that names neither accounts nor devices.
-        let store = test_store();
-        let gid = ContextGroupId::from([7u8; 32]);
-        let member = AccountId::from(*key(1).public_key());
-        crate::MembershipRepository::new(&store)
-            .add_member(&gid, &member, crate::GroupMemberRole::Member)
-            .expect("add member");
-
-        // Alice's account, rooted at an offline key that is a member NOWHERE, with
-        // a device whose own signing key is a member of nothing either.
-        let root = key(2);
-        let genesis = AccountGenesis::new(root.public_key());
-        let account = genesis.account_id();
-        let device_sign_pk = key(3).public_key();
-        let cert = DeviceCert::sign(
-            &root,
-            account,
-            DeviceId::mint(account, [0xAB; 16]),
-            &device_sign_pk,
-            &KemPublicKey::from([3u8; 32]),
-            0,
-            0,
-        )
-        .expect("sign cert");
-        let repo = AccountBindingRepository::new(&store);
-        repo.record_endorser(&gid, account, &member)
-            .expect("endorse");
-        let _ = repo
-            .apply_link(&gid, &genesis, &[], &cert, 0)
-            .expect("store")
-            .expect("admissible");
-
-        assert_eq!(
-            member_account_for_device_key(&store, &gid, &device_sign_pk).expect("resolve"),
-            Some(account),
-            "the device's signing key must resolve to the account a member vouched for"
-        );
-
-        // A key nobody linked speaks for nobody.
-        assert_eq!(
-            member_account_for_device_key(&store, &gid, &key(9).public_key()).expect("resolve"),
-            None
-        );
-
-        // Revocation withdraws it: terminal, and it must not merely stop delivery.
-        repo.apply_revocation(&gid, cert.device).expect("revoke");
-        assert_eq!(
-            member_account_for_device_key(&store, &gid, &device_sign_pk).expect("resolve"),
-            None,
-            "a revoked device must stop being a route into the group"
-        );
-    }
     #[test]
     fn the_sign_pk_map_answers_every_lookup_the_single_search_does() {
         // The substitutability the batch form exists for. It replaces
