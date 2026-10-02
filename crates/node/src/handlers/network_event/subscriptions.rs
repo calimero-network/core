@@ -157,18 +157,15 @@ pub(super) fn handle_unsubscribed(peer_id: libp2p::PeerId, topic: libp2p::gossip
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use calimero_network_primitives::messages::NetworkEvent;
     use libp2p::gossipsub::TopicHash;
     use libp2p::PeerId;
     use serial_test::serial;
-    use tokio::time::sleep;
 
     use crate::test_node_harness::boot_test_node;
 
-    /// A peer the swarm no longer lists, because it disconnected without
-    /// unsubscribing or subscribed to a topic this node does not use, counts for nothing.
+    /// A `Subscribed` event alone counts for nothing: the count is what the swarm
+    /// lists, which here is no one, as after a peer disconnects without unsubscribing.
     #[actix::test]
     #[serial(boot_test_node)]
     async fn a_subscriber_the_swarm_does_not_list_is_not_counted() {
@@ -184,9 +181,7 @@ mod tests {
                 .await
                 .expect("deliver Subscribed to the node actor");
         }
-        sleep(Duration::from_millis(100)).await;
 
-        // The stub swarm lists no subscribers on any topic.
         assert_eq!(node.node_client.known_subscribers(&namespace).await, 0);
         assert_eq!(node.node_client.known_subscribers(&foreign).await, 0);
     }

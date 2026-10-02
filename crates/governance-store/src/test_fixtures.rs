@@ -641,8 +641,8 @@ pub fn record_credential(
 
 /// Stub `NetworkManager` for tests that call
 /// `NamespaceGovernance::sign_apply_and_publish[_returning_op]` end to end:
-/// resolves only the two `NetworkMessage` variants that path touches
-/// (`Publish`, `MeshPeerCount`) and drops the rest, so the publish step
+/// resolves only the three `NetworkMessage` variants that path touches
+/// (`Publish`, `MeshPeerCount`, `SubscribedPeers`) and drops the rest, so the publish step
 /// completes without a live libp2p swarm. Mirrors the `CountingNetworkActor`
 /// pattern in `calimero_node_primitives::client::publish_on_namespace_now_tests`.
 struct StubNetworkActor {
