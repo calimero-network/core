@@ -1052,7 +1052,7 @@ impl<'a> NamespaceGovernance<'a> {
             self.store,
             self.namespace_id,
             &signer_sk.public_key(),
-            node_client.known_subscribers(&topic),
+            node_client.known_subscribers(&topic).await,
         );
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);
@@ -1135,7 +1135,7 @@ impl<'a> NamespaceGovernance<'a> {
         let mesh = node_client
             .mesh_peer_count_for_namespace(self.namespace_id.to_bytes())
             .await;
-        let known = node_client.known_subscribers(&topic);
+        let known = node_client.known_subscribers(&topic).await;
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
@@ -1277,7 +1277,7 @@ impl<'a> NamespaceGovernance<'a> {
         // callers that `NoAckReceived` is swallowed into a `Degraded`
         // report; for quorum callers it is the genuine failure they
         // expect.
-        let known = node_client.known_subscribers(&topic);
+        let known = node_client.known_subscribers(&topic).await;
         let ackable = ackable_members(
             self.store,
             self.namespace_id,
