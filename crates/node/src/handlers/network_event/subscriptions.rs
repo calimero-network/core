@@ -1,4 +1,6 @@
 use actix::{AsyncContext, WrapFuture};
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::MetaRepository;
 use calimero_primitives::context::ContextId;
 use tracing::{debug, info, warn};
 
@@ -27,6 +29,18 @@ pub(super) fn handle_subscribed(
     if let Some(hex) = topic_str.strip_prefix("group/") {
         let mut bytes = [0u8; 32];
         if hex::decode_to_slice(hex, &mut bytes).is_ok() {
+            let group_id = ContextGroupId::from(bytes);
+            match MetaRepository::new(manager.clients.context.datastore()).load(&group_id) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    debug!(%peer_id, group_id=%hex, "Observed subscription to unknown group, ignoring..");
+                    return;
+                }
+                Err(err) => {
+                    warn!(%peer_id, group_id=%hex, %err, "group lookup failed while handling subscription; ignoring");
+                    return;
+                }
+            }
             info!(%peer_id, group_id=%hex, "Peer subscribed to group topic, triggering sync");
             let context_client = manager.clients.context.clone();
             let _ignored = ctx.spawn(
@@ -34,9 +48,7 @@ pub(super) fn handle_subscribed(
                     use calimero_context_client::group::{
                         BroadcastGroupLocalStateRequest, SyncGroupRequest,
                     };
-                    use calimero_context_config::types::ContextGroupId;
 
-                    let group_id = ContextGroupId::from(bytes);
                     if let Err(err) = context_client
                         .sync_group(SyncGroupRequest { group_id })
                         .await
