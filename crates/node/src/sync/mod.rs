@@ -181,6 +181,7 @@ pub(crate) mod helpers;
 pub mod level_sync;
 mod manager;
 pub mod metrics;
+pub(crate) mod namespace_backfill;
 pub(crate) mod network;
 pub(crate) mod parent_pull;
 pub(crate) mod peers;
