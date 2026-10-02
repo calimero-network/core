@@ -428,6 +428,18 @@ xcall-example = { path = "./apps/xcall-example" }
 [profile.dev]
 panic = "unwind"
 
+# binaryen, compiled from C++ by wasm-opt-sys, runs every `cargo mero build`'s
+# `wasm-opt -Oz`. Under the dev profile it was compiled at -O0, which made that
+# pass about 3x slower; the wasm it writes is byte-identical either way.
+[profile.dev.package.wasm-opt]
+opt-level = 3
+
+[profile.dev.package.wasm-opt-sys]
+opt-level = 3
+
+[profile.dev.package.wasm-opt-cxx-sys]
+opt-level = 3
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
