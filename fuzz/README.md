@@ -21,3 +21,8 @@ After one script run has copied the root lock in, replay a crash with `cargo +ni
 
 Private entry points are reached through `fuzz_api` modules compiled only under `cfg(fuzzing)`; they wrap the real function and hold no logic.
 Seeds, where a target has them, live in `fuzz/seeds/<target>/`; a target that guards a fixed finding includes its reproduction input.
+
+CI (`.github/workflows/fuzz.yml`) runs `scripts/fuzz-ci.sh <target> 60` for each target whose sources a pull request changes, and every target for 30 minutes nightly with its corpus cached between runs.
+`scripts/fuzz-ci.sh` is `scripts/fuzz.sh` with the fuzzer's output kept out of the job log, which is public.
+A crash fails the run and prints only the target and the failing input's SHA-256; the input is neither shown nor uploaded, and nothing opens an issue, since it can be a working exploit.
+To get the input, fuzz that target locally with `scripts/fuzz.sh`; the hash tells whether a local find is the same one.

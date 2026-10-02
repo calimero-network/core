@@ -71,6 +71,104 @@ pub struct AuthenticatedKey(pub calimero_primitives::identity::PublicKey);
 #[derive(Clone, Debug)]
 pub struct AuthenticatedNodeOwner;
 
+#[derive(Clone, Debug)]
+pub struct ClientKeyScope(pub mero_auth::auth::bindings::ClientKeyBindings);
+
+impl ClientKeyScope {
+    pub(crate) fn permits_context(
+        &self,
+        ctx_client: &calimero_context_client::client::ContextClient,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> bool {
+        let bindings = &self.0;
+
+        let application = if bindings.application_id.is_some() {
+            match ctx_client.get_context(context_id) {
+                Ok(Some(ctx)) => ctx.application_id.to_string(),
+                Ok(None) | Err(_) => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        bindings.permits(&context_id.to_string(), &application)
+    }
+
+    pub(crate) fn permits_group(
+        &self,
+        store: &calimero_store::Store,
+        group_id: &calimero_context_config::types::ContextGroupId,
+    ) -> bool {
+        let bindings = &self.0;
+
+        if let Some(context_id) = bindings.context_id.as_deref() {
+            let Ok(context_id) = context_id.parse::<calimero_primitives::context::ContextId>()
+            else {
+                return false;
+            };
+            let Ok(Some(owning)) =
+                calimero_governance_store::get_group_for_context(store, &context_id)
+            else {
+                return false;
+            };
+            let namespaces = calimero_governance_store::NamespaceRepository::new(store);
+            let mut current = owning;
+            let mut on_chain = false;
+            for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+                if current == *group_id {
+                    on_chain = true;
+                    break;
+                }
+                match namespaces.parent(&current) {
+                    Ok(Some(parent)) => current = parent,
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            if !on_chain {
+                return false;
+            }
+        }
+
+        if let Some(application_id) = bindings.application_id.as_deref() {
+            match calimero_governance_store::MetaRepository::new(store).load(group_id) {
+                Ok(Some(meta))
+                    if meta
+                        .target
+                        .application_id
+                        .to_string()
+                        .eq_ignore_ascii_case(application_id) => {}
+                _ => return false,
+            }
+        }
+
+        true
+    }
+
+    pub(crate) fn principal(&self) -> String {
+        let bindings = &self.0;
+        format!(
+            "client-key[context={};application={}]",
+            bindings
+                .context_id
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            bindings
+                .application_id
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+        )
+    }
+
+    pub(crate) fn refusal() -> serde_json::Value {
+        let refusal = calimero_server_primitives::jsonrpc::ExecutionError::FunctionCallError(
+            "This key is not permitted to act on this context".to_owned(),
+        );
+        serde_json::to_value(refusal).unwrap_or_default()
+    }
+}
+
 /// The authenticated requester's **account**, injected by [`AuthGuardService`]
 /// when the session is anchored to an account rather than to a key row in this
 /// node's auth store — today, an `account_proof` login.
@@ -630,6 +728,12 @@ where
                             Ok(true) => {
                                 debug!(key_id=%auth_response.key_id, "client key (row present, no public key): granting NodeOwner");
                                 parts.extensions.insert(AuthenticatedNodeOwner);
+                                let bindings = mero_auth::auth::bindings::ClientKeyBindings::from_permissions(
+                                    &auth_response.permissions,
+                                );
+                                if !bindings.is_unbound() {
+                                    parts.extensions.insert(ClientKeyScope(bindings));
+                                }
                             }
                             Ok(false) => {
                                 match auth_response.key_id.parse::<calimero_account::AccountId>() {
@@ -722,6 +826,116 @@ mod query_token_route_tests {
             "/node1/admin-api/blobs/ab12",
             "/node1"
         ));
+    }
+}
+
+#[cfg(test)]
+mod client_key_scope_tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{ContextTreeService, NamespaceRepository};
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use mero_auth::auth::bindings::{application_binding, ClientKeyBindings};
+
+    use super::ClientKeyScope;
+
+    fn namespace() -> ContextGroupId {
+        ContextGroupId::from([0xa0; 32])
+    }
+
+    fn owning_group() -> ContextGroupId {
+        ContextGroupId::from([0xa1; 32])
+    }
+
+    fn sibling_group() -> ContextGroupId {
+        ContextGroupId::from([0xa2; 32])
+    }
+
+    fn other_namespace() -> ContextGroupId {
+        ContextGroupId::from([0xb0; 32])
+    }
+
+    fn bound_context() -> ContextId {
+        ContextId::from([0x01; 32])
+    }
+
+    fn store() -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let namespaces = NamespaceRepository::new(&store);
+        namespaces
+            .nest(&namespace(), &owning_group())
+            .expect("nest");
+        namespaces
+            .nest(&namespace(), &sibling_group())
+            .expect("nest");
+        ContextTreeService::new(&store, owning_group())
+            .register_context(&bound_context())
+            .expect("register");
+        store
+    }
+
+    fn scope(permissions: &[String]) -> ClientKeyScope {
+        ClientKeyScope(ClientKeyBindings::from_permissions(permissions))
+    }
+
+    fn bound_to(context_id: ContextId) -> ClientKeyScope {
+        scope(&[
+            format!("context[{context_id},identity]"),
+            "context:execute".to_owned(),
+        ])
+    }
+
+    #[test]
+    fn a_context_bound_key_reaches_the_groups_above_its_context() {
+        let store = store();
+        let s = bound_to(bound_context());
+        assert!(s.permits_group(&store, &owning_group()));
+        assert!(s.permits_group(&store, &namespace()));
+    }
+
+    #[test]
+    fn a_context_bound_key_is_refused_every_other_group() {
+        let store = store();
+        let s = bound_to(bound_context());
+        assert!(!s.permits_group(&store, &sibling_group()));
+        assert!(!s.permits_group(&store, &other_namespace()));
+    }
+
+    #[test]
+    fn a_key_bound_to_a_context_in_no_group_reaches_no_group() {
+        let store = store();
+        let s = bound_to(ContextId::from([0x09; 32]));
+        for group in [owning_group(), namespace(), sibling_group()] {
+            assert!(!s.permits_group(&store, &group));
+        }
+    }
+
+    #[test]
+    fn an_application_bound_key_fails_closed_on_a_group_with_no_meta() {
+        let store = store();
+        let s = scope(&[application_binding("app-a"), "context:execute".to_owned()]);
+        assert!(!s.permits_group(&store, &namespace()));
+    }
+
+    #[test]
+    fn each_binding_gets_its_own_principal() {
+        let a = bound_to(ContextId::from([0x01; 32]));
+        let b = bound_to(ContextId::from([0x02; 32]));
+        assert_ne!(a.principal(), b.principal());
+        assert_eq!(
+            a.principal(),
+            bound_to(ContextId::from([0x01; 32])).principal()
+        );
+    }
+
+    #[test]
+    fn a_principal_ignores_the_case_of_the_ids() {
+        let lower = scope(&[application_binding("deadbeef")]);
+        let upper = scope(&[application_binding("DEADBEEF")]);
+        assert_eq!(lower.principal(), upper.principal());
     }
 }
 
