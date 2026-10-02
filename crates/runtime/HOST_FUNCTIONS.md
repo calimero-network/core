@@ -517,6 +517,8 @@ Host functions can fail with these common errors:
 | `InvalidRegisterId` | Requested register doesn't exist |
 | `DeserializationError` | Borsh deserialization failed |
 | `Panic` | Guest triggered panic |
+| `HostCallLimitExceeded` | More host calls than `max_host_calls` in one execution |
+| `HostBytesLimitExceeded` | Host calls copied more bytes into registers or across guest memory than `max_host_bytes` in one execution |
 
 ---
 
@@ -538,3 +540,5 @@ All operations are bounded by `VMLimits`:
 | `max_events` | 100 | Maximum events |
 | `max_event_kind_size` | 100 | Maximum event kind length (bytes) |
 | `max_event_data_size` | 16KB | Maximum event data size |
+| `max_host_calls` | 1000000 | Maximum host calls per execution; past it the call traps with `HostCallLimitExceeded` |
+| `max_host_bytes` | 6720MB | Maximum bytes host calls copy into registers or across guest memory per execution; past it the call traps with `HostBytesLimitExceeded` |
