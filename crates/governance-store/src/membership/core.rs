@@ -981,11 +981,11 @@ impl<'a> MembershipRepository<'a> {
     /// [`Self::groups_for_account`] answers only the direct half, because that
     /// is all the index stores. Inheritance flows downward, so the groups a
     /// direct row can reach are exactly the descendants of that group, and
-    /// [`Self::check_path`] decides which of them it actually reaches — an Open
-    /// chain, an admin grant, a deny-list entry are all its business, not this
-    /// function's. Re-deciding any of that here would be a second copy of the
-    /// rule able to disagree with `is_member`, which is the disagreement a list
-    /// endpoint would show as a context the caller cannot then open.
+    /// [`Self::effective_capabilities`] decides which of them it actually
+    /// reaches — an Open chain, an admin grant, a deny-list entry are all its
+    /// business, not this function's. Re-deciding any of that here would be a
+    /// second copy of the rule able to disagree with the context reads, which a
+    /// list endpoint would show as a context the caller cannot then open.
     ///
     /// Cost is O(the caller's groups and their descendants), never O(the node's)
     /// — the property #3941 asks for. A caller in nothing pays one empty scan.
@@ -1003,7 +1003,7 @@ impl<'a> MembershipRepository<'a> {
 
         let mut effective = BTreeSet::new();
         for candidate in candidates {
-            if self.is_member(&candidate, account)? {
+            if self.effective_capabilities(&candidate, account)?.is_some() {
                 let _ignored = effective.insert(candidate);
             }
         }

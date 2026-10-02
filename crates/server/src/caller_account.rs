@@ -9,7 +9,7 @@
 use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{AccountBindingRepository, MembershipRepository};
+use calimero_governance_store::AccountBindingRepository;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{DeviceId, PublicKey};
 use tracing::warn;
@@ -48,8 +48,8 @@ pub(crate) enum EventCaller {
 /// for a caller that never had a key to be keyed by.
 ///
 /// **This is deliberately the same rule the delegated read runs** (#3931, the
-/// `read_as` arm in `crates/context/src/handlers/execute/mod.rs`): resolve the
-/// context's group, then ask `is_member`. Two implementations of "may this
+/// `read_as` arm in `crates/context/src/handlers/execute/mod.rs`): both call
+/// `calimero_governance_store::account_is_context_member`. Two implementations of "may this
 /// account see this context" would be free to drift, and the drift would show
 /// up as a stream delivering what a read refuses, or the reverse — which is
 /// exactly the shape of bug nobody notices until it is a disclosure.
@@ -83,15 +83,15 @@ pub(crate) fn account_is_context_member(
     if device.is_some_and(|device| device_withdrawn(ctx_client, &group_id, *account, device)) {
         return false;
     }
-    MembershipRepository::new(store)
-        .is_member(&group_id, account)
-        .unwrap_or_else(|err| {
+    calimero_governance_store::account_is_context_member(store, context_id, account).unwrap_or_else(
+        |err| {
             warn!(
                 %err, %context_id, %account,
                 "account membership: could not read the membership row; denying observation"
             );
             false
-        })
+        },
+    )
 }
 
 /// Whether the namespace of `group_id` has withdrawn `device` of `account`.
