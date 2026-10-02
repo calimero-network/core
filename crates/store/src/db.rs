@@ -200,6 +200,11 @@ pub enum Column {
     /// could already copy into its context. Reading one as the other would widen
     /// either what an account-scoped caller reads or what peers are served.
     BlobOwner,
+    /// A snapshot being installed, keyed `context_id(32) ‖ state_key(33)` like
+    /// `State`: it is checked here as a tree and only then moved into `State`,
+    /// so an unchecked snapshot is never read as the context's state. Node-local,
+    /// not synchronized, empty between installs.
+    SnapshotStage,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

@@ -24,7 +24,7 @@ use calimero_storage::entities::{ChildInfo, EntryRules, Metadata, SignatureData,
 use calimero_storage::env::with_runtime_env;
 use calimero_storage::index::Index;
 use calimero_storage::interface::ApplyContext;
-use calimero_store::db::InMemoryDB;
+use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::key::STATE_KEY_LEN;
 use calimero_utils_actix::LazyRecipient;
 use sha2::{Digest, Sha256};
@@ -231,6 +231,16 @@ impl Joiner {
             .collect();
         keys.sort();
         keys
+    }
+
+    /// Whether the staging area holds nothing for the context.
+    fn stages_nothing(&self) -> bool {
+        let prefix = context();
+        let hi = [prefix.as_ref(), &[0xFF; STATE_KEY_LEN + 1][..]].concat();
+        self.store
+            .raw_scan(Column::SnapshotStage, prefix.as_ref(), &hi, Some(1))
+            .unwrap()
+            .is_empty()
     }
 
     fn holds(&self, id: Id) -> bool {
@@ -441,9 +451,9 @@ async fn an_empty_snapshot_of_an_empty_context_clears_the_context() {
 }
 
 /// A leaf stamped for a schema the joiner cannot read yet is held in the absorb
-/// buffer rather than stored.
+/// buffer, and only once the tree it belongs to has checked out.
 #[tokio::test]
-async fn a_leaf_declined_for_its_schema_is_buffered_not_stored() {
+async fn a_leaf_declined_for_its_schema_is_buffered_only_once_the_snapshot_verifies() {
     let (source, claimed) = source();
     let declined = Id::new([0x23; 32]);
     let mut records = shipped(&source);
@@ -458,6 +468,15 @@ async fn a_leaf_declined_for_its_schema_is_buffered_not_stored() {
         .enumerate_pending(&context())
         .unwrap();
     assert_eq!(buffered.len(), 1);
+
+    let bad = joiner().await;
+    calimero_context::activation::record_activation(&bad.store, &context(), [1; 32]);
+    let outcome = bad.installs(Hash::from([0xAB; 32]), records).await;
+    assert!(outcome.is_err());
+    let buffered = AbsorbRepository::new(&bad.store)
+        .enumerate_pending(&context())
+        .unwrap();
+    assert!(buffered.is_empty(), "buffered the leaves of a refused tree");
 }
 
 #[tokio::test]
@@ -574,18 +593,20 @@ fn unsigned_user_entry() -> StorageType {
     }
 }
 
-/// The message of the error an install of `records` ends in, with `entity` not stored.
-async fn refused(
-    joiner: &Joiner,
-    claimed: Hash,
-    records: Vec<SnapshotRecord>,
-    entity: Id,
-) -> String {
+/// The message of the error an install of `records` ends in, with the context
+/// left as it was.
+async fn refused(joiner: &Joiner, claimed: Hash, records: Vec<SnapshotRecord>) -> String {
+    joiner.holds_stale_state();
     let outcome = joiner.installs(claimed, records).await;
     let message = outcome
         .expect_err("installed a tree that lacks an entity")
         .to_string();
-    assert!(!joiner.holds(entity));
+    assert_eq!(joiner.keys(), vec![STALE]);
+    assert_eq!(
+        joiner.manager.check_sync_in_progress(context()).unwrap(),
+        None
+    );
+    assert!(joiner.stages_nothing());
     message
 }
 
@@ -597,7 +618,7 @@ async fn an_entity_shipped_with_bytes_that_are_not_its_hash_fails_the_snapshot()
     let (records, claimed) =
         tree_over(&[child(entity, b"real", b"garbage", unsigned_user_entry())]);
 
-    let message = refused(&joiner().await, claimed, records, entity).await;
+    let message = refused(&joiner().await, claimed, records).await;
 
     assert!(message.contains("own hash"), "{message}");
 }
@@ -609,7 +630,7 @@ async fn an_entity_whose_signature_fails_fails_the_snapshot() {
     let (records, claimed) =
         tree_over(&[child(entity, b"forged", b"forged", unsigned_user_entry())]);
 
-    let message = refused(&joiner().await, claimed, records, entity).await;
+    let message = refused(&joiner().await, claimed, records).await;
 
     assert!(message.contains("signature"), "{message}");
 }
@@ -625,7 +646,7 @@ async fn a_leaf_declined_for_its_schema_with_a_bad_signature_fails_the_snapshot(
     let joiner = joiner().await;
     calimero_context::activation::record_activation(&joiner.store, &context(), [1; 32]);
 
-    let message = refused(&joiner, claimed, records, leaf).await;
+    let message = refused(&joiner, claimed, records).await;
 
     assert!(message.contains("signature"), "{message}");
     let buffered = AbsorbRepository::new(&joiner.store)
@@ -649,7 +670,7 @@ async fn a_member_whose_anchor_is_not_in_the_snapshot_fails_the_snapshot() {
         },
     )]);
 
-    let message = refused(&joiner().await, claimed, records, member).await;
+    let message = refused(&joiner().await, claimed, records).await;
 
     assert!(message.contains("anchor"), "{message}");
 }
@@ -736,4 +757,161 @@ fn a_snapshot_leaf_that_is_what_its_hash_says_drains_into_the_store() {
     .unwrap();
 
     assert_eq!(outcome, SnapshotEntityDrainOutcome::Persisted);
+}
+
+#[tokio::test]
+async fn a_leaf_whose_hashes_agree_with_each_other_but_not_its_parents_record_does_not_fold() {
+    let (source, claimed) = source();
+    let leaf = Id::new([0x21; 32]);
+    let mut records = shipped(&source);
+    let (entry, index, _) = entity(&mut records, leaf);
+    *entry = vec![0xEE; 17];
+    let mut agreeing = decode(index);
+    agreeing.own_hash = sha(entry);
+    agreeing.full_hash = sha(&agreeing.own_hash);
+    *index = agreeing.encode();
+    let joiner = joiner().await;
+    joiner.holds_stale_state();
+
+    let outcome = joiner.installs(claimed, records).await;
+
+    assert!(
+        outcome.is_err(),
+        "installed a leaf its parent does not hold"
+    );
+    assert_eq!(joiner.keys(), vec![STALE]);
+}
+
+#[tokio::test]
+async fn a_tree_that_folds_to_another_root_than_the_claim_is_not_installed() {
+    let (source, _) = source();
+    let joiner = joiner().await;
+    joiner.holds_stale_state();
+
+    let outcome = joiner
+        .installs(Hash::from([0xAB; 32]), shipped(&source))
+        .await;
+
+    assert!(outcome.is_err(), "installed a tree under another root");
+    assert_eq!(joiner.keys(), vec![STALE]);
+}
+
+#[tokio::test]
+async fn entities_that_name_each_other_as_parents_are_not_installed() {
+    let (source, claimed) = source();
+    let mut records = shipped(&source);
+    let (a, b) = (Id::new([0x41; 32]), Id::new([0x42; 32]));
+    for (id, parent) in [(a, b), (b, a)] {
+        let entry = vec![id.as_bytes()[0]; 8];
+        let index = IndexRow {
+            id: *id.as_bytes(),
+            parent_id: Some(*parent.as_bytes()),
+            full_hash: sha(&sha(&entry)),
+            own_hash: sha(&entry),
+            metadata: Metadata::new(1, 1),
+            deleted_at: None,
+            deleted_children: Vec::new(),
+        };
+        records.push(SnapshotRecord::Entity {
+            id: *id.as_bytes(),
+            entry,
+            index: index.encode(),
+            schema_bytecode_id: None,
+        });
+    }
+    let joiner = joiner().await;
+    joiner.holds_stale_state();
+
+    let outcome = joiner.installs(claimed, records).await;
+
+    assert!(outcome.is_err(), "installed a parent chain that loops");
+    assert_eq!(joiner.keys(), vec![STALE]);
+}
+
+#[tokio::test]
+async fn a_refused_snapshot_leaves_no_sync_marker_behind() {
+    let (source, _) = source();
+    let joiner = joiner().await;
+
+    let outcome = joiner
+        .installs(Hash::from([0xAB; 32]), shipped(&source))
+        .await;
+
+    assert!(outcome.is_err());
+    assert_eq!(
+        joiner.manager.check_sync_in_progress(context()).unwrap(),
+        None,
+        "a refused snapshot must not make the next attempt a crash recovery"
+    );
+}
+
+#[tokio::test]
+async fn a_public_entity_outside_the_tree_is_dropped_and_a_frozen_one_is_kept() {
+    let (source, claimed) = source();
+    let (public, frozen) = (Id::new([0x61; 32]), Id::new([0x62; 32]));
+    let mut records = shipped(&source);
+    records.push(orphan(public, StorageType::Public));
+    records.push(orphan(frozen, StorageType::Frozen));
+    let joiner = joiner().await;
+
+    joiner.installs(claimed, records).await.unwrap();
+
+    assert!(!joiner.holds(public));
+    assert!(joiner.holds(frozen));
+    assert_eq!(
+        served_state_root(&joiner.store, context()).unwrap(),
+        claimed
+    );
+}
+
+/// An entity whose parent is not in the snapshot.
+fn orphan(id: Id, storage_type: StorageType) -> SnapshotRecord {
+    let entry = vec![id.as_bytes()[0]; 8];
+    let own_hash = sha(&entry);
+    let mut metadata = Metadata::new(1, 1);
+    metadata.storage_type = storage_type;
+    let index = IndexRow {
+        id: *id.as_bytes(),
+        parent_id: Some([0x60; 32]),
+        full_hash: sha(&own_hash),
+        own_hash,
+        metadata,
+        deleted_at: None,
+        deleted_children: Vec::new(),
+    };
+    SnapshotRecord::Entity {
+        id: *id.as_bytes(),
+        entry,
+        index: index.encode(),
+        schema_bytecode_id: None,
+    }
+}
+
+#[tokio::test]
+async fn an_installed_snapshot_leaves_nothing_staged() {
+    let (source, claimed) = source();
+    let joiner = joiner().await;
+
+    joiner.installs(claimed, shipped(&source)).await.unwrap();
+
+    assert!(joiner.stages_nothing());
+}
+
+/// A crash part way through staging leaves rows behind; the next install must
+/// not count them as part of its own tree.
+#[tokio::test]
+async fn rows_a_crashed_install_left_staged_are_not_installed() {
+    let (source, claimed) = source();
+    let joiner = joiner().await;
+    let left = Id::new([0x5C; 32]);
+    let leftover = [context().as_ref(), &StorageKey::Index(left).to_bytes()[..]].concat();
+    joiner
+        .store
+        .raw_put(Column::SnapshotStage, &leftover, b"left by a crash")
+        .unwrap();
+
+    joiner.installs(claimed, shipped(&source)).await.unwrap();
+
+    assert!(!joiner.holds(left));
+    assert!(joiner.stages_nothing());
 }

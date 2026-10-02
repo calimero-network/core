@@ -32,8 +32,10 @@ use tracing::{debug, info, warn};
 use super::helpers::SnapshotAuthorship;
 use super::manager::SyncManager;
 use super::tracking::Sequencer;
+use stage::Stage;
 
 mod leaf;
+mod stage;
 
 #[cfg(test)]
 mod install_tests;
@@ -601,13 +603,15 @@ impl SyncManager {
 
     /// Request and apply snapshot pages from a peer.
     ///
-    /// This method uses an atomic approach to avoid leaving the node in a
-    /// partially cleared state if the stream fails:
-    /// 1. Set a sync-in-progress marker for crash recovery detection
-    /// 2. Receive all pages and write new keys (overwriting existing ones)
-    /// 3. Track which keys we received from the snapshot
-    /// 4. After completion, delete any old keys not in the new snapshot
-    /// 5. Remove the sync-in-progress marker (after metadata update)
+    /// This method leaves the context's state as it was unless the whole
+    /// snapshot checks out:
+    /// 1. Receive all pages, checking each entity and writing the ones that pass
+    ///    to a staging area ([`Stage`]), not the context's state
+    /// 2. Fold the staged tree from the leaves up and compare it with the root
+    ///    the boundary named
+    /// 3. Set the sync-in-progress marker, then move the staged entities into
+    ///    the context's state and delete the old keys the snapshot does not carry
+    /// 4. The caller removes the marker once the root is published
     ///
     /// # Concurrency Assumptions
     ///
@@ -644,9 +648,6 @@ impl SyncManager {
             eyre::bail!("No owned identity found for context: {}", context_id);
         };
 
-        // Set sync-in-progress marker for crash recovery detection
-        self.set_sync_in_progress_marker(context_id, &boundary.boundary_root_hash)?;
-
         // Wall-clock start, for the snapshot-progress ETA estimate.
         let started_at = Instant::now();
 
@@ -660,19 +661,12 @@ impl SyncManager {
         };
         debug!(%context_id, existing_count = existing_keys.len(), "Collected existing state keys");
 
-        // Track keys received from the snapshot (to know what to keep).
-        // Includes Entry + Index keys for every `SnapshotRecord::Entity`
-        // we accept after signature verification. We *also* insert the
-        // entity's `RotationLog` state_key here even though snapshot
-        // doesn't ship rotation logs (intentional, per the #2387
-        // security trade-off — see the receiver's Auxiliary reject
-        // path). Without that, any rotation history the receiver
-        // built up from verified delta replay would be wiped by
-        // `cleanup_stale_keys` at the end of the snapshot, since the
-        // RotationLog state_key sits in `existing_keys` but never in
-        // `received_keys`. Preserving it lets `writers_at(causal_point)`
-        // lookups keep working on post-snapshot delta applies.
-        let mut received_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]> = HashSet::new();
+        // Pages land in a staging area, and reach the context's state only once
+        // the whole tree checks out against the boundary.
+        let stage = Stage::open(self.context_client.datastore().clone(), context_id)?;
+        // Leaves stamped for a schema this node cannot read yet: staged so the
+        // tree check counts them, then buffered instead of installed.
+        let mut declined: HashMap<Id, [u8; 32]> = HashMap::new();
         let mut total_applied = 0;
         // The schema the applied entities carry — bound by the resync settle.
         let mut observed_schema: Option<[u8; 32]> = None;
@@ -769,25 +763,25 @@ impl SyncManager {
                         sent_count,
                         total_records,
                     } => {
-                        // Handle empty snapshot (no entries): only the state of an
-                        // empty context has no root, so only that one is cleared.
+                        // Handle empty snapshot (no entries): `install_staged_snapshot`
+                        // lets it clear only an empty context.
                         if payload.is_empty() && uncompressed_len == 0 {
-                            eyre::ensure!(
-                                *boundary.boundary_root_hash == [0; 32],
-                                "snapshot: no entities, but the boundary names root {}",
-                                boundary.boundary_root_hash
-                            );
-                            self.cleanup_stale_keys(context_id, &existing_keys, &received_keys)?;
+                            install_staged_snapshot(
+                                stage,
+                                boundary.boundary_root_hash,
+                                existing_keys,
+                                declined,
+                            )
+                            .await?;
                             return Ok((total_applied, observed_schema));
                         }
 
                         let decompressed = decompress_snapshot_page(&payload, uncompressed_len)?;
 
                         let records = decode_snapshot_records(&decompressed)?;
-                        let mut handle = self.context_client.datastore_handle();
                         let mut applied = 0usize;
                         let mut rejected = 0usize;
-                        // Written directly, not via `apply_action`: no nonce replay or CRDT merge,
+                        // Staged, not applied via `apply_action`: no nonce replay or CRDT merge,
                         // sound only because I5 or crash recovery leaves no newer local state.
                         for record in &records {
                             match record {
@@ -807,9 +801,10 @@ impl SyncManager {
                                     // than this node's loaded reader, DECLINE +
                                     // BUFFER the raw entity into the absorb
                                     // buffer instead of persisting unreadable
-                                    // bytes. The buffered entity is re-applied
-                                    // (re-verified + `handle.put`) once the
-                                    // loaded reader advances to that schema.
+                                    // bytes. It is buffered once the snapshot
+                                    // checks out, and re-applied (re-verified)
+                                    // once the loaded reader advances to that
+                                    // schema.
                                     if !snapshot_entity_is_readable(
                                         *schema_bytecode_id,
                                         loaded_bytecode_id,
@@ -858,22 +853,12 @@ impl SyncManager {
                                                 &format!("fails signature verification: {e}"),
                                             ));
                                         }
-                                        if let Err(e) = self.buffer_future_schema_snapshot_entity(
-                                            context_id,
-                                            *id,
-                                            entry,
-                                            index,
+                                        stage.put_entity(Id::new(*id), entry, index)?;
+                                        let _previous = declined.insert(
+                                            Id::new(*id),
                                             schema_bytecode_id
                                                 .expect("gate only declines when Some"),
-                                        ) {
-                                            warn!(
-                                                %context_id,
-                                                id = ?id,
-                                                error = ?e,
-                                                "snapshot Entity record: failed to buffer \
-                                                 future-schema entity into the absorb buffer"
-                                            );
-                                        }
+                                        );
                                         rejected += 1;
                                         continue;
                                     }
@@ -991,16 +976,8 @@ impl SyncManager {
                                         }
                                     }
 
-                                    // Verified — persist the entity row
-                                    // (index record + data).
-                                    let row_state_key = put_entity_row(
-                                        &mut handle,
-                                        context_id,
-                                        id_obj,
-                                        entry,
-                                        index,
-                                    )?;
-                                    let _ = received_keys.insert(row_state_key);
+                                    // Verified: staged, and installed with the rest of the snapshot.
+                                    stage.put_entity(id_obj, entry, index)?;
                                     applied += 1;
                                     if let Some(k) = schema_bytecode_id {
                                         observed_schema = Some(*k);
@@ -1140,7 +1117,6 @@ impl SyncManager {
                                     // settle the deferred `Shared` leaves before
                                     // the members, whose writers come from them.
                                     if !deferred_rotations.is_empty() {
-                                        let mut handle = self.context_client.datastore_handle();
                                         for (id_obj, entry, index, leaf_schema) in
                                             deferred_rotations.drain(..)
                                         {
@@ -1173,14 +1149,7 @@ impl SyncManager {
                                                     "was signed by an account outside its writers, and no rotation by that signer removed it",
                                                 ));
                                             }
-                                            let row_state_key = put_entity_row(
-                                                &mut handle,
-                                                context_id,
-                                                id_obj,
-                                                &entry,
-                                                &index,
-                                            )?;
-                                            let _ = received_keys.insert(row_state_key);
+                                            stage.put_entity(id_obj, &entry, &index)?;
                                             total_applied += 1;
                                             if let Some(k) = leaf_schema {
                                                 observed_schema = Some(k);
@@ -1203,7 +1172,6 @@ impl SyncManager {
                                     // whose signature doesn't verify, is dropped
                                     // — same fail-closed semantics as pass 1.
                                     if !deferred_members.is_empty() {
-                                        let mut handle = self.context_client.datastore_handle();
                                         for (id_obj, entry, index, member_schema) in
                                             deferred_members.drain(..)
                                         {
@@ -1300,14 +1268,7 @@ impl SyncManager {
                                                     ));
                                                 }
                                             }
-                                            let row_state_key = put_entity_row(
-                                                &mut handle,
-                                                context_id,
-                                                id_obj,
-                                                &entry,
-                                                &index,
-                                            )?;
-                                            let _ = received_keys.insert(row_state_key);
+                                            stage.put_entity(id_obj, &entry, &index)?;
                                             total_applied += 1;
                                             // Bind observed_schema from members too,
                                             // so a SharedMember-only context settles
@@ -1318,12 +1279,16 @@ impl SyncManager {
                                         }
                                     }
 
-                                    // All pages received - cleanup stale keys
-                                    self.cleanup_stale_keys(
-                                        context_id,
-                                        &existing_keys,
-                                        &received_keys,
-                                    )?;
+                                    // All pages received: install the snapshot, and
+                                    // delete the keys it replaces, only if its tree
+                                    // folds to the root the boundary named.
+                                    install_staged_snapshot(
+                                        stage,
+                                        boundary.boundary_root_hash,
+                                        existing_keys,
+                                        declined,
+                                    )
+                                    .await?;
                                     return Ok((total_applied, observed_schema));
                                 }
                                 Some(c) => {
@@ -1341,47 +1306,6 @@ impl SyncManager {
                 }
             }
         }
-    }
-
-    /// Delete keys that existed before sync but weren't in the snapshot.
-    fn cleanup_stale_keys(
-        &self,
-        context_id: ContextId,
-        existing_keys: &std::collections::HashSet<[u8; calimero_store::key::STATE_KEY_LEN]>,
-        received_keys: &std::collections::HashSet<[u8; calimero_store::key::STATE_KEY_LEN]>,
-    ) -> Result<()> {
-        let mut handle = self.context_client.datastore_handle();
-        let mut deleted = 0;
-
-        for state_key in existing_keys.difference(received_keys) {
-            handle.delete(&ContextStateKey::new(context_id, *state_key))?;
-            deleted += 1;
-        }
-
-        if deleted > 0 {
-            debug!(%context_id, deleted, "Cleaned up stale keys");
-        }
-        Ok(())
-    }
-
-    /// Set a marker indicating snapshot sync is in progress for this context.
-    ///
-    /// This marker is used for crash recovery - if present on startup, the
-    /// context's state may be inconsistent and needs to be re-synced.
-    fn set_sync_in_progress_marker(
-        &self,
-        context_id: ContextId,
-        boundary_root_hash: &Hash,
-    ) -> Result<()> {
-        use calimero_store::types::GenericData;
-
-        let key = GenericKey::new(SYNC_IN_PROGRESS_SCOPE, *context_id);
-        let value_bytes = borsh::to_vec(boundary_root_hash)?;
-        let value: GenericData<'_> = Slice::from(value_bytes).into();
-        let mut handle = self.context_client.datastore_handle();
-        handle.put(&key, &value)?;
-        debug!(%context_id, "Set sync-in-progress marker");
-        Ok(())
     }
 
     /// Record snapshot progress on the advisory `sync_status` mirror and push a
@@ -1520,44 +1444,107 @@ impl SyncManager {
             None => Ok(None),
         }
     }
+}
 
-    /// Buffer a future-schema snapshot `Entity` into the absorb buffer instead
-    /// of `handle.put`-storing unreadable bytes (PR-6b Task 6b.7).
-    ///
-    /// Keyed by the entity id (idempotent overwrite on re-delivery), under the
-    /// *sender's* schema so the drain only re-verifies + persists it once this
-    /// node advances to that reader. Caller has already confirmed
-    /// `!snapshot_entity_is_readable(Some(schema), loaded)`.
-    fn buffer_future_schema_snapshot_entity(
-        &self,
-        context_id: ContextId,
-        id: [u8; 32],
-        entry: &[u8],
-        index: &[u8],
-        schema: [u8; 32],
-    ) -> Result<()> {
-        let record = calimero_governance_store::AbsorbRecord::from_snapshot_entity(
-            id,
-            entry.to_vec(),
-            index.to_vec(),
-            schema,
-        );
-        calimero_governance_store::AbsorbRepository::new(self.context_client.datastore()).save(
-            &context_id,
-            schema,
-            &record,
-        )?;
-        crate::node_metrics::record_delta_outcome("absorbed_snapshot_entity_future_schema");
-        warn!(
-            %context_id,
-            id = ?id,
-            ?schema,
-            "snapshot entity authored under a newer schema than the loaded reader \
-             — buffered into the absorb buffer instead of storing unreadable bytes \
-             (will re-verify + persist once the reader advances)"
-        );
+/// Buffer a future-schema snapshot `Entity` into the absorb buffer instead
+/// of storing unreadable bytes (PR-6b Task 6b.7).
+///
+/// Keyed by the entity id (idempotent overwrite on re-delivery), under the
+/// *sender's* schema so the drain only re-verifies + persists it once this
+/// node advances to that reader. Caller has already confirmed
+/// `!snapshot_entity_is_readable(Some(schema), loaded)`.
+fn buffer_future_schema_snapshot_entity(
+    store: &Store,
+    context_id: ContextId,
+    id: [u8; 32],
+    entry: &[u8],
+    index: &[u8],
+    schema: [u8; 32],
+) -> Result<()> {
+    let record = calimero_governance_store::AbsorbRecord::from_snapshot_entity(
+        id,
+        entry.to_vec(),
+        index.to_vec(),
+        schema,
+    );
+    calimero_governance_store::AbsorbRepository::new(store).save(&context_id, schema, &record)?;
+    crate::node_metrics::record_delta_outcome("absorbed_snapshot_entity_future_schema");
+    warn!(
+        %context_id,
+        id = ?id,
+        ?schema,
+        "snapshot entity authored under a newer schema than the loaded reader \
+         — buffered into the absorb buffer instead of storing unreadable bytes \
+         (will re-verify + persist once the reader advances)"
+    );
+    Ok(())
+}
+
+/// Checks the staged snapshot against `claimed`, then moves it into the
+/// context's state, deleting the `existing_keys` it does not carry. A refusal
+/// leaves the state as it was and sets no sync-in-progress marker.
+async fn install_staged_snapshot(
+    stage: Stage,
+    claimed: Hash,
+    existing_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]>,
+    declined: HashMap<Id, [u8; 32]>,
+) -> Result<()> {
+    // The check hashes every entity and rebuilds its trie, so it runs off the
+    // async workers.
+    tokio::task::spawn_blocking(move || {
+        let (store, context_id) = (stage.store().clone(), stage.context_id());
+        let mut skip = stage.verify(claimed)?;
+        skip.extend(declined.keys().copied());
+        set_sync_in_progress_marker(&store, context_id, &claimed)?;
+        let installed = stage.promote(&existing_keys, &skip)?;
+        debug!(%context_id, installed, "Installed snapshot");
+        for (id, schema) in declined {
+            let (entry, index) = stage.entity(id)?.ok_or_else(|| {
+                eyre::eyre!(
+                    "snapshot: declined entity {:?} left the stage",
+                    id.as_bytes()
+                )
+            })?;
+            if let Err(e) = buffer_future_schema_snapshot_entity(
+                &store,
+                context_id,
+                *id.as_bytes(),
+                &entry,
+                &index,
+                schema,
+            ) {
+                warn!(
+                    %context_id,
+                    id = ?id.as_bytes(),
+                    error = ?e,
+                    "snapshot Entity record: failed to buffer future-schema entity into \
+                     the absorb buffer"
+                );
+            }
+        }
         Ok(())
-    }
+    })
+    .await
+    .map_err(|e| eyre::eyre!("snapshot install task failed: {e}"))?
+}
+
+/// Set a marker indicating snapshot sync is in progress for this context.
+///
+/// This marker is used for crash recovery - if present on startup, the
+/// context's state may be inconsistent and needs to be re-synced.
+fn set_sync_in_progress_marker(
+    store: &Store,
+    context_id: ContextId,
+    boundary_root_hash: &Hash,
+) -> Result<()> {
+    use calimero_store::types::GenericData;
+
+    let key = GenericKey::new(SYNC_IN_PROGRESS_SCOPE, *context_id);
+    let value_bytes = borsh::to_vec(boundary_root_hash)?;
+    let value: GenericData<'_> = Slice::from(value_bytes).into();
+    store.handle().put(&key, &value)?;
+    debug!(%context_id, "Set sync-in-progress marker");
+    Ok(())
 }
 
 /// Outcome of draining a buffered snapshot entity (PR-6b Task 6b.7).
@@ -1988,36 +1975,44 @@ fn link_children_into_parent_trie(
     parent_id: Id,
     children: Vec<calimero_storage::entities::ChildInfo>,
 ) -> Result<()> {
-    let mut pending: BTreeMap<StorageKey, Vec<u8>> = BTreeMap::new();
-
-    for child in children {
-        let mut writes: Vec<(StorageKey, Vec<u8>)> = Vec::new();
-        {
-            let read = |key: StorageKey| -> Option<Vec<u8>> {
-                if let Some(bytes) = pending.get(&key) {
-                    return Some(bytes.clone());
-                }
-                let k = ContextStateKey::new(context_id, key.to_bytes());
-                handle.get(&k).ok().flatten().map(|v| v.as_ref().to_vec())
-            };
-            calimero_storage::child_trie::ChildTrie::<calimero_storage::store::MainStorage>::insert_with(
-                parent_id,
-                child,
-                read,
-                |key, bytes| writes.push((key, bytes.to_vec())),
-            );
-        }
-        for (key, bytes) in writes {
-            let _prev = pending.insert(key, bytes);
-        }
-    }
-
-    for (key, bytes) in pending {
+    let writes = child_trie_writes(
+        |key| {
+            let k = ContextStateKey::new(context_id, key.to_bytes());
+            handle.get(&k).ok().flatten().map(|v| v.as_ref().to_vec())
+        },
+        parent_id,
+        children,
+    );
+    for (key, bytes) in writes {
         let k = ContextStateKey::new(context_id, key.to_bytes());
         let slice: Slice<'_> = bytes.into();
         handle.put(&k, &ContextStateValue::from(slice))?;
     }
     Ok(())
+}
+
+/// The trie rows that linking `children` into `parent_id`'s trie writes, over
+/// the rows `read` returns. Pure, so the live state and a staged snapshot share it.
+fn child_trie_writes(
+    read: impl Fn(StorageKey) -> Option<Vec<u8>>,
+    parent_id: Id,
+    children: Vec<calimero_storage::entities::ChildInfo>,
+) -> BTreeMap<StorageKey, Vec<u8>> {
+    let mut pending: BTreeMap<StorageKey, Vec<u8>> = BTreeMap::new();
+
+    for child in children {
+        let mut writes: Vec<(StorageKey, Vec<u8>)> = Vec::new();
+        calimero_storage::child_trie::ChildTrie::<calimero_storage::store::MainStorage>::insert_with(
+            parent_id,
+            child,
+            |key| pending.get(&key).cloned().or_else(|| read(key)),
+            |key, bytes| writes.push((key, bytes.to_vec())),
+        );
+        for (key, bytes) in writes {
+            let _prev = pending.insert(key, bytes);
+        }
+    }
+    pending
 }
 
 /// Rebuild every installed entity's link into its parent's child trie.
@@ -2172,9 +2167,9 @@ fn check_snapshot_leaf(
 /// shipped root index, so a dropped leaf would leave this node publishing its
 /// source's root over state that lacks it, and nothing would ever repair the
 /// gap. An unknown signer almost always means this joiner has not folded the
-/// namespace's governance that far, so the retry succeeds once it has. The
-/// applied entries persist with the sync-in-progress marker set, which the next
-/// attempt treats as crash recovery.
+/// namespace's governance that far, so the retry succeeds once it has. Nothing
+/// of the snapshot is installed and no marker is set, so the retry is a fresh
+/// bootstrap.
 fn unknown_snapshot_signer(context_id: ContextId, id: Id) -> eyre::Report {
     warn!(
         %context_id,
@@ -2210,11 +2205,9 @@ fn unknown_snapshot_signer(context_id: ContextId, id: Id) -> eyre::Report {
 /// rejections` warning. An entity that fails its checks fails the snapshot
 /// before this runs.
 ///
-/// Failing is safe to repeat. The applied `ContextState` entries persist with
-/// the root still unpublished, which is the state
-/// `calimero_node_primitives::sync::snapshot_safety_decision` classifies as
-/// `RecoverContradiction` — explicitly allowed to re-bootstrap rather than
-/// deadlock on the I5 gate.
+/// This runs after the staged snapshot has been folded to the claim and moved
+/// into the context's state, so a failure here leaves the installed entities
+/// and the sync-in-progress marker in place, and the retry is crash recovery.
 fn verified_snapshot_root(store: &Store, context_id: ContextId, claimed: Hash) -> Result<Hash> {
     let computed = served_state_root(store, context_id).map_err(|e| {
         warn!(
