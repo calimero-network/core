@@ -2561,8 +2561,8 @@ impl SyncManager {
                                 continue;
                             }
 
-                            // A revoked device passes the cut check below by
-                            // citing heads from before its revocation, and a head
+                            // A revoked or narrowed-out device passes the cut
+                            // check below by citing heads from before it, and a head
                             // has nothing built on it to vouch that anyone
                             // accepted it earlier (core#4070). Dropped, not
                             // remembered: if an authorized author later builds on

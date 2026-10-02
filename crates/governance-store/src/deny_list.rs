@@ -23,11 +23,13 @@
 //! removed. Keying by account rather than by signing key also means one
 //! removal silences every device the removed person holds.
 //!
-//! A revoked device is the one denial not keyed by account: the account still
-//! has its other devices, so the receive filter instead refuses the signing key
-//! the revoked device was bound under (`GroupRevokedSigner`, recorded by
-//! [`crate::AccountBindingRepository::apply_revocation`]) while no live binding
-//! speaks for it.
+//! A revoked or narrowed-out device is the one denial not keyed by account: the
+//! account still has its other devices, so the receive filter instead refuses
+//! the signing key the device was bound under (`GroupRevokedSigner`, recorded by
+//! [`crate::AccountBindingRepository::apply_revocation`],
+//! [`crate::AccountBindingRepository::narrow`] and a link
+//! [`crate::AccountBindingRepository::apply_link`] refuses for either) while no
+//! live binding speaks for it.
 //!
 //! Entries are added when `MemberRemoved` / `MemberLeft` apply. They are
 //! cleared by any write of a direct member row for the same
@@ -210,9 +212,9 @@ impl<'a> DenyListRepository<'a> {
     /// by a direct deny entry on that group, OR a namespace-root inherited-deny
     /// (an evicted/left member who reached the owning subgroup only by
     /// inheritance from the root), OR because the key signed for a device the
-    /// namespace has revoked and no live binding speaks for it now. Returns
-    /// `Ok(false)` when the context isn't registered to any group (nothing to
-    /// deny on). Encapsulates the
+    /// namespace has revoked or narrowed out and no live binding speaks for it
+    /// now. Returns `Ok(false)` when the context isn't registered to any group
+    /// (nothing to deny on). Encapsulates the
     /// `get_group_for_context` → deny lookups so callers (e.g. the state-delta
     /// handler) don't reach into group-id resolution. The direct check is O(1);
     /// the inherited check resolves the group's namespace root (a bounded
@@ -231,9 +233,9 @@ impl<'a> DenyListRepository<'a> {
 
         // The author signs with a device key; denial is recorded against the
         // account that key speaks for. A key with no live binding is denied only
-        // when it signed for a device this namespace has revoked: the cross-DAG
+        // when it signed for a device this namespace has withdrawn: the cross-DAG
         // check authorizes a delta at the governance heads its author cites, so a
-        // revoked device that has not folded its own revocation cites heads from
+        // withdrawn device that has not folded its own withdrawal cites heads from
         // before it and passes there. Any other unresolved key is reported as NOT
         // denied — abstaining costs one wasted walk, while denying would silence a
         // legitimate peer whose device binding this node has not applied yet.
@@ -257,7 +259,8 @@ impl<'a> DenyListRepository<'a> {
     }
 
     /// Whether `author_key` signed for a device the namespace owning
-    /// `context_id` has revoked, and no live binding speaks for it now.
+    /// `context_id` has revoked or narrowed out, and no live binding speaks for
+    /// it now.
     ///
     /// The revoked-device half of [`Self::is_author_denied_for_context`], on its
     /// own, for the DAG catch-up of a peer's heads. That path judges an author
