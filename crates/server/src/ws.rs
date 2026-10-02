@@ -2803,7 +2803,9 @@ mod tests {
     /// guard over an in-memory auth service, as a browser client would.
     async fn spawn_test_ws_behind_guard(permissions: &[&str]) -> TestServer {
         use mero_auth::auth::token::TokenManager;
-        use mero_auth::config::JwtConfig;
+        use mero_auth::config::{
+            default_client_access_token_expiry, default_client_refresh_token_expiry, JwtConfig,
+        };
         use mero_auth::secrets::SecretManager;
         use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
         use mero_auth::AuthService;
@@ -2817,6 +2819,8 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: default_client_access_token_expiry(),
+                client_refresh_token_expiry: default_client_refresh_token_expiry(),
                 node_host: None,
             },
             Arc::clone(&storage),
