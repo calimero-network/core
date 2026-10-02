@@ -33,8 +33,8 @@ use crate::store::{MainStorage, StorageAdaptor};
 const MARKS_FIELD: &str = "__rich_marks"; // child id namespace for the mark map
 const LAMPORT_EXHAUSTED: &str = "mark lamport space exhausted";
 const MARK_ID_TAKEN: &str = "mark id already in use";
-/// Ids a mark tries before it is refused: the minting replica's, then ones
-/// derived from the mark itself. Each one taken is a row a peer had to plant.
+/// Ids a mark tries before it is refused: the minting replica's, then fresh
+/// ones (see [`next_replica`]). Each one taken is a row a peer had to plant.
 const MAX_MARK_ID_ATTEMPTS: u64 = 16;
 const MARK_REPLICA_DOMAIN: &[u8] = b"calimero:rich-text:mark-replica:v1";
 const SEED_WITH: &str = "mark_with_replica(start, end, key, value, replica)"; // the migration-safe minting call
@@ -758,8 +758,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         };
         // A row already at the id is one no read returns: a readable row there
         // would carry this lamport, above the top. Writing over it would hide the
-        // mark, so the mark moves to a replica derived from itself, which a peer
-        // cannot plant ahead of a mark it has not seen. The lamport stays, so the
+        // mark, so the mark moves to another replica. The lamport stays, so the
         // mark is still read and still wins over every mark read before it.
         let mut attempt = 0;
         while self.mark_id_taken(mark.id) {
@@ -767,7 +766,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             if attempt == MAX_MARK_ID_ATTEMPTS {
                 return Err(invalid(MARK_ID_TAKEN));
             }
-            mark.id.replica = derived_replica(&mark, attempt)?;
+            mark.id.replica = next_replica(&mark, attempt)?;
         }
         let id = mark.id;
         let _ignored = self.marks.insert(MarkKey::new(id), mark)?;
@@ -1123,9 +1122,23 @@ mod span_attrs_json {
     }
 }
 
-/// The replica `mark` moves to on its `attempt`-th try, when its id is taken: the
-/// first 8 bytes of a hash of the mark as it stands, id included. Deterministic,
-/// so a migration minting the same mark on every node mints the same id.
+/// The replica `mark` moves to on its `attempt`-th try, when its id is taken.
+///
+/// Outside a migration, a random one, which no peer can plant a row ahead of.
+/// A migration mints the same mark on every node, so there it is
+/// [`derived_replica`]: a peer that guesses the exact mark could plant its
+/// [`MAX_MARK_ID_ATTEMPTS`] ids, and the mark is refused.
+fn next_replica(mark: &Mark, attempt: u64) -> Result<u64, StoreError> {
+    if crate::env::in_merge_mode() {
+        return derived_replica(mark, attempt);
+    }
+    let mut bytes = [0_u8; 8];
+    crate::env::random_bytes(&mut bytes);
+    Ok(u64::from_be_bytes(bytes))
+}
+
+/// The first 8 bytes of a hash of `mark` as it stands, id included, and of
+/// `attempt`: deterministic, so every node running a migration mints one id.
 fn derived_replica(mark: &Mark, attempt: u64) -> Result<u64, StoreError> {
     let bytes = borsh::to_vec(mark).map_err(|_| invalid("mark does not encode"))?;
     let digest: [u8; 32] = Sha256::new()
@@ -1300,10 +1313,49 @@ mod mark_lamport_bounds_tests {
         first
     }
 
+    /// [`RichText::put_mark`] of `first`'s whole-document `underline`, as a migration mints it.
+    fn put_mark_in_a_migration(
+        doc: &mut RichText<DefaultMarks>,
+        first: &Mark,
+    ) -> Result<MarkId, crate::collections::error::StoreError> {
+        env::with_merge_mode(|| {
+            doc.put_mark(
+                &[],
+                first.start,
+                first.end,
+                &first.key,
+                Some("true"),
+                first.id.replica,
+            )
+        })
+    }
+
     #[test]
-    fn a_mark_moves_past_every_taken_id_but_the_last_it_may_try() {
+    fn a_migration_mark_moves_past_every_taken_id_but_the_last_it_may_try() {
         let mut doc = document();
         let first = plant_rows_at_the_ids_a_mark_tries(&doc, MAX_MARK_ID_ATTEMPTS - 1);
+
+        let minted = put_mark_in_a_migration(&mut doc, &first).expect("one id is still free");
+
+        assert_eq!(minted.lamport, 1);
+        assert_eq!(attribute(&doc, "underline").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn a_migration_mark_whose_every_id_is_taken_is_refused() {
+        let mut doc = document();
+        let first = plant_rows_at_the_ids_a_mark_tries(&doc, MAX_MARK_ID_ATTEMPTS);
+
+        let minted = put_mark_in_a_migration(&mut doc, &first);
+
+        assert!(minted.is_err(), "the tries are bounded: {minted:?}");
+        assert_eq!(attribute(&doc, "underline"), None);
+    }
+
+    #[test]
+    fn rows_planted_at_every_id_a_guessed_mark_derives_do_not_stop_it_outside_a_migration() {
+        let mut doc = document();
+        let first = plant_rows_at_the_ids_a_mark_tries(&doc, MAX_MARK_ID_ATTEMPTS);
 
         let minted = doc
             .put_mark(
@@ -1314,28 +1366,10 @@ mod mark_lamport_bounds_tests {
                 Some("true"),
                 first.id.replica,
             )
-            .expect("one id is still free");
+            .expect("a random replica is free");
 
         assert_eq!(minted.lamport, 1);
         assert_eq!(attribute(&doc, "underline").as_deref(), Some("true"));
-    }
-
-    #[test]
-    fn a_mark_whose_every_id_is_taken_is_refused() {
-        let mut doc = document();
-        let first = plant_rows_at_the_ids_a_mark_tries(&doc, MAX_MARK_ID_ATTEMPTS);
-
-        let minted = doc.put_mark(
-            &[],
-            first.start,
-            first.end,
-            &first.key,
-            Some("true"),
-            first.id.replica,
-        );
-
-        assert!(minted.is_err(), "the tries are bounded: {minted:?}");
-        assert_eq!(attribute(&doc, "underline"), None);
     }
 
     /// A row for `id`, stored under `key` instead.

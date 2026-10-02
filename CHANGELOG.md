@@ -569,9 +569,17 @@
   formatting.** A row a peer stored where this replica's next `RichText` mark
   would go, one that does not decode or is filed under another parent, made
   `mark` fail with a deserialization error, and a left-out row refused the
-  mark outright. The mark now keeps its lamport and moves to a replica derived
-  from the mark itself, so it is still read and still wins; it fails only after
-  `MAX_MARK_ID_ATTEMPTS` taken ids. Found by the `crdt_sync` fuzz target.
+  mark outright. The mark now keeps its lamport and moves to a random replica
+  (one derived from the mark itself during a migration), so it is still read
+  and still wins; it fails only after `MAX_MARK_ID_ATTEMPTS` taken ids. Found
+  by the `crdt_sync` fuzz target.
+
+- **A collection no longer reads another parent's entity as its own.** A peer's
+  delta could store an entity at the id one of this node's map keys derives,
+  under another parent or as an orphan; `get` then returned that entity's value
+  as the key's, or failed decoding it, and so did the insert that followed.
+  Every collection read now treats an entity whose index names another parent
+  as absent, before decoding it.
 
 - **The delegated routes take the intent permission, and an account reads its
   groups' upgrade state.** With `delegated_access` off, `presence-intents`,

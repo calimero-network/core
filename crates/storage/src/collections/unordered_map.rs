@@ -1310,8 +1310,73 @@ where
 mod tests {
     use crate::collections::unordered_map::Entry;
     use crate::collections::{Root, UnorderedMap};
+    use crate::entities::Data as _;
     use crate::store::MainStorage;
     use calimero_account::AccountId;
+
+    /// `ours`, and a row of `theirs` filed under `theirs` at the id `ours`
+    /// gives `"key"`, as a peer's delta can link one.
+    fn a_row_of_another_map_at_the_id_of<V>(
+        theirs_value: V,
+    ) -> UnorderedMap<String, String, MainStorage>
+    where
+        V: borsh::BorshSerialize + borsh::BorshDeserialize + 'static,
+    {
+        crate::env::reset_for_testing();
+        let ours = UnorderedMap::<String, String, MainStorage>::new_with_field_name("ours");
+        let mut theirs = UnorderedMap::<String, V, MainStorage>::new_with_field_name("theirs");
+        let at = ours.entry_id("key");
+        let storage_type = theirs.element().metadata.storage_type.clone();
+        let _ignored = theirs
+            .insert_with_storage_type_and_crdt_type(
+                "other".to_owned(),
+                theirs_value,
+                storage_type,
+                Some(at),
+                None,
+            )
+            .unwrap();
+        ours
+    }
+
+    #[test]
+    fn a_row_another_map_holds_at_a_keys_id_does_not_read_as_this_maps_value() {
+        let ours = a_row_of_another_map_at_the_id_of("theirs".to_owned());
+
+        assert_eq!(ours.get("key").unwrap(), None);
+        assert!(!ours.contains("key").unwrap());
+    }
+
+    #[test]
+    fn an_orphan_at_a_keys_id_does_not_read_as_this_maps_value() {
+        use crate::index::{EntityIndex, Index};
+        use crate::store::{Key, StorageAdaptor as _};
+
+        crate::env::reset_for_testing();
+        let mut ours = UnorderedMap::<String, String, MainStorage>::new_with_field_name("ours");
+        let at = ours.entry_id("key");
+        Index::<MainStorage>::save_index(&EntityIndex::minimal_for_test(at)).unwrap();
+        let _written = MainStorage::storage_write(Key::Entry(at), &[120]);
+
+        assert_eq!(ours.get("key").unwrap(), None);
+        assert_eq!(ours.insert("key".to_owned(), "v".to_owned()).unwrap(), None);
+        assert_eq!(
+            ours.get("key").unwrap().as_deref().map(String::as_str),
+            Some("v")
+        );
+    }
+
+    #[test]
+    fn a_row_another_map_holds_at_a_keys_id_is_never_decoded_as_this_maps() {
+        let mut ours = a_row_of_another_map_at_the_id_of(7_u8);
+
+        assert_eq!(ours.get("key").unwrap(), None);
+        assert_eq!(ours.insert("key".to_owned(), "v".to_owned()).unwrap(), None);
+        assert_eq!(
+            ours.get("key").unwrap().as_deref().map(String::as_str),
+            Some("v")
+        );
+    }
 
     #[test]
     fn test_unordered_map_basic_operations() {
