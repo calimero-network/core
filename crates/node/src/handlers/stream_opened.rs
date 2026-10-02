@@ -24,39 +24,69 @@ const MAX_INBOUND_BLOB_STREAMS_PER_PEER: usize = 32; // of those, held by any on
 const MAX_INBOUND_SYNC_STREAMS: usize = SYNC_SESSION_CHANNEL_CAPACITY; // queued, waiting or running responders
 const MAX_INBOUND_SYNC_STREAMS_PER_PEER: usize = 2 * DEFAULT_MAX_CONCURRENT_SYNCS; // a peer's sessions plus some parent fetches
 
-static BLOB_STREAM_SLOTS: Semaphore = Semaphore::const_new(MAX_INBOUND_BLOB_STREAMS);
-static BLOB_STREAMS_PER_PEER: LazyLock<Mutex<HashMap<PeerId, usize>>> =
-    LazyLock::new(Mutex::default);
+static BLOB_STREAMS: StreamLimits =
+    StreamLimits::new(MAX_INBOUND_BLOB_STREAMS, MAX_INBOUND_BLOB_STREAMS_PER_PEER);
+static SYNC_STREAMS: StreamLimits =
+    StreamLimits::new(MAX_INBOUND_SYNC_STREAMS, MAX_INBOUND_SYNC_STREAMS_PER_PEER);
 
-/// One inbound blob stream's share of both limits, given back when its task ends.
-struct BlobStreamPermit {
-    _slot: SemaphorePermit<'static>,
-    peer: PeerId,
+/// How many streams of one kind the node holds at once, in total and per peer.
+struct StreamLimits {
+    slots: Semaphore,
+    per_peer: LazyLock<Mutex<HashMap<PeerId, usize>>>,
+    max_per_peer: usize,
 }
 
-impl BlobStreamPermit {
-    /// `None` when the peer or the node is at its limit: the caller drops the
-    /// stream rather than queueing work on a remote peer's say-so.
-    fn admit(peer: PeerId, protocol: &StreamProtocol) -> Option<Self> {
-        let mut per_peer = BLOB_STREAMS_PER_PEER
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let held = per_peer.get(&peer).copied().unwrap_or(0);
-        let slot = (held < MAX_INBOUND_BLOB_STREAMS_PER_PEER)
-            .then(|| BLOB_STREAM_SLOTS.try_acquire().ok())
-            .flatten();
-        let Some(slot) = slot else {
-            debug!(%peer, %protocol, held, "Refusing inbound blob stream: stream limit reached");
-            return None;
-        };
-        *per_peer.entry(peer).or_default() += 1;
-        Some(Self { _slot: slot, peer })
+impl StreamLimits {
+    const fn new(total: usize, max_per_peer: usize) -> Self {
+        Self {
+            slots: Semaphore::const_new(total),
+            per_peer: LazyLock::new(Mutex::default),
+            max_per_peer,
+        }
     }
 }
 
-impl Drop for BlobStreamPermit {
+/// One inbound stream's share of its kind's limits, given back when its work ends.
+pub(crate) struct InboundStreamPermit {
+    _slot: SemaphorePermit<'static>,
+    limits: &'static StreamLimits,
+    peer: PeerId,
+}
+
+impl InboundStreamPermit {
+    /// `None` when the peer or the node is at its limit: the caller drops the
+    /// stream rather than queueing work on a remote peer's say-so.
+    fn admit(
+        limits: &'static StreamLimits,
+        peer: PeerId,
+        protocol: &StreamProtocol,
+    ) -> Option<Self> {
+        let mut per_peer = limits
+            .per_peer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let held = per_peer.get(&peer).copied().unwrap_or(0);
+        let slot = (held < limits.max_per_peer)
+            .then(|| limits.slots.try_acquire().ok())
+            .flatten();
+        let Some(slot) = slot else {
+            debug!(%peer, %protocol, held, "Refusing inbound stream: stream limit reached");
+            return None;
+        };
+        *per_peer.entry(peer).or_default() += 1;
+        Some(Self {
+            _slot: slot,
+            limits,
+            peer,
+        })
+    }
+}
+
+impl Drop for InboundStreamPermit {
     fn drop(&mut self) {
-        let mut per_peer = BLOB_STREAMS_PER_PEER
+        let mut per_peer = self
+            .limits
+            .per_peer
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if let Entry::Occupied(mut held) = per_peer.entry(self.peer) {
@@ -83,7 +113,7 @@ pub fn handle_stream_opened(
 ) {
     // Route streams based on protocol
     if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
-        let Some(permit) = BlobStreamPermit::admit(peer_id, &protocol) else {
+        let Some(permit) = InboundStreamPermit::admit(&BLOB_STREAMS, peer_id, &protocol) else {
             return;
         };
         info!(%peer_id, "Routing to blob protocol handler");
@@ -106,7 +136,7 @@ pub fn handle_stream_opened(
             }
         }));
     } else if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_ANNOUNCE_PROTOCOL {
-        let Some(permit) = BlobStreamPermit::admit(peer_id, &protocol) else {
+        let Some(permit) = InboundStreamPermit::admit(&BLOB_STREAMS, peer_id, &protocol) else {
             return;
         };
         debug!(%peer_id, "Routing to blob announce handler");
@@ -124,6 +154,9 @@ pub fn handle_stream_opened(
             }
         }));
     } else {
+        let Some(permit) = InboundStreamPermit::admit(&SYNC_STREAMS, peer_id, &protocol) else {
+            return;
+        };
         debug!(%peer_id, "Routing to sync protocol handler");
         // Route inbound sync streams onto the dedicated SyncSessionActor
         // arbiter (issue #2316). On Full/Closed we drop the stream and
@@ -131,8 +164,11 @@ pub fn handle_stream_opened(
         // moving sync sessions off this actor's arbiter.
         match node_manager
             .sync_session_tx
-            .try_send(SyncSessionJob::Responder { peer_id, stream })
-        {
+            .try_send(SyncSessionJob::Responder {
+                peer_id,
+                stream,
+                permit,
+            }) {
             Ok(()) => {}
             Err(SyncSessionSendError::Full) => {
                 warn!(
