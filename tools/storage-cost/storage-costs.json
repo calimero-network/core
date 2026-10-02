@@ -304,8 +304,8 @@
         "rows_removed": 0,
         "index_rows_read": 37,
         "index_rows_removed": 15,
-        "hash_calls": 5278,
-        "hash_blocks": 6498
+        "hash_calls": 5373,
+        "hash_blocks": 6593
       },
       "00000100": {
         "rows_read": 14381,
@@ -313,8 +313,8 @@
         "rows_removed": 0,
         "index_rows_read": 352,
         "index_rows_removed": 150,
-        "hash_calls": 77618,
-        "hash_blocks": 100278
+        "hash_calls": 78568,
+        "hash_blocks": 101228
       },
       "00000500": {
         "rows_read": 204837,
@@ -322,8 +322,8 @@
         "rows_removed": 0,
         "index_rows_read": 1752,
         "index_rows_removed": 750,
-        "hash_calls": 970828,
-        "hash_blocks": 1294231
+        "hash_calls": 975578,
+        "hash_blocks": 1298981
       },
       "00002000": {
         "rows_read": 3018132,
@@ -331,8 +331,8 @@
         "rows_removed": 0,
         "index_rows_read": 7002,
         "index_rows_removed": 3000,
-        "hash_calls": 12861535,
-        "hash_blocks": 17202831
+        "hash_calls": 12880535,
+        "hash_blocks": 17221831
       }
     }
   },
@@ -729,29 +729,29 @@
         "rows_read": 10,
         "rows_written": 0,
         "rows_removed": 0,
-        "hash_calls": 40,
-        "hash_blocks": 50
+        "hash_calls": 50,
+        "hash_blocks": 70
       },
       "00000100": {
         "rows_read": 100,
         "rows_written": 0,
         "rows_removed": 0,
-        "hash_calls": 400,
-        "hash_blocks": 500
+        "hash_calls": 500,
+        "hash_blocks": 700
       },
       "00001000": {
         "rows_read": 1000,
         "rows_written": 0,
         "rows_removed": 0,
-        "hash_calls": 4000,
-        "hash_blocks": 5000
+        "hash_calls": 5000,
+        "hash_blocks": 7000
       },
       "00010000": {
         "rows_read": 10000,
         "rows_written": 0,
         "rows_removed": 0,
-        "hash_calls": 40000,
-        "hash_blocks": 50000
+        "hash_calls": 50000,
+        "hash_blocks": 70000
       }
     }
   },
@@ -801,8 +801,8 @@
         "rows_removed": 0,
         "index_rows_read": 37,
         "index_rows_removed": 15,
-        "hash_calls": 5498,
-        "hash_blocks": 6788
+        "hash_calls": 5638,
+        "hash_blocks": 6973
       },
       "00000100": {
         "rows_read": 21082,
@@ -810,8 +810,8 @@
         "rows_removed": 0,
         "index_rows_read": 352,
         "index_rows_removed": 150,
-        "hash_calls": 102019,
-        "hash_blocks": 129676
+        "hash_calls": 107919,
+        "hash_blocks": 140526
       },
       "00000500": {
         "rows_read": 402515,
@@ -819,8 +819,8 @@
         "rows_removed": 0,
         "index_rows_read": 1752,
         "index_rows_removed": 750,
-        "hash_calls": 1607700,
-        "hash_blocks": 2049496
+        "hash_calls": 1737200,
+        "hash_blocks": 2303746
       },
       "00002000": {
         "rows_read": 5604705,
@@ -828,8 +828,8 @@
         "rows_removed": 0,
         "index_rows_read": 7002,
         "index_rows_removed": 3000,
-        "hash_calls": 22426412,
-        "hash_blocks": 28704098
+        "hash_calls": 24444412,
+        "hash_blocks": 32721098
       }
     }
   },
@@ -841,32 +841,32 @@
         "rows_written": 92,
         "rows_removed": 0,
         "index_rows_read": 22,
-        "hash_calls": 1525,
-        "hash_blocks": 1967
+        "hash_calls": 1570,
+        "hash_blocks": 2057
       },
       "00000100": {
         "rows_read": 8247,
         "rows_written": 906,
         "rows_removed": 0,
         "index_rows_read": 202,
-        "hash_calls": 32018,
-        "hash_blocks": 41606
+        "hash_calls": 36968,
+        "hash_blocks": 51506
       },
       "00000500": {
         "rows_read": 141901,
         "rows_written": 4902,
         "rows_removed": 0,
         "index_rows_read": 1002,
-        "hash_calls": 561064,
-        "hash_blocks": 711449
+        "hash_calls": 685814,
+        "hash_blocks": 960949
       },
       "00002000": {
         "rows_read": 2070110,
         "rows_written": 19915,
         "rows_removed": 0,
         "index_rows_read": 4002,
-        "hash_calls": 8247049,
-        "hash_blocks": 10355518
+        "hash_calls": 10246049,
+        "hash_blocks": 14353518
       }
     }
   },
