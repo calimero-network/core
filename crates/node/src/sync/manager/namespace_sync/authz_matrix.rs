@@ -43,8 +43,7 @@ const TABLES: &[OpTable] = &[
             OtherNamespaceMember,
             NonMember,
         ],
-        // The responder reads no tombstone and no scope floor for the joining device.
-        gap: &[RevokedDevice, DescopedDevice],
+        gap: &[],
     },
     OpTable {
         op: GatedOp::OpenSubgroupJoinKey,

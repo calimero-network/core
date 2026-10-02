@@ -39,13 +39,12 @@ const TABLES: &[OpTable] = &[
     OpTable {
         op: GatedOp::SseSubscribe,
         allow: SUBJECT_MEMBERS,
-        // An account caller is judged by the deny-list-blind walk.
-        gap: &[Kicked, Left],
+        gap: &[],
     },
     OpTable {
         op: GatedOp::WsSubscribe,
         allow: SUBJECT_MEMBERS,
-        gap: &[Kicked, Left],
+        gap: &[],
     },
     OpTable {
         op: GatedOp::ListSubgroups,
@@ -67,8 +66,7 @@ const TABLES: &[OpTable] = &[
     OpTable {
         op: GatedOp::SubgroupInScope,
         allow: SUBJECT_MEMBERS,
-        // Descendants are reached by the deny-list-blind walk.
-        gap: &[Kicked, Left],
+        gap: &[],
     },
 ];
 
