@@ -2466,6 +2466,8 @@ async fn internal_execute(
         delegation.is_some() || read_as.is_some(),
     )?;
     let storage = ContextStorage::from(datastore.clone(), context.id);
+    // Kept for the on-behalf gate after the run; private storage takes the store.
+    let on_behalf_store = delegation.is_some().then(|| datastore.clone());
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
 
     // Search: only for an app that declares an index; any other app pays one
@@ -2647,6 +2649,24 @@ async fn internal_execute(
         }
     }
 
+    // The entries a delegated run writes for its author are signed by this
+    // node, and peers accept them only from a `RelayTee` writing for a member.
+    // The warrant gate is wider (it also admits an `Admin` or `Member` holding
+    // `CAN_AUTHOR_ON_BEHALF`), so a run that signs an entry asks the narrower
+    // rule too, before anything commits. A run that signs none writes nothing
+    // on the author's behalf and stays with the warrant gate alone.
+    if let (Some(d), Some(store)) = (delegation, on_behalf_store.as_ref()) {
+        if !is_state_op && outcome.root_hash.is_some() && artifact_signs_entries(&outcome.artifact)
+        {
+            if let Some(reason) = on_behalf_refusal(store, &context.id, d.warrant.author_account)? {
+                bail!(ExecuteError::DelegatedWriteRefused {
+                    context_id: context.id,
+                    reason,
+                });
+            }
+        }
+    }
+
     // Always update root_hash if present (even if storage is empty)
     // This is critical for state_ops like __calimero_sync_next where actions
     // are applied inside WASM but storage appears empty
@@ -2710,8 +2730,14 @@ async fn internal_execute(
                     actions_count = actions.len(),
                     "Received several actions. Verify if there any user actions..."
                 );
-                sign_authorized_actions(&mut actions, identity_private_key)
-                    .wrap_err("Failed to sign user actions")?;
+                // A delegated run's entries are written for the author and
+                // signed by this node; see `sign_authorized_actions`.
+                sign_authorized_actions(
+                    &mut actions,
+                    identity_private_key,
+                    delegation.is_some().then_some(account),
+                )
+                .wrap_err("Failed to sign user actions")?;
 
                 // Persist the signed `signature_data` back to local
                 // storage for each upsert action. `save_raw` runs
@@ -3120,6 +3146,51 @@ async fn internal_execute(
 /// has such a key, or while every key this TEE holds is retired because a TEE
 /// that held it was removed, it seals to the attested key of every TEE
 /// authority instead.
+/// Whether a run's artifact carries an entry this node will sign: see
+/// [`signing::signs_entries`]. An artifact that is not `StorageDelta::Actions`
+/// carries none, matching how the commit below reads it.
+fn artifact_signs_entries(artifact: &[u8]) -> bool {
+    matches!(
+        borsh::from_slice::<StorageDelta>(artifact),
+        Ok(StorageDelta::Actions(actions)) if signing::signs_entries(&actions)
+    )
+}
+
+/// Why peers would refuse the entries a delegated run writes for `author`, or
+/// `None` when they accept them: the on-behalf rule
+/// (`calimero_governance_store::on_behalf_standing`) asked of this node's own
+/// account, live, since the run is about to be signed at this node's heads.
+fn on_behalf_refusal(
+    datastore: &Store,
+    context_id: &ContextId,
+    author: calimero_account::AccountId,
+) -> eyre::Result<Option<calimero_context_client::messages::DelegatedWriteRefusal>> {
+    use calimero_context_client::messages::DelegatedWriteRefusal;
+    use calimero_governance_store::OnBehalfRefusal;
+
+    let Some(group_id) = calimero_governance_store::get_group_for_context(datastore, context_id)?
+    else {
+        // The warrant gate refuses a context in no group before this runs.
+        bail!("a delegated write needs a context that belongs to a group");
+    };
+    let relay = calimero_governance_store::account_for_context(datastore, context_id)?;
+    Ok(
+        match calimero_governance_store::on_behalf_standing_live(
+            datastore, &group_id, relay, author,
+        )? {
+            Ok(()) => None,
+            Err(OnBehalfRefusal::SignerNotARelay) => {
+                Some(DelegatedWriteRefusal::ExecutorIsNotARelay)
+            }
+            Err(OnBehalfRefusal::AccountIsReadOnly) => {
+                Some(DelegatedWriteRefusal::AuthorIsReadOnly)
+            }
+            // The warrant gate, which runs first, refuses this too.
+            Err(refusal @ OnBehalfRefusal::AccountNotAMember) => return Err(refusal.into()),
+        },
+    )
+}
+
 fn sealing_context(
     datastore: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,

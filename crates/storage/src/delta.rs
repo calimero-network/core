@@ -347,6 +347,21 @@ pub enum StorageDelta {
         /// could not resolve the author, and every consumer treats that as a
         /// refusal — never as "authorize as whoever is applying".
         signer_account: Option<AccountId>,
+        /// The account each action written on another's behalf
+        /// (`SignatureData::on_behalf`) is attributed to, keyed by action id,
+        /// for the actions the applying node found entitled: signed by a
+        /// `RelayTee` writing for a member, at this delta's cut
+        /// (`calimero_governance_store::on_behalf_standing`).
+        ///
+        /// Per action rather than per delta because the entitlement is the
+        /// SIGNER's, not the delta author's: a relay may write any member's
+        /// entries, and the delta that carries them need not be authored by
+        /// that member. An action listed here is resolved to its account in
+        /// place of `signer_account`; an on-behalf action not listed falls back
+        /// to `signer_account`, which storage accepts only when it equals the
+        /// action's `on_behalf`. Trusted for the same reason as the fields
+        /// above: it never comes off the wire.
+        on_behalf_accounts: BTreeMap<Id, AccountId>,
     },
 }
 
@@ -368,6 +383,7 @@ impl BorshSerialize for StorageDelta {
                 delta_hlc,
                 effective_writers,
                 signer_account,
+                on_behalf_accounts,
             } => {
                 2u8.serialize(writer)?;
                 actions.serialize(writer)?;
@@ -375,6 +391,7 @@ impl BorshSerialize for StorageDelta {
                 delta_hlc.serialize(writer)?;
                 effective_writers.serialize(writer)?;
                 signer_account.serialize(writer)?;
+                on_behalf_accounts.serialize(writer)?;
             }
         }
         Ok(())
@@ -399,6 +416,7 @@ impl BorshDeserialize for StorageDelta {
                 delta_hlc: HybridTimestamp::deserialize_reader(reader)?,
                 effective_writers: BTreeMap::deserialize_reader(reader)?,
                 signer_account: Option::deserialize_reader(reader)?,
+                on_behalf_accounts: BTreeMap::deserialize_reader(reader)?,
             }),
             Some(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
         }
@@ -673,6 +691,7 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
                     nonce: sig_data.nonce,
                     signature: [0; 64], // Use placeholder for hash
                     signer: sig_data.signer,
+                    on_behalf: None,
                 }),
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
@@ -688,6 +707,7 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
                     nonce: sig_data.nonce,
                     signature: [0; 64], // Use placeholder for hash
                     signer: sig_data.signer,
+                    on_behalf: None,
                 }),
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
@@ -705,6 +725,7 @@ fn hash_metadata_storage_type_for_id(hasher: &mut Sha256, metadata: &Metadata) {
                     nonce: sig_data.nonce,
                     signature: [0; 64], // Use placeholder for hash
                     signer: sig_data.signer,
+                    on_behalf: None,
                 }),
             };
             hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
@@ -820,6 +841,7 @@ mod borsh_roundtrip_tests {
             delta_hlc: make_hlc(12_345),
             effective_writers: effective_writers.clone(),
             signer_account: Some(AccountId::from([0xAC; 32])),
+            on_behalf_accounts: BTreeMap::from([(entity_b, AccountId::from([0xA1; 32]))]),
         };
 
         let bytes = to_vec(&original).unwrap();
@@ -833,7 +855,12 @@ mod borsh_roundtrip_tests {
                 delta_hlc,
                 effective_writers: ew,
                 signer_account: _,
+                on_behalf_accounts,
             } => {
+                assert_eq!(
+                    on_behalf_accounts,
+                    BTreeMap::from([(entity_b, AccountId::from([0xA1; 32]))])
+                );
                 assert_actions_equal(&actions, &[make_action(0xFE)]);
                 assert_eq!(delta_id, [0xCD; 32]);
                 assert_eq!(delta_hlc, make_hlc(12_345));
@@ -853,6 +880,7 @@ mod borsh_roundtrip_tests {
             delta_hlc: make_hlc(0),
             effective_writers: BTreeMap::new(),
             signer_account: None,
+            on_behalf_accounts: BTreeMap::new(),
         };
         let bytes = to_vec(&original).unwrap();
         let decoded: StorageDelta = from_slice(&bytes).unwrap();

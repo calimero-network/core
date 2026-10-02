@@ -53,6 +53,8 @@ mod cascade_dispatch_e2e;
 #[cfg(test)]
 mod crash_recovery_test;
 #[cfg(test)]
+mod delegated_apply_gate_test;
+#[cfg(test)]
 mod delta_store_batch_test;
 #[cfg(test)]
 mod delta_store_lock_inversion_test;

@@ -403,6 +403,14 @@ pub enum DelegatedWriteRefusal {
     /// The member the write is attributed to is read-only in the context.
     #[error("the author's role in this context is read-only")]
     AuthorIsReadOnly,
+    /// This node may relay the write but is not a `RelayTee`, and only a
+    /// `RelayTee` signs entries on a member's behalf: every peer would refuse
+    /// the entries this run produced.
+    #[error(
+        "this node is not a RelayTee in this namespace, and only a RelayTee signs entries on a \
+         member's behalf"
+    )]
+    ExecutorIsNotARelay,
 }
 
 #[derive(Copy, Clone, Debug)]

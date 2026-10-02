@@ -31,8 +31,11 @@
 //! The principal and the signer DO differ, on exactly one path: a delegated
 //! execution reads both halves off the warrant
 //! (`Principal::new(warrant.author_account, warrant.author_device_key)`), while
-//! the envelope is signed by this node's own key. Every other construction site
-//! still derives both from the node's identity.
+//! the envelope is signed by this node's own key. So are the entries the run
+//! writes: they name this node's key as `signer` and the author's account as
+//! `on_behalf` (see `sign_authorized_actions`), since the author's device key is
+//! not one this node holds. Every other construction site still derives both
+//! from the node's identity.
 //!
 //! That divergence had a precondition, and it is why it waited for delegated
 //! authorship rather than landing on its own: the sync path refuses a `User` leaf

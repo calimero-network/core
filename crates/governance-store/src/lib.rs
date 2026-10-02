@@ -66,6 +66,7 @@ mod namespace;
 mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
+mod on_behalf;
 mod ops;
 mod owner_guard;
 mod pending_rotation;
@@ -161,6 +162,7 @@ pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, Owner
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
+pub use self::on_behalf::{on_behalf_standing, on_behalf_standing_live, OnBehalfRefusal};
 pub use self::tee::{
     is_attested_tee_key_for_context, is_evidence_quote_used, is_quote_hash_used,
     is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
