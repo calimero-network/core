@@ -338,7 +338,7 @@ impl ContextRegistry {
         // (or vice versa).
         let mut tx = Transaction::default();
         for (delta_key, record) in deltas {
-            let value: Slice<'_> = borsh::to_vec(record)?.into();
+            let value: Slice<'_> = record.to_row_bytes()?.into();
             tx.put(delta_key, value);
         }
         let meta_bytes: Slice<'_> = borsh::to_vec(&meta)?.into();
@@ -376,7 +376,7 @@ impl ContextRegistry {
 
         let mut tx = Transaction::default();
         for (delta_key, record) in deltas {
-            let value: Slice<'_> = borsh::to_vec(record)?.into();
+            let value: Slice<'_> = record.to_row_bytes()?.into();
             tx.put(delta_key, value);
         }
 
@@ -2395,7 +2395,6 @@ mod atomic_persist_tests {
     ) -> (key::ContextDagDelta, types::ContextDagDelta) {
         let key = key::ContextDagDelta::new(*context_id, id);
         let record = types::ContextDagDelta {
-            delta_id: id,
             parents: Vec::new(),
             actions: vec![1, 2, 3],
             hlc: HybridTimestamp::zero(),
@@ -2695,8 +2694,7 @@ mod atomic_persist_tests {
             .get(&key_a)
             .expect("read staged record")
             .expect("record present after commit");
-        assert_eq!(read_back.delta_id, rec_a.delta_id, "delta_id round-trips");
-        assert_eq!(read_back.actions, rec_a.actions, "actions round-trip");
+        assert_eq!(read_back, rec_a, "the row round-trips");
 
         // A batch dropped without commit writes nothing.
         let (key_b, rec_b) = delta_record(&cid, DELTA_B);

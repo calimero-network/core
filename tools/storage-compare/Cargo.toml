@@ -10,7 +10,11 @@ publish = false
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
+calimero-account = { workspace = true }
+calimero-context-config = { workspace = true }
+calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-storage = { workspace = true }
+calimero-store = { workspace = true, features = ["datatypes"] }
 eyre = { workspace = true }
 rocksdb = { workspace = true }
 tempfile = { workspace = true }

@@ -810,7 +810,7 @@ impl SyncManager {
                         &delta_id,
                     )?;
                     let causal_delta = CausalDelta {
-                        id: stored_delta.delta_id,
+                        id: delta_id,
                         parents: stored_delta.parents,
                         actions,
                         hlc: stored_delta.hlc,

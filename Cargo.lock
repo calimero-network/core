@@ -9924,7 +9924,11 @@ name = "storage-compare"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "calimero-account",
+ "calimero-context-config",
+ "calimero-primitives",
  "calimero-storage",
+ "calimero-store",
  "calimero-store-rocksdb",
  "eyre",
  "rocksdb",

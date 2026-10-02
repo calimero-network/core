@@ -3016,7 +3016,6 @@ async fn internal_execute(
             handle.put(
                 &key::ContextDagDelta::new(context.id, delta.id),
                 &types::ContextDagDelta {
-                    delta_id: delta.id,
                     parents: delta.parents.clone(),
                     actions: serialized_actions,
                     hlc: delta.hlc,
@@ -3033,8 +3032,8 @@ async fn internal_execute(
                     delegation: delegation.cloned(),
                 },
             )?;
-            // Kept beside the row, which cannot grow a field without breaking
-            // every row already on disk: a peer that fetches this delta by
+            // Kept beside the row, which cannot grow a field without a new
+            // row-layout version (`calimero_store`'s `delta_row`): a peer that fetches this delta by
             // catchup needs the trigger to verify its signature.
             if let Some(trigger) = tee_trigger.filter(|_| tee_authority) {
                 calimero_context_client::tee_trigger::record_delta_trigger(

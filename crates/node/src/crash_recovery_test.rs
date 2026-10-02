@@ -56,7 +56,6 @@ fn persist_row(
         .put(
             &calimero_store::key::ContextDagDelta::new(context(), delta_id),
             &calimero_store::types::ContextDagDelta {
-                delta_id,
                 parents,
                 actions,
                 // A zero HLC is safe for these tests: `load_persisted_deltas`

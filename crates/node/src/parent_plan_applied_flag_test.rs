@@ -59,7 +59,6 @@ fn persist_unapplied_row(store: &Store, delta_id: [u8; 32], parents: Vec<[u8; 32
         .put(
             &calimero_store::key::ContextDagDelta::new(context(), delta_id),
             &calimero_store::types::ContextDagDelta {
-                delta_id,
                 parents,
                 actions,
                 hlc: HybridTimestamp::default(),

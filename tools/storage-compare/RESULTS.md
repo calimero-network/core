@@ -121,6 +121,45 @@ and RocksDB stores, at 100 / 1,000 / 10,000 keys): every result is within ±11% 
 moves in both directions. That is noise, which is expected, because these benches
 write fixed small values and none of the format changes reach them.
 
+## Delta rows in `Column::Delta`
+
+`cargo run -p storage-compare --release -- --deltas`, 2026-10-02. One row per call, 10,000 calls per
+workload, the way `execute` persists a self-authored delta. "Before" is the borsh layout of the old
+`ContextDagDelta`; "after" is the current layout (`crates/store/src/types/context/delta_row.rs`).
+Mean bytes per row:
+
+| field | kv set before | kv set after | kv update before | kv update after | chat before | chat after |
+|---|---:|---:|---:|---:|---:|---:|
+| header (tag, version, flags) | 0 | 3 | 0 | 3 | 0 | 3 |
+| delta_id (duplicate of the key) | 32 | 0 | 32 | 0 | 32 | 0 |
+| parents (one) | 36 | 33 | 36 | 33 | 36 | 33 |
+| actions | 152.1 | 150.1 | 127.8 | 124.8 | 392.9 | 390.9 |
+| hlc | 16 | 16 | 16 | 16 | 16 | 16 |
+| applied | 1 | 0 | 1 | 0 | 1 | 0 |
+| checkpoint_root_hash (absent) | 1 | 0 | 1 | 0 | 1 | 0 |
+| events (absent) | 1 | 0 | 1 | 0 | 1 | 0 |
+| author_id | 33 | 32 | 33 | 32 | 33 | 32 |
+| governance_position_blob (one head) | 41 | 37 | 41 | 37 | 41 | 37 |
+| delta_signature | 65 | 64 | 65 | 64 | 65 | 64 |
+| delegation (absent) | 1 | 0 | 1 | 0 | 1 | 0 |
+| **value** | **379.1** | **335.1** | **354.8** | **309.8** | **619.9** | **575.9** |
+| **key (64) + value** | **443.1** | **399.1** | **418.8** | **373.8** | **683.9** | **639.9** |
+
+On disk, 10,000 rows, fully compacted, bytes per row:
+
+| workload | uncompressed before | uncompressed after | node options before | node options after | change |
+|---|---:|---:|---:|---:|---:|
+| kv set | 432.4 | 387.4 | 202.8 | 197.8 | −2.5% |
+| kv update | 407.0 | 361.2 | 208.5 | 202.8 | −2.7% |
+| chat send | 678.3 | 633.8 | 228.6 | 223.9 | −2.0% |
+
+The logical row is 44–45 B (12%) smaller, but on disk the saving is about 5 B per row. The
+compressor had already removed most of what was cut: the value's delta id sits right after the same
+32 bytes in its key, and the presence bytes and length padding are the same in every row. What is
+left on disk is mostly incompressible: 32 B of delta id in the key, 32 B of parent id and 64 B of
+signature are 128 of the ~200 B, and the rest is the random ids and hashes inside the actions. The
+author key, the governance head and the HLC id repeat across rows and compress away.
+
 ## Bottom line
 
 - **Size:** state is 63% smaller logically and 76–78% smaller on disk. Deltas are 58–83%

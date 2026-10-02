@@ -113,7 +113,7 @@ impl Column {
             Self::Config => "ContextConfig { application_revision: u64, members_revision: u64 }",
             Self::Identity => "ContextIdentity { private_key: Option<[u8; 32]> }",
             Self::State => "Raw bytes (application-specific state)",
-            Self::Delta => "ContextDagDelta { delta_id, parents, actions, hlc, applied, expected_root_hash, events, author_id, governance_position_blob, delta_signature }",
+            Self::Delta => "ContextDagDelta row v1 (0xCD 0x01 ‖ flags ‖ parents ‖ actions ‖ hlc ‖ checkpoint_root_hash? ‖ events? ‖ author_id? ‖ governance_position_blob? ‖ delta_signature? ‖ delegation?; the delta id is the key's second half), or the earlier borsh ContextDagDelta { delta_id, parents, actions, hlc, applied, checkpoint_root_hash, events, author_id, governance_position_blob, delta_signature, delegation }",
             Self::Blobs => "BlobMeta { size: u64, hash: [u8; 32], links: Box<[BlobId]>, refs: u32 }",
             Self::Application => "ApplicationMeta { bytecode: BlobId, size: u64, source: Box<str>, metadata: Box<[u8]>, compiled: BlobId, package: Box<str>, version: Box<str>, signer_id: Box<str>, services: Vec<ServiceMeta>, state_version: u32 }",
             Self::Alias => "Hash (32 bytes) - can point to ContextId, PublicKey, or ApplicationId",
@@ -387,12 +387,11 @@ fn parse_alias_target(data: &[u8]) -> Result<Value> {
 }
 
 fn parse_dag_delta(data: &[u8]) -> Result<Value> {
-    match StoreContextDagDelta::try_from_slice(data) {
+    match StoreContextDagDelta::from_row_bytes(data) {
         Ok(delta) => {
             let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
             Ok(json!({
                 "type": "context_dag_delta",
-                "delta_id": hex::encode(delta.delta_id),
                 "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                 "actions_size": delta.actions.len(),
                 "timestamp": timestamp_raw,
@@ -411,12 +410,11 @@ fn parse_dag_delta(data: &[u8]) -> Result<Value> {
 
 fn parse_generic_value(data: &[u8]) -> Result<Value> {
     // Try to parse as ContextDagDelta first (for backwards compatibility)
-    match StoreContextDagDelta::try_from_slice(data) {
+    match StoreContextDagDelta::from_row_bytes(data) {
         Ok(delta) => {
             let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
             Ok(json!({
                 "type": "context_dag_delta",
-                "delta_id": hex::encode(delta.delta_id),
                 "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                 "actions_size": delta.actions.len(),
                 "timestamp": timestamp_raw,

@@ -1704,7 +1704,6 @@ impl DeltaStore {
         handle.put(
             &key,
             &calimero_store::types::ContextDagDelta {
-                delta_id: delta.id,
                 parents: delta.parents.clone(),
                 actions: borsh::to_vec(&delta.payload)
                     .map_err(|e| eyre::eyre!("Failed to serialize delta actions: {}", e))?,
@@ -1899,7 +1898,7 @@ impl DeltaStore {
             // until `execute_cascaded_events` clears `events` on disk.
             if stored_delta.applied {
                 if let Some(ref events_data) = stored_delta.events {
-                    pending_handler_events.push((stored_delta.delta_id, events_data.clone()));
+                    pending_handler_events.push((delta_id, events_data.clone()));
                 }
             }
 
@@ -1932,7 +1931,7 @@ impl DeltaStore {
 
                 // Record parents only; the payload is lazy-loaded at restore
                 // time to avoid holding every delta's actions in RAM at once.
-                let _ = applied_parents.insert(stored_delta.delta_id, stored_delta.parents);
+                let _ = applied_parents.insert(delta_id, stored_delta.parents);
             } else {
                 // Uncommitted (`applied: false`) rows are re-driven through the
                 // full apply path, so they need their decoded payload now. These
@@ -1943,7 +1942,7 @@ impl DeltaStore {
                         warn!(
                             ?e,
                             context_id = %self.applier.context_id,
-                            delta_id = ?stored_delta.delta_id,
+                            delta_id = ?delta_id,
                             "Failed to deserialize persisted delta actions, skipping"
                         );
                         continue;
@@ -1953,7 +1952,7 @@ impl DeltaStore {
                     && stored_delta.parents[0] == [0u8; 32]
                     && actions.is_empty();
                 let dag_delta = CausalDelta {
-                    id: stored_delta.delta_id,
+                    id: delta_id,
                     parents: stored_delta.parents,
                     payload: actions,
                     hlc: stored_delta.hlc,
@@ -2059,7 +2058,7 @@ impl DeltaStore {
                         && stored_delta.parents[0] == [0u8; 32]
                         && actions.is_empty();
                     let dag_delta = CausalDelta {
-                        id: stored_delta.delta_id,
+                        id: *delta_id,
                         parents: stored_delta.parents.clone(),
                         payload: actions,
                         hlc: stored_delta.hlc,
@@ -2301,7 +2300,6 @@ impl DeltaStore {
                             input.delta.id,
                         ),
                         &calimero_store::types::ContextDagDelta {
-                            delta_id: input.delta.id,
                             parents: input.delta.parents.clone(),
                             actions: serialized_actions,
                             hlc: input.delta.hlc,
@@ -2467,7 +2465,6 @@ impl DeltaStore {
             primaries.push((
                 calimero_store::key::ContextDagDelta::new(self.applier.context_id, input.delta.id),
                 calimero_store::types::ContextDagDelta {
-                    delta_id: input.delta.id,
                     parents: input.delta.parents.clone(),
                     actions: serialized_actions,
                     hlc: input.delta.hlc,
@@ -2790,7 +2787,6 @@ impl DeltaStore {
                 .put(
                     &calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
                     &calimero_store::types::ContextDagDelta {
-                        delta_id,
                         parents: parents.clone(),
                         actions: encoded,
                         hlc,
@@ -2985,7 +2981,6 @@ impl DeltaStore {
             Some((
                 calimero_store::key::ContextDagDelta::new(self.applier.context_id, delta_id),
                 calimero_store::types::ContextDagDelta {
-                    delta_id,
                     parents,
                     actions: serialized_actions,
                     hlc,
@@ -3208,7 +3203,7 @@ impl DeltaStore {
                     };
 
                     let dag_delta = CausalDelta {
-                        id: stored_delta.delta_id,
+                        id: *parent_id,
                         parents: stored_delta.parents,
                         payload: actions,
                         hlc: stored_delta.hlc,
@@ -3632,7 +3627,6 @@ impl DeltaStore {
                 // `applied: true, events: Some(..)` and replay the handlers.
                 // `mark_events_executed` clears the column once they run.
                 let record = calimero_store::types::ContextDagDelta {
-                    delta_id: *cid,
                     parents: applied_delta.parents.clone(),
                     actions: serialized_actions,
                     hlc: applied_delta.hlc,
@@ -3943,7 +3937,6 @@ impl DeltaStore {
             checkpoint_records.push((
                 calimero_store::key::ContextDagDelta::new(self.applier.context_id, head_id),
                 calimero_store::types::ContextDagDelta {
-                    delta_id: head_id,
                     parents: checkpoint.parents.clone(),
                     actions: serialized_actions,
                     hlc: checkpoint.hlc,
@@ -4707,7 +4700,6 @@ mod on_behalf_action_tests {
             "no row"
         );
         let row = |blob| calimero_store::types::ContextDagDelta {
-            delta_id,
             parents: vec![],
             actions: vec![],
             hlc: calimero_storage::logical_clock::HybridTimestamp::default(),

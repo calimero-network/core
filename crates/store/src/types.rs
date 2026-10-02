@@ -14,7 +14,7 @@ pub use context::{
     ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,
     ContextConfig, ContextDagDelta, ContextExecutingBytecode, ContextIdentity, ContextLeftMarker,
     ContextMeta, ContextMigrationFailed, ContextPrivateState, ContextState, ContextWarrantNonce,
-    ScopeUnifiedOp,
+    DeltaRowCodec, ScopeUnifiedOp,
 };
 pub use generic::GenericData;
 

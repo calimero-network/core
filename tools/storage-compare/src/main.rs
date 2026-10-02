@@ -17,6 +17,7 @@ use rocksdb::{
 
 #[path = "config.rs"]
 mod config;
+mod delta_row;
 
 type Rows = BTreeMap<Vec<u8>, Vec<u8>>;
 type Kv = UnorderedMap<String, LwwRegister<String>, MainStorage>;
@@ -239,6 +240,10 @@ fn on_disk(rows: &Rows, contexts: usize, mut cf: Options) -> u64 {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--deltas") {
+        delta_row::report();
+        return;
+    }
     const CONTEXTS: usize = 4;
     let kv_n = 25_000;
     let chat_n = 10_000;
@@ -292,4 +297,5 @@ fn main() {
     ] {
         println!("| {name} | {:.0} | {:.1} |", c.delta_bytes, c.us_per_call);
     }
+    delta_row::report();
 }

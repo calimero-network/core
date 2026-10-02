@@ -66,6 +66,12 @@ pub fn export_data(
     }))
 }
 
+/// The delta id a 64-byte `context_id ‖ delta_id` key names. A delta row does
+/// not repeat it in its value.
+fn key_delta_id(key: &[u8]) -> Option<String> {
+    (key.len() == 64).then(|| hex::encode(&key[32..]))
+}
+
 fn delta_hlc_snapshot(delta: &StoreContextDagDelta) -> (u64, Value) {
     let timestamp = delta.hlc.inner();
     let raw_time = timestamp.get_time().as_u64();
@@ -1084,7 +1090,7 @@ pub fn parse_value_with_abi(
             }))
         }
         Column::Generic => {
-            if let Ok(delta) = StoreContextDagDelta::try_from_slice(value) {
+            if let Ok(delta) = StoreContextDagDelta::from_row_bytes(value) {
                 if let Some(root) = manifest.state_root.as_ref() {
                     if let Ok(parsed) =
                         deserializer::deserialize_with_abi(&delta.actions, manifest, root)
@@ -1092,7 +1098,7 @@ pub fn parse_value_with_abi(
                         let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                         return Ok(json!({
                             "type": "context_dag_delta",
-                            "delta_id": hex::encode(delta.delta_id),
+                            "delta_id": key_delta_id(key),
                             "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                             "actions": {
                                 "parsed": parsed,
@@ -1109,7 +1115,7 @@ pub fn parse_value_with_abi(
                 let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                 return Ok(json!({
                     "type": "context_dag_delta",
-                    "delta_id": hex::encode(delta.delta_id),
+                    "delta_id": key_delta_id(key),
                     "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                     "actions": {
                         "raw": String::from_utf8_lossy(&delta.actions),
@@ -3428,11 +3434,11 @@ pub fn export_data_without_abi(
 
             // For Generic column, try to parse ContextDagDelta even without ABI
             let value_json = if *column == Column::Generic {
-                if let Ok(delta) = StoreContextDagDelta::try_from_slice(&value) {
+                if let Ok(delta) = StoreContextDagDelta::from_row_bytes(&value) {
                     let (timestamp_raw, hlc_json) = delta_hlc_snapshot(&delta);
                     json!({
                         "type": "context_dag_delta",
-                        "delta_id": hex::encode(delta.delta_id),
+                        "delta_id": key_delta_id(&key),
                         "parents": delta.parents.iter().map(hex::encode).collect::<Vec<_>>(),
                         "actions": {
                             "raw": String::from_utf8_lossy(&delta.actions),

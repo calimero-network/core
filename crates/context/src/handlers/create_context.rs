@@ -595,7 +595,6 @@ async fn create_context(
         let serialized_actions = borsh::to_vec(&actions)?;
 
         let delta = types::ContextDagDelta {
-            delta_id,
             parents,
             actions: serialized_actions,
             hlc,
@@ -622,7 +621,7 @@ async fn create_context(
             "Created genesis delta with dag_heads"
         );
 
-        Some((delta, actions))
+        Some((delta_id, delta, actions))
     } else {
         None
     };
@@ -648,15 +647,12 @@ async fn create_context(
     )?;
 
     // Persist init delta if created
-    if let Some((delta, actions)) = init_delta {
-        handle.put(
-            &key::ContextDagDelta::new(context.id, delta.delta_id),
-            &delta,
-        )?;
+    if let Some((delta_id, delta, actions)) = init_delta {
+        handle.put(&key::ContextDagDelta::new(context.id, delta_id), &delta)?;
 
         debug!(
             context_id = %context.id,
-            delta_id = ?delta.delta_id,
+            delta_id = ?delta_id,
             "Persisted init delta to database"
         );
 
@@ -665,7 +661,7 @@ async fn create_context(
         node_client.notify_local_applied_delta(
             calimero_node_primitives::client::LocalAppliedDelta {
                 context_id: context.id,
-                delta_id: delta.delta_id,
+                delta_id,
                 parents: delta.parents.clone(),
                 hlc: delta.hlc,
                 actions,

@@ -43,7 +43,7 @@ pub fn get_delta_details(
         if let Some(delta_cf) = db.cf_handle(delta_cf_name) {
             if let Some(value) = db.get_cf(&delta_cf, &key)? {
                 Some(
-                    StoreContextDagDelta::try_from_slice(&value)
+                    StoreContextDagDelta::from_row_bytes(&value)
                         .wrap_err("Failed to deserialize delta from Delta column")?,
                 )
             } else {
@@ -59,7 +59,7 @@ pub fn get_delta_details(
             db.get_cf(&generic_cf, &key)
                 .ok()
                 .flatten()
-                .and_then(|value| StoreContextDagDelta::try_from_slice(&value).ok())
+                .and_then(|value| StoreContextDagDelta::from_row_bytes(&value).ok())
         } else {
             None
         }
@@ -208,19 +208,19 @@ pub fn export_dag(db: &DBWithThreadMode<SingleThreaded>) -> Result<Value> {
             }
 
             // Try to parse as ContextDagDelta
-            if let Ok(delta) = StoreContextDagDelta::try_from_slice(&value) {
+            if let Ok(delta) = StoreContextDagDelta::from_row_bytes(&value) {
                 let context_id = hex::encode(&key[0..32]);
 
                 // NOTE: Deltas for deleted contexts are INTENTIONALLY kept in the database!
                 // They're part of the immutable distributed DAG and must remain for sync.
                 // We track them separately for diagnostics but don't skip them.
                 if !valid_contexts.contains(&context_id) {
-                    let delta_id = hex::encode(delta.delta_id);
+                    let delta_id = hex::encode(&key[32..64]);
                     orphaned_deltas.push((context_id.clone(), delta_id));
                     // Don't continue - still process these deltas for visualization
                 }
 
-                let delta_id = hex::encode(delta.delta_id);
+                let delta_id = hex::encode(&key[32..64]);
                 let node_id = format!("{context_id}:{delta_id}");
 
                 // Track which deltas belong to which context

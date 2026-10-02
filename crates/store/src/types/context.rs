@@ -2,10 +2,12 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::entry::{Borsh, Identity};
+use crate::entry::{Borsh, Codec, Identity};
 use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
+
+mod delta_row;
 
 pub type Hash = [u8; 32];
 
@@ -191,9 +193,13 @@ impl PredefinedEntry for key::ContextLeftMarker {
 }
 
 /// DAG delta data (persisted)
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug)]
+///
+/// Stored in [`delta_row`]'s compact layout, not as borsh: see that module for
+/// the byte layout and for how rows written in the earlier borsh layout are
+/// still read. The delta id is not a field: it is the second half of the
+/// row's key ([`key::ContextDagDelta::delta_id`]).
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextDagDelta {
-    pub delta_id: [u8; 32],
     pub parents: Vec<[u8; 32]>,
     pub actions: Vec<u8>, // Serialized actions
     pub hlc: calimero_storage::logical_clock::HybridTimestamp,
@@ -272,8 +278,47 @@ impl ContextDagDelta {
     }
 }
 
+impl ContextDagDelta {
+    /// The bytes this row is stored as in `Column::Delta`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delegation fails to serialize.
+    pub fn to_row_bytes(&self) -> Result<Vec<u8>, borsh::io::Error> {
+        delta_row::encode(self)
+    }
+
+    /// Decode a `Column::Delta` value, in the current layout or the borsh
+    /// layout rows were written in before it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes are neither.
+    pub fn from_row_bytes(bytes: &[u8]) -> Result<Self, borsh::io::Error> {
+        delta_row::decode(bytes)
+    }
+}
+
+/// The codec of `Column::Delta` rows: [`ContextDagDelta::to_row_bytes`] and
+/// [`ContextDagDelta::from_row_bytes`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum DeltaRowCodec {}
+
+impl Codec<'_, ContextDagDelta> for DeltaRowCodec {
+    type Error = borsh::io::Error;
+
+    fn encode(value: &ContextDagDelta) -> Result<Slice<'_>, Self::Error> {
+        value.to_row_bytes().map(Into::into)
+    }
+
+    fn decode(bytes: Slice<'_>) -> Result<ContextDagDelta, Self::Error> {
+        ContextDagDelta::from_row_bytes(&bytes)
+    }
+}
+
 impl PredefinedEntry for key::ContextDagDelta {
-    type Codec = Borsh;
+    type Codec = DeltaRowCodec;
     type DataType<'a> = ContextDagDelta;
 }
 
