@@ -626,11 +626,11 @@ impl<'a> AccountBindingRepository<'a> {
     ///
     /// The batch form of
     /// [`binding_for_sign_pk`](Self::binding_for_sign_pk), for the callers that
-    /// attribute *many* signatures against one group: the projection backfill
-    /// resolves a signer per governance op, and the ACL shadow resolves one per
-    /// rotation-log entry. Each of those searched a fresh scan, so a walk of *n*
-    /// ops over a group with *d* devices read the binding column *n × d* times to
-    /// answer questions that share a single answer set.
+    /// attribute *many* signatures against one group, such as the projection
+    /// backfill, which resolves a signer per governance op. That scan was
+    /// repeated per op, so a walk of *n* ops over a group with *d* devices read
+    /// the binding column *n × d* times to answer questions that share a single
+    /// answer set.
     ///
     /// Built from the filtered list rather than from the raw rows, so the
     /// read-time rules — revocation, root-key supersession, and the replica-seed

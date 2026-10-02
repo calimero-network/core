@@ -16,7 +16,6 @@
 
 mod support;
 
-mod acl;
 mod credential;
 mod data;
 mod group;

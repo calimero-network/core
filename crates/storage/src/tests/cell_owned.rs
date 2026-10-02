@@ -22,7 +22,7 @@ use serial_test::serial;
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::collections::crdt_meta::{CrdtType, Mergeable};
+use crate::collections::crdt_meta::Mergeable;
 use crate::collections::{
     cell_id, cell_value_id, compute_collection_id, compute_id, owned_entry_id,
     owned_keyed_entry_id, Authored, AuthoredSortedMap, AuthoredVector, IndexValue, Indexed,
@@ -113,9 +113,6 @@ fn shipped(creator: &SigningKey, owners: &[&SigningKey]) -> Vec<Delivery> {
         let metadata = <Index<MainStorage>>::get_metadata(id)
             .expect("metadata")
             .expect("entity");
-        if metadata.crdt_type == Some(CrdtType::RotationLog) {
-            continue;
-        }
         let signer = match &metadata.storage_type {
             StorageType::User { owner, .. } => *owners
                 .iter()

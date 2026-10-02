@@ -101,8 +101,8 @@ impl Op {
     /// Build an op from an **explicit** `id` rather than recomputing it from the
     /// content.
     ///
-    /// This exists only for the unified-op *bridge*: a [`SignedNamespaceOp`] /
-    /// rotation entry is already a node in the governance DAG with its own
+    /// This exists only for the unified-op *bridge*: a [`SignedNamespaceOp`]
+    /// is already a node in the governance DAG with its own
     /// identity (`content_hash` / `delta_id`), and the unified `Op` mirrors that
     /// node verbatim — keyed in the op-store by that same id — rather than by
     /// `Op::compute_id` of the projected payload. These bridge ops are internal,

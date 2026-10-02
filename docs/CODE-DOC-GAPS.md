@@ -32,7 +32,7 @@ against `src/content/docs/`. Ordered by priority. `file:line` anchors included.
 - **Sync observability**: periodic-sync backoff `2^min(fail,8)`→256s (distinct from reconcile 30s→30min); readiness FSM 5 tiers + constants; `sync_status` phases (Syncing/Idle/BackingOff/WaitingForPeers). → `operate/observability.mdx` + `protocol/sync.mdx`.
 - **Upgrade internals**: the upgrade gate freezes writes mid-eager-upgrade (reads from pre-migration root, side-effecting calls refused); activation-marker ladder replay (multi-version catch-up hops v1→v2→v3); HLC fence is absorb-don't-drop and keys on the loaded reader, not the target. `crates/context/...`. → `protocol/upgrades.mdx`.
 - **Storage marker columns** (operator debugging of stuck upgrades): `ContextMigrationFailed` (kind 1/2), `ContextExecutingBlob` vs `ContextActivatedBlob`, `ContextResyncRequested`, `ApplicationPreviousBlob`. `crates/store/src/types/context.rs`. → `protocol/storage.mdx` + `operate/runbooks.mdx`.
-- **Snapshot apply semantics**: full REPLACE (local-only keys deleted); bypasses `apply_action` (no nonce/CRDT — sound only for fresh/force); never ships rotation logs (Auxiliary rejected, rebuilt from delta replay). `snapshot.rs`. → `protocol/sync-internals.mdx`/`security-model.mdx`.
+- **Snapshot apply semantics**: full REPLACE (local-only keys deleted); bypasses `apply_action` (no nonce/CRDT - sound only for fresh/force); ships no per-cell writer history (every Auxiliary record rejected; writers come from the governance fold). `snapshot.rs`. → `protocol/sync-internals.mdx`/`security-model.mdx`.
 - **KMS supply-chain**: Sigstore (Rekor/Fulcio) release-policy verification pinned to a GitHub identity; `USE_ENV_POLICY` air-gap toggle; `MERO_KMS_RELEASE_TAG`/`_VERSION` pinning. `crates/merod/src/kms_policy.rs`. → `operate/security.mdx`.
 - **Startup self-heal sweeps**: redrive-stranded-governance-ops (key-delivery race, fixpoint, 64 passes); eager-upgrade propagator re-spawn on restart; self-purge completion sweep. `crates/context/...`. → `protocol/governance.mdx`.
 - **JS runtime surface**: `js_crdt_*`/`js_user_storage_*` host fns with the `-1`/register error ABI; the JS storage-bridge fns (`persist_root_state`, `apply_storage_delta`) that make JS produce a valid root. `crates/runtime/.../js_collections.rs`. → `build/host-functions.mdx`/`protocol/execution.mdx`.
@@ -42,7 +42,7 @@ against `src/content/docs/`. Ordered by priority. `file:line` anchors included.
 
 ## 3. Long tail (P3) — selected
 
-- Temporal staging + one-WriteBatch cross-CF atomicity; rotation-log-as-children; runtime deterministic-id rekey + `DeleteRef` tombstone; Merkle-invisible `schema_version` tag (storage internals).
+- Temporal staging + one-WriteBatch cross-CF atomicity; runtime deterministic-id rekey + `DeleteRef` tombstone; Merkle-invisible `schema_version` tag (storage internals).
 - `tracing` integration + WARN default + `env::set_log_level`; method-arg JSON contract (`deny_unknown_fields`); reserved `__calimero` prefix; `#[app::view]` post-exec enforcement; state-lint rejects interior mutability; `#[app::private]` alias blind spot (storage internals / sdk).
 - ABI in `calimero_abi_v1` custom section, hashed with bytecode; downgrade lint fail-closed; guarded wrappers normalize to SharedStorage (ABI).
 - Beacon debounce/anti-abuse; wedge-watchdog +10s; targeted `context sync` syncs all; deferred root-merge through WASM; crash-recovery sync marker; `force` resync disables I5+fence (sync internals).

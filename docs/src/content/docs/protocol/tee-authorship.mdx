@@ -263,8 +263,7 @@ impl TeeDice {
   refused for good, because a stored writer set is what a write is checked
   against and a storage type never changes. So a `TeeOnly` state field lives
   at a TEE-only id (`tee_only_id`): its first bytes mark it, and every id
-  derived beneath it carries the same mark, except the rotation log beside the
-  value, which the node writes. Merge, on the delta path and in state sync,
+  derived beneath it carries the same mark. Merge, on the delta path and in state sync,
   refuses anything at a TEE-only id but the TEE's own cell (`Shared` with
   exactly `TEE_AUTHORITY` as writer), members anchored to it, and, at a
   collection's id there (which carries a mark of its own), the collection's

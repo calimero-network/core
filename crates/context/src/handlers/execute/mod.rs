@@ -2708,7 +2708,7 @@ async fn internal_execute(
             // Authoring on the stale head forks the DAG: the new delta's
             // parents exclude an already-applied ancestor — e.g. a writer-set
             // rotation the executor has locally applied — and every peer then
-            // rejects it (`writers_at(parents)` resolves the pre-rotation set),
+            // rejects it (the fold resolves the pre-rotation set at its position),
             // a permanent split-brain. The inbound apply now holds this same
             // lock across its `dag_heads` commit (see
             // `DeltaStore::add_delta_internal`), so once we hold the guard the

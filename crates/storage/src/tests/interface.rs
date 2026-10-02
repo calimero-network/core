@@ -1582,11 +1582,11 @@ mod shared_storage_replay_protection {
 /// Tests for `SharedStorage` writer-set rotation authentication.
 ///
 /// A writer-set rotation propagates as a signed per-entity action and is
-/// verified at merge against the *current* writer set (resolved from the
-/// rotation log / `effective_writers`, with the stored writers as the
-/// fallback). A rotation forged by a non-writer must be rejected — this is the
-/// merge-time backstop behind the local writer gate, and the property that
-/// makes the writer set unforgeable.
+/// verified at merge against the *current* writer set (the fold's answer in
+/// `effective_writers`, with the stored writers as the fallback). A rotation
+/// forged by a non-writer must be rejected - this is the merge-time backstop
+/// behind the local writer gate, and the property that makes the writer set
+/// unforgeable.
 #[cfg(test)]
 mod shared_storage_rotation_authentication {
     use std::collections::BTreeSet;
@@ -2210,7 +2210,7 @@ mod shared_storage_rotation_authentication {
         // path where the apply context carries NO `effective_writers` (empty
         // ctx). The verifier must then fall back to the entity's *stored* writer
         // set and still reject a non-writer's forged rotation — covering the
-        // case where rotation-log resolution yielded nothing.
+        // case where the node resolved no rotated set.
         env::reset_for_testing();
         let root = setup_root_for_main();
 
@@ -2385,10 +2385,9 @@ mod shared_storage_rotation_authentication {
     /// writer becomes un-writable by Bob the instant the anchor rotates him out,
     /// even though the member entity itself is byte-identical throughout.
     ///
-    /// We model the rotation by the writer set the node's `writers_at` would
-    /// resolve from the anchor's rotation log at the delta's causal cut, passed
-    /// as `effective_writers`. The member carries only its anchor pointer, so
-    /// the SAME stored member is verified against {alice, bob} before the
+    /// We model the rotation by the writer set the governance fold would give
+    /// for the anchor at the delta's causal cut, passed as `effective_writers`.
+    /// The member carries only its anchor pointer, so the SAME stored member is verified against {alice, bob} before the
     /// rotation and {alice} after — no per-member re-stamp involved.
     #[test]
     fn rotating_anchor_retroactively_revokes_member_writes() {
@@ -4975,7 +4974,7 @@ mod stale_write_to_a_merging_entry {
     }
 }
 
-/// A cell's writers come from the host, never from the cell's rotation log.
+/// A cell's writers come from the host, never from entities under the cell.
 #[cfg(test)]
 mod shared_writers_from_the_host {
     use std::collections::BTreeSet;

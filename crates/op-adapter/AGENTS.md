@@ -6,8 +6,8 @@ Transitional pure-function adapter that maps each per-plane operation type onto 
 
 - **Crate**: `calimero-op-adapter`
 - **Entry**: `src/lib.rs` (crate docs + the flat re-export facade; one module per plane holds the encoders themselves)
-- **Key deps**: `calimero-op` (`OpPayload`/`ScopeId`, the unified log's vocabulary), `calimero-storage` (`Action`, `RotationLogEntry`, `Id` - the data and ACL plane source types), `calimero-governance-types` (`GroupOp`, `RootOp` - the governance plane source types), `calimero-account` (`AccountId`, `DeviceCert`, `verify_device_cert` - the account plane the credentials are checked against), `calimero-context-config` (`ContextGroupId`, `VisibilityMode`), `calimero-primitives` (`PublicKey`, `GroupMemberRole`)
-- **Dev-deps**: `calimero-projection` (`ScopeState` - folds the encoded ops back down in tests to prove fold-equivalence), `calimero-authz` (`AclView` - the shape a receiver resolves a signature against, used only by the writer-plane test)
+- **Key deps**: `calimero-op` (`OpPayload`/`ScopeId`, the unified log's vocabulary), `calimero-storage` (`Action`, `Id` - the data plane source types), `calimero-governance-types` (`GroupOp`, `RootOp` - the governance plane source types), `calimero-account` (`AccountId`, `DeviceCert`, `verify_device_cert` - the account plane the credentials are checked against), `calimero-context-config` (`ContextGroupId`, `VisibilityMode`), `calimero-primitives` (`PublicKey`, `GroupMemberRole`)
+- **Dev-deps**: `calimero-projection` (`ScopeState` - folds the encoded ops back down in tests to prove fold-equivalence)
 
 ## Commands
 
@@ -15,7 +15,7 @@ Transitional pure-function adapter that maps each per-plane operation type onto 
 # Build
 cargo build -p calimero-op-adapter
 
-# Test (all - 12 unit tests, no doc-tests)
+# Test (all - 13 unit tests, no doc-tests)
 cargo test -p calimero-op-adapter
 
 # Test one plane (the test tree mirrors the module tree)
@@ -30,7 +30,6 @@ cargo test -p calimero-op-adapter group_op_encoder_mapping -- --nocapture
 | Item | Kind | Purpose |
 | --- | --- | --- |
 | `payload_from_action(action: &Action) -> Option<OpPayload>` | fn | Data plane: `Action::Add`/`Action::Update` -> `OpPayload::Put`, `Action::DeleteRef` -> `OpPayload::Delete`. Always returns `Some` today; `Option` is reserved for a future non-state-changing action |
-| `set_writers_payload(object: Id, entry: &RotationLogEntry) -> OpPayload` | fn | Access-control plane: a writer-set rotation -> `OpPayload::SetWriters { object, writers }`. Infallible - returns `OpPayload` directly, not `Option` |
 | `payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPayload>` | fn | Membership plane (per-group ops, already decrypted): maps auth-relevant `GroupOp` variants to `MemberAdded`/`MemberRemoved`/`AdminChanged`/`DeviceLinked`/`DeviceRevoked`/`DeviceDescoped`/`AccountKeysRotated`/`DefaultCapabilitiesSet`/`MemberCapabilitySet`/`SubgroupVisibilitySet`/`SharedWritersRotated`; everything else -> `None`. The two scope-bearing arms verify the root-signed statement here, since the payload carries only its epoch |
 | `payload_from_root_op(op: &RootOp) -> Option<OpPayload>` | fn | Admin/namespace plane (root governance ops): maps to `AdminChanged`/`PolicyUpdated`/`MemberAdded`/`MemberJoinedWithDevice`/`DeviceLinked`/`SubgroupCreated`/`SubgroupReparented`/`SubgroupDeleted`; `KeyDelivery` -> `None`. Takes **no signer** - every arm reads the account off the op |
 | `join_credential_binds(member: &AccountId, genesis, chain, cert) -> bool` | fn | The op-local half of credential admission: does this credential name `member`, and does it verify? Shared verbatim with the governance apply path |
@@ -50,7 +49,6 @@ which file it lives in.
    per-plane source type                 this crate                    OpPayload
    ─────────────────────                 ──────────                    ─────────
    Action ─────────────────────────▶ data.rs ──────────────────▶ Put / Delete
-   RotationLogEntry ───────────────▶ acl.rs ───────────────────▶ SetWriters
    GroupOp ────────────────────────▶ group.rs ─────────────────▶ MemberAdded / …
    RootOp ─────────────────────────▶ root.rs ──────────────────▶ AdminChanged / …
                                           │
@@ -64,26 +62,27 @@ which file it lives in.
                                     that is deleted first at cutover
 ```
 
-`root.rs` is the only module with an intra-crate edge (`credential.rs`); the four
+`root.rs` is the only module with an intra-crate edge (`credential.rs`); the three
 plane encoders are otherwise independent of each other.
 
-## Mental Model: Bridging Four Planes onto One Log
+## Mental Model: Bridging Three Planes onto One Log
 
-The system is mid-migration from four separate stores (data Merkle, ACL rotation log, per-group governance log, namespace root governance log) to one unified causal log keyed by `OpPayload`. This crate is the seam: each per-plane apply path still produces its native type (`Action`, `RotationLogEntry`, `GroupOp`, `RootOp`), and one function here re-expresses that same fact as an `OpPayload` so a `calimero-projection::ScopeState` can fold it alongside ops from the other three planes and reach the *same* answer (ACL, membership, admin) that the legacy per-plane resolvers give today.
+The system is mid-migration from separate stores (data Merkle, per-group governance log, namespace root governance log) to one unified causal log keyed by `OpPayload`. This crate is the seam: each per-plane apply path still produces its native type (`Action`, `GroupOp`, `RootOp`), and one function here re-expresses that same fact as an `OpPayload` so a `calimero-projection::ScopeState` can fold it alongside ops from the other planes and reach the *same* answer (membership, admin) that the legacy per-plane resolvers give today.
 
-The crate does not decide what the unified system's semantics are - `OpPayload` (in `calimero-op`) and `ScopeState` (in `calimero-projection`) own that. This crate is only the translation layer, and it is explicitly transitional: `lib.rs`'s doc comment says it "and the per-plane source types it reads" get deleted once everything runs on `OpPayload` directly - the day nothing sources from `Action`/`RotationLogEntry`/`GroupOp`/`RootOp` any more, this crate has no reason to exist.
+A `SharedStorage` cell's writer set has no encoder here. The per-cell rotation log that `set_writers_payload` used to encode is deleted; a rotation now rides governance as `GroupOp::SharedWritersRotated` and is folded by `calimero_storage::shared_writers::fold`. `OpPayload::SetWriters` stays in `calimero-op` (the enum is append-only and pinned by tests; `calimero-authz` and `calimero-projection` still match it), but nothing in this crate builds one.
+
+The crate does not decide what the unified system's semantics are - `OpPayload` (in `calimero-op`) and `ScopeState` (in `calimero-projection`) own that. This crate is only the translation layer, and it is explicitly transitional: `lib.rs`'s doc comment says it "and the per-plane source types it reads" get deleted once everything runs on `OpPayload` directly - the day nothing sources from `Action`/`GroupOp`/`RootOp` any more, this crate has no reason to exist.
 
 Each encoder's rustdoc is the actual spec for its plane, cataloguing:
-- **in-model** variants - the ones that move the unified `authorize` decision (membership, admin, ACL, the visibility/capability bits that gate inheritance);
+- **in-model** variants - the ones that move the unified `authorize` decision (membership, admin, the visibility/capability bits that gate inheritance);
 - **out-of-model** variants, by design, not by omission - app/upgrade config, metadata, TEE-policy, key transport, the context<->group binding (that one lives in a separate index because `authorize` needs it *at auth time*, not folded into a scope's `ScopeState`).
 
-Both `GroupOp` and `RootOp` are `#[non_exhaustive]` upstream, so every match here carries a mandatory `_ => None` arm. That means a brand-new upstream variant silently lands in "out-of-model" by default - there is no compiler error to catch a forgotten wire-up. The safety net is the fold-equivalence property tests (here and in `calimero-governance-store`): if a new auth-relevant variant should have been folded but wasn't, `acl_plane_matches_resolve_local_*` / `prefix_walk_resolution_matches_reference_under_random_inputs` diverge from the legacy resolver and fail.
+Both `GroupOp` and `RootOp` are `#[non_exhaustive]` upstream, so every match here carries a mandatory `_ => None` arm. That means a brand-new upstream variant silently lands in "out-of-model" by default - there is no compiler error to catch a forgotten wire-up. The safety net is the fold-equivalence property tests (here and in `calimero-governance-store`): if a new auth-relevant variant should have been folded but wasn't, `prefix_walk_resolution_matches_reference_under_random_inputs` diverges from the legacy resolver and fails.
 
 ## Consumers
 
 - **`calimero-governance-store`** (`src/unified_op_decode.rs`) imports `payload_from_group_op` and `payload_from_root_op` to build the unified `Op` that the governance apply path writes to the op-store on the *same store handle* as the gov-DAG write, so the two writes are atomic.
-- **`calimero-context`** (`src/scope_projection.rs`) imports `set_writers_payload` to feed ACL rotations into the per-scope `ScopeState` that backs `acl_view_at`.
-- Both consumers pair the payload from this crate with `Op::from_parts` (not `Op::new`): the unified op mirrors the source op's own id/parents (its `delta_id`/`content_hash`) rather than computing a fresh content address, so the projection's op graph shares an id space with the source DAGs.
+- The consumer pairs the payload from this crate with `Op::from_parts` (not `Op::new`): the unified op mirrors the source op's own id/parents (its `delta_id`/`content_hash`) rather than computing a fresh content address, so the projection's op graph shares an id space with the source DAGs.
 
 ## Key Files
 
@@ -91,7 +90,6 @@ Both `GroupOp` and `RootOp` are `#[non_exhaustive]` upstream, so every match her
 | --- | --- |
 | `src/lib.rs` | Crate docs (the WHY), module declarations, and the flat `pub use` facade |
 | `src/data.rs` | Data plane: `payload_from_action` |
-| `src/acl.rs` | Access-control plane: `set_writers_payload` |
 | `src/group.rs` | Membership plane: `payload_from_group_op` + its in-model/out-of-model coverage doc |
 | `src/root.rs` | Admin/namespace plane: `payload_from_root_op` + its coverage doc and caveats |
 | `src/credential.rs` | `join_credential_binds`, `join_credential_certifies`, and the private `credential_binds_the_member` dispatcher over the join variants |
