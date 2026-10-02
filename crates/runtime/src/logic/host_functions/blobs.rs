@@ -844,7 +844,8 @@ mod tests {
     }
 
     /// The documented flow: a client uploads with no context, then the app
-    /// announces the blob to its own context. Its peers must then be served it.
+    /// announces the blob to its own context. Its peers must then be served it,
+    /// while an announce into another context traps and shares nothing.
     #[tokio::test(flavor = "multi_thread")]
     async fn announcing_a_held_blob_to_the_runs_own_context_shares_it() {
         let run_context = [0xC7; DIGEST_SIZE];
@@ -889,8 +890,12 @@ mod tests {
         for (ptr, target) in [(200, run_context), (300, other_context)] {
             host.borrow_memory().write(ptr, &target).unwrap();
             prepare_guest_buf_descriptor(&host, ptr - 150, ptr, DIGEST_SIZE as u64);
-            assert_eq!(host.blob_announce_to_context(16, ptr - 150).unwrap(), 1);
         }
+        assert_eq!(host.blob_announce_to_context(16, 50).unwrap(), 1);
+        assert!(matches!(
+            host.blob_announce_to_context(16, 150).unwrap_err(),
+            VMLogicError::HostError(HostError::BlobContextMismatch)
+        ));
 
         assert!(node_client
             .is_blob_held_for_context(&ContextId::from(run_context), &blob_id)
