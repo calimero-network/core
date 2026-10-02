@@ -21,6 +21,7 @@
 //! public key travels in the record, so no external key distribution is needed.
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use libp2p::identity::{Keypair, PublicKey};
 use libp2p::PeerId;
 
@@ -114,10 +115,12 @@ impl BlobProviderRecord {
             return None;
         }
 
+        // libp2p's ed25519 check accepts a small-order key, for which a trivial
+        // signature verifies any message; the strict check refuses it.
+        let signer = PrimitivePublicKey::from(public_key.try_into_ed25519().ok()?.to_bytes());
+        let signature: &[u8; 64] = record.signature.as_slice().try_into().ok()?;
         let message = Self::signed_message(record_key, &record.peer_id, record.size);
-        if !public_key.verify(&message, &record.signature) {
-            return None;
-        }
+        signer.verify_raw_signature(&message, signature).ok()?;
 
         Some(claimed_peer)
     }
@@ -125,7 +128,7 @@ impl BlobProviderRecord {
 
 #[cfg(test)]
 mod tests {
-    use libp2p::identity::Keypair;
+    use libp2p::identity::{ed25519, Keypair};
 
     use super::*;
 
@@ -190,6 +193,25 @@ mod tests {
         record.signature[0] ^= 0xff;
         let tampered = borsh::to_vec(&record).unwrap();
         assert_eq!(BlobProviderRecord::verify(&key(), &tampered), None);
+    }
+
+    #[test]
+    fn rejects_a_small_order_key() {
+        // The identity point: with it, R = identity and s = 0 verify any message
+        // under the lenient check.
+        let mut weak = [0; 32];
+        weak[0] = 1;
+        let public_key = PublicKey::from(ed25519::PublicKey::try_from_bytes(&weak).unwrap());
+        let mut signature = vec![0; 64];
+        signature[0] = 1; // R = identity, s = 0
+        let record = BlobProviderRecord {
+            peer_id: public_key.to_peer_id().to_bytes(),
+            size: 4096,
+            public_key: public_key.encode_protobuf(),
+            signature,
+        };
+        let value = borsh::to_vec(&record).unwrap();
+        assert_eq!(BlobProviderRecord::verify(&key(), &value), None);
     }
 
     #[test]
