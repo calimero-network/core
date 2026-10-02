@@ -578,7 +578,10 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
+          # PRs build the image to prove the Dockerfile still packages the binaries,
+          # but push nothing: no PR job pulls a standard `pr-<N>` image (fuzzy-load-test
+          # pulls `pr-<N>-profiling`, which the profiling job below still pushes).
+          push: ${{ github.event_name == 'push' }}
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
@@ -611,7 +614,8 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
+          # Built on PRs, pushed only from master; see release-merod-container.
+          push: ${{ github.event_name == 'push' }}
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth

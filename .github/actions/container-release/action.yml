@@ -124,7 +124,6 @@ runs:
         images: ghcr.io/${{ github.repository_owner }}/${{ inputs.container_name }}
         tags: |
           type=edge
-          type=ref,prefix=pr-,event=pr
           type=sha,prefix=,format=short
           type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' }}
           type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'false' }}
