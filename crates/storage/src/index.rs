@@ -19,6 +19,8 @@ use crate::hash_meter::{Digest, Sha256};
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 
+pub(crate) const MAX_PARENT_CHAIN: usize = 256; // most ancestors an entity may have
+
 // Deferred ancestor recomputation (#2238).
 //
 // `recalculate_ancestor_hashes_for` walks from a given node up to root,
@@ -955,6 +957,9 @@ impl<S: StorageAdaptor> Index<S> {
         let mut current_id = id;
 
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
+            if ancestors.len() == MAX_PARENT_CHAIN {
+                return Err(StorageError::ParentChainTooLong(id));
+            }
             let (parent_full_hash, _) =
                 Self::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
             let metadata =
@@ -986,7 +991,12 @@ impl<S: StorageAdaptor> Index<S> {
         let mut ancestors = Vec::new();
         let mut current_id = id;
 
+        let mut steps = 0;
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
+            if steps == MAX_PARENT_CHAIN {
+                return Err(StorageError::ParentChainTooLong(id));
+            }
+            steps += 1;
             if parent_id.is_root() && !ancestors.is_empty() {
                 break;
             }
@@ -1312,7 +1322,12 @@ impl<S: StorageAdaptor> Index<S> {
         // that save rather than from reading its row back.
         let mut current = Self::get_index(id)?.map(|index| (index.parent_id, index.full_hash));
 
+        let mut steps = 0;
         while let Some((Some(parent_id), current_full_hash)) = current {
+            if steps == MAX_PARENT_CHAIN {
+                return Err(StorageError::ParentChainTooLong(id));
+            }
+            steps += 1;
             let (mut parent_index, parent_value) = Self::get_index_with_value(parent_id)?
                 .ok_or(StorageError::IndexNotFound(parent_id))?;
             let old_full_hash = parent_index.full_hash;
@@ -1469,7 +1484,12 @@ impl<S: StorageAdaptor> Index<S> {
         // the whole walk, so a concurrent native writer can't insert a child
         // that the traversal would miss.
         let mut stack = vec![root_id];
+        let mut seen = BTreeSet::new();
         while let Some(id) = stack.pop() {
+            // A child trie that lists an ancestor would otherwise be walked forever.
+            if !seen.insert(id) {
+                continue;
+            }
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
@@ -1524,7 +1544,11 @@ impl<S: StorageAdaptor> Index<S> {
     pub(crate) fn find_frozen_descendant(root_id: Id) -> Result<Option<Id>, StorageError> {
         let _mutation_guard = index_mutation_guard();
         let mut stack = vec![root_id];
+        let mut seen = BTreeSet::new();
         while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };

@@ -943,6 +943,14 @@ struct MyType {
   a written-once delete);
   `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
   the layout store-wide.
+- **No entity is its own ancestor.** `apply_action` refuses an upsert whose links (the
+  entity under its first ancestor, each missing ancestor under the next) would put an
+  entity under itself, give it more than `MAX_PARENT_CHAIN` ancestors, or link one id
+  twice (`refuse_ancestor_loop`), before it writes anything, so a sync merge drops it.
+  Moving a stored entity does not re-check the depth of what is under it. Every walk up
+  the tree stops after `MAX_PARENT_CHAIN` steps with `StorageError::ParentChainTooLong`, a
+  hard error, and the walks down a subtree visit each entity once, so a loop or an
+  over-deep chain fails the call instead of spinning it. `tests/index.rs` `parent_loops`.
 
 ## Further Documentation
 

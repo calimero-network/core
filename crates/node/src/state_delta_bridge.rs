@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 use actix::{
     Actor, ActorFutureExt, Addr, ArbiterHandle, AsyncContext, Context, Handler, Message, WrapFuture,
 };
+use calimero_utils_actix::supervise::exit_on_panic;
 use tracing::{debug, info, warn};
 
 use crate::handlers::state_delta::{handle_state_delta, StateDeltaContext, StateDeltaMessage};
@@ -319,7 +320,7 @@ pub fn start_state_delta_actor(arbiter: &ArbiterHandle, capacity: usize) -> Stat
     // message arrives) rather than in `started()`, so the bound is in
     // effect for every queued message — not just those received after
     // the actor's first lifecycle hook.
-    let addr = StateDeltaActor::start_in_arbiter(arbiter, move |ctx| {
+    let addr = exit_on_panic(arbiter, move |ctx| {
         ctx.set_mailbox_capacity(capacity);
         StateDeltaActor::new(dropped_for_actor)
     });

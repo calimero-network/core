@@ -35,6 +35,7 @@ fuzz_target!(
             delta_hlc,
             effective_writers: Default::default(),
             signer_account: None,
+            on_behalf_accounts: Default::default(),
         };
         let artifact = borsh::to_vec(&delta).expect("delta encodes");
         if Root::<Doc>::sync(&artifact, &ApplyContext::empty()).is_err() {

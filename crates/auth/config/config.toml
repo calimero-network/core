@@ -8,6 +8,8 @@ listen_addr = "0.0.0.0:3001"
 issuer = "calimero-auth"
 access_token_expiry = 1800          # 30 minutes
 refresh_token_expiry = 2592000    # 30 days
+client_access_token_expiry = 900   # 15 minutes, for app client keys
+client_refresh_token_expiry = 604800  # 7 days, for app client keys
 # Trusted authoritative host for node-binding validation (security finding #7).
 # When set, node-bound tokens are validated against THIS host instead of the
 # client-controllable Host/X-Forwarded-Host request headers, preventing a caller

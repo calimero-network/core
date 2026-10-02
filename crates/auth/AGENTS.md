@@ -59,7 +59,7 @@ It has two deployment shapes, both compiled from the same code:
 | `auth/challenge.rs` | `ChallengeMinter` - stateless single-use login challenges (`expiry ‖ nonce ‖ tag`), the spent set, and its expiry sweep |
 | `storage/` | `Storage` trait, `KeyManager` (root/client key CRUD + indices), `models::Key`/`KeyType`, RocksDB and in-memory backends, self-registering `StorageProvider`s |
 | `api/routes.rs` | `create_router` - assembles public (`/auth/*`) and protected (`/admin/*`) route trees, CORS, security headers, body limit, panic-catch |
-| `api/handlers/` | `auth.rs` (token/challenge/refresh/validate/callback/mock-token), `root_keys.rs`, `client_keys.rs`, `permissions.rs`, plus health/metrics/identity/providers/asset handlers in `mod.rs` |
+| `api/handlers/` | `auth.rs` (token/challenge/refresh/validate/mock-token), `root_keys.rs`, `client_keys.rs`, `permissions.rs`, plus health/metrics/identity/providers/asset handlers in `mod.rs` |
 | `utils.rs` | `AuthMetrics` (atomic counters + timer), `sanitize_for_log` (CR/LF and ANSI-escape stripping for log injection) |
 
 ## Mental model: the auth flow
@@ -70,7 +70,7 @@ It has two deployment shapes, both compiled from the same code:
 
 **Authorization** is a second, independent check after authentication succeeds: `PermissionValidator::determine_required_permissions` maps the request's method+path to zero or more `Permission` values (exact-match table first, then a battery of pre-compiled regexes for parameterized routes like `/admin-api/contexts/:id`), and any unmapped `/admin-api/*` route defaults to requiring `Permission::Admin` - a deliberate default-deny so a new route added to `calimero-server` without a corresponding permission mapping here fails closed instead of being silently open to any valid token. `Permission::satisfies` implements the actual hierarchy (global scope satisfies specific, `admin` satisfies everything, umbrella verbs like `namespace` cover every namespace sub-verb).
 
-**Client-key derivation**: a root key (an authenticated human/identity) can mint scoped client keys via `POST /admin/client-key` - each client key is tied to a `root_key_id` and can only be granted permissions the root key itself already holds (`KeyManager::set_key`/`add_permission` re-validate against the root key on every write, and `update_key_permissions_handler` separately checks the *caller's* JWT permissions before letting them grant anything, closing a privilege-escalation path where a `keys:permissions:update`-scoped key could otherwise hand itself `admin`).
+**Client-key derivation**: a root key (an authenticated human/identity) can mint scoped client keys via `POST /admin/client-key` - each client key is tied to a `root_key_id` and can only be granted permissions the root key itself already holds (`KeyManager::set_key`/`add_permission` re-validate against the root key on every write, and `update_key_permissions_handler` separately checks the *caller's* JWT permissions before letting them grant anything, closing a privilege-escalation path where a `keys:permissions:update`-scoped key could otherwise hand itself `admin`). `/admin/client-key` never mints an `admin*` or `keys*` permission other than the exact string `admin`, and never `admin` on a key bound to a context (`context_id`/`context_identity` set).
 
 ## Key files
 

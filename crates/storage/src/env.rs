@@ -959,10 +959,10 @@ mod calimero_vm {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod mocked {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use std::cell::RefCell;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use calimero_primitives::identity::PublicKey;
     use rand::Rng;
 
     use super::RuntimeEnv;
@@ -1371,9 +1371,8 @@ mod mocked {
         VERIFY_CALLS.with(|c| c.set(0));
     }
 
-    /// Verifies an Ed25519 signature.
-    ///
-    /// Uses a pure-Rust implementation for testing.
+    /// Verifies an Ed25519 signature strictly, as the guest's host function does:
+    /// a small-order key would let a trivial signature verify any message.
     pub(super) fn ed25519_verify(
         signature: &[u8; 64],
         public_key: &[u8; 32],
@@ -1382,15 +1381,9 @@ mod mocked {
         #[cfg(any(test, feature = "testing"))]
         VERIFY_CALLS.with(|c| c.set(c.get().saturating_add(1)));
 
-        // We need to parse the public key.
-        // If parsing fails, the signature is invalid.
-        let Ok(public_key) = VerifyingKey::from_bytes(public_key) else {
-            return false;
-        };
-
-        let signature = Signature::from_bytes(signature);
-        // Perform the verification.
-        public_key.verify(message, &signature).is_ok()
+        PublicKey::from(*public_key)
+            .verify_raw_signature(message, signature)
+            .is_ok()
     }
 
     /// Get a new hybrid timestamp from the HLC
