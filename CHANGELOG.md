@@ -394,6 +394,12 @@
 
 ### Fixed
 
+- **A compacted delta's events hash and TEE trigger go with it.** DAG
+  compaction deleted a delta's row but left the rows kept beside it, so disk
+  still grew with delta history. They are now deleted in the same transaction
+  as the row, those earlier compactions left behind are swept, and the space
+  is given back. A peer asking for a compacted delta still gets "not found".
+
 - **A group context runs only a release its own group named.** A node keeps one
   application row per `ApplicationId`, shared by every group on it, and any
   group admin could point that row at their own blob; a context in another
