@@ -9,6 +9,11 @@
 //! twice, once for the link and once for the value write that follows it with
 //! the same bytes.
 //!
+//! A peer's delta applies its actions with the walks deferred to the end, but
+//! each applied entry also relinked itself under its parent at once, and the
+//! deferred walks then ran one per dirty entity: a delta updating `k` entries
+//! of a map rewrote the map's row and its trie spine `k` times each.
+//!
 //! These pin the walk to one descent per trie and one write per ancestor whose
 //! hash moved, and the tree to the root a store built directly would hold.
 
@@ -18,8 +23,9 @@ use std::rc::Rc;
 
 use calimero_storage::address::Id;
 use calimero_storage::collections::{Root, UnorderedMap};
-use calimero_storage::env::{with_runtime_env, RuntimeEnv};
+use calimero_storage::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
+use calimero_storage::interface::ApplyContext;
 use calimero_storage::store::{Key, MainStorage, KEY_LEN};
 
 type Map = UnorderedMap<String, String, MainStorage>;
@@ -67,6 +73,10 @@ impl Backing {
 type Shared = Rc<RefCell<Backing>>;
 
 fn env(backing: &Shared) -> RuntimeEnv {
+    env_of(backing, [2; 32])
+}
+
+fn env_of(backing: &Shared, device: [u8; 32]) -> RuntimeEnv {
     let b = Rc::clone(backing);
     let read = Rc::new(move |key: &Key| {
         let mut b = b.borrow_mut();
@@ -81,7 +91,7 @@ fn env(backing: &Shared) -> RuntimeEnv {
     });
     let b = Rc::clone(backing);
     let remove = Rc::new(move |key: &Key| b.borrow_mut().state.remove(&key.to_bytes()).is_some());
-    RuntimeEnv::new(read, write, remove, [1; 32], [2; 32], [3; 32])
+    RuntimeEnv::new(read, write, remove, [1; 32], device, [3; 32])
 }
 
 fn build(entries: impl IntoIterator<Item = (String, String)>) -> Root<Map> {
@@ -210,4 +220,58 @@ fn a_write_of_the_bytes_already_stored_moves_no_ancestor() {
         "reads of the root's row"
     );
     assert_eq!(root_hash, root_of(filled()), "the root hash moved");
+}
+
+/// A peer's delta updating the first `updated` of `ENTRIES` entries, applied
+/// through `Root::sync` as `__calimero_sync_next` applies it: the most writes
+/// any one row took, and whether the receiver's root matches the sender's.
+fn apply_update_delta(updated: usize) -> (usize, bool) {
+    let sender = Shared::default();
+    let (create, update, sender_root) = with_runtime_env(env_of(&sender, [9; 32]), || {
+        build(filled()).commit();
+        let create = take_last_artifact().expect("the build should emit a delta");
+        let mut map = Root::<Map>::fetch().expect("the map was just committed");
+        for i in 0..updated {
+            let _previous = map
+                .insert(format!("key{i}"), "changed".to_owned())
+                .expect("update should succeed");
+        }
+        map.commit();
+        let update = take_last_artifact().expect("the updates should emit a delta");
+        (create, update, root().1)
+    });
+
+    let receiver = Shared::default();
+    with_runtime_env(env(&receiver), || {
+        Root::<Map>::sync(&create, &ApplyContext::empty()).expect("the build should apply");
+        receiver.borrow_mut().reset();
+        Root::<Map>::sync(&update, &ApplyContext::empty()).expect("the updates should apply");
+        let hottest = receiver
+            .borrow()
+            .writes
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        (hottest, root().1 == sender_root)
+    })
+}
+
+#[test]
+fn a_delta_rewrites_each_ancestor_once_however_many_entries_it_updates() {
+    for updated in [1, 64] {
+        let (hottest, converged) = apply_update_delta(updated);
+        assert!(
+            converged,
+            "{updated} updates: the receiver's root is not the sender's"
+        );
+        // Each entry's row, each trie row and each ancestor's row, once. Each
+        // updated entry used to relink itself under the map, which wrote its
+        // row a second time and the map's row and every row of the map's trie
+        // spine once per entry.
+        assert_eq!(
+            hottest, 1,
+            "{updated} updates: the most writes any one row took"
+        );
+    }
 }

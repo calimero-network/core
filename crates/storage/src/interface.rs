@@ -3194,9 +3194,15 @@ impl<S: StorageAdaptor> Interface<S> {
                     <Index<S>>::set_schema_version(id, metadata.schema_version)?;
                 }
 
-                // ALWAYS update parent with correct hash after save (handles merging)
-                // save_internal calls write_value_for which updates child_index.own_hash
-                if let Some(parent) = parent {
+                // Link the entity under its parent if this apply is what links it
+                // (a placeholder above, or an entry the parent no longer lists).
+                // One the parent already lists needs nothing more here: the walk
+                // from `save_internal`'s write stores its new hash in the parent's
+                // trie, and under `Root::sync` that walk is batched with the
+                // delta's other writes, which relinking here eagerly defeated.
+                if let Some(parent) =
+                    parent.filter(|parent| !<ChildTrie<S>>::new(parent.id()).contains(id))
+                {
                     // Read the hash and relink under one guard: a concurrent
                     // `save_internal` of this entity landing between the two
                     // would leave its bytes beside this read's `own_hash`

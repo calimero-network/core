@@ -6,8 +6,9 @@ mod tests;
 
 use core::any::TypeId;
 use core::cell::RefCell;
+use core::cmp::Reverse;
 use core::marker::PhantomData;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use tracing::info;
@@ -25,10 +26,10 @@ pub(crate) const MAX_PARENT_CHAIN: usize = 256; // most ancestors an entity may 
 //
 // `recalculate_ancestor_hashes_for` walks from a given node up to root,
 // re-reading and re-hashing each ancestor. During a merge (e.g. `Root::sync`
-// applying 20 deltas to the same parent), the per-action call pattern runs
-// this walk 20 times with ~identical starts, redoing the same O(K) hash
-// work at every parent along the path. Batching collapses that to one walk
-// per unique starting id per merge.
+// applying 20 actions under the same parent), the per-action call pattern runs
+// this walk 20 times, redoing the same work at every ancestor along the path.
+// Batching collapses that to one pass at the end of the merge that refreshes
+// each ancestor once (`Index::recalculate_ancestor_hashes_for_all`).
 //
 // Mechanism: a thread-local slot holding `Option<(TypeId, BTreeSet<Id>)>`.
 // The `TypeId` identifies the `StorageAdaptor` the active scope was opened
@@ -225,11 +226,10 @@ impl<S: StorageAdaptor> DeferredAncestorScope<S> {
     ///
     /// # Errors
     ///
-    /// Returns `StorageError` on the first failed ancestor walk. Any dirty
-    /// entries not yet processed are left in the thread-local set so the
-    /// `Drop` fail-safe can retry them after the caller's error unwinds.
-    /// If the `Drop` path also fails, the set is cleared to avoid leaking
-    /// into subsequent operations on the same thread.
+    /// Returns the `StorageError` that stopped the flush. The dirty set is
+    /// taken off the thread before the flush starts, so it never outlives the
+    /// scope: a failed flush leaves no stale set behind to defer every later
+    /// walk on this thread.
     pub(crate) fn finish(mut self) -> Result<(), StorageError> {
         self.flushed = true;
         if !self.is_outermost {
@@ -238,49 +238,21 @@ impl<S: StorageAdaptor> DeferredAncestorScope<S> {
         Self::flush_impl()
     }
 
-    /// Drains the thread-local dirty-set one entry at a time, running the
-    /// real ancestor walk for each. On error, the remaining entries stay in
-    /// the set (available for a `Drop`-time retry); on the Drop path the
-    /// caller is expected to clear what's left.
+    /// Takes the thread-local dirty set and refreshes every ancestor of every
+    /// id in it in one pass ([`Index::recalculate_ancestor_hashes_for_all`]).
     fn flush_impl() -> Result<(), StorageError> {
         let type_id = TypeId::of::<S>();
-        loop {
-            // Pop one id at a time. Keep the BTreeSet (and TypeId tag) in
-            // place; only remove the tag entirely when the set is empty.
-            let next_id = DEFERRED_ANCESTORS.with(|slot| {
-                let mut borrowed = slot.borrow_mut();
-                match borrowed.as_mut() {
-                    Some((existing, set)) if *existing == type_id => {
-                        let next = set.pop_first();
-                        if set.is_empty() {
-                            *borrowed = None;
-                        }
-                        next
-                    }
-                    _ => None,
-                }
-            });
-            let Some(id) = next_id else {
-                return Ok(());
-            };
-            <Index<S>>::recalculate_ancestor_hashes_for_now(id)?;
-        }
-    }
-
-    /// Drops any dirty entries remaining in the thread-local after a failed
-    /// flush. Called from the `Drop` path when the fail-safe flush itself
-    /// errors, so a stuck set can't leak into the next operation on this
-    /// thread. Any entries discarded here were never flushed — the caller
-    /// has already logged the underlying error.
-    fn discard_dirty_set() {
-        let type_id = TypeId::of::<S>();
-        DEFERRED_ANCESTORS.with(|slot| {
+        let dirty = DEFERRED_ANCESTORS.with(|slot| {
             let mut borrowed = slot.borrow_mut();
-            let matches = matches!(borrowed.as_ref(), Some((t, _)) if *t == type_id);
-            if matches {
-                *borrowed = None;
+            match borrowed.take() {
+                Some((existing, set)) if existing == type_id => set,
+                other => {
+                    *borrowed = other;
+                    BTreeSet::new()
+                }
             }
         });
+        <Index<S>>::recalculate_ancestor_hashes_for_all(dirty)
     }
 }
 
@@ -298,9 +270,8 @@ impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
         // Result. This path is typically reached when the caller returned
         // `?` from inside the scope and never got to `finish()`, so the
         // merkle tree is already in an uncertain state from the caller's
-        // original error. We still attempt to flush remaining entries,
-        // and if the flush itself fails, we discard the rest to avoid
-        // leaking the dirty set into the next operation on this thread.
+        // original error. We still attempt the flush; the set is gone from
+        // the thread either way, so nothing leaks into the next operation.
         if let Err(err) = Self::flush_impl() {
             tracing::error!(
                 target: "storage::merkle",
@@ -308,7 +279,6 @@ impl<S: StorageAdaptor> Drop for DeferredAncestorScope<S> {
                 "deferred ancestor recompute failed during Drop; merkle tree may be inconsistent. \
                  Prefer .finish()? over Drop for error propagation."
             );
-            Self::discard_dirty_set();
         }
     }
 }
@@ -1376,6 +1346,140 @@ impl<S: StorageAdaptor> Index<S> {
             Self::save_index_keeping(&parent_index, parent_value.as_deref())?;
             parent = parent_index.parent_id;
             child = ChildInfo::new(parent_id, parent_index.full_hash, parent_index.metadata);
+        }
+
+        Ok(())
+    }
+
+    /// The ancestor walks from every id in `dirty`, as one pass: each entity
+    /// on the way from any of them to the root is read once and, when a hash
+    /// beneath it moved, written once.
+    ///
+    /// Walking them one at a time rewrites a shared ancestor once per dirty id
+    /// beneath it: a delta updating `k` entries of one collection wrote the
+    /// collection's row, the root's row and the root's trie `k` times each.
+    /// Here a parent is refreshed only after every child it folds has its final
+    /// hash, deepest parents first. A trie is a function of its child set, and
+    /// every other field of a parent's row is left as read, so the rows this
+    /// leaves are the ones the walks one at a time leave, in any order.
+    pub(crate) fn recalculate_ancestor_hashes_for_all(
+        dirty: BTreeSet<Id>,
+    ) -> Result<(), StorageError> {
+        if dirty.len() < 2 {
+            for id in dirty {
+                Self::recalculate_ancestor_hashes_for_now(id)?;
+            }
+            return Ok(());
+        }
+        let _mutation_guard = index_mutation_guard();
+
+        // Every entity on a dirty one's way up, with its data, so a parent is
+        // rewritten without its row being read again. A dirty id with no index
+        // row walks nowhere, as a walk from it does; a missing ancestor is the
+        // error a walk reaching it returns.
+        let mut rows: BTreeMap<Id, IndexWithValue> = BTreeMap::new();
+        for &id in &dirty {
+            if rows.contains_key(&id) {
+                continue;
+            }
+            let Some(row) = Self::get_index_with_value(id)? else {
+                continue;
+            };
+            let mut parent = row.0.parent_id;
+            let _previous = rows.insert(id, row);
+            while let Some(parent_id) = parent {
+                if rows.contains_key(&parent_id) {
+                    break;
+                }
+                let row = Self::get_index_with_value(parent_id)?
+                    .ok_or(StorageError::IndexNotFound(parent_id))?;
+                parent = row.0.parent_id;
+                let _previous = rows.insert(parent_id, row);
+            }
+        }
+
+        // How far each entity is below the top of its chain. Every parent of a
+        // row read above was read too, so every chain ends at a row with none.
+        let mut depths: BTreeMap<Id, usize> = BTreeMap::new();
+        for &id in rows.keys() {
+            let mut chain = Vec::new();
+            let mut at = Some(id);
+            let mut depth = 0;
+            while let Some(node) = at {
+                if let Some(&known) = depths.get(&node) {
+                    depth = known + 1;
+                    break;
+                }
+                chain.push(node);
+                at = rows.get(&node).and_then(|(index, _)| index.parent_id);
+            }
+            for node in chain.into_iter().rev() {
+                let _previous = depths.insert(node, depth);
+                depth += 1;
+            }
+        }
+        let depth_of = |id: &Id| depths.get(id).copied().unwrap_or_default();
+
+        // Parents to refresh, deepest first, with the children whose slots may
+        // be stale: each dirty entity's, then each parent's whose hash moved.
+        let mut stale: BTreeMap<Id, BTreeSet<Id>> = BTreeMap::new();
+        let mut queue: BTreeSet<(Reverse<usize>, Id)> = BTreeSet::new();
+        for id in &dirty {
+            if let Some(parent_id) = rows.get(id).and_then(|(index, _)| index.parent_id) {
+                let _new = stale.entry(parent_id).or_default().insert(*id);
+                let _new = queue.insert((Reverse(depth_of(&parent_id)), parent_id));
+            }
+        }
+
+        while let Some((_, parent_id)) = queue.pop_first() {
+            let children: Vec<ChildInfo> = stale
+                .remove(&parent_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|child_id| {
+                    let (child, _) = rows.get(&child_id)?;
+                    Some(ChildInfo::new(
+                        child_id,
+                        child.full_hash,
+                        child.metadata.clone(),
+                    ))
+                })
+                .collect();
+            // No slot moved, so neither did this parent's hash.
+            let Some(trie_root) = <ChildTrie<S>>::new(parent_id).refresh_all(&children) else {
+                continue;
+            };
+            if parent_id.is_root() {
+                info!(
+                    target: "storage::merkle",
+                    children = children.len(),
+                    "ROOT MERKLE: Child hashes updated"
+                );
+            }
+
+            let (parent_index, parent_value) = rows
+                .get_mut(&parent_id)
+                .ok_or(StorageError::IndexNotFound(parent_id))?;
+            let old_full_hash = parent_index.full_hash;
+            parent_index.full_hash = Self::full_hash_from_root(parent_index.own_hash, trie_root);
+            if parent_id.is_root() && old_full_hash != parent_index.full_hash {
+                info!(
+                    target: "storage::merkle",
+                    %parent_id,
+                    old_full_hash = %hex::encode(old_full_hash),
+                    new_full_hash = %hex::encode(parent_index.full_hash),
+                    children_count = Self::child_count(parent_id),
+                    "ROOT MERKLE: Root hash recalculated from ancestor"
+                );
+            }
+            // The trie writes above touch the trie's rows, not the parent's, so
+            // the data read with its index is still what it holds.
+            Self::save_index_keeping(parent_index, parent_value.as_deref())?;
+
+            if let Some(grandparent_id) = parent_index.parent_id {
+                let _new = stale.entry(grandparent_id).or_default().insert(parent_id);
+                let _new = queue.insert((Reverse(depth_of(&grandparent_id)), grandparent_id));
+            }
         }
 
         Ok(())

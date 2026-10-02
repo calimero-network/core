@@ -861,8 +861,14 @@ struct MyType {
   ancestor already folds it. A new path that changes a full hash or a trie
   without calling `recalculate_ancestor_hashes_for` leaves the stale hash in
   place for good: no later walk repairs it in passing.
-  `tests/ancestor_walk_cost.rs` pins the rows a write costs and the root it
-  leaves.
+  Under `Root::sync` the walks are deferred to the end of the delta and run as
+  one pass (`recalculate_ancestor_hashes_for_all`, `ChildTrie::refresh_all`):
+  deepest parents first, each ancestor and each trie row read and written once
+  however many of the delta's entries sit beneath it. So `apply_action` relinks
+  an entity only when its parent does not list it yet; relinking a listed one
+  did the walk's work eagerly, once per action, and defeated the batch.
+  `tests/ancestor_walk_cost.rs` pins the rows a write and a delta cost and the
+  root they leave.
 - **A local write is stamped after what it overwrites, never just "now".**
   `save_raw` stamps `max(now, stored updated_at + 1, deleted_at + 1)` (the
   `stamp_after_stored` helper, on the index row it already reads), a delete
