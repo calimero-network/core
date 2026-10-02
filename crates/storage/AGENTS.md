@@ -853,6 +853,16 @@ struct MyType {
 - Hash with `crate::hash_meter::{Digest, Sha256}`, never `sha2` directly. It is `sha2::Sha256` unless the `cost-meter` feature (enabled only by `tools/storage-cost`) swaps in a counting wrapper with the same digest, and the counts are the storage-cost CPU gate; a module naming `sha2` is invisible to it, which `production_code_hashes_through_the_meter` refuses.
 
 - Use #[app::state] macro attribute - it auto-generates Mergeable impl
+- **An ancestor walk starts only where a full hash moved, and stops at the first
+  parent whose trie slot already holds the child's hash** (`Index::write_value_for`,
+  `add_child_with_value_to`, `recalculate_ancestor_hashes_for_now`,
+  `ChildTrie::refresh`). That is sound because every path that moves an
+  entity's full hash walks from that entity, so above a current slot every
+  ancestor already folds it. A new path that changes a full hash or a trie
+  without calling `recalculate_ancestor_hashes_for` leaves the stale hash in
+  place for good: no later walk repairs it in passing.
+  `tests/ancestor_walk_cost.rs` pins the rows a write costs and the root it
+  leaves.
 - **A local write is stamped after what it overwrites, never just "now".**
   `save_raw` stamps `max(now, stored updated_at + 1, deleted_at + 1)` (the
   `stamp_after_stored` helper, on the index row it already reads), a delete

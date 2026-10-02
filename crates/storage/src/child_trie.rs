@@ -531,6 +531,64 @@ fn insert_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, slot: Slot) -
     }
 }
 
+/// What [`refresh_at`] did to a child that may already be linked.
+enum Refreshed {
+    /// The child is not linked here: nothing was written.
+    Absent,
+    /// The child's slot already held its hash: no hash moved.
+    Unchanged,
+    /// The child's hash was stored; the subtree's hash is now this. At the root
+    /// it also carries the root as it was before.
+    Changed { hash: [u8; 32], old_root: [u8; 32] },
+}
+
+/// Stores `slot.hash` as the hash of `slot.id`, a child already linked in the
+/// subtree at `path`, in one descent.
+///
+/// Writes exactly what [`insert_at`] writes when it replaces a child whose hash
+/// moved, and nothing when the child is absent, which [`insert_at`] would add
+/// instead, or when its slot already holds `slot.hash`.
+fn refresh_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, slot: Slot) -> Refreshed {
+    let Some(row) = read_row(rows, parent, path) else {
+        return Refreshed::Absent;
+    };
+    let is_root = path.is_empty();
+    let next_order = if is_root {
+        row.next_order.max(slot.order.saturating_add(1))
+    } else {
+        0
+    };
+    match row.body {
+        Body::Bucket(mut bucket) => match bucket.entries.binary_search_by_key(&slot.id, |s| s.id) {
+            Err(_) => Refreshed::Absent,
+            Ok(i) if bucket.entries[i].hash == slot.hash => Refreshed::Unchanged,
+            Ok(i) => {
+                let old_root = if is_root { bucket.hash() } else { EMPTY };
+                bucket.entries[i] = slot;
+                let hash = build(rows, parent, path, bucket.entries, next_order);
+                Refreshed::Changed { hash, old_root }
+            }
+        },
+        Body::Node(mut node) => {
+            let nib = nibble(slot.id, path.len());
+            if node.slots.binary_search_by_key(&nib, |(n, _)| *n).is_err() {
+                return Refreshed::Absent;
+            }
+            path.push(nib);
+            let below = refresh_at(rows, parent, path, slot);
+            let _popped = path.pop();
+            let Refreshed::Changed { hash: below, .. } = below else {
+                return below;
+            };
+            let old_root = if is_root { node.hash() } else { EMPTY };
+            node.set(nib, below);
+            let hash = node.hash();
+            write_row(rows, parent, path, next_order, Body::Node(node));
+            Refreshed::Changed { hash, old_root }
+        }
+    }
+}
+
 /// Removes `id` from the subtree at `path`, merging a node back into a bucket
 /// once it holds [`BUCKET_MAX`] or fewer. `None` when `id` is not there.
 fn remove_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, id: Id) -> Option<[u8; 32]> {
@@ -746,6 +804,28 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             tally.finish::<S>(root, None, linked.as_ref());
         }
         root
+    }
+
+    /// Store `child`'s hash in its slot, if it is linked here under another
+    /// hash, and return the new root. `None` when no hash moved: `child` is not
+    /// linked, or its slot already holds that hash.
+    ///
+    /// Leaves the rows exactly as [`insert`](Self::insert) would for a child it
+    /// replaces under a new hash, but descends once instead of looking the child
+    /// up first, and writes nothing when the hash is already there.
+    pub(crate) fn refresh(&self, child: &ChildInfo) -> Option<[u8; 32]> {
+        let slot = Slot::of(child);
+        match refresh_at(&mut Self::rows(), self.parent, &mut Vec::new(), slot) {
+            Refreshed::Changed { hash, old_root } => {
+                // A replaced child moves no count (see `insert`); the row only
+                // follows the root.
+                if let Some(tally) = admitted_count::before_change_at::<S>(self.parent, old_root) {
+                    tally.finish::<S>(hash, None, None);
+                }
+                Some(hash)
+            }
+            Refreshed::Absent | Refreshed::Unchanged => None,
+        }
     }
 
     /// Remove `child_id`. Returns the new root hash.
