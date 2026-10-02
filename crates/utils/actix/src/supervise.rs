@@ -17,9 +17,10 @@ use tracing::error;
 mod tests;
 
 pub const CRASH_LOOP_MAX_RESTARTS: usize = 5; // restarts tolerated within the window; one more exits
-pub const CRASH_LOOP_WINDOW: Duration = Duration::from_secs(600); // catches a panic on every tick of a 2 minute interval
+pub const CRASH_LOOP_WINDOW: Duration = Duration::from_secs(1800); // trips on a panic every tick of up to a 5 minute interval
 pub const PANIC_EXIT_CODE: i32 = 70; // EX_SOFTWARE in sysexits.h
-const MAILBOX_CAPACITY: usize = 16; // actix's default, which it keeps private
+#[doc(hidden)]
+pub const MAILBOX_CAPACITY: usize = 16; // actix's default, which it keeps private
 
 /// Counts recent restarts of one actor and reports when they form a crash loop.
 #[derive(Debug, Default)]
@@ -76,6 +77,7 @@ where
 }
 
 /// Logs that `A` panicked and exits, leaving the restart to the service manager.
+#[doc(hidden)]
 pub fn exit_after_panic<A>() -> ! {
     error!(
         actor = actor_name::<A>(),
@@ -100,7 +102,11 @@ where
         let mut ctx = Context::with_receiver(rx);
         let act = f(&mut ctx);
         let fut = ctx.into_future(act);
-        let _handle = actix::spawn(Guarded { fut, restarts });
+        let _handle = actix::spawn(Guarded {
+            fut,
+            restarts,
+            settled: false,
+        });
     });
     Addr::new(tx)
 }
@@ -115,12 +121,13 @@ struct Restarts<A: Actor<Context = Context<A>>> {
 struct Guarded<A: Actor<Context = Context<A>>> {
     fut: ContextFut<A, Context<A>>,
     restarts: Option<Restarts<A>>,
+    settled: bool, // a poll has returned Pending, so the startup wait queue (e.g. `Lazy::init`) has run
 }
 
 impl<A: Actor<Context = Context<A>>> Guarded<A> {
     /// Restarts the actor after a panic, or exits when it cannot be restarted.
     fn recover(&mut self) {
-        let Some(restarts) = &mut self.restarts else {
+        let Some(restarts) = self.restarts.as_mut().filter(|_| self.settled) else {
             exit_after_panic::<A>()
         };
         let actor = actor_name::<A>();
@@ -132,8 +139,10 @@ impl<A: Actor<Context = Context<A>>> Guarded<A> {
             );
             exit_after_panic::<A>()
         }
-        if !(restarts.restart)(&mut self.fut) {
-            error!(actor, "actor has no live sender to restart for");
+        let restart = restarts.restart;
+        let fut = &mut self.fut;
+        if !catch_unwind(AssertUnwindSafe(|| restart(fut))).unwrap_or(false) {
+            error!(actor, "actor could not be restarted");
             exit_after_panic::<A>()
         }
         restarts.total += 1;
@@ -153,7 +162,10 @@ impl<A: Actor<Context = Context<A>>> Future for Guarded<A> {
         let this = self.get_mut();
         loop {
             match catch_unwind(AssertUnwindSafe(|| Pin::new(&mut this.fut).poll(cx))) {
-                Ok(poll) => return poll,
+                Ok(poll) => {
+                    this.settled |= poll.is_pending();
+                    return poll;
+                }
                 Err(_panic) => this.recover(),
             }
         }

@@ -11,6 +11,7 @@ use super::{
 };
 
 const CHILD_ENV: &str = "CALIMERO_SUPERVISE_TEST_CHILD"; // set when a test re-runs itself as the process under test
+const CHILD_MARKER: &str = "child reached the fatal panic"; // printed just before it, so an earlier exit fails the test
 
 static RESTARTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -87,13 +88,21 @@ fn assert_child_exits(test: &str) {
         "child stderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains(CHILD_MARKER));
+}
+
+/// Starts a restartable `Flaky` and waits until it has settled past startup.
+async fn settled_flaky() -> actix::Addr<Flaky> {
+    let addr = restart_on_panic(&Arbiter::current(), count_restart, |_ctx| Flaky {
+        starts: 0,
+    });
+    assert_eq!(addr.send(Starts).await.ok(), Some(1));
+    addr
 }
 
 #[actix::test]
 async fn handler_panic_does_not_stop_the_actor() {
-    let addr = restart_on_panic(&Arbiter::current(), count_restart, |_ctx| Flaky {
-        starts: 0,
-    });
+    let addr = settled_flaky().await;
 
     let (panicked, queued) = join!(addr.send(Panic), addr.send(Starts));
     assert!(panicked.is_err(), "the panicking request fails");
@@ -112,14 +121,13 @@ async fn crash_loop_exits_the_process() {
         return assert_child_exits("crash_loop_exits_the_process");
     }
 
-    let addr = restart_on_panic(&Arbiter::current(), count_restart, |_ctx| Flaky {
-        starts: 0,
-    });
+    let addr = settled_flaky().await;
     for _ in 0..CRASH_LOOP_MAX_RESTARTS {
         let _ = addr.send(Panic).await;
     }
     assert!(addr.send(Starts).await.is_ok(), "restarts up to the limit");
 
+    println!("{CHILD_MARKER}");
     let _ = addr.send(Panic).await;
     panic!("one restart past the limit should have exited the process");
 }
@@ -130,13 +138,26 @@ async fn a_panic_with_no_sender_left_exits_the_process() {
         return assert_child_exits("a_panic_with_no_sender_left_exits_the_process");
     }
 
-    let addr = restart_on_panic(&Arbiter::current(), count_restart, |_ctx| Flaky {
-        starts: 0,
-    });
+    let addr = settled_flaky().await;
+    println!("{CHILD_MARKER}");
     addr.do_send(Panic);
     drop(addr);
     actix::clock::sleep(Duration::from_secs(5)).await;
     panic!("an actor that cannot be restarted should have exited the process");
+}
+
+#[actix::test]
+async fn a_panic_before_the_actor_settles_exits_the_process() {
+    if std::env::var_os(CHILD_ENV).is_none() {
+        return assert_child_exits("a_panic_before_the_actor_settles_exits_the_process");
+    }
+
+    let addr = restart_on_panic(&Arbiter::current(), count_restart, |_ctx| Flaky {
+        starts: 0,
+    });
+    println!("{CHILD_MARKER}");
+    let _ = addr.send(Panic).await;
+    panic!("a panic before the startup wait queue ran should have exited the process");
 }
 
 #[actix::test]
@@ -146,6 +167,7 @@ async fn exit_on_panic_exits_the_process() {
     }
 
     let addr = exit_on_panic(&Arbiter::current(), |_ctx| Flaky { starts: 0 });
+    println!("{CHILD_MARKER}");
     let _ = addr.send(Panic).await;
     panic!("a panic in an exit-on-panic actor should have exited the process");
 }
@@ -157,6 +179,7 @@ async fn actor_macro_exits_the_process_on_panic() {
     }
 
     let addr = Streaming.start();
+    println!("{CHILD_MARKER}");
     let _ = addr.send(Panic).await;
     panic!("a panic in an actor! actor should have exited the process");
 }

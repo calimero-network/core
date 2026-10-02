@@ -24,7 +24,7 @@ pub mod __private {
     pub use tokio::task;
 
     pub use crate::actor;
-    pub use crate::supervise::exit_after_panic;
+    pub use crate::supervise::{exit_after_panic, MAILBOX_CAPACITY};
 
     pub trait ActorSpawn: Actor {
         fn spawn(self, ctx: Self::Context);
@@ -111,7 +111,7 @@ macro_rules! actor {
         {
             use $crate::macros::__private::*;
 
-            let (tx, rx) = channel::channel(16);
+            let (tx, rx) = channel::channel(MAILBOX_CAPACITY);
 
             let _ignored = wrk.spawn(async move {
                 let mut ctx = Context::with_receiver(rx);
