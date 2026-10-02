@@ -1915,6 +1915,7 @@ dependencies = [
  "pastey",
  "tokio",
  "tokio-stream",
+ "tracing",
 ]
 
 [[package]]
