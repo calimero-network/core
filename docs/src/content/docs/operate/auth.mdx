@@ -65,6 +65,13 @@ token manager:
   **refresh token**.
 - **Default lifetimes:** access token `3600` seconds (1 hour), refresh token 30
   days. Configurable via `jwt.access_token_expiry` / `jwt.refresh_token_expiry`.
+- **Application client keys** get shorter tokens: access token `900` seconds
+  (15 minutes), refresh token 7 days, set by `jwt.client_access_token_expiry` /
+  `jwt.client_refresh_token_expiry` and never longer than the two settings
+  above. Every refresh issues a new refresh token, so an app in use stays signed
+  in until its client key expires (30 days by default, or the `ttl_secs` it was
+  minted with); an app left unused for longer than the refresh lifetime signs in
+  again.
 - **Issuer:** `jwt.issuer` (the shipped example config uses `calimero-auth`).
 
 Access-token claims:
