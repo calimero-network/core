@@ -35,7 +35,7 @@ merod [--node <name>] <subcommand>     # --node only where a store is opened
 ├── init          # Initialize node configuration (mints the embedded-auth
 │                 # admin root key from --admin-user + password via
 │                 # file/stdin/env; --no-admin defers)
-├── run           # Start the node daemon (alias: up)
+├── run           # Start the node daemon (alias: up); --dev accepts dev-signed bundles
 ├── config        # Modify node configuration
 ├── auth          # Embedded-auth accounts (set-admin: offline admin-key mint)
 └── kms           # Key management service (probe, disk-key)

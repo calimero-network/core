@@ -69,7 +69,7 @@ run() {
 
   stdin $1
 
-  <n$1.i ${merod} --node n"$1" run 2> >(scoped $1 2 $fg >&1) > >(scoped $1 1 $fg) &
+  <n$1.i ${merod} --node n"$1" run --dev 2> >(scoped $1 2 $fg >&1) > >(scoped $1 1 $fg) &
   export PID$1=$!
 }
 

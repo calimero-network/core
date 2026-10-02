@@ -162,6 +162,7 @@ pub struct NodeConfig {
     /// config section (unset fields fall back to `VMLimits::default`).
     pub vm_limits: calimero_runtime::logic::VMLimits,
     pub registry: RegistryConfig, // threaded onto NodeClient
+    pub dev: bool,                // accept bundles signed with the public development key
     /// DEV/TEST ONLY. When true, the TEE admin handlers produce and accept mock
     /// attestation quotes instead of requiring real TDX hardware. Insecure —
     /// never enable in production. Sourced from `merod run --mock-tee` and
@@ -299,7 +300,8 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         sync_client,
         Some(local_delta_tx),
     )
-    .with_registry(config.registry.clone());
+    .with_registry(config.registry.clone())
+    .with_dev_bundles(config.dev);
 
     let context_client = ContextClient::new(
         datastore.clone(),

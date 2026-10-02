@@ -56,6 +56,11 @@ pub struct RunCommand {
     /// the default-off `mock-attestation` build feature.
     #[clap(long, default_value_t = false)]
     pub mock_tee: bool,
+
+    /// DEV/TEST ONLY. Install and run bundles signed with the public development
+    /// key (`cargo mero bundle --dev`). Same as `dev = true` in config.toml.
+    #[arg(long, default_value_t = false)]
+    pub dev: bool,
 }
 
 impl RunCommand {
@@ -88,6 +93,11 @@ impl RunCommand {
         let mut config = ConfigFile::load(&path).await?;
 
         apply_registry_env(&mut config.registry, |k| std::env::var(k).ok())?;
+
+        config.dev |= self.dev;
+        if config.dev {
+            warn!("dev mode: accepting bundles signed with the public development key");
+        }
 
         // Apply CLI auth_mode override before validation.
         if let Some(mode) = self.auth_mode {
@@ -308,6 +318,7 @@ impl RunCommand {
             mode: node_mode,
             stop_watch,
             vm_limits: config.runtime.vm_limits(),
+            dev: config.dev,
             #[cfg(feature = "mock-attestation")]
             mock_tee: self.mock_tee,
         })

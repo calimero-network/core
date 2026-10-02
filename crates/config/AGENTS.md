@@ -42,6 +42,7 @@ cargo test -p calimero-config write_atomic_creates_file_mode_0600 -- --nocapture
 | `runtime` | `[runtime]` | `RuntimeConfig` (from `calimero-runtime`) | `RuntimeConfig::default()` |
 | `tee` | `[tee]` | `Option<TeeConfig>` | `None` |
 | `dag_compaction` | `[dag_compaction]` | `DagCompactionConfig` (re-exported from `calimero-node-primitives`) | `DagCompactionConfig::default()` |
+| `dev` | `dev = true` | `bool`, skipped when false (DEV/TEST ONLY: accept bundles signed with the public development key) | `false` |
 
 Nested structs of note:
 

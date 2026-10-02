@@ -174,7 +174,8 @@ pub fn sign_manifest(manifest_path: &Path, signing_key: &SigningKey) -> Result<(
 
     if is_dev {
         eprintln!(
-            "\u{26a0}  Signed with DEVELOPMENT key. This bundle cannot be published to the registry."
+            "\u{26a0}  Signed with DEVELOPMENT key. This bundle cannot be published to the registry \
+             and installs only on a node run with `merod run --dev`."
         );
     } else {
         eprintln!("Signed manifest: {}", manifest_path.display());

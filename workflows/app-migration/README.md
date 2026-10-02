@@ -140,7 +140,7 @@ cargo mero build --manifest-path apps/migrations/migration-suite-v1/Cargo.toml
 
 ## Running locally
 
-Requires `merobox >= 0.6.16` and Docker. Use the published `merod:edge`
+Requires `merobox >= 0.6.82` and Docker. Use the published `merod:edge`
 image, or build a local `merod:local`:
 
 ```bash

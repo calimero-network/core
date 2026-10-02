@@ -117,7 +117,7 @@ struct BundleArgs {
     #[arg(long, group = "signing")]
     key: Option<PathBuf>,
 
-    /// Sign with the well-known development key: fine locally, REFUSED by the registry
+    /// Sign with the well-known development key: installs only on `merod run --dev`, REFUSED by the registry
     #[arg(long, group = "signing")]
     dev: bool,
 
@@ -282,7 +282,7 @@ struct SignArgs {
     #[arg(long, short, conflicts_with = "dev")]
     key: Option<PathBuf>,
 
-    /// Sign with the well-known development key (cannot be published to registry)
+    /// Sign with the well-known development key (installs only on `merod run --dev`, cannot be published to registry)
     #[arg(long, conflicts_with = "key")]
     dev: bool,
 }

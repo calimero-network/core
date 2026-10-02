@@ -40,7 +40,7 @@ fuzz_target!(|data: &[u8]| {
     let mut archive = manifest_entry(&path, &hash, wasm.len());
     archive.extend_from_slice(&entries);
     let compressed: Arc<[u8]> = gzip(&archive).into();
-    let Ok(bundle) = VerifiedBundle::open(Arc::clone(&compressed)) else {
+    let Ok(bundle) = VerifiedBundle::open(Arc::clone(&compressed), true) else {
         return;
     };
     assert_eq!(bundle.signer_id(), dev_signer_id());

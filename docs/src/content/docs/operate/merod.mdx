@@ -95,6 +95,7 @@ server. Foreground process. Alias: `up`.
 | -------------------- | ---------------------- | ------- | -------------------------------------------------------------------------- |
 | `--auth-mode <MODE>` | `proxy`, `embedded`    | —       | Override the authentication mode from `config.toml` for this run.          |
 | `--mock-tee`         | bool                   | `false` | DEV/TEST ONLY. Produce/accept mock TEE attestation quotes. Env: `MEROD_MOCK_TEE`. |
+| `--dev`              | bool                   | `false` | DEV/TEST ONLY. Install and run bundles signed with the public development key. Same as `dev = true` in `config.toml`. |
 
 ```sh
 merod --node node1 run

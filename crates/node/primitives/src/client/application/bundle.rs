@@ -9,7 +9,7 @@ use std::path::{Component, Path};
 use std::sync::Arc;
 
 use crate::bundle::{
-    verify_manifest_signature, BundleArtifact, BundleManifest, ManifestVerification,
+    dev_signer_id, verify_manifest_signature, BundleArtifact, BundleManifest, ManifestVerification,
     MAX_MANIFEST_BYTES,
 };
 use eyre::bail;
@@ -336,10 +336,14 @@ pub struct VerifiedBundle {
 }
 
 impl VerifiedBundle {
-    /// Signature is mandatory. There is no unsigned constructor.
-    pub fn open(data: Arc<[u8]>) -> eyre::Result<Self> {
+    /// Signature is mandatory. There is no unsigned constructor. The development
+    /// key is public, so its signature counts only when `accept_dev` is set.
+    pub fn open(data: Arc<[u8]>, accept_dev: bool) -> eyre::Result<Self> {
         let (manifest_json, manifest) = extract_bundle_manifest(&data)?;
         let ManifestVerification { signer_id, .. } = verify_manifest_signature(&manifest_json)?;
+        if !accept_dev && signer_id == dev_signer_id() {
+            bail!("bundle is signed with the public development key; run merod with --dev to install it");
+        }
         // After the signature, not during the scan: reaching the end of a large
         // archive needs the archive cap, which the pre-auth scan must not spend.
         ensure_single_manifest(&data)?;

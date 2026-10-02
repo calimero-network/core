@@ -71,7 +71,7 @@ cargo mero new my-app        # 1. scaffold an app (state, events, logic, tests)
 cargo mero build             # 2. compile -> wasm-opt -> embed ABI (res/my_app.wasm)
 cargo mero test              # 3. run TestHost + convergence tests (no node needed)
 cargo mero bundle --dev --no-icon      # 4. build all services, write manifest.json, sign, tar dist/<package>-<version>.mpk
-meroctl app install --path dist/<package>-<version>.mpk ...   # 5. install on a node (merod)
+meroctl app install --path dist/<package>-<version>.mpk ...   # 5. install on a node (merod run --dev)
 ```
 
 <Steps>
@@ -274,7 +274,7 @@ There are two kinds of key:
 
 - **Development key (`--dev`).**
   A single well-known key baked into the tool - no key file, fine for local installs and CI.
-  Because the key is public it proves nothing about provenance, so the registry refuses `--dev` bundles and `cargo mero bundle --dev` prints a warning saying so.
+  Because the key is public it proves nothing about provenance, so the registry refuses `--dev` bundles, a node installs one only when run with `merod run --dev`, and `cargo mero bundle --dev` prints a warning saying so.
 - **Production key (`--key <file>`).**
   A private Ed25519 key that only you hold, for anything you publish or install against a registry.
   Generate one with `cargo mero key generate -o my-key.json`.

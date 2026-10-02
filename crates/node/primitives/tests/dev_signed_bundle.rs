@@ -41,6 +41,34 @@ async fn an_operator_install_refuses_a_dev_signed_bundle() {
 }
 
 #[tokio::test]
+async fn a_dev_node_installs_and_runs_a_dev_signed_bundle() {
+    let dir = TempDir::new().unwrap();
+    let path = bundle_signed_by(&dir, PACKAGE, "1.0.0", WASM, &dev_signing_key());
+    let (node, _store, _d, _b) = node_client().await;
+    let node = node.with_dev_bundles(true);
+
+    let app_id = node.install_application_from_path(path).await.unwrap();
+    let bytes = node.get_application_bytes(&app_id, None).await.unwrap();
+    assert_eq!(bytes.as_deref(), Some(WASM));
+}
+
+#[tokio::test]
+async fn an_app_installed_under_dev_stops_running_when_dev_is_off() {
+    let dir = TempDir::new().unwrap();
+    let path = bundle_signed_by(&dir, PACKAGE, "1.0.0", WASM, &dev_signing_key());
+    let (node, _store, _d, _b) = node_client().await;
+
+    let app_id = node
+        .clone()
+        .with_dev_bundles(true)
+        .install_application_from_path(path)
+        .await
+        .unwrap();
+
+    assert_refused(node.get_application_bytes(&app_id, None).await);
+}
+
+#[tokio::test]
 async fn a_bundle_signed_with_its_own_key_installs_without_dev() {
     let dir = TempDir::new().unwrap();
     let path = bundle(&dir, PACKAGE, "1.0.0", WASM);

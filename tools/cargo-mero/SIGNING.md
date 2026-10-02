@@ -19,7 +19,7 @@ did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd
 ```
 
 This is the analogue of Android's `debug.keystore`: it needs no key file and is fine for local installs and CI, but because the key is public it proves nothing about provenance.
-The registry **refuses** bundles signed with the dev key, and `cargo mero bundle --dev` prints a warning saying so.
+The registry **refuses** bundles signed with the dev key, a node installs or runs one only when started with `merod run --dev` (or `dev = true` in its `config.toml`), and `cargo mero bundle --dev` prints a warning saying so.
 
 **Production key (`--key <file>`).**
 A private Ed25519 key that only you hold.

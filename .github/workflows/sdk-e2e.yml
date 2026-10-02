@@ -168,7 +168,7 @@ jobs:
           "$BIN" --node ci-node init --server-port "$SERVER_PORT" --swarm-port 2528 --auth-mode embedded \
             --device-key-login --device-key-login-audience cli
           CALIMERO_REGISTRY_MODE=http CALIMERO_REGISTRY_URL="http://127.0.0.1:$REGISTRY_PORT/" \
-            "$BIN" --node ci-node run &
+            "$BIN" --node ci-node run --dev &
           echo "MEROD_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
             if curl -fsS "http://localhost:$SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
@@ -188,7 +188,7 @@ jobs:
           # Sealed-only: every request but attestation must come sealed, which
           # the suite checks (NODE_TEE_SEALED_ONLY below).
           printf '\n[server.sealed]\nrequired = true\n' >> "$HOME/.calimero/ci-tee/config.toml"
-          "$BIN" --node ci-tee run --mock-tee &
+          "$BIN" --node ci-tee run --dev --mock-tee &
           echo "MEROD_TEE_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
             if curl -fsS "http://localhost:$TEE_SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
@@ -210,7 +210,7 @@ jobs:
           BIN="$MEROD_BIN"
           "$BIN" --node ci-tee-relay init --server-port "$TEE_RELAY_SERVER_PORT" --swarm-port 2568 \
             --delegated-access
-          "$BIN" --node ci-tee-relay run --mock-tee &
+          "$BIN" --node ci-tee-relay run --dev --mock-tee &
           echo "MEROD_TEE_RELAY_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
             if curl -fsS "http://localhost:$TEE_RELAY_SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
@@ -230,7 +230,7 @@ jobs:
         run: |
           BIN="$MEROD_BIN"
           "$BIN" --node ci-pair init --server-port "$PAIR_SERVER_PORT" --swarm-port 2548 --auth-mode embedded
-          "$BIN" --node ci-pair run &
+          "$BIN" --node ci-pair run --dev &
           echo "MEROD_PAIR_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
             if curl -fsS "http://localhost:$PAIR_SERVER_PORT/admin-api/health" >/dev/null 2>&1; then
@@ -257,9 +257,9 @@ jobs:
           [ -n "$MN1_PEER" ] || { echo "::error::no peer id in ci-mn1's init output"; exit 1; }
           "$BIN" --node ci-mn2 init --server-port "$MN2_SERVER_PORT" --swarm-port 2559 \
             --auth-mode embedded --boot-nodes "/ip4/127.0.0.1/tcp/2558/p2p/$MN1_PEER"
-          "$BIN" --node ci-mn1 run &
+          "$BIN" --node ci-mn1 run --dev &
           echo "MEROD_MN1_PID=$!" >> "$GITHUB_ENV"
-          "$BIN" --node ci-mn2 run &
+          "$BIN" --node ci-mn2 run --dev &
           echo "MEROD_MN2_PID=$!" >> "$GITHUB_ENV"
           for port in "$MN1_SERVER_PORT" "$MN2_SERVER_PORT"; do
             for i in $(seq 1 60); do

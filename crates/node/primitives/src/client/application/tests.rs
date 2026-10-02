@@ -211,6 +211,6 @@ fn test_extract_manifest_empty_tar() {
 
 #[test]
 fn test_verified_bundle_rejects_non_tar() {
-    let result = bundle::VerifiedBundle::open(Arc::from(b"garbage".as_slice()));
+    let result = bundle::VerifiedBundle::open(Arc::from(b"garbage".as_slice()), false);
     assert!(result.is_err());
 }

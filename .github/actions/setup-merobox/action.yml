@@ -19,7 +19,9 @@ runs:
         # >= 0.6.81 so a fuzzy_test assertion fails when the call it checks
         # failed; before it, `is_set({{out}})` passed on a failed call's literal
         # placeholder name (calimero-network/merobox#431).
-        MEROBOX_VERSION="0.6.81"
+        # >= 0.6.82 so its nodes install `cargo mero bundle --dev` apps: merod
+        # refuses the public development key unless its config sets `dev`.
+        MEROBOX_VERSION="0.6.82"
 
         MEROBOX_ARCH=""
         if [ "${RUNNER_OS}" != "Windows" ]; then
