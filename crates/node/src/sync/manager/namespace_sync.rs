@@ -4368,7 +4368,7 @@ mod namespace_join_device_tests {
 
         // Linked again at a later scope, the narrowed device is live once more.
         let credential = calimero_context::test_support::credential(&descoped_sk.public_key());
-        let _ = AccountBindingRepository::new(&store)
+        let _bound = AccountBindingRepository::new(&store)
             .apply_link(
                 &ns,
                 &credential.genesis,
@@ -4376,7 +4376,8 @@ mod namespace_join_device_tests {
                 &credential.statement,
                 2,
             )
-            .expect("link the device again");
+            .expect("link the device again")
+            .expect("the link above the floor is admitted");
         assert!(
             served(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x04)).await),
             "a device linked again above its floor is served the key"
