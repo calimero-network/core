@@ -513,7 +513,7 @@ fn decode_map_entry(bytes: &[u8], field: &MapField, manifest: &Manifest) -> Resu
         "[decode_map_entry] Attempting to deserialize value (type: {:?})",
         field.value_type
     );
-    let value_value = match deserializer::deserialize_type_ref_from_cursor(
+    let value_value = match deserializer::deserialize_map_value_from_cursor(
         &mut cursor,
         &field.value_type,
         manifest,

@@ -180,18 +180,19 @@ pub(crate) fn tee_origin() -> bool {
 }
 
 /// Marker opening a mock envelope. The mock does not encrypt: it only has to
-/// open for the key it names, like the real one, so app tests can check who
-/// may read what.
-const MOCK_SEALED_TAG: &[u8; 8] = b"mocksea1";
+/// open for the key and context it names, like the real one, so app tests can
+/// check who may read what.
+const MOCK_SEALED_TAG: &[u8; 8] = b"mocksea2";
 
 pub(crate) fn seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
-    Some([MOCK_SEALED_TAG.as_slice(), key, plaintext].concat())
+    Some([MOCK_SEALED_TAG.as_slice(), &context_id(), key, plaintext].concat())
 }
 
 pub(crate) fn open_sealed(sealed: &[u8]) -> Option<Vec<u8>> {
     let rest = sealed.strip_prefix(MOCK_SEALED_TAG.as_slice())?;
+    let (context, rest) = rest.split_at_checked(32)?;
     let (key, plaintext) = rest.split_at_checked(32)?;
-    (key == device_id()).then(|| plaintext.to_vec())
+    (context == context_id() && key == device_id()).then(|| plaintext.to_vec())
 }
 
 pub(crate) fn tee_authority_keys() -> Vec<u8> {
@@ -457,4 +458,19 @@ pub(crate) fn random_bytes(buf: &mut [u8]) {
             chunk.copy_from_slice(&bytes[..chunk.len()]);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{device_id, open_sealed, seal_to, set_context_id};
+
+    /// Like the node, a mock envelope opens only in the context that sealed it.
+    #[test]
+    fn a_mock_envelope_opens_only_in_the_context_that_sealed_it() {
+        let sealed = seal_to(&device_id(), b"card").expect("seal");
+        assert_eq!(open_sealed(&sealed).as_deref(), Some(b"card".as_ref()));
+
+        set_context_id([0x42; 32]);
+        assert_eq!(open_sealed(&sealed), None);
+    }
 }

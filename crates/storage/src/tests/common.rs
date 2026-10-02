@@ -29,7 +29,13 @@ where
     K: BorshSerialize + AsRef<[u8]>,
     V: BorshSerialize,
 {
-    let mut bytes = borsh::to_vec(&((value, key), id)).expect("serialize entry");
+    use crate::collections::lww_register::entry_stamp;
+    // As the map encodes it: a register value goes without its stamp.
+    let mut bytes = entry_stamp::within_collection(Some(core::any::type_name::<V>()), || {
+        entry_stamp::within_entry(|| borsh::to_vec(&(value, key)))
+    })
+    .expect("serialize entry");
+    bytes.extend(borsh::to_vec(&id).expect("serialize id"));
     if crate::collections::is_keyed_owned_id(id) {
         let key_len = u32::try_from(key.as_ref().len()).expect("a short key");
         bytes.extend_from_slice(&key_len.to_le_bytes());
@@ -508,6 +514,7 @@ pub fn create_signed_user_add_action(
                 // The key the signature verifies against. `owner` is an account
                 // now, so this is no longer optional.
                 signer: Some(pubkey_of(signing_key)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -550,6 +557,7 @@ pub fn create_signed_user_add_action(
                 // Must match what the payload was hashed over — the stamp above
                 // named this key, so re-stating it here keeps the two in step.
                 signer: Some(pubkey_of(signing_key)),
+                on_behalf: None,
             });
         }
     }
@@ -696,6 +704,7 @@ pub fn build_signed_shared_action(
                 signature: [0; 64],
                 nonce: hlc_ns,
                 signer: Some(pubkey_of(signer_sk)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -756,6 +765,7 @@ pub fn build_signed_member_action(
                 signature: [0; 64],
                 nonce: hlc_ns,
                 signer: Some(pubkey_of(signer_sk)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -856,6 +866,7 @@ pub fn build_signed_member_delete(
                 signature: [0; 64],
                 nonce: deleted_at,
                 signer: Some(pubkey_of(signer_sk)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -905,6 +916,7 @@ pub fn create_signed_user_update_action(
                 signature: [0; 64],
                 nonce,
                 signer: Some(pubkey_of(signing_key)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
@@ -937,6 +949,7 @@ pub fn create_signed_user_update_action(
                 // Must match what the payload was hashed over — the stamp above
                 // named this key, so re-stating it here keeps the two in step.
                 signer: Some(pubkey_of(signing_key)),
+                on_behalf: None,
             });
         }
     }

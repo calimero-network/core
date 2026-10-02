@@ -656,10 +656,11 @@ fn redrive_stranded_ops_sweep(store: &Store) {
         for (ns_id, group_id) in pass_pairs {
             let ns_hex = hex::encode(ns_id);
             let group_hex = hex::encode(group_id);
-            match calimero_governance_store::redrive_buffered_ops_for_group(
+            match calimero_governance_store::redrive_buffered_ops_for_group_with(
                 store,
                 ns_id.into(),
                 group_id,
+                &crate::VoidJudge::new(store),
             ) {
                 Ok(0) => {
                     // Nothing applied this pass for this group (already

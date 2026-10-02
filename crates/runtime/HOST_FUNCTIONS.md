@@ -183,15 +183,16 @@ Node-local, per-context search (`calimero-search`); views only.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `commit` | `(root_hash_ptr: u64, artifact_ptr: u64)` | Commits execution state with 32-byte root hash and artifact. **Must be called exactly once.** |
-| `persist_root_state` | `(doc_ptr: u64, created_at: u64, updated_at: u64)` | Persists root state document through Merkle tree. |
+| `persist_root_state` | `(doc_ptr: u64, created_at: u64, updated_at: u64)` | Persists root state document through Merkle tree. Its writes are held to the `storage_write` limits and budget. |
 | `read_root_state` | `(register_id: u64) -> i32` | Reads persisted root state. Returns `1` if exists, `0` if not. |
-| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. |
+| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. Not held to the write limits, so a peer's JS delta is not refused by them; a guest can also call it with a delta of its own. |
 | `flush_delta` | `() -> i32` | Flushes pending CRDT actions as causal delta. Returns `1` if delta emitted, `0` if nothing to commit. |
 | `register_js_sdk_root_merge` | `()` | Opts the JS app root into the WASM `__calimero_merge_root_state` sync path (concurrent-writer convergence). `persist_root_state` then stamps the root with the `JsRoot` marker instead of `None`. |
 
 ### CRDT Collections (JS)
 
 These functions support JavaScript SDK CRDT collections. All return `i32` status codes.
+The storage writes they make are held to the same limits as `storage_write` and `storage_index_set`: a write over a cap or past the execution's write budget traps.
 
 #### Map Operations
 
@@ -437,8 +438,9 @@ Large binary object streaming.
 | `blob_write` | `(fd: u64, data_ptr: u64) -> u64` | Writes data to blob, returns bytes written. |
 | `blob_close` | `(fd: u64, blob_id_ptr: u64) -> u32` | Closes blob, writes blob ID to buffer. |
 | `blob_open` | `(blob_id_ptr: u64) -> u64` | Opens existing blob for reading, returns file descriptor. |
+| `blob_open_in_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u64` | Opens a blob, fetching it from the executing context's peers when not local; any other context traps. |
 | `blob_read` | `(fd: u64, data_ptr: u64) -> u64` | Reads data from blob into buffer. |
-| `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces blob availability to context. |
+| `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces blob availability to the executing context; any other context traps. |
 
 ### Utility
 
@@ -452,8 +454,8 @@ Large binary object streaming.
 | `tee_authority_keys` | `(register_id: u64)` | Writes the keys to seal a value only the TEE may read to, 32 bytes each: the namespace TEE key once the TEE holds it, else the attested key of every TEE authority. TEE-triggered runs only; traps (`TeeOnly`) otherwise. |
 | `shared_writers` | `(cell_ptr: u64, register_id: u64) -> u32` | The writers of a `SharedStorage` cell (32-byte cell id) at the run's governance cut. `0` if they cannot be resolved (fail closed); `1` if no rotation took effect (the set stored with the cell stands); `2` if rotated, with `borsh(BTreeMap<AccountId, OpMask>)` in the register. |
 | `shared_writers_rotate` | `(rotation_ptr: u64)` | Records a `borsh(SharedRotation { cell, prior, new })` on the execution `Outcome` for the node to publish as a governance op; nothing is stored. Traps on malformed borsh, a set over 256 writers, or more than 64 rotations in one run. |
-| `seal_to` | `(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32` | Seals the plaintext to a 32-byte Ed25519 key (ephemeral ECDH + AES-256-GCM) and writes the envelope. `0` if the key is not a usable point. Available in every run. |
-| `open_sealed` | `(sealed_ptr: u64, register_id: u64) -> u32` | Opens an envelope with the run's executor key, or failing that with a namespace TEE key the run holds (`SealingContext::vault_keys`, TEE-triggered runs only), and writes the plaintext; `0` if it does not open. Traps (`TeeOnly`) when the node withheld the key: a run on a TEE node the TEE scheduler did not fire, or a delegated run. |
+| `seal_to` | `(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32` | Seals the plaintext to a 32-byte Ed25519 key (ephemeral ECDH + AES-256-GCM, `Purpose::App` bound to the run's context id) and writes the envelope. `0` if the key is not a usable point. Available in every run. |
+| `open_sealed` | `(sealed_ptr: u64, register_id: u64) -> u32` | Opens an envelope with the run's executor key, or failing that with a namespace TEE key the run holds (`SealingContext::vault_keys`, TEE-triggered runs only), and writes the plaintext; `0` if it does not open, including an envelope sealed in another context. Traps (`TeeOnly`) when the node withheld the key: a run on a TEE node the TEE scheduler did not fire, or a delegated run. |
 
 ---
 

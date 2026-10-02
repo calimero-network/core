@@ -95,8 +95,8 @@ fn delta_id_is_content_addressed() {
     let hlc = crate::env::hlc_timestamp();
 
     // Compute ID twice with same inputs
-    let id1 = CausalDelta::compute_id(&parents, &actions, &hlc);
-    let id2 = CausalDelta::compute_id(&parents, &actions, &hlc);
+    let id1 = CausalDelta::compute_id(&parents, &actions, None, &hlc);
+    let id2 = CausalDelta::compute_id(&parents, &actions, None, &hlc);
 
     // Should be identical
     assert_eq!(id1, id2);
@@ -107,8 +107,8 @@ fn delta_id_changes_with_parents() {
     let actions = vec![];
     let hlc = crate::env::hlc_timestamp();
 
-    let id1 = CausalDelta::compute_id(&[[0; 32]], &actions, &hlc);
-    let id2 = CausalDelta::compute_id(&[[1; 32]], &actions, &hlc);
+    let id1 = CausalDelta::compute_id(&[[0; 32]], &actions, None, &hlc);
+    let id2 = CausalDelta::compute_id(&[[1; 32]], &actions, None, &hlc);
 
     // Should be different
     assert_ne!(id1, id2);
@@ -123,8 +123,8 @@ fn delta_id_deterministic_regardless_of_hlc() {
     std::thread::sleep(std::time::Duration::from_millis(2));
     let hlc2 = crate::env::hlc_timestamp();
 
-    let id1 = CausalDelta::compute_id(&parents, &actions, &hlc1);
-    let id2 = CausalDelta::compute_id(&parents, &actions, &hlc2);
+    let id1 = CausalDelta::compute_id(&parents, &actions, None, &hlc1);
+    let id2 = CausalDelta::compute_id(&parents, &actions, None, &hlc2);
 
     // Should be the SAME - delta ID is deterministic based on parents+actions only.
     // This ensures nodes executing the same operations produce identical delta IDs.

@@ -992,9 +992,8 @@ impl SyncManager {
                                     //   verified Entity could
                                     //   clobber the just-verified
                                     //   index/entry blobs.
-                                    // * `SYNC_STATE` — not written
-                                    //   by the current codebase
-                                    //   (grep `Key::SyncState`); a
+                                    // * kind 2 — once a sync-state
+                                    //   key nothing ever wrote; a
                                     //   peer emitting one is
                                     //   misbehaving.
                                     // * `ROTATION_LOG` - legacy rotation
@@ -1312,13 +1311,8 @@ impl SyncManager {
             return;
         };
 
-        // A resynced peer runs the recovered bytecode but never ran the install,
-        // so its `ApplicationMeta` (the version migration-status reads) still
-        // reflects the version it last installed — it lingers below-target. Run
-        // the SAME in-place install the normal blob-share path runs
-        // (`install_bundle_after_blob_sharing`) against the blob the activation
-        // marker now points at, so the peer's installed version matches the
-        // adopted one — exactly as a normally-upgraded peer ends up.
+        // A resynced peer never ran the install for the bytecode it recovered, so
+        // install the marker's blob; one older than the row's release leaves the row.
         if let Some(bound) = calimero_context::activation::activated_bytecode(
             self.context_client.datastore(),
             &context_id,
@@ -2136,16 +2130,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // *full* id set on every call (independent of the page window)
     // so the operator-visible warning stays stable across
     // pagination.
-    //
-    // **Note on `SyncState`:** the sender doesn't look up
-    // `Key::SyncState(id)` — no production codebase path actually
-    // writes that key (it's defined in the storage layer but
-    // unused). The receiver mirrors this and rejects
-    // `Auxiliary { kind: SYNC_STATE, .. }` as misbehaving. If
-    // SyncState ever does start being written, replicating it
-    // safely will require per-record authentication (it's not
-    // bound to an entity signature) — track as a follow-up if /
-    // when that need arises.
     //
     // Cursor support: skip any entity ids ≤ cursor.last_key. The
     // `≤` (not `<`) is correct because the cursor records the
@@ -4109,6 +4093,7 @@ mod snapshot_trust_tests {
             signature: [0x5A; 64],
             nonce: 1,
             signer: Some(*key),
+            on_behalf: None,
         })
     }
 
@@ -4223,6 +4208,7 @@ mod snapshot_trust_tests {
                     signature: [0; 64],
                     nonce: 1,
                     signer: Some(signer.public_key()),
+                    on_behalf: None,
                 }),
             };
             let payload = Action::Add {
@@ -4280,6 +4266,7 @@ mod snapshot_trust_tests {
             signature: [0; 64],
             nonce,
             signer: Some(key.public_key()),
+            on_behalf: None,
         })
     }
 

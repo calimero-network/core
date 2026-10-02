@@ -262,6 +262,7 @@ impl NodeManager {
 
                 let context_client = act.clients.context.clone();
                 let node_client = act.clients.node.clone();
+                let stability = act.state.tombstone_stability.clone();
 
                 let _ignored = ctx.spawn(
                     async move {
@@ -295,6 +296,23 @@ impl NodeManager {
                                     "Failed to broadcast hash heartbeat"
                                 );
                             }
+
+                            let mut heads = context.dag_heads.clone();
+                            heads.sort_unstable();
+                            stability.record_own(
+                                context_id,
+                                heads.clone(),
+                                *context.root_hash,
+                                crate::tombstone_stability::now_nanos(),
+                            );
+                            broadcast_state_beacons(
+                                &context_client,
+                                &node_client,
+                                context_id,
+                                context.root_hash,
+                                heads,
+                            )
+                            .await;
                         }
                     }
                     .into_actor(act),
@@ -302,4 +320,65 @@ impl NodeManager {
             },
         );
     }
+}
+
+/// Send a signed state beacon for each identity this node holds in
+/// `context_id`: its state as of this heartbeat, `root_hash` over the sorted
+/// `heads`. Peers count it towards releasing the tombstones they hold (see
+/// [`crate::tombstone_stability`]). Best-effort: an identity whose key cannot
+/// be read, or a send that fails, waits for the next tick.
+async fn broadcast_state_beacons(
+    context_client: &calimero_context_client::client::ContextClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    context_id: ContextId,
+    root_hash: calimero_primitives::hash::Hash,
+    heads: Vec<[u8; 32]>,
+) {
+    if !crate::tombstone_stability::beacon_heads_fit(&heads) {
+        debug!(%context_id, heads = heads.len(), "Too many DAG heads for a state beacon");
+        return;
+    }
+    let store = context_client.datastore();
+    let signers = calimero_governance_store::find_local_signing_identities(store, &context_id)
+        .unwrap_or_default();
+    for signer in signers {
+        let signature = match sign_state_beacon(store, context_id, signer, *root_hash, &heads) {
+            Ok(Some(signature)) => signature,
+            Ok(None) => continue,
+            Err(err) => {
+                debug!(%context_id, %signer, %err, "Failed to sign a state beacon");
+                continue;
+            }
+        };
+        if let Err(err) = node_client
+            .broadcast_state_beacon(&context_id, signer, root_hash, heads.clone(), signature)
+            .await
+        {
+            debug!(%context_id, %signer, error = %err, "Failed to broadcast a state beacon");
+        }
+    }
+}
+
+/// `signer`'s signature over its state beacon, or `None` when this node holds
+/// no key for it here.
+fn sign_state_beacon(
+    store: &calimero_store::Store,
+    context_id: ContextId,
+    signer: calimero_primitives::identity::PublicKey,
+    root_hash: [u8; 32],
+    heads: &[[u8; 32]],
+) -> eyre::Result<Option<[u8; 64]>> {
+    use zeroize::Zeroize as _;
+
+    let Some(mut secret) =
+        calimero_governance_store::resolve_local_signing_key(store, &context_id, &signer)?
+    else {
+        return Ok(None);
+    };
+    let key = calimero_primitives::identity::PrivateKey::from(secret);
+    secret.zeroize();
+    let payload = calimero_node_primitives::sync::delta_auth::state_beacon_payload(
+        context_id, signer, root_hash, heads,
+    )?;
+    Ok(Some(key.sign(&payload)?.to_bytes()))
 }

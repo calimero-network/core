@@ -1149,8 +1149,8 @@ pub fn tee_random_bytes(buf: &mut [u8]) {
     }
 }
 
-/// Seal `plaintext` to the Ed25519 public key `key`, so that only a run whose
-/// executor is `key` can [`open_sealed`] it.
+/// Seal `plaintext` to the Ed25519 public key `key`, so that only a run in this
+/// context whose executor is `key` can [`open_sealed`] it.
 ///
 /// A TEE deals a hidden card by sealing it to each of the player's device keys
 /// ([`account_device_keys`]) and writing the envelopes into `TeeOnly` state.
@@ -1162,7 +1162,7 @@ pub fn tee_random_bytes(buf: &mut [u8]) {
 /// is not a usable Ed25519 point.
 ///
 /// Under the in-process test harness the envelope is not encrypted; it opens
-/// only for the key it names, like the real one.
+/// only for the key and context it names, like the real one.
 #[must_use]
 pub fn seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
     #[cfg(target_arch = "wasm32")]
@@ -1184,7 +1184,8 @@ pub fn seal_to(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
 
 /// Open an envelope [`seal_to`] made for this run's executor key.
 ///
-/// `None` if the envelope is sealed to another key, malformed, or tampered with.
+/// `None` if the envelope is sealed to another key or in another context,
+/// malformed, or tampered with.
 ///
 /// On a TEE node the host traps unless the TEE scheduler fired the run, so a
 /// JSON-RPC call on that node cannot read what is sealed to the TEE. In a
@@ -1453,6 +1454,8 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
 /// store just like `blob_create`/`blob_write` would, with no chunk GC path
 /// to reclaim them later. A view method that loops over many distinct blob
 /// ids in a large context will grow the node's blob store accordingly.
+///
+/// `context_id` must be [`context_id()`]; the host refuses any other.
 pub fn blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {

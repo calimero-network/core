@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::content_hash::ContentHash;
-use calimero_store::key::BlobMeta as BlobMetaKey;
+use calimero_store::key::{BlobMeta as BlobMetaKey, BlobOwner as BlobOwnerKey};
 use calimero_store::types::BlobMeta as BlobMetaValue;
 use calimero_store::Store as DataStore;
 use camino::Utf8PathBuf;
@@ -140,6 +140,25 @@ impl RefLocks {
         // and one byte is enough to spread ids across the stripes.
         let stripe = usize::from(AsRef::<[u8; 32]>::as_ref(&id)[0]) % REF_LOCK_STRIPES;
         self.0[stripe].lock().await
+    }
+}
+
+/// What [`BlobManager::delete`] did to a blob.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Deleted {
+    /// No reference to the id existed.
+    Absent,
+    /// One reference was released and others still hold the bytes.
+    Released,
+    /// The last reference went: the bytes and the contexts they were held for.
+    Freed,
+}
+
+impl Deleted {
+    /// Whether the blob existed, so a reference was released.
+    #[must_use]
+    pub const fn existed(self) -> bool {
+        !matches!(self, Self::Absent)
     }
 }
 
@@ -303,22 +322,22 @@ impl BlobManager {
     /// reference to each of its chunks too — symmetric with [`Self::put_sized`],
     /// which increments the root and every chunk on add.
     ///
-    /// Returns `true` if `id` existed (its reference was released), `false` if
-    /// it was already absent. Note that `true` does *not* imply the bytes were
-    /// physically removed — if other owners still reference the content, only
-    /// the count was decremented and the blob remains readable for them.
+    /// Returns [`Deleted::Freed`] when that was the last reference, and
+    /// [`Deleted::Released`] when other owners still reference the content and
+    /// only the count was decremented.
     ///
     /// Safe against a concurrent add or delete of the *same* content id: each
     /// reference change runs under that id's stripe lock (see [`RefLocks`]), so
     /// no increment can be lost and no content can be freed twice. Ids are
     /// locked one at a time — the root's guard is dropped before its chunks are
     /// released — so two deletes over overlapping chunk sets cannot deadlock.
-    pub async fn delete(&self, id: BlobId) -> EyreResult<bool> {
+    pub async fn delete(&self, id: BlobId) -> EyreResult<Deleted> {
         // Release the root's own reference. A root blob keeps its content in its
         // chunks and has no backing file of its own.
-        let links = match self.release_ref(Slot::Root(id)).await? {
-            RefRelease::Absent => return Ok(false),
-            RefRelease::Released { links } | RefRelease::Freed { links } => links,
+        let (deleted, links) = match self.release_ref(Slot::Root(id)).await? {
+            RefRelease::Absent => return Ok(Deleted::Absent),
+            RefRelease::Released { links } => (Deleted::Released, links),
+            RefRelease::Freed { links } => (Deleted::Freed, links),
         };
 
         // Release one reference from every chunk, mirroring the per-chunk
@@ -334,7 +353,23 @@ impl BlobManager {
             }
         }
 
-        Ok(true)
+        Ok(deleted)
+    }
+
+    /// Drop every row recording a context `id` is held for. The index is keyed
+    /// by context first, so this scans it; it runs only when a blob is freed.
+    fn forget_owners(&self, id: BlobId) -> EyreResult<()> {
+        let mut handle = self.data_store.handle();
+        let owners = {
+            let mut iter = handle.iter::<BlobOwnerKey>()?;
+            iter.keys()
+                .filter(|owner| owner.as_ref().map_or(true, |owner| owner.blob_id() == id))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for owner in owners {
+            handle.delete(&owner)?;
+        }
+        Ok(())
     }
 
     /// Decrement `id`'s reference count by one, removing the metadata row and
@@ -381,6 +416,11 @@ impl BlobManager {
         match meta.refs.saturating_sub(1) {
             0 => {
                 self.data_store.handle().delete(&key)?;
+                // Under the id's guard, so an add of the same bytes for another
+                // context cannot record its owner in between and lose it here.
+                if matches!(slot, Slot::Root(_)) {
+                    self.forget_owners(id)?;
+                }
                 // A failed file delete is logged, not propagated, so the caller
                 // still goes on to release this blob's chunks.
                 if let Some(file) = slot.file() {
@@ -968,7 +1008,7 @@ mod delete_tests {
         assert!(mgr.has(id).unwrap());
         assert!(mgr.get(id).unwrap().is_some());
 
-        assert!(mgr.delete(id).await.unwrap());
+        assert!(mgr.delete(id).await.unwrap().existed());
 
         // The metadata row must be gone too; otherwise `has` keeps reporting the
         // blob as present while `get` can no longer read it.
@@ -976,7 +1016,7 @@ mod delete_tests {
         assert!(mgr.get(id).unwrap().is_none());
 
         // A second delete has nothing left to remove.
-        assert!(!mgr.delete(id).await.unwrap());
+        assert!(!mgr.delete(id).await.unwrap().existed());
     }
 
     fn refs_of(mgr: &BlobManager, id: BlobId) -> Option<u32> {
@@ -1023,7 +1063,7 @@ mod delete_tests {
         );
 
         // First owner releases their reference: the blob survives for the second.
-        assert!(mgr.delete(id).await.unwrap());
+        assert!(mgr.delete(id).await.unwrap().existed());
         assert_eq!(refs_of(&mgr, id), Some(1));
         assert!(mgr.has(id).unwrap());
         assert_eq!(
@@ -1033,7 +1073,7 @@ mod delete_tests {
         );
 
         // Second owner releases the last reference: now it is really gone.
-        assert!(mgr.delete(id).await.unwrap());
+        assert!(mgr.delete(id).await.unwrap().existed());
         assert_eq!(refs_of(&mgr, id), None);
         assert!(!mgr.has(id).unwrap());
     }
@@ -1089,7 +1129,7 @@ mod delete_tests {
 
         // Delete the first root. Its unique tail chunk goes; the shared chunk is
         // decremented but kept, and the sibling blob reads back intact.
-        assert!(mgr.delete(root_a).await.unwrap());
+        assert!(mgr.delete(root_a).await.unwrap().existed());
         assert!(!mgr.has(root_a).unwrap());
         assert_eq!(
             chunk_refs_of(&mgr, tail_a),
@@ -1108,7 +1148,7 @@ mod delete_tests {
         );
 
         // Deleting the sibling now frees the shared chunk for good.
-        assert!(mgr.delete(root_b).await.unwrap());
+        assert!(mgr.delete(root_b).await.unwrap().existed());
         assert_eq!(chunk_refs_of(&mgr, shared_chunk), None);
     }
 }
@@ -1445,12 +1485,12 @@ mod refcount_concurrency_tests {
         // Each owner but the last releases its reference and the content must
         // still be readable — the real cost of a lost increment.
         for remaining in (1..OWNERS).rev() {
-            assert!(mgr.delete(id).await.unwrap());
+            assert!(mgr.delete(id).await.unwrap().existed());
             assert_eq!(refs_of(&mgr, id), Some(remaining));
             assert_eq!(read_all(&mgr, id).await, data, "surviving owners keep data");
         }
 
-        assert!(mgr.delete(id).await.unwrap());
+        assert!(mgr.delete(id).await.unwrap().existed());
         assert_eq!(refs_of(&mgr, id), None, "last release frees the blob");
         assert!(!mgr.has(id).unwrap());
     }
@@ -1491,7 +1531,7 @@ mod refcount_concurrency_tests {
                     let deleter = {
                         let mgr = mgr.clone();
                         tokio::spawn(async move {
-                            assert!(mgr.delete(id).await.unwrap(), "blob was present");
+                            assert!(mgr.delete(id).await.unwrap().existed(), "blob was present");
                         })
                     };
                     [adder, deleter]
@@ -1567,7 +1607,7 @@ mod refcount_concurrency_tests {
         // Drop all but the last root: the shared chunk is decremented each time
         // and the remaining files still read back whole.
         for (i, root) in roots.iter().enumerate().take(roots.len() - 1) {
-            assert!(mgr.delete(*root).await.unwrap());
+            assert!(mgr.delete(*root).await.unwrap().existed());
             assert_eq!(
                 chunk_refs_of(&mgr, shared_chunk),
                 Some(ROOTS - u32::try_from(i).unwrap() - 1),
@@ -1582,7 +1622,7 @@ mod refcount_concurrency_tests {
             "the surviving root is not corrupted"
         );
 
-        assert!(mgr.delete(roots[last]).await.unwrap());
+        assert!(mgr.delete(roots[last]).await.unwrap().existed());
         assert_eq!(
             chunk_refs_of(&mgr, shared_chunk),
             None,

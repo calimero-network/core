@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::cell::Cell;
 use tracing::{debug, error, info, trace, warn};
 
+use super::write_meter::metered;
 use crate::store::Storage as RuntimeStorage;
 use crate::{
     errors::{HostError, Location, PanicContext},
@@ -1283,7 +1284,7 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| -> VMLogicResult<()> {
             debug!(
                 target: "runtime::host::system",
-                "apply_storage_delta using context id"
+                "persist_root_state using context id"
             );
             let env = build_runtime_env(
                 logic.storage,
@@ -1307,7 +1308,10 @@ impl VMHostFunctions<'_> {
                 metadata.crdt_type = Some(calimero_primitives::crdt::CrdtType::js_root());
             }
 
-            with_runtime_env(env, move || {
+            // The app's own write, so held to the guest write limits; a replayed
+            // delta (`apply_storage_delta`) is not, so JS sync is not refused.
+            let (env, meter) = metered(env, logic);
+            let saved = with_runtime_env(env, move || {
                 // Store the root document as the ROOT_ENTRY_ID leaf (a child of
                 // Id::root()), NOT on Id::root() itself. A JS root converges only
                 // via the HashComparison deferred-merge path, which fires only for
@@ -1315,8 +1319,9 @@ impl VMHostFunctions<'_> {
                 // owns CRDT collections) it was never deferred. See
                 // Interface::save_root_entry.
                 Interface::<MainStorage>::save_root_entry(payload, metadata)
-            })
-            .map_err(|err| {
+            });
+            meter.settle(logic)?;
+            saved.map_err(|err| {
                 VMLogicError::from(HostError::Panic {
                     context: PanicContext::Host,
                     message: format!("persist_root_state failed: {err}"),
@@ -1545,6 +1550,13 @@ impl VMHostFunctions<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
+    use calimero_storage::delta::{commit_causal_delta, StorageDelta};
+    use calimero_storage::env::with_runtime_env;
+    use calimero_storage::{
+        address::Id, entities::Metadata, index::Index, interface::Interface, store::MainStorage,
+    };
     use wasmer::{AsStoreMut, Store};
 
     use crate::errors::{HostError, Location};
@@ -1552,10 +1564,162 @@ mod tests {
         tests::{
             prepare_guest_buf_descriptor, setup_vm, write_str, SimpleMockStorage, DESCRIPTOR_SIZE,
         },
-        Cow, VMContext, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE,
+        Cow, VMContext, VMHostFunctions, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE,
     };
 
-    use super::{CallbackHandlerGuard, CURRENT_CALLBACK_HANDLER};
+    use super::{build_runtime_env, CallbackHandlerGuard, CURRENT_CALLBACK_HANDLER};
+
+    const DOC_DESC_PTR: u64 = 64;
+    const KEY_DESC_PTR: u64 = 128;
+    const KEY_DATA_PTR: u64 = 512;
+    const DOC_DATA_PTR: u64 = 1024;
+
+    /// Places `doc` in guest memory behind the descriptor at [`DOC_DESC_PTR`].
+    fn put_doc(host: &VMHostFunctions<'_>, doc: &[u8]) {
+        prepare_guest_buf_descriptor(host, DOC_DESC_PTR, DOC_DATA_PTR, doc.len() as u64);
+        host.borrow_memory()
+            .write(DOC_DATA_PTR, doc)
+            .expect("write doc");
+    }
+
+    /// The JS app's root is its own write, so it is held to the value cap
+    /// `storage_write` enforces.
+    #[test]
+    fn test_persist_root_state_refuses_an_oversize_root_like_storage_write() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_value_size: NonZeroU64::new(4096).unwrap(),
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, &[0xAB; 8192]);
+        prepare_guest_buf_descriptor(&host, KEY_DESC_PTR, KEY_DATA_PTR, 1);
+
+        let err = host
+            .storage_write(KEY_DESC_PTR, DOC_DESC_PTR, 2)
+            .unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::ValueLengthOverflow)),
+            "{err:?}"
+        );
+        let err = host.persist_root_state(DOC_DESC_PTR, 0, 0).unwrap_err();
+        assert!(
+            matches!(err, VMLogicError::HostError(HostError::ValueLengthOverflow)),
+            "{err:?}"
+        );
+        assert_eq!(
+            host.read_root_state(1).unwrap(),
+            0,
+            "the root was not persisted"
+        );
+    }
+
+    #[test]
+    fn test_persist_root_state_draws_on_the_storage_write_budget() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_writes: 0,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, b"root");
+
+        let err = host.persist_root_state(DOC_DESC_PTR, 0, 0).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VMLogicError::HostError(HostError::StorageWriteCountExceeded { max: 0 })
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn test_persist_root_state_draws_on_the_storage_write_byte_budget() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_write_bytes: 1024,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, &[0xAB; 2048]);
+
+        let err = host.persist_root_state(DOC_DESC_PTR, 0, 0).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VMLogicError::HostError(HostError::StorageWriteBytesExceeded { max: 1024, .. })
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// A root write that fits is charged, so later writes see a smaller budget.
+    #[test]
+    fn test_persist_root_state_charges_the_budget_it_draws_on() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_writes: 64,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, b"root");
+        prepare_guest_buf_descriptor(&host, KEY_DESC_PTR, KEY_DATA_PTR, 1);
+
+        let refused = (0..64).any(|_| {
+            host.persist_root_state(DOC_DESC_PTR, 0, 0).is_err()
+                || host.storage_write(KEY_DESC_PTR, DOC_DESC_PTR, 2).is_err()
+        });
+        assert!(refused, "64 writes cannot cover 64 root saves");
+    }
+
+    #[test]
+    fn test_persist_root_state_accepts_a_root_within_the_limits() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, b"root");
+        host.persist_root_state(DOC_DESC_PTR, 0, 0).unwrap();
+        assert_eq!(host.read_root_state(1).unwrap(), 1);
+    }
+
+    /// A peer's delta is applied whatever this execution's caps, so sync is
+    /// never refused.
+    #[test]
+    fn test_apply_storage_delta_ignores_the_write_limits() {
+        let root = vec![0xCD; 8192];
+        let mut peer = SimpleMockStorage::new();
+        let env = build_runtime_env(&mut peer, [0; 32], [0; 32], [0; 32]);
+        let artifact = with_runtime_env(env, || {
+            Interface::<MainStorage>::save_root_entry(root.clone(), Metadata::new(1, 1))
+                .expect("save root");
+            let (root_hash, _) = Index::<MainStorage>::get_hashes_for(Id::root())
+                .expect("root hash")
+                .expect("a root");
+            let delta = commit_causal_delta(&root_hash)
+                .expect("commit")
+                .expect("a delta");
+            borsh::to_vec(&StorageDelta::Actions(delta.actions)).expect("encode")
+        });
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_value_size: NonZeroU64::new(4096).unwrap(),
+            max_storage_writes: 0,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, &artifact);
+        host.apply_storage_delta(DOC_DESC_PTR).unwrap();
+        assert_eq!(host.read_root_state(1).unwrap(), 1);
+        assert_eq!(host.register_len(1).unwrap(), root.len() as u64);
+    }
 
     fn current_handler() -> Option<String> {
         CURRENT_CALLBACK_HANDLER.with(|name| name.borrow().clone())

@@ -115,22 +115,25 @@ signature = {
 ```
 
 The signed payload is **not** the raw archive bytes. It is the SHA-256 of the
-canonical manifest:
+canonical manifest, prefixed with a domain tag:
 
 ```text
-payload = SHA-256( JCS(manifest without `signature` and without any `_`-prefixed field) )
+payload = SHA-256( "calimero.bundle.manifest.v1" ‖ 0x00 ‖ JCS(manifest without `signature` and without any `_`-prefixed field) )
 ```
 
 The manifest is canonicalized with RFC 8785 (JCS) — lexicographically ordered keys —
 after dropping the `signature` field and **every** underscore-prefixed field
 (transient markers such as `_binary` / `_overwrite` are excluded so they cannot be
-smuggled into the signed view). The SHA-256 of those canonical bytes is the Ed25519
-signing payload (`crates/node/primitives/src/bundle/signature.rs`).
+smuggled into the signed view). The domain-tagged SHA-256 of those canonical bytes is
+the Ed25519 signing payload (`crates/bundle/src/signature.rs`). The tag keeps a
+signature over a manifest from being valid for any other message the same key signs,
+and a signature made over the bare SHA-256 is refused. The bundle hash stays the
+plain SHA-256 of the canonical bytes, so a bundle's identity does not depend on the tag.
 
 Verification (`verify_manifest_signature`) is strict:
 
 - `algorithm` must equal `"ed25519"` exactly — `"ED25519"` / `"Ed25519"` are rejected.
-- The signature must verify against `publicKey` over that SHA-256 payload.
+- The signature must verify against `publicKey` over that tagged SHA-256 payload.
 - `signerId` must equal the value **derived from** `publicKey`:
   `did:key:z{base58btc(0xed01 ‖ pubkey)}` — multibase base58btc of the multicodec
   `0xed01` (ed25519-pub) tag concatenated with the 32-byte key. A `signerId` the
@@ -482,8 +485,8 @@ staying reachable - see
 [how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node).
 The ladder is the carrier rather than the application row because a bundle's
 `ApplicationId` is version-stable: one row cannot describe both the version this member has
-installed and the one it is being moved to, and the row deliberately never overwrites a
-local install.
+installed and the one it is being moved to, and no remote party can roll the row back to an
+older release (see [how bytecode reaches a node](/protocol/applications/#how-bytecode-reaches-a-node)).
 
 `GroupOp::TargetApplicationSet`, the single-group form of the same change, carries the
 identical pair, and so does `GroupOp::ContextRegistered` - that is how a joiner learns where

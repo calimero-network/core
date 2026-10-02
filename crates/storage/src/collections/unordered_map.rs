@@ -46,9 +46,13 @@ use crate::store::MainStorage;
 use std::collections::BTreeMap;
 
 /// A map collection that stores key-value pairs.
-#[derive(BorshSerialize, BorshDeserialize)]
+///
+/// An entry whose value is an [`LwwRegister`](super::LwwRegister) stores the
+/// register without its stamp, which is the entry's `updated_at` (see
+/// `lww_register::entry_stamp`).
+#[derive(BorshSerialize)]
 pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
-    #[borsh(bound(serialize = "", deserialize = ""))]
+    #[borsh(bound(serialize = ""))]
     /// Entries are stored **value first**: `(V, K)`, not `(K, V)`.
     ///
     /// The key is not used to find anything — `get` hashes it into the child id
@@ -62,6 +66,14 @@ pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
     /// with the key in front there is no way to skip it. The public API is
     /// unchanged and still speaks `(K, V)`.
     inner: Collection<(V, K), S>,
+}
+
+impl<K, V, S: StorageAdaptor> BorshDeserialize for UnorderedMap<K, V, S> {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        Ok(Self {
+            inner: Collection::deserialize_reader(reader)?.stamp_values_of::<V>(),
+        })
+    }
 }
 
 /// Re-key a nested map (a map stored as another collection's value) relative to
@@ -140,7 +152,7 @@ where
     /// Create a new map collection (internal, shared with Counter).
     pub(super) fn new_internal() -> Self {
         Self {
-            inner: Collection::new(None),
+            inner: Collection::new(None).stamp_values_of::<V>(),
         }
     }
 
@@ -154,7 +166,7 @@ where
     /// Only use this for truly inert placeholder fields.
     pub(super) fn new_detached() -> Self {
         Self {
-            inner: Collection::new_detached(),
+            inner: Collection::new_detached().stamp_values_of::<V>(),
         }
     }
 
@@ -168,7 +180,8 @@ where
                 parent_id,
                 field_name,
                 CrdtType::UnorderedMap,
-            ),
+            )
+            .stamp_values_of::<V>(),
         }
     }
 
@@ -179,7 +192,8 @@ where
         crdt_type: CrdtType,
     ) -> Self {
         Self {
-            inner: Collection::new_with_field_name_and_crdt_type(parent_id, field_name, crdt_type),
+            inner: Collection::new_with_field_name_and_crdt_type(parent_id, field_name, crdt_type)
+                .stamp_values_of::<V>(),
         }
     }
 

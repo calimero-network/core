@@ -647,6 +647,20 @@ fn validate_limit_values(config: &ConfigFile) -> EyreResult<()> {
                 auth_config.jwt.refresh_token_expiry
             );
         }
+        if auth_config.jwt.client_access_token_expiry == 0 {
+            bail!("embedded_auth.jwt.client_access_token_expiry must be greater than 0");
+        }
+        if auth_config.jwt.client_refresh_token_expiry == 0 {
+            bail!("embedded_auth.jwt.client_refresh_token_expiry must be greater than 0");
+        }
+        if auth_config.jwt.client_access_token_expiry >= auth_config.jwt.client_refresh_token_expiry
+        {
+            bail!(
+                "embedded_auth.jwt.client_access_token_expiry ({}) should be less than client_refresh_token_expiry ({})",
+                auth_config.jwt.client_access_token_expiry,
+                auth_config.jwt.client_refresh_token_expiry
+            );
+        }
 
         // Password length constraints
         if auth_config.user_password.min_password_length == 0 {

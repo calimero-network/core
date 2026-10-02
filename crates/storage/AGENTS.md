@@ -347,6 +347,8 @@ switching a field between the two types needs no migration.
   The overflowing character opens a new block parented on the full run's last node, side right.
   Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.
 - No node-local derived state: order is recomputed from the stored blocks on every call, because gas must be equal on every replica.
+  So an insert by position reads one row per block, which is linear in the document (about 40 rows at 10,000 characters).
+  A replicated position index does not help: a visible position needs live counts, a count is not joinable (two replicas deleting one character would count it twice), so the index has to hold every block's tombstones, and every keystroke would ship it in its delta.
 - A block is in bounds (`TextBlock::is_sound(key)`, judged against the map key) when it is stored at its own start id, holds 1 to `MAX_RUN_LEN` nodes, every node counter and its parent's is below `u32::MAX`, and its tombstone bitmap is trimmed with no bit past the run. `load` and `merge_blocks_from` leave any other block out, and a row filed under an id its key does not derive too. The apply path stores such a row unfiltered; `merge_blocks_from` drops a lone one. `RichDocument`'s spine and every `FugueText` read go through `load`.
 - `join_under` orders the sync join by that check: one side in bounds gives exactly that side (the other's tombstones are not merged in); two in bounds go through `join_block`; of two out of bounds the greater by every field stays, so neither turns readable. The result is the same in either order and grouping.
 - Minting never produces a block out of bounds: `next_counter` and `bump` return `COUNTER_EXHAUSTED` rather than use `u32::MAX`, and a write moves its first counter past any row left out that its run could land on, since that row's timestamp could win over the write. The goal is a document that stays readable, not that no peer can stop a replica typing: a peer can still store a block in bounds near a replica's top counter and exhaust that replica, which then errors on insert instead of losing the character.
@@ -656,6 +658,39 @@ the resolution of *that action's own* signer. Storage verifies the signature und
 the key the action names and checks the account against the writer set, but has no
 bindings with which to confirm the two describe the same principal.
 
+**A relay writes on an account's behalf by saying so.** When a relay executes a
+call for an account (a warrant-carried delegated run), it signs the resulting
+entries with its OWN key: `signature_data.signer` is the relay's key — still the
+key the signature verifies under, never a key that did not sign — and
+`signature_data.on_behalf` is the account it wrote for. The signed payload
+commits to `on_behalf` (`hash_signature_data` in `action.rs`), so it cannot be
+stripped, added or swapped in transit. Ownership and the writer-set checks are
+asked of that account (`Interface::author_account`): the node must resolve
+`signer_account` to exactly the `on_behalf` account, which it does only when the
+signer's account is a `RelayTee` in the namespace and the account is a member who
+may write (`calimero_governance_store::on_behalf_standing`; no capability bit is
+consulted). On the delta path the resolution is per action: the node judges each
+on-behalf action at the delta's cut and lists the accepted ones in
+`StorageDelta::CausalActions::on_behalf_accounts` (action id → account), which
+`Root::sync` uses in place of the delta-wide `signer_account` for that action. So
+the delta's author need not be the account (a relay may write any member's
+entries), and an on-behalf action the node did not list is checked against the
+delta-wide account as before. The node refuses a delta with an on-behalf action
+it cannot accept (`calimero-node`'s `delta_store::on_behalf_accounts`).
+Any other resolution — the relay's own account, a third account, `None` — is
+refused. A User refusal names which check fired: `bad-signature`,
+`author-unresolved` or `wrong-author`. `tests/on_behalf.rs` pins every arm.
+
+**Known limitation: a writer-set rotation cannot be made on someone's behalf.**
+`RotationLogEntry` records the key that signed a rotation (`signer`) and carries
+no `on_behalf`, and rotation-log authentication checks that key's account against
+the prior writer set's `ADMIN` bit. A rotation a relay signs for an account is
+therefore attributed to the relay, which is not in the set, and is refused by
+every peer that authenticates the log. Delegated runs can write `Shared` and
+`SharedMember` entries for an account but cannot change a writer set for it.
+Deferred: closing it means an `on_behalf` on the rotation entry, covered by its
+signature, and the same rule at rotation authentication.
+
 Writing a test here? Derive the account from a different domain than the key (see
 `tests::common::account_of_key`). A test where the two are equal cannot tell an
 account-keyed gate from a device-keyed one.
@@ -810,6 +845,16 @@ struct MyType {
   stamp dropped the write. Do not add a write path that stamps from the clock
   alone; a replay that must keep its writer's stamp goes through
   `save_raw_replayed`. `tests/entity_clock.rs` steps the clock back for each case.
+- **A register that is an `UnorderedMap` or `SortedMap` entry's whole value is stored
+  without its stamp.** The entry's `updated_at` is its stamp
+  (`lww_register::entry_stamp`): the collection names its value type on its `Collection` (`stamp_values_of`), the entry offers it to
+  the register that starts its value, and `find_by_id` names the row's `updated_at`
+  for the decode. Every path already resolved such an entry by `updated_at`, never by
+  the register's HLC, so that was 16 dead bytes per entry. Registers anywhere else keep
+  their stamp: a state field or a field of a stored value is merged by it, a set's entry
+  is addressed by its own bytes, and `Vector::merge` pairs two vectors' elements by
+  position and decides by the stamp (`crdt_contract`'s vector law test fails without it). Code that decodes entry bytes outside the
+  collection must do as `tests::common::map_entry_bytes` does, or the decode fails.
 - CRDTs auto-merge on sync - no manual conflict resolution needed
 - Use nested CRDTs (UnorderedMap<String, LwwRegister<String>>) for last-write-wins semantics
 - Convert values with .into() when inserting: self.data.insert(key, value.into())?
@@ -898,6 +943,14 @@ struct MyType {
   a written-once delete);
   `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
   the layout store-wide.
+- **No entity is its own ancestor.** `apply_action` refuses an upsert whose links (the
+  entity under its first ancestor, each missing ancestor under the next) would put an
+  entity under itself, give it more than `MAX_PARENT_CHAIN` ancestors, or link one id
+  twice (`refuse_ancestor_loop`), before it writes anything, so a sync merge drops it.
+  Moving a stored entity does not re-check the depth of what is under it. Every walk up
+  the tree stops after `MAX_PARENT_CHAIN` steps with `StorageError::ParentChainTooLong`, a
+  hard error, and the walks down a subtree visit each entity once, so a loop or an
+  over-deep chain fails the call instead of spinning it. `tests/index.rs` `parent_loops`.
 
 - **A cell's writers come from the host, and a rotation is a request.** `Interface::resolve_anchor_writers(anchor)` asks `env::shared_writers(anchor)`: `Some(Rotated(w))` is `w`, `Some(Genesis)` is the `Shared { writers }` stored with the anchor, and `None` is the empty set (every caller refuses). Nothing on the local write path or on resolve reads the rotation log any more; a receiver no longer appends a rotation-log child on apply and the author never did, so a new cell hashes the same on every node; `rotation_log.rs` and `CrdtType::RotationLog` stay for a later change to delete. `WriterSetCell::rotate_writers_scoped` requires `ADMIN` in the current set, refuses a rotation the node could not publish (`SharedRotation::refusal`: an empty set on either side, a cell that is not a cell id, or a set over `MAX_WRITERS_PER_ROTATION`; the wasm host function applies the same rule), then calls `env::record_shared_rotation(&SharedRotation { cell, prior, new })` and invalidates its value cache: it does not re-stamp the wrapper, save anything or touch the index, so a rotation writes no byte and ships no delta (the node publishes the request from the run's `Outcome` as a governance op). The env keeps a per-run overlay, so the run that rotated reads the new set back at once (on wasm the instance is one run; on native `with_runtime_env` clears the overlay on entry and puts the outer run's back on exit). Native `mocked` answers `Some(Genesis)` with no resolver and keeps unsunk requests for `env::take_recorded_rotations()` (tests); `RuntimeEnv::with_shared_writers` and `with_rotation_sink` install the host's. `tests::common::env_resolving` plays the governance fold in a test. `apply_action`'s `Shared` arm refuses an update to an existing anchor whose claimed `writers` differ from the stored set (`ActionNotAllowed`), after the signature and mask checks; writer sets change by governance op alone. The same arm reads the writers it checks from `ApplyContext::effective_writers` when the node resolved a rotated set at the delta's position, and otherwise from the host exactly as `resolve_anchor_writers` does (the stored set at genesis, the empty set when the host cannot resolve), so a write with no cut of its own (a repair, a pushed leaf) is judged by the host's answer for repairs: every writer the cell has had by the node's current heads (`shared_writers::ever_writers`), so a since-removed writer's earlier write still reaches a repairing node. A `Shared` wrapper delete (`DeleteRef`) is judged the same way, by `ctx.effective_writers` else `resolve_anchor_writers`, and so is the local stamp (`authorize_local_shared_stamp`), never by the stored set alone. `tests/shared_cell_creator_and_applier.rs` pins that the node that writes a cell and a node that applies its deltas hold the same anchor hash and root hash through creation, a member entry, an update, a rotation (which writes nothing), and both deletes.
 - **A cell's writer set is the fold of its governance rotation steps** (`shared_writers::fold`, the rules are in the governance chapter of the docs). It takes the steps and their causal pasts and nothing else, so its answer cannot depend on arrival order or on this node's store. It takes at most `MAX_STEPS_PER_CELL` steps and has no answer past that, which bounds its cost without dropping history, and treats two identical concurrent rotations as one so a step built on either still counts. Its `Ok(None)` means no step took effect and `Err(OverBudget)` that there is no answer; the reader, not this crate, knows whether the cut could be read at all. `ever_writers` shares the counting loop (`count_steps`) and returns the genesis set unioned (accounts; `OpMask` bits OR-ed) with the `new` set of every counted step, void or not, because each was a real writer set at some cut.

@@ -27,6 +27,12 @@ use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_storage::shared_writers::{self, OverBudget, RotationStep};
 
+mod void;
+#[cfg(test)]
+mod void_tests;
+
+pub use void::AuthorityBase;
+
 #[cfg(test)]
 mod shared_writers_tests;
 #[cfg(test)]
@@ -217,6 +223,9 @@ pub struct CutAncestry<'a> {
     reached: HashSet<[u8; 32]>,
     missing: Option<[u8; 32]>,
     opaque: Option<[u8; 32]>,
+    /// Ops of the walk with no authority (see [`ScopeState::void_ops`]): kept in `ops`
+    /// so causal depth runs through them, but the view folds none.
+    void: BTreeSet<[u8; 32]>,
 }
 
 impl<'a> CutAncestry<'a> {
@@ -1143,6 +1152,16 @@ impl ScopeState {
     /// at-cut read to get both answers.
     #[must_use]
     pub fn cut_ancestry<'a>(log: &'a [Op], parents: &[[u8; 32]]) -> CutAncestry<'a> {
+        Self::cut_ancestry_with_void(log, parents, &BTreeSet::new())
+    }
+
+    /// [`Self::cut_ancestry`], told which ops of `log` carry no authority.
+    #[must_use]
+    pub fn cut_ancestry_with_void<'a>(
+        log: &'a [Op],
+        parents: &[[u8; 32]],
+        void: &BTreeSet<[u8; 32]>,
+    ) -> CutAncestry<'a> {
         let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
         let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
@@ -1183,6 +1202,7 @@ impl ScopeState {
             reached: visited,
             missing,
             opaque,
+            void: void.clone(),
         }
     }
 
@@ -1204,7 +1224,14 @@ impl ScopeState {
     /// fully-materialized ancestry.
     #[must_use]
     pub fn acl_view_at(log: &[Op], parents: &[[u8; 32]]) -> AclView {
-        Self::acl_view_from_ancestry(&Self::cut_ancestry(log, parents))
+        Self::acl_view_at_with_base(log, parents, AuthorityBase::default())
+    }
+
+    /// [`Self::acl_view_at`] with the facts no op carries.
+    #[must_use]
+    pub fn acl_view_at_with_base(log: &[Op], parents: &[[u8; 32]], base: AuthorityBase) -> AclView {
+        let void = Self::void_ops(log, base);
+        Self::acl_view_from_ancestry(&Self::cut_ancestry_with_void(log, parents, &void))
     }
 
     /// Fold an already-walked ancestry into an [`AclView`].
@@ -1262,6 +1289,9 @@ impl ScopeState {
 
         let mut state = Self::default();
         for &op in ancestry {
+            if walked.void.contains(&op.id()) {
+                continue;
+            }
             state.apply_with_generation(op, generation.get(&op.id()).copied().unwrap_or(0));
         }
         state.acl_view()

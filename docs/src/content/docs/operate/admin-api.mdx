@@ -187,6 +187,11 @@ in this order:
 If the `Authorization` header is present, the `?token=` query parameter is
 ignored entirely.
 
+The upgrade needs `context:subscribe`. Each `execute` message is then checked
+against the same token for `context:execute` on its context (and method, for a
+method-scoped grant), so a subscribe-only token can subscribe but its `execute`
+messages are refused.
+
 ## Server-Sent Events
 
 | Method | Path | Purpose |
@@ -376,7 +381,7 @@ split.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| PUT | `/admin-api/blobs` | Upload a blob. |
+| PUT | `/admin-api/blobs` | Upload a blob. Optional `?hash=<hex>` to verify the content, and `?context_id=<id>` to share it in a context this node is a member of (`400` for any other context, and nothing is stored). Peers are served only blobs held for the context they ask under, so a blob uploaded without a context stays local. |
 | GET | `/admin-api/blobs` | List blobs. |
 | GET | `/admin-api/blobs/:blob_id` | Download a blob. Optional `?context_id=<id>`: if this node does not hold the blob, look for it among the context's peers and download it from one. |
 | HEAD | `/admin-api/blobs/:blob_id` | Get blob info/metadata (headers only). Optional `?context_id=<id>`: see below. |

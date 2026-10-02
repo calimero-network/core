@@ -1,4 +1,4 @@
-use calimero_crypto::{Nonce, SharedKey, NONCE_LEN};
+use calimero_crypto::{Nonce, Purpose, SharedKey, NONCE_LEN};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::blobs::BlobId;
@@ -86,7 +86,7 @@ impl SyncManager {
             .and_then(|i| i.private_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity)?;
+        let shared_key = SharedKey::new(&private_key, &their_identity, Purpose::BlobTransfer)?;
 
         let (tx, mut rx) = mpsc::channel(1);
 
@@ -165,6 +165,7 @@ impl SyncManager {
             );
             return Err(err);
         }
+        self.node_client.record_blob_owner(&context.id, &blob_id)?;
 
         info!(
             context_id=%context.id,
@@ -194,8 +195,13 @@ impl SyncManager {
         );
 
         // An http node resolves applications from its registry, so it is not a
-        // source of their bytes; to the peer that reads as "not held".
-        let held = if self.node_client.may_share_blob(&blob_id)? {
+        // source of their bytes; to the peer that reads as "not held". Neither
+        // is a blob this node holds only for another context.
+        let held = if self.node_client.may_share_blob(&blob_id)?
+            && self
+                .node_client
+                .is_blob_held_for_context(&context.id, &blob_id)?
+        {
             self.node_client.get_blob(&blob_id, None).await?
         } else {
             None
@@ -220,7 +226,7 @@ impl SyncManager {
             .and_then(|i| i.private_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity)?;
+        let shared_key = SharedKey::new(&private_key, &their_identity, Purpose::BlobTransfer)?;
         let mut our_nonce = rand::rng().random::<Nonce>();
 
         self.send(

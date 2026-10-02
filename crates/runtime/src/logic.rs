@@ -291,9 +291,8 @@ const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
 /// `private_storage_write`, and `storage_index_set` all draw from this one
 /// budget — so a guest loop cannot issue an unbounded stream of writes into the
 /// host store (each write carries fixed per-entry overhead independent of its
-/// size). CRDT/root writes performed by the storage interface
-/// (`persist_root_state`, `apply_storage_delta`) go through a separate writer
-/// closure and are NOT charged here.
+/// size). The JS root and collection writes are charged too; a replayed delta
+/// (`apply_storage_delta`, guest-callable) is NOT, so JS sync is not refused.
 const DEFAULT_MAX_STORAGE_WRITES: u64 = 100_000;
 /// Default maximum cumulative bytes a single execution may write to storage, in
 /// MiB (128 MiB).
@@ -405,16 +404,17 @@ pub struct VMLimits {
     pub max_storage_value_size: NonZeroU64,
     /// The maximum number of direct guest storage writes per execution.
     ///
-    /// Shared budget across `storage_write`, `private_storage_write`, and
-    /// `storage_index_set`: a per-execution *count* ceiling that turns an
-    /// unbounded write loop into a trappable one. CRDT/root writes made through
-    /// the storage interface are not charged against it.
+    /// Shared budget across `storage_write`, `private_storage_write`, the
+    /// `storage_index_*` writes and the JS collection and root host functions'
+    /// writes: a per-execution *count* ceiling that turns an unbounded write
+    /// loop into a trappable one. A replayed delta (`apply_storage_delta`) is
+    /// not charged against it.
     pub max_storage_writes: u64,
     /// The maximum cumulative `key + value` bytes written to storage per
     /// execution.
     ///
     /// The byte-sized companion to [`max_storage_writes`](Self::max_storage_writes),
-    /// sharing the same budget across the three write host functions.
+    /// sharing the same budget across the same writes.
     pub max_storage_write_bytes: u64,
     /// The maximum number of blob handles that can exist.
     pub max_blob_handles: u64,
@@ -769,9 +769,9 @@ impl<'a> VMLogic<'a> {
     /// Charges one storage write of `bytes` (`key.len() + value.len()`) against
     /// the shared per-execution storage-write budget.
     ///
-    /// Shared by `storage_write`, `private_storage_write`, and
-    /// `storage_index_set` so a guest cannot sidestep the ceiling by spreading
-    /// writes across the main store, the private store, and the ordered index.
+    /// Shared by `storage_write`, `private_storage_write`, `storage_index_set`
+    /// and the JS collection and root host functions so a guest cannot sidestep the
+    /// ceiling by spreading writes across the stores and the ordered index.
     /// Charged *before* the backend write so a rejected write never touches the
     /// store.
     ///
