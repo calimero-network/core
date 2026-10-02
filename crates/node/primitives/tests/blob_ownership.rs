@@ -70,6 +70,33 @@ async fn a_local_hit_records_no_context() {
         .unwrap());
 }
 
+/// Bytes held for one context become another's only when a peer of that one
+/// serves them, even though they are already on disk.
+#[actix::test]
+async fn a_blob_held_for_another_context_is_held_once_this_ones_peer_serves_it() {
+    let (network, _peer) = fake_peer_network(PeerBehavior::Serves(BYTES.to_vec()));
+    let (node_client, _data, _blobs) = create_test_node_client_with(None, network).await;
+    let (local, _size) = node_client
+        .add_blob(BYTES, Some(BYTES.len() as u64), None)
+        .await
+        .expect("store bytes");
+    node_client
+        .record_blob_owner(&ContextId::from(OTHER), &local)
+        .unwrap();
+
+    let fetched = node_client
+        .fetch_blob_for_context(&local, &ContextId::from(CONTEXT))
+        .await
+        .expect("network fetch");
+
+    assert!(fetched.is_some());
+    for context in [CONTEXT, OTHER] {
+        assert!(node_client
+            .is_blob_held_for_context(&ContextId::from(context), &local)
+            .unwrap());
+    }
+}
+
 /// Once the last reference goes, so do the contexts the blob was held for:
 /// identical bytes added again later with no context must not be served.
 #[actix::test]

@@ -1405,9 +1405,9 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
 }
 
 /// Open a blob for reading, fetching it from the context's peers if this node
-/// does not already hold it.
+/// does not already hold it for this context.
 ///
-/// Returns 0 if the blob is available neither locally nor from any peer.
+/// Returns 0 if the blob is neither held for this context nor served by its peers.
 ///
 /// Produces no state delta, which is what makes it legal to call from a
 /// `#[app::view]` method — but it is not a cheap read. It can block for
@@ -1488,7 +1488,9 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
 
 /// Announce a blob to a specific context for network discovery.
 /// This makes the blob discoverable by other nodes in the context.
-/// Returns true if the announcement was successful.
+/// Returns true if the announcement was successful, false unless the blob is
+/// held for this context: written by the app, uploaded with this context's id,
+/// or fetched from its peers.
 ///
 /// # Security
 /// For security reasons, a context can only announce blobs to itself.

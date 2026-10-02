@@ -266,9 +266,9 @@ reason not to.
 
 A minimal file-sharing app: the binary lives in Calimero's **blob store**, while
 the app holds only metadata records, each the uploader's own entry, keyed by a
-generated file id that names the uploader. Uploading also
-**announces the blob to the context** so other nodes can discover and download
-it.
+generated file id that names the uploader. A client uploads the bytes with
+the context's id, and registering the file **announces the blob to the
+context** so other nodes can discover and download it.
 
 **State shape** ([`apps/blobs/src/lib.rs`](https://github.com/calimero-network/core/tree/master/apps/blobs/src/lib.rs)):
 
