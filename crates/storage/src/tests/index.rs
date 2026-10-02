@@ -1519,6 +1519,7 @@ mod minimal_struct_layout_compat {
             signature: [0xEE; 64],
             nonce: 42,
             signer: None,
+            on_behalf: None,
         };
         let index = make_index(
             StorageType::User {
@@ -1739,6 +1740,7 @@ mod verify_snapshot_entity_signature_tests {
                     signature: [0u8; 64],
                     nonce: 42,
                     signer: None,
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -1763,6 +1765,7 @@ mod verify_snapshot_entity_signature_tests {
                 signature,
                 nonce: 7,
                 signer,
+                on_behalf: None,
             })
         };
         let signer = PublicKey::from([0x11; 32]);
@@ -1828,6 +1831,30 @@ mod verify_snapshot_entity_signature_tests {
                 signature_data: sig(real, Some(signer)),
             }),
             "signed"
+        );
+
+        // Written by a relay for an account: verified under the relay's key and
+        // owned by the account it names — a different producer to chase.
+        let relayed = Some(SignatureData {
+            signature: real,
+            nonce: 7,
+            signer: Some(signer),
+            on_behalf: Some(AccountId::from([0xA1; 32])),
+        });
+        assert_eq!(
+            signature_shape(&StorageType::SharedMember {
+                anchor: Id::new([0xA0; 32]),
+                signature_data: relayed,
+            }),
+            "signed-on-behalf"
+        );
+        assert_eq!(
+            signature_shape(&StorageType::User {
+                rules: crate::entities::EntryRules::OWNED,
+                owner: AccountId::from([0xA1; 32]),
+                signature_data: relayed,
+            }),
+            "signed-on-behalf"
         );
     }
 
@@ -1919,6 +1946,7 @@ mod verify_snapshot_entity_signature_tests {
                 signature: [0; 64],
                 nonce: 1,
                 signer: Some(pubkey_of(&mallory)),
+                on_behalf: None,
             }),
         };
         let signature = sign_action(
@@ -1980,6 +2008,7 @@ mod update_signature_in_place_tests {
                 signature: sig,
                 nonce: 1,
                 signer: None,
+                on_behalf: None,
             }),
         }
     }
@@ -1992,6 +2021,7 @@ mod update_signature_in_place_tests {
                 signature: sig,
                 nonce: 1,
                 signer: None,
+                on_behalf: None,
             }),
         }
     }

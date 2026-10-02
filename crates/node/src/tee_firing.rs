@@ -18,6 +18,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::ExecuteError;
 use calimero_context_client::tee_trigger;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -168,13 +169,7 @@ impl TeeFiring {
                 debug!(%context_id, tee_method, "Skipping TEE trigger: already fired");
                 TeeRun::Settled
             }
-            Ok(TeePlan::Now) => {
-                if self.fire(context_client).await {
-                    TeeRun::Fired
-                } else {
-                    TeeRun::Failed
-                }
-            }
+            Ok(TeePlan::Now) => self.fire(context_client).await,
             Ok(TeePlan::After(delay)) => {
                 self.fire_after(context_client.clone(), delay);
                 TeeRun::Waiting
@@ -205,8 +200,8 @@ impl TeeFiring {
         Ok(plan_tee_firing(rank, age, TEE_FAILOVER_GRACE))
     }
 
-    /// Fire now. `true` if the run went through.
-    async fn fire(&self, context_client: &ContextClient) -> bool {
+    /// Fire now.
+    async fn fire(&self, context_client: &ContextClient) -> TeeRun {
         let context_id = &self.context_id;
         let tee_method = self.cause.method();
         info!(%context_id, tee_method, "Firing TEE trigger");
@@ -233,11 +228,22 @@ impl TeeFiring {
                 if response.artifact.is_empty() {
                     self.announce_fired(context_client).await;
                 }
-                true
+                TeeRun::Fired
+            }
+            // The app does not declare the method a handler, so no TEE ever runs it.
+            Err(ExecuteError::NotAnEventHandler { application_id, .. }) => {
+                warn!(
+                    %context_id,
+                    %application_id,
+                    method = tee_method,
+                    "Dropped a TEE trigger naming a method the app does not declare a handler: \
+                     mark the method #[app::handler] and rebuild the app with cargo mero build"
+                );
+                TeeRun::Settled
             }
             Err(err) => {
                 warn!(tee_method, error = %err, "TEE trigger failed");
-                false
+                TeeRun::Failed
             }
         }
     }

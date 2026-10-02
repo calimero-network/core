@@ -656,6 +656,39 @@ the resolution of *that action's own* signer. Storage verifies the signature und
 the key the action names and checks the account against the writer set, but has no
 bindings with which to confirm the two describe the same principal.
 
+**A relay writes on an account's behalf by saying so.** When a relay executes a
+call for an account (a warrant-carried delegated run), it signs the resulting
+entries with its OWN key: `signature_data.signer` is the relay's key — still the
+key the signature verifies under, never a key that did not sign — and
+`signature_data.on_behalf` is the account it wrote for. The signed payload
+commits to `on_behalf` (`hash_signature_data` in `action.rs`), so it cannot be
+stripped, added or swapped in transit. Ownership and the writer-set checks are
+asked of that account (`Interface::author_account`): the node must resolve
+`signer_account` to exactly the `on_behalf` account, which it does only when the
+signer's account is a `RelayTee` in the namespace and the account is a member who
+may write (`calimero_governance_store::on_behalf_standing`; no capability bit is
+consulted). On the delta path the resolution is per action: the node judges each
+on-behalf action at the delta's cut and lists the accepted ones in
+`StorageDelta::CausalActions::on_behalf_accounts` (action id → account), which
+`Root::sync` uses in place of the delta-wide `signer_account` for that action. So
+the delta's author need not be the account (a relay may write any member's
+entries), and an on-behalf action the node did not list is checked against the
+delta-wide account as before. The node refuses a delta with an on-behalf action
+it cannot accept (`calimero-node`'s `delta_store::on_behalf_accounts`).
+Any other resolution — the relay's own account, a third account, `None` — is
+refused. A User refusal names which check fired: `bad-signature`,
+`author-unresolved` or `wrong-author`. `tests/on_behalf.rs` pins every arm.
+
+**Known limitation: a writer-set rotation cannot be made on someone's behalf.**
+`RotationLogEntry` records the key that signed a rotation (`signer`) and carries
+no `on_behalf`, and rotation-log authentication checks that key's account against
+the prior writer set's `ADMIN` bit. A rotation a relay signs for an account is
+therefore attributed to the relay, which is not in the set, and is refused by
+every peer that authenticates the log. Delegated runs can write `Shared` and
+`SharedMember` entries for an account but cannot change a writer set for it.
+Deferred: closing it means an `on_behalf` on the rotation entry, covered by its
+signature, and the same rule at rotation authentication.
+
 Writing a test here? Derive the account from a different domain than the key (see
 `tests::common::account_of_key`). A test where the two are equal cannot tell an
 account-keyed gate from a device-keyed one.
@@ -810,6 +843,16 @@ struct MyType {
   stamp dropped the write. Do not add a write path that stamps from the clock
   alone; a replay that must keep its writer's stamp goes through
   `save_raw_replayed`. `tests/entity_clock.rs` steps the clock back for each case.
+- **A register that is an `UnorderedMap` or `SortedMap` entry's whole value is stored
+  without its stamp.** The entry's `updated_at` is its stamp
+  (`lww_register::entry_stamp`): the collection names its value type on its `Collection` (`stamp_values_of`), the entry offers it to
+  the register that starts its value, and `find_by_id` names the row's `updated_at`
+  for the decode. Every path already resolved such an entry by `updated_at`, never by
+  the register's HLC, so that was 16 dead bytes per entry. Registers anywhere else keep
+  their stamp: a state field or a field of a stored value is merged by it, a set's entry
+  is addressed by its own bytes, and `Vector::merge` pairs two vectors' elements by
+  position and decides by the stamp (`crdt_contract`'s vector law test fails without it). Code that decodes entry bytes outside the
+  collection must do as `tests::common::map_entry_bytes` does, or the decode fails.
 - CRDTs auto-merge on sync - no manual conflict resolution needed
 - Use nested CRDTs (UnorderedMap<String, LwwRegister<String>>) for last-write-wins semantics
 - Convert values with .into() when inserting: self.data.insert(key, value.into())?

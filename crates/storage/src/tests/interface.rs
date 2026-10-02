@@ -844,6 +844,123 @@ mod user_storage_signature_verification {
             .expect("the refused write applies once the writer can be named");
     }
 
+    /// The delegated-write repro, as D2 fixes it: a relay signs the author's
+    /// `User` entry with a delegated key the author's device certified, and
+    /// names that key as the signer. A receiver that resolves the key to the
+    /// author (the node's job: `storage_author_account_in_namespace`) applies it
+    /// with no storage change at all.
+    #[test]
+    fn a_user_entry_signed_by_a_delegated_key_applies_for_its_author() {
+        env::reset_for_testing();
+        let (_author_device, owner) = create_test_owner();
+        let (delegated, _) = create_test_keypair();
+
+        let element = crate::tests::common::owned_element(owner);
+        let page = Page::new_from_element("Account profile", element);
+        let action = create_signed_user_add_action(
+            &delegated,
+            owner,
+            page.id(),
+            to_vec(&page).unwrap(),
+            env::time_now(),
+        );
+        MainInterface::apply_action(action, &apply_ctx_for(owner))
+            .expect("the delegated key resolves to the owner");
+    }
+
+    /// The old poison entry stays refused: the author's device named as the
+    /// signer, the signature by the relay's own key. Resolving the named device
+    /// to the owner does not help, because the signature does not verify under
+    /// the key the entry names.
+    #[test]
+    fn delegated_user_write_signed_by_relay_key_is_refused_everywhere() {
+        use crate::entities::{SignatureData, StorageType};
+        env::reset_for_testing();
+
+        let (author_device, owner) = create_test_owner();
+        let (relay_key, _) = create_test_keypair();
+
+        let element = crate::tests::common::owned_element(owner);
+        let page = Page::new_from_element("Account profile", element);
+        let serialized = to_vec(&page).unwrap();
+        let nonce = env::time_now();
+        let good =
+            create_signed_user_add_action(&author_device, owner, page.id(), serialized, nonce);
+
+        let mut relayed = good.clone();
+        let relay_sig = crate::tests::common::sign_action(&relayed, &relay_key);
+        if let Action::Add {
+            ref mut metadata, ..
+        } = relayed
+        {
+            if let StorageType::User {
+                signature_data:
+                    Some(SignatureData {
+                        ref mut signature,
+                        ref signer,
+                        ..
+                    }),
+                ..
+            } = metadata.storage_type
+            {
+                assert_eq!(
+                    *signer,
+                    Some(crate::tests::common::pubkey_of(&author_device))
+                );
+                *signature = relay_sig;
+            }
+        }
+        assert!(matches!(
+            MainInterface::apply_action(relayed, &apply_ctx_for(owner)),
+            Err(StorageError::InvalidSignature)
+        ));
+        MainInterface::apply_action(good, &apply_ctx_for(owner))
+            .expect("the author-signed twin applies");
+    }
+
+    /// Which of the three User checks refused a write, as the apply path's
+    /// diagnostics name it.
+    #[test]
+    fn the_user_refusal_names_which_check_failed() {
+        use crate::interface::AuthorVerdict;
+        env::reset_for_testing();
+        let (device, owner) = create_test_owner();
+        let (_, stranger) = create_test_owner();
+        let element = crate::tests::common::owned_element(owner);
+        let page = Page::new_from_element("p", element);
+        let action =
+            create_signed_user_add_action(&device, owner, page.id(), to_vec(&page).unwrap(), 1);
+        let Action::Add { metadata, .. } = &action else {
+            unreachable!()
+        };
+        let crate::entities::StorageType::User {
+            signature_data: Some(sd),
+            ..
+        } = &metadata.storage_type
+        else {
+            unreachable!()
+        };
+        let payload = action.payload_for_signing();
+        let verdict = |sd, resolved: Option<&AccountId>| {
+            MainInterface::user_action_verdict(sd, &payload, &owner, resolved)
+        };
+
+        assert_eq!(verdict(sd, Some(&owner)), AuthorVerdict::Authorized);
+        assert_eq!(verdict(sd, None), AuthorVerdict::AuthorUnresolved);
+        assert_eq!(verdict(sd, Some(&stranger)), AuthorVerdict::WrongAuthor);
+        let mut forged = *sd;
+        forged.signature[0] ^= 1;
+        assert_eq!(verdict(&forged, Some(&owner)), AuthorVerdict::BadSignature);
+
+        assert_eq!(AuthorVerdict::BadSignature.reason(), Some("bad-signature"));
+        assert_eq!(AuthorVerdict::WrongAuthor.reason(), Some("wrong-author"));
+        assert_eq!(
+            AuthorVerdict::AuthorUnresolved.reason(),
+            Some("author-unresolved")
+        );
+        assert_eq!(AuthorVerdict::Authorized.reason(), None);
+    }
+
     #[test]
     fn user_action_with_invalid_signature_fails() {
         env::reset_for_testing();
@@ -862,7 +979,7 @@ mod user_storage_signature_verification {
         // failure: the signature verifies fine under the key it names. What
         // rejects it is that the key resolves to a DIFFERENT account, which only
         // a resolved context can say. An empty context defers to the node-side
-        // gate instead; see `Interface::user_action_authorized`.
+        // gate instead; see `Interface::user_action_verdict`.
         let action =
             create_signed_user_add_action(&wrong_signing_key, owner, page.id(), serialized, nonce);
 
@@ -1070,6 +1187,7 @@ mod user_storage_replay_protection {
                     signature: [0u8; 64], // placeholder, set below
                     nonce: hlc,
                     signer: Some(crate::tests::common::pubkey_of(&signing_key)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -1515,6 +1633,7 @@ mod shared_storage_rotation_authentication {
                         signature: [0; 64],
                         nonce,
                         signer: None,
+                        on_behalf: None,
                     }),
                 },
                 crdt_type: None,
@@ -2735,6 +2854,7 @@ mod shared_storage_rotation_authentication {
                         signature: [0; 64],
                         nonce: hlc,
                         signer: Some(pubkey_of(sk)),
+                        on_behalf: None,
                     }),
                 },
                 crdt_type: Some(CrdtType::GCounter),
@@ -3410,6 +3530,7 @@ mod storage_type_edge_cases {
                     signature: [0; 64],
                     nonce,
                     signer: Some(crate::tests::common::pubkey_of(signing_key)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -3439,6 +3560,7 @@ mod storage_type_edge_cases {
                     signature,
                     nonce,
                     signer: Some(crate::tests::common::pubkey_of(signing_key)),
+                    on_behalf: None,
                 });
             }
         }
@@ -3800,6 +3922,7 @@ mod storage_type_edge_cases {
                     signature: [0; 64],
                     nonce: stored,
                     signer: Some(crate::tests::common::pubkey_of(&signing_key)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -3827,6 +3950,7 @@ mod storage_type_edge_cases {
                     signature,
                     nonce: stored,
                     signer: Some(crate::tests::common::pubkey_of(&signing_key)),
+                    on_behalf: None,
                 });
             }
         }
@@ -4125,6 +4249,7 @@ mod owner_driven_convert {
                     signature: [0; 64],
                     nonce,
                     signer: Some(crate::tests::common::pubkey_of(signing_key)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -4195,6 +4320,7 @@ mod owner_driven_convert {
                     signature: [0; 64],
                     nonce: new_nonce,
                     signer: Some(crate::tests::common::pubkey_of(&owner_sk)),
+                    on_behalf: None,
                 }),
             },
             crdt_type: None,
@@ -4845,5 +4971,141 @@ mod stale_write_to_a_merging_entry {
         let after = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
         assert_eq!(after.updated_at, before.updated_at);
         assert_eq!(after.crdt_type, None);
+    }
+}
+
+/// A write that reaches a tombstone stamped no later than the delete's own HLC.
+///
+/// `apply_delete_ref_action` settles the tie for a delete that arrives after
+/// the write: delete wins (`deleted_at < updated_at` is strict). The same tie
+/// must come out the same way when the write arrives after the delete, or
+/// two replicas that see the pair in opposite orders diverge.
+#[cfg(test)]
+mod a_write_no_newer_than_a_delete {
+    use super::*;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::entities::ChildInfo;
+
+    fn custom() -> CrdtType {
+        CrdtType::Custom(calimero_primitives::crdt::CustomTypeId::of("tests::Low"))
+    }
+
+    fn public(created_at: u64, updated_at: u64, crdt_type: Option<CrdtType>) -> Metadata {
+        Metadata {
+            created_at,
+            updated_at: updated_at.into(),
+            storage_type: StorageType::Public,
+            crdt_type,
+            field_name: None,
+            schema_version: None,
+            order: 0,
+        }
+    }
+
+    /// A child of the root, written at `t0` and deleted at `deleted_at`.
+    fn deleted_child(
+        t0: u64,
+        deleted_at: u64,
+        crdt_type: Option<CrdtType>,
+    ) -> (Id, Vec<ChildInfo>) {
+        crate::env::reset_for_testing();
+        let id = Id::random();
+        let ancestors = vec![ChildInfo::new(Id::root(), [0; 32], Metadata::default())];
+        MainInterface::apply_action(
+            Action::Add {
+                id,
+                data: b"first".to_vec(),
+                ancestors: ancestors.clone(),
+                metadata: public(t0, t0, crdt_type),
+            },
+            &ApplyContext::empty(),
+        )
+        .unwrap();
+        MainInterface::apply_action(
+            Action::DeleteRef {
+                id,
+                deleted_at,
+                metadata: Metadata::default(),
+            },
+            &ApplyContext::empty(),
+        )
+        .unwrap();
+        assert!(<Index<MainStorage>>::is_deleted(id).unwrap());
+        (id, ancestors)
+    }
+
+    fn write(
+        add: bool,
+        id: Id,
+        ancestors: Vec<ChildInfo>,
+        t0: u64,
+        at: u64,
+        crdt_type: Option<CrdtType>,
+    ) {
+        let (data, metadata) = (b"second".to_vec(), public(t0, at, crdt_type));
+        let action = if add {
+            Action::Add {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+        } else {
+            Action::Update {
+                id,
+                data,
+                ancestors,
+                metadata,
+            }
+        };
+        MainInterface::apply_action(action, &ApplyContext::empty()).unwrap();
+    }
+
+    /// Writes at `at` to a child deleted at `deleted_at`, and checks the
+    /// delete still holds.
+    fn keeps_the_delete(add: bool, at: impl FnOnce(u64) -> u64, crdt_type: Option<CrdtType>) {
+        let t0 = time_now();
+        let deleted_at = t0 + ONE_SEC_NANOS;
+        let (id, ancestors) = deleted_child(t0, deleted_at, crdt_type.clone());
+        write(add, id, ancestors, t0, at(deleted_at), crdt_type);
+        assert!(
+            <Index<MainStorage>>::is_deleted(id).unwrap(),
+            "a write no newer than the delete resurrected the entity"
+        );
+        assert!(
+            !<Index<MainStorage>>::get_children_of(Id::root())
+                .unwrap()
+                .iter()
+                .any(|child| child.id() == id),
+            "the root lists a child its delete removed"
+        );
+    }
+
+    #[test]
+    fn an_equal_hlc_update_does_not_lift_the_tombstone() {
+        keeps_the_delete(false, |deleted_at| deleted_at, None);
+    }
+
+    #[test]
+    fn an_equal_hlc_add_does_not_lift_the_tombstone() {
+        keeps_the_delete(true, |deleted_at| deleted_at, None);
+    }
+
+    /// An entry that merges whatever the order skips the stale-write check, so
+    /// an older write reached the merge, found no data and was taken whole.
+    #[test]
+    fn an_older_write_to_a_merging_entry_does_not_lift_the_tombstone() {
+        keeps_the_delete(false, |deleted_at| deleted_at - 1, Some(custom()));
+    }
+
+    /// The neighbour on the other side: strictly newer lifts it.
+    #[test]
+    fn a_strictly_newer_update_lifts_the_tombstone() {
+        let t0 = time_now();
+        let deleted_at = t0 + ONE_SEC_NANOS;
+        let (id, ancestors) = deleted_child(t0, deleted_at, None);
+        write(false, id, ancestors, t0, deleted_at + 1, None);
+        assert!(!<Index<MainStorage>>::is_deleted(id).unwrap());
+        assert_eq!(MainInterface::get(id).unwrap(), b"second");
     }
 }

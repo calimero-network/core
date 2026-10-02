@@ -92,6 +92,7 @@ impl TeeCards {
     /// event, which any member's node can emit: this cannot tell that `player`
     /// asked. See the README.
     #[app::tee]
+    #[app::handler]
     pub fn deal(&mut self, player: String) -> app::Result<()> {
         let Some(account) = parse_hex(&player) else {
             return Ok(());

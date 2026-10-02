@@ -74,7 +74,7 @@ detail.
    Point `mero-sign sign` at your `manifest.json`. It derives the `signerId` from
    the key, refuses to sign if `minRuntimeVersion` is absent (a signer must not
    rewrite the document it signs), canonicalizes the manifest with RFC 8785 (JCS),
-   signs the SHA-256 of those canonical bytes, and writes a `signature` object
+   signs the domain-tagged SHA-256 of those canonical bytes, and writes a `signature` object
    back into the manifest. It then packages the bundle directory into an `.mpk`.
 
    ```bash

@@ -1,0 +1,33 @@
+name: PR Description
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+
+permissions:
+  contents: read
+
+jobs:
+  trust-boundary:
+    name: Trust boundary
+    runs-on: ubuntu-latest
+    # Dependabot cannot fill in a PR body, and its action bumps touch .github/workflows.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Test the check
+        run: bash scripts/tests/check-trust-boundary.test.sh
+
+      # HEAD is the PR merge commit, so its first parent is the base it merges into.
+      - name: Check the Trust boundary block
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: git diff --name-only --no-renames HEAD^1 HEAD | python3 scripts/check-trust-boundary.py

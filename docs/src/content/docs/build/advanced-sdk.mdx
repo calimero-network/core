@@ -354,8 +354,8 @@ See [`xcall`](/protocol/xcall/) for the dispatch and namespace model.
 ## Events with handlers
 
 `app::emit!((event, "handler"))` attaches a handler name to an event. The handler
-is a method on your state, and it runs on the **receiving** nodes only, **after**
-the originating write commits:
+is a method on your state marked `#[app::handler]`, and it runs on the
+**receiving** nodes only, **after** the originating write commits:
 
 ```rust
 pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
@@ -365,11 +365,21 @@ pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
 }
 
 // Runs on receivers, after commit, possibly more than once.
+#[app::handler]
 pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
     self.handler_counter.increment()?; // CRDT mutation: safe to replay
     Ok(())
 }
 ```
+
+A receiver runs only a method the app's embedded ABI declares a handler. An event
+naming anything else, the SDK's own `__calimero_*` exports included, runs
+nothing, and so does every event of an app whose ABI declares no handler or
+cannot be read. The events are part of the delta's content id, so the
+author's signature covers the handler names and their arguments. It does not
+make them trustworthy: any member can emit an event naming any declared handler
+with any arguments, so a handler must check its input like any other entry
+point.
 
 Delivery is **at-least-once with restart replay**: the handler is persisted until
 every receiver has run it successfully, and a node restart mid-delivery replays

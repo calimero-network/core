@@ -480,68 +480,28 @@ fn shadow_fold_and_compare(
         parents: delta_parents,
     } = op;
     let ns_id = signed_op.namespace_id;
-    // For an encrypted `NamespaceOp::Group` that just applied,
-    // decrypt its cleartext membership op (the key is present —
-    // the live apply already used it). Read-only decrypt; never
-    // re-runs the mutation. A `Root` op or an undecryptable group
-    // op yields `None` → the node folds as `Noop` (still recorded
-    // so the ancestry walk can pass through it).
-    let decrypted = match &signed_op.op {
-        calimero_governance_types::NamespaceOp::Group {
-            group_id,
-            key_id,
-            encrypted,
-            ..
-        } => calimero_governance_store::decrypt_group_op(
-            store,
-            ns_id,
-            *group_id,
-            key_id.as_bytes(),
-            encrypted,
-        )
-        .map_err(|err| {
-            tracing::warn!(%err, "unified-op shadow: group-op decrypt failed; folded as Noop");
-        })
-        .ok()
-        .flatten(),
-        calimero_governance_types::NamespaceOp::Root(_) => None,
-        // `NamespaceOp` is `#[non_exhaustive]`; an unknown future
-        // op has nothing to decrypt and folds as `Noop`.
-        _ => None,
-    };
-    // The shadow must fold exactly what the live apply folded. A sealed root
-    // op this node could not open folded nothing there, so it must fold as a
-    // visible hole here too — otherwise the shadow reports a complete ancestry
-    // the live side never had.
-    let opened_root = match &signed_op.op {
-        calimero_governance_types::NamespaceOp::RootSealed { key_id, encrypted } => {
-            calimero_governance_store::open_sealed_root_op(
-                store,
-                ns_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .map_err(|err| {
-                tracing::warn!(%err, "unified-op shadow: sealed root-op open failed; folded as a hole");
-            })
-            .ok()
-            .flatten()
-        }
-        _ => None,
-    };
-    // Resolved from the store, not derived from the key: the op
-    // has just applied, and it could not have unless the signer's
-    // binding was present — so every node agrees on this value.
-    let signer_binding = calimero_governance_store::signer_binding_for(
-        store,
-        &ContextGroupId::from(ns_id.to_bytes()),
-        &signed_op.signer,
-    );
-    let shadow_op = calimero_governance_store::op_from_namespace_op_with_binding(
+    // What this node can read of the op it just applied, opened the one way every
+    // projection producer opens it. The key is present for whatever the live
+    // apply could read; an op it could not read folds as the hole it is, so the
+    // shadow never reports an ancestry the live side never had. A relayed join
+    // folds from the joiner's own op: the envelope is the admitter's, and folding
+    // it as it stands records a `Noop` by the admitter under the join's id —
+    // which no later backfill replaces, so the joiner's device is a stranger at
+    // every cut after its own join.
+    //
+    // The signer's binding is resolved from the store, not derived from the key:
+    // the op has just applied, and it could not have unless the signer's binding
+    // was present — so every node agrees on this value.
+    let opened = calimero_governance_store::OpenedNamespaceOp::open(store, signed_op);
+    let shadow_op = opened.to_op(
         signed_op,
-        decrypted.as_ref(),
-        opened_root.as_ref(),
-        signer_binding,
+        |signer| {
+            calimero_governance_store::signer_binding_for(
+                store,
+                &ContextGroupId::from(ns_id.to_bytes()),
+                signer,
+            )
+        },
         delta_id,
         delta_hlc,
         delta_parents,
@@ -732,9 +692,11 @@ fn shadow_fold_and_compare(
         // that reason alone, so `Some(false)` would name the lag
         // rather than a real disagreement.
         if fed {
-            if let Some((auth_group, req)) =
-                apply_auth_requirement(signed_op, decrypted.as_ref(), opened_root.as_ref())
-            {
+            if let Some((auth_group, req)) = apply_auth_requirement(
+                signed_op,
+                opened.group_op.as_ref(),
+                opened.sealed_root.as_ref(),
+            ) {
                 let verdict = match scope_projections.read() {
                     Ok(projections) => match req {
                         ApplyAuthReq::Admin => projections.is_admin_at_cut(
@@ -1052,6 +1014,63 @@ mod tests {
                 assert_eq!(result == "agree", agrees, "verdict must follow the planes");
             }
         }
+    }
+
+    /// A join an admitter relayed must reach the projection as the joiner's
+    /// membership on the apply path, the feed a peer's projection is maintained
+    /// by between backfills.
+    ///
+    /// The envelope is signed by the admitter and sealed, so folding it as it
+    /// stands records a `Noop` by the admitter. The id is the same either way, so
+    /// that `Noop` is never replaced by a later backfill of the correct row, and
+    /// every delta the joiner's device signs is refused against a complete cut
+    /// that names its device nowhere.
+    #[test]
+    fn a_relayed_join_folds_as_the_joiners_membership_on_the_apply_path() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let join = crate::test_support::relayed_join(&store);
+        let projections = RwLock::new(ScopeProjections::new());
+
+        // Everything the apply folded before the relayed join, as the live feed
+        // would have, then the relayed join itself through the apply path.
+        let walked = ScopeProjections::collect_namespace_ops(&store, join.namespace.to_bytes())
+            .expect("the namespace head is readable");
+        for op in walked.iter().filter(|op| op.id() != join.envelope_id) {
+            projections.write().expect("projection lock").ingest_op(op);
+        }
+        super::shadow_fold_and_compare(
+            &store,
+            &projections,
+            AppliedOp {
+                signed: &join.envelope,
+                id: join.envelope_id,
+                hlc: hlc(2),
+                parents: &join.envelope.parent_op_hashes,
+            },
+            None,
+        );
+
+        let folded = projections.read().expect("projection lock");
+        assert_eq!(
+            folded.device_account_at_cut(
+                &store,
+                join.namespace,
+                &join.device_key,
+                &[join.envelope_id]
+            ),
+            Some(join.account),
+            "the joiner's device must speak for its account at the join's cut",
+        );
+        assert_eq!(
+            folded.member_at_cut(
+                &store,
+                join.namespace,
+                &join.device_key,
+                &[join.envelope_id]
+            ),
+            Some(true),
+            "a delta the joiner's device signs after the join must be authorized",
+        );
     }
 
     /// The apply path must fold every delta the DAG applied, not just the one it

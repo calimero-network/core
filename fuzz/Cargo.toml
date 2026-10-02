@@ -1,0 +1,37 @@
+[package]
+name = "calimero-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Shared dependencies resolve to the root Cargo.lock, which scripts/fuzz.sh copies in.
+[dependencies]
+borsh = "*"
+calimero-node-primitives = { path = "../crates/node/primitives" }
+calimero-storage = { path = "../crates/storage", features = ["testing"] }
+flate2 = "*"
+hex = "*"
+libfuzzer-sys = "0.4"
+mero-sign = { path = "../tools/mero-sign" }
+serde_json = "*"
+sha2 = "*"
+tar = "*"
+
+[[bin]]
+name = "bundle_open"
+path = "fuzz_targets/bundle_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crdt_sync"
+path = "fuzz_targets/crdt_sync.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

@@ -127,6 +127,80 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
         .map(|binding| binding.account)
 }
 
+/// The effective role of `account` in `group` in a folded view: its direct
+/// role, `Admin` when it inherits through an admin, else its role at the anchor
+/// it inherits from. See [`ScopeProjections::role_at_cut_for_group`].
+fn effective_role_in_view(
+    view: &calimero_authz::AclView,
+    group: ContextGroupId,
+    account: &AccountId,
+    root: Option<(ContextGroupId, AccountId)>,
+    default_cap_base: u32,
+) -> Option<GroupMemberRole> {
+    match view.member_path_at_cut(group, account, root, default_cap_base) {
+        calimero_authz::MemberPathAtCut::None => None,
+        calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+        calimero_authz::MemberPathAtCut::Inherited {
+            via_admin: true, ..
+        } => Some(GroupMemberRole::Admin),
+        // `member_path_at_cut` only emits this arm when the anchor row is present,
+        // so the lookup resolves; if it somehow doesn't, return `None` (defer to
+        // live / skip the shadow) rather than GUESS `Member` — guessing could emit
+        // a spurious `data-write-role` divergence. Matches `member_entries_with`,
+        // which bails rather than fabricating a role on the same inconsistency.
+        calimero_authz::MemberPathAtCut::Inherited {
+            anchor,
+            via_admin: false,
+        } => view
+            .groups
+            .get(&anchor)
+            .and_then(|m| m.get(account))
+            .cloned(),
+    }
+}
+
+/// The two immutable bases every at-cut membership walk in a namespace takes:
+/// the namespace root's genesis admin (no governance op carries it) and the
+/// root's default member capability (`CAN_JOIN_OPEN_SUBGROUPS` is set there at
+/// creation as a store write, not an op) — the inheritance walk's cap fallback.
+fn membership_bases(
+    store: &Store,
+    namespace_id: [u8; 32],
+) -> (Option<(ContextGroupId, AccountId)>, u32) {
+    let root_group = ContextGroupId::from(namespace_id);
+    let root = MetaRepository::new(store)
+        .load(&root_group)
+        .ok()
+        .flatten()
+        .map(|meta| (root_group, meta.admin_identity));
+    let default_cap_base = CapabilitiesRepository::new(store)
+        .default_capabilities(&root_group)
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    (root, default_cap_base)
+}
+
+/// The materialized-only membership fallback of
+/// [`ScopeProjections::member_at_cut`]: `group` is ENTIRELY absent from the fold
+/// (no member folded for it at all), yet the live store has `account` as a
+/// direct member. See the comment at its call site there for why only a wholly
+/// unfolded group qualifies; it is the deny direction only.
+fn materialized_member(
+    store: &Store,
+    view: Option<&calimero_authz::AclView>,
+    group: ContextGroupId,
+    account: &AccountId,
+) -> bool {
+    let group_wholly_unfolded = view.is_none_or(|v| !v.groups.contains_key(&group));
+    group_wholly_unfolded
+        && MembershipRepository::new(store)
+            .role_of(&group, account)
+            .ok()
+            .flatten()
+            .is_some()
+}
+
 /// Admin of `group`, or a holder of any bit in `capability` there, in a folded
 /// view. The capability is the member's folded cap, falling back to the
 /// namespace default-cap base (a store-written genesis fact) only when nothing
@@ -670,56 +744,29 @@ impl ScopeProjections {
                 // is — a `Noop` that cannot be checked is not evidence of a hole.
                 continue;
             };
-            // Both encrypted shapes are re-attempted, and for the same reason.
-            // A sealed root op is the one that MUST be: the root admin arrives
-            // on a root op, so a hole left here is one every admin-or-capability
-            // question in the namespace abstains on. Reclassifying group ops
-            // only would leave that hole permanent and park those questions
-            // forever, which is the failure mode a hole that cannot clear
-            // always is.
-            let (decrypted, opened_root) = match &signed.op {
-                calimero_governance_types::NamespaceOp::Group {
-                    group_id,
-                    key_id,
-                    encrypted,
-                    ..
-                } => (
-                    calimero_governance_store::decrypt_group_op(
-                        store,
-                        namespace_id.into(),
-                        *group_id,
-                        key_id.as_bytes(),
-                        encrypted,
-                    )
-                    .ok()
-                    .flatten(),
-                    None,
-                ),
-                calimero_governance_types::NamespaceOp::RootSealed { key_id, encrypted } => (
-                    None,
-                    calimero_governance_store::open_sealed_root_op(
-                        store,
-                        namespace_id.into(),
-                        key_id.as_bytes(),
-                        encrypted,
-                    )
-                    .ok()
-                    .flatten(),
-                ),
-                // A cleartext root op that models nothing is a genuine `Noop`,
-                // then and now.
-                _ => continue,
-            };
-            let signer_binding = calimero_governance_store::signer_binding_for(
-                store,
-                &ContextGroupId::from(namespace_id),
-                &signed.signer,
-            );
-            let rebuilt = calimero_governance_store::op_from_namespace_op_with_binding(
+            // A cleartext root op that models nothing is a genuine `Noop`, then
+            // and now.
+            if matches!(signed.op, calimero_governance_types::NamespaceOp::Root(_)) {
+                continue;
+            }
+            // Every sealed and encrypted shape is re-attempted, and for the same
+            // reason. A sealed root op is one that MUST be: the root admin
+            // arrives on a root op, so a hole left here is one every
+            // admin-or-capability question in the namespace abstains on. A
+            // relayed join is another: a row a walk wrote from the admitter's
+            // envelope holds a `Noop` where the joiner's membership belongs, and
+            // left in place it refuses every delta the joiner writes.
+            // Reclassifying group ops only would leave those holes permanent,
+            // which is the failure mode a hole that cannot clear always is.
+            let rebuilt = calimero_governance_store::OpenedNamespaceOp::open(store, &signed).to_op(
                 &signed,
-                decrypted.as_ref(),
-                opened_root.as_ref(),
-                signer_binding,
+                |signer| {
+                    calimero_governance_store::signer_binding_for(
+                        store,
+                        &ContextGroupId::from(namespace_id),
+                        signer,
+                    )
+                },
                 ops[i].id(),
                 ops[i].hlc,
                 &ops[i].parents,
@@ -1561,55 +1608,17 @@ impl ScopeProjections {
             let Ok(delta) = signed_namespace_op_to_delta(&signed) else {
                 continue;
             };
-            // Decrypt an encrypted group op so its membership change folds; a
-            // failure (no key for this group) leaves it a `Noop` node — still
-            // recorded so the walk can pass through it.
-            let decrypted = match &signed.op {
-                calimero_governance_types::NamespaceOp::Group {
-                    group_id,
-                    key_id,
-                    encrypted,
-                    ..
-                } => calimero_governance_store::decrypt_group_op(
-                    store,
-                    namespace_id.into(),
-                    *group_id,
-                    key_id.as_bytes(),
-                    encrypted,
-                )
-                .ok()
-                .flatten(),
-                calimero_governance_types::NamespaceOp::Root(_) => None,
-                // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op has
-                // nothing to decrypt and folds as `Noop`.
-                _ => None,
-            };
-            // The same question for a sealed root op, decoded with the keys
-            // present NOW — this walk is the read-time re-decode, so a root op
-            // sealed when it applied becomes readable here the moment the
-            // namespace key has landed.
-            let opened_root = match &signed.op {
-                calimero_governance_types::NamespaceOp::RootSealed { key_id, encrypted } => {
-                    calimero_governance_store::open_sealed_root_op(
-                        store,
-                        namespace_id.into(),
-                        key_id.as_bytes(),
-                        encrypted,
-                    )
-                    .ok()
-                    .flatten()
-                }
-                _ => None,
-            };
-            // Same resolution the apply path uses, so a backfilled op and a
-            // live-folded one are attributed identically.
-            let signer_binding = signer_bindings.get(&signed.signer).copied();
+            // Opened with the keys present NOW — this walk is the read-time
+            // re-decode, so an op sealed or encrypted when it applied becomes
+            // readable here the moment its key has landed, and one this node
+            // cannot read is recorded as the hole it is so the walk can pass
+            // through it. Opened, and attributed, exactly as the apply path folds
+            // it (a relayed join from the joiner's own op), so a backfilled op and
+            // a live-folded one agree.
             ops.push(
-                calimero_governance_store::op_from_namespace_op_with_binding(
+                calimero_governance_store::OpenedNamespaceOp::open(store, &signed).to_op(
                     &signed,
-                    decrypted.as_ref(),
-                    opened_root.as_ref(),
-                    signer_binding,
+                    |signer| signer_bindings.get(signer).copied(),
                     delta.id,
                     delta.hlc,
                     &delta.parents,
@@ -1794,10 +1803,9 @@ impl ScopeProjections {
         let view = view?;
         let bindings = calimero_governance_store::AccountBindingRepository::new(store);
         let binding = bindings.binding_for_sign_pk(&group, author).ok()??;
-        let endorsers = bindings.endorsers_of(&group, binding.account).ok()?;
-        endorsers
-            .iter()
-            .any(|endorser| view.is_member_at_cut(group, endorser, root, default_cap_base))
+        // The device's own account, not whoever vouched for it: a vouch is a
+        // statement about an account and lends its device no one else's standing.
+        view.is_member_at_cut(group, &binding.account, root, default_cap_base)
             .then_some(true)
     }
 
@@ -1922,20 +1930,7 @@ impl ScopeProjections {
         // it); every mutable input — memberships, caps, visibility, the subgroup
         // tree, subgroup-creator admin — comes from the fold.
         let view = self.acl_view_at(&scope, heads);
-        let root_group = ContextGroupId::from(namespace_id);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
-        // The namespace root's default member cap (CAN_JOIN_OPEN_SUBGROUPS is set
-        // here at creation as a store write, not an op) — base fallback for the
-        // inheritance walk's cap check. Immutable-base like the genesis admin.
-        let default_cap_base = CapabilitiesRepository::new(store)
-            .default_capabilities(&root_group)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
+        let (root, default_cap_base) = membership_bases(store, namespace_id);
         if view.as_ref().is_some_and(|v| {
             account_for_author(v, author)
                 .is_some_and(|account| v.is_member_at_cut(group, &account, root, default_cap_base))
@@ -1949,12 +1944,12 @@ impl ScopeProjections {
         // second device can be delivered scope keys and then have every op it
         // writes refused, which is the feature failing at its whole point.
         //
-        // The device→account→endorser mapping is read from the materialized
+        // The device→account mapping is read from the materialized
         // account rows, because account ops do not reach the fold on the
         // governance bridge (`op_from_group_op` feeds the cutover's unified log,
         // not this path). The AUTHORITY question is still answered at the cut:
-        // the endorser's membership is resolved through the same folded view
-        // above, so a cut that removed the endorser refuses the device's ops too.
+        // the account's membership is resolved through the same folded view
+        // above, so a cut that removed the account refuses the device's ops too.
         //
         // `binding_for_sign_pk` reads live bindings, which already exclude
         // revoked and superseded devices — so a revocation withdraws the right to
@@ -1989,18 +1984,12 @@ impl ScopeProjections {
         // group whose members were all removed via ops also reads as "unfolded" —
         // acceptable here because this is the conservative deny-direction path,
         // which errs toward member.)
-        let group_wholly_unfolded = view.as_ref().is_none_or(|v| !v.groups.contains_key(&group));
-        if group_wholly_unfolded
-            && calimero_governance_store::member_account_in_namespace(store, &group, author)
+        let materialized =
+            calimero_governance_store::member_account_in_namespace(store, &group, author)
                 .ok()
-                .flatten()
-                .and_then(|account| {
-                    MembershipRepository::new(store)
-                        .role_of(&group, &account)
-                        .ok()
-                        .flatten()
-                })
-                .is_some()
+                .flatten();
+        if materialized
+            .is_some_and(|account| materialized_member(store, view.as_ref(), group, &account))
         {
             return Some(true);
         }
@@ -2021,6 +2010,53 @@ impl ScopeProjections {
             return None;
         }
 
+        Some(false)
+    }
+
+    /// [`member_at_cut`](Self::member_at_cut) for an ACCOUNT the caller has
+    /// already resolved, rather than for a signing key this fold must resolve.
+    ///
+    /// For a delegated delta. Its author is the account its warrant names, and
+    /// the warrant's own proof ties the signing device to that account, root
+    /// signed and verified before this is asked. The device itself need never
+    /// have joined or been bound in this namespace: an account's second browser
+    /// device finds the relay and writes through it without publishing anything
+    /// here. Resolving that key through the folded bindings found nobody, and
+    /// every peer refused the account's write as a stranger's while the account
+    /// was a member at the very cut it cited.
+    ///
+    /// Membership is the same question either way, asked the same way: the
+    /// at-cut walk, the materialized fallback for a wholly unfolded group, and
+    /// `None` until the cited ancestry is whole. Whether the device may still act
+    /// for the account (revocation) is the delegated-delta gate's question, which
+    /// every receive path asks before the delta applies.
+    #[must_use]
+    pub fn account_member_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        let view = self.acl_view_at(&scope, heads);
+        let (root, default_cap_base) = membership_bases(store, namespace_id);
+        if view
+            .as_ref()
+            .is_some_and(|v| v.is_member_at_cut(group, account, root, default_cap_base))
+        {
+            return Some(true);
+        }
+        if materialized_member(store, view.as_ref(), group, account) {
+            return Some(true);
+        }
+        if !self.cut_ancestry_complete(&scope, heads) {
+            return None;
+        }
         Some(false)
     }
 
@@ -2597,26 +2633,22 @@ impl ScopeProjections {
         // "member at cut but role unresolved" the caller then logged before
         // guessing `Member`.
         let account = account_for_author(&view, member)?;
-        match view.member_path_at_cut(group, &account, root, default_cap_base) {
-            calimero_authz::MemberPathAtCut::None => None,
-            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
-            calimero_authz::MemberPathAtCut::Inherited {
-                via_admin: true, ..
-            } => Some(GroupMemberRole::Admin),
-            // `member_path_at_cut` only emits this arm when the anchor row is present,
-            // so the lookup resolves; if it somehow doesn't, return `None` (defer to
-            // live / skip the shadow) rather than GUESS `Member` — guessing could emit
-            // a spurious `data-write-role` divergence. Matches `member_entries_with`,
-            // which bails rather than fabricating a role on the same inconsistency.
-            calimero_authz::MemberPathAtCut::Inherited {
-                anchor,
-                via_admin: false,
-            } => view
-                .groups
-                .get(&anchor)
-                .and_then(|m| m.get(&account))
-                .cloned(),
-        }
+        effective_role_in_view(&view, group, &account, root, default_cap_base)
+    }
+
+    /// [`role_at_cut_for_group`](Self::role_at_cut_for_group) for an account the
+    /// caller has already resolved — the role half of
+    /// [`account_member_at_cut`](Self::account_member_at_cut).
+    #[must_use]
+    pub fn role_at_cut_for_account(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<GroupMemberRole> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        effective_role_in_view(&view, group, account, root, default_cap_base)
     }
 
     /// The role the projection records for `member` in `group` within `scope`,
@@ -2680,8 +2712,30 @@ impl CutStandingReads<'_> {
             .member_path_at_cut(*group, account, self.root, self.default_cap_base)
     }
 
+    /// The row live holds for `account` in `group`.
+    ///
+    /// Two rows the apply writes are not kept in the fold's `groups`, both an
+    /// `Admin` row for whoever brought the group into being:
+    ///
+    /// * a subgroup's creator, which the fold records as the subgroup's genesis
+    ///   admin instead;
+    /// * the namespace's founder, at the root, which the genesis op folds only as
+    ///   a device binding — the root admin is read from the group meta, the
+    ///   immutable base every at-cut walk here takes.
+    ///
+    /// Reading `groups` alone found nobody for either. An account that created a
+    /// subgroup was refused as a stranger by every delegated statement in it,
+    /// and a founder relaying for a member under its `CAN_AUTHOR_ON_BEHALF` grant
+    /// was refused by every peer as an executor holding none, while the live
+    /// rows called both the Admin. A folded row still wins: it is the later word
+    /// on the role.
     fn direct_row(&self, group: &ContextGroupId, account: &AccountId) -> Option<GroupMemberRole> {
-        self.view.groups.get(group)?.get(account).cloned()
+        if let Some(role) = self.view.groups.get(group).and_then(|m| m.get(account)) {
+            return Some(role.clone());
+        }
+        let founds = self.view.group_admin.get(group) == Some(account)
+            || self.root == Some((*group, *account));
+        founds.then_some(GroupMemberRole::Admin)
     }
 
     fn denied(&self, group: &ContextGroupId, account: &AccountId) -> eyre::Result<bool> {
@@ -2717,8 +2771,9 @@ impl calimero_governance_store::StandingReads for CutStandingReads<'_> {
             return Ok(Some((role, *group)));
         }
         Ok(match self.path(group, account) {
-            // The admin carve-out with no row: live's `Direct` arm reads the
-            // row and finds none, so neither does this.
+            // No row and no founding: live's `Direct` arm reads the row and
+            // finds none, so neither does this. (A subgroup's creator and the
+            // namespace's founder do have one; `direct_row` reads it.)
             MemberPathAtCut::None | MemberPathAtCut::Direct { .. } => None,
             MemberPathAtCut::Inherited { .. } if self.denied(group, account)? => None,
             MemberPathAtCut::Inherited {
@@ -4016,6 +4071,71 @@ mod tests {
         );
     }
 
+    /// The account that created a subgroup is that subgroup's Admin at every cut
+    /// after the creation, as the delegated-statement standing rules read it.
+    ///
+    /// The apply writes the creator an `Admin` row. The fold records the
+    /// creator as the subgroup's genesis admin instead, and these reads looked
+    /// only for a row, so they found nobody. An account that created a subgroup
+    /// through a relay and then wrote in its context was refused at the cut as
+    /// "not a member of the group owning this context", while the self-authored
+    /// check at the same cut and the live rows both called it the Admin.
+    #[test]
+    fn a_subgroups_creator_is_its_admin_in_the_standing_reads_at_the_cut() {
+        use calimero_governance_store::StandingReads;
+
+        let ns = [0x91; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let s = ContextGroupId::from([0x92; 32]);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .nest(&ns_gid, &s)
+            .expect("nest S under the namespace");
+
+        let creator = PublicKey::from([0x93; 32]);
+        let account = test_account(&creator);
+        let create_s = op_from_namespace_op(
+            &signed_root(
+                ns,
+                creator,
+                RootOp::GroupCreated {
+                    admin: account,
+                    group_id: s.to_bytes().into(),
+                    parent_id: ns.into(),
+                    restricted: true,
+                    salt: [0; 32],
+                },
+            ),
+            None,
+            [0xD1; 32],
+            hlc(10),
+            &[],
+        );
+
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&create_s);
+        let at = reg
+            .standing_reads_at_cut(&store, s, &[[0xD1; 32]])
+            .expect("a complete, readable cut is decidable");
+
+        assert_eq!(
+            at.effective_role(&s, &account).expect("read"),
+            Some((GroupMemberRole::Admin, s)),
+            "the creator holds the Admin row the apply wrote for it"
+        );
+        assert_eq!(
+            at.role_of(&s, &account).expect("read"),
+            Some(GroupMemberRole::Admin)
+        );
+        assert_eq!(at.inherited_anchor(&s, &account).expect("read"), None);
+        assert_eq!(
+            at.effective_role(&s, &test_account(&PublicKey::from([0x94; 32])))
+                .expect("read"),
+            None,
+            "nobody else is seated by the creation"
+        );
+    }
+
     /// The standing a delegated statement is admitted by, read at a cut, is
     /// the live rules' answer as of that cut: membership, the capability row,
     /// and removal. Built on real folded ops, so it checks the translation
@@ -4494,5 +4614,80 @@ mod tests {
             signature: [0u8; 64],
             admitter_endorsement: None,
         }
+    }
+
+    /// The namespace's founder is its Admin at every cut, as the delegated
+    /// statement standing rules read it, so a grant it holds there counts.
+    ///
+    /// The namespace-creation apply writes the founder an `Admin` row at the
+    /// root, but the genesis op folds only the founder's device binding, so the
+    /// fold holds no row for it. A founder relaying for a member through its
+    /// `CAN_AUTHOR_ON_BEHALF` grant was admitted live and refused by every peer
+    /// at the cut as an executor holding no grant.
+    #[test]
+    fn the_namespace_founder_is_its_admin_in_the_standing_reads_at_the_cut() {
+        use calimero_context_config::MemberCapabilities;
+        use calimero_governance_store::StandingReads;
+        use calimero_governance_types::GroupOp;
+
+        let ns = [0xA1; 32];
+        let ns_gid = ContextGroupId::from(ns);
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let founder = PublicKey::from([0xA2; 32]);
+        let account = test_account(&founder);
+        MetaRepository::new(&store)
+            .save(
+                &ns_gid,
+                &calimero_store::key::GroupMetaValue {
+                    target: calimero_store::key::GroupTarget {
+                        application_id: calimero_primitives::application::ApplicationId::from(
+                            [0xBB; 32],
+                        ),
+                        bytecode_id: [0xAA; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
+                    created_at: 1_700_000_000,
+                    admin_identity: account,
+                    owner_identity: account,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the namespace meta");
+
+        let grant = op_from_namespace_op(
+            &signed_group(ns, founder, ns_gid),
+            Some(&GroupOp::MemberCapabilitySet {
+                member: account,
+                capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+            }),
+            [0xF1; 32],
+            hlc(10),
+            &[],
+        );
+        let mut reg = ScopeProjections::new();
+        reg.ingest_op(&grant);
+        let at = reg
+            .standing_reads_at_cut(&store, ns_gid, &[[0xF1; 32]])
+            .expect("a complete, readable cut is decidable");
+
+        assert_eq!(
+            at.effective_role(&ns_gid, &account).expect("read"),
+            Some((GroupMemberRole::Admin, ns_gid)),
+            "the founder holds the Admin row the namespace creation wrote for it"
+        );
+        assert!(
+            at.effective_capabilities(&ns_gid, &account)
+                .expect("read")
+                .is_some_and(|caps| caps & MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits() != 0),
+            "and the grant it holds there"
+        );
+        assert_eq!(
+            at.effective_role(&ns_gid, &test_account(&PublicKey::from([0xA3; 32])))
+                .expect("read"),
+            None,
+            "nobody else is seated by the founding"
+        );
     }
 }
