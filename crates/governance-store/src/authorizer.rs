@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::Op;
 use calimero_primitives::context::GroupMemberRole;
@@ -152,6 +152,19 @@ pub trait AtCutAuthorizer: Send + Sync {
     /// reason, never the second.
     fn can_resolve_cut(&self, _group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
         true
+    }
+
+    /// Is `device` bound to `account` in `group`'s namespace at an epoch past
+    /// `device_epoch` at the cut, so that certificate names a retired key? `None` = defer.
+    fn device_epoch_superseded_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _account: &AccountId,
+        _device: &DeviceId,
+        _device_epoch: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
     }
 
     /// Drop what this authorizer has folded: the store changed under it, as when a key

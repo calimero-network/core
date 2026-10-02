@@ -16,7 +16,7 @@ use super::context::NamespaceApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::{
     ApplyError, BindingRejected, MemberJoinedOpenRejection, MembershipPath, MembershipRepository,
-    NamespaceRepository, ReentryRepository,
+    NamespaceRepository, PermissionChecker, ReentryRepository,
 };
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{JoinAccountCredential, SignedNamespaceOp};
@@ -42,10 +42,36 @@ use eyre::Result as EyreResult;
 /// their account. Without (2), a member holding any valid credential could
 /// name someone else's account in the op and have the row written for them.
 ///
+/// A key the device has since been re-keyed past at the op's cut proves nothing:
+/// that op is refused with an error, read at the cut so every replica agrees.
+///
 /// Deliberately NOT used by the TEE admission path, which breaks half (1) on
 /// purpose: an attested replica cannot admit itself, so its op is signed by the
 /// verifying member rather than by the replica's own device.
 pub(crate) fn join_op_proves_ownership(
+    permissions: &PermissionChecker<'_>,
+    signer: &PublicKey,
+    member: &AccountId,
+    account: &JoinAccountCredential,
+) -> EyreResult<bool> {
+    if !credential_names_signer(signer, member, account) {
+        return Ok(false);
+    }
+    let cert = &account.statement;
+    if permissions.device_epoch_superseded(&cert.account, &cert.device, cert.device_epoch)? {
+        eyre::bail!(
+            "join signed by {signer}, a key device {} was re-keyed past at the op's cut \
+             (certificate epoch {})",
+            hex::encode(cert.device.as_bytes()),
+            cert.device_epoch
+        );
+    }
+    Ok(true)
+}
+
+/// The op-local halves of [`join_op_proves_ownership`], for an op whose signer's
+/// binding the projection never folds (the founding relay's attestation).
+pub(crate) fn credential_names_signer(
     signer: &PublicKey,
     member: &AccountId,
     account: &JoinAccountCredential,
@@ -64,7 +90,8 @@ pub(crate) fn apply(
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
 
-    if !join_op_proves_ownership(&op.signer, &member, account) {
+    let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
+    if !join_op_proves_ownership(&ctx.permissions_for(ns_gid), &op.signer, &member, account)? {
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::SignerMismatch {
                 signer: format!("{}", op.signer),

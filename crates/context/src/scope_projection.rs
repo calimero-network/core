@@ -2409,6 +2409,26 @@ impl ScopeProjections {
         Some(view.member_path_at_cut(group, member, root, default_cap_base))
     }
 
+    /// Is `device` bound to `account` at an epoch past `device_epoch` at the cut, so
+    /// that certificate names a retired key? `None` on incomplete ancestry.
+    #[must_use]
+    pub fn device_epoch_superseded_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        device: &calimero_account::DeviceId,
+        device_epoch: u32,
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        Some(
+            view.devices.get(device).is_some_and(|bound| {
+                bound.account == *account && device_epoch < bound.device_epoch
+            }),
+        )
+    }
+
     /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
     /// the cut — the apply-auth analogue of live's `is_authorized_with_capability`.
     /// Same authoritative `None`-on-incomplete-ancestry contract as
