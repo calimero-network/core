@@ -33,7 +33,7 @@ mod verify;
 pub(crate) use buffering::{
     drain_absorbed, drain_all_absorbed, drain_all_governance_pending, recover_absorbed_on_startup,
 };
-use buffering::{drain_governance_pending, fence_and_maybe_absorb, FenceOutcome};
+use buffering::{drain_governance_pending, fence_and_maybe_absorb, park_first_copy, FenceOutcome};
 // Used only by the in-module test suite (the live drain/recover entry points
 // reach these internally within `buffering`).
 #[cfg(test)]
@@ -439,8 +439,8 @@ pub(crate) async fn apply_authorized_state_delta(
     // Parking rather than dropping matters because gossipsub does not re-deliver
     // a message it has already delivered: without a durable copy the only
     // recovery would be hash-heartbeat divergence triggering a snapshot sync.
-    // The original ciphertext is what gets stored — a replay is verified against
-    // the same bytes the sender signed.
+    // The envelope signature does not cover the payload, so the stored copy is
+    // unchecked until its replay re-derives the content address.
     if author_id != our_identity {
         if let BytecodeStatus::Missing(application_id) =
             application_bytecode_status(&node_clients.node, &node_clients.context, &context_id)?
@@ -467,10 +467,13 @@ pub(crate) async fn apply_authorized_state_delta(
             // Keyed by the awaited application rather than by `producing_bytecode_id`:
             // the application id resolves from local context metadata even when
             // nothing about the application has landed, and a delta may carry no
-            // `producing_bytecode_id` at all. `delta_id` keeps the key unique, so a
-            // re-delivery overwrites instead of duplicating.
-            calimero_governance_store::AbsorbRepository::new(node_clients.context.datastore())
-                .save(&context_id, *application_id.as_ref(), &record)?;
+            // `producing_bytecode_id` at all.
+            park_first_copy(
+                node_clients.context.datastore(),
+                &context_id,
+                *application_id.as_ref(),
+                &record,
+            )?;
             info!(
                 %context_id,
                 %author_id,
