@@ -21,6 +21,31 @@ pub fn base_url() -> String {
     std::env::var(BASE_URL_ENV).unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned())
 }
 
+/// The publish request carries the API key, so it goes over https, or over
+/// plain http only to this machine.
+fn require_secure_registry(base_url: &str) -> Result<()> {
+    let uri: ureq::http::Uri = base_url
+        .parse()
+        .map_err(|e| eyre!("invalid registry URL {base_url}: {e}"))?;
+    match uri.scheme_str() {
+        Some("https") => Ok(()),
+        Some("http") if is_loopback(uri.host()) => Ok(()),
+        _ => Err(eyre!(
+            "refusing to send the registry API key to {base_url}: use an https URL \
+             (plain http is accepted only for localhost)"
+        )),
+    }
+}
+
+fn is_loopback(host: Option<&str>) -> bool {
+    let Some(host) = host else { return false };
+    host == "localhost"
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 pub enum Bump {
     Major,
     Minor,
@@ -30,7 +55,7 @@ pub enum Bump {
 /// Highest published appVersion for `package`, bumped per `bump`.
 /// `Ok("0.1.0")` when the registry lists nothing for it.
 pub fn next_version(base_url: &str, package: &str, bump: Bump) -> Result<String> {
-    let url = format!("{base_url}/api/v2/bundles?package={package}");
+    let url = format!("{base_url}/api/v2/bundles?package={package}&all_versions=true");
     let body = ureq::get(&url)
         .config()
         .timeout_global(Some(TIMEOUT))
@@ -110,6 +135,7 @@ fn parse_component(s: &str) -> Option<u64> {
 /// the registry strips `_`-prefixed keys before checking the signature, so this
 /// doesn't touch what was signed.
 pub fn publish(base_url: &str, api_key: &str, mpk: &Utf8Path) -> Result<()> {
+    require_secure_registry(base_url)?;
     let bytes = std::fs::read(mpk).map_err(|e| eyre!("failed to read {mpk}: {e}"))?;
     let body = push_body(&bytes)
         .map_err(|e| eyre!("failed to build the publish request from {mpk}: {e}"))?;
@@ -274,7 +300,10 @@ mod tests {
 
         let request = handle.join().expect("server thread");
         assert_eq!(request.method, "GET");
-        assert_eq!(request.path, "/api/v2/bundles?package=com.example.demo");
+        assert_eq!(
+            request.path,
+            "/api/v2/bundles?package=com.example.demo&all_versions=true"
+        );
     }
 
     #[test]
@@ -319,6 +348,49 @@ mod tests {
         assert_eq!(body["appVersion"], "1.2.3");
         let binary = body["_binary"].as_str().expect("_binary is a string");
         assert_eq!(hex::decode(binary).expect("valid hex"), mpk);
+    }
+
+    #[test]
+    fn publish_refuses_a_plain_http_registry_that_is_not_loopback() {
+        let mpk = build_mpk(&[("manifest.json", br#"{"package":"com.example.demo"}"#)]);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mpk_path = Utf8Path::from_path(tmp.path())
+            .expect("utf8 tempdir")
+            .join("demo.mpk");
+        std::fs::write(&mpk_path, &mpk).expect("write fixture mpk");
+
+        let err = publish("http://registry.invalid", "test-api-key", &mpk_path)
+            .expect_err("an api key must not travel over plain http");
+        assert!(err.to_string().contains("https"), "got: {err}");
+    }
+
+    #[test]
+    fn plain_http_is_accepted_only_for_loopback_hosts() {
+        for ok in [
+            "https://apps.calimero.network",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080/",
+            "http://[::1]:8080",
+        ] {
+            assert!(
+                require_secure_registry(ok).is_ok(),
+                "{ok} should be accepted"
+            );
+        }
+        for refused in [
+            "http://apps.calimero.network",
+            "http://10.0.0.5:8080",
+            "http://localhost.example.com",
+            "http://127.0.0.1.example.com",
+            "http://127.0.0.1@example.com",
+            "ftp://127.0.0.1",
+            "apps.calimero.network",
+        ] {
+            assert!(
+                require_secure_registry(refused).is_err(),
+                "{refused} should be refused"
+            );
+        }
     }
 
     #[test]

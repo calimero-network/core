@@ -133,6 +133,7 @@ fn timeout_classifier_assigns_per_op_kind() {
             group_id: [0u8; 32].into(),
             parent_id: [0u8; 32].into(),
             restricted: true,
+            salt: [0; 32],
         })),
         OP_ACK_MEMBER_CHANGE_TIMEOUT
     );
@@ -783,8 +784,10 @@ fn sealed_admin_change(store: &Store, ns_id: NamespaceId, pk: PublicKey) -> Name
     let new_admin = crate::member_account_in_namespace(store, &gid, &pk)
         .expect("account lookup")
         .expect("the fixture's admin is enrolled");
-    crate::namespace::seal_root_op_for_publish(store, ns_id, RootOp::AdminChanged { new_admin })
-        .expect("seal")
+    // Owner-level since schema 20, so it carries the admin's own root proof.
+    let guarded =
+        crate::test_fixtures::guarded_root_op(store, &gid, &pk, RootOp::AdminChanged { new_admin });
+    crate::namespace::seal_root_op_for_publish(store, ns_id, guarded).expect("seal")
 }
 
 /// The op this publish just applied, for an ack signed against it.
@@ -805,8 +808,10 @@ fn published_op_hash(store: &Store, ns_id: NamespaceId) -> Option<[u8; 32]> {
 #[actix::test]
 async fn publish_does_not_wait_on_a_subscriber_that_cannot_ack() {
     let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
-        crate::test_fixtures::namespace_publish_fixture().await;
-    node_client.record_peer_subscribed(libp2p::PeerId::random(), ns_topic(ns_id));
+        crate::test_fixtures::namespace_publish_fixture_with_subscribers(vec![
+            libp2p::PeerId::random(),
+        ])
+        .await;
     let op = sealed_admin_change(&store, ns_id, sk.public_key());
 
     let report = NamespaceGovernance::new(&store, ns_id)
@@ -830,11 +835,13 @@ async fn publish_does_not_wait_on_a_subscriber_that_cannot_ack() {
 #[actix::test]
 async fn publish_waits_for_and_records_an_ackable_member() {
     let (store, node_client, ack_router, ns_id, sk, _tmp, _msgs) =
-        crate::test_fixtures::namespace_publish_fixture().await;
+        crate::test_fixtures::namespace_publish_fixture_with_subscribers(vec![
+            libp2p::PeerId::random(),
+        ])
+        .await;
     let acker = PrivateKey::random(&mut rand::rng());
     let acker_pk = acker.public_key();
     plant_namespace_role(&store, ns_id, &acker_pk, GroupMemberRole::Admin);
-    node_client.record_peer_subscribed(libp2p::PeerId::random(), ns_topic(ns_id));
     let op = sealed_admin_change(&store, ns_id, sk.public_key());
 
     let ack_store = store.clone();

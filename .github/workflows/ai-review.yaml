@@ -20,6 +20,9 @@ concurrency:
   group: ai-review-${{ github.event.inputs.pr_number }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -36,9 +39,9 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Tracks ai-code-reviewer @master (pin a SHA here for a deliberate review gate).
+      # Pinned to a commit of ai-code-reviewer master; bump it deliberately.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@master
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@a065f220db4648dc0f01cd93bb4af9c832b80193
 
       - name: Determine PR number and agent count
         id: pr

@@ -157,17 +157,14 @@ pub enum SnapshotRecord {
     /// Auxiliary state keyed under the same context but not
     /// signature-verifiable per record. Currently used for:
     ///
-    /// * `kind = 2`: `Key::SyncState(id)` — last-sync-with-peer
-    ///   pointers. Local-state-adjacent; preserved on snapshot
-    ///   to avoid resetting receiver-side sync timers.
     /// * `kind = 3`: `Key::RotationLog(id)` — per-entity writer
     ///   rotation history. Its authenticity is implicit from the
     ///   signed entity's writer set (the rotation log just records
     ///   transitions between writer-set-signed states).
     ///
     /// The receiver re-derives the storage key via
-    /// `Key::SyncState(id).to_bytes()` /
-    /// `Key::RotationLog(id).to_bytes()` and writes through.
+    /// `Key::RotationLog(id).to_bytes()` and writes through. Any other
+    /// kind is refused.
     Auxiliary {
         /// Discriminator byte from `calimero_storage::store::Key`.
         kind: u8,
@@ -240,8 +237,6 @@ pub mod snapshot_record_kind {
     /// `Key::Entry(id)` — not used in `Auxiliary` (Entry is shipped
     /// inside `Entity`); kept here for completeness.
     pub const ENTRY: u8 = 1;
-    /// `Key::SyncState(id)` — last-sync timestamps.
-    pub const SYNC_STATE: u8 = 2;
     /// `Key::RotationLog(id)` — per-entity writer rotation history.
     pub const ROTATION_LOG: u8 = 3;
 }
@@ -691,9 +686,9 @@ pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 /// borsh-encoded storage delta).
 ///
 /// This is a defense-in-depth backstop, NOT the primary limit: an inbound
-/// gossip message is already capped at gossipsub's default
-/// `max_transmit_size` (64 KiB), so a network-delivered delta's plaintext is
-/// bounded well below this before it reaches decryption. The cap matters for
+/// gossip message is already capped at the network's gossipsub
+/// `max_transmit_size` (1 MiB), so a network-delivered delta's plaintext
+/// cannot exceed this before it reaches decryption. The cap matters for
 /// the buffered-replay path (which decrypts payloads loaded from local
 /// storage) and as a hard ceiling against a malicious group-key holder, who
 /// can seal an arbitrarily large payload that still passes AEAD.
@@ -702,7 +697,8 @@ pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 /// *compressed* snapshot pages and is intentionally looser to absorb
 /// compression expansion. A state-delta plaintext is uncompressed, so it gets
 /// its own, tighter, named bound. Sized generously above any legitimate delta
-/// (16× the gossip transmit cap) but far below a memory-exhaustion payload.
+/// (the same size as the gossip transmit cap) but far below a memory-exhaustion
+/// payload.
 pub const MAX_STATE_DELTA_PLAINTEXT_BYTES: usize = 1024 * 1024;
 
 /// Plaintext that gets encrypted into the `artifact` field of a
@@ -753,6 +749,11 @@ impl SealedDeltaPayload {
     }
 }
 
+// A wire enum: one value is decoded per gossip message, matched and dropped,
+// never held in bulk, so the size gap between `StateDelta` and the rest costs
+// nothing a `Box` would save. It used to be hidden by `Ephemeral` carrying its
+// author, seq and signature in the clear; those now travel sealed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
 pub enum BroadcastMessage<'a> {
@@ -910,40 +911,21 @@ pub enum BroadcastMessage<'a> {
         dag_heads: Vec<[u8; 32]>,
     },
 
-    /// Transient ephemeral presence message — encrypted presence slice broadcast
-    /// on the context gossip topic. Never enters state_delta; dispatched inline.
-    ///
-    /// The payload is sealed under the group key identified by `key_id` so only
-    /// context members can read it. `seq` provides a per-author monotonic counter
-    /// for LWW tiebreaking at the receiver without any persistent state.
+    /// Ephemeral presence: one
+    /// [`PresenceUpdate`](crate::presence::PresenceUpdate), borsh, sealed under
+    /// the keyring that seals the context (core#4027). Every field a receiver
+    /// relies on (author, seq, time, state, certificate) is inside the AEAD and
+    /// signed by the author; `key_id` and `nonce` cannot be altered without
+    /// failing decryption.
     Ephemeral {
         context_id: ContextId,
-        /// Context identity of the sender (LWW key).
-        author: PublicKey,
-        /// Per-author monotonic counter; LWW tiebreak.
-        seq: u64,
-        /// `sha256(group_key)` — identifies which group key sealed this;
-        /// receiver resolves it from its local `GroupKeyEntry` store.
+        /// `sha256(group_key)` of the key that sealed it; only the current one
+        /// is accepted.
         key_id: [u8; 32],
-        /// Sender's wall clock (ms since the UNIX epoch) at publish time.
-        ///
-        /// Freshness binding: receivers drop an envelope whose stamp sits
-        /// further than `PRESENCE_MAX_SKEW_MS` from their own clock, which is
-        /// what stops a mesh peer from re-injecting a recorded envelope after
-        /// its author's entry has expired. Covered by `signature`, so it
-        /// cannot be restamped in flight.
-        sent_at_ms: u64,
         /// Nonce for the AEAD seal (same `Nonce` type as `StateDelta`).
         nonce: Nonce,
-        /// `SharedKey`-encrypted borsh-encoded presence slice.
+        /// The sealed borsh of a `PresenceUpdate`.
         ciphertext: Cow<'a, [u8]>,
-        /// ed25519 signature by `author` over the canonical payload binding
-        /// `(context_id, author, seq, key_id, sent_at_ms, nonce,
-        /// sha256(ciphertext))`. Mandatory: `author`, `seq`, `sent_at_ms` and
-        /// `nonce` all ride outside the AEAD, so without this they are
-        /// rewritable in flight. Verified on every receive before the
-        /// awareness store is touched.
-        signature: [u8; 64],
     },
 
     /// [`Self::TeeAttestationAnnounce`] plus the mero-tee node release the
@@ -986,6 +968,28 @@ pub enum BroadcastMessage<'a> {
         trigger: Box<super::delta_auth::TeeTriggerCause>,
         /// By `author_id`, over
         /// [`super::delta_auth::tee_fired_payload`].
+        signature: [u8; 64],
+    },
+
+    /// A member's state: the DAG heads it has applied and the root hash they
+    /// produced, signed by the member's device key. Sent with every heartbeat.
+    ///
+    /// Tombstone GC collects a delete only once every member device has shown
+    /// a state equal to this node's own after the delete (see
+    /// [`super::delta_auth::StateBeaconPayload`]), so this is what lets a
+    /// tombstone go. Gossip-only and never persisted: a node that misses one
+    /// waits for the next.
+    ///
+    /// **Borsh ordering**: appended at the tail so every existing variant
+    /// discriminant is unchanged. An older node drops it as undecodable.
+    StateBeacon {
+        context_id: ContextId,
+        /// The member device key that signed it.
+        signer: PublicKey,
+        root_hash: Hash,
+        /// Sorted.
+        dag_heads: Vec<[u8; 32]>,
+        /// By `signer`, over [`super::delta_auth::state_beacon_payload`].
         signature: [u8; 64],
     },
 }
@@ -1740,34 +1744,24 @@ mod tests {
         use calimero_crypto::NONCE_LEN;
         let msg = BroadcastMessage::Ephemeral {
             context_id: ContextId::from([1u8; 32]),
-            author: PublicKey::from([2u8; 32]),
-            seq: 7,
             key_id: [3u8; 32],
-            sent_at_ms: 1_700_000_000_123,
-            nonce: [0u8; NONCE_LEN],
+            nonce: [4u8; NONCE_LEN],
             ciphertext: std::borrow::Cow::Borrowed(&[9, 9, 9]),
-            signature: [5u8; 64],
         };
         let bytes = borsh::to_vec(&msg).unwrap();
         let back: BroadcastMessage<'_> = borsh::from_slice(&bytes).unwrap();
         let BroadcastMessage::Ephemeral {
-            seq,
-            sent_at_ms,
-            signature,
+            key_id,
+            nonce,
+            ciphertext,
             ..
         } = back
         else {
             panic!("expected Ephemeral");
         };
-        assert_eq!(seq, 7);
-        assert_eq!(
-            sent_at_ms, 1_700_000_000_123,
-            "the freshness stamp must survive the round-trip"
-        );
-        assert_eq!(
-            signature, [5u8; 64],
-            "signature must survive the round-trip"
-        );
+        assert_eq!(key_id, [3u8; 32]);
+        assert_eq!(nonce, [4u8; NONCE_LEN]);
+        assert_eq!(ciphertext.as_ref(), &[9, 9, 9]);
     }
 
     #[test]

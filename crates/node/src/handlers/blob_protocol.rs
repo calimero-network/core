@@ -56,7 +56,7 @@ pub async fn handle_blob_protocol_stream(
     let blob_request = serde_json::from_slice::<BlobRequest>(&first_message.data)
         .map_err(|e| eyre::eyre!("Failed to parse blob request: {}", e))?;
 
-    if !is_blob_access_authorized(&context_client, &blob_request, &peer_id).await? {
+    if !is_blob_access_authorized(&node_client, &context_client, &blob_request, &peer_id).await? {
         let response = BlobResponse {
             found: false,
             size: None,
@@ -258,19 +258,19 @@ async fn handle_blob_request_stream(
     outcome
 }
 
-/// Helper function to check if the blob access is authorized.
-///
-////// Helper function to authorize blob access.
+/// Helper function to authorize blob access.
 ///
 /// Implements the security policy:
 /// 1. Public blobs (App Bundles) are accessible to everyone (bootstrapping).
-/// 2. Private blobs require a valid signature from a Context Member.
+/// 2. Private blobs require a valid signature from a Context Member, and are
+///    served only if this node holds them for that context.
 ///
 /// # Returns
 /// * `Ok(true)` - if access is granted.
 /// * `Ok(false)` - if access is denied.
 /// * `Err` - only on internal system failures (e.g. DB errors).
 async fn is_blob_access_authorized(
+    node_client: &NodeClient,
     context_client: &ContextClient,
     request: &BlobRequest,
     peer_id: &PeerId,
@@ -308,7 +308,16 @@ async fn is_blob_access_authorized(
     // the full decision (replay window, signature, direct-or-inherited
     // membership) is unit-testable end to end with a real signature, without an
     // actor or the network.
-    is_signed_context_member(context_client.datastore(), request, peer_id)
+    if !is_signed_context_member(context_client.datastore(), request, peer_id)? {
+        return Ok(false);
+    }
+    // Membership of the named context is not enough: the requester names that
+    // context, so the blob must be held for it too.
+    let owned = node_client.is_blob_held_for_context(&request.context_id, &request.blob_id)?;
+    if !owned {
+        debug!(blob_id=%request.blob_id, context_id=%request.context_id, "Blob is not held for this context. Denying blob access.");
+    }
+    Ok(owned)
 }
 
 /// Authorizes a *private* blob read from a signed request: an `auth` envelope
@@ -333,7 +342,7 @@ async fn is_blob_access_authorized(
 /// one-directional blob (image/canvas) sync: the namespace creator could fetch
 /// a joiner's blobs, but the joiner could not fetch the creator's. The
 /// inheritance-aware fallback mirrors the sync responder's parent-walk (#2256).
-fn is_signed_context_member(
+pub(crate) fn is_signed_context_member(
     store: &calimero_store::Store,
     request: &BlobRequest,
     peer_id: &PeerId,
@@ -600,17 +609,33 @@ mod tests {
     /// `timestamp`, with the `auth.public_key` set to `claimed` (normally the
     /// signer's own public key; differs only in the signature-mismatch test).
     fn signed_request(signer: &PrivateKey, claimed: PublicKey, timestamp: u64) -> BlobRequest {
+        sign_request(
+            signer,
+            claimed,
+            timestamp,
+            BlobId::from(BLOB),
+            ContextId::from(CONTEXT),
+        )
+    }
+
+    fn sign_request(
+        signer: &PrivateKey,
+        claimed: PublicKey,
+        timestamp: u64,
+        blob_id: BlobId,
+        context_id: ContextId,
+    ) -> BlobRequest {
         let payload = BlobAuthPayload {
-            blob_id: BLOB,
-            context_id: CONTEXT,
+            blob_id: *blob_id,
+            context_id: *context_id,
             timestamp,
             requester: REQUESTER.to_bytes(),
         };
         let message = borsh::to_vec(&payload).unwrap();
         let signature = signer.sign(&message).unwrap().to_bytes();
         BlobRequest {
-            blob_id: BlobId::from(BLOB),
-            context_id: ContextId::from(CONTEXT),
+            blob_id,
+            context_id,
             auth: Some(BlobAuth {
                 public_key: claimed,
                 signature,
@@ -823,6 +848,233 @@ mod tests {
             is_signed_context_member(&store, &request, &REQUESTER).unwrap(),
             "a direct context member with a valid signature must be authorized \
              without relying on the inheritance walk"
+        );
+    }
+
+    // -- ownership: a context's peers are served only that context's blobs --
+
+    /// One node holding two contexts, each running its own application, and
+    /// the key of one direct member of each.
+    struct TwoContexts {
+        node_client: NodeClient,
+        context_client: calimero_context_client::client::ContextClient,
+        a: (ContextId, PrivateKey, PublicKey, BlobId),
+        b: (ContextId, PrivateKey, PublicKey, BlobId),
+        _dirs: (tempfile::TempDir, tempfile::TempDir),
+    }
+
+    /// Registers `context_id` as running an application of its own, with
+    /// `member` as a direct member; returns the application's bytecode blob.
+    async fn context_with_member(
+        node_client: &NodeClient,
+        store: &Store,
+        context_id: ContextId,
+        member: PublicKey,
+        bytecode: &[u8],
+    ) -> BlobId {
+        use calimero_primitives::application::{ApplicationId, ApplicationSource};
+        use calimero_store::{key, types};
+
+        let (bytecode_id, size) = node_client
+            .add_blob(bytecode, Some(bytecode.len() as u64), None)
+            .await
+            .expect("store bytecode");
+        let application_id = ApplicationId::from(*context_id);
+        let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
+        node_client
+            .write_application_row(&application_id, &bytecode_id, size, &source, None)
+            .expect("install the application");
+
+        let mut handle = store.handle();
+        handle
+            .put(
+                &key::ContextConfig::new(context_id),
+                &types::ContextConfig::new(0, 0),
+            )
+            .unwrap();
+        handle
+            .put(
+                &key::ContextMeta::new(context_id),
+                &types::ContextMeta::new(
+                    key::ApplicationMeta::new(application_id),
+                    [0; 32],
+                    Vec::new(),
+                    None,
+                ),
+            )
+            .unwrap();
+        handle
+            .put(
+                &key::ContextIdentity::new(context_id, member),
+                &types::ContextIdentity { private_key: None },
+            )
+            .unwrap();
+        bytecode_id
+    }
+
+    async fn two_contexts() -> TwoContexts {
+        use calimero_app_downloader::registry::{RegistryConfig, RegistryMode};
+
+        let (node_client, store, data_dir, blob_dir) = node_client().await;
+        // A dht node serves application bytecode at all, so only ownership decides.
+        let node_client = node_client.with_registry(RegistryConfig::new(RegistryMode::Dht, None));
+        let context_client = calimero_context_client::client::ContextClient::new(
+            store.clone(),
+            node_client.clone(),
+            calimero_utils_actix::LazyRecipient::new(),
+        );
+        let (alice_sk, alice) = keypair(0x0A);
+        let (bob_sk, bob) = keypair(0x0B);
+        let context_a = ContextId::from([0xA1; 32]);
+        let context_b = ContextId::from([0xB1; 32]);
+        let bytecode_a =
+            context_with_member(&node_client, &store, context_a, alice, b"app A wasm").await;
+        let bytecode_b =
+            context_with_member(&node_client, &store, context_b, bob, b"app B wasm").await;
+        TwoContexts {
+            node_client,
+            context_client,
+            a: (context_a, alice_sk, alice, bytecode_a),
+            b: (context_b, bob_sk, bob, bytecode_b),
+            _dirs: (data_dir, blob_dir),
+        }
+    }
+
+    async fn add(node_client: &NodeClient, bytes: &[u8]) -> BlobId {
+        node_client
+            .add_blob(bytes, Some(bytes.len() as u64), None)
+            .await
+            .expect("store blob")
+            .0
+    }
+
+    /// Whether a member's signed request for `blob_id` under `context_id`
+    /// reaches the bytes, driven through the protocol's own entry point.
+    async fn member_is_served(
+        node: &TwoContexts,
+        (signer, member): (&PrivateKey, PublicKey),
+        context_id: ContextId,
+        blob_id: BlobId,
+    ) -> bool {
+        use calimero_network_primitives::blob_types::BlobResponse;
+        use calimero_network_primitives::stream::{Message, Stream};
+        use futures_util::{SinkExt, StreamExt};
+
+        let request = sign_request(signer, member, now_secs(), blob_id, context_id);
+        let (mut ours, theirs) = Stream::test_pair();
+        ours.send(Message::new(serde_json::to_vec(&request).unwrap()))
+            .await
+            .expect("send the request");
+        let responder = super::handle_blob_protocol_stream(
+            node.node_client.clone(),
+            node.context_client.clone(),
+            *REQUESTER,
+            Box::new(theirs),
+        );
+        let (result, reply) = tokio::join!(responder, ours.next());
+        result.expect("the responder must answer rather than fault");
+        let reply = reply.expect("a reply frame").expect("a readable frame");
+        serde_json::from_slice::<BlobResponse>(&reply.data)
+            .expect("a blob response")
+            .found
+    }
+
+    #[tokio::test]
+    async fn a_member_of_one_context_cannot_fetch_a_blob_owned_by_another() {
+        let node = two_contexts().await;
+        let (context_a, alice_sk, alice, _) = &node.a;
+        let (context_b, ..) = &node.b;
+        let private_to_b = add(&node.node_client, b"a file shared in context B only").await;
+        node.node_client
+            .record_blob_owner(context_b, &private_to_b)
+            .unwrap();
+
+        assert!(
+            !member_is_served(&node, (alice_sk, *alice), *context_a, private_to_b).await,
+            "a member of A must not be served B's blob by naming its own context"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_member_is_served_its_own_contexts_blobs_and_application() {
+        let node = two_contexts().await;
+        let (context_a, alice_sk, alice, bytecode_a) = &node.a;
+        let blob_of_a = add(&node.node_client, b"a file shared in context A").await;
+        node.node_client
+            .record_blob_owner(context_a, &blob_of_a)
+            .unwrap();
+
+        assert!(
+            member_is_served(&node, (alice_sk, *alice), *context_a, blob_of_a).await,
+            "a member of A must be served A's blob"
+        );
+        assert!(
+            member_is_served(&node, (alice_sk, *alice), *context_a, *bytecode_a).await,
+            "a member of A must be served the application A runs"
+        );
+    }
+
+    // The rule the sync blob share serves by, which has no unsigned path.
+    #[tokio::test]
+    async fn the_application_a_context_runs_is_held_for_it() {
+        let node = two_contexts().await;
+        let (context_a, _, _, bytecode_a) = &node.a;
+        let (_, _, _, bytecode_b) = &node.b;
+
+        assert!(node
+            .node_client
+            .is_blob_held_for_context(context_a, bytecode_a)
+            .unwrap());
+        assert!(!node
+            .node_client
+            .is_blob_held_for_context(context_a, bytecode_b)
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn another_contexts_application_is_not_served() {
+        let node = two_contexts().await;
+        let (context_a, alice_sk, alice, _) = &node.a;
+        let (_, _, _, bytecode_b) = &node.b;
+
+        assert!(
+            !member_is_served(&node, (alice_sk, *alice), *context_a, *bytecode_b).await,
+            "B's application is not A's to fetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blob_uploaded_without_a_context_is_not_served() {
+        let node = two_contexts().await;
+        let (context_a, alice_sk, alice, _) = &node.a;
+        let unowned = add(&node.node_client, b"uploaded with no context").await;
+
+        assert!(
+            !member_is_served(&node, (alice_sk, *alice), *context_a, unowned).await,
+            "a blob held for no context must not be served to any context's member"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blob_held_for_two_contexts_is_served_to_members_of_either() {
+        let node = two_contexts().await;
+        let (context_a, alice_sk, alice, _) = &node.a;
+        let (context_b, bob_sk, bob, _) = &node.b;
+        let shared = add(&node.node_client, b"the same bytes, added in both").await;
+        let again = add(&node.node_client, b"the same bytes, added in both").await;
+        assert_eq!(shared, again, "content addressing dedups the bytes");
+        node.node_client
+            .record_blob_owner(context_a, &shared)
+            .unwrap();
+        node.node_client
+            .record_blob_owner(context_b, &shared)
+            .unwrap();
+
+        assert!(member_is_served(&node, (alice_sk, *alice), *context_a, shared).await);
+        assert!(member_is_served(&node, (bob_sk, *bob), *context_b, shared).await);
+        assert!(
+            !member_is_served(&node, (alice_sk, *alice), *context_b, shared).await,
+            "membership of the named context still gates the read"
         );
     }
 }

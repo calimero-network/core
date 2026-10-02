@@ -225,6 +225,8 @@ if !is_admin {
 
 <Aside type="note" title="Creation default is base state, not an op">
 A group's *creation-time* default capability is materialized store state, not a folded operation. So when the projection finds nothing folded for an anchor, it falls back to `default_cap_base` — the immutable base default — rather than treating the member as having zero caps. This is what keeps the at-cut walk's inheritance decision identical to the live store's.
+
+The fallback applies only when **nothing** is folded: no per-member grant and no folded group default. An explicit grant is authoritative, including a grant of nothing. `MemberCapabilitySet { capabilities: empty }` is how an admin revokes everything a member holds, and a member whose only bit was the default `CAN_JOIN_OPEN_SUBGROUPS` reaches exactly 0 when an admin keeps them out of Open subgroups. The live row then reads 0. The projection once read a folded 0 as "nothing folded" and fell back to the default, so at the cut the revoked member kept the default's bits. They kept inheriting into Open subgroups, and kept passing the at-cut capability gates, while every live check refused them. `AclView::capability` now falls back on absence, never on zero.
 </Aside>
 
 ### Effective capabilities of an inherited member

@@ -17,6 +17,7 @@ impl Handler<SetTeeAuthoringPolicyRequest> for ContextManager {
         SetTeeAuthoringPolicyRequest {
             group_id,
             allowed_mrtd,
+            root_proof,
         }: SetTeeAuthoringPolicyRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -40,6 +41,21 @@ impl Handler<SetTeeAuthoringPolicyRequest> for ContextManager {
             Ok(preflight) => preflight,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
+        // An empty list is accepted on purpose: it is how an admin turns TEE
+        // authorship back off.
+        let enabled = !allowed_mrtd.is_empty();
+        // Admin-level, with the signing admin's own root proof; see
+        // `crate::root_guard`.
+        let op = match crate::root_guard::guard_group_op(
+            &preflight.datastore,
+            &group_id,
+            &preflight.signer,
+            GroupOp::TeeAuthoringPolicySet { allowed_mrtd },
+            root_proof,
+        ) {
+            Ok(op) => op,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
         let sk = preflight.signer_sk();
         let datastore = preflight.datastore;
         let node_client = preflight.node_client;
@@ -47,16 +63,13 @@ impl Handler<SetTeeAuthoringPolicyRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                // An empty list is accepted on purpose: it is how an admin turns
-                // TEE authorship back off.
-                let enabled = !allowed_mrtd.is_empty();
                 let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,
                     &group_id,
                     &sk,
-                    GroupOp::TeeAuthoringPolicySet { allowed_mrtd },
+                    op,
                 )
                 .await?;
                 report.observe("set_tee_authoring_policy", "TeeAuthoringPolicySet");

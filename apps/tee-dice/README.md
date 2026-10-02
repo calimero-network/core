@@ -10,6 +10,16 @@ from `env::tee_random_bytes`, and records it in `TeeOnly` state. Every peer
 accepts that write because its signer resolves to `AccountId::TEE_AUTHORITY`,
 and drops a member's attempt to write the same cell.
 
+> **Mock attestation.** The roll is unrigged only if the enclave is genuine. The
+> workflows here run with mock attestation: the namespace's TEE admission policy
+> sets `acceptMock` (`accept_mock` in the merobox step) and lists the all-zero
+> measurements a mock quote reports, and the authoring policy's `allowedMrtd`
+> does the same. Production needs a real attestation policy: `acceptMock` false,
+> `allowedMrtd` and `allowedRtmr1` to `allowedRtmr3` naming the approved image
+> (or `signedRelease`), the real MRTD in the authoring policy, and a `merod`
+> that does not run with `--mock-tee`. See
+> `docs/src/content/docs/protocol/tee-attestation.mdx`.
+
 ## Methods
 
 - `roll(roll_id, sides)` — ask the TEE for a roll (any member)
@@ -30,6 +40,10 @@ roll is needed (a turn's id plus a nonce the roller commits to, say), and read
 `sides` from its own rules rather than from whichever request won. Binding a
 roll to its requester takes a request record in owned state (an `Authored` or
 `WriteOnce` entry) that the TEE handler reads, instead of trusting the event.
+
+This is a demo of TEE authorship, not a game to deploy as is: it does not bind
+a roll to its requester or its die, and if two TEE authorities resolve the same
+roll at once, the last write wins and a face already read can change.
 
 ## Building
 

@@ -317,6 +317,72 @@ pub enum OpPayload {
         /// The group whose TEE role the seat takes, if the relay holds one there.
         tee_role_from: Option<ContextGroupId>,
     },
+
+    // ---- owner-level governance ----
+    /// An owner-level op that carried a root-signed authorisation from its
+    /// author's account (`GroupOp::RootGuarded` / `RootOp::RootGuarded`).
+    ///
+    /// Produced only when the proof is internally valid for the op it wraps:
+    /// its genesis, chain and root signature verify, and it names this op's kind
+    /// and digest (and, for a group op, this group). What stays for the cut, and
+    /// so for `calimero-authz`, is whether `account` is the op's author, whether
+    /// `counter` is the number of guarded ops `group` has folded before this
+    /// one, and whether the chain reaches the epoch the cut has resolved for the
+    /// account. `genesis` and `chain` ride along so that last question can be
+    /// asked.
+    ///
+    /// `carried` folds exactly as it would on its own; `Noop` for a guarded op the
+    /// projection models nothing about (a group deletion, an admission policy).
+    /// The bare owner-level ops fold to nothing at all since schema 20: without a
+    /// proof they never apply, so there is nothing to fold.
+    RootGuarded {
+        /// What the guarded op folds as.
+        carried: Box<OpPayload>,
+        /// The group whose guarded-op counter the proof spends.
+        group: ContextGroupId,
+        /// The account whose root signed the proof.
+        account: AccountId,
+        /// The counter the proof names.
+        counter: u64,
+        /// The account's self-certifying root.
+        genesis: AccountGenesis,
+        /// The handoff chain the proof carried.
+        chain: Vec<RootKeyHandoff>,
+    },
+}
+
+impl OpPayload {
+    /// Must a void op keep this payload when it loses its bytes? True for all the void
+    /// rule or a view reads. No wildcard: a new payload has to be decided here.
+    #[must_use]
+    pub fn outlives_void_bytes(&self) -> bool {
+        match self {
+            Self::MemberAdded { .. }
+            | Self::MemberRemoved { .. }
+            | Self::MemberCapabilitySet { .. }
+            | Self::DefaultCapabilitiesSet { .. }
+            | Self::AdminChanged { .. }
+            | Self::PolicyUpdated { .. }
+            | Self::SubgroupCreated { .. }
+            | Self::SubgroupReparented { .. }
+            | Self::SubgroupDeleted { .. }
+            | Self::SubgroupVisibilitySet { .. }
+            | Self::DeviceLinked { .. }
+            | Self::DeviceRevoked { .. }
+            | Self::DeviceDescoped { .. }
+            | Self::AccountKeysRotated { .. }
+            | Self::MemberJoinedWithDevice { .. }
+            | Self::TeeAuthoringPolicySet { .. }
+            | Self::TeeAuthorityEvidence { .. }
+            | Self::RelaySeated { .. }
+            | Self::RootGuarded { .. } => true,
+            Self::Put { .. }
+            | Self::Delete { .. }
+            | Self::SetWriters { .. }
+            | Self::Noop
+            | Self::Opaque { .. } => false,
+        }
+    }
 }
 
 /// The device credential a [`OpPayload::RelaySeated`] binds, with the same

@@ -54,13 +54,14 @@ use futures_util::StreamExt as _;
 use tracing::warn;
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
-use crate::auth::AuthenticatedAccount;
+use crate::auth::{AuthenticatedAccount, AuthenticatedDevice};
 use crate::AdminState;
 
 pub async fn handler(
     Path(context_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
     account: Option<Extension<AuthenticatedAccount>>,
+    device: Option<Extension<AuthenticatedDevice>>,
     Json(req): Json<QueryContextApiRequest>,
 ) -> impl IntoResponse {
     let context_id: ContextId = match context_id_str.parse() {
@@ -89,6 +90,24 @@ pub async fn handler(
         }
         .into_response();
     };
+
+    // A device the namespace withdrew reads nothing in it. A session that names
+    // no device is judged by its account alone.
+    if let Some(Extension(AuthenticatedDevice(device))) = device {
+        if crate::caller_account::device_withdrawn_for_context(
+            &state.ctx_client,
+            &context_id,
+            account,
+            device,
+        ) {
+            return ApiError {
+                status_code: StatusCode::FORBIDDEN,
+                message: "this device is no longer authorized in the namespace owning this context"
+                    .to_owned(),
+            }
+            .into_response();
+        }
+    }
 
     match query(&state.ctx_client, context_id, account, &req).await {
         Ok(returns) => ApiResponse {

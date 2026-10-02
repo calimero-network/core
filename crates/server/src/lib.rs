@@ -240,6 +240,7 @@ pub async fn start(
     drop(tokio::spawn(admin::handlers::tee::evidence_retry::run(
         datastore.clone(),
         node_client.clone(),
+        config.tee_release_version.clone(),
         #[cfg(feature = "mock-attestation")]
         mock_tee,
         shutdown.clone(),
@@ -357,9 +358,14 @@ pub async fn start(
         // the serve future resolves — so a termination signal drains requests
         // instead of the server task being dropped mid-response.
         drop(set.spawn(async move {
-            axum::serve(listener, ServiceExt::<Request>::into_make_service(app))
-                .with_graceful_shutdown(async move { shutdown.cancelled().await })
-                .await
+            axum::serve(
+                listener,
+                ServiceExt::<Request>::into_make_service_with_connect_info::<std::net::SocketAddr>(
+                    app,
+                ),
+            )
+            .with_graceful_shutdown(async move { shutdown.cancelled().await })
+            .await
         }));
     }
 

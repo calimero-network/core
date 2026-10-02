@@ -188,6 +188,18 @@ pub enum Column {
     /// `ContextLeftMarker` in `ContextLocal`. Dropped with the context by
     /// `delete_context`. Auto-created from `Column::iter()` (no DB migration).
     ContextBlob,
+    /// Which context each blob is held for, keyed `context_id(32) ‖ blob_id(32)`
+    /// (see `key::BlobOwner`); the blob protocol serves a context's peers only
+    /// blobs with a row here. Node-local, not synchronized.
+    ///
+    /// Not [`Column::ContextBlob`]. That column answers a stricter question, the
+    /// one an account-scoped caller of the blob admin API is held to: did these
+    /// bytes demonstrably enter on this context's behalf. This one answers what
+    /// this node may hand the context's own peers, and so also holds what the
+    /// context's own run created or announced, which names no more than the run
+    /// could already copy into its context. Reading one as the other would widen
+    /// either what an account-scoped caller reads or what peers are served.
+    BlobOwner,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {
@@ -344,7 +356,8 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     /// Blocking; call it off any latency-sensitive path.
     ///
     /// The default is a no-op for backends that reclaim space on delete (the
-    /// in-memory DB); RocksDB overrides it with `compact_range_cf`.
+    /// in-memory DB); RocksDB overrides it with a non-exclusive
+    /// `compact_range_cf_opt`, so background compaction keeps running meanwhile.
     fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
         let _ = (col, lo, hi);
         Ok(())

@@ -2,7 +2,7 @@
 
 use std::hint::black_box;
 
-use calimero_crypto::{Nonce, SharedKey};
+use calimero_crypto::{Nonce, Purpose, SharedKey};
 use calimero_primitives::identity::PrivateKey;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
@@ -38,7 +38,13 @@ fn aead(c: &mut Criterion) {
     let peer_pk = peer.public_key();
     group.throughput(Throughput::Elements(1));
     group.bench_function("derive_shared_key", |b| {
-        b.iter(|| black_box(SharedKey::new(black_box(&sk), black_box(&peer_pk))));
+        b.iter(|| {
+            black_box(SharedKey::new(
+                black_box(&sk),
+                black_box(&peer_pk),
+                Purpose::BlobTransfer,
+            ))
+        });
     });
 
     group.finish();

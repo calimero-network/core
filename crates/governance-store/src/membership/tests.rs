@@ -2928,7 +2928,7 @@ mod owner_guard_prevents_a_memberless_group {
         let store = test_store();
         let ns_id = [0xC4u8; 32];
         let ns_gid = ContextGroupId::from(ns_id);
-        let ((owner_sk, _owner_pk), owner) =
+        let ((owner_sk, owner_pk), owner) =
             crate::test_fixtures::bootstrap_namespace_with_admin_account(&store, ns_id);
 
         let successor_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
@@ -2943,9 +2943,14 @@ mod owner_guard_prevents_a_memberless_group {
             ns_gid.to_bytes().into(),
             vec![],
             1,
-            GroupOp::TransferOwnership {
-                new_owner: successor,
-            },
+            crate::test_fixtures::guarded_group_op(
+                &store,
+                &ns_gid,
+                &owner_pk,
+                GroupOp::TransferOwnership {
+                    new_owner: successor,
+                },
+            ),
         )
         .expect("sign TransferOwnership");
         apply_local_signed_group_op(&store, &transfer).expect("the owner may hand the role over");
@@ -3188,10 +3193,10 @@ fn the_effective_set_reaches_groups_held_through_a_parent() {
     assert!(members.is_member(&child, &me).unwrap());
 }
 
-/// The effective set must not widen past what `is_member` allows: a descendant
+/// The effective set must not widen past what membership allows: a descendant
 /// the caller does not reach stays out, even though it is a descendant.
 #[test]
-fn the_effective_set_stops_where_is_member_does() {
+fn the_effective_set_stops_where_membership_does() {
     use calimero_context_config::VisibilityMode;
 
     let store = test_store();
@@ -3218,11 +3223,50 @@ fn the_effective_set_stops_where_is_member_does() {
 
     let effective = members.effective_groups_for_account(&me).unwrap();
     assert!(effective.contains(&parent));
-    assert_eq!(
-        effective.contains(&child),
-        members.is_member(&child, &me).unwrap(),
-        "the effective set and is_member have to agree, or a listed context \
-         refuses the read that follows it"
+    assert!(!effective.contains(&child));
+}
+
+/// A member removed from an Open subgroup it inherits into keeps the path, and
+/// the deny-list entry is the removal: the effective set drops the subgroup.
+#[test]
+fn the_effective_set_drops_a_subgroup_the_account_was_removed_from() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let parent = test_group_id();
+    let child = ContextGroupId::from([0xc3; 32]);
+    let owner = AccountId::from([0x09; 32]);
+    let me = AccountId::from([0x01; 32]);
+
+    MetaRepository::new(&store)
+        .save(&parent, &sample_meta_with_admin(owner))
+        .unwrap();
+    nest_for_test(&store, &parent, &child);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&child, VisibilityMode::Open)
+        .unwrap();
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&parent, &me, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &parent,
+            &me,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    assert!(
+        members
+            .effective_groups_for_account(&me)
+            .unwrap()
+            .contains(&child),
+        "precondition: the member inherits into the Open subgroup"
     );
+
+    DenyListRepository::new(&store).mark(&child, &me).unwrap();
+
+    let effective = members.effective_groups_for_account(&me).unwrap();
+    assert!(effective.contains(&parent));
     assert!(!effective.contains(&child));
 }

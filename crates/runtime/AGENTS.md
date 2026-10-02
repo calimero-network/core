@@ -83,7 +83,7 @@ src/
 ├── store.rs                  # Storage trait and InMemoryStorage
 ├── constraint.rs             # Execution constraints
 ├── constants.rs              # Runtime constants (DIGEST_SIZE = 32)
-├── memory.rs                 # WasmerTunables for memory limits
+├── memory.rs                 # WasmerTunables: memory and table maxima, no shared memory
 ├── errors.rs                 # Error types (HostError, VMRuntimeError, etc.)
 ├── panic_payload.rs          # Panic handling utilities
 ├── logic.rs                  # VMLogic, VMContext, VMLimits, VMHostFunctions
@@ -95,11 +95,13 @@ src/
 │       ├── storage.rs        # storage_read/write/remove, private_storage_*
 │       ├── blobs.rs          # blob_create/write/close/open/read
 │       ├── utility.rs        # random_bytes, time_now, ed25519_verify, tee_origin, tee_random_bytes
-│       ├── sealing.rs        # seal_to, open_sealed, tee_authority_keys, account_device_keys (keys from VMContext.sealing)
+│       ├── sealing.rs        # seal_to, open_sealed (bound to the run's own context), tee_authority_keys, account_device_keys (keys from VMContext.sealing)
 │       ├── system.rs         # panic, registers, input/output, emit, commit
-│       └── js_collections.rs # js_crdt_* functions for JS SDK
+│       ├── js_collections.rs # js_crdt_* functions for JS SDK
+│       └── write_meter.rs    # holds js_crdt_* and persist_root_state writes to the storage_write caps and budget
 └── tests/
-    └── errors.rs             # Error handling tests
+    ├── errors.rs             # Error handling tests
+    └── resource_limits.rs    # Memory/table maxima and threads refused, whatever the module declares
 examples/
 ├── demo.rs                   # Basic key-value storage demo
 └── rps.rs                    # Requests per second benchmark
@@ -301,6 +303,7 @@ cargo test -p calimero-runtime test_storage -- --nocapture
 8. **Context mutations are queued** - They don't happen immediately, applied after execution
 9. **Host work can be charged gas** - A host function calls `VMLogic::owe_gas(points)`; the import wrapper (`imports.rs`) settles it against the instance's metering globals (`metering::GasMeter`) as the call returns, trapping with `HostError::HostGasExhausted` (reported as `GasExhausted`) when the budget cannot cover it. Only `search_query` owes gas today: `search_gas` = `SEARCH_BASE_GAS` + per matched document + per hit + per response byte (`host_functions/search.rs`, constants derived in `tools/search-bench`). It is safe only because views never replicate — a write's gas must be identical on every node, so never charge a write for node-local work
 10. **`search_query` is views-only** - `VMContext::search` is `Some` only for a read-only run, and the host binds each call to `VMContext::context_id` (the request names no context). At most `MAX_SEARCH_CALLS` (32) per execution
+11. **Memory and table maxima come from the tunables** - `max_memory_pages` and `max_table_elements` cap what a module declares (or omits); the threads feature is off in `create_engine` and shared memories are refused at instantiation
 
 ## Related Crates
 

@@ -63,11 +63,8 @@ impl SyncManager {
         outcome != Outcome::Unavailable
     }
 
-    /// Install bundle application after blob sharing completes.
-    ///
-    /// Returns `Some(installed_application)` if a bundle was installed,
-    /// `None` otherwise. Updates `context.application_id` if the installed
-    /// ApplicationId differs from the context's ApplicationId.
+    /// Install a context's bundle or raw wasm once blob sharing delivered it,
+    /// under the id the context names; sets `application` to the row.
     pub(crate) async fn install_bundle_after_blob_sharing(
         &self,
         context_id: &ContextId,
@@ -97,9 +94,11 @@ impl SyncManager {
             .await?
             .source;
 
+        // The group named an application id; a bundle deriving a different one
+        // is refused before it writes anything.
         let installed_app_id = if is_bundle {
             self.node_client
-                .install_application_from_bundle_blob(blob_id, &source)
+                .install_expected_bundle_blob(&context.application_id, blob_id, &source)
                 .await
                 .map_err(|e| {
                     eyre::eyre!(
@@ -139,17 +138,6 @@ impl SyncManager {
                 installed_app_id
             );
         };
-
-        // The group named an application id; a bundle deriving a different one
-        // is a different application, and repointing the context at it would
-        // hand whoever served the bytes the power to swap a context's app.
-        if installed_app_id != context.application_id {
-            bail!(
-                "bundle blob {blob_id} derives application {installed_app_id}, \
-                 not the {} this context targets",
-                context.application_id
-            );
-        }
 
         // Use the verified installed application
         *application = Some(installed_application);

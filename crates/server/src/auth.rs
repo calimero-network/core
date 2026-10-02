@@ -107,6 +107,11 @@ pub struct AuthenticatedAccount(pub calimero_account::AccountId);
 #[derive(Clone, Debug)]
 pub struct AuthenticatedDevice(pub calimero_primitives::identity::DeviceId);
 
+/// The verified token's permissions, for a WebSocket that is admitted once and
+/// then authorizes each message itself.
+#[derive(Clone, Debug)]
+pub struct GrantedPermissions(pub Arc<[String]>);
+
 /// Wrapper around the embedded authentication application, keeping the router and shared state.
 pub struct BundledAuth {
     app: EmbeddedAuthApp,
@@ -514,6 +519,9 @@ where
                 ) {
                     return Ok(resp);
                 }
+                parts.extensions.insert(GrantedPermissions(Arc::from(
+                    auth_response.permissions.as_slice(),
+                )));
 
                 // Attempt to resolve the authenticated public key and inject it so
                 // handlers can use it as the effective requester without trusting the
@@ -805,6 +813,9 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(
+                ),
                 node_host: None,
             },
             Arc::clone(&storage),
@@ -942,6 +953,9 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(
+                ),
                 node_host: None,
             },
             Arc::clone(&storage),
@@ -1028,6 +1042,9 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(
+                ),
                 node_host: None,
             },
             Arc::clone(&storage),

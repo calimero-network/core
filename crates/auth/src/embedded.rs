@@ -98,6 +98,7 @@ pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
         config: config.clone(),
         metrics,
         login_rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::default()),
+        account_rate_limiter: Arc::new(crate::auth::rate_limit::LoginRateLimiter::account_ceiling()),
     });
 
     let router = create_router(Arc::clone(&state), &config);
@@ -117,6 +118,8 @@ pub fn default_config() -> AuthConfig {
             issuer: "calimero-auth".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 2592000,
+            client_access_token_expiry: crate::config::default_client_access_token_expiry(),
+            client_refresh_token_expiry: crate::config::default_client_refresh_token_expiry(),
             // Opt-in (finding #7): unset keeps legacy header-derived node-host
             // validation. Operators set the node's public host to enforce
             // node-binding against trusted config instead of request headers.
@@ -135,21 +138,7 @@ pub fn default_config() -> AuthConfig {
                 frame_options: "DENY".to_string(),
                 content_type_options: "nosniff".to_string(),
                 referrer_policy: "strict-origin-when-cross-origin".to_string(),
-                csp: ContentSecurityPolicyConfig {
-                    enabled: true,
-                    default_src: vec!["'self'".to_string()],
-                    script_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
-                    style_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
-                    connect_src: vec![
-                        "'self'".to_string(),
-                        "http://localhost:*".to_string(),
-                        "http://host.docker.internal:*".to_string(),
-                        "http://*.nip.io:*".to_string(),
-                        "https://*.nip.io:*".to_string(),
-                        "https:".to_string(), // Allow all HTTPS connections for configurable registries
-                        "http:".to_string(),  // Allow HTTP for local development registries
-                    ],
-                },
+                csp: ContentSecurityPolicyConfig::default(),
             },
         },
         providers,

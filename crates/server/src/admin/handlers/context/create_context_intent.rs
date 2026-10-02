@@ -41,7 +41,9 @@ use calimero_server_primitives::admin::{
 use eyre::WrapErr as _;
 use tracing::{debug, error, warn};
 
-use crate::admin::handlers::context::perform_intent::{now_secs, IntentRefusal};
+use crate::admin::handlers::context::perform_intent::{
+    decode_author_proof, now_secs, IntentRefusal,
+};
 use crate::admin::handlers::identity::get_node_identity::node_identity;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -138,17 +140,7 @@ async fn perform(
 ) -> eyre::Result<CreateContextIntentApiResponseData> {
     let warrant = decode_creation_warrant(&req.warrant)?;
 
-    let proof_bytes = hex::decode(req.author_proof.trim()).map_err(|err| {
-        eyre::eyre!(IntentRefusal::Malformed(format!(
-            "authorProof is not hex: {err}"
-        )))
-    })?;
-    let author_proof: calimero_account::AccountProof<calimero_account::DeviceCert> =
-        borsh::from_slice(&proof_bytes).map_err(|err| {
-            eyre::eyre!(IntentRefusal::Malformed(format!(
-                "authorProof is not a valid credential: {err}"
-            )))
-        })?;
+    let author_proof = decode_author_proof(&req.author_proof)?;
 
     let init_args = serde_json::to_vec(&req.init_args)
         .map_err(|err| eyre::eyre!("init arguments could not be encoded: {err}"))?;

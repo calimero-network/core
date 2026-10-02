@@ -33,7 +33,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | `LwwRegister<T>`           | Last-write-wins register | Timestamp-based (later wins)      | Blob       |
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
 | `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Structured |
-| `FugueTextBlock`           | One block of a `FugueText`| Tombstone OR + longer text wins  | Structured |
+| `FugueTextBlock`           | One block of a `FugueText`| In-bounds block first, then tombstone OR + longer text wins | Structured |
 | `RichText<Sc>`             | Text plus formatting marks| Composite: text union + mark union| Structured |
 | `RichDocument<Sc>`         | Ordered list of rich-text blocks| Composite: spine union + per-field LWW| Structured |
 | `UnorderedMap<K,V>`        | Key-value map            | Entry-wise merge*                 | Structured |
@@ -346,6 +346,14 @@ switching a field between the two types needs no migration.
   The overflowing character opens a new block parented on the full run's last node, side right.
   Only `tools/storage-cost/tests/keystroke_bytes.rs` gates this, because row counts cannot see it.
 - No node-local derived state: order is recomputed from the stored blocks on every call, because gas must be equal on every replica.
+  So an insert by position reads one row per block, which is linear in the document (about 40 rows at 10,000 characters).
+  A replicated position index does not help: a visible position needs live counts, a count is not joinable (two replicas deleting one character would count it twice), so the index has to hold every block's tombstones, and every keystroke would ship it in its delta.
+- A block is in bounds (`TextBlock::is_sound(key)`, judged against the map key) when it is stored at its own start id, holds 1 to `MAX_RUN_LEN` nodes, every node counter and its parent's is below `u32::MAX`, and its tombstone bitmap is trimmed with no bit past the run. `load` and `merge_blocks_from` leave any other block out, and a row filed under an id its key does not derive too. The apply path stores such a row unfiltered; `merge_blocks_from` drops a lone one. `RichDocument`'s spine and every `FugueText` read go through `load`.
+- `join_under` orders the sync join by that check: one side in bounds gives exactly that side (the other's tombstones are not merged in); two in bounds go through `join_block`; of two out of bounds the greater by every field stays, so neither turns readable. The result is the same in either order and grouping.
+- Minting never produces a block out of bounds: `next_counter` and `bump` return `COUNTER_EXHAUSTED` rather than use `u32::MAX`, and a write moves its first counter past any row left out that its run could land on, since that row's timestamp could win over the write. The goal is a document that stays readable, not that no peer can stop a replica typing: a peer can still store a block in bounds near a replica's top counter and exhaust that replica, which then errors on insert instead of losing the character.
+- Rows filed at one id under different keys join by the greater key, whole, and only rows under one key go through `join_under`, so the pick does not depend on which side is held. Rows filed under an id their key does not derive are left out of reads and mints; a write moves past the id such a row holds (the mint probes `entry_id` per counter, only while any exist).
+- Mixed versions: when a block out of bounds and one in bounds meet at one key, a node without this change joins them with `join_block` (the result can be out of bounds) while a node with it keeps the side in bounds. Stored bytes differ, and repair churns until every node has upgraded.
+- Known limits: two overlapping runs of one replica, both in bounds, can make a delete fail (`find_block`/`bury`). A lone out-of-bounds row is stored by the apply path but dropped by `merge_blocks_from`, so root hashes can differ until a sync reaches it. A mark minted in the partial-sync window can lose to a row left out at its id once the two meet (the write is last-writer-wins), whereas a block in bounds always wins the join. No release wrote untrimmed tombstones: `tomb_set`, `tomb_or` and `tomb_trim` have been the only writers since the file first shipped (0.11.0-rc.54).
 - Tombstones are one bit per NODE, because coalescing grows a run after the fact.
 - Blocks are mutable under one key, so entries carry their own `crdt_type`: the `FugueTextBlock` tag routes to a join instead of the untagged last-writer-wins, which drops every node only the loser defines.
   It dispatches on the APPLIED path only, since a local write is not a merge.
@@ -372,6 +380,7 @@ switching a field between the two types needs no migration.
   That is sound for exactly one reason: a mark row is written ONCE and never rewritten, so two replicas holding one `MarkId` hold byte-identical values, and the last-writer-wins that an untagged entry falls back to cannot pick wrong.
   Removing formatting is a NEW row with a greater id and `value: None`, never an edit or a delete. Stamping a mark row with a converging type would route it through the wrong arm; `sync_sim`'s `rich_text` scenarios pin that it stays opaque.
 - The read rule is the whole format contract: per character, per key, the covering mark with the greatest `MarkId` wins, and a `None` value means the key is absent. A future compaction may replace any set of marks by an equivalent one as long as that rule still renders the same spans.
+- `marks()` leaves out a row whose lamport exceeds the number of mark rows, or whose key is not its own id, or that is filed under an id its key does not derive, so minting and every read ignore it. An honest lamport is one more than the greatest the writer saw, hence at most the row count. This assumes rows are never removed or compacted: a compaction must keep the row count at or above the greatest lamport. Under partial sync a replica can hide a row until the earlier rows arrive. Padding rows raise the bar only by their own number, and one left out at the id the next mark would take (found by the stored id of the row, whatever its own id says) makes that mark fail (`mark id already in use`) instead of being written where it cannot be read. A hidden high-lamport row becomes visible once the document reaches that many mark rows and then wins over its whole range. A row at (local replica, greatest visible lamport + 1) keeps failing that replica's marks until another replica mints past it.
 - `MarkId` is `(lamport, replica)` with `lamport = 1 + the greatest this replica can see`, NOT an HLC. The WASM clock is quantised to about 15 microseconds and re-seeded per instance, so two marks minted in one call would share a timestamp - harmless for a register's value, silent data loss for a map KEY.
 - Where a mark grows when text is typed at its edge is decided ONCE, at write time, as the two stored anchor biases; `MarkSchema` is consulted on the write side only. A replica running an older schema therefore renders identical spans, and a removal uses `Expand::inverted()` so turning bold off keeps growing the way turning it on did.
 - A boundary insert follows Peritext: scan the tombstones in the gap, and if one carries the `After` anchor of any mark, insert after the last such tombstone. It reads stored anchor sides, never the schema, which is what makes it identical on every replica. `FugueTree::insert_after_in` exists for it, because a visible index cannot name a position among tombstones.
@@ -508,7 +517,7 @@ function is registered, it returns an error rather than silently falling back to
 | `PnCounter`    | `merge_pn_counter()`  | Counter::merge() - max per executor   |
 | `Rga`          | `merge_rga()`         | RGA::merge() - union characters       |
 | `FugueText`    | `merge_fugue_text()`  | FugueText::merge() - union blocks     |
-| `FugueTextBlock`| `merge_fugue_text_block()` | Per-block join; the arm the SYNC path reaches* |
+| `FugueTextBlock`| `merge_fugue_text_block()` | Per-block join, in-bounds block first; the arm the SYNC path reaches* |
 | `LwwRegister`  | Returns incoming      | Timestamp comparison done by caller   |
 | `UnorderedMap` | Returns incoming      | Entries are separate entities*        |
 | `UnorderedSet` | Returns incoming      | Entries are separate entities*        |
@@ -587,6 +596,7 @@ src/
 ├── address.rs                # Address types
 ├── action.rs                 # Actions
 ├── delta.rs                  # Delta handling
+├── reclaim.rs                # What tombstone GC may reclaim from raw rows (used by node gc.rs)
 ├── snapshot.rs               # Snapshots
 ├── store.rs                  # Store adaptor
 ├── index.rs                  # Entity indexing (Merkle tree)
@@ -645,6 +655,39 @@ Signature authenticity is enforced here on every path, because that needs none.
 the resolution of *that action's own* signer. Storage verifies the signature under
 the key the action names and checks the account against the writer set, but has no
 bindings with which to confirm the two describe the same principal.
+
+**A relay writes on an account's behalf by saying so.** When a relay executes a
+call for an account (a warrant-carried delegated run), it signs the resulting
+entries with its OWN key: `signature_data.signer` is the relay's key — still the
+key the signature verifies under, never a key that did not sign — and
+`signature_data.on_behalf` is the account it wrote for. The signed payload
+commits to `on_behalf` (`hash_signature_data` in `action.rs`), so it cannot be
+stripped, added or swapped in transit. Ownership and the writer-set checks are
+asked of that account (`Interface::author_account`): the node must resolve
+`signer_account` to exactly the `on_behalf` account, which it does only when the
+signer's account is a `RelayTee` in the namespace and the account is a member who
+may write (`calimero_governance_store::on_behalf_standing`; no capability bit is
+consulted). On the delta path the resolution is per action: the node judges each
+on-behalf action at the delta's cut and lists the accepted ones in
+`StorageDelta::CausalActions::on_behalf_accounts` (action id → account), which
+`Root::sync` uses in place of the delta-wide `signer_account` for that action. So
+the delta's author need not be the account (a relay may write any member's
+entries), and an on-behalf action the node did not list is checked against the
+delta-wide account as before. The node refuses a delta with an on-behalf action
+it cannot accept (`calimero-node`'s `delta_store::on_behalf_accounts`).
+Any other resolution — the relay's own account, a third account, `None` — is
+refused. A User refusal names which check fired: `bad-signature`,
+`author-unresolved` or `wrong-author`. `tests/on_behalf.rs` pins every arm.
+
+**Known limitation: a writer-set rotation cannot be made on someone's behalf.**
+`RotationLogEntry` records the key that signed a rotation (`signer`) and carries
+no `on_behalf`, and rotation-log authentication checks that key's account against
+the prior writer set's `ADMIN` bit. A rotation a relay signs for an account is
+therefore attributed to the relay, which is not in the set, and is refused by
+every peer that authenticates the log. Delegated runs can write `Shared` and
+`SharedMember` entries for an account but cannot change a writer set for it.
+Deferred: closing it means an `on_behalf` on the rotation entry, covered by its
+signature, and the same rule at rotation authentication.
 
 Writing a test here? Derive the account from a different domain than the key (see
 `tests::common::account_of_key`). A test where the two are equal cannot tell an
@@ -800,6 +843,16 @@ struct MyType {
   stamp dropped the write. Do not add a write path that stamps from the clock
   alone; a replay that must keep its writer's stamp goes through
   `save_raw_replayed`. `tests/entity_clock.rs` steps the clock back for each case.
+- **A register that is an `UnorderedMap` or `SortedMap` entry's whole value is stored
+  without its stamp.** The entry's `updated_at` is its stamp
+  (`lww_register::entry_stamp`): the collection names its value type on its `Collection` (`stamp_values_of`), the entry offers it to
+  the register that starts its value, and `find_by_id` names the row's `updated_at`
+  for the decode. Every path already resolved such an entry by `updated_at`, never by
+  the register's HLC, so that was 16 dead bytes per entry. Registers anywhere else keep
+  their stamp: a state field or a field of a stored value is merged by it, a set's entry
+  is addressed by its own bytes, and `Vector::merge` pairs two vectors' elements by
+  position and decides by the stamp (`crdt_contract`'s vector law test fails without it). Code that decodes entry bytes outside the
+  collection must do as `tests::common::map_entry_bytes` does, or the decode fails.
 - CRDTs auto-merge on sync - no manual conflict resolution needed
 - Use nested CRDTs (UnorderedMap<String, LwwRegister<String>>) for last-write-wins semantics
 - Convert values with .into() when inserting: self.data.insert(key, value.into())?
@@ -888,6 +941,14 @@ struct MyType {
   a written-once delete);
   `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
   the layout store-wide.
+- **No entity is its own ancestor.** `apply_action` refuses an upsert whose links (the
+  entity under its first ancestor, each missing ancestor under the next) would put an
+  entity under itself, give it more than `MAX_PARENT_CHAIN` ancestors, or link one id
+  twice (`refuse_ancestor_loop`), before it writes anything, so a sync merge drops it.
+  Moving a stored entity does not re-check the depth of what is under it. Every walk up
+  the tree stops after `MAX_PARENT_CHAIN` steps with `StorageError::ParentChainTooLong`, a
+  hard error, and the walks down a subtree visit each entity once, so a loop or an
+  over-deep chain fails the call instead of spinning it. `tests/index.rs` `parent_loops`.
 
 ## Further Documentation
 

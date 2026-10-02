@@ -1888,15 +1888,21 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // (empty RTMR lists allow all; mrtd/tcb_status are matched explicitly).
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        &GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec!["m1".to_owned()],
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec!["r1".to_owned()],
-            allowed_rtmr2: vec!["r2".to_owned()],
-            allowed_rtmr3: vec!["r3".to_owned()],
-            allowed_tcb_statuses: vec!["ok".to_owned()],
-            accept_mock: true,
-        },
+        // Since schema 20 a TEE policy carries its signer's own root proof.
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
     )
     .unwrap();
     let policy_ns_op = SignedNamespaceOp::sign(
@@ -2065,15 +2071,21 @@ fn tee_admission_is_vouched_only_by_admin_or_admitted_tee() {
         role: GroupMemberRole::ReadOnlyTee,
     };
 
-    let policy = GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd: vec!["m1".to_owned()],
-        allowed_rtmr0: vec![],
-        allowed_rtmr1: vec!["r1".to_owned()],
-        allowed_rtmr2: vec!["r2".to_owned()],
-        allowed_rtmr3: vec!["r3".to_owned()],
-        allowed_tcb_statuses: vec![],
-        accept_mock: false,
-    };
+    // Since schema 20 a TEE policy carries its signer's own root proof.
+    let policy = crate::test_fixtures::guarded_group_op(
+        &store,
+        &ns_gid,
+        &admin_sk.public_key(),
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec!["r1".to_owned()],
+            allowed_rtmr2: vec!["r2".to_owned()],
+            allowed_rtmr3: vec!["r3".to_owned()],
+            allowed_tcb_statuses: vec![],
+            accept_mock: false,
+        },
+    );
     gov.apply_signed_op(&sign_group_op(&admin_sk, 1, &policy))
         .expect("the admin sets the TEE admission policy");
 
@@ -2196,15 +2208,21 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
     // ---- Op 1 (nonce 1): TeeAdmissionPolicySet, authored by the founder. ----
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        &GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec!["m1".to_owned()],
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec!["r1".to_owned()],
-            allowed_rtmr2: vec!["r2".to_owned()],
-            allowed_rtmr3: vec!["r3".to_owned()],
-            allowed_tcb_statuses: vec!["ok".to_owned()],
-            accept_mock: true,
-        },
+        // Since schema 20 a TEE policy carries its signer's own root proof.
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &founder_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
     )
     .unwrap();
     // FIDELITY: these are NON-genesis ops applied AFTER the genesis applied
@@ -2321,7 +2339,7 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
     // This exercises the realistic backfill order (genesis applied first, then a
     // non-owner KeyDelivery seed lands, then the owner's GroupCreated) against the
     // SAME apply path the backfill uses (`NamespaceGovernance::apply_signed_op`).
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -2411,16 +2429,21 @@ fn replica_genesis_founder_survives_non_owner_seed_and_applies_owner_ops() {
         "the DAG head must be non-empty after the genesis applied (the genesis delta \
          is the current head)"
     );
-    let subgroup_id = [0xC5u8; 32];
+    let subgroup_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&owner_sk.public_key()),
+        namespace_id,
+        true,
+        0x01,
+    );
     let create_op = seal_for_test(
         &store,
         ns_gid,
-        RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-            group_id: subgroup_id.into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        },
+        crate::test_fixtures::group_created(
+            crate::test_fixtures::account_for(&owner_sk.public_key()),
+            namespace_id,
+            true,
+            0x01,
+        ),
     );
     let signed = SignedNamespaceOp::sign(
         &owner_sk,
@@ -3496,14 +3519,13 @@ fn replica_op_log_dedup_survives_head_pruning() {
         .unwrap()
     };
 
-    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd: vec![mrtd.to_owned()],
-        allowed_rtmr0: vec![],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
-        allowed_rtmr3: vec![],
-        allowed_tcb_statuses: vec!["ok".to_owned()],
-        accept_mock: true,
+    // Any admin op that writes one op-log entry will do; these tests are about
+    // the log and the head, not the op. A metadata op rather than a TEE policy,
+    // which since schema 20 spends a guarded-op counter, so two siblings signed
+    // for one counter would race by design.
+    let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
+        name: Some(mrtd.to_owned()),
+        data: std::collections::BTreeMap::new(),
     };
 
     // ---- Op A (nonce 1). ----
@@ -3626,14 +3648,13 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
 
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
-    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd: vec![mrtd.to_owned()],
-        allowed_rtmr0: vec![],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
-        allowed_rtmr3: vec![],
-        allowed_tcb_statuses: vec!["ok".to_owned()],
-        accept_mock: true,
+    // Any admin op that writes one op-log entry will do; these tests are about
+    // the log and the head, not the op. A metadata op rather than a TEE policy,
+    // which since schema 20 spends a guarded-op counter, so two siblings signed
+    // for one counter would race by design.
+    let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
+        name: Some(mrtd.to_owned()),
+        data: std::collections::BTreeMap::new(),
     };
 
     // Both ops are DAG siblings: same empty parent set, consecutive nonces.
@@ -3738,14 +3759,13 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         .unwrap()
     };
 
-    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
-        allowed_mrtd: vec![mrtd.to_owned()],
-        allowed_rtmr0: vec![],
-        allowed_rtmr1: vec![],
-        allowed_rtmr2: vec![],
-        allowed_rtmr3: vec![],
-        allowed_tcb_statuses: vec!["ok".to_owned()],
-        accept_mock: true,
+    // Any admin op that writes one op-log entry will do; these tests are about
+    // the log and the head, not the op. A metadata op rather than a TEE policy,
+    // which since schema 20 spends a guarded-op counter, so two siblings signed
+    // for one counter would race by design.
+    let make_policy_op = |mrtd: &str| GroupOp::GroupMetadataSet {
+        name: Some(mrtd.to_owned()),
+        data: std::collections::BTreeMap::new(),
     };
 
     // ---- Op A (nonce 1): entry + head land at seq 1. ----
@@ -4271,11 +4291,11 @@ fn governance_group_reparented_via_signed_op() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let mid_id = [0xA1u8; 32];
+    let mid_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xA1);
     let mid_gid = ContextGroupId::from(mid_id);
-    let new_parent_id = [0xA2u8; 32];
+    let new_parent_id = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xA2);
     let new_parent_gid = ContextGroupId::from(new_parent_id);
-    let leaf_id = [0xA3u8; 32];
+    let leaf_id = crate::test_fixtures::derived_group_id(&admin_account, mid_id, true, 0xA3);
     let leaf_gid = ContextGroupId::from(leaf_id);
 
     // Bootstrap namespace: meta + admin + namespace identity
@@ -4293,7 +4313,7 @@ fn governance_group_reparented_via_signed_op() {
 
     // Create three subgroups via GroupCreated ops (atomic create+nest):
     // namespace → mid, namespace → new_parent, mid → leaf.
-    for (i, (gid, parent)) in [(mid_id, ns_id), (new_parent_id, ns_id), (leaf_id, mid_id)]
+    for (i, (tag, parent)) in [(0xA1, ns_id), (0xA2, ns_id), (0xA3, mid_id)]
         .iter()
         .enumerate()
     {
@@ -4305,12 +4325,7 @@ fn governance_group_reparented_via_signed_op() {
             seal_for_test(
                 &store,
                 ns_gid,
-                RootOp::GroupCreated {
-                    admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                    group_id: (*gid).into(),
-                    parent_id: (*parent).into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(admin_account, *parent, true, *tag),
             ),
         )
         .expect("sign create op");
@@ -4360,7 +4375,7 @@ fn governance_group_reparented_via_signed_op() {
 
 #[test]
 fn governance_apply_signed_op_is_idempotent_on_replay() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -4397,12 +4412,12 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: [0xC1; 32].into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign create op");
@@ -4427,7 +4442,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
 
 #[test]
 fn governance_rejects_non_admin_signer() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -4467,12 +4482,12 @@ fn governance_rejects_non_admin_signer() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&intruder_sk.public_key()),
-                group_id: [0xBB; 32].into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&intruder_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op");
@@ -4483,7 +4498,7 @@ fn governance_rejects_non_admin_signer() {
 
 #[test]
 fn governance_group_created_is_idempotent() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -4499,7 +4514,6 @@ fn governance_group_created_is_idempotent() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let new_group_id = [0xCC; 32];
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
@@ -4521,12 +4535,12 @@ fn governance_group_created_is_idempotent() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op1");
@@ -4543,12 +4557,12 @@ fn governance_group_created_is_idempotent() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op2");
@@ -4560,7 +4574,7 @@ fn governance_group_created_is_idempotent() {
 
 #[test]
 fn governance_group_created_rejects_cross_namespace_parent() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -4602,7 +4616,6 @@ fn governance_group_created_rejects_cross_namespace_parent() {
         .unwrap();
 
     // Namespace-A admin tries to graft a subgroup under namespace-B's group.
-    let new_group = [0xCCu8; 32];
     let op = SignedNamespaceOp::sign(
         &admin_sk,
         ns_a.into(),
@@ -4611,12 +4624,12 @@ fn governance_group_created_rejects_cross_namespace_parent() {
         seal_for_test(
             &store,
             ns_a_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group.into(),
-                parent_id: foreign.to_bytes().into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                foreign.to_bytes(),
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign GroupCreated");
@@ -4858,7 +4871,7 @@ fn rotation_apply_ignored_when_signer_not_admin() {
 /// via `is_open_chain_to_namespace`) will see Open immediately.
 #[test]
 fn governance_group_created_writes_birth_visibility() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -4876,8 +4889,18 @@ fn governance_group_created_writes_birth_visibility() {
     let ns_id = [0xA1u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let open_group_id = [0xE0u8; 32];
-    let restricted_group_id = [0xE1u8; 32];
+    let open_group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        false,
+        0x01,
+    );
+    let restricted_group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        true,
+        0x01,
+    );
 
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
@@ -4901,12 +4924,12 @@ fn governance_group_created_writes_birth_visibility() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: open_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                false,
+                0x01,
+            ),
         ),
     )
     .expect("sign born-open op");
@@ -4928,12 +4951,12 @@ fn governance_group_created_writes_birth_visibility() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: restricted_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign born-restricted op");
@@ -4956,7 +4979,7 @@ fn governance_group_created_writes_birth_visibility() {
 /// `GroupCreated` op and assert the flip survives.
 #[test]
 fn governance_group_created_replay_does_not_reset_visibility() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -4974,7 +4997,12 @@ fn governance_group_created_replay_does_not_reset_visibility() {
     let ns_id = [0xB2u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let group_id = [0xE2u8; 32];
+    let group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        false,
+        0x01,
+    );
     let gid = ContextGroupId::from(group_id);
 
     MetaRepository::new(&store)
@@ -4999,12 +5027,12 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                false,
+                0x01,
+            ),
         ),
     )
     .expect("sign create op");
@@ -5036,12 +5064,12 @@ fn governance_group_created_replay_does_not_reset_visibility() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                false,
+                0x01,
+            ),
         ),
     )
     .expect("sign replay op");
@@ -5066,7 +5094,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     // originating node — leaving it with no parent edge while remote peers
     // correctly populate the edges. This test simulates the originator flow
     // and asserts the parent edge IS written even when meta pre-exists.
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -5082,7 +5110,12 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
     let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
-    let new_group_id = [0xCCu8; 32];
+    let new_group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        true,
+        0x01,
+    );
     let new_gid = ContextGroupId::from(new_group_id);
 
     MetaRepository::new(&store)
@@ -5111,12 +5144,12 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op");
@@ -5141,6 +5174,9 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
 
 /// A namespace with two admins (`owner` and `other`), and a subgroup `owner`
 /// created under the root, for the existing-group takeover tests.
+///
+/// `group_id` and `sibling_id` are the ids `owner` derives under the root with
+/// salts `[GROUP_TAG; 32]` and `[SIBLING_TAG; 32]`.
 struct ExistingGroupFixture {
     store: Store,
     ns_id: [u8; 32],
@@ -5152,7 +5188,7 @@ struct ExistingGroupFixture {
 }
 
 fn existing_group_fixture() -> ExistingGroupFixture {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -5178,9 +5214,10 @@ fn existing_group_fixture() -> ExistingGroupFixture {
         .store_identity(&ns_gid, &owner_sk.public_key(), &owner_sk_bytes)
         .unwrap();
 
-    let group_id = [0xCCu8; 32];
-    let sibling_id = [0xCDu8; 32];
-    for (nonce, id) in [(1, group_id), (2, sibling_id)] {
+    let group_id = crate::test_fixtures::derived_group_id(&owner_account, ns_id, true, GROUP_TAG);
+    let sibling_id =
+        crate::test_fixtures::derived_group_id(&owner_account, ns_id, true, SIBLING_TAG);
+    for (nonce, tag) in [(1, GROUP_TAG), (2, SIBLING_TAG)] {
         let op = SignedNamespaceOp::sign(
             &owner_sk,
             ns_id.into(),
@@ -5189,12 +5226,7 @@ fn existing_group_fixture() -> ExistingGroupFixture {
             seal_for_test(
                 &store,
                 ns_gid,
-                RootOp::GroupCreated {
-                    admin: owner_account,
-                    group_id: id.into(),
-                    parent_id: ns_id.into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(owner_account, ns_id, true, tag),
             ),
         )
         .expect("sign GroupCreated");
@@ -5214,7 +5246,14 @@ fn existing_group_fixture() -> ExistingGroupFixture {
     }
 }
 
+const GROUP_TAG: u8 = 0xCC;
+const SIBLING_TAG: u8 = 0xCD;
+
 impl ExistingGroupFixture {
+    /// `signer` creates `group_id` under `parent_id`, salted `[GROUP_TAG; 32]`:
+    /// the owner's genuine create of `group_id` when the signer is the owner
+    /// and the parent the root, and a create naming an id it does not derive
+    /// otherwise.
     fn create(
         &self,
         signer: &PrivateKey,
@@ -5237,6 +5276,7 @@ impl ExistingGroupFixture {
                     group_id: group_id.into(),
                     parent_id: parent_id.into(),
                     restricted: true,
+                    salt: [GROUP_TAG; 32],
                 },
             ),
         )
@@ -5257,8 +5297,9 @@ impl ExistingGroupFixture {
 #[test]
 fn group_created_refuses_another_accounts_existing_group() {
     // Another admin naming an existing subgroup's id must not seat itself as
-    // that subgroup's admin. Before the fix this applied, added `other` as
-    // Admin and rewrote the parent edge.
+    // that subgroup's admin. Before #4231 this applied, added `other` as Admin
+    // and rewrote the parent edge. Now the id is not one `other` derives, so
+    // it is refused before the existing group is even looked at.
     let f = existing_group_fixture();
     let gid = ContextGroupId::from(f.group_id);
     let other = crate::test_fixtures::account_for(&f.other_sk.public_key());
@@ -5269,9 +5310,9 @@ fn group_created_refuses_another_accounts_existing_group() {
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
-            Some(crate::GroupCreatedRejection::ExistingGroupNotOwned { .. })
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
         ),
-        "expected ExistingGroupNotOwned, got: {err}"
+        "expected GroupIdNotDerived, got: {err}"
     );
     assert!(
         !MembershipRepository::new(&f.store)
@@ -5284,7 +5325,8 @@ fn group_created_refuses_another_accounts_existing_group() {
 #[test]
 fn group_created_refuses_moving_an_existing_group() {
     // The owner replaying its create under a different parent is a move, and a
-    // move is GroupReparented's job.
+    // move is GroupReparented's job. The id commits to its parent, so naming
+    // it under another one is not a create of this id at all.
     let f = existing_group_fixture();
     let gid = ContextGroupId::from(f.group_id);
 
@@ -5294,14 +5336,36 @@ fn group_created_refuses_moving_an_existing_group() {
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
+        ),
+        "expected GroupIdNotDerived, got: {err}"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&f.store).parent(&gid).unwrap(),
+        Some(f.ns_gid),
+        "the group must stay under its original parent"
+    );
+
+    // Once the group has been moved, a replay of its genuine create (which
+    // still derives the id) must not move it back.
+    let sibling_gid = ContextGroupId::from(f.sibling_id);
+    let _moved = NamespaceRepository::new(&f.store)
+        .reparent(&gid, &sibling_gid)
+        .unwrap();
+    let err = f
+        .create(&f.owner_sk, 4, f.group_id, f.ns_id)
+        .expect_err("a replayed create must not undo a move");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
             Some(crate::GroupCreatedRejection::ExistingGroupParentMismatch { .. })
         ),
         "expected ExistingGroupParentMismatch, got: {err}"
     );
     assert_eq!(
         NamespaceRepository::new(&f.store).parent(&gid).unwrap(),
-        Some(f.ns_gid),
-        "the group must stay under its original parent"
+        Some(sibling_gid),
+        "the group must stay where it was moved"
     );
 }
 
@@ -5309,7 +5373,8 @@ fn group_created_refuses_moving_an_existing_group() {
 fn group_created_refuses_the_namespace_root_as_a_child() {
     // The namespace root has no parent edge and is owned by its founder, so the
     // owner and parent checks alone would let the founder hang the root under
-    // one of its own subgroups: a cycle.
+    // one of its own subgroups: a cycle. A root id is a founded namespace id,
+    // never one a create derives, so this is refused at the derivation.
     let f = existing_group_fixture();
 
     let err = f
@@ -5318,9 +5383,9 @@ fn group_created_refuses_the_namespace_root_as_a_child() {
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
-            Some(crate::GroupCreatedRejection::ParentIsDescendant { .. })
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
         ),
-        "expected ParentIsDescendant, got: {err}"
+        "expected GroupIdNotDerived, got: {err}"
     );
     assert_eq!(
         NamespaceRepository::new(&f.store)
@@ -5339,6 +5404,136 @@ fn group_created_still_accepts_the_owners_replay() {
         .expect("the owner's replay is idempotent");
 }
 
+/// A fresh namespace `[0xA1; 32]` with two admins keyed by `owner` and
+/// `other`, and nothing created under it: one replica, for the concurrent
+/// create race.
+fn two_admin_namespace(owner: &[u8; 32], other: &[u8; 32]) -> Store {
+    let store = test_store();
+    let ns_gid = ContextGroupId::from(RACE_NS);
+    let owner_sk = PrivateKey::from(*owner);
+    let owner_account = enrol_member(&store, &ns_gid, &owner_sk.public_key());
+    let other_account = enrol_member(&store, &ns_gid, &PrivateKey::from(*other).public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(owner_account))
+        .unwrap();
+    for account in [owner_account, other_account] {
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &owner_sk.public_key(), owner)
+        .unwrap();
+    store
+}
+
+const RACE_NS: [u8; 32] = [0xA1; 32];
+
+/// What a replica folded for a group: owner, admin, parent, and whether each
+/// of the two racing accounts was seated as its admin.
+fn folded_group(
+    store: &Store,
+    gid: &ContextGroupId,
+    accounts: [&calimero_account::AccountId; 2],
+) -> (
+    Option<(calimero_account::AccountId, calimero_account::AccountId)>,
+    Option<ContextGroupId>,
+    [bool; 2],
+) {
+    let meta = MetaRepository::new(store)
+        .load(gid)
+        .unwrap()
+        .map(|m| (m.owner_identity, m.admin_identity));
+    let parent = NamespaceRepository::new(store).parent(gid).unwrap();
+    let admins = accounts.map(|a| MembershipRepository::new(store).is_admin(gid, a).unwrap());
+    (meta, parent, admins)
+}
+
+#[test]
+fn concurrent_creates_of_one_group_converge_in_either_apply_order() {
+    // Two `GroupCreated` ops for the same id, causally concurrent (same parent
+    // heads), signed by two different namespace admins: the genuine creator's
+    // and a racer's that saw the id (and the op's salt) before the genuine op
+    // was in its frontier. Replicas fold concurrent ops in whatever order they
+    // arrive, so the outcome must not depend on it.
+    //
+    // Before the id was derived from the create, whichever op a replica folded
+    // first owned the group there and the other was refused as a takeover
+    // (#4231): two replicas, two owners, for good.
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+    let owner_bytes = [0x11u8; 32];
+    let other_bytes = [0x22u8; 32];
+    let owner_sk = PrivateKey::from(owner_bytes);
+    let other_sk = PrivateKey::from(other_bytes);
+    let owner = crate::test_fixtures::account_for(&owner_sk.public_key());
+    let other = crate::test_fixtures::account_for(&other_sk.public_key());
+    let ns_gid = ContextGroupId::from(RACE_NS);
+
+    let genuine_op = crate::test_fixtures::group_created(owner, RACE_NS, true, 0xCE);
+    let group_id = crate::test_fixtures::derived_group_id(&owner, RACE_NS, true, 0xCE);
+    let gid = ContextGroupId::from(group_id);
+
+    // What a racer can sign having seen the genuine op: the same id and salt
+    // naming itself, or the genuine payload verbatim (naming the creator).
+    let racer_ops = [
+        RootOp::GroupCreated {
+            group_id: group_id.into(),
+            parent_id: RACE_NS.into(),
+            restricted: true,
+            admin: other,
+            salt: [0xCE; 32],
+        },
+        genuine_op.clone(),
+    ];
+
+    let sign = |store: &Store, sk: &PrivateKey, op: RootOp| {
+        SignedNamespaceOp::sign(
+            sk,
+            RACE_NS.into(),
+            vec![],
+            1,
+            seal_for_test(store, ns_gid, op),
+        )
+        .expect("sign GroupCreated")
+    };
+
+    for racer_op in racer_ops {
+        let replica = |genuine_first: bool| {
+            let store = two_admin_namespace(&owner_bytes, &other_bytes);
+            let genuine = sign(&store, &owner_sk, genuine_op.clone());
+            let racer = sign(&store, &other_sk, racer_op.clone());
+            let apply = |op: &SignedNamespaceOp| {
+                super::NamespaceGovernance::new(&store, RACE_NS.into()).apply_signed_op(op)
+            };
+            let (genuine_verdict, racer_verdict) = if genuine_first {
+                let g = apply(&genuine);
+                (g, apply(&racer))
+            } else {
+                let r = apply(&racer);
+                (apply(&genuine), r)
+            };
+            let _applied = genuine_verdict.expect("the genuine create applies in either order");
+            let _refused =
+                racer_verdict.expect_err("the racer's create is refused in either order");
+            folded_group(&store, &gid, [&owner, &other])
+        };
+
+        let genuine_first = replica(true);
+        let racer_first = replica(false);
+        assert_eq!(
+            genuine_first, racer_first,
+            "replicas that folded the same two concurrent creates in opposite orders \
+             disagree on the group's owner/admin/parent"
+        );
+        assert_eq!(
+            genuine_first,
+            (Some((owner, owner)), Some(ns_gid), [true, false]),
+            "the genuine creator owns and alone administers the group, under its parent"
+        );
+    }
+}
+
 #[test]
 fn group_created_replay_must_declare_its_creator_as_admin() {
     // The op's `admin` is what the fold records; on an existing group it must
@@ -5346,32 +5541,79 @@ fn group_created_replay_must_declare_its_creator_as_admin() {
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
     let f = existing_group_fixture();
-    let op = SignedNamespaceOp::sign(
-        &f.owner_sk,
-        f.ns_id.into(),
-        vec![],
-        3,
-        seal_for_test(
-            &f.store,
-            f.ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&f.other_sk.public_key()),
-                group_id: f.group_id.into(),
-                parent_id: f.ns_id.into(),
-                restricted: true,
-            },
-        ),
-    )
-    .expect("sign GroupCreated");
+    let other = crate::test_fixtures::account_for(&f.other_sk.public_key());
+    let sign = |nonce, group_id: [u8; 32]| {
+        SignedNamespaceOp::sign(
+            &f.owner_sk,
+            f.ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &f.store,
+                f.ns_gid,
+                RootOp::GroupCreated {
+                    admin: other,
+                    group_id: group_id.into(),
+                    parent_id: f.ns_id.into(),
+                    restricted: true,
+                    salt: [GROUP_TAG; 32],
+                },
+            ),
+        )
+        .expect("sign GroupCreated")
+    };
+
+    // Over the existing id, another admin does not derive it, so the create is
+    // refused before anything is read.
     let err = super::NamespaceGovernance::new(&f.store, f.ns_id.into())
-        .apply_signed_op(&op)
+        .apply_signed_op(&sign(3, f.group_id))
         .expect_err("a replay naming another admin is refused");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
+        ),
+        "{err:?}"
+    );
+
+    // An id that does derive from the named admin still needs that admin to be
+    // the signer: the declared admin is bound to the signer on every apply.
+    let derived = crate::test_fixtures::derived_group_id(&other, f.ns_id, true, GROUP_TAG);
+    let err = super::NamespaceGovernance::new(&f.store, f.ns_id.into())
+        .apply_signed_op(&sign(4, derived))
+        .expect_err("a create naming an admin other than its signer is refused");
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
             Some(crate::GroupCreatedRejection::Unauthorized { .. })
         ),
         "{err:?}"
+    );
+}
+
+/// The existing-group check a derived create reaches, run on `root` directly:
+/// no create can name a namespace id, so the full apply path never gets here,
+/// but a root must still be refused as a child should one ever do so.
+fn assert_refused_as_namespace_root(f: &ExistingGroupFixture, root: ContextGroupId) {
+    let owner = crate::test_fixtures::account_for(&f.owner_sk.public_key());
+    let meta = MetaRepository::new(&f.store)
+        .load(&root)
+        .unwrap()
+        .expect("the root has meta");
+    assert_eq!(
+        meta.owner_identity, owner,
+        "precondition: the creator owns it"
+    );
+    let err = crate::ops::namespace::group_created::refuse_foreign_existing_group(
+        &f.store, root, f.ns_gid, &owner, &meta,
+    )
+    .expect_err("a namespace root is not given a parent");
+    assert!(
+        matches!(
+            ExistingGroupFixture::rejection(&err),
+            Some(crate::GroupCreatedRejection::ExistingGroupIsNamespaceRoot { .. })
+        ),
+        "expected ExistingGroupIsNamespaceRoot, got: {err}"
     );
 }
 
@@ -5391,18 +5633,22 @@ fn group_created_refuses_grafting_another_namespace_root() {
     let gov_b = super::NamespaceGovernance::new(&f.store, ns_b.into());
     gov_b.apply_signed_op(&genesis).expect("B is founded");
 
+    // A namespace id is not one any create derives, so the graft is refused
+    // before the existing group is looked at. The namespace-root check behind
+    // it is defense in depth, exercised directly below.
     let err = f
         .create(&f.owner_sk, 3, ns_b, f.ns_id)
         .expect_err("a namespace root must not become a subgroup of another namespace");
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
-            Some(crate::GroupCreatedRejection::ExistingGroupIsNamespaceRoot { .. })
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
         ),
-        "expected ExistingGroupIsNamespaceRoot, got: {err}"
+        "expected GroupIdNotDerived, got: {err}"
     );
     let namespaces = NamespaceRepository::new(&f.store);
     let ns_b_gid = ContextGroupId::from(ns_b);
+    assert_refused_as_namespace_root(&f, ns_b_gid);
     assert_eq!(namespaces.parent(&ns_b_gid).unwrap(), None);
     assert!(!namespaces
         .list_children(&f.ns_gid)
@@ -5450,10 +5696,11 @@ fn group_created_refuses_grafting_a_namespace_root_with_no_founding_record() {
     assert!(
         matches!(
             ExistingGroupFixture::rejection(&err),
-            Some(crate::GroupCreatedRejection::ExistingGroupIsNamespaceRoot { .. })
+            Some(crate::GroupCreatedRejection::GroupIdNotDerived { .. })
         ),
-        "expected ExistingGroupIsNamespaceRoot, got: {err}"
+        "expected GroupIdNotDerived, got: {err}"
     );
+    assert_refused_as_namespace_root(&f, legacy_gid);
     assert_eq!(
         NamespaceRepository::new(&f.store)
             .parent(&legacy_gid)
@@ -5512,6 +5759,7 @@ fn execute_group_created_rejects_self_parent() {
                 group_id: ns_id.into(),
                 parent_id: ns_id.into(),
                 restricted: true,
+                salt: [0; 32],
             },
         ),
     )
@@ -5537,7 +5785,7 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
     // remote-created subgroups even though the originator's local copy
     // had the right key (originator pre-populates meta with the derived
     // blob-id-based key; peers' copies come from this apply handler).
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -5567,7 +5815,12 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
         .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes)
         .unwrap();
 
-    let sub_id = [0xE1u8; 32];
+    let sub_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        true,
+        0x01,
+    );
     let sub_gid = ContextGroupId::from(sub_id);
 
     let op = SignedNamespaceOp::sign(
@@ -5578,12 +5831,12 @@ fn execute_group_created_inherits_bytecode_id_and_application_from_parent() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: sub_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .expect("sign op");
@@ -6307,7 +6560,7 @@ fn collect_subtree_for_cascade_includes_contexts_from_all_groups() {
 
 #[test]
 fn governance_group_created_honors_can_create_subgroup_at_root_only() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use calimero_context_config::MemberCapabilities;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -6348,7 +6601,8 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     // op never advances the head or gets stored. Distinct `group_id`s already
     // give each op a distinct content hash; we pass increasing values for
     // readability. (Same as the `governance_group_deleted_*` test.)
-    let create = |sk: &PrivateKey, group_id: [u8; 32], parent_id: [u8; 32], nonce: u64| {
+    // Each creator derives its own id for a tag (`created_subgroup_id`).
+    let create = |sk: &PrivateKey, tag: u8, parent_id: [u8; 32], nonce: u64| {
         SignedNamespaceOp::sign(
             sk,
             ns_id.into(),
@@ -6357,18 +6611,18 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             seal_for_test(
                 &store,
                 ns_gid,
-                RootOp::GroupCreated {
-                    admin: crate::test_fixtures::account_for(&sk.public_key()),
-                    group_id: group_id.into(),
-                    parent_id: parent_id.into(),
-                    restricted: true,
-                },
+                crate::test_fixtures::group_created(
+                    crate::test_fixtures::account_for(&sk.public_key()),
+                    parent_id,
+                    true,
+                    tag,
+                ),
             ),
         )
         .unwrap()
     };
 
-    let chan = [0xB1u8; 32];
+    let chan = crate::test_fixtures::derived_group_id(&member_account, ns_id, true, 0xB1);
 
     // A total stranger (not a namespace member, no capability row) cannot
     // create a subgroup — rejected by the apply-side authorization check.
@@ -6379,7 +6633,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         "precondition: the stranger must not be enrolled in the namespace"
     );
     let err = gov
-        .apply_signed_op(&create(&stranger_sk, chan, ns_id, 1))
+        .apply_signed_op(&create(&stranger_sk, 0xB1, ns_id, 1))
         .unwrap_err();
     assert!(
         matches!(
@@ -6398,7 +6652,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
 
     // Member without the cap cannot create a subgroup, even under the root.
     assert!(gov
-        .apply_signed_op(&create(&member_sk, chan, ns_id, 2))
+        .apply_signed_op(&create(&member_sk, 0xB1, ns_id, 2))
         .is_err());
     assert!(MetaRepository::new(&store)
         .load(&ContextGroupId::from(chan))
@@ -6414,7 +6668,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
             MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
         )
         .unwrap();
-    gov.apply_signed_op(&create(&member_sk, chan, ns_id, 3))
+    gov.apply_signed_op(&create(&member_sk, 0xB1, ns_id, 3))
         .expect("member with CAN_CREATE_SUBGROUP creates a subgroup under the root");
     assert_eq!(
         MetaRepository::new(&store)
@@ -6434,18 +6688,17 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
 
     // But the capability is scoped to root-level subgroups: the member cannot
     // create a nested subgroup under another subgroup.
-    let nested_parent = [0xB2u8; 32];
-    gov.apply_signed_op(&create(&admin_sk, nested_parent, ns_id, 4))
+    let nested_parent = crate::test_fixtures::derived_group_id(&admin_account, ns_id, true, 0xB2);
+    gov.apply_signed_op(&create(&admin_sk, 0xB2, ns_id, 4))
         .expect("admin creates an intermediate subgroup");
-    let grandchild = [0xB3u8; 32];
     assert!(
-        gov.apply_signed_op(&create(&member_sk, grandchild, nested_parent, 5))
+        gov.apply_signed_op(&create(&member_sk, 0xB3, nested_parent, 5))
             .is_err(),
         "CAN_CREATE_SUBGROUP is honored only directly under the namespace root"
     );
 
     // A namespace admin is still allowed at any depth.
-    gov.apply_signed_op(&create(&admin_sk, grandchild, nested_parent, 6))
+    gov.apply_signed_op(&create(&admin_sk, 0xB3, nested_parent, 6))
         .expect("namespace admin may create nested subgroups");
 }
 
@@ -6621,7 +6874,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
 /// to re-drive, so apply must succeed cleanly and surface no divergence.
 #[test]
 fn group_created_with_no_key_skips_retry() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -6644,7 +6897,12 @@ fn group_created_with_no_key_skips_retry() {
 
     // Brand-new subgroup id: no GroupKeyring entry exists for it, so the
     // key-presence gate in the GroupCreated arm must skip the retry entirely.
-    let new_group_id = [0xF1u8; 32];
+    let new_group_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&admin_sk.public_key()),
+        ns_id,
+        true,
+        0x01,
+    );
     let new_group_gid = ContextGroupId::from(new_group_id);
     assert!(
         GroupKeyring::new(&store, new_group_gid)
@@ -6662,12 +6920,12 @@ fn group_created_with_no_key_skips_retry() {
         seal_for_test(
             &store,
             ns_gid,
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&admin_sk.public_key()),
-                group_id: new_group_id.into(),
-                parent_id: ns_id.into(),
-                restricted: true,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&admin_sk.public_key()),
+                ns_id,
+                true,
+                0x01,
+            ),
         ),
     )
     .unwrap();
@@ -8484,7 +8742,12 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     let joiner_account = crate::test_fixtures::account_for(&joiner);
 
     let namespace_id = founded_namespace_for(&owner_sk);
-    let subgroup_id = [0xE6u8; 32];
+    let subgroup_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&owner_sk.public_key()),
+        namespace_id,
+        false,
+        0x01,
+    );
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
 
     let signed_genesis = SignedNamespaceOp::sign(
@@ -8509,12 +8772,12 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
         seal_for_test(
             &store,
             ContextGroupId::from(namespace_id),
-            RootOp::GroupCreated {
-                admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-                group_id: subgroup_id.into(),
-                parent_id: namespace_id.into(),
-                restricted: false,
-            },
+            crate::test_fixtures::group_created(
+                crate::test_fixtures::account_for(&owner_sk.public_key()),
+                namespace_id,
+                false,
+                0x01,
+            ),
         ),
     )
     .expect("owner signs GroupCreated");
@@ -8553,7 +8816,7 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
 
 #[test]
 fn group_created_honors_at_cut_grant_over_live_denial() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -8595,16 +8858,21 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
     );
 
     let head = gov.read_head_record().expect("read head");
-    let subgroup_id = [0xE2u8; 32];
+    let subgroup_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&creator_sk.public_key()),
+        namespace_id,
+        true,
+        0x01,
+    );
     let create_op = seal_for_test(
         &store,
         ns_gid,
-        RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&creator_sk.public_key()),
-            group_id: subgroup_id.into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        },
+        crate::test_fixtures::group_created(
+            crate::test_fixtures::account_for(&creator_sk.public_key()),
+            namespace_id,
+            true,
+            0x01,
+        ),
     );
     let signed = SignedNamespaceOp::sign(
         &creator_sk,
@@ -8631,7 +8899,7 @@ fn group_created_honors_at_cut_grant_over_live_denial() {
 
 #[test]
 fn group_created_honors_at_cut_denial_over_live_grant() {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+    use calimero_context_client::local_governance::SignedNamespaceOp;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
@@ -8666,16 +8934,21 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     );
 
     let head = gov.read_head_record().expect("read head");
-    let subgroup_id = [0xE4u8; 32];
+    let subgroup_id = crate::test_fixtures::derived_group_id(
+        &crate::test_fixtures::account_for(&owner_sk.public_key()),
+        namespace_id,
+        true,
+        0x01,
+    );
     let create_op = seal_for_test(
         &store,
         ns_gid,
-        RootOp::GroupCreated {
-            admin: crate::test_fixtures::account_for(&owner_sk.public_key()),
-            group_id: subgroup_id.into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        },
+        crate::test_fixtures::group_created(
+            crate::test_fixtures::account_for(&owner_sk.public_key()),
+            namespace_id,
+            true,
+            0x01,
+        ),
     );
     let signed = SignedNamespaceOp::sign(
         &owner_sk,
@@ -8814,10 +9087,8 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
         .expect("joining binds the device in the same apply as the membership");
     assert_eq!(binding.account, account_id);
 
-    // The endorsement, without which the binding is inert: every reader that
-    // turns a key into an account goes through the endorser rows.
     assert_eq!(
-        crate::member_account_for_device_key(&store, &ns_gid, &joiner)
+        crate::member_account_in_namespace(&store, &ns_gid, &joiner)
             .expect("resolve the joiner's account"),
         Some(account_id),
         "a bound joiner must resolve to its account, or it gets no scope keys \
@@ -9020,19 +9291,25 @@ fn a_tee_admission_binds_the_replicas_device() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        &GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec!["m1".to_owned()],
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec!["r1".to_owned()],
-            allowed_rtmr2: vec!["r2".to_owned()],
-            // RTMR3 is mandatory: it is the only measurement that identifies the
-            // image, since MRTD is shared by every profile of a release. This
-            // fixture is about device binding, so it names the value its own
-            // join op attests and nothing more.
-            allowed_rtmr3: vec!["r3".to_owned()],
-            allowed_tcb_statuses: vec!["ok".to_owned()],
-            accept_mock: true,
-        },
+        // Since schema 20 a TEE policy carries its signer's own root proof.
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                // RTMR3 is mandatory: it is the only measurement that identifies the
+                // image, since MRTD is shared by every profile of a release. This
+                // fixture is about device binding, so it names the value its own
+                // join op attests and nothing more.
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
     )
     .expect("encrypt the policy op");
     let head = gov.read_head_record().expect("read head");
@@ -9091,7 +9368,7 @@ fn a_tee_admission_binds_the_replicas_device() {
         .expect("admission binds the replica's device in the same apply");
     assert_eq!(binding.account, account_id);
     assert_eq!(
-        crate::member_account_for_device_key(&store, &ns_gid, &replica).expect("resolve"),
+        crate::member_account_in_namespace(&store, &ns_gid, &replica).expect("resolve"),
         Some(account_id),
         "and the binding resolves, so the replica receives scope keys addressed \
          to its account rather than falling back to a stand-in"
@@ -9132,19 +9409,25 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
     let policy_op = GroupKeyring::encrypt_op(
         &group_key,
-        &GroupOp::TeeAdmissionPolicySet {
-            allowed_mrtd: vec!["m1".to_owned()],
-            allowed_rtmr0: vec![],
-            allowed_rtmr1: vec!["r1".to_owned()],
-            allowed_rtmr2: vec!["r2".to_owned()],
-            // RTMR3 is mandatory: it is the only measurement that identifies the
-            // image, since MRTD is shared by every profile of a release. This
-            // fixture is about device binding, so it names the value its own
-            // join op attests and nothing more.
-            allowed_rtmr3: vec!["r3".to_owned()],
-            allowed_tcb_statuses: vec!["ok".to_owned()],
-            accept_mock: true,
-        },
+        // Since schema 20 a TEE policy carries its signer's own root proof.
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                // RTMR3 is mandatory: it is the only measurement that identifies the
+                // image, since MRTD is shared by every profile of a release. This
+                // fixture is about device binding, so it names the value its own
+                // join op attests and nothing more.
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
     )
     .expect("encrypt the policy op");
     let head = gov.read_head_record().expect("read head");
@@ -9211,10 +9494,11 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
         "a lifted credential must not graft the victim's account into this namespace"
     );
     assert!(
-        bindings
-            .endorsers_of(&ns_gid, victim_account)
+        !bindings
+            .accounts_by_endorsing_member(&ns_gid)
             .expect("read endorsers")
-            .is_empty(),
+            .values()
+            .any(|accounts| accounts.contains(&victim_account)),
         "nor make the replica an endorser of it"
     );
     assert!(
@@ -11353,6 +11637,227 @@ fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
     );
 }
 
+/// A namespace, a parent and a subgroup below it, all owned by one account, and
+/// a plain member of the parent. Visibility is the test's to set.
+struct AnchoredTree {
+    store: Store,
+    namespace: ContextGroupId,
+    parent: ContextGroupId,
+    subgroup: ContextGroupId,
+    owner: PublicKey,
+    member: PublicKey,
+}
+
+fn anchored_tree() -> AnchoredTree {
+    let namespace = ContextGroupId::from([0x81u8; 32]);
+    let parent = ContextGroupId::from([0x82u8; 32]);
+    let subgroup = ContextGroupId::from([0x83u8; 32]);
+    let owner = PrivateKey::from([0x84u8; 32]).public_key();
+    let member = PrivateKey::from([0x86u8; 32]).public_key();
+
+    let store = test_store();
+    let owner_account = enrol_member(&store, &namespace, &owner);
+    for group in [namespace, parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(owner_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&namespace, &parent)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &subgroup)
+        .unwrap();
+    let member_account = enrol_member(&store, &namespace, &member);
+    MembershipRepository::new(&store)
+        .add_member(&parent, &member_account, GroupMemberRole::Member)
+        .unwrap();
+
+    AnchoredTree {
+        store,
+        namespace,
+        parent,
+        subgroup,
+        owner,
+        member,
+    }
+}
+
+/// Where a joiner may take a group key from without an invitation vouching for
+/// the sender: the anchors of the group and of the ancestors that inherit into it.
+#[test]
+fn join_key_sources_are_the_anchors_of_the_group_and_its_open_ancestors() {
+    use calimero_context_config::VisibilityMode;
+
+    let tree = anchored_tree();
+    let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Open)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Open)
+        .unwrap();
+
+    // A plain member of the parent is nobody's anchor.
+    let sources = repo.join_key_sources(&tree.subgroup).unwrap();
+    assert!(sources.contains(&tree.owner), "the owner is an anchor");
+    assert!(!sources.contains(&tree.member));
+
+    // An admin of the parent is an anchor of the subgroup below it, and is not
+    // one of a group that is not below it.
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let admin_account = enrol_member(&tree.store, &tree.namespace, &parent_admin);
+    repo.add_member(&tree.parent, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+    assert!(repo
+        .join_key_sources(&tree.subgroup)
+        .unwrap()
+        .contains(&parent_admin));
+    assert!(!repo
+        .join_key_sources(&tree.namespace)
+        .unwrap()
+        .contains(&parent_admin));
+
+    // So is an admin of the namespace root, two Open edges up.
+    let root_admin = PrivateKey::from([0x89u8; 32]).public_key();
+    let root_account = enrol_member(&tree.store, &tree.namespace, &root_admin);
+    repo.add_member(&tree.namespace, &root_account, GroupMemberRole::Admin)
+        .unwrap();
+    assert!(repo
+        .join_key_sources(&tree.subgroup)
+        .unwrap()
+        .contains(&root_admin));
+}
+
+/// A Restricted edge ends the walk: an admin above it is not in the subgroup
+/// and holds none of its keys.
+#[test]
+fn a_restricted_edge_ends_the_walk_for_join_key_sources() {
+    use calimero_context_config::VisibilityMode;
+
+    let tree = anchored_tree();
+    let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Restricted)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Open)
+        .unwrap();
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let admin_account = enrol_member(&tree.store, &tree.namespace, &parent_admin);
+    repo.add_member(&tree.parent, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    assert!(
+        !repo
+            .join_key_sources(&tree.subgroup)
+            .unwrap()
+            .contains(&parent_admin),
+        "an admin of the parent of a Restricted subgroup is not a source of its key"
+    );
+    assert!(
+        repo.join_key_sources(&tree.subgroup)
+            .unwrap()
+            .contains(&tree.owner),
+        "control: the subgroup's own anchor still is"
+    );
+}
+
+/// Only the edges a subgroup inherits across count, wherever the first Restricted
+/// one is.
+#[test]
+fn join_key_sources_stop_at_a_restricted_edge_in_the_middle() {
+    use calimero_context_config::VisibilityMode;
+
+    let tree = anchored_tree();
+    let repo = MembershipRepository::new(&tree.store);
+    let caps = CapabilitiesRepository::new(&tree.store);
+    caps.set_subgroup_visibility(&tree.subgroup, VisibilityMode::Open)
+        .unwrap();
+    caps.set_subgroup_visibility(&tree.parent, VisibilityMode::Restricted)
+        .unwrap();
+    let parent_admin = PrivateKey::from([0x88u8; 32]).public_key();
+    let parent_account = enrol_member(&tree.store, &tree.namespace, &parent_admin);
+    repo.add_member(&tree.parent, &parent_account, GroupMemberRole::Admin)
+        .unwrap();
+    let root_admin = PrivateKey::from([0x89u8; 32]).public_key();
+    let root_account = enrol_member(&tree.store, &tree.namespace, &root_admin);
+    repo.add_member(&tree.namespace, &root_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let sources = repo.join_key_sources(&tree.subgroup).unwrap();
+    assert!(
+        sources.contains(&parent_admin),
+        "the parent is inherited from"
+    );
+    assert!(
+        !sources.contains(&root_admin),
+        "the parent is Restricted, so nothing above it is"
+    );
+}
+
+/// The admitter is looked up in the namespace the invitation is for, which a
+/// joiner can name before the group's own parent edge has folded.
+#[test]
+fn an_admitter_bound_in_the_namespace_is_recognised_for_a_group_not_yet_nested() {
+    let tree = anchored_tree();
+    let unfolded = ContextGroupId::from([0x8Fu8; 32]);
+    let inviter = PrivateKey::from([0x91u8; 32]);
+    let admitter = PrivateKey::from([0x92u8; 32]);
+    let admitter_account = enrol_member(&tree.store, &tree.namespace, &admitter.public_key());
+    let invitation =
+        test_signed_invitation_with_admitters(&inviter, unfolded, 0, vec![admitter_account]);
+
+    assert!(NamespaceMembershipService::join_key_sender_trusted(
+        &tree.store,
+        &tree.namespace,
+        &unfolded,
+        &admitter.public_key(),
+        Some(&invitation),
+    )
+    .unwrap());
+}
+
+/// A group key in a join response is installed only from someone the joiner has
+/// a reason to believe.
+#[test]
+fn a_join_key_is_trusted_from_the_inviter_an_admitter_or_an_anchor_and_nobody_else() {
+    let tree = anchored_tree();
+    let ns_gid = tree.namespace;
+    let inviter = PrivateKey::from([0x91u8; 32]);
+    let admitter = PrivateKey::from([0x92u8; 32]);
+    let admitter_account = enrol_member(&tree.store, &ns_gid, &admitter.public_key());
+    let invitation =
+        test_signed_invitation_with_admitters(&inviter, ns_gid, 0, vec![admitter_account]);
+    let trusted = |sender: &PublicKey, invitation| {
+        NamespaceMembershipService::join_key_sender_trusted(
+            &tree.store,
+            &ns_gid,
+            &ns_gid,
+            sender,
+            invitation,
+        )
+        .unwrap()
+    };
+
+    assert!(trusted(&inviter.public_key(), Some(&invitation)));
+    assert!(trusted(&admitter.public_key(), Some(&invitation)));
+    assert!(
+        trusted(&tree.owner, Some(&invitation)),
+        "an anchor of the group is trusted whatever the invitation says"
+    );
+    assert!(
+        !trusted(&tree.member, Some(&invitation)),
+        "a plain member the invitation does not name is not"
+    );
+    let stranger = PrivateKey::from([0x93u8; 32]).public_key();
+    assert!(!trusted(&stranger, Some(&invitation)));
+
+    // Without an invitation only the anchors count: the inviter and the
+    // admitter of the invitation above are nobody to this join.
+    assert!(!trusted(&inviter.public_key(), None));
+    assert!(!trusted(&admitter.public_key(), None));
+    assert!(trusted(&tree.owner, None));
+}
+
 /// A `KeyDelivery` is accepted only from a trusted anchor of the group it
 /// delivers for (#3871).
 ///
@@ -11735,7 +12240,6 @@ fn a_stranded_key_delivery_is_deferred_then_redriven_by_group_created() {
 
     let store = test_store();
     let ns_gid = ContextGroupId::from([0xE8u8; 32]);
-    let sub_gid = ContextGroupId::from([0xE9u8; 32]);
     let namespace_id = ns_gid.to_bytes();
 
     // A namespace admin, and NOTHING for the subgroup: no meta, no member row,
@@ -11743,6 +12247,12 @@ fn a_stranded_key_delivery_is_deferred_then_redriven_by_group_created() {
     // and it has not applied.
     let admin_sk = PrivateKey::from([0xEAu8; 32]);
     let admin_account = enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    let sub_gid = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &admin_account,
+        namespace_id,
+        true,
+        0x01,
+    ));
     MetaRepository::new(&store)
         .save(&ns_gid, &sample_meta_with_admin(admin_account))
         .unwrap();
@@ -11817,12 +12327,7 @@ fn a_stranded_key_delivery_is_deferred_then_redriven_by_group_created() {
     let create = seal_for_test(
         &store,
         ns_gid,
-        RootOp::GroupCreated {
-            admin: admin_account,
-            group_id: sub_gid.to_bytes().into(),
-            parent_id: namespace_id.into(),
-            restricted: true,
-        },
+        crate::test_fixtures::group_created(admin_account, namespace_id, true, 0x01),
     );
     let signed_create = SignedNamespaceOp::sign(
         &admin_sk,
@@ -13012,7 +13517,7 @@ fn admin_changed_does_not_make_an_attested_tee_the_admin() {
     let store = test_store();
     let ns_id = [0xA7u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    let ((admin_sk, _admin_pk), admin) = bootstrap_namespace_with_admin_account(&store, ns_id);
+    let ((admin_sk, admin_pk), admin) = bootstrap_namespace_with_admin_account(&store, ns_id);
     let tee = enrol_member(&store, &ns_gid, &PublicKey::from([0xA8u8; 32]));
     let plain = enrol_member(&store, &ns_gid, &PublicKey::from([0xA9u8; 32]));
     let membership = MembershipRepository::new(&store);
@@ -13031,7 +13536,16 @@ fn admin_changed_does_not_make_an_attested_tee_the_admin() {
             ns_id.into(),
             head.parent_hashes,
             head.next_nonce,
-            seal_for_test(&store, ns_gid, RootOp::AdminChanged { new_admin }),
+            seal_for_test(
+                &store,
+                ns_gid,
+                crate::test_fixtures::guarded_root_op(
+                    &store,
+                    &ns_gid,
+                    &admin_pk,
+                    RootOp::AdminChanged { new_admin },
+                ),
+            ),
         )
         .expect("sign AdminChanged")
     };
@@ -13119,6 +13633,7 @@ fn group_created_for_existing_foreign_group_is_rejected() {
                 group_id: foreign.to_bytes().into(),
                 parent_id: ns_a.into(),
                 restricted: true,
+                salt: [0; 32],
             },
         ),
     )

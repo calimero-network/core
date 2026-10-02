@@ -805,6 +805,22 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         (children, resume)
     }
 
+    /// [`Self::children_from`] for ids alone: no child's index row is read,
+    /// and a page holds fewer than `at_least + BUCKET_MAX` ids.
+    #[must_use]
+    pub fn child_ids_from(&self, from: Id, at_least: usize) -> (Vec<Id>, Option<Id>) {
+        let mut out = Vec::new();
+        let resume = slots_from(
+            &Self::rows(),
+            self.parent,
+            &mut Vec::new(),
+            Some(&from),
+            at_least.max(1),
+            &mut out,
+        );
+        (out.into_iter().map(|slot| slot.id).collect(), resume)
+    }
+
     /// Number of children, without enumerating them. One row read.
     #[must_use]
     pub fn len(&self) -> u64 {
@@ -1310,6 +1326,26 @@ mod tests {
                 "children must come back in ChildInfo order"
             );
         }
+    }
+
+    /// Paging ids from the start, each page resuming where the last stopped,
+    /// visits every child exactly once, ascending, in pages under
+    /// `at_least + BUCKET_MAX`.
+    #[test]
+    fn id_pages_cover_every_child_once_in_order() {
+        let trie = ChildTrie::<crate::store::MainStorage>::new(parent(8));
+        for i in 0..=u8::MAX {
+            let _root = trie.insert(child(i, i));
+        }
+        let mut seen = Vec::new();
+        let mut from = Some(Id::new([0; 32]));
+        while let Some(at) = from {
+            let (page, next) = trie.child_ids_from(at, 40);
+            assert!(page.len() < 40 + BUCKET_MAX, "page of {}", page.len());
+            seen.extend(page);
+            from = next;
+        }
+        assert_eq!(seen, trie.child_ids());
     }
 
     #[test]

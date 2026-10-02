@@ -62,6 +62,8 @@ pub enum Modifer {
     Destructive,
     /// `#[app::idempotent]` - repeating the call with the same arguments changes nothing further.
     Idempotent,
+    /// `#[app::handler]` - an event may name this method as its handler.
+    Handler,
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -469,6 +471,10 @@ impl PublicLogicMethod<'_> {
             .modifiers
             .iter()
             .any(|modifier| matches!(modifier, Modifer::Idempotent));
+        let handler = self
+            .modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::Handler));
 
         quote! {
             {
@@ -493,6 +499,7 @@ impl PublicLogicMethod<'_> {
                     returns_doc: #returns_doc,
                     destructive: #destructive,
                     idempotent: #idempotent,
+                    handler: #handler,
                     ..::core::default::Default::default()
                 });
             }
@@ -655,6 +662,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                     }
                     "destructive" => modifiers.push(Modifer::Destructive),
                     "idempotent" => modifiers.push(Modifer::Idempotent),
+                    "handler" => modifiers.push(Modifer::Handler),
                     "xcall" => {
                         // Validate the optional caller-policy arg so a typo is a
                         // compile error rather than silently falling back to the
@@ -719,6 +727,16 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ));
             }
             (_, false) => {
+                // Only a `pub` method is exported, so a private handler could never run.
+                if modifiers.iter().any(|m| matches!(m, Modifer::Handler)) {
+                    errors.subsume(SynError::new_spanned(
+                        &input.item.sig.ident,
+                        ParseError::HandlerNotPublic {
+                            method: input.item.sig.ident.to_string(),
+                        },
+                    ));
+                    errors.check()?;
+                }
                 return Ok(Self::Private);
             }
         }
@@ -839,6 +857,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             let attr = match modifier {
                 Modifer::Destructive => "destructive",
                 Modifer::Idempotent => "idempotent",
+                Modifer::Handler => "handler",
                 _ => continue,
             };
             if is_init {

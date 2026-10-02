@@ -872,6 +872,9 @@ async fn text_stale_and_forged_blocks_resolve_identically() {
     let new = edit::<Text>(&author, |doc| {
         doc.insert_str(3, &tail).expect("insert tail");
     });
+    // `new` grows the block `old` created, so a DAG lands `old` first; a stale
+    // copy of it can still arrive after `new`, as a re-delivery.
+    land(&receiver, &old);
     land(&receiver, &new);
     land(&receiver, &old);
 

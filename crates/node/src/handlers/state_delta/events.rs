@@ -8,6 +8,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::ExecuteError;
 use calimero_context_client::tee_trigger;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
@@ -112,7 +113,7 @@ pub(super) async fn execute_cascaded_events(
     }
 
     for (cascaded_id, events_data) in cascaded_events {
-        match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+        match ExecutionEvent::decode_all(events_data) {
             Ok(cascaded_payload) => {
                 info!(
                     %context_id,
@@ -188,7 +189,7 @@ pub(super) async fn execute_cascaded_events(
                     phase = phase,
                     "Failed to deserialize cascaded events — clearing blob to prevent permanent replay loop"
                 );
-                // `serde_json::from_slice` failures on this blob are
+                // `ExecutionEvent::decode_all` failures on this blob are
                 // structural, not transient: a blob that fails to
                 // deserialize now will fail every restart. Without the
                 // clear, `collect_pending_handler_events` would surface
@@ -332,12 +333,11 @@ pub(super) async fn execute_event_handlers_parsed(
             );
 
             match context_client
-                .execute(
+                .execute_event_handler(
                     context_id,
                     our_identity,
                     handler_name.clone(),
                     event.data.clone(),
-                    None,
                 )
                 .await
             {
@@ -345,6 +345,17 @@ pub(super) async fn execute_event_handlers_parsed(
                     debug!(
                         handler_name = %handler_name,
                         "Handler executed successfully"
+                    );
+                }
+                // Settled, not failed: the app never declared it, and never
+                // will for this build, so a replay would refuse it again.
+                Err(ExecuteError::NotAnEventHandler { application_id, .. }) => {
+                    warn!(
+                        %context_id,
+                        %application_id,
+                        method = %handler_name,
+                        "Dropped an event's call to a method the app does not declare a handler: \
+                         mark the method #[app::handler] and rebuild the app with cargo mero build"
                     );
                 }
                 Err(err) => {
@@ -420,7 +431,7 @@ pub(super) fn emit_state_mutation_event_parsed(
 /// Decode a delta's optional events blob into `ExecutionEvent`s.
 ///
 /// Returns `None` both when there is no blob (`events == None`) and when the
-/// blob is present but fails JSON deserialization (logged at `warn`). Callers
+/// blob is present but fails to decode (logged at `warn`). Callers
 /// that need to distinguish the two — e.g. to clear a corrupt blob — check
 /// `events.is_some()` alongside a `None` return.
 pub(super) fn parse_events_payload(
@@ -431,7 +442,7 @@ pub(super) fn parse_events_payload(
         return None;
     };
 
-    match serde_json::from_slice::<Vec<ExecutionEvent>>(events_data) {
+    match ExecutionEvent::decode_all(events_data) {
         Ok(payload) => Some(payload),
         Err(e) => {
             warn!(

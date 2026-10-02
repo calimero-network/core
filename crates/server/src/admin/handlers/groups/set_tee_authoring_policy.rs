@@ -24,6 +24,11 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
+    let root_proof = match crate::admin::handlers::root_proof::decode(req.root_proof.as_deref()) {
+        Ok(proof) => proof,
+        Err(err) => return err.into_response(),
+    };
+
     info!(group_id=%group_id_str, "Setting TEE authoring policy");
 
     let result = state
@@ -31,6 +36,7 @@ pub async fn handler(
         .set_tee_authoring_policy(SetTeeAuthoringPolicyRequest {
             group_id,
             allowed_mrtd: req.allowed_mrtd,
+            root_proof,
         })
         .await
         .map_err(parse_api_error);

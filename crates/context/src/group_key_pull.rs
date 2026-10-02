@@ -27,10 +27,12 @@ pub(crate) fn adopt_pulled_group_key(
 ) -> eyre::Result<[u8; 32]> {
     let key_id =
         calimero_governance_store::GroupKeyring::new(store, group_id).store_key(group_key)?;
-    if let Err(err) = calimero_governance_store::retry_encrypted_ops_for_group(
+    let authorizer = crate::apply_authorizer::VoidJudge::new(store);
+    if let Err(err) = calimero_governance_store::retry_encrypted_ops_for_group_with(
         store,
         namespace_id,
         group_id.to_bytes(),
+        &authorizer,
     ) {
         warn!(
             group_id = %hex::encode(group_id.to_bytes()),
@@ -171,7 +173,13 @@ mod tests {
             .add_member(&ns, &joiner_account, GroupMemberRole::Member)
             .unwrap();
 
-        let sub = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+        let sub_salt: [u8; 32] = rand::RngExt::random(&mut rng);
+        let sub = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &owner_account,
+            &namespace_id,
+            true,
+            &sub_salt,
+        ));
         NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
         MetaRepository::new(&store)
             .save(&sub, &meta(owner_account))
@@ -187,6 +195,7 @@ mod tests {
                 group_id: sub.to_bytes().into(),
                 parent_id: namespace_id.into(),
                 restricted: true,
+                salt: sub_salt,
             }),
         )
         .unwrap();

@@ -641,11 +641,13 @@ pub fn record_credential(
 
 /// Stub `NetworkManager` for tests that call
 /// `NamespaceGovernance::sign_apply_and_publish[_returning_op]` end to end:
-/// resolves only the two `NetworkMessage` variants that path touches
-/// (`Publish`, `MeshPeerCount`) and drops the rest, so the publish step
+/// resolves only the three `NetworkMessage` variants that path touches
+/// (`Publish`, `MeshPeerCount`, `SubscribedPeers`) and drops the rest, so the publish step
 /// completes without a live libp2p swarm. Mirrors the `CountingNetworkActor`
 /// pattern in `calimero_node_primitives::client::publish_on_namespace_now_tests`.
-struct StubNetworkActor;
+struct StubNetworkActor {
+    subscribers: Vec<libp2p::PeerId>,
+}
 
 impl actix::Actor for StubNetworkActor {
     type Context = actix::Context<Self>;
@@ -667,6 +669,9 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             }
             NetworkMessage::Publish { outcome, .. } => {
                 let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
+            }
+            NetworkMessage::SubscribedPeers { outcome, .. } => {
+                let _ = outcome.send(self.subscribers.clone());
             }
             _ => {}
         }
@@ -697,14 +702,8 @@ impl actix::Handler<calimero_node_primitives::messages::NodeMessage> for Capturi
     }
 }
 
-/// Build a real `NodeClient`/`AckRouter` pair for tests that publish end to end -
-/// the namespace governance path and the device-link path both use it: a namespace
-/// with a bootstrapped admin (returned as the signing key), and a
-/// `NodeClient` whose network side is wired to `StubNetworkActor` so the
-/// publish step resolves without a swarm. The `TempDir` keeps the stub
-/// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
-/// never touches it, but `NodeClient::new` requires a real `BlobManager`).
-pub async fn namespace_publish_fixture() -> (
+/// What [`namespace_publish_fixture`] hands a test.
+pub type PublishFixture = (
     Store,
     calimero_node_primitives::client::NodeClient,
     calimero_context_client::local_governance::AckRouter,
@@ -712,7 +711,23 @@ pub async fn namespace_publish_fixture() -> (
     PrivateKey,
     tempfile::TempDir,
     tokio::sync::mpsc::UnboundedReceiver<calimero_node_primitives::messages::NodeMessage>,
-) {
+);
+
+/// Build a real `NodeClient`/`AckRouter` pair for tests that publish end to end -
+/// the namespace governance path and the device-link path both use it: a namespace
+/// with a bootstrapped admin (returned as the signing key), and a
+/// `NodeClient` whose network side is wired to `StubNetworkActor` so the
+/// publish step resolves without a swarm. The `TempDir` keeps the stub
+/// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
+/// never touches it, but `NodeClient::new` requires a real `BlobManager`).
+pub async fn namespace_publish_fixture() -> PublishFixture {
+    namespace_publish_fixture_with_subscribers(Vec::new()).await
+}
+
+/// [`namespace_publish_fixture`], with the swarm listing `subscribers` on every topic.
+pub async fn namespace_publish_fixture_with_subscribers(
+    subscribers: Vec<libp2p::PeerId>,
+) -> PublishFixture {
     use actix::Actor;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::NetworkMessage;
@@ -736,7 +751,7 @@ pub async fn namespace_publish_fixture() -> (
     let network_client = NetworkClient::new(network_recipient.clone());
     let _addr = StubNetworkActor::create(move |ctx| {
         assert!(network_recipient.init(ctx), "network recipient init");
-        StubNetworkActor
+        StubNetworkActor { subscribers }
     });
 
     let (event_sender, _) = tokio::sync::broadcast::channel(16);
@@ -849,4 +864,107 @@ pub fn seal_for_test(
     }
     crate::seal_root_op_for_publish(store, ns_gid.to_bytes().into(), op)
         .expect("seal a root op for a test")
+}
+
+/// The id `admin` derives for a subgroup under `parent` with salt `[tag; 32]`
+/// (`calimero_account::created_subgroup_id`): the only id a
+/// [`group_created`] op built with the same arguments may name.
+pub fn derived_group_id(
+    admin: &AccountId,
+    parent: [u8; 32],
+    restricted: bool,
+    tag: u8,
+) -> [u8; 32] {
+    calimero_account::created_subgroup_id(admin, &parent, restricted, &[tag; 32])
+}
+
+/// A `RootOp::GroupCreated` by `admin` under `parent`, salted `[tag; 32]`, whose
+/// id is [`derived_group_id`] of the same arguments, as apply requires.
+pub fn group_created(
+    admin: AccountId,
+    parent: [u8; 32],
+    restricted: bool,
+    tag: u8,
+) -> calimero_context_client::local_governance::RootOp {
+    calimero_context_client::local_governance::RootOp::GroupCreated {
+        group_id: derived_group_id(&admin, parent, restricted, tag).into(),
+        parent_id: parent.into(),
+        restricted,
+        admin,
+        salt: [tag; 32],
+    }
+}
+
+/// The account root [`real_join_account`] derives for `sign_pk`: the key whose
+/// signature an owner-level op's root proof needs.
+pub fn root_for(sign_pk: &PublicKey) -> PrivateKey {
+    PrivateKey::from(*(*sign_pk))
+}
+
+/// A root proof from `sign_pk`'s own account for an op of `kind` whose digest is
+/// `digest`, on `group` in `namespace`, at the group's current guarded-op
+/// counter and root epoch 0.
+pub fn owner_proof_for(
+    store: &Store,
+    namespace: &ContextGroupId,
+    group: &ContextGroupId,
+    sign_pk: &PublicKey,
+    kind: calimero_account::OwnerOpKind,
+    digest: [u8; 32],
+) -> calimero_account::SignedOwnerOp {
+    let root = root_for(sign_pk);
+    let genesis = calimero_account::AccountGenesis::new(root.public_key());
+    let terms = calimero_account::OwnerOpTerms {
+        account: genesis.account_id(),
+        namespace_id: namespace.to_bytes(),
+        group_id: group.to_bytes(),
+        kind,
+        op_digest: digest,
+        counter: crate::owner_op_counter(store, group).expect("read the counter"),
+        key_epoch: 0,
+    };
+    calimero_account::SignedOwnerOp {
+        genesis,
+        chain: vec![],
+        statement: calimero_account::OwnerOpAuthorization::sign(&root, terms).expect("sign"),
+    }
+}
+
+/// `op` wrapped in `GroupOp::RootGuarded` with `sign_pk`'s own root proof for
+/// `group`, as an owner's node would publish it.
+pub fn guarded_group_op(
+    store: &Store,
+    group: &ContextGroupId,
+    sign_pk: &PublicKey,
+    op: GroupOp,
+) -> GroupOp {
+    let namespace = NamespaceRepository::new(store)
+        .resolve(group)
+        .expect("resolve the namespace");
+    let kind = op.owner_op_kind().expect("a guarded op");
+    let digest = op.owner_op_digest().expect("digest");
+    GroupOp::RootGuarded {
+        proof: Box::new(owner_proof_for(
+            store, &namespace, group, sign_pk, kind, digest,
+        )),
+        op: Box::new(op),
+    }
+}
+
+/// `op` wrapped in `RootOp::RootGuarded` with `sign_pk`'s own root proof for the
+/// namespace root `namespace`.
+pub fn guarded_root_op(
+    store: &Store,
+    namespace: &ContextGroupId,
+    sign_pk: &PublicKey,
+    op: calimero_context_client::local_governance::RootOp,
+) -> calimero_context_client::local_governance::RootOp {
+    let kind = op.owner_op_kind().expect("a guarded op");
+    let digest = op.owner_op_digest().expect("digest");
+    calimero_context_client::local_governance::RootOp::RootGuarded {
+        proof: Box::new(owner_proof_for(
+            store, namespace, namespace, sign_pk, kind, digest,
+        )),
+        op: Box::new(op),
+    }
 }

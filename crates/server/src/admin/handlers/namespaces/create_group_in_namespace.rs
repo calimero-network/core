@@ -50,11 +50,6 @@ pub async fn handler(
         "Creating group in namespace via namespace governance"
     );
 
-    let group_id: [u8; 32] = {
-        use rand::RngExt;
-        rand::rng().random()
-    };
-
     match NamespaceRepository::new(&state.store).parent(&namespace_id) {
         Ok(Some(_)) => {
             return parse_api_error(eyre::eyre!("namespace_id must reference a root group"))
@@ -95,6 +90,31 @@ pub async fn handler(
         None => true,
     };
 
+    // The account this node signs as. Carried on the op so receivers fold the
+    // creator without resolving anything; the apply still checks it against its
+    // own resolution, so an unresolvable signer fails here rather than pinning a
+    // subgroup admin nobody can match.
+    let admin_account = match calimero_context::member_account::require(
+        &state.store,
+        &resolved_ns_id.to_bytes().into(),
+        &signer_pk,
+    ) {
+        Ok(account) => account,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    // The id is derived from the create (`created_subgroup_id`), so no other
+    // member can race a concurrent create for it. The salt rides on the op.
+    let salt: [u8; calimero_account::SUBGROUP_SALT_LEN] = {
+        use rand::RngExt;
+        rand::rng().random()
+    };
+    let group_id = calimero_account::created_subgroup_id(
+        &admin_account,
+        &namespace_id.to_bytes(),
+        restricted,
+        &salt,
+    );
     let group_id_cgid = calimero_context_config::types::ContextGroupId::from(group_id);
 
     // Mint the subgroup's signing key AND group key BEFORE applying the op.
@@ -133,18 +153,6 @@ pub async fn handler(
     // the namespace root in one op. Previous two-op pattern (GroupCreated then
     // GroupNested) is collapsed — orphan state is no longer reachable. See
     // docs/superpowers/specs/2026-04-22-strict-group-tree-and-cascade-delete.md
-    // The account this node signs as. Carried on the op so receivers fold the
-    // creator without resolving anything; the apply still checks it against its
-    // own resolution, so an unresolvable signer fails here rather than pinning a
-    // subgroup admin nobody can match.
-    let admin_account = match calimero_context::member_account::require(
-        &state.store,
-        &resolved_ns_id.to_bytes().into(),
-        &signer_pk,
-    ) {
-        Ok(account) => account,
-        Err(err) => return parse_api_error(err).into_response(),
-    };
     // Sealed under the namespace key: that a subgroup exists, and where it sits,
     // is members' business. This site does not decide that — the choke point
     // does. The sibling create path (`context::handlers::create_group`) and
@@ -158,6 +166,7 @@ pub async fn handler(
             parent_id: namespace_id.to_bytes().into(),
             restricted,
             admin: admin_account,
+            salt,
         },
     ) {
         Ok(op) => op,

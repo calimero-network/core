@@ -3,13 +3,18 @@
 
 use std::sync::Arc;
 
-use calimero_app_downloader::registry::{RegistryConfig, RegistryMode};
+use calimero_app_downloader::registry::{RegistryConfig, RegistryMode, PENDING_BLOB_SHARE_SOURCE};
 use calimero_app_downloader::source::dht::PeerBlobs;
 use calimero_app_downloader::{app_source, AppRequest, ApplicationDownloader, Outcome};
+use calimero_node_primitives::client::application::InstallOrigin;
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_store::db::InMemoryDB;
 use calimero_store::{key, types, Store};
+use ed25519_dalek::SigningKey;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
 use tempfile::TempDir;
 use url::Url;
 
@@ -263,9 +268,10 @@ async fn a_bare_install_lands_under_the_manifest_derived_id() {
 
     assert_eq!(
         node_client
-            .install_by_coords(PACKAGE, VERSION)
+            .install_by_coords(PACKAGE, VERSION, InstallOrigin::Operator)
             .await
-            .expect("the install must not fault"),
+            .expect("the install must not fault")
+            .map(|(id, _blob)| id),
         Some(derived_id)
     );
     let _ignored = server.await;
@@ -285,7 +291,7 @@ async fn a_bare_install_reports_unpublished_coordinates_as_absent() {
 
     assert_eq!(
         node_client
-            .install_by_coords(PACKAGE, VERSION)
+            .install_by_coords(PACKAGE, VERSION, InstallOrigin::Operator)
             .await
             .expect("an unpublished version is not a fault"),
         None
@@ -304,7 +310,7 @@ async fn a_bare_install_refuses_a_substituted_package() {
     let (node_client, _data, _blobs) = node_pointed_at(&base_of(&url)).await;
 
     let err = node_client
-        .install_by_coords(PACKAGE, VERSION)
+        .install_by_coords(PACKAGE, VERSION, InstallOrigin::Operator)
         .await
         .expect_err("a substituted package must be refused");
     let _ignored = server.await;
@@ -337,7 +343,7 @@ async fn a_bare_install_refuses_a_substituted_version() {
     let (node_client, _data, _blobs) = node_pointed_at(&base_of(&url)).await;
 
     let err = node_client
-        .install_by_coords(PACKAGE, VERSION)
+        .install_by_coords(PACKAGE, VERSION, InstallOrigin::Operator)
         .await
         .expect_err("a substituted version must be refused");
     let _ignored = server.await;
@@ -347,4 +353,366 @@ async fn a_bare_install_refuses_a_substituted_version() {
         err.contains("0.9.0") && err.contains(VERSION),
         "error must name both versions, got: {err}"
     );
+}
+
+/// Two releases of one application: same signer, so the same id.
+fn two_releases(older: &str, newer: &str) -> (Vec<u8>, Vec<u8>, ApplicationId) {
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (older, id) = common::signed_bundle_bytes_by(&key, PACKAGE, older, &[]);
+    let (newer, newer_id) = common::signed_bundle_bytes_by(&key, PACKAGE, newer, &[]);
+    assert_eq!(id, newer_id, "releases by one signer share an id");
+    (older, newer, id)
+}
+
+/// A node over `store` whose one source is the registry at `base`.
+async fn node_over(store: &Store, base: &Url) -> (NodeClient, TempDir, TempDir) {
+    let (node_client, data, blobs) = common::create_test_node_client(Some(store.clone())).await;
+    let registry = RegistryConfig::new(RegistryMode::Http, Some(base.clone()));
+    (node_client.with_registry(registry), data, blobs)
+}
+
+/// Install `bundle` the way the admin API's dev install does.
+async fn install_by_operator(node_client: &NodeClient, bundle: &[u8]) -> BlobId {
+    let dir = TempDir::new().expect("temp dir");
+    let path = dir.path().join("app.mpk");
+    std::fs::write(&path, bundle).expect("write bundle");
+    let _id = node_client
+        .install_application_from_path(path.try_into().expect("utf-8 path"))
+        .await
+        .expect("operator install");
+    common::blob_id_of(bundle).await
+}
+
+async fn store_blob(node_client: &NodeClient, bytes: &[u8]) -> BlobId {
+    let (blob_id, _size) = node_client
+        .add_blob(bytes, Some(bytes.len() as u64), None)
+        .await
+        .expect("store blob");
+    blob_id
+}
+
+/// A base no test contacts: the bytes are already local.
+fn unused_base() -> Url {
+    "http://127.0.0.1:9/".parse().expect("base")
+}
+
+/// Any group can name any application id, so a download it triggers must not
+/// roll this node's installed release back.
+#[tokio::test]
+async fn a_downloaded_older_release_never_replaces_the_installed_row() {
+    let (older, newer, id) = two_releases("1.0.0", "2.0.0");
+    let older_blob = common::blob_id_of(&older).await;
+    let (url, server) = common::serve_once(older).await;
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &base_of(&url)).await;
+    let newer_blob = install_by_operator(&node_client, &newer).await;
+
+    assert_eq!(
+        download(&node_client, &base_of(&url), &req(older_blob, id))
+            .await
+            .expect("an older release is still acquired for whoever binds it"),
+        Outcome::Installed
+    );
+    let _ignored = server.await;
+
+    let row = row(&store, id);
+    assert_eq!(&*row.version, "2.0.0");
+    assert_eq!(row.bytecode.blob_id(), newer_blob);
+    assert!(node_client.has_blob(&older_blob).expect("blob lookup"));
+}
+
+#[tokio::test]
+async fn a_held_older_release_never_replaces_the_installed_row() {
+    let (older, newer, id) = two_releases("1.0.0", "2.0.0");
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &unused_base()).await;
+    let newer_blob = install_by_operator(&node_client, &newer).await;
+    let older_blob = store_blob(&node_client, &older).await;
+
+    assert_eq!(
+        download(&node_client, &unused_base(), &req(older_blob, id))
+            .await
+            .expect("the walk must not fault"),
+        Outcome::Installed
+    );
+
+    let row = row(&store, id);
+    assert_eq!(&*row.version, "2.0.0");
+    assert_eq!(row.bytecode.blob_id(), newer_blob);
+}
+
+#[tokio::test]
+async fn downloaded_raw_wasm_never_replaces_a_signed_row_and_is_released() {
+    let (_older, newer, id) = two_releases("1.0.0", "2.0.0");
+    let raw = b"raw wasm, not a bundle".to_vec();
+    let raw_blob = common::blob_id_of(&raw).await;
+    let (url, server) = common::serve_once(raw).await;
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &base_of(&url)).await;
+    let newer_blob = install_by_operator(&node_client, &newer).await;
+
+    let _refused = download(&node_client, &base_of(&url), &req(raw_blob, id))
+        .await
+        .expect_err("raw wasm must not replace a signed release");
+    let _ignored = server.await;
+
+    assert_eq!(row(&store, id).bytecode.blob_id(), newer_blob);
+    assert!(!node_client.has_blob(&raw_blob).expect("blob lookup"));
+}
+
+#[tokio::test]
+async fn a_downloaded_newer_release_replaces_the_installed_row() {
+    let (older, newer, id) = two_releases("1.0.0", "2.0.0");
+    let newer_blob = common::blob_id_of(&newer).await;
+    let (url, server) = common::serve_once(newer).await;
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &base_of(&url)).await;
+    let _older_blob = install_by_operator(&node_client, &older).await;
+
+    assert_eq!(
+        download(&node_client, &base_of(&url), &req(newer_blob, id))
+            .await
+            .expect("the walk must not fault"),
+        Outcome::Installed
+    );
+    let _ignored = server.await;
+
+    let row = row(&store, id);
+    assert_eq!(&*row.version, "2.0.0");
+    assert_eq!(row.bytecode.blob_id(), newer_blob);
+}
+
+/// A relay resolving a member's older target keeps the bundle and reports its
+/// blob, without touching the row.
+#[tokio::test]
+async fn a_remote_coords_install_keeps_the_newer_row() {
+    let (older, newer, id) = two_releases(VERSION, "2.0.0");
+    let older_blob = common::blob_id_of(&older).await;
+    let (url, server) = common::serve_once(older).await;
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &base_of(&url)).await;
+    let newer_blob = install_by_operator(&node_client, &newer).await;
+
+    let installed = node_client
+        .install_by_coords(PACKAGE, VERSION, InstallOrigin::Remote)
+        .await
+        .expect("an older release is not a fault");
+    let _ignored = server.await;
+
+    assert_eq!(installed, Some((id, older_blob)));
+    assert_eq!(row(&store, id).bytecode.blob_id(), newer_blob);
+    assert!(node_client.has_blob(&older_blob).expect("blob lookup"));
+}
+
+/// A version that is not semver cannot be ordered against the row's release,
+/// so the row keeps its release and the bundle stays a blob.
+#[tokio::test]
+async fn a_remote_coords_install_keeps_the_row_for_an_unordered_release() {
+    let (unordered, newer, id) = two_releases("nightly", "2.0.0");
+    let unordered_blob = common::blob_id_of(&unordered).await;
+    let (url, server) = common::serve_once(unordered).await;
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &base_of(&url)).await;
+    let newer_blob = install_by_operator(&node_client, &newer).await;
+
+    let installed = node_client
+        .install_by_coords(PACKAGE, "nightly", InstallOrigin::Remote)
+        .await
+        .expect("an unordered release is not a fault");
+    let _ignored = server.await;
+
+    assert_eq!(installed, Some((id, unordered_blob)));
+    assert_eq!(row(&store, id).bytecode.blob_id(), newer_blob);
+}
+
+/// Equal versions need no order, so a rebuilt non-semver release still lands.
+#[tokio::test]
+async fn a_remote_install_of_the_same_unordered_version_replaces_the_row() {
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (first, id) = common::signed_bundle_bytes_by(&key, PACKAGE, "nightly", &[]);
+    let (rebuilt, _id) = common::signed_bundle_bytes_by(&key, PACKAGE, "nightly", &["svc"]);
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &unused_base()).await;
+    let _first_blob = install_by_operator(&node_client, &first).await;
+    let rebuilt_blob = store_blob(&node_client, &rebuilt).await;
+
+    let _id = node_client
+        .install_expected_bundle_blob(
+            &id,
+            &rebuilt_blob,
+            &PENDING_BLOB_SHARE_SOURCE.parse().expect("source"),
+        )
+        .await
+        .expect("install");
+
+    assert_eq!(row(&store, id).bytecode.blob_id(), rebuilt_blob);
+}
+
+/// A non-semver row cannot be shown older than anything, so a remote semver
+/// release never replaces it.
+#[tokio::test]
+async fn a_remote_semver_release_never_replaces_an_unordered_row() {
+    let (semver_release, unordered, id) = two_releases("0.0.1", "nightly");
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &unused_base()).await;
+    let unordered_blob = install_by_operator(&node_client, &unordered).await;
+    let semver_blob = store_blob(&node_client, &semver_release).await;
+
+    let _id = node_client
+        .install_expected_bundle_blob(
+            &id,
+            &semver_blob,
+            &PENDING_BLOB_SHARE_SOURCE.parse().expect("source"),
+        )
+        .await
+        .expect("a kept row is not a fault");
+
+    assert_eq!(row(&store, id).bytecode.blob_id(), unordered_blob);
+}
+
+#[tokio::test]
+async fn downloaded_raw_wasm_never_replaces_a_raw_row_and_is_released() {
+    let held = b"raw wasm already bound".to_vec();
+    let raw = b"raw wasm, not a bundle".to_vec();
+    let raw_blob = common::blob_id_of(&raw).await;
+    let named_id = ApplicationId::from([0xB4; 32]);
+    let (url, server) = common::serve_once(raw).await;
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &base_of(&url)).await;
+    let held_blob = store_blob(&node_client, &held).await;
+    let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
+    node_client
+        .write_application_row(&named_id, &held_blob, held.len() as u64, &source, None)
+        .expect("first install");
+
+    let _refused = download(&node_client, &base_of(&url), &req(raw_blob, named_id))
+        .await
+        .expect_err("raw wasm must not replace a row that holds bytes");
+    let _ignored = server.await;
+
+    assert_eq!(row(&store, named_id).bytecode.blob_id(), held_blob);
+    assert!(!node_client.has_blob(&raw_blob).expect("blob lookup"));
+}
+
+/// Reinstalling a missing intermediate version is how an operator recovers a
+/// stranded context, so an admin install may still roll the row back.
+#[tokio::test]
+async fn an_operator_install_may_roll_the_row_back() {
+    let (older, newer, id) = two_releases("1.0.0", "2.0.0");
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &unused_base()).await;
+    let _newer_blob = install_by_operator(&node_client, &newer).await;
+    let older_blob = install_by_operator(&node_client, &older).await;
+
+    let row = row(&store, id);
+    assert_eq!(&*row.version, "1.0.0");
+    assert_eq!(row.bytecode.blob_id(), older_blob);
+}
+
+/// A resync or blob share delivering an older release keeps the row, stores
+/// none of its service blobs, and still succeeds.
+#[tokio::test]
+async fn an_expected_blob_install_keeps_the_newer_row() {
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (newer, id) = common::signed_bundle_bytes_by(&key, PACKAGE, "2.0.0", &[]);
+    let (older, _id) = common::signed_bundle_bytes_by(&key, PACKAGE, "1.0.0", &["svc"]);
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &unused_base()).await;
+    let newer_blob = install_by_operator(&node_client, &newer).await;
+    let older_blob = store_blob(&node_client, &older).await;
+
+    let installed = node_client
+        .install_expected_bundle_blob(
+            &id,
+            &older_blob,
+            &PENDING_BLOB_SHARE_SOURCE.parse().expect("source"),
+        )
+        .await
+        .expect("an older release is not a fault");
+
+    assert_eq!(installed, id);
+    assert_eq!(row(&store, id).bytecode.blob_id(), newer_blob);
+    assert_eq!(
+        node_client.list_blobs().expect("list").len(),
+        2,
+        "a kept row must store no service blob"
+    );
+}
+
+/// A rebuilt release under an unchanged version still replaces the row.
+#[tokio::test]
+async fn an_expected_blob_install_accepts_the_same_version() {
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (first, id) = common::signed_bundle_bytes_by(&key, PACKAGE, VERSION, &[]);
+    let (rebuilt, _id) = common::signed_bundle_bytes_by(&key, PACKAGE, VERSION, &["svc"]);
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &unused_base()).await;
+    let _first_blob = install_by_operator(&node_client, &first).await;
+    let rebuilt_blob = store_blob(&node_client, &rebuilt).await;
+
+    let _id = node_client
+        .install_expected_bundle_blob(
+            &id,
+            &rebuilt_blob,
+            &PENDING_BLOB_SHARE_SOURCE.parse().expect("source"),
+        )
+        .await
+        .expect("install");
+
+    assert_eq!(row(&store, id).bytecode.blob_id(), rebuilt_blob);
+}
+
+/// The stub governance seeds before any bytes arrive names no release, so
+/// raw wasm may fill it.
+#[tokio::test]
+async fn downloaded_raw_wasm_fills_a_placeholder_row() {
+    let raw = b"raw wasm, not a bundle".to_vec();
+    let raw_blob = common::blob_id_of(&raw).await;
+    let raw_size = raw.len() as u64;
+    let named_id = ApplicationId::from([0xB3; 32]);
+    let (url, server) = common::serve_once(raw).await;
+
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data, _blobs) = node_over(&store, &base_of(&url)).await;
+    store
+        .handle()
+        .put(
+            &key::ApplicationMeta::new(named_id),
+            &types::ApplicationMeta::new(
+                key::BlobMeta::new(raw_blob),
+                0,
+                PENDING_BLOB_SHARE_SOURCE.into(),
+                Box::default(),
+                key::BlobMeta::new(BlobId::from([0; 32])),
+                types::PackageInfo {
+                    package: PACKAGE.into(),
+                    version: VERSION.into(),
+                    signer_id: String::new().into_boxed_str(),
+                    state_version: 0,
+                },
+            ),
+        )
+        .expect("seed stub");
+
+    assert_eq!(
+        download(&node_client, &base_of(&url), &req(raw_blob, named_id))
+            .await
+            .expect("the walk must not fault"),
+        Outcome::Installed
+    );
+    let _ignored = server.await;
+
+    assert_eq!(row(&store, named_id).size, raw_size);
 }

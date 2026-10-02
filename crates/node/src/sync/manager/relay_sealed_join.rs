@@ -505,6 +505,7 @@ mod tests {
             parent_id: ContextGroupId::from(NS),
             restricted: true,
             admin: credential().statement.account,
+            salt: [0; 32],
         }));
 
         let err =

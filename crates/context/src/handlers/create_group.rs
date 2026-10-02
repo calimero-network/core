@@ -45,9 +45,13 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // passes one, which only the account namespace does (its salt is
         // derived from the account root's secret, deliberately unlinkable).
         //
-        // A subgroup stays random: it is not a root of trust, its authority
-        // comes from the namespace above it.
-        let (group_id, founding) = match parent_group_id {
+        // A subgroup's id is derived too, from the create itself:
+        // `created_subgroup_id(creator, parent, restricted, salt)`. It is not a
+        // root of trust (its authority comes from the namespace above it), but
+        // binding it to its creator is what stops another member who saw the
+        // id from racing a concurrent create for it. That needs the creator's
+        // account, so it is derived below, once the account is resolved.
+        let (root_id, founding) = match parent_group_id {
             None => {
                 let founder = match crate::join_credential::founding_account(&self.datastore) {
                     Ok(founder) => founder,
@@ -61,27 +65,23 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     salt.unwrap_or_else(|| rand::rng().random());
                 let group_id =
                     ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &salt));
-                (group_id, Some((founder, salt)))
+                (Some(group_id), Some((founder, salt)))
             }
             Some(_) if salt.is_some() => {
                 return ActorResponse::reply(Err(eyre::eyre!(
-                    "a subgroup's id is random: a salt only derives a namespace root's id"
+                    "a subgroup's salt is drawn here: a caller's salt only derives a \
+                     namespace root's id"
                 )))
             }
-            Some(_) => {
-                let bytes: [u8; 32] = rand::rng().random();
-                (bytes.into(), None)
-            }
+            Some(_) => (None, None),
         };
 
-        if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
-            return ActorResponse::reply(Err(crate::error::ContextError::GroupAlreadyExists {
-                group_id: group_id.to_string(),
-            }
-            .into()));
-        }
-
-        let namespace_anchor_group_id = parent_group_id.as_ref().unwrap_or(&group_id);
+        let Some(namespace_anchor_group_id) = parent_group_id.or(root_id) else {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "internal: neither a parent nor a root id"
+            )));
+        };
+        let namespace_anchor_group_id = &namespace_anchor_group_id;
         let (namespace_id, admin_identity, sk_bytes) =
             match self.get_or_create_namespace_identity(namespace_anchor_group_id) {
                 Ok(result) => result,
@@ -154,6 +154,34 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 }
             }
         };
+
+        // The subgroup id, now that the creator's account is known. The salt
+        // rides on the op so every replica can check the derivation.
+        let (group_id, subgroup_salt) = match (root_id, parent_group_id) {
+            (Some(group_id), _) => (group_id, None),
+            (None, Some(parent_id)) => {
+                let salt: [u8; calimero_account::SUBGROUP_SALT_LEN] = rand::rng().random();
+                let group_id = ContextGroupId::from(calimero_account::created_subgroup_id(
+                    &admin_account,
+                    &parent_id.to_bytes(),
+                    restricted,
+                    &salt,
+                ));
+                (group_id, Some(salt))
+            }
+            (None, None) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "internal: neither a parent nor a root id"
+                )))
+            }
+        };
+
+        if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
+            return ActorResponse::reply(Err(crate::error::ContextError::GroupAlreadyExists {
+                group_id: group_id.to_string(),
+            }
+            .into()));
+        }
 
         // Subgroups inherit target_application_id from the parent (namespace root owns the app).
         let effective_application_id = if let Some(ref parent_id) = parent_group_id {
@@ -393,7 +421,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 // `ops/namespace/namespace_created.rs`). Previously root creation
                 // emitted NO op and the founder lived only in the creator's local
                 // GroupMeta, which is exactly the gap #2474 closes.
-                if let Some(parent_id) = parent_group_id {
+                if let (Some(parent_id), Some(salt)) = (parent_group_id, subgroup_salt) {
                     // Sealed under the namespace key. Group structure is only
                     // members' business, and the choke point decides — this site
                     // does not know or need to know which variants seal.
@@ -408,6 +436,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             group_id: group_id.to_bytes().into(),
                             parent_id: parent_id.to_bytes().into(),
                             restricted,
+                            salt,
                         },
                     )?;
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
@@ -1350,8 +1379,9 @@ mod tests {
         );
     }
 
-    /// A subgroup's id is always random, so a salt for one is refused rather
-    /// than silently dropped.
+    /// A subgroup's salt is always drawn by this node (its id is derived from
+    /// the create, `created_subgroup_id`), so a caller's salt for one is refused
+    /// rather than silently dropped.
     #[actix::test]
     async fn a_salt_for_a_subgroup_is_refused() {
         let store = store();

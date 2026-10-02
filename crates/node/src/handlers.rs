@@ -197,6 +197,17 @@ impl Handler<NodeMessage> for NodeManager {
                 // A dropped receiver means the caller gave up; ignore.
                 let _ = outcome.send(result);
             }
+            NodeMessage::PublishDelegatedEphemeral {
+                context_id,
+                update,
+                outcome,
+            } => {
+                let result = crate::handlers::ephemeral::outbound::publish_delegated(
+                    self, ctx, context_id, *update,
+                );
+                // A dropped receiver means the caller gave up; ignore.
+                let _ = outcome.send(result);
+            }
             NodeMessage::GetEphemeralSnapshot {
                 context_id,
                 outcome,

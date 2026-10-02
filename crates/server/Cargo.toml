@@ -78,6 +78,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tokio-tungstenite.workspace = true
 tempfile.workspace = true
 calimero-blobstore.workspace = true
+calimero-node-primitives = { workspace = true, features = ["testing"] }
 calimero-utils-actix.workspace = true
 # `testing` exposes governance-store's own fixtures, which build an enrolled
 # member — membership rows AND the binding rows that make that account's ops

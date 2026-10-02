@@ -11,8 +11,9 @@ use crate::credential::{credential_binds_the_member, join_credential_binds};
 
 /// Encode a namespace root governance op ([`RootOp`]) as an [`OpPayload`].
 ///
-/// **Coverage (admin + membership + scope-tree planes):** `AdminChanged` →
-/// `AdminChanged`; `PolicyUpdated` → `PolicyUpdated`; `MemberJoinedOpen` →
+/// **Coverage (admin + membership + scope-tree planes):**
+/// `RootGuarded { AdminChanged }` → `RootGuarded { AdminChanged }` (a bare
+/// `AdminChanged` folds to nothing, see `crate::guard`); `PolicyUpdated` → `PolicyUpdated`; `MemberJoinedOpen` →
 /// `MemberAdded` (open-subgroup self-join grants `Member`); `GroupCreated` →
 /// `SubgroupCreated`; `GroupReparented` → `SubgroupReparented`; `GroupDeleted`
 /// → `SubgroupDeleted` (see caveats).
@@ -47,9 +48,30 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         RootOp::OnBehalf { op, delegation } if op.delegable_form().is_some() => {
             relay_seat(op, delegation, payload_from_root_op(op)?)
         }
-        RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {
-            new_admin: *new_admin,
-        }),
+        // Owner-level: folds only with its root proof, whose group is the
+        // namespace root. A bare `AdminChanged` falls through to `None`; see
+        // `crate::guard`.
+        RootOp::RootGuarded { op: inner, proof } => {
+            let RootOp::AdminChanged { new_admin } = inner.as_ref() else {
+                return None;
+            };
+            let kind = inner.owner_op_kind()?;
+            let digest = inner.owner_op_digest().ok()?;
+            // A root op names no group of its own: the proof's must be the
+            // namespace root, which is the one it names as its namespace.
+            if proof.statement.group_id != proof.statement.namespace_id {
+                return None;
+            }
+            crate::guard::guarded_payload(
+                ContextGroupId::from(proof.statement.namespace_id),
+                kind,
+                digest,
+                proof,
+                OpPayload::AdminChanged {
+                    new_admin: *new_admin,
+                },
+            )
+        }
         RootOp::PolicyUpdated { policy_bytes } => Some(OpPayload::PolicyUpdated {
             policy_bytes: policy_bytes.clone(),
         }),
@@ -155,6 +177,9 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
             parent_id,
             restricted,
             admin,
+            // The id's derivation input; apply checks it, the projection has
+            // no use for it.
+            salt: _,
         } => Some(OpPayload::SubgroupCreated {
             child: ScopeId::from(group_id.to_bytes()),
             parent: ScopeId::from(parent_id.to_bytes()),
@@ -206,6 +231,18 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         // Out-of-model: `KeyDelivery` is key transport, not authorization
         // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
         _ => None,
+    }
+}
+
+/// [`payload_from_root_op`] for an op signed under a schema from before the
+/// root guard. See [`crate::payload_from_pre_guard_group_op`] for why.
+#[must_use]
+pub fn payload_from_pre_guard_root_op(op: &RootOp) -> Option<OpPayload> {
+    match op {
+        RootOp::AdminChanged { new_admin } => Some(OpPayload::AdminChanged {
+            new_admin: *new_admin,
+        }),
+        other => payload_from_root_op(other),
     }
 }
 

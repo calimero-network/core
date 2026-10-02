@@ -226,6 +226,7 @@ impl TeeDice {
 
     // Only the elected TEE authority runs this.
     #[app::tee]
+    #[app::handler]
     pub fn resolve_roll(&mut self, roll_id: String, sides: u32) -> app::Result<()> {
         let mut bytes = [0u8; 4];
         env::tee_random_bytes(&mut bytes);
@@ -285,8 +286,9 @@ example adds a timer and [hidden values](#hidden-values).
 
 ## Firing: the `tee:` handler
 
-A TEE trigger is an event handler whose name starts with `tee:`. Handlers only
-run on receivers, never on the delta's author. For a `tee:` handler each
+A TEE trigger is an event handler whose name starts with `tee:`. The method it
+names must be marked `#[app::handler]` beside `#[app::tee]`, or no TEE runs it.
+Handlers only run on receivers, never on the delta's author. For a `tee:` handler each
 receiver asks two questions, in `events.rs` and `tee_firing.rs`:
 
 <Steps>
@@ -406,8 +408,8 @@ functions, and two storage types built on them, cover a card game:
 
 | | What it does |
 | --- | --- |
-| `env::seal_to(key, bytes)` | Seals bytes to an Ed25519 key: an ephemeral key agreement, then AES-256-GCM. Any run may seal. |
-| `env::open_sealed(envelope)` | Opens an envelope with the run's executor key, or in a TEE-triggered run with a namespace TEE key the TEE holds. |
+| `env::seal_to(key, bytes)` | Seals bytes to an Ed25519 key: an ephemeral key agreement, then AES-256-GCM, bound to the run's context. Any run may seal. |
+| `env::open_sealed(envelope)` | Opens an envelope sealed in the same context with the run's executor key, or in a TEE-triggered run with a namespace TEE key the TEE holds. An envelope opens only in the context it was sealed in. |
 | `env::tee_authority_keys()` | What a TEE-triggered run seals a value only the TEE may read to: the namespace TEE key (see below). |
 | `env::account_device_keys(account)` | What a TEE-triggered run seals a value only one member may read to: the signing key of every live device of that account in the namespace. |
 | `Sealed<T>` | A `T` sealed to one or more keys (`to_key`, `to_keys`, `to_account`, `to_tee`); `open` returns it to a reader it was made for. |
@@ -446,10 +448,20 @@ all and any event it missed. Each check does two things:
    `GroupOp::TeeVaultKeyDelivered` on the root: the key's private half sealed
    to that TEE's attested key.
 
-Only a TEE member (`ReadOnlyTee` or `RelayTee`) may publish one; apply refuses an admin as well as
-a member, because a key an admin handed the TEEs is one it could read
-everything with. A TEE opens only the copies addressed to it, and checks that
-each opens to the key it names.
+The key is sealed under a label and AAD bound to the namespace root, so a copy opens only as that namespace's key.
+Copies sealed by a release before this binding do not open, and a namespace that has only such copies never creates a new key: recreate it after upgrading.
+
+Only a TEE member (`ReadOnlyTee` or `RelayTee`) may publish one; apply refuses
+an admin as well as a plain member, because a key an admin handed the TEEs is
+one it could read everything with. Apply adds no check on evidence, so the logs
+of all replicas are the same whatever order the ops arrive in.
+
+A key is used only while its signer is a current TEE authority: a member whose
+verified evidence binds the key it signs with, under an image the authoring
+policy names. That is decided when the key is read. A key whose signer or a
+recipient is not an authority is retired, so a member with no evidence can log a
+delivery but no run seals to its key. A TEE opens only the copies addressed to
+it, and checks that each opens to the key it names.
 
 A TEE-triggered run is given every key its TEE holds, and seals to the lowest.
 Two TEEs that each create a key before seeing the other's hand both on, so each
@@ -460,7 +472,7 @@ the next write seals to the namespace key.
 **A TEE that stops being an authority rotates the key.** A TEE may stop being
 a TEE authority in four ways: it is removed, it leaves, the authoring policy no
 longer names its MRTD, or its evidence lapses. Whichever it is, it still holds
-every key it was handed. Each such key is retired (`retired_tee_vault_keys`):
+every key it was handed. Each key it delivered or was handed is retired (`retired_tee_vault_keys`):
 no run seals to it again, and once the namespace has no other key a TEE
 authority creates a new one and hands it to the TEE authorities that remain.
 They keep the retired keys, so a value sealed before still opens for them, and

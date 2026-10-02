@@ -24,6 +24,12 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::logical_clock::HybridTimestamp;
 
+mod void;
+#[cfg(test)]
+mod void_tests;
+
+pub use void::AuthorityBase;
+
 #[cfg(test)]
 pub mod testing;
 
@@ -164,6 +170,13 @@ pub struct ScopeState {
     /// The seats relays took by publishing a member's op, keyed by
     /// `(group, relay)`; materialized into membership by [`Self::seated`].
     relay_seats: BTreeMap<(ContextGroupId, AccountId), RelaySeat>,
+    // --- owner-level governance ---
+    /// The root-guarded ops folded for each group, by op id. A grow-only set, so
+    /// the count at a cut is the number of guarded ops in its ancestry whatever
+    /// order they folded in; a root proof must name that count. Not part of
+    /// `governance_hash`, like the TEE policy: what a guarded op changes is
+    /// already in the planes it carries.
+    owner_ops: BTreeMap<ContextGroupId, BTreeSet<[u8; 32]>>,
 }
 
 /// Direct membership, per group.
@@ -205,6 +218,9 @@ pub struct CutAncestry<'a> {
     reached: HashSet<[u8; 32]>,
     missing: Option<[u8; 32]>,
     opaque: Option<[u8; 32]>,
+    /// Ops of the walk with no authority (see [`ScopeState::void_ops`]): kept in `ops`
+    /// so causal depth runs through them, but the view folds none.
+    void: BTreeSet<[u8; 32]>,
 }
 
 impl<'a> CutAncestry<'a> {
@@ -666,6 +682,24 @@ impl ScopeState {
                 }
             }
 
+            // An owner-level op with its root proof. The proof itself was
+            // checked where the payload was built; the one op-local rule left is
+            // that it is the author's own, so a proof lifted into another
+            // account's op writes nothing. The counter and the epoch floor need
+            // a cut and are `calimero-authz`'s. The bare owner-level payloads
+            // still fold by their own arms: since schema 20 only an op signed
+            // before the guard produces one (see `calimero-op-adapter`).
+            OpPayload::RootGuarded {
+                carried,
+                group,
+                account,
+                ..
+            } => {
+                if *account == op.authorship.account {
+                    let _ = self.owner_ops.entry(*group).or_default().insert(op.id());
+                    self.fold_payload(op, carried, stamp);
+                }
+            }
             // The carried op first, by its own arms; then the relay's device, if
             // this op binds it; then the seat, which is resolved when the view is
             // read (see `seated`) because the role it takes depends on the
@@ -1089,6 +1123,11 @@ impl ScopeState {
                 .iter()
                 .map(|(member, all)| (*member, all.values().cloned().collect()))
                 .collect(),
+            owner_op_counts: self
+                .owner_ops
+                .iter()
+                .map(|(group, ops)| (*group, u64::try_from(ops.len()).unwrap_or(u64::MAX)))
+                .collect(),
         }
     }
 
@@ -1104,6 +1143,16 @@ impl ScopeState {
     /// at-cut read to get both answers.
     #[must_use]
     pub fn cut_ancestry<'a>(log: &'a [Op], parents: &[[u8; 32]]) -> CutAncestry<'a> {
+        Self::cut_ancestry_with_void(log, parents, &BTreeSet::new())
+    }
+
+    /// [`Self::cut_ancestry`], told which ops of `log` carry no authority.
+    #[must_use]
+    pub fn cut_ancestry_with_void<'a>(
+        log: &'a [Op],
+        parents: &[[u8; 32]],
+        void: &BTreeSet<[u8; 32]>,
+    ) -> CutAncestry<'a> {
         let by_id: HashMap<[u8; 32], &Op> = log.iter().map(|op| (op.id(), op)).collect();
         let mut visited: HashSet<[u8; 32]> = HashSet::new();
         let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
@@ -1144,6 +1193,7 @@ impl ScopeState {
             reached: visited,
             missing,
             opaque,
+            void: void.clone(),
         }
     }
 
@@ -1165,7 +1215,14 @@ impl ScopeState {
     /// fully-materialized ancestry.
     #[must_use]
     pub fn acl_view_at(log: &[Op], parents: &[[u8; 32]]) -> AclView {
-        Self::acl_view_from_ancestry(&Self::cut_ancestry(log, parents))
+        Self::acl_view_at_with_base(log, parents, AuthorityBase::default())
+    }
+
+    /// [`Self::acl_view_at`] with the facts no op carries.
+    #[must_use]
+    pub fn acl_view_at_with_base(log: &[Op], parents: &[[u8; 32]], base: AuthorityBase) -> AclView {
+        let void = Self::void_ops(log, base);
+        Self::acl_view_from_ancestry(&Self::cut_ancestry_with_void(log, parents, &void))
     }
 
     /// Fold an already-walked ancestry into an [`AclView`].
@@ -1223,6 +1280,9 @@ impl ScopeState {
 
         let mut state = Self::default();
         for &op in ancestry {
+            if walked.void.contains(&op.id()) {
+                continue;
+            }
             state.apply_with_generation(op, generation.get(&op.id()).copied().unwrap_or(0));
         }
         state.acl_view()
@@ -2482,6 +2542,38 @@ mod tests {
             role_in(&view, CHANNEL, &relay()),
             Some(GroupMemberRole::Member)
         );
+    }
+
+    /// A root-guarded op folds as the op it carries and is counted for its
+    /// group, but only when the proof is the author's own: lifted into another
+    /// account's op it writes nothing, in any fold order.
+    #[test]
+    fn a_root_guarded_op_folds_only_as_its_authors_own() {
+        let group = ContextGroupId::from([0x5A; 32]);
+        let heir = AccountId::from([7u8; 32]);
+        let genesis =
+            AccountGenesis::new(calimero_primitives::identity::PublicKey::from([0x21; 32]));
+        let guarded = |account| OpPayload::RootGuarded {
+            carried: Box::new(OpPayload::AdminChanged { new_admin: heir }),
+            group,
+            account,
+            counter: 0,
+            genesis,
+            chain: vec![],
+        };
+        // `op` authors as account [1; 32].
+        let own = op(10, guarded(AccountId::from([1u8; 32])));
+        let lifted = op(11, guarded(AccountId::from([2u8; 32])));
+
+        let only_lifted = ScopeState::from_ops([&lifted]).acl_view();
+        assert_eq!(only_lifted.root_admin, None);
+        assert_eq!(only_lifted.owner_op_count(&group), 0);
+
+        for ops in [[&own, &lifted], [&lifted, &own]] {
+            let view = ScopeState::from_ops(ops).acl_view();
+            assert_eq!(view.root_admin, Some(heir));
+            assert_eq!(view.owner_op_count(&group), 1);
+        }
     }
 
     /// A relay's seat grant stands until a later removal of the relay, and a

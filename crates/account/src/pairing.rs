@@ -29,6 +29,11 @@
 //! [`PairingOffer::confirmation_code`] covers the remaining case, by giving the two
 //! humans a value to compare that an attacker cannot reproduce.
 //!
+//! **The statement is dated, so a captured one goes stale.** The issue time is
+//! inside the signed bytes, and the certifying side refuses a statement older
+//! than [`PAIRING_STATEMENT_MAX_AGE_SECS`]. Without it, an offer captured today
+//! could be completed whenever the account holder next runs `pair-complete`.
+//!
 //! **The code's length is its work factor.** The attacker sees the genuine payload,
 //! so it knows the target code and can grind its own keypairs offline until one
 //! matches. 64 bits puts that at roughly 2^64 hashes, whereas the six digits a
@@ -44,6 +49,57 @@ use crate::domain::{
 };
 use crate::error::AccountError;
 use crate::signed::sign_payload;
+
+/// How long after a device signs its statement the certifying side still accepts
+/// it. Long enough for two people to read a code to each other.
+pub const PAIRING_STATEMENT_MAX_AGE_SECS: u64 = 300;
+
+/// How far ahead of the verifier's clock a statement's issue time may sit, to
+/// absorb the two nodes' clocks disagreeing.
+pub const PAIRING_STATEMENT_MAX_SKEW_SECS: u64 = 60;
+
+/// A pairing device's signature over its [`PairingOffer`] and the time it signed.
+///
+/// One opaque value on the wire: the issue time and the signature travel
+/// together, so relaying it needs no field beyond the statement itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PairingStatement {
+    issued_at: u64,
+    signature: [u8; 64],
+}
+
+impl PairingStatement {
+    /// Length of [`Self::to_bytes`]: eight bytes of issue time, then the signature.
+    pub const LEN: usize = 72;
+
+    /// Unix seconds at which the pairing device signed this statement.
+    #[must_use]
+    pub const fn issued_at(&self) -> u64 {
+        self.issued_at
+    }
+
+    /// The wire form: the issue time big-endian, then the signature.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::LEN] {
+        let mut bytes = [0u8; Self::LEN];
+        bytes[..8].copy_from_slice(&self.issued_at.to_be_bytes());
+        bytes[8..].copy_from_slice(&self.signature);
+        bytes
+    }
+
+    /// Read the wire form back. Whether it verifies is [`PairingOffer::verify_statement`]'s call.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8; Self::LEN]) -> Self {
+        let mut issued_at = [0u8; 8];
+        issued_at.copy_from_slice(&bytes[..8]);
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&bytes[8..]);
+        Self {
+            issued_at: u64::from_be_bytes(issued_at),
+            signature,
+        }
+    }
+}
 
 /// The key material a pairing device minted, and the identity it minted it for.
 ///
@@ -91,6 +147,9 @@ impl PairingOffer {
     /// does not hold would defeat the point. Getting a statement at all therefore
     /// requires handing over the secret.
     ///
+    /// `issued_at` is the signer's clock in unix seconds; it is part of what is
+    /// signed, so the certifying side can refuse a statement that has gone stale.
+    ///
     /// # Errors
     /// [`AccountError::SigningFailed`] if the key cannot sign.
     pub fn signed(
@@ -98,21 +157,28 @@ impl PairingOffer {
         account: AccountId,
         device: DeviceId,
         kem_pk: KemPublicKey,
-    ) -> Result<(Self, [u8; 64]), AccountError> {
+        issued_at: u64,
+    ) -> Result<(Self, PairingStatement), AccountError> {
         let offer = Self::new(account, device, kem_pk, device_sk.public_key());
-        let statement = sign_payload(device_sk, &offer.payload())?;
-        Ok((offer, statement))
+        let signature = sign_payload(device_sk, &offer.payload(issued_at))?;
+        Ok((
+            offer,
+            PairingStatement {
+                issued_at,
+                signature,
+            },
+        ))
     }
 
     /// Canonical bytes the pairing device signs.
     ///
-    /// Covers the account it is joining, its own replica id, and **both** keys the
-    /// certificate will name. The account is in the preimage so a statement
-    /// produced for one account cannot be presented while pairing into another;
-    /// the keys are there because they are the entire content of what gets
-    /// certified.
+    /// Covers the account it is joining, its own replica id, **both** keys the
+    /// certificate will name, and the time it signed. The account is in the
+    /// preimage so a statement produced for one account cannot be presented while
+    /// pairing into another; the keys are there because they are the entire
+    /// content of what gets certified; the time is there so the statement expires.
     #[must_use]
-    pub fn payload(&self) -> [u8; 32] {
+    pub fn payload(&self, issued_at: u64) -> [u8; 32] {
         domain_hash(
             PAIRING_STATEMENT_SIGN_DOMAIN,
             &[
@@ -120,21 +186,38 @@ impl PairingOffer {
                 self.device.as_bytes(),
                 self.kem_pk.as_bytes(),
                 AsRef::<[u8; 32]>::as_ref(&self.sign_pk),
+                &issued_at.to_be_bytes(),
             ],
         )
     }
 
     /// Check that the party offering this key material is the party that generated
-    /// it — that `signature` is [`Self::sign_pk`]'s over exactly these four values.
+    /// it, and did so recently: that `statement` carries [`Self::sign_pk`]'s
+    /// signature over exactly these four values and its issue time, and that the
+    /// issue time is within [`PAIRING_STATEMENT_MAX_AGE_SECS`] before `now`.
     ///
-    /// See the module docs for what this closes and what it does not.
+    /// `now` is the verifier's clock in unix seconds. See the module docs for what
+    /// this closes and what it does not.
     ///
     /// # Errors
-    /// [`AccountError::PairingStatementInvalid`] if the signature does not verify.
-    pub fn verify_statement(&self, signature: &[u8; 64]) -> Result<(), AccountError> {
+    /// [`AccountError::PairingStatementInvalid`] if the signature does not verify,
+    /// [`AccountError::PairingStatementExpired`] if it does but the statement is
+    /// too old, or dated too far ahead of `now`.
+    pub fn verify_statement(
+        &self,
+        statement: &PairingStatement,
+        now: u64,
+    ) -> Result<(), AccountError> {
         self.sign_pk
-            .verify_raw_signature(&self.payload(), signature)
-            .map_err(|_| AccountError::PairingStatementInvalid)
+            .verify_raw_signature(&self.payload(statement.issued_at), &statement.signature)
+            .map_err(|_| AccountError::PairingStatementInvalid)?;
+
+        let too_old = now.saturating_sub(statement.issued_at) > PAIRING_STATEMENT_MAX_AGE_SECS;
+        let too_new = statement.issued_at.saturating_sub(now) > PAIRING_STATEMENT_MAX_SKEW_SECS;
+        if too_old || too_new {
+            return Err(AccountError::PairingStatementExpired);
+        }
+        Ok(())
     }
 
     /// A short value both ends derive independently, for the two humans to compare

@@ -99,6 +99,11 @@ pub enum DelegationRefusal {
     /// This warrant has already been spent.
     #[error("this governance warrant has already been spent")]
     AlreadySpent,
+    /// The op's cut does not reach the governance heads the author signed the
+    /// warrant against — or, for a founding, the warrant names heads at all,
+    /// when there is no namespace yet for them to be heads of.
+    #[error("the op's cut does not reach the governance floor its warrant was signed against")]
+    FloorNotCovered,
     /// A delegated `TargetApplicationSet` on a group that already targets an
     /// application. A relay carries a group's first choice only; changing it is
     /// an upgrade, which a node publishes as itself. See
@@ -111,6 +116,7 @@ pub enum DelegationRefusal {
 }
 
 impl AdmissionRefusal for DelegationRefusal {
+    const FLOOR_NOT_COVERED: Self = Self::FloorNotCovered;
     const AUTHOR_DEVICE_REVOKED: Self = Self::AuthorDeviceRevoked;
     const EXECUTOR_DEVICE_REVOKED: Self = Self::ExecutorDeviceRevoked;
     const AUTHOR_NOT_A_MEMBER: Self = Self::AuthorNotAMember;
@@ -219,6 +225,11 @@ fn check_genesis(
             return Err(DelegationRefusal::GroupAlreadyExists(namespace_group.to_string()).into());
         }
     }
+    // A floor is heads of THIS namespace's governance, and there is none yet:
+    // any head named is from elsewhere, and no cut here can reach it.
+    if !warrant.governance_floor.is_empty() {
+        return Err(DelegationRefusal::FloorNotCovered.into());
+    }
     check_nonce::<_, DelegationRefusal>(store, &*warrant)?;
     let principal = ActingPrincipal {
         key: warrant.author_device_key,
@@ -260,6 +271,7 @@ fn check_common(
             permissions,
             capability: None,
         },
+        permissions.admission_cut(),
     )?;
     let principal = ActingPrincipal {
         key: warrant.author_device_key,
@@ -337,6 +349,7 @@ fn root_op_label(op: &RootOp) -> &'static str {
         RootOp::KeyDelivery { .. } => "KeyDelivery",
         RootOp::NamespaceCreatedV2 { .. } => "NamespaceCreated",
         RootOp::OnBehalf { .. } => "OnBehalf",
+        RootOp::RootGuarded { .. } => "RootGuarded",
     }
 }
 
@@ -902,13 +915,14 @@ mod tests {
 
     // ── root ops: subgroups ───────────────────────────────────────────────
 
-    fn create_subgroup(_w: &World, group: [u8; 32], admin: AccountId) -> RootOp {
-        RootOp::GroupCreated {
-            group_id: group.into(),
-            parent_id: NS.into(),
-            restricted: true,
-            admin,
-        }
+    /// `admin` creates a Restricted subgroup under the root, salted `[tag; 32]`.
+    fn create_subgroup(_w: &World, tag: u8, admin: AccountId) -> RootOp {
+        crate::test_fixtures::group_created(admin, NS, true, tag)
+    }
+
+    /// The id [`create_subgroup`] names for the same `tag` and `admin`.
+    fn subgroup_id(tag: u8, admin: &AccountId) -> [u8; 32] {
+        crate::test_fixtures::derived_group_id(admin, NS, true, tag)
     }
 
     #[test]
@@ -917,8 +931,8 @@ mod tests {
         NamespaceRepository::new(&w.store)
             .store_identity(&w.ns, &w.relay_sk.public_key(), w.relay_sk.as_bytes())
             .expect("identity");
-        let channel = [0xB1; 32];
-        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.author)))
+        let channel = subgroup_id(0xB1, &w.author);
+        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xB1, w.author)))
             .expect("the author may create a subgroup");
         let gid = ContextGroupId::from(channel);
         let meta = MetaRepository::new(&w.store)
@@ -940,9 +954,9 @@ mod tests {
     #[test]
     fn a_subgroup_naming_another_admin_is_refused() {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
-        let channel = [0xB2; 32];
+        let channel = subgroup_id(0xB2, &w.relay);
         let _refused = w
-            .relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.relay)))
+            .relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xB2, w.relay)))
             .expect_err("the declared admin must be the author");
         assert!(MetaRepository::new(&w.store)
             .load(&ContextGroupId::from(channel))
@@ -953,9 +967,9 @@ mod tests {
     #[test]
     fn an_author_without_create_subgroup_is_refused() {
         let w = world(MemberCapabilities::empty());
-        let channel = [0xB3; 32];
+        let channel = subgroup_id(0xB3, &w.author);
         let _refused = w
-            .relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.author)))
+            .relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xB3, w.author)))
             .expect_err("the author may not create subgroups");
         assert!(MetaRepository::new(&w.store)
             .load(&ContextGroupId::from(channel))
@@ -969,9 +983,9 @@ mod tests {
     #[test]
     fn a_dm_is_created_and_populated_entirely_through_a_relay() {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
-        let dm = [0xD1; 32];
+        let dm = subgroup_id(0xD1, &w.author);
         let gid = ContextGroupId::from(dm);
-        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, dm, w.author)))
+        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xD1, w.author)))
             .expect("create the DM subgroup");
         // No "set capabilities" for the relay in between: creating the subgroup
         // through it seated it there.
@@ -1221,9 +1235,9 @@ mod tests {
     #[test]
     fn a_relay_that_creates_a_subgroup_is_seated_in_it_with_authorship() {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
-        let channel = [0xC1; 32];
+        let channel = subgroup_id(0xC1, &w.author);
         let gid = ContextGroupId::from(channel);
-        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.author)))
+        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xC1, w.author)))
             .expect("create");
         assert_eq!(
             MembershipRepository::new(&w.store)
@@ -1255,9 +1269,9 @@ mod tests {
     #[test]
     fn the_projection_seats_the_relay_that_created_a_subgroup() {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
-        let channel = [0xC3; 32];
+        let channel = subgroup_id(0xC3, &w.author);
         let gid = ContextGroupId::from(channel);
-        let root = w.root_on_behalf(create_subgroup(&w, channel, w.author));
+        let root = w.root_on_behalf(create_subgroup(&w, 0xC3, w.author));
         w.relay_publishes_root(root.clone()).expect("create");
 
         let envelope = SignedNamespaceOp::sign(
@@ -1311,9 +1325,9 @@ mod tests {
         MembershipRepository::new(&w.store)
             .set_role(&w.ns, &w.relay, GroupMemberRole::RelayTee)
             .expect("relay TEE");
-        let channel = [0xC2; 32];
+        let channel = subgroup_id(0xC2, &w.author);
         let gid = ContextGroupId::from(channel);
-        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, channel, w.author)))
+        w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xC2, w.author)))
             .expect("create");
         assert_eq!(
             MembershipRepository::new(&w.store)
@@ -1544,11 +1558,13 @@ mod tests {
         let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
         let theirs = open_channel(&w, [0xF1; 32]);
         let err = w
-            .relay_publishes_root(w.root_on_behalf(create_subgroup(
-                &w,
-                theirs.to_bytes(),
-                w.author,
-            )))
+            .relay_publishes_root(w.root_on_behalf(RootOp::GroupCreated {
+                group_id: theirs,
+                parent_id: NS.into(),
+                restricted: true,
+                admin: w.author,
+                salt: [0; 32],
+            }))
             .expect_err("collision");
         assert!(
             matches!(
@@ -2029,15 +2045,16 @@ mod founding_tests {
             .expect("the founding relay attests");
         assert_eq!(f.role(&f.relay), Some(GroupMemberRole::RelayTee));
 
-        let channel = ContextGroupId::from([0xC7; 32]);
+        // The id the author's create derives, as apply requires.
+        let channel = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+            &f.author,
+            f.ns.to_bytes(),
+            true,
+            0xC7,
+        ));
         f.relay_publishes_sealed_root(
             f.wrapped(
-                RootOp::GroupCreated {
-                    group_id: channel.to_bytes().into(),
-                    parent_id: f.ns.to_bytes().into(),
-                    restricted: true,
-                    admin: f.author,
-                },
+                crate::test_fixtures::group_created(f.author, f.ns.to_bytes(), true, 0xC7),
                 2,
             ),
             2,

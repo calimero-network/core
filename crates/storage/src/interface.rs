@@ -50,7 +50,7 @@ use crate::child_trie::ChildTrie;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
-use crate::index::Index;
+use crate::index::{Index, MAX_PARENT_CHAIN};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -162,7 +162,46 @@ pub struct ApplyContext {
     /// is accepted. Production cannot produce that pair (one delta has one author,
     /// and the account is resolved *from* that author's key), which is exactly why
     /// the resolution must stay in one place instead of being assembled from two.
+    ///
+    /// **For an on-behalf action** (`signature_data.on_behalf: Some(account)`),
+    /// this is the resolution of its AUTHOR: `Some(account)` when the node found
+    /// the signing key to belong to a party entitled to author for `account`
+    /// (a `RelayTee` in the namespace, with `account` a member who may write:
+    /// `calimero_governance_store::on_behalf_standing`), and `None` otherwise. Storage refuses an on-behalf
+    /// action whose resolution is anything but exactly its `on_behalf` account,
+    /// so a node that resolved the key to the relay's own account refuses rather
+    /// than letting the relay write as itself.
     pub signer_account: Option<AccountId>,
+}
+
+/// Why a signed `User` write is or is not accepted — the three refusals the
+/// apply path's diagnostics tell apart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AuthorVerdict {
+    /// The signature verifies and the author is the entry's owner.
+    Authorized,
+    /// The signature does not verify under the key it names, names no key, or
+    /// is the unsigned placeholder.
+    BadSignature,
+    /// The signature verifies but the node could not resolve its author (the
+    /// binding has not folded here, or an on-behalf write's signer is not
+    /// entitled to author for the account it names).
+    AuthorUnresolved,
+    /// The signature verifies and the author resolved, but it is not the
+    /// owner — or, for an on-behalf write, not the account the write names.
+    WrongAuthor,
+}
+
+impl AuthorVerdict {
+    /// The `reason` the apply path logs for a refusal; `None` when authorized.
+    pub(crate) const fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Authorized => None,
+            Self::BadSignature => Some("bad-signature"),
+            Self::AuthorUnresolved => Some("author-unresolved"),
+            Self::WrongAuthor => Some("wrong-author"),
+        }
+    }
 }
 
 impl ApplyContext {
@@ -527,7 +566,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// proven structural add-wins collection merge: `insert` routes through
     /// `Interface::add_child_to`, which seeds the entry's REAL `own_hash` into
     /// the parent's `ChildInfo` (the hand-rolled path seeded `[0u8; 32]` and
-    /// relied on a later `update_hash_for` to backfill it, which did not
+    /// relied on a later `write_value_for` to backfill it, which did not
     /// propagate into the parent's child list — so HashComparison saw equal
     /// subtree hashes and never reconciled the per-`delta_id` children).
     ///
@@ -587,7 +626,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// serialized collection (deterministic across nodes — `Element` serializes
     /// only its id, metadata is `#[borsh(skip)]`); only its children carry
     /// rotation entries. `add_child_to` before the value write avoids the
-    /// `CannotCreateOrphan` reject; `save_raw`'s `update_hash_for` then sets the
+    /// `CannotCreateOrphan` reject; `save_raw`'s `write_value_for` then sets the
     /// real hash and propagates it into the anchor's `full_hash`.
     fn ensure_rotation_log_parent(anchor: Id) -> Result<Id, StorageError> {
         use crate::collections::crdt_meta::CrdtType;
@@ -602,7 +641,7 @@ impl<S: StorageAdaptor> Interface<S> {
             // the same bytes and the same `own_hash`.
             let empty = to_vec(&Self::rotation_log_map(anchor))
                 .map_err(StorageError::SerializationError)?;
-            let _ = Self::save_raw(map_id, empty, meta)?;
+            let _ = Self::save_raw_stamped(map_id, empty, meta, true, true)?;
         }
         Ok(map_id)
     }
@@ -707,7 +746,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // refused (and retried once the binding folds), because defaulting to the
         // local account would let any delta authorize itself.
         let signer = sig_data.signer?;
-        let account = signer_account?;
+        let account = Self::author_account(sig_data, signer_account.as_ref())?;
 
         // Cheap check before the expensive one — this ordering is what stage 1
         // bought: a signature that verifies under nobody used to cost one
@@ -784,32 +823,67 @@ impl<S: StorageAdaptor> Interface<S> {
     /// membership AND, for a `User` leaf, that the author's account is the
     /// entry's `owner`. Signature authenticity is still enforced here, on every
     /// path, because that needs no bindings at all.
-    fn user_action_authorized(
+    ///
+    /// **An on-behalf write is owned by the account it names**, and only when the
+    /// node resolved it to exactly that account — see
+    /// [`author_account`](Self::author_account).
+    ///
+    /// Returns which check failed, so the apply path can name it.
+    pub(crate) fn user_action_verdict(
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
         owner: &AccountId,
         signer_account: Option<&AccountId>,
-    ) -> bool {
+    ) -> AuthorVerdict {
         if !Self::snapshot_signature_verifies(sig_data, payload) {
-            return false;
+            return AuthorVerdict::BadSignature;
         }
-        match signer_account {
-            Some(account) => account == owner,
-            // Refused, matching the `Shared` and `SharedMember` arms, which bail
-            // on an unnameable writer via `resolve_signer`.
-            //
-            // This arm used to accept, from when nothing could name a signer on
-            // any path that reaches here. Both now can: a local apply states the
-            // executing account (`Root::sync`), and a repair resolves the leaf's
-            // signer (`calimero-node`'s `repair_signer_account`). So `None` no
-            // longer means "nobody asked" — it means the binding has not folded
-            // here yet, which is a retryable timing gap, not authority.
-            //
-            // Accepting it was the divergence the refusal exists to prevent: a
-            // peer that HAS folded the binding refuses the same leaf, and the two
-            // keep different state. Refusing converges them, because the leaf is
-            // re-driven once the binding lands.
-            None => false,
+        // Refused on `None`, matching the `Shared` and `SharedMember` arms, which
+        // bail on an unnameable writer via `resolve_signer`.
+        //
+        // This arm used to accept, from when nothing could name a signer on
+        // any path that reaches here. Both now can: a local apply states the
+        // executing account (`Root::sync`), and a repair resolves the leaf's
+        // signer (`calimero-node`'s `repair_signer_account`). So `None` no
+        // longer means "nobody asked" — it means the binding has not folded
+        // here yet, which is a retryable timing gap, not authority.
+        //
+        // Accepting it was the divergence the refusal exists to prevent: a
+        // peer that HAS folded the binding refuses the same leaf, and the two
+        // keep different state. Refusing converges them, because the leaf is
+        // re-driven once the binding lands.
+        let Some(resolved) = signer_account else {
+            return AuthorVerdict::AuthorUnresolved;
+        };
+        match Self::author_account(sig_data, Some(resolved)) {
+            Some(author) if author == *owner => AuthorVerdict::Authorized,
+            _ => AuthorVerdict::WrongAuthor,
+        }
+    }
+
+    /// The account a signed write is attributed to: the node's resolution of
+    /// its author, provided that resolution is consistent with what the write
+    /// itself claims.
+    ///
+    /// A direct write (`on_behalf: None`) is attributed to `signer_account`, the
+    /// account the node resolved the signing key to — unchanged.
+    ///
+    /// An on-behalf write is attributed to its `on_behalf` account, and only if
+    /// the node resolved the write to exactly that account. The node resolves an
+    /// on-behalf write to its account only when the signing key belongs to a
+    /// party entitled to author for it (a relay, by role); anything else —
+    /// the relay's own account, a third account, nothing — is refused here. So
+    /// a node that resolved the key naively, to the relay's account, cannot
+    /// thereby let the relay write as itself under a label naming someone else,
+    /// nor let a write for one account be checked against another's rights.
+    fn author_account(
+        sig_data: &crate::entities::SignatureData,
+        signer_account: Option<&AccountId>,
+    ) -> Option<AccountId> {
+        let resolved = *signer_account?;
+        match sig_data.on_behalf {
+            None => Some(resolved),
+            Some(account) => (account == resolved).then_some(account),
         }
     }
 
@@ -820,7 +894,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// that names one, immutable or not: that is what moderation is for. Both
     /// need the signature to verify and the signer's account resolved at the
     /// delete's causal cut, exactly as
-    /// [`user_action_authorized`](Self::user_action_authorized) does.
+    /// [`user_action_verdict`](Self::user_action_verdict) does.
     fn user_delete_authorized(
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
@@ -831,9 +905,10 @@ impl<S: StorageAdaptor> Interface<S> {
         if !Self::snapshot_signature_verifies(sig_data, payload) {
             return false;
         }
-        let Some(signer) = ctx.signer_account.as_ref() else {
+        let Some(signer) = Self::author_account(sig_data, ctx.signer_account.as_ref()) else {
             return false;
         };
+        let signer = &signer;
         if signer == owner && !rules.immutable {
             return true;
         }
@@ -1367,7 +1442,9 @@ impl<S: StorageAdaptor> Interface<S> {
         // pinned to 0 under merge mode. Without this they tie and the random id
         // decides, so `get(0)` could return the third push.
         let trie = <ChildTrie<S>>::new(parent_id);
-        child.element_mut().metadata.order = match trie.get(child.id()) {
+        let linked = trie.get(child.id());
+        let newly_linked = linked.is_none();
+        child.element_mut().metadata.order = match linked {
             Some(existing) => existing.metadata.order,
             None => trie.next_order(),
         };
@@ -1377,10 +1454,11 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let own_hash = Sha256::digest(&data).into();
 
-        // ENTRY-BEFORE-PARENT: pre-write Key::Entry so the parent's
-        // children list never advertises an id that has no backing
-        // entry. The matching `add_child_to` in `apply_action`'s
-        // delta-apply path already pre-writes the entry; this is the
+        // ENTRY-BEFORE-PARENT: write Key::Entry together with the child's
+        // index, before the link, so the parent's children list never
+        // advertises an id that has no backing entry. The matching
+        // `add_child_with_value_to` in `apply_action`'s delta-apply path
+        // already writes the entry first; this is the
         // local-write path (`CollectionMut::insert`, i.e. every
         // WASM-side `chars.insert`) and needs the same order, otherwise
         // a reader iterating the parent's children between the index
@@ -1407,14 +1485,20 @@ impl<S: StorageAdaptor> Interface<S> {
         // `Key::Entry` *after* `save_raw` returns. A direct
         // signature-check on a `find_by_id` result would observe this
         // window's placeholder; don't add one.
-        let _ignored = S::storage_write(Key::Entry(child.id()), &data);
-
-        <Index<S>>::add_child_to(
+        <Index<S>>::add_child_with_value_to(
             parent_id,
             ChildInfo::new(child.id(), own_hash, child.element().metadata.clone()),
+            Some(&data),
         )?;
 
-        let Some(hash) = Self::save_raw(child.id(), data, child.element().metadata.clone())? else {
+        let Some(hash) = Self::save_raw_stamped(
+            child.id(),
+            data,
+            child.element().metadata.clone(),
+            true,
+            newly_linked,
+        )?
+        else {
             return Ok(false);
         };
 
@@ -1503,11 +1587,15 @@ impl<S: StorageAdaptor> Interface<S> {
             )?;
         }
 
+        let newly_linked = <ChildTrie<S>>::new(Id::root()).get(id).is_none();
         let own_hash: [u8; 32] = Sha256::digest(&payload).into();
-        let _ignored = S::storage_write(Key::Entry(id), &payload);
-        <Index<S>>::add_child_to(Id::root(), ChildInfo::new(id, own_hash, metadata.clone()))?;
+        <Index<S>>::add_child_with_value_to(
+            Id::root(),
+            ChildInfo::new(id, own_hash, metadata.clone()),
+            Some(&payload),
+        )?;
 
-        Self::save_raw(id, payload, metadata)
+        Self::save_raw_stamped(id, payload, metadata, true, newly_linked)
     }
 
     /// Reads the raw bytes of the application root document from its leaf entry
@@ -1699,6 +1787,123 @@ impl<S: StorageAdaptor> Interface<S> {
         )
     }
 
+    /// Put back the context root a delta leaves off the end of an ancestor
+    /// chain (see `Index::get_delta_ancestors_of`), so the rest of
+    /// [`Self::apply_action`] sees the chain the writer's tree holds.
+    ///
+    /// A chain that already ends at the root, as one built in memory from
+    /// `Index::get_ancestors_of` does, is left alone, and so is an empty one,
+    /// which names no parent ([`Self::with_stored_parent`]).
+    fn with_implied_root(mut action: Action) -> Action {
+        if let Action::Add { ancestors, .. } | Action::Update { ancestors, .. } = &mut action {
+            if ancestors.last().is_some_and(|a| !a.id().is_root()) {
+                ancestors.push(ChildInfo::new(Id::root(), [0; 32], Metadata::default()));
+            }
+        }
+        action
+    }
+
+    /// Refuses an upsert whose links would put an entity under itself or more than
+    /// `MAX_PARENT_CHAIN` deep, before apply writes anything.
+    fn refuse_ancestor_loop(id: Id, ancestors: &[ChildInfo]) -> Result<(), StorageError> {
+        let refuse = || {
+            Err(StorageError::ActionNotAllowed(format!(
+                "the links {id} makes would loop or exceed {MAX_PARENT_CHAIN} ancestors"
+            )))
+        };
+        // An honest chain names each id once, and at most MAX_PARENT_CHAIN of them. The links
+        // apply makes: `id` under the first ancestor, each missing one under the next.
+        if ancestors.len() > MAX_PARENT_CHAIN {
+            return refuse();
+        }
+        let mut links = BTreeMap::new();
+        let missing = ancestors
+            .windows(2)
+            .filter(|pair| !<Index<S>>::has_index(pair[0].id()))
+            .map(|pair| (pair[0].id(), pair[1].id()));
+        for (child, parent) in ancestors
+            .first()
+            .map(|first| (id, first.id()))
+            .into_iter()
+            .chain(missing)
+        {
+            if links.insert(child, parent).is_some() {
+                return refuse();
+            }
+        }
+        let parent_of = |entity: Id| match links.get(&entity) {
+            Some(&parent) => Ok(Some(parent)),
+            None => <Index<S>>::get_parent_id(entity),
+        };
+        // Ancestor count of each entity walked so far, so none is walked twice.
+        let mut depths: BTreeMap<Id, usize> = BTreeMap::new();
+        for &start in links.keys() {
+            let mut path = Vec::new();
+            let mut at = start;
+            let above = loop {
+                if let Some(&depth) = depths.get(&at) {
+                    break Some(depth);
+                }
+                if path.len() > MAX_PARENT_CHAIN {
+                    return refuse();
+                }
+                path.push(at);
+                match parent_of(at)? {
+                    Some(parent) => at = parent,
+                    None => break None,
+                }
+            };
+            let top = above.map_or(0, |depth| depth + 1);
+            for (depth, entity) in (top..).zip(path.into_iter().rev()) {
+                if depth > MAX_PARENT_CHAIN {
+                    return refuse();
+                }
+                let _previous = depths.insert(entity, depth);
+            }
+        }
+        Ok(())
+    }
+
+    /// The chain an upsert of `id` that names no ancestors is placed under: the
+    /// parent this node stores for it.
+    ///
+    /// An `Update` to an entity its writer held live before the write names no
+    /// ancestors (`save_raw_stamped`), and neither does an entity-level sync of
+    /// one this node holds. An honest writer never relinks a stored entity, so the parent
+    /// this node stores is the one the writer has, and one stored with no
+    /// parent stays as it is. A non-root entity this node
+    /// does not hold, or holds under a parent it has since collected, cannot be
+    /// placed from such an action. It is refused as not allowed, so a delta
+    /// replay drops it and carries on (`Root::sync`), and the divergence that
+    /// leaves is one entity-level sync repairs. The writer got the entity in a
+    /// way this node did not: by entity-level sync rather than through the
+    /// delta that added it, or this node deleted it concurrently and has since
+    /// collected the tombstone. Placing it anyway would store an orphan that no
+    /// collection lists and fail the write, which would refuse the whole delta
+    /// on every retry.
+    fn with_stored_parent(
+        id: Id,
+        ancestors: Vec<ChildInfo>,
+    ) -> Result<Vec<ChildInfo>, StorageError> {
+        if !ancestors.is_empty() || id.is_root() {
+            return Ok(ancestors);
+        }
+        let unplaceable = || {
+            StorageError::ActionNotAllowed(format!(
+                "{id} names no parent, and this node holds no parent to place it under"
+            ))
+        };
+        let stored = <Index<S>>::get_index(id)?.ok_or_else(unplaceable)?;
+        let Some(parent) = stored.parent_id() else {
+            // Stored as a root of its own tree: there is nothing to place.
+            return Ok(ancestors);
+        };
+        if !<Index<S>>::has_index(parent) {
+            return Err(unplaceable());
+        }
+        Ok(vec![ChildInfo::new(parent, [0; 32], Metadata::default())])
+    }
+
     /// Applies a synchronization action from a remote node.
     ///
     /// Handles Add/Update/DeleteRef actions, creating missing ancestors if needed.
@@ -1722,6 +1927,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // Verify that the action timestamp is not too far in the future
         // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
+        let action = Self::with_implied_root(action);
 
         match &action {
             Action::Add { id, metadata, .. }
@@ -1736,6 +1942,9 @@ impl<S: StorageAdaptor> Interface<S> {
                     refuse_foreign_entity_at_cell_id(*id, metadata, !<Index<S>>::has_index(*id))?;
                 }
             }
+        }
+        if let Action::Add { id, ancestors, .. } | Action::Update { id, ancestors, .. } = &action {
+            Self::refuse_ancestor_loop(*id, ancestors)?;
         }
         // An owned entry answers to the parent it is linked under, which its
         // id is bound to in a cell and whose kind of id it must take, and a
@@ -1917,19 +2126,15 @@ impl<S: StorageAdaptor> Interface<S> {
                         // unauthenticated stale action should still
                         // reject as `InvalidSignature`, not silently
                         // disappear.
-                        let verification_result = Self::user_action_authorized(
+                        let verdict = Self::user_action_verdict(
                             sig_data,
                             &payload,
                             owner,
                             ctx.signer_account.as_ref(),
                         );
 
-                        if !verification_result {
-                            return Err(Self::reject_action_signature(
-                                "stale-action-unauthenticated",
-                                id,
-                                metadata,
-                            ));
+                        if let Some(reason) = verdict.reason() {
+                            return Err(Self::reject_action_signature(reason, id, metadata));
                         }
 
                         // An owned entry in a cell answers to the cell too. The
@@ -2758,6 +2963,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // sync supplies `ancestors: vec![]`, which makes this a
                 // no-op there (correct — sync runs precisely when tree
                 // shapes have drifted).
+                let ancestors = Self::with_stored_parent(id, ancestors)?;
                 Self::verify_ancestor_integrity(&ancestors);
                 let mut parent = None;
                 for this in ancestors.iter().rev() {
@@ -2822,12 +3028,11 @@ impl<S: StorageAdaptor> Interface<S> {
                         debug!(%id, "Creating root index entry for entity");
                         <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata.clone()))?;
                     } else if let Some(parent) = parent {
-                        // Pre-write the entry bytes so the parent's
-                        // children list never advertises an id without
-                        // a backing `Key::Entry`. See the
-                        // ENTRY-BEFORE-PARENT comment above.
-                        let _ignored = S::storage_write(Key::Entry(id), &data);
-                        // Create minimal index entry with placeholder hash
+                        // Create minimal index entry with placeholder hash,
+                        // written with the entry bytes so the parent's
+                        // children list never advertises an id without a
+                        // backing `Key::Entry`. See the ENTRY-BEFORE-PARENT
+                        // comment above.
                         let placeholder_hash = Sha256::digest(&data).into();
                         debug!(
                             %id,
@@ -2835,29 +3040,11 @@ impl<S: StorageAdaptor> Interface<S> {
                             placeholder_hash = ?placeholder_hash,
                             "Creating placeholder child entry pending save"
                         );
-                        <Index<S>>::add_child_to(
+                        <Index<S>>::add_child_with_value_to(
                             parent.id(),
                             ChildInfo::new(id, placeholder_hash, metadata.clone()),
+                            Some(&data),
                         )?;
-                    } else {
-                        // ORPHAN_ADD diagnostic: brand-new non-root entity
-                        // with empty `ancestors`. Sync senders now carry
-                        // the full ancestor chain on the wire, so this
-                        // path is only hit by legacy peers that ship just
-                        // an immediate parent id. `save_internal` still
-                        // writes `Key::Entry(id)` but the parent's
-                        // `children` list never learns about it — the read
-                        // path skips the entry because it isn't
-                        // advertised. Warn loudly so the next reproduction
-                        // names the entity and the sending peer is
-                        // identifiable as legacy.
-                        tracing::warn!(
-                            target: "calimero_storage::orphan_add",
-                            %id,
-                            created_at = metadata.created_at,
-                            updated_at = metadata.updated_at(),
-                            "ORPHAN_ADD: brand-new non-root entity with empty ancestors — legacy peer or pre-ancestor-chain sync path"
-                        );
                     }
                 }
 
@@ -2945,7 +3132,7 @@ impl<S: StorageAdaptor> Interface<S> {
 
                 // Receiver-side signature/data COUPLING (mirror of the
                 // originator's `persist_signed_signatures`). `save_internal`
-                // (→ `update_hash_for`: hashes + `updated_at`) and `add_child_to`
+                // (→ `write_value_for`: hashes + `updated_at`) and `add_child_to`
                 // (refreshes the PARENT's child list + this entity's hashes, but
                 // for an already-present entity keeps its stored `metadata`) never
                 // rewrite the entity's OWN stored `signature_data`. So a receiver
@@ -2988,7 +3175,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // `schema_version` to the stored index entry. A replicated
                 // convert lands here as an ordinary signed `Action::Update`
                 // whose metadata carries the new schema tag; but for an existing
-                // entry neither `save_internal` (→ `update_hash_for`, hashes +
+                // entry neither `save_internal` (→ `write_value_for`, hashes +
                 // `updated_at` only) nor `add_child_to` (sets stored metadata
                 // only on first creation) rewrites it. Stamp it explicitly so a
                 // receiving replica observes the converted tag — exactly as the
@@ -3008,8 +3195,13 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
 
                 // ALWAYS update parent with correct hash after save (handles merging)
-                // save_internal calls update_hash_for which updates child_index.own_hash
+                // save_internal calls write_value_for which updates child_index.own_hash
                 if let Some(parent) = parent {
+                    // Read the hash and relink under one guard: a concurrent
+                    // `save_internal` of this entity landing between the two
+                    // would leave its bytes beside this read's `own_hash`
+                    // (core#2571). The guard is reentrant.
+                    let _mutation_guard = crate::index::index_mutation_guard();
                     let (_, own_hash) =
                         <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
 
@@ -3282,18 +3474,23 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
-        // Single `EntityIndex` read serves the tombstone check AND supplies the
-        // merkle_hash and metadata below. Loading it once here avoids the
-        // earlier `is_deleted()` + `get_index()` pair, which read and
-        // deserialized the index twice for every child of every collection scan.
-        let index = <Index<S>>::get_index(id)?;
+        // One row read serves the tombstone check, the merkle_hash and metadata
+        // below AND the data: reading the index and the data apart read the
+        // same row twice for every child of every collection scan.
+        let row = S::storage_read_entity(id);
+        let index = row
+            .index
+            .as_deref()
+            .map(<crate::index::EntityIndex as borsh::BorshDeserialize>::try_from_slice)
+            .transpose()
+            .map_err(StorageError::DeserializationError)?;
 
         // Check if entity is deleted (tombstone)
         if index.as_ref().and_then(|index| index.deleted_at).is_some() {
             return Ok(None); // Entity is deleted
         }
 
-        let value = S::storage_read(Key::Entry(id));
+        let value = row.data;
 
         let Some(slice) = value else {
             return Ok(None);
@@ -3304,8 +3501,15 @@ impl<S: StorageAdaptor> Interface<S> {
         let domain = index.as_ref().map_or(crate::domain::Domain::Open, |index| {
             crate::domain::Domain::inherited_from(&index.metadata.storage_type)
         });
-        let mut item = crate::domain::with_ambient(domain, || from_slice::<D>(&slice))
-            .map_err(StorageError::DeserializationError)?;
+        // A map entry's register reads its stamp from the row (see
+        // `lww_register::entry_stamp`).
+        let updated_at = index.as_ref().map(|index| *index.metadata.updated_at);
+        let mut item = crate::domain::with_ambient(domain, || {
+            crate::collections::lww_register::entry_stamp::with_stored(updated_at, || {
+                from_slice::<D>(&slice)
+            })
+        })
+        .map_err(StorageError::DeserializationError)?;
 
         let index = index.ok_or(StorageError::IndexNotFound(id))?;
         item.element_mut().merkle_hash = index.full_hash();
@@ -3470,6 +3674,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // content hash, so it is not what the signature
                         // verifies against.
                         signer: Some(crate::env::device_id().into()),
+                        on_behalf: None,
                     }),
                 };
             }
@@ -3496,6 +3701,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce: deleted_at,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
         }
@@ -3529,6 +3735,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce: deleted_at,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
         }
@@ -3652,21 +3859,17 @@ impl<S: StorageAdaptor> Interface<S> {
         metadata: Metadata,
         origin: WriteOrigin,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
-        // Serialize the WHOLE read-merge-write-rehash sequence, not just the
-        // index update. The entry-value write (`storage_write(Key::Entry(id))`)
-        // and the `own_hash` update (`Index::update_hash_for`) are two separate
-        // store writes; `own_hash = Sha256(final_data)` is computed from THIS
-        // call's merged bytes. Without a guard spanning both, a concurrent
-        // writer for the same id (the execute path vs. the dedicated sync
-        // apply, which run on different threads sharing one store) can land its
-        // value write and its own_hash update in opposite orders, leaving the
-        // stored bytes and the recorded `own_hash` from DIFFERENT writers. A
-        // peer recomputing the leaf hash from the bytes then never matches this
-        // node's advertised `own_hash`, so the parent collection's `full_hash`
-        // can't converge and HashComparison re-merges it forever (the
-        // stable-but-different root-hash split-brain). The guard is reentrant,
-        // so the nested `update_hash_for` / `add_child_to` re-acquire it on this
-        // thread without deadlock; on wasm it compiles out (single-threaded).
+        // Serialize the WHOLE read-merge-write sequence, not just the write.
+        // The value and its `own_hash` land in one row write
+        // (`Index::write_value_for`), but what is written is THIS call's merge
+        // of what it read. Without a guard spanning the read and the write, a
+        // concurrent writer for the same id (the execute path vs. the dedicated
+        // sync apply, which run on different threads sharing one store) can
+        // merge against the same stale value and overwrite this call's result,
+        // or have its own write overwritten, so one writer's update is lost
+        // (core#2571). The guard is reentrant, so the nested `write_value_for`
+        // / `add_child_to` re-acquire it on this thread without deadlock; on
+        // wasm it compiles out (single-threaded).
         //
         // TODO(perf): this widens the global mutation guard to span the CRDT
         // merge (not just the microsecond index update it was scoped to), so all
@@ -3682,7 +3885,24 @@ impl<S: StorageAdaptor> Interface<S> {
         // root-merge trace logs below, so it's computed lazily inside those
         // branches rather than on every (hot, non-root) write.
 
-        let last_metadata = <Index<S>>::get_metadata(id)?;
+        let last_index = <Index<S>>::get_index(id)?;
+        // A tombstone wins every write not strictly newer than its delete, by
+        // whichever path the write comes: the same tie `apply_delete_ref_action`
+        // settles for a delete that arrives after the write (delete wins on
+        // equal HLCs). Without this, a write at exactly `deleted_at` took the
+        // concurrent branch below, found no data to merge with, and its parent
+        // link (`add_child_to`) then cleared the tombstone; a write to an entry
+        // that merges whatever the order did the same from any older stamp. A
+        // replica that saw the delete last kept it deleted, one that saw it
+        // first brought it back, and the two never converged.
+        if last_index
+            .as_ref()
+            .and_then(|index| index.deleted_at)
+            .is_some_and(|deleted_at| *metadata.updated_at <= deleted_at)
+        {
+            return Ok(None);
+        }
+        let last_metadata = last_index.map(|index| index.metadata);
         let final_data = if let Some(last_metadata) = &last_metadata {
             if merges_whatever_the_order(id, metadata.crdt_type.as_ref(), origin) {
                 // `Custom` joins this arm for the same reason, and it is
@@ -3863,8 +4083,6 @@ impl<S: StorageAdaptor> Interface<S> {
             data.to_vec()
         };
 
-        let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
-
         // `own_hash` is `Sha256(data)` for every storage type, including
         // `Shared` anchors. The Phase-2 ACL fold (mixing the resolved writer set
         // into a `Shared` anchor's `own_hash`) was removed once the rotation log
@@ -3876,56 +4094,14 @@ impl<S: StorageAdaptor> Interface<S> {
         // (a node could fold a stale/transient resolved set and never re-fold
         // after the collection converged via HC), so dropping it makes `own_hash`
         // identical on every write path (WASM-execute and merge alike).
-
-        // Write the entry bytes BEFORE updating the Merkle index. The
-        // index update propagates the new own_hash up the parent chain,
-        // making the new state observable via the root-hash poll path
-        // (`compute_root_hash`). Readers that iterate a collection's
-        // children silently drop entries whose `Key::Entry` lookup
-        // returns `None` (`UnorderedMap::entries` → `flatten().fuse()`
-        // swallows the `NotFound` Err), so an admin-server reader hit
-        // mid-write would otherwise see a converged root hash with
-        // missing children — the "Hello Wor" vs "Hello World" rga
-        // flake reproduced post-#2465. Writing the entry first means
-        // readers see either (old hash + old entries) or
-        // (new hash + new entries), never the inconsistent middle.
         //
-        // `storage_write` returns `bool` meaning "evicted a previous
-        // value" (true) vs "inserted a new key" (false) — not
-        // success/failure. Actual write failures surface as `HostError`
-        // traps from the runtime (`KeyLengthOverflow`,
-        // `ValueLengthOverflow`, `InvalidMemoryAccess`), not as
-        // `Ok(false)`. Discard the bool — `let _ignored = ...` matches
-        // the style used at the `storage_remove` site (line 1448).
-        let _ignored = S::storage_write(Key::Entry(id), &final_data);
-
-        // If `update_hash_for` errors below after the entry write above
-        // succeeded, the entry bytes remain in storage with no index
-        // entry pointing at them — an "orphan." This is unavoidable
-        // without a transactional storage layer, and it's the lesser
-        // evil compared to the inverse (index advertising bytes that
-        // aren't there) because:
-        //   * `find_by_id` consults the index first (line 1689, 1702)
-        //     and bails when the index entry is missing or deleted —
-        //     so the read path used by collections (`Collection::get`,
-        //     `Collection::entries`) silently skips the orphan.
-        //   * `find_by_id_raw` does NOT consult the index — it returns
-        //     raw bytes whenever `Key::Entry(id)` is present. In
-        //     principle this exposes the orphan, but every production
-        //     caller (the sync-layer traversals in
-        //     `hash_comparison{,_protocol}.rs`, `level_sync.rs`)
-        //     reaches `find_by_id_raw` only after iterating a parent's
-        //     index-derived child list — and the orphan's id is, by
-        //     definition, not in any parent's index.
-        //   * The next successful `apply_action` for the same id
-        //     overwrites the orphan bytes, so the storage cost is
-        //     transient.
-        // The pre-fix ordering (index-then-entry) had the symmetric
-        // problem with much worse user-visible behavior — the rga
-        // "Hello Wor" flake described above — because the read path
-        // *does* propagate index-advertised entries through every
-        // production caller, so a "hash exists, bytes don't"
-        // inconsistency surfaces immediately as a wrong-content read.
+        // The entry bytes and the index that records their `own_hash` are one
+        // row, written once by `write_value_for` — no read-back of the row being
+        // replaced, and no state between the two in which a reader could see the
+        // new hash without the new bytes (the "Hello Wor" rga flake, post-#2465)
+        // or the bytes without an index pointing at them. The index update then
+        // propagates the new hash up the parent chain.
+        //
         // (Re)assert the root's merge-dispatch tag on every local write. Unlike
         // creation (`add_root`), a plain hash update never persisted `crdt_type`,
         // so a root first stored opaque could never be upgraded to `JsRoot` by a
@@ -3946,30 +4122,22 @@ impl<S: StorageAdaptor> Interface<S> {
             Some(last) if last.updated_at > metadata.updated_at => last.updated_at,
             _ => metadata.updated_at,
         };
-        let full_hash =
-            <Index<S>>::update_hash_for(id, own_hash, Some(updated_at), root_crdt_type)?;
-
-        // A value write that causally follows an existing tombstone must lift it,
-        // or `find_by_id` would keep hiding the bytes we just wrote (the entity's
-        // `updated_at` already outran the tombstone in the LWW guard above, so
-        // the write won — but the stale `deleted_at` would silently suppress it,
-        // diverging replicas on delete-then-update vs update-only delivery). This
-        // is a no-op unless the entity is tombstoned; `save_internal` is never on
-        // the delete path (deletes go through `apply_delete_ref_action`), and the
-        // `> deleted_at` guard inside `clear_deleted` keeps ties and older writes
-        // from resurrecting.
-        //
-        // Ordering: `update_hash_for` above already persisted the new
-        // `updated_at`, and both calls run inside the same reentrant
-        // `index_mutation_guard`, so no concurrent writer interleaves between
-        // them (`clear_deleted` also re-advances the nonce defensively).
-        <Index<S>>::clear_deleted(id, *metadata.updated_at)?;
+        // The write also lifts a tombstone this write causally follows (see
+        // `write_value_for`); `save_internal` is never on the delete path
+        // (deletes go through `apply_delete_ref_action`).
+        let full_hash = <Index<S>>::write_value_for(
+            id,
+            &final_data,
+            updated_at,
+            root_crdt_type,
+            Some(*metadata.updated_at),
+        )?;
 
         if id.is_root() {
             info!(
                 target: "storage::root_merge",
                 %id,
-                own_hash = %hex::encode(own_hash),
+                own_hash = %hex::encode(Sha256::digest(&final_data)),
                 full_hash = %hex::encode(full_hash),
                 "ROOT MERGE: Final hashes after Merkle tree update"
             );
@@ -4013,16 +4181,7 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: &Metadata,
     ) -> Result<[u8; 32], StorageError> {
-        // Held across the value write and the hash update, as `save_internal`
-        // does, so no concurrent writer lands between them.
-        let _mutation_guard = crate::index::index_mutation_guard();
-        let _ignored = S::storage_write(Key::Entry(id), data);
-        <Index<S>>::update_hash_for(
-            id,
-            Sha256::digest(data).into(),
-            Some(metadata.updated_at),
-            None,
-        )
+        <Index<S>>::write_value_for(id, data, metadata.updated_at, None, None)
     }
 
     /// Write a root-state byte blob that has *already* been CRDT-merged
@@ -4052,7 +4211,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // root: hash the merged bytes, update the Merkle index, write
         // storage. When this is the first time the receiver has seen
         // the entity, the index doesn't exist yet — create it so
-        // `update_hash_for` doesn't fail with `IndexNotFound`.
+        // `write_value_for` doesn't fail with `IndexNotFound`.
         //
         // App root state covers TWO ids: `ROOT_ID` (the system root)
         // and `ROOT_ENTRY_ID` (the `Root<T>` entry). Pre-fix only
@@ -4112,50 +4271,32 @@ impl<S: StorageAdaptor> Interface<S> {
                 // root so the index hierarchy stays consistent with
                 // the layout `Root::new` produces locally.
                 //
-                // ENTRY-BEFORE-PARENT (#2319 follow-up): pre-write
-                // Key::Entry so `Id::root()`'s children list never
-                // advertises an id without a backing entry. The
-                // matching `storage_write(Key::Entry(id), merged)`
-                // below would otherwise leave a window in which
-                // `find_by_id(id)` returns `None` for an id that the
-                // root's children advertises. Same rationale as the
-                // apply_action fix at line 1267.
-                let _ignored = S::storage_write(Key::Entry(id), merged);
-                <Index<S>>::add_child_to(
+                // ENTRY-BEFORE-PARENT (#2319 follow-up): write the
+                // entry with the child's index, before `Id::root()`'s
+                // children list advertises it, so `find_by_id(id)` never
+                // returns `None` for an id the root's children advertise.
+                // Same rationale as the `apply_action` pre-creation path.
+                <Index<S>>::add_child_with_value_to(
                     Id::root(),
                     ChildInfo::new(id, [0_u8; 32], metadata.clone()),
+                    Some(merged),
                 )?;
             }
         }
 
-        let own_hash: [u8; 32] = Sha256::digest(merged).into();
-        // Entry-before-index ordering — same rationale as `save_internal`:
-        // updating the Merkle index first makes the new root hash
-        // observable before the entry bytes are stored, so a concurrent
-        // reader can see a converged root hash with missing children
-        // (the "Hello Wor" rga flake). The discarded `bool` from
-        // `storage_write` is the eviction signal ("did a previous value
-        // exist under this key"), not a success/failure flag — write
-        // failures trap from the runtime as `HostError`, not `Ok(false)`.
+        // The merged bytes and the index recording their hash are one row
+        // write (see `save_internal`), so a reader never sees one without the
+        // other.
         //
-        // Same orphan trade-off as `save_internal` (see the longer
-        // comment there): if `update_hash_for` errors below, the
-        // merged bytes are persisted but the index isn't updated.
-        // `find_by_id` bails on the missing index; `find_by_id_raw`
-        // would expose the orphan in principle, but every production
-        // caller reaches it only via an index-derived child list that
-        // the orphan isn't in. The next successful merge for this id
-        // overwrites the orphan bytes.
+        // We don't re-check the LWW guard before the write because the only
+        // thing that could invalidate it is a concurrent writer for the same
+        // id, and the storage layer doesn't serialize concurrent writes
+        // anyway — re-checking would just narrow the race window without
+        // closing it.
         //
-        // We don't re-check the LWW guard after the entry write
-        // because the only thing that could invalidate it is a
-        // concurrent writer for the same id, and the storage layer
-        // doesn't serialize concurrent writes anyway — re-checking
-        // would just narrow the race window without closing it.
-        let _ignored = S::storage_write(Key::Entry(id), merged);
         // Preserve the root's merge-dispatch tag across a sync-applied write so a
         // `JsRoot` root materialised via sync keeps routing to the guest merge
-        // (see the note in `Index::update_hash_for`). Only the app root carries a
+        // (see the note in `Index::rehashed`). Only the app root carries a
         // meaningful tag on this path; non-root entities pass `None`.
         let root_crdt_type = if crate::collections::is_app_root_entry(id) {
             metadata.crdt_type.clone()
@@ -4163,7 +4304,7 @@ impl<S: StorageAdaptor> Interface<S> {
             None
         };
         let full_hash =
-            <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at), root_crdt_type)?;
+            <Index<S>>::write_value_for(id, merged, metadata.updated_at, root_crdt_type, None)?;
         Ok(full_hash)
     }
 
@@ -4509,7 +4650,7 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
-        Self::save_raw_stamped(id, data, metadata, true)
+        Self::save_raw_stamped(id, data, metadata, true, false)
     }
 
     /// [`save_raw`](Self::save_raw) for a write that is not new: the root
@@ -4520,14 +4661,17 @@ impl<S: StorageAdaptor> Interface<S> {
         data: Vec<u8>,
         metadata: Metadata,
     ) -> Result<Option<[u8; 32]>, StorageError> {
-        Self::save_raw_stamped(id, data, metadata, false)
+        Self::save_raw_stamped(id, data, metadata, false, false)
     }
 
+    /// `newly_linked`: the caller linked `id` under its parent in this call,
+    /// so its stored index says nothing about what a peer holds.
     fn save_raw_stamped(
         id: Id,
         data: Vec<u8>,
         metadata: Metadata,
         new_write: bool,
+        newly_linked: bool,
     ) -> Result<Option<[u8; 32]>, StorageError> {
         debug!(
             %id,
@@ -4537,6 +4681,13 @@ impl<S: StorageAdaptor> Interface<S> {
             "save_raw called"
         );
         let stored = <Index<S>>::get_index(id)?;
+        // A live entity that was linked before this write was linked by an
+        // action a peer applies first: an earlier one in this delta, or one in
+        // a delta this one causally follows. So a peer holds it, under the
+        // parent it stores, and an `Update` need not name that parent
+        // (`Interface::with_stored_parent`). A tombstone may have been
+        // collected on the peer already, so rewriting one names its parent.
+        let peers_hold = !newly_linked && stored.as_ref().is_some_and(|s| s.deleted_at.is_none());
         let parent = if id.is_root() {
             None
         } else {
@@ -4563,7 +4714,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // current target so a stale identity-gated entry migrates as the owner's
         // next ordinary signed delta. The stamp must also be persisted to the
         // stored index entry, because a re-write of an existing entry flows
-        // through `update_hash_for`, which deliberately does NOT rewrite stored
+        // through `write_value_for`, which deliberately does NOT rewrite stored
         // metadata — so we persist it explicitly via `Index::set_schema_version`
         // after `save_internal` succeeds.
         let mut local_owner_schema_stamp: Option<u32> = None;
@@ -4592,6 +4743,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // The DEVICE writing on the owner's behalf — see the
                         // matching stamp on the delete path.
                         signer: Some(crate::env::device_id().into()),
+                        on_behalf: None,
                     }),
                 };
                 // Owner-driven convert (PR-6c): the owner's own write re-stamps
@@ -4638,6 +4790,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
             // Owner-driven convert (PR-6c): same as the User arm — a current
@@ -4677,6 +4830,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
             // Owner-driven convert (PR-6c): same as the User/Shared arms — a
@@ -4718,7 +4872,7 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         // Owner-driven convert (PR-6c): persist the re-stamped `schema_version`
-        // to the stored index entry. `save_internal` → `update_hash_for` only
+        // to the stored index entry. `save_internal` → `write_value_for` only
         // touches the entity hashes + `updated_at` (it deliberately does NOT
         // rewrite stored metadata), so an existing entry's schema tag would
         // otherwise stay frozen at its add-time value. Only fires for a local
@@ -4754,7 +4908,11 @@ impl<S: StorageAdaptor> Interface<S> {
             ));
         }
 
-        let ancestors = <Index<S>>::get_ancestors_of(id)?;
+        let ancestors = if is_new || !peers_hold {
+            <Index<S>>::get_delta_ancestors_of(id)?
+        } else {
+            Vec::new()
+        };
 
         let action = if is_new {
             debug!(%id, "save_raw emitting Add action for entity");

@@ -309,11 +309,9 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     ///
     /// Returns error if storage operation fails
     pub fn len(&self) -> Result<usize, StoreError> {
-        // Deleted chars are dropped from the live child list `chars.len()`
-        // counts (tombstoned for merge, but excluded from that list) — the same
-        // list `get_ordered_chars` walks via `entries()`. So the stored count
-        // already equals the visible length; no need to re-linearize.
-        self.chars.len()
+        // The chars `get_text` shows: a stored row it leaves out would make an
+        // insert at this position fail.
+        Ok(self.get_ordered_chars()?.len())
     }
 
     /// Check if the text is empty
@@ -389,13 +387,21 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     ///
     /// # Errors
     ///
-    /// Returns error if position is out of bounds or storage operation fails
+    /// Returns error if position is out of bounds, `timestamp` is the zero
+    /// timestamp (the document start's), or storage operation fails
     pub fn insert_str_at_timestamp(
         &mut self,
         pos: usize,
         timestamp: crate::logical_clock::HybridTimestamp,
         s: &str,
     ) -> Result<(), StoreError> {
+        if CharId::new(timestamp, 0) == CharId::root() {
+            return Err(StoreError::StorageError(
+                crate::interface::StorageError::InvalidData(
+                    "the zero timestamp names the document start, not a character".into(),
+                ),
+            ));
+        }
         // Find the left neighbor
         let ordered = self.get_ordered_chars()?;
         let mut left = if pos == 0 {
@@ -457,7 +463,8 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         // This prevents "out of bounds" errors when operations arrive out of order
         let actual_end = end.min(ordered.len());
 
-        // Delete each character in range (may be empty if start >= ordered.len())
+        // A start past the end leaves an empty range instead of an inverted slice.
+        let start = start.min(actual_end);
         for (char_id, _) in &ordered[start..actual_end] {
             let _ = self.chars.remove(&CharKey::new(*char_id))?;
         }
@@ -473,9 +480,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         &mut self,
         other: &ReplicatedGrowableArray<S2>,
     ) -> Result<(), StoreError> {
-        let other_chars = other.chars.entries()?;
-
-        for (key, char_data) in other_chars {
+        for (key, char_data) in other.readable_chars()? {
             // Propagate a read error instead of swallowing it: `.ok().flatten()`
             // would treat a transient storage failure as "char absent" and
             // re-insert, corrupting the array. A genuine absence is `Ok(None)`.
@@ -497,6 +502,18 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         }
 
         Ok(())
+    }
+
+    /// The live chars, leaving out a row keyed as the document start or filed under
+    /// an id its key does not derive: no local write stores one, and a peer's would misplace text.
+    fn readable_chars(&self) -> Result<impl Iterator<Item = (CharKey, RgaChar)> + '_, StoreError> {
+        Ok(self
+            .chars
+            .entries_with_ids()?
+            .filter_map(|(id, key, char)| {
+                (key.id() != CharId::root() && self.chars.entry_id(&key) == id)
+                    .then_some((key, char))
+            }))
     }
 
     // Helper: Get all characters in RGA order (excludes deleted automatically via UnorderedMap)
@@ -523,10 +540,8 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     fn get_ordered_chars(&self) -> Result<Vec<(CharId, RgaChar)>, StoreError> {
         use std::collections::{BTreeMap, BTreeSet};
 
-        // Get all non-deleted characters from UnorderedMap
         let chars: Vec<(CharId, RgaChar)> = self
-            .chars
-            .entries()?
+            .readable_chars()?
             .map(|(key, char)| (key.id(), char))
             .collect();
 
@@ -629,7 +644,7 @@ mod merge_mode_tests {
         // The deterministic replay API (explicit, input-derived timestamp) is
         // the sanctioned way to seed an RGA in a migrate — it stays usable.
         env::with_merge_mode(|| {
-            rga.insert_str_at_timestamp(0, HybridTimestamp::zero(), "H")
+            rga.insert_str_at_timestamp(0, HybridTimestamp::from_unix_nanos(1), "H")
                 .unwrap();
         });
         assert_eq!(rga.len().unwrap(), 1);
@@ -640,7 +655,7 @@ mod merge_mode_tests {
         env::reset_for_testing();
         let mut rga = Root::new(ReplicatedGrowableArray::new);
         env::with_merge_mode(|| {
-            rga.insert_str_at_timestamp(0, HybridTimestamp::zero(), "Hi")
+            rga.insert_str_at_timestamp(0, HybridTimestamp::from_unix_nanos(1), "Hi")
                 .unwrap();
         });
         assert_eq!(rga.len().unwrap(), 2);
@@ -649,6 +664,16 @@ mod merge_mode_tests {
                                 // re-linearized visible length that get_text() reflects.
         assert_eq!(rga.len().unwrap(), 1);
         assert_eq!(rga.len().unwrap(), rga.get_text().unwrap().chars().count());
+    }
+
+    #[test]
+    fn a_char_is_not_minted_at_the_document_start() {
+        env::reset_for_testing();
+        let mut rga = Root::new(ReplicatedGrowableArray::new);
+        assert!(rga
+            .insert_str_at_timestamp(0, HybridTimestamp::zero(), "H")
+            .is_err());
+        assert_eq!(rga.len().unwrap(), 0);
     }
 
     #[test]
@@ -683,7 +708,7 @@ mod tombstone_merge_tests {
 
     /// Build a generic-`S` RGA whose `chars` map has a deterministic id (same
     /// across scopes for the same `field_name`), so two replicas share CharIds.
-    fn rga_in<S: StorageAdaptor>(field_name: &str) -> ReplicatedGrowableArray<S> {
+    pub(super) fn rga_in<S: StorageAdaptor>(field_name: &str) -> ReplicatedGrowableArray<S> {
         ReplicatedGrowableArray {
             chars: UnorderedMap::new_with_field_name_and_crdt_type(
                 None,
@@ -923,5 +948,123 @@ mod tombstone_merge_tests {
             "blob merge must not delete a char self holds live (delete travels via \
              the DeleteRef path, not the add-only blob merge)"
         );
+    }
+}
+
+/// A peer's char row that no local write would store, delivered as a delta.
+#[cfg(test)]
+mod peer_rows {
+    use super::{CharId, CharKey, ReplicatedGrowableArray, RgaChar};
+    use crate::address::Id;
+    use crate::collections::Root;
+    use crate::delta::StorageDelta;
+    use crate::entities::{ChildInfo, Data, Metadata};
+    use crate::env;
+    use crate::interface::{Action, ApplyContext, Interface};
+    use crate::logical_clock::HybridTimestamp;
+    use crate::store::{MockedStorage, StorageAdaptor};
+
+    use super::tombstone_merge_tests::rga_in;
+
+    fn key(nanos: u64) -> CharId {
+        CharId::new(HybridTimestamp::from_unix_nanos(nanos), 0)
+    }
+
+    /// A row for `content` after `left`, keyed `key`, filed at `filed_at`, as a delta carries it.
+    fn row<S: StorageAdaptor>(
+        rga: &ReplicatedGrowableArray<S>,
+        filed_at: Id,
+        key: CharId,
+        content: char,
+        left: CharId,
+    ) -> Action {
+        let mut data = borsh::to_vec(&(RgaChar::new(content, left), CharKey::new(key))).unwrap();
+        data.extend_from_slice(filed_at.as_bytes());
+        Action::Add {
+            id: filed_at,
+            data,
+            ancestors: vec![ChildInfo::new(rga.chars.id(), [0; 32], Metadata::default())],
+            metadata: Metadata::new(1, 1),
+        }
+    }
+
+    /// "hello" with `rows` synced in, then "!" typed at the end.
+    fn typed_after_sync(rows: impl FnOnce(&ReplicatedGrowableArray) -> Vec<Action>) -> String {
+        env::reset_for_testing();
+        let mut doc = Root::new(|| ReplicatedGrowableArray::new_with_field_name("doc"));
+        doc.insert_str(0, "hello").unwrap();
+        let actions = rows(&doc);
+        doc.commit();
+        let delta = StorageDelta::CausalActions {
+            actions,
+            delta_id: [0; 32],
+            delta_hlc: HybridTimestamp::default(),
+            effective_writers: Default::default(),
+            signer_account: None,
+            on_behalf_accounts: Default::default(),
+        };
+        Root::<ReplicatedGrowableArray>::sync(
+            &borsh::to_vec(&delta).unwrap(),
+            &ApplyContext::empty(),
+        )
+        .unwrap();
+        let mut doc = Root::<ReplicatedGrowableArray>::fetch().unwrap();
+        let end = doc.len().unwrap();
+        doc.insert_str(end, "!").unwrap();
+        doc.get_text().unwrap()
+    }
+
+    #[test]
+    fn a_char_keyed_as_the_document_start_is_left_out() {
+        let text = typed_after_sync(|rga| {
+            let start = CharId::root();
+            vec![row(
+                rga,
+                rga.chars.entry_id(&CharKey::new(start)),
+                start,
+                'x',
+                CharId::root(),
+            )]
+        });
+        assert_eq!(text, "hello!");
+    }
+
+    #[test]
+    fn a_char_filed_under_another_keys_id_is_left_out() {
+        let text = typed_after_sync(|rga| {
+            let elsewhere = rga.chars.entry_id(&CharKey::new(key(2)));
+            vec![row(rga, elsewhere, key(1), 'x', CharId::root())]
+        });
+        assert_eq!(text, "hello!");
+    }
+
+    /// Chars whose `left` links loop are reached from no origin, so they are not shown.
+    #[test]
+    fn chars_whose_left_links_loop_are_not_counted() {
+        let text = typed_after_sync(|rga| {
+            let filed = |at: u64| rga.chars.entry_id(&CharKey::new(key(at)));
+            vec![
+                row(rga, filed(1), key(1), 'x', key(2)),
+                row(rga, filed(2), key(2), 'y', key(1)),
+            ]
+        });
+        assert_eq!(text, "hello!");
+    }
+
+    #[test]
+    fn a_merge_does_not_take_a_misfiled_char() {
+        type A = MockedStorage<819>;
+        type B = MockedStorage<820>;
+        let mut a = rga_in::<A>("content");
+        let b = rga_in::<B>("content");
+        let elsewhere = b.chars.entry_id(&CharKey::new(key(2)));
+        Interface::<B>::apply_action(
+            row(&b, elsewhere, key(1), 'x', CharId::root()),
+            &ApplyContext::empty(),
+        )
+        .unwrap();
+
+        a.merge_chars_from(&b).unwrap();
+        assert_eq!(a.get_text().unwrap(), "");
     }
 }

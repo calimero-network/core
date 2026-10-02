@@ -119,18 +119,22 @@ pub(crate) fn list_scope(
     let store = ctx_client.datastore();
     let mut groups = MembershipRepository::new(store).effective_groups_for_account(&account)?;
 
-    // Revocation is per device AND per group, so it can only be applied where
-    // both are in hand — which is here, and not at authentication. A device
-    // revoked in one group may be live in another, so this removes groups
+    // A withdrawal is per device AND per namespace, so it can only be applied
+    // where both are in hand — which is here, and not at authentication. A device
+    // withdrawn in one namespace may be live in another, so this removes groups
     // rather than refusing the caller: the account is still itself, and still a
-    // member everywhere the revocation does not reach.
+    // member everywhere the withdrawal does not reach.
     //
     // A read that fails removes the group. An unreadable revocation row is not
     // evidence of a live device, and treating it as one would make the check
     // conditional on the store answering.
     if let Some(device) = device {
         let bindings = AccountBindingRepository::new(store);
-        groups.retain(|group| !bindings.is_revoked(group, device).unwrap_or(true));
+        groups.retain(|group| {
+            !bindings
+                .device_is_withdrawn(group, account, device)
+                .unwrap_or(true)
+        });
     }
 
     Ok(ListScope::Account { account, groups })
@@ -149,6 +153,56 @@ pub(crate) fn list_scope_for(
         account.as_ref().map(|e| &e.0),
         device.map(|e| e.0 .0),
     )
+}
+
+/// Refuse a read of `group_id` unless the caller's scope admits it.
+///
+/// **404, not 403**: a 403 would confirm the group exists, so a caller could
+/// enumerate the node's groups one id at a time by reading which refusal came
+/// back. Every group read a delegated session may reach (`group:list-own`, the
+/// narrow verb `GROUP_OWN_READ_REGEX` grants) calls this before it reads
+/// anything.
+pub(crate) fn refuse_unless_group_in_scope(
+    scope: &ListScope,
+    group_id: &ContextGroupId,
+) -> Option<axum::response::Response> {
+    use axum::response::IntoResponse;
+
+    if scope.admits(Some(group_id)) {
+        return None;
+    }
+    tracing::debug!(
+        group_id = ?group_id,
+        account = ?scope.account(),
+        "refusing a group outside the caller's scope",
+    );
+    Some(
+        crate::admin::service::ApiError {
+            status_code: reqwest::StatusCode::NOT_FOUND,
+            message: "Group not found".to_owned(),
+        }
+        .into_response(),
+    )
+}
+
+/// Resolve the caller's scope and refuse `group_id` outside it, in one call:
+/// what a group read handler runs first.
+pub(crate) fn refuse_group_outside_caller_scope(
+    ctx_client: &ContextClient,
+    node_owner: Option<axum::Extension<AuthenticatedNodeOwner>>,
+    account: Option<axum::Extension<AuthenticatedAccount>>,
+    device: Option<axum::Extension<AuthenticatedDevice>>,
+    group_id: &ContextGroupId,
+) -> Option<axum::response::Response> {
+    use axum::response::IntoResponse;
+
+    match list_scope_for(ctx_client, node_owner, account, device) {
+        Ok(scope) => refuse_unless_group_in_scope(&scope, group_id),
+        Err(err) => {
+            tracing::error!(error = ?err, "Failed to resolve the caller's list scope");
+            Some(crate::admin::service::parse_api_error(err).into_response())
+        }
+    }
 }
 
 /// Whether `scope` may be served the context named by `context_id`.
@@ -325,7 +379,7 @@ mod admits_context_tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
-    use super::{admits_context, ListScope};
+    use super::{admits_context, refuse_unless_group_in_scope, ListScope};
 
     fn mine() -> ContextGroupId {
         ContextGroupId::from([0xa1; 32])
@@ -396,5 +450,17 @@ mod admits_context_tests {
         for context_id in [my_context(), their_context(), orphan_context()] {
             assert!(admits_context(&store, &context_id, &ListScope::NodeWide).unwrap());
         }
+    }
+
+    /// The group reads' guard: a group outside an account's scope is refused as
+    /// missing (404, so the refusal is no existence oracle), its own groups and
+    /// a node-wide caller pass.
+    #[test]
+    fn a_group_read_is_refused_outside_the_callers_scope_as_missing() {
+        let refusal =
+            refuse_unless_group_in_scope(&my_scope(), &theirs()).expect("their group is refused");
+        assert_eq!(refusal.status(), axum::http::StatusCode::NOT_FOUND);
+        assert!(refuse_unless_group_in_scope(&my_scope(), &mine()).is_none());
+        assert!(refuse_unless_group_in_scope(&ListScope::NodeWide, &theirs()).is_none());
     }
 }

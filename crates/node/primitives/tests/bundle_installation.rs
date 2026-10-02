@@ -799,7 +799,7 @@ async fn test_install_application_from_bundle_blob_missing_blob() {
 /// 4. User 2 receives invitation
 /// 5. User 2 calls sync_context_config (which fetches context config from external)
 /// 6. sync_context_config detects bundle blob exists locally
-/// 7. sync_context_config calls install_application_from_bundle_blob
+/// 7. sync_context_config calls install_expected_bundle_blob
 /// 8. User 2 can now use the context
 ///
 /// To test the full flow, we would need to:
@@ -808,7 +808,7 @@ async fn test_install_application_from_bundle_blob_missing_blob() {
 /// - Simulate context creation and invitation
 ///
 /// The current test verifies the critical integration point: when a bundle blob
-/// exists locally, install_application_from_bundle_blob correctly installs it
+/// exists locally, install_expected_bundle_blob correctly installs it
 /// with the same ApplicationId as the original installation.
 #[tokio::test]
 async fn test_bundle_blob_sharing_integration() {
@@ -879,10 +879,10 @@ async fn test_bundle_blob_sharing_integration() {
 
     // Step 4: Simulate sync_context_config by manually installing from blob
     // This simulates what happens when sync_context_config detects the blob
-    // In real scenario, sync_context_config would call install_application_from_bundle_blob
     // No metadata needed - bundle detection happens via is_bundle_blob()
     let application_id_user2 = node_client_2
-        .install_application_from_bundle_blob(
+        .install_expected_bundle_blob(
+            &application_id_user1,
             &bundle_blob_id,
             &bundle_source, // Use same source as User 1
         )

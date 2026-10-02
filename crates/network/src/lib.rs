@@ -35,6 +35,28 @@ use tracing::{error, info, warn};
 
 use crate::handlers::stream::incoming::FromIncoming;
 
+/// Private entry points the fuzz targets drive, compiled only under `cargo fuzz`.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz_api {
+    use libp2p::identity::Keypair;
+    use libp2p::PeerId;
+
+    use crate::blob_provider_record::BlobProviderRecord;
+
+    pub fn blob_provider_record_signed_value(
+        record_key: &[u8],
+        keypair: &Keypair,
+        size: u64,
+    ) -> eyre::Result<Vec<u8>> {
+        BlobProviderRecord::signed_value(record_key, keypair, size)
+    }
+
+    pub fn blob_provider_record_verify(record_key: &[u8], value: &[u8]) -> Option<PeerId> {
+        BlobProviderRecord::verify(record_key, value)
+    }
+}
+
 pub use calimero_network_primitives::autonat_v2 as autonat;
 pub mod behaviour;
 mod blob_provider_record;
@@ -48,6 +70,7 @@ use behaviour::Behaviour;
 use discovery::peer_cache::PeerAddrCache;
 use discovery::Discovery;
 use handlers::stream::rendezvous::RendezvousTick;
+use handlers::stream::swarm::kad::InboundRecordQuota;
 use handlers::stream::swarm::FromSwarm;
 use subscription_repair::SubscriptionRepair;
 
@@ -88,6 +111,8 @@ pub struct NetworkManager {
     /// it publishes so peers resolving them can authenticate the announcement
     /// binds to this peer. See [`blob_provider_record`].
     identity: Keypair,
+    /// Per-peer accounting of inbound DHT records held in the store.
+    inbound_record_quota: InboundRecordQuota,
     /// Detects and repairs a subscriber table that has fallen out of step with
     /// the peers we are actually meshed with. See [`subscription_repair`].
     subscription_repair: SubscriptionRepair,
@@ -154,6 +179,7 @@ impl NetworkManager {
             pending_blob_queries: HashMap::new(),
             ping_failures: HashMap::default(),
             identity: config.identity.clone(),
+            inbound_record_quota: InboundRecordQuota::default(),
             subscription_repair: SubscriptionRepair::default(),
             metrics: Metrics::new(prom_registry),
         };

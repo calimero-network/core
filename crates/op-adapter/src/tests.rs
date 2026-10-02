@@ -20,4 +20,5 @@ mod acl;
 mod credential;
 mod data;
 mod group;
+mod guard;
 mod root;

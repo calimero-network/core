@@ -3,6 +3,7 @@
 use std::io::ErrorKind;
 use std::sync::Arc;
 
+use super::bind::InstallOrigin;
 use super::bundle;
 use calimero_app_downloader::app_source;
 use calimero_app_downloader::registry::RegistryCoords;
@@ -22,44 +23,21 @@ use crate::client::NodeClient;
 // A payload that is no bundle at all, as opposed to one that fails to verify.
 const NOT_A_BUNDLE: &str = "not a signed application bundle";
 
+/// The id a bundle installs under, from its verified manifest and signer alone.
+pub(super) async fn derive_bundle_id(bundle_data: Arc<[u8]>) -> eyre::Result<ApplicationId> {
+    tokio::task::spawn_blocking(move || {
+        let verified = bundle::VerifiedBundle::open(bundle_data)?;
+        ApplicationId::for_bundle(&verified.manifest().package, verified.signer_id())
+    })
+    .await?
+}
+
 impl NodeClient {
-    fn install_bundle_application(
-        &self,
-        blob_id: &BlobId,
-        size: u64,
-        source: &ApplicationSource,
-        metadata: Vec<u8>,
-        info: types::PackageInfo,
-        services: Vec<types::ServiceMeta>,
-    ) -> eyre::Result<ApplicationId> {
-        let mut application = types::ApplicationMeta::new(
-            key::BlobMeta::new(*blob_id),
-            size,
-            source.to_string().into_boxed_str(),
-            metadata.into_boxed_slice(),
-            key::BlobMeta::new(BlobId::from([0; 32])),
-            info,
-        );
-        application.services = services;
-
-        let application_id =
-            ApplicationId::for_bundle(&application.package, &application.signer_id)?;
-
-        // Bundle ids are version-stable (hash(package, signer)), so a new
-        // version overwrites the row in place. The row is a download-cache
-        // pointer ("latest fetched"); what a context executes is decided by
-        // its per-context binding (activation marker / group bytecode_id), so no
-        // displaced-blob breadcrumb is needed.
-        let mut handle = self.datastore.handle();
-        let key = key::ApplicationMeta::new(application_id);
-        handle.put(&key, &application)?;
-        Ok(application_id)
-    }
-
     /// Install a `.mpk`. The signature is mandatory and every wasm artifact is
     /// digest-checked before any bytes are stored.
     ///
     /// `expected` is what the caller asked for, on coordinate-addressed paths.
+    /// A remote install older than the row's release keeps the row as it is.
     pub(super) async fn install_bundle(
         &self,
         bundle_data: Arc<[u8]>,
@@ -67,6 +45,7 @@ impl NodeClient {
         stored_size: u64,
         source: &ApplicationSource,
         expected: Option<RegistryCoords<'_>>,
+        origin: InstallOrigin,
     ) -> eyre::Result<ApplicationId> {
         // Every artifact, including the unnamed single-service one that gets no
         // blob of its own, so substituted bytes are refused before first execution.
@@ -99,6 +78,12 @@ impl NodeClient {
             }
         }
 
+        // Before any service blob is stored: nothing would reclaim one.
+        let application_id = ApplicationId::for_bundle(package, verified.signer_id())?;
+        if !self.bundle_may_replace(&application_id, version, origin)? {
+            return Ok(application_id);
+        }
+
         let mut services = Vec::new();
         let mut max_state_version = 0;
         for artifact in &wasm {
@@ -124,23 +109,29 @@ impl NodeClient {
             });
         }
 
-        self.install_bundle_application(
-            blob_id,
+        let mut application = types::ApplicationMeta::new(
+            key::BlobMeta::new(*blob_id),
             stored_size,
-            source,
-            manifest.to_metadata_json()?,
+            source.to_string().into_boxed_str(),
+            manifest.to_metadata_json()?.into_boxed_slice(),
+            key::BlobMeta::new(BlobId::from([0; 32])),
             types::PackageInfo {
                 package: package.as_str().into(),
                 version: version.as_str().into(),
                 signer_id: verified.signer_id().into(),
                 state_version: max_state_version,
             },
-            services,
-        )
+        );
+        application.services = services;
+
+        // Bundle ids are version-stable, so a new version overwrites the row in
+        // place; a context executes its own binding (marker / group key), not the row.
+        let _written = self.put_bundle_row(&application_id, &application, origin)?;
+        Ok(application_id)
     }
 
-    /// Install a signed `.mpk` from disk. The id derives from the manifest's
-    /// (package, signer), so a payload without one has no re-derivable id.
+    /// Install a signed `.mpk` from disk, as an operator. The id derives from the
+    /// manifest's (package, signer), so a payload without one has no re-derivable id.
     pub async fn install_application_from_path(
         &self,
         path: Utf8PathBuf,
@@ -173,17 +164,25 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.store_and_install_bundle(bundle_data, &uri.as_str().parse()?, None)
-            .await
+        let (application_id, _blob_id) = self
+            .store_and_install_bundle(
+                bundle_data,
+                &uri.as_str().parse()?,
+                None,
+                InstallOrigin::Operator,
+            )
+            .await?;
+        Ok(application_id)
     }
 
-    /// Install `package@version` from this node's one source; `Ok(None)` means
-    /// nothing published there. The manifest decides the id, so it is checked.
+    /// Install `package@version` from this node's one source, returning its id
+    /// and stored bundle blob; `Ok(None)` means nothing published there.
     pub async fn install_by_coords(
         &self,
         package: &str,
         version: &str,
-    ) -> eyre::Result<Option<ApplicationId>> {
+        origin: InstallOrigin,
+    ) -> eyre::Result<Option<(ApplicationId, BlobId)>> {
         let source = app_source(&self.registry_config(), self.clone())?;
         let req = AppRequest {
             application_id: None,
@@ -205,6 +204,7 @@ impl NodeClient {
             bundle_data,
             &PENDING_BLOB_SHARE_SOURCE.parse()?,
             Some(RegistryCoords::new(package, version)),
+            origin,
         )
         .await
         .map(Some)
@@ -217,7 +217,8 @@ impl NodeClient {
         bundle_data: Arc<[u8]>,
         source: &ApplicationSource,
         expected: Option<RegistryCoords<'_>>,
-    ) -> eyre::Result<ApplicationId> {
+        origin: InstallOrigin,
+    ) -> eyre::Result<(ApplicationId, BlobId)> {
         let cursor = Cursor::new(&bundle_data[..]);
         let (bundle_blob_id, stored_size) = self
             .add_blob(cursor, Some(bundle_data.len() as u64), None)
@@ -231,8 +232,16 @@ impl NodeClient {
         );
 
         let installed = self
-            .install_bundle(bundle_data, &bundle_blob_id, stored_size, source, expected)
-            .await;
+            .install_bundle(
+                bundle_data,
+                &bundle_blob_id,
+                stored_size,
+                source,
+                expected,
+                origin,
+            )
+            .await
+            .map(|application_id| (application_id, bundle_blob_id));
         self.release_blob_on_error(bundle_blob_id, installed).await
     }
 
@@ -246,8 +255,9 @@ impl NodeClient {
         bundle::is_bundle_blob(blob_bytes)
     }
 
-    /// Install an application from a bundle blob that's already in the blobstore.
-    /// This is used when a bundle blob is received via blob sharing or discovery.
+    /// Install, as an operator, a bundle blob already in the blobstore. Test-only:
+    /// a production path must name the id it expects (`install_expected_bundle_blob`).
+    #[cfg(any(test, feature = "testing"))]
     pub async fn install_application_from_bundle_blob(
         &self,
         blob_id: &BlobId,
@@ -261,8 +271,44 @@ impl NodeClient {
 
         let stored_size = bundle_bytes.len() as u64;
 
-        self.install_bundle(bundle_bytes, blob_id, stored_size, source, None)
-            .await
+        self.install_bundle(
+            bundle_bytes,
+            blob_id,
+            stored_size,
+            source,
+            None,
+            InstallOrigin::Operator,
+        )
+        .await
+    }
+
+    /// Install a blob a peer or group named, but only as `expected`. The id is
+    /// derived first, so a mismatch writes nothing; an older release keeps the row.
+    pub async fn install_expected_bundle_blob(
+        &self,
+        expected: &ApplicationId,
+        blob_id: &BlobId,
+        source: &ApplicationSource,
+    ) -> eyre::Result<ApplicationId> {
+        let Some(bundle_bytes) = self.get_blob_bytes(blob_id, None).await? else {
+            bail!("bundle blob not found");
+        };
+
+        let derived = derive_bundle_id(Arc::clone(&bundle_bytes)).await?;
+        if derived != *expected {
+            bail!("application mismatch: expected {expected}, got {derived}");
+        }
+
+        let stored_size = bundle_bytes.len() as u64;
+        self.install_bundle(
+            bundle_bytes,
+            blob_id,
+            stored_size,
+            source,
+            None,
+            InstallOrigin::Remote,
+        )
+        .await
     }
 
     pub fn uninstall_application(&self, application_id: &ApplicationId) -> eyre::Result<()> {
@@ -272,6 +318,6 @@ impl NodeClient {
     }
 
     // Query and management functions (list_applications, list_packages,
-    // list_versions, get_latest_version, update_compiled_app) are in the
+    // list_versions, get_latest_version) are in the
     // `query` submodule.
 }

@@ -93,6 +93,10 @@ pub struct AclView {
     /// reader picks which counts: the most recent appraisal, judged against
     /// the time it is asked about.
     pub tee_evidence: BTreeMap<AccountId, Vec<TeeEvidence>>,
+    /// How many root-guarded owner-level ops each group has at the cut. A root
+    /// proof must name exactly this count for its group; see
+    /// `OpPayload::RootGuarded`.
+    pub owner_op_counts: BTreeMap<ContextGroupId, u64>,
 }
 
 /// What a TEE member's verified attestation evidence established, at a cut.
@@ -186,16 +190,25 @@ impl AclView {
     }
 
     /// `member`'s effective capability bitmask in `group` at the cut: the
-    /// explicit per-member override if present, else the group default, else
-    /// `0`. Mirrors the live `member_capability` read used by inherited-
-    /// membership resolution (the `CAN_JOIN_OPEN_SUBGROUPS` gate).
+    /// explicit per-member grant if one is folded, else the group's folded
+    /// default, else `base` — the store-written creation default the fold
+    /// cannot see. Mirrors the live `member_capability` read, whose row holds
+    /// the explicit grant or the default copied in at admission.
+    ///
+    /// **An explicit grant is authoritative, including a grant of nothing.**
+    /// `MemberCapabilitySet { capabilities: empty }` is how an admin revokes
+    /// every bit a member holds, and the live row then reads 0. Treating a
+    /// folded 0 as "nothing folded" and falling back to `base` handed the
+    /// revoked member the default's bits back at every cut. The same holds for
+    /// a group default explicitly set to nothing. Only the absence of a folded
+    /// value falls back.
     #[must_use]
-    pub fn capability(&self, group: &ContextGroupId, member: &AccountId) -> u32 {
+    pub fn capability(&self, group: &ContextGroupId, member: &AccountId, base: u32) -> u32 {
         self.member_caps
             .get(&(*group, *member))
+            .or_else(|| self.default_caps.get(group))
             .copied()
-            .or_else(|| self.default_caps.get(group).copied())
-            .unwrap_or(0)
+            .unwrap_or(base)
     }
 
     /// Is `author` the owner of `object` — permitted to rotate its writer set?
@@ -216,6 +229,12 @@ impl AclView {
             self.groups.get(&group).and_then(|m| m.get(author)),
             Some(GroupMemberRole::Admin)
         )
+    }
+
+    /// How many root-guarded ops `group` has at the cut; zero if none.
+    #[must_use]
+    pub fn owner_op_count(&self, group: &ContextGroupId) -> u64 {
+        self.owner_op_counts.get(group).copied().unwrap_or(0)
     }
 
     /// Is `author` the scope's root admin at the cut?
