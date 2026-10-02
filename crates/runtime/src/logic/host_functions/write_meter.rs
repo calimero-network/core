@@ -172,7 +172,13 @@ mod tests {
     ) -> Result<(), VMLogicError> {
         let mut storage = IndexedStorage::default();
         let (mut logic, _store) = setup_vm!(&mut storage, limits, vec![]);
-        let env = build_runtime_env(logic.storage, [0; 32], [0; 32], [0; 32]);
+        let env = build_runtime_env(
+            logic.storage,
+            &mut logic.shared_rotations,
+            [0; 32],
+            [0; 32],
+            [0; 32],
+        );
         let (env, meter) = metered(env, &logic);
         let index = env
             .index()
