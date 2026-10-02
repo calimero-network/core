@@ -174,3 +174,59 @@ pub(super) fn handle_unsubscribed(
         peer_id, context_id
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::MetaRepository;
+    use calimero_network_primitives::messages::NetworkEvent;
+    use libp2p::gossipsub::TopicHash;
+    use libp2p::PeerId;
+    use serial_test::serial;
+    use tokio::time::sleep;
+
+    use crate::test_node_harness::{boot_test_node, TestNode};
+
+    async fn subscribe_to_group(node: &TestNode, group: [u8; 32]) {
+        node.node_addr
+            .send(NetworkEvent::Subscribed {
+                peer_id: PeerId::random(),
+                topic: TopicHash::from_raw(format!("group/{}", hex::encode(group))),
+            })
+            .await
+            .expect("deliver Subscribed to the node actor");
+        sleep(Duration::from_millis(200)).await;
+    }
+
+    /// A peer subscribing to the topic of a group this node does not hold
+    /// starts no group sync; one it holds still does.
+    #[actix::test]
+    #[serial(boot_test_node)]
+    async fn a_subscription_to_an_unknown_group_starts_no_sync() {
+        let node = boot_test_node().await;
+
+        subscribe_to_group(&node, [0x5E; 32]).await;
+        assert_eq!(node.sync_group_requests.load(Ordering::SeqCst), 0);
+
+        let known = [0x5F; 32];
+        let admin = calimero_governance_store::placeholder_admin_identity();
+        MetaRepository::new(&node.store)
+            .save(
+                &ContextGroupId::from(known),
+                &calimero_store::key::GroupMetaValue {
+                    target: calimero_store::key::GroupTarget::default(),
+                    created_at: 0,
+                    admin_identity: admin,
+                    owner_identity: admin,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the group meta");
+        subscribe_to_group(&node, known).await;
+        assert_eq!(node.sync_group_requests.load(Ordering::SeqCst), 1);
+    }
+}
