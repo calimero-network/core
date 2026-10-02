@@ -403,35 +403,41 @@ impl TokenManager {
             .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
-        let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
-        let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
+        let (access_expiry, refresh_expiry) = self.expiries_for(&key.key_type);
 
-        match key.key_type {
-            // For root tokens, simply generate new tokens with the same ID
-            KeyType::Root => {
-                self.generate_raw_token_pair(
-                    key_id,
-                    permissions,
-                    node_url,
-                    access_expiry,
-                    refresh_expiry,
-                    device,
-                )
-                .await
-            }
-            // For client tokens, use the same key ID - no rotation during initial generation
-            KeyType::Client => {
-                self.generate_raw_token_pair(
-                    key_id,
-                    permissions,
-                    node_url,
-                    access_expiry,
-                    refresh_expiry,
-                    device,
-                )
-                .await
-            }
-        }
+        self.generate_raw_token_pair(
+            key_id,
+            permissions,
+            node_url,
+            access_expiry,
+            refresh_expiry,
+            device,
+        )
+        .await
+    }
+
+    /// Access and refresh lifetimes for a token pair minted for a key of this
+    /// type. A client key's pair is capped by the `client_*` settings, and never
+    /// outlives the node-wide ones.
+    fn expiries_for(&self, key_type: &KeyType) -> (Duration, Duration) {
+        let (access, refresh) = match key_type {
+            KeyType::Root => (
+                self.config.access_token_expiry,
+                self.config.refresh_token_expiry,
+            ),
+            KeyType::Client => (
+                self.config
+                    .client_access_token_expiry
+                    .min(self.config.access_token_expiry),
+                self.config
+                    .client_refresh_token_expiry
+                    .min(self.config.refresh_token_expiry),
+            ),
+        };
+        (
+            Duration::seconds(access as i64),
+            Duration::seconds(refresh as i64),
+        )
     }
 
     /// Decode and signature-verify a JWT, returning its raw claims.
@@ -1061,8 +1067,7 @@ impl TokenManager {
                 // Generate tokens FIRST, before any key mutations.
                 // This ensures that if token generation fails, we haven't modified any keys
                 // and the user's original key remains valid (no lockout scenario).
-                let access_expiry = Duration::seconds(self.config.access_token_expiry as i64);
-                let refresh_expiry = Duration::seconds(self.config.refresh_token_expiry as i64);
+                let (access_expiry, refresh_expiry) = self.expiries_for(&KeyType::Client);
 
                 let (access_token, refresh_token) = self
                     .generate_raw_token_pair(
@@ -1142,6 +1147,8 @@ mod tests {
             issuer: "calimero-test".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 30 * 24 * 3600,
+            client_access_token_expiry: crate::config::default_client_access_token_expiry(),
+            client_refresh_token_expiry: crate::config::default_client_refresh_token_expiry(),
             node_host: None,
         }
     }
@@ -1607,6 +1614,98 @@ mod tests {
         );
     }
 
+    async fn lifetimes(tm: &TokenManager, access: &str, refresh: &str) -> (u64, u64) {
+        let access = tm.verify_token(access).await.unwrap();
+        let refresh = tm.verify_refresh_token(refresh).await.unwrap();
+        (access.exp - access.iat, refresh.exp - refresh.iat)
+    }
+
+    async fn seed_root_and_client(tm: &TokenManager) {
+        let root = crate::storage::models::Key::new_root_key_with_permissions(
+            "pk".to_string(),
+            "method".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        tm.get_key_manager().set_key("root-1", &root).await.unwrap();
+        let client = crate::storage::models::Key::new_client_key(
+            "root-1".to_string(),
+            "client".to_string(),
+            vec!["context".to_string()],
+            None,
+        );
+        tm.get_key_manager()
+            .set_key("client-1", &client)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_client_key_gets_the_shorter_client_lifetimes_on_mint_and_refresh() {
+        let (tm, _sm) = test_manager().await;
+        seed_root_and_client(&tm).await;
+
+        let (access, refresh) = tm
+            .generate_token_pair(
+                "client-1".to_string(),
+                vec!["context".to_string()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            lifetimes(&tm, &access, &refresh).await,
+            (15 * 60, 7 * 24 * 3600)
+        );
+
+        let (access, refresh) = tm.refresh_token_pair(&refresh).await.unwrap();
+        assert_eq!(
+            lifetimes(&tm, &access, &refresh).await,
+            (15 * 60, 7 * 24 * 3600)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_root_key_keeps_the_node_wide_lifetimes() {
+        let (tm, _sm) = test_manager().await;
+        seed_root_and_client(&tm).await;
+
+        let (access, refresh) = tm
+            .generate_token_pair("root-1".to_string(), vec!["admin".to_string()], None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            lifetimes(&tm, &access, &refresh).await,
+            (3600, 30 * 24 * 3600)
+        );
+    }
+
+    #[tokio::test]
+    async fn client_lifetimes_never_exceed_the_node_wide_ones() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secret_manager.initialize().await.unwrap();
+        let config = JwtConfig {
+            access_token_expiry: 300,
+            refresh_token_expiry: 3600,
+            ..test_config()
+        };
+        let tm = TokenManager::new(config, storage, secret_manager);
+        seed_root_and_client(&tm).await;
+
+        let (access, refresh) = tm
+            .generate_token_pair(
+                "client-1".to_string(),
+                vec!["context".to_string()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(lifetimes(&tm, &access, &refresh).await, (300, 3600));
+    }
+
     #[tokio::test]
     async fn replayed_client_refresh_after_rotation_revokes_live_key() {
         // Review finding: after a client-key rotation deletes the old key id,
@@ -1880,6 +1979,8 @@ mod tests {
                 issuer: "test".to_string(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: crate::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: crate::config::default_client_refresh_token_expiry(),
                 node_host: None,
             },
             storage,
@@ -1907,6 +2008,8 @@ mod tests {
                 issuer: "test".to_string(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: crate::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: crate::config::default_client_refresh_token_expiry(),
                 node_host: Some(node_host.to_string()),
             },
             storage,

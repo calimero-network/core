@@ -805,6 +805,9 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(
+                ),
                 node_host: None,
             },
             Arc::clone(&storage),
@@ -942,6 +945,9 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(
+                ),
                 node_host: None,
             },
             Arc::clone(&storage),
@@ -1028,6 +1034,9 @@ mod tests {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 86400,
+                client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(
+                ),
                 node_host: None,
             },
             Arc::clone(&storage),
