@@ -12,7 +12,14 @@
 //! `index_rows_*`: it is a different column on a node, never synced and never
 //! hashed, so folding it into the state counts would hide what a change moved.
 //!
-//! Row counts are what [`RowCosts`], `storage-costs.json` and
+//! Alongside the rows, every SHA-256 the storage crate runs is counted, as
+//! `hash_calls` and `hash_blocks` (compression-function runs), through
+//! `calimero_storage::hash_meter`, which only this tool's `cost-meter` feature
+//! compiles in. That is the deterministic proxy for CPU: re-hashing a row on
+//! every decode costs no extra row, so row counts alone let a 17-38% per-call
+//! CPU regression through. Time is never measured; it is not reproducible.
+//!
+//! Row and hash counts are what [`RowCosts`], `storage-costs.json` and
 //! `scripts/check-storage-cost.sh` gate on. They reproduce exactly because
 //! [`measure`] pins the host's randomness, clock and HLC to a fixed seed: the
 //! child trie's shape follows the set of child ids (a subtree splits once it
@@ -25,6 +32,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use calimero_storage::env::{with_deterministic_env, with_runtime_env, IndexCallbacks, RuntimeEnv};
+use calimero_storage::hash_meter;
 use calimero_storage::reclaim::{prune_deleted_children, tombstone_deleted_at};
 use calimero_storage::store::Key;
 use serde::{Deserialize, Serialize};
@@ -53,6 +61,10 @@ pub struct RowCosts {
     /// Ordered-index rows and validity markers removed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub index_rows_removed: u64,
+    /// SHA-256 hashes the storage crate finished.
+    pub hash_calls: u64,
+    /// SHA-256 compression blocks those hashes ran: what hashing CPU scales with.
+    pub hash_blocks: u64,
 }
 
 #[expect(
@@ -80,6 +92,10 @@ pub struct Costs {
     pub index_rows_written: u64,
     /// See [`RowCosts::index_rows_removed`].
     pub index_rows_removed: u64,
+    /// See [`RowCosts::hash_calls`].
+    pub hash_calls: u64,
+    /// See [`RowCosts::hash_blocks`].
+    pub hash_blocks: u64,
 }
 
 impl Costs {
@@ -93,6 +109,8 @@ impl Costs {
             index_rows_read: self.index_rows_read,
             index_rows_written: self.index_rows_written,
             index_rows_removed: self.index_rows_removed,
+            hash_calls: self.hash_calls,
+            hash_blocks: self.hash_blocks,
         }
     }
 }
@@ -149,12 +167,27 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
     let env = RuntimeEnv::new(read, write, remove, [1; 32], [2; 32], [3; 32])
         .with_index(counting_index(&backing));
 
+    // Hashing is counted per thread, not per store: what ran so far belongs to
+    // the enclosing `measure`, if any, and what runs inside to this one.
     let previous = CURRENT.with(|c| c.borrow_mut().replace(Rc::clone(&backing)));
+    charge_hashing(previous.as_ref());
     let result = with_runtime_env(env, || with_deterministic_env(MEASURE_SEED, f));
+    charge_hashing(Some(&backing));
     CURRENT.with(|c| *c.borrow_mut() = previous);
 
     let costs = backing.borrow().costs;
     (result, costs)
+}
+
+/// Move the SHA-256 work counted on this thread so far onto `backing`'s
+/// costs, or drop it when no `measure` is in flight.
+fn charge_hashing(backing: Option<&Rc<RefCell<Backing>>>) {
+    let work = hash_meter::take();
+    if let Some(backing) = backing {
+        let costs = &mut backing.borrow_mut().costs;
+        costs.hash_calls += work.calls;
+        costs.hash_blocks += work.blocks;
+    }
 }
 
 /// Index callbacks over `backing`'s own index maps, counting as they go.
@@ -250,6 +283,7 @@ thread_local! {
 /// is how a point workload isolates one operation from the build in front of
 /// it. A no-op outside `measure`.
 pub fn reset_counters() {
+    let _discarded = hash_meter::take();
     CURRENT.with(|c| {
         if let Some(backing) = c.borrow().as_ref() {
             backing.borrow_mut().costs = Costs::default();
@@ -326,6 +360,11 @@ mod tests {
         assert!(
             costs.bytes_written > 0,
             "harness observed no bytes written; got {costs:?}"
+        );
+        assert!(
+            costs.hash_calls > 0 && costs.hash_blocks >= costs.hash_calls,
+            "harness observed no hashing — the `cost-meter` feature is not counting, \
+             and the CPU gate is vacuous; got {costs:?}"
         );
     }
 

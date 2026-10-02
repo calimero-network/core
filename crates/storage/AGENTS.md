@@ -833,6 +833,8 @@ struct MyType {
 
 ## Common Gotchas
 
+- Hash with `crate::hash_meter::{Digest, Sha256}`, never `sha2` directly. It is `sha2::Sha256` unless the `cost-meter` feature (enabled only by `tools/storage-cost`) swaps in a counting wrapper with the same digest, and the counts are the storage-cost CPU gate; a module naming `sha2` is invisible to it, which `production_code_hashes_through_the_meter` refuses.
+
 - Use #[app::state] macro attribute - it auto-generates Mergeable impl
 - **A local write is stamped after what it overwrites, never just "now".**
   `save_raw` stamps `max(now, stored updated_at + 1, deleted_at + 1)` (the

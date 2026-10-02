@@ -42,7 +42,6 @@ use std::collections::BTreeMap;
 use borsh::{from_slice, to_vec};
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
-use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::address::Id;
@@ -50,6 +49,7 @@ use crate::child_trie::ChildTrie;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
+use crate::hash_meter::{Digest, Sha256};
 use crate::index::{Index, MAX_PARENT_CHAIN};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 

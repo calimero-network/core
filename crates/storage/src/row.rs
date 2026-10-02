@@ -46,9 +46,9 @@
 //! entity row, which tombstone GC relies on.
 
 use borsh::BorshDeserialize;
-use sha2::{Digest, Sha256};
 
 use crate::address::Id;
+use crate::hash_meter::{Digest, Sha256};
 use crate::index::{EntityIndex, SlimIndex};
 use crate::store::Key;
 
