@@ -394,6 +394,25 @@
 
 ### Fixed
 
+- **A self-hosted relay creates a context for a member when `init` signs
+  nothing.** The on-behalf check now runs after `init` and before anything
+  commits or publishes, and asks for a `RelayTee` only when `init` writes an
+  entry the relay signs for the author, as delegated calls already do; a
+  member holding `CAN_AUTHOR_ON_BEHALF` was refused every delegated creation.
+  (#4386)
+
+- **Entry signatures are verified strictly on the node too.** The node's
+  native storage environment used a lenient Ed25519 verify that accepts a
+  small-order public key, under which a trivial signature verifies any
+  message; it now uses `verify_strict`, as the guest host function and the
+  rest of the node do. A signed `User`, `Shared` or `SharedMember` write or
+  snapshot leaf under such a key is refused. (#4382)
+
+- **The at-rest key file is owner-only from the moment it is created.** It is
+  opened with mode `0600` instead of being written with the process umask and
+  narrowed afterwards, and a key file of the wrong length is replaced rather
+  than truncated in place. (#4297)
+
 - **Peers judge an account's relayed writes by its membership at the cut.**
   A relayed join folds as the joiner's membership, a subgroup's creator and
   the namespace founder are Admin at the cut, and a delegated delta is judged
