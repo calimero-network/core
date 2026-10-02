@@ -12,6 +12,7 @@ Development and debugging tools for Calimero infrastructure.
 | `mero-sign`    | `mero-sign` | Sign Calimero bundle manifests (Ed25519)     |
 | `search-bench` | `search-bench` | Engine benchmarks for `calimero-search` and the host-time fit behind search gas (`README.md` holds the results) |
 | `state-disk-cost` | `state-disk-cost` | On-disk RocksDB bytes per state entry (kv, chat) under candidate column-family options (`README.md` holds the results) |
+| `storage-compare` | `storage-compare` | State bytes, delta bytes and per-call time for kv and chat workloads, built at any commit to compare two of them (`RESULTS.md` holds the before/after results) |
 
 Everything here is a Rust crate.
 
