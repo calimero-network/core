@@ -400,7 +400,7 @@
   admin) it refused the namespace's admin with 403. It now checks the caller:
   the node's account for a node session, the delegated account for an account
   session. A plain member is refused with the same not-admin error on both
-  paths. (#PRNUM)
+  paths. (#4400)
 
 - **The delegated routes take the intent permission, and an account reads its
   groups' upgrade state.** With `delegated_access` off, `presence-intents`,
