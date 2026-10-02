@@ -59,6 +59,15 @@ EVERY_JOB = (
 
 CARGO_MERO_SETUP = (".github/actions/setup-cargo-mero/*", "scripts/setup-cargo-mero.sh")
 
+# What the apps job's cache key holds beyond the app trees (.github/actions/wasm-apps):
+# the job must run whenever that key can change, or master never saves the new set.
+WASM_APPS = (
+    ".github/actions/wasm-apps/*",
+    ".github/actions/rust-toolchain/*",
+    ".github/workflows/e2e-rust-apps.yml",
+    "scripts/check-embedded-abi.sh",
+)
+
 
 # workflow -> (its whole-workflow job, the inputs that run it)
 WORKFLOWS = {
@@ -73,6 +82,7 @@ WORKFLOWS = {
             # Every script ci-checks.yml runs (ci-scope-test.py keeps this complete),
             # and what those scripts read.
             "scripts/build-all-apps.sh",
+            "scripts/check-embedded-abi.sh",
             "scripts/check-like-ci.py",
             "scripts/check-naming.sh",
             "scripts/check-no-user-data-at-info.py",
@@ -85,6 +95,7 @@ WORKFLOWS = {
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",
             *CARGO_MERO_SETUP,
+            ".github/actions/wasm-apps/*",
         ),
     ),
     "release": (
@@ -133,10 +144,12 @@ JOBS = {
         True,
         ("tools/cargo-mero/*",),
     ),
+    # tools/calimero-abi: build-all-apps.sh runs mero-abi over every wasm it built,
+    # whether or not cargo-mero keeps linking it.
     "apps": (
-        lambda: [*app_packages(), "tools/cargo-mero"],
+        lambda: [*app_packages(), "tools/cargo-mero", "tools/calimero-abi"],
         False,
-        ("apps/*", "scripts/build-all-apps.sh", *CARGO_MERO_SETUP),
+        ("apps/*", "scripts/build-all-apps.sh", *CARGO_MERO_SETUP, *WASM_APPS),
     ),
 }
 

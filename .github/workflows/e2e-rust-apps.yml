@@ -47,8 +47,11 @@ on:
       - ".github/actions/build-local-merod/**"
       - ".github/actions/merod-binaries/**"
       - ".github/actions/setup-cargo-mero/**"
+      - ".github/actions/wasm-apps/**"
       - "scripts/setup-cargo-mero.sh"
       - "scripts/path-dep-closure.py"
+      - "scripts/build-all-apps.sh"
+      - "scripts/check-embedded-abi.sh"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
@@ -94,8 +97,11 @@ on:
       - ".github/actions/build-local-merod/**"
       - ".github/actions/merod-binaries/**"
       - ".github/actions/setup-cargo-mero/**"
+      - ".github/actions/wasm-apps/**"
       - "scripts/setup-cargo-mero.sh"
       - "scripts/path-dep-closure.py"
+      - "scripts/build-all-apps.sh"
+      - "scripts/check-embedded-abi.sh"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
@@ -308,101 +314,30 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
+      # The same set, script and inputs as ci-checks.yml's Rust apps job, so either
+      # job's master build serves both. A hit skips Rust and cargo-mero entirely.
+      - name: Restore the apps, or set up to build them
+        id: apps
+        uses: ./.github/actions/wasm-apps
         with:
-          targets: wasm32-unknown-unknown
-          shared-key: wasm-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          root: apps
+          script: scripts/build-all-apps.sh
+          workflows: .github/workflows/ci-checks.yml .github/workflows/e2e-rust-apps.yml
+          # This job is the wasm-apps rust-cache group's one saver.
+          rust-cache-save: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Setup cargo mero
-        uses: ./.github/actions/setup-cargo-mero
+      # Bundles every app the scenarios install (lint-e2e-bundle-coverage.py reads
+      # the list from the script), then checks every wasm embeds its ABI (core#3287).
+      - name: Build every app
+        if: steps.apps.outputs.hit != 'true'
+        run: ./scripts/build-all-apps.sh
 
-      - name: Build scaffolding-e2e bundle
-        run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
-
-      # apps/scaffolding-e2e-multi declares services backed by scaffolding-e2e's
-      # wasm and builds none of its own, so it only needs a bundle step.
-      - name: Build scaffolding-e2e-multi bundle
-        run: (cd apps/scaffolding-e2e-multi && cargo mero bundle --dev --no-icon)
-
-      - name: Build xcall-example bundle
-        run: (cd apps/xcall-example && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-with-shared-storage bundle
-        run: (cd apps/kv-store-with-shared-storage && cargo mero bundle --dev --no-icon)
-
-      - name: Build tee-dice bundle
-        run: (cd apps/tee-dice && cargo mero bundle --dev --no-icon)
-
-      - name: Build tee-cards bundle
-        run: (cd apps/tee-cards && cargo mero bundle --dev --no-icon)
-
-      - name: Build name-registry bundle
-        run: (cd apps/name-registry && cargo mero bundle --dev --no-icon)
-
-      - name: Build name-registry-admin bundle
-        run: (cd apps/name-registry-admin && cargo mero bundle --dev --no-icon)
-
-      - name: Build authored-sorted-kv-store bundle
-        run: (cd apps/authored-sorted-kv-store && cargo mero bundle --dev --no-icon)
-
-      - name: Build indexed-issue-tracker bundle
-        run: (cd apps/indexed-issue-tracker && cargo mero bundle --dev --no-icon)
-
-      - name: Build indexed-forum bundle
-        run: (cd apps/indexed-forum && cargo mero bundle --dev --no-icon)
-
-      - name: Build search-chat bundle
-        run: (cd apps/search-chat && cargo mero bundle --dev --no-icon)
-
-      - name: Build permissions-showcase bundle
-        run: (cd apps/permissions-showcase && cargo mero bundle --dev --no-icon)
-
-      - name: Build components-demo bundle
-        run: (cd apps/components-demo && cargo mero bundle --dev --no-icon)
-
-      - name: Build blobs bundle
-        run: (cd apps/blobs && cargo mero bundle --dev --no-icon)
-
-      - name: Build abi_conformance bundle
-        run: (cd apps/abi_conformance && cargo mero bundle --dev --no-icon)
-
-      - name: Build collaborative-editor bundle
-        run: (cd apps/collaborative-editor && cargo mero bundle --dev --no-icon)
-
-      - name: Build fugue-collab bundle
-        run: (cd apps/fugue-collab && cargo mero bundle --dev --no-icon)
-
-      - name: Build rich-collab bundle
-        run: (cd apps/rich-collab && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-init bundle
-        run: (cd apps/kv-store-init && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-with-handlers bundle
-        run: (cd apps/kv-store-with-handlers && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-with-user-and-frozen-storage bundle
-        run: (cd apps/kv-store-with-user-and-frozen-storage && cargo mero bundle --dev --no-icon)
-
-      - name: Build nested-crdt-test bundle
-        run: (cd apps/nested-crdt-test && cargo mero bundle --dev --no-icon)
-
-      - name: Build private_data bundle
-        run: (cd apps/private_data && cargo mero bundle --dev --no-icon)
-
-      - name: Build team-metrics-custom bundle
-        run: (cd apps/team-metrics-custom && cargo mero bundle --dev --no-icon)
-
-      - name: Build team-metrics-macro bundle
-        run: (cd apps/team-metrics-macro && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store bundle
-        run: (cd apps/kv-store && cargo mero bundle --dev --no-icon)
-
-      - name: Verify every built app wasm embeds the ABI (core#3287)
-        run: ./scripts/check-embedded-abi.sh
+      - name: Share the built apps
+        if: steps.apps.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.apps.outputs.paths }}
+          key: ${{ steps.apps.outputs.key }}
 
       - name: Upload app artifacts
         uses: actions/upload-artifact@v7

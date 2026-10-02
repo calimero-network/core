@@ -275,14 +275,28 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
+      # A hit is the output of this exact build (same app trees, cargo-mero,
+      # lockfile, toolchain, script and workflows), which already passed on master:
+      # only master saves, and only after the build below succeeds. e2e-rust-apps'
+      # Build Apps runs the same script with the same inputs, so they share it.
+      - name: Restore the apps, or set up to build them
+        id: apps
+        uses: ./.github/actions/wasm-apps
         with:
-          shared-key: wasm-apps
-          save-if: false
+          root: apps
+          script: scripts/build-all-apps.sh
+          workflows: .github/workflows/ci-checks.yml .github/workflows/e2e-rust-apps.yml
 
       - name: Build every app
+        if: steps.apps.outputs.hit != 'true'
         run: ./scripts/build-all-apps.sh
+
+      - name: Share the built apps
+        if: steps.apps.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.apps.outputs.paths }}
+          key: ${{ steps.apps.outputs.key }}
 
   rust-supply-chain:
     name: Rust supply chain
