@@ -488,6 +488,10 @@
           "type": "boolean",
           "description": "Repeating the call with the same arguments has no further effect (#[app::idempotent]). Emitted only when true; a hint, not enforced."
         },
+        "handler": {
+          "type": "boolean",
+          "description": "Declared event handler (#[app::handler]). The node runs an event's handler only if its method sets this. Emitted only when true."
+        },
         "doc": {
           "type": "string"
         }

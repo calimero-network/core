@@ -139,6 +139,7 @@ fn unsigned_shared_action_does_not_abort_the_sync_batch() {
         effective_writers,
         // The delta's author, as the applying node resolved it at its cut.
         signer_account: Some(alice),
+        on_behalf_accounts: Default::default(),
     })
     .unwrap();
 

@@ -66,6 +66,7 @@ mod namespace;
 mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
+mod on_behalf;
 mod ops;
 mod owner_guard;
 mod pending_rotation;
@@ -78,7 +79,8 @@ pub mod unified_op_decode;
 mod warrant_admission;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
-    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
+    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, OpenedNamespaceOp,
+    SignerBindings,
 };
 mod upgrade_ladder;
 mod upgrades;
@@ -92,8 +94,8 @@ pub use self::authorizer::{
 pub use self::capabilities::CapabilitiesRepository;
 
 pub use self::account_bindings::{
-    member_account_for_device_key, member_account_in_namespace, signer_account_in_namespace,
-    AccountBindingRepository, BindingRejected, DeviceBinding, JOIN_SCOPE_EPOCH,
+    member_account_in_namespace, signer_account_in_namespace, AccountBindingRepository,
+    BindingRejected, DeviceBinding, JOIN_SCOPE_EPOCH,
 };
 pub use self::account_devices::AccountDeviceRegistry;
 pub use self::account_namespaces::AccountNamespaceSet;
@@ -161,6 +163,7 @@ pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, Owner
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
+pub use self::on_behalf::{on_behalf_standing, on_behalf_standing_live, OnBehalfRefusal};
 pub use self::tee::{
     is_attested_tee_key_for_context, is_evidence_quote_used, is_quote_hash_used,
     is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
@@ -178,7 +181,7 @@ pub use self::tee_vault::{
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
-pub use self::warrant_admission::{AdmissionCut, StandingReads};
+pub use self::warrant_admission::{device_withdrawn, AdmissionCut, StandingReads};
 
 #[cfg(test)]
 use self::local_state::{append_op_log_entry, set_op_head};
@@ -1699,5 +1702,7 @@ pub mod authz_matrix;
 mod governance_boundary_tests;
 #[cfg(test)]
 mod owner_guard_tests;
+#[cfg(test)]
+mod sealing_domain_tests;
 #[cfg(test)]
 mod tests;

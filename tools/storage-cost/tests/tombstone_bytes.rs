@@ -1,4 +1,4 @@
-//! The gate on tombstone GC: once it has run past the retention, a deleted
+//! The gate on tombstone GC: once it has collected a delete, a deleted
 //! entry costs no byte, neither as its own row nor in its map's. Row counters
 //! cannot see the second: the map is one row however many ids it lists, and
 //! every write to the map rewrites the list.

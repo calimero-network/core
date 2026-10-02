@@ -20,9 +20,6 @@ pub enum Key {
     /// An entry key.
     Entry(Id),
 
-    /// Sync state key for tracking last sync time with a remote node.
-    SyncState(Id),
-
     /// A node in a parent's child trie.
     ///
     /// Its own keyspace so children are addressed independently of the parent's
@@ -40,7 +37,7 @@ pub use calimero_prelude::constants::STATE_KEY_LEN as KEY_LEN;
 impl Key {
     const TAG_INDEX: u8 = calimero_prelude::constants::ENTITY_KEY_TAG;
     const TAG_ENTRY: u8 = 1;
-    const TAG_SYNC_STATE: u8 = 2;
+    // Tag 2 named a sync-state key nothing ever wrote; it decodes as no key.
     const TAG_CHILD_TRIE: u8 = 3;
 
     /// The physical key: the kind's tag followed by the id.
@@ -54,7 +51,6 @@ impl Key {
         let (tag, id) = match *self {
             Self::Index(id) => (Self::TAG_INDEX, id),
             Self::Entry(id) => (Self::TAG_ENTRY, id),
-            Self::SyncState(id) => (Self::TAG_SYNC_STATE, id),
             Self::ChildTrie(id) => (Self::TAG_CHILD_TRIE, id),
         };
         let mut bytes = [0; KEY_LEN];
@@ -71,7 +67,6 @@ impl Key {
         Some(match tag {
             Self::TAG_INDEX => Self::Index(id),
             Self::TAG_ENTRY => Self::Entry(id),
-            Self::TAG_SYNC_STATE => Self::SyncState(id),
             Self::TAG_CHILD_TRIE => Self::ChildTrie(id),
             _ => return None,
         })
@@ -81,7 +76,7 @@ impl Key {
     #[must_use]
     pub const fn id(&self) -> Id {
         match *self {
-            Self::Index(id) | Self::Entry(id) | Self::SyncState(id) | Self::ChildTrie(id) => id,
+            Self::Index(id) | Self::Entry(id) | Self::ChildTrie(id) => id,
         }
     }
 }

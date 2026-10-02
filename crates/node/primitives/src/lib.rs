@@ -1,6 +1,21 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+/// Private entry points the fuzz targets drive, compiled only under `cargo fuzz`.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz_api {
+    use std::collections::{BTreeSet, HashMap};
+    use std::sync::Arc;
+
+    pub fn extract_bundle_files<'a>(
+        bundle_data: &[u8],
+        wanted: &BTreeSet<&'a str>,
+    ) -> eyre::Result<HashMap<&'a str, Arc<[u8]>>> {
+        crate::client::application::bundle::extract_bundle_files(bundle_data, wanted)
+    }
+}
+
 pub use calimero_bundle as bundle;
 pub mod client;
 pub use client::{BlobManager, SyncClient};

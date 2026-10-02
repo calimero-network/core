@@ -104,7 +104,9 @@ printf '%s' "$SECRET" | meroctl --node node1 account seal-to <GROUP_ID> <ACCOUNT
 ```
 
 The envelope it prints carries `accountRootEpoch`, `ephemeralPublicKey`, `nonce`
-and `ciphertext`. At most 64 KiB may be sealed in one call, and an empty payload
+and `ciphertext`.
+It opens only as an account envelope, with the account root key; `env::open_sealed` in an app does not open it.
+At most 64 KiB may be sealed in one call, and an empty payload
 is refused rather than sealed — an envelope over nothing is valid and carries no
 information, which downstream is indistinguishable from a real one.
 
@@ -422,7 +424,7 @@ a node. A node may be a local home directory or a remote URL.
 
 ```sh
 meroctl node add node1 /path/to/home
-meroctl node add node3 http://public.node.com
+meroctl node add node3 https://public.node.com
 meroctl node use node1
 meroctl node ls
 ```
@@ -430,6 +432,10 @@ meroctl node ls
 For a remote node that needs authentication, login starts automatically; pass
 `--access-token` (and optionally `--refresh-token`) to skip it with explicit
 JWTs.
+
+Use https for any node that is not on this machine: `node add` and `--api`
+warn on stderr when a plain `http://` URL points at a non-loopback host, since
+the access token would then cross the network unencrypted.
 
 ### meroctl's own config (`nodes.toml`)
 

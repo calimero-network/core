@@ -1,5 +1,6 @@
 //! High-level data structures for storage.
 
+use core::any::type_name;
 use core::cell::{RefCell, RefMut};
 use core::cmp::Ordering;
 use core::fmt;
@@ -880,6 +881,12 @@ struct Collection<T, S: StorageAdaptor = MainStorage> {
     /// the entries has named them (see [`Collection::key_fits`]).
     slot_key: Option<fn(&T) -> &[u8]>,
 
+    /// The value type of a map's entries, whose register goes without its stamp
+    /// where it is the whole value (see [`lww_register::entry_stamp`]). Set by
+    /// [`UnorderedMap`] and [`SortedMap`] alone, so no other collection's entries
+    /// are written differently.
+    stamped_value: Option<&'static str>,
+
     _priv: PhantomData<(T, S)>,
 }
 
@@ -906,8 +913,21 @@ impl<T, S: StorageAdaptor> BorshDeserialize for Collection<T, S> {
             children_ids: RefCell::new(None),
             materialized: core::cell::Cell::new(false),
             slot_key: None,
+            stamped_value: None,
             _priv: PhantomData,
         })
+    }
+}
+
+impl<T, S: StorageAdaptor> Collection<T, S> {
+    /// Writes every register that is a whole entry value of type `V` without
+    /// its stamp, which the entry's `updated_at` gives back on reading (see
+    /// [`lww_register::entry_stamp`]). [`UnorderedMap`] and [`SortedMap`] call
+    /// this whenever they make or load their collection, so it holds for every
+    /// one of their entries.
+    pub(crate) fn stamp_values_of<V>(mut self) -> Self {
+        self.stamped_value = Some(type_name::<V>());
+        self
     }
 }
 
@@ -941,13 +961,33 @@ struct Entries<T> {
 }
 
 /// An entry in a map.
-#[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug)]
+#[derive(AtomicUnit, Clone, Debug)]
 struct Entry<T> {
     /// The item in the entry.
     item: T,
     /// The storage element for the entry.
     #[storage]
     storage: Element,
+}
+
+/// `item ‖ element`, the item encoded as the value of an entry of the
+/// collection whose call into the store this is (see
+/// [`lww_register::entry_stamp`]).
+impl<T: BorshSerialize> BorshSerialize for Entry<T> {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        lww_register::entry_stamp::within_entry(|| self.item.serialize(writer))?;
+        self.storage.serialize(writer)
+    }
+}
+
+impl<T: BorshDeserialize> BorshDeserialize for Entry<T> {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let item = lww_register::entry_stamp::within_entry(|| T::deserialize_reader(reader))?;
+        Ok(Self {
+            item,
+            storage: Element::deserialize_reader(reader)?,
+        })
+    }
 }
 
 /// Decode the stored VALUE bytes of a rotation-log map child back into the
@@ -1031,6 +1071,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             storage: Element::new(Some(id)),
             materialized: core::cell::Cell::new(false),
             slot_key: None,
+            stamped_value: None,
             _priv: PhantomData,
         };
 
@@ -1099,6 +1140,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             // (and ship) before that write does.
             materialized: core::cell::Cell::new(true),
             slot_key: None,
+            stamped_value: None,
             _priv: PhantomData,
         };
 
@@ -1126,6 +1168,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             // Never linked into the tree, even by an insert.
             materialized: core::cell::Cell::new(true),
             slot_key: None,
+            stamped_value: None,
             _priv: PhantomData,
         }
         // Note: No Interface::save or add_child_to call - this collection is completely detached
@@ -1155,6 +1198,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             storage,
             materialized: core::cell::Cell::new(true),
             slot_key: None,
+            stamped_value: None,
             _priv: PhantomData,
         }
     }
@@ -1182,6 +1226,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             ),
             materialized: core::cell::Cell::new(false),
             slot_key: None,
+            stamped_value: None,
             _priv: PhantomData,
         };
 
@@ -1393,7 +1438,8 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             .collect();
         let mut snapshot: Vec<(T, StorageType)> = Vec::with_capacity(ordered_ids.len());
         for id in ordered_ids {
-            let entry = <Interface<S>>::find_by_id::<Entry<T>>(id)
+            let entry = self
+                .within(|| <Interface<S>>::find_by_id::<Entry<T>>(id))
                 .expect("read child entry for reindex")
                 .expect("vector child entry must exist");
             snapshot.push((entry.item, entry.storage.metadata.storage_type));
@@ -1551,6 +1597,12 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok((stored_id, entry.item))
     }
 
+    /// Names this collection's entries' value type to the register for the
+    /// store call `f` (see [`lww_register::entry_stamp`]).
+    fn within<R>(&self, f: impl FnOnce() -> R) -> R {
+        lww_register::entry_stamp::within_collection(self.stamped_value, f)
+    }
+
     #[inline(never)]
     fn get(&self, id: Id) -> StoreResult<Option<T>> {
         Ok(self.find_admitted(id)?.map(|entry| entry.item))
@@ -1593,7 +1645,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// the domain does not admit is one no honest writer could have made (a
     /// patched peer's), and reads as absent on every node.
     fn find_admitted(&self, id: Id) -> StoreResult<Option<Entry<T>>> {
-        let entry = <Interface<S>>::find_by_id::<Entry<_>>(id)?;
+        let entry = self.within(|| <Interface<S>>::find_by_id::<Entry<_>>(id))?;
         Ok(entry.filter(|entry| {
             self.storage
                 .domain
@@ -1762,7 +1814,8 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
         let mut out = Vec::with_capacity(ids.len());
         for child in ids {
-            let entry = <Interface<S>>::find_by_id::<Entry<T>>(child)?
+            let entry = self
+                .within(|| <Interface<S>>::find_by_id::<Entry<T>>(child))?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(child)))?;
             out.push((entry.item, entry.storage.metadata.storage_type));
         }
@@ -2126,7 +2179,8 @@ where
             return;
         }
         self.entry.element_mut().update();
-        let _ignored = <Interface<S>>::save(&mut self.entry);
+        let entry = &mut self.entry;
+        let _ignored = self.collection.within(|| <Interface<S>>::save(entry));
     }
 }
 
@@ -2146,7 +2200,10 @@ where
 
     fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
         self.collection.ensure_materialized()?;
-        let _ = <Interface<S>>::add_child_to(self.collection.id(), item)?;
+        let parent = self.collection.id();
+        let _ = self
+            .collection
+            .within(|| <Interface<S>>::add_child_to(parent, item))?;
 
         // Only touch the cache if it is ALREADY materialised. Calling
         // `children_cache()` here would populate it — reading every existing
