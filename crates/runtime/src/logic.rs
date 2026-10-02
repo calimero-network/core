@@ -350,6 +350,12 @@ const DEFAULT_MAX_GAS: u64 = 1_000_000_000;
 /// depending on the value, so treat it as consensus-affecting: every node must
 /// use the same one.
 const DEFAULT_MAX_TABLE_ELEMENTS: u32 = 100_000;
+const DEFAULT_MAX_HOST_CALLS: u64 = 1_000_000; // 10x the ~99k calls a real app makes before gas runs out
+const DEFAULT_MAX_HOST_BYTES_MIB: u64 = 10
+    * (DEFAULT_MAX_BLOB_TOTAL_SIZE_MIB
+        + DEFAULT_MAX_STORAGE_WRITE_BYTES_MIB
+        + DEFAULT_MAX_RETURN_VALUE_SIZE_MIB
+        + DEFAULT_MAX_ARTIFACT_SIZE_MIB); // filling every output budget uses a tenth
 /// Fixed capacity, in chunks, of the channel feeding each blob writer task.
 ///
 /// A blob is streamed chunk-by-chunk to the writer task over this channel; a
@@ -475,6 +481,12 @@ pub struct VMLimits {
     /// instantiation and after `table.grow`. A module declaring a larger
     /// minimum is not instantiated, and a smaller declared maximum still wins.
     pub max_table_elements: u32,
+    /// The maximum number of host calls one execution may make. Gas charges the guest's
+    /// side of a call, not the host's work; every node must use the same value.
+    pub max_host_calls: u64,
+    /// The maximum bytes host calls may copy into registers or across guest memory in
+    /// one execution; every node must use the same value.
+    pub max_host_bytes: u64,
 }
 
 impl VMLimits {
@@ -547,6 +559,8 @@ impl Default for VMLimits {
                 * u64::from(ONE_MIB),
             max_gas: DEFAULT_MAX_GAS,
             max_table_elements: DEFAULT_MAX_TABLE_ELEMENTS,
+            max_host_calls: DEFAULT_MAX_HOST_CALLS,
+            max_host_bytes: DEFAULT_MAX_HOST_BYTES_MIB * u64::from(ONE_MIB),
         }
     }
 }

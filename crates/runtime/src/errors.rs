@@ -125,6 +125,10 @@ pub enum HostError {
     SearchUnavailable,
     #[error("more than {max} search_query calls in one execution")]
     SearchCallsExceeded { max: u64 },
+    #[error("more than {max} host calls in one execution")]
+    HostCallLimitExceeded { max: u64 },
+    #[error("host calls moved {attempted} bytes across the host boundary (max: {max})")]
+    HostBytesLimitExceeded { attempted: u64, max: u64 },
     #[error("host-side work exhausted the execution's gas budget")]
     HostGasExhausted,
     #[error("invalid memory access")]
