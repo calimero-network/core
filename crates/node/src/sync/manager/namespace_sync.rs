@@ -2170,14 +2170,17 @@ impl SyncManager {
                 // hash check cannot bound the content and the responder gate
                 // above is all that stands between this node and a chosen key.
                 let expected_key_ids = key_id.as_slice();
-                let outcome = calimero_governance_store::apply_received_group_key(
+                let judge = calimero_context::VoidJudge::new(&store);
+                let outcome = calimero_governance_store::apply_received_group_key_with(
                     &store,
                     namespace_id.into(),
                     group_id,
                     &envelope_bytes,
                     responder_identity,
                     expected_key_ids,
+                    &judge,
                 );
+                drop(judge);
                 drop(store);
                 match outcome {
                     Ok(divergence) => {
@@ -2234,12 +2237,12 @@ impl SyncManager {
                                 &store,
                                 namespace_id,
                             );
-                        drop(store);
                         if let Some(ops) = refreshed {
                             self.node_state
                                 .write_scope_projections()
-                                .apply_backfill(namespace_id, ops);
+                                .apply_backfill_with_base(&store, namespace_id, ops);
                         }
+                        drop(store);
 
                         self.drain_governance_pending_after_sync().await;
                     }
