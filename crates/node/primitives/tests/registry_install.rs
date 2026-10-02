@@ -6,7 +6,7 @@ use std::sync::Arc;
 use calimero_app_downloader::registry::{RegistryConfig, RegistryMode, PENDING_BLOB_SHARE_SOURCE};
 use calimero_app_downloader::source::dht::PeerBlobs;
 use calimero_app_downloader::{app_source, AppRequest, ApplicationDownloader, Outcome};
-use calimero_node_primitives::client::application::InstallOrigin;
+use calimero_node_primitives::client::application::{InstallOrigin, NotABundle};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
@@ -157,8 +157,8 @@ async fn downloaded_raw_wasm_is_refused_and_writes_no_row() {
     let _ignored = server.await;
 
     assert!(
-        err.to_string().contains("not a signed application bundle"),
-        "got: {err}"
+        err.downcast_ref::<NotABundle>().is_some(),
+        "refused as raw wasm, got: {err}"
     );
     assert!(
         node_client
@@ -168,25 +168,6 @@ async fn downloaded_raw_wasm_is_refused_and_writes_no_row() {
         "a refused install must write no row"
     );
     assert!(!node_client.has_blob(&raw_blob).expect("blob lookup"));
-}
-
-/// A locally built app is published nowhere. Absent coordinates must stay
-/// absent: a placeholder would aim the resolver at a URL nobody published.
-#[tokio::test]
-async fn absent_coordinates_are_written_as_absent() {
-    let named_id = ApplicationId::from([0xB2; 32]);
-    let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
-
-    let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let (node_client, _data, _blobs) = common::create_test_node_client(Some(store.clone())).await;
-
-    node_client
-        .write_application_row(&named_id, &BlobId::from([0x33; 32]), 12, &source, None)
-        .expect("row write");
-
-    let row = row(&store, named_id);
-    assert!(row.package.is_empty(), "got package {:?}", row.package);
-    assert!(row.version.is_empty(), "got version {:?}", row.version);
 }
 
 /// A bundle that verifies but names another application must leave nothing:
@@ -596,7 +577,7 @@ async fn downloaded_raw_wasm_never_replaces_a_raw_row_and_is_released() {
     let held_blob = store_blob(&node_client, &held).await;
     let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
     node_client
-        .write_application_row(&named_id, &held_blob, held.len() as u64, &source, None)
+        .write_application_row(&named_id, &held_blob, held.len() as u64, &source)
         .expect("first install");
 
     let _refused = download(&node_client, &base_of(&url), &req(raw_blob, named_id))

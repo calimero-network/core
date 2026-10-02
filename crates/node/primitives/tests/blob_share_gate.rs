@@ -81,7 +81,7 @@ async fn node_with_an_installed_app(
         .expect("store bytecode");
     let source: ApplicationSource = "https://reg.example/app.mpk".parse().expect("source");
     node_client
-        .write_application_row(&named_id, &bytecode, size, &source, None)
+        .write_application_row(&named_id, &bytecode, size, &source)
         .expect("install the application");
 
     let (user_blob, _size) = node_client
@@ -181,7 +181,7 @@ async fn node_missing_its_bytecode(
     let bytecode = common::blob_id_of(bundle).await;
     let source: ApplicationSource = "file:///home/dev/app.mpk".parse().expect("source");
     node_client
-        .write_application_row(&named_id, &bytecode, bundle.len() as u64, &source, None)
+        .write_application_row(&named_id, &bytecode, bundle.len() as u64, &source)
         .expect("seed the row governance named");
     assert!(!node_client.has_blob(&bytecode).expect("lookup"));
 

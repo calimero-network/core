@@ -154,6 +154,31 @@ pub(crate) async fn test_node_client(
     (node_client, blob_dir)
 }
 
+/// An admin state over `store`, with this node's account root provisioned.
+pub(crate) async fn admin_state(store: &Store) -> (std::sync::Arc<crate::AdminState>, TempDir) {
+    calimero_governance_store::NodeDeviceRepository::new(store)
+        .provision_account_root()
+        .expect("this node's account root");
+    let (event_sender, _rx) = broadcast::channel(16);
+    let (node_client, blob_dir) =
+        test_node_client(store, stub_node_manager(vec![]), event_sender).await;
+    let ctx_client = calimero_context_client::client::ContextClient::new(
+        store.clone(),
+        node_client.clone(),
+        LazyRecipient::new(),
+    );
+    let state = std::sync::Arc::new(crate::AdminState::new(
+        store.clone(),
+        ctx_client,
+        node_client,
+        std::sync::Arc::new(crate::NodeReadiness::new()),
+        [0; 32],
+        #[cfg(feature = "mock-attestation")]
+        false,
+    ));
+    (state, blob_dir)
+}
+
 /// Seed a namespace with one Restricted subgroup and `caller` in `role`,
 /// returning the namespace and subgroup ids as wire hashes plus the account
 /// `caller`'s key resolves to - the principal every row below is keyed by,

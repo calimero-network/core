@@ -280,8 +280,10 @@ async fn resolve_bundle(
     version: &str,
 ) -> eyre::Result<calimero_context_config::types::BytecodeId> {
     let node = &state.node_client;
+    // A raw-wasm row is no release: only a signed bundle may become a target.
     let installed = node.get_application(application_id)?.filter(|app| {
         app.size != 0
+            && app.signer_id.is_some()
             && app.package == package
             && app.version.as_ref().map(ToString::to_string).as_deref() == Some(version)
     });
@@ -391,17 +393,15 @@ mod tests {
         AccountGenesis, AccountProof, DeviceCert, DeviceId, GovernanceOpKind, GovernanceTerms,
         GovernanceWarrant, KemPublicKey,
     };
-    use calimero_context_client::client::ContextClient;
     use calimero_context_client::group::DelegatedGovernanceOp;
     use calimero_context_client::local_governance::{GroupOp, RootOp};
     use calimero_context_config::types::{BytecodeId, ContextGroupId};
-    use calimero_governance_store::{NamespaceRepository, NodeDeviceRepository};
+    use calimero_governance_store::NamespaceRepository;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::{AccountId, PrivateKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
-    use calimero_utils_actix::LazyRecipient;
     use libp2p::identity::Keypair;
     use tower::ServiceExt;
 
@@ -631,7 +631,7 @@ mod tests {
     /// The admin API's unauthenticated router as a relay serves it
     /// (`delegated_access`), over `store` with this node's identity provisioned.
     async fn public_router(store: &Store) -> (Router, tempfile::TempDir) {
-        let (state, blob_dir) = admin_state(store).await;
+        let (state, blob_dir) = crate::test_support::admin_state(store).await;
         let config = crate::config::ServerConfig::new(
             vec![],
             Keypair::generate_ed25519(),
@@ -643,32 +643,6 @@ mod tests {
         let (_path, _protected, public) =
             crate::admin::service::setup(&config, state).expect("admin api enabled");
         (public, blob_dir)
-    }
-
-    /// A relay's admin state over `store`, with this node's identity provisioned.
-    async fn admin_state(store: &Store) -> (Arc<crate::AdminState>, tempfile::TempDir) {
-        NodeDeviceRepository::new(store)
-            .provision_account_root()
-            .expect("this node's account root");
-        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
-        let (node_client, blob_dir) = crate::test_support::test_node_client(
-            store,
-            crate::test_support::stub_node_manager(vec![]),
-            event_sender,
-        )
-        .await;
-        let ctx_client =
-            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
-        let state = Arc::new(crate::AdminState::new(
-            store.clone(),
-            ctx_client,
-            node_client,
-            Arc::new(crate::NodeReadiness::new()),
-            [0; 32],
-            #[cfg(feature = "mock-attestation")]
-            false,
-        ));
-        (state, blob_dir)
     }
 
     fn store() -> Store {
@@ -949,7 +923,7 @@ mod tests {
     #[actix::test]
     async fn a_raw_wasm_row_is_never_named_as_a_groups_release() {
         let store = store();
-        let (state, _blobs) = admin_state(&store).await;
+        let (state, _blobs) = crate::test_support::admin_state(&store).await;
         let raw = b"raw wasm, not a bundle";
         let (blob_id, size) = state
             .node_client

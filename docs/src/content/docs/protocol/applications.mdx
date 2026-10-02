@@ -139,7 +139,8 @@ Any group can name any application id, so an install a remote party triggers nev
 That covers this resolver, the blob-share install, the join bootstrap and a relay resolving a member's target.
 On those paths a signed bundle must derive the id it is installed under, and replaces the row only when its version equals, or is semver-newer than, the signed release the row names.
 Any other release, older or not orderable because either version is not semver, stays a local blob for the contexts bound to it, and the row is left as it was.
-Raw wasm only fills a missing row or the stub governance seeds before any bytes arrive; it never replaces a row that holds bytes.
+Raw wasm is refused on all of them: it derives no id, so a group naming it could bind it under any id.
+Raw wasm never runs at all, since a group target, activation marker or stub can name any blob a node holds: the execution read (`application_bytes_from_blob`) refuses anything that is not a signed bundle.
 An operator install through the admin API may still set the row to any release, including an older one, which is how a missing intermediate version is reinstalled.
 
 Step 4 is `Outcome::Unavailable`, and it is not a failure.
