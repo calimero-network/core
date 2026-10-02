@@ -209,6 +209,13 @@ impl RuntimeEnv {
     }
 
     #[must_use]
+    /// Replaces the storage write callback, keeping every other callback attached.
+    pub fn with_storage_write(mut self, write: StorageWriteFn) -> Self {
+        self.storage_write = write;
+        self
+    }
+
+    #[must_use]
     /// Attaches the host's answer for a cell's writers, which the governance fold
     /// decides. Without one, every cell answers as its genesis writers.
     pub fn with_shared_writers(mut self, resolver: SharedWritersFn) -> Self {
