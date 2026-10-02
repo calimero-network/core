@@ -66,6 +66,8 @@ mod namespace;
 mod namespace_founding;
 mod node_device;
 pub mod nonce_window;
+mod on_behalf;
+mod op_budget;
 mod ops;
 mod owner_guard;
 mod pending_rotation;
@@ -75,10 +77,12 @@ mod reentry;
 mod tee;
 mod tee_vault;
 pub mod unified_op_decode;
+mod void_ledger;
 mod warrant_admission;
 pub mod warrant_gate;
 pub use crate::unified_op_decode::{
-    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, SignerBindings,
+    op_from_namespace_op_with_binding, signer_binding_for, signer_bindings_in, OpenedNamespaceOp,
+    SignerBindings,
 };
 mod upgrade_ladder;
 mod upgrades;
@@ -87,7 +91,8 @@ use self::local_state::{op_log_contains_content_hash, persist_group_governance_p
 pub use self::absorb::AbsorbRepository;
 pub use self::absorb_record::{AbsorbRecord, AbsorbedEntity, AbsorbedLeaf};
 pub use self::authorizer::{
-    AtCutAuthorizer, AtCutMembershipPath, LiveFallbackAuthorizer, LIVE_FALLBACK_AUTHORIZER,
+    AtCutAuthorizer, AtCutMembershipPath, GroupRows, LiveFallbackAuthorizer,
+    LIVE_FALLBACK_AUTHORIZER,
 };
 pub use self::capabilities::CapabilitiesRepository;
 
@@ -100,10 +105,10 @@ pub use self::account_namespaces::AccountNamespaceSet;
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
-    cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identities,
-    find_local_signing_identity, get_group_for_context, is_admitted_to_context,
-    is_currently_authorized_for_context, register_context_in_group, resolve_local_signing_key,
-    restore_member_context_identities, unregister_context_from_group,
+    account_is_context_member, cascade_remove_member_from_group_tree, enumerate_group_contexts,
+    find_local_signing_identities, find_local_signing_identity, get_group_for_context,
+    is_admitted_to_context, is_currently_authorized_for_context, register_context_in_group,
+    resolve_local_signing_key, restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
 pub use self::device_link::{
@@ -139,13 +144,15 @@ pub use self::metadata::MetadataRepository;
 pub use self::namespace::NamespaceRepository;
 pub use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
-    apply_received_group_key, apply_signed_namespace_op, apply_signed_namespace_op_at_cut,
-    build_group_key_delivery, collect_skeleton_delta_ids_for_group, decrypt_group_op,
-    known_namespace_identities, namespace_group_keys_awaiting, namespace_groups_awaiting_key,
+    apply_received_group_key, apply_received_group_key_with, apply_signed_namespace_op,
+    apply_signed_namespace_op_at_cut, build_group_key_delivery,
+    collect_skeleton_delta_ids_for_group, decrypt_group_op, known_namespace_identities,
+    namespace_group_keys_awaiting, namespace_groups_awaiting_key,
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
     open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
-    retry_encrypted_ops_for_group, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
+    redrive_buffered_ops_for_group_with, retry_encrypted_ops_for_group,
+    retry_encrypted_ops_for_group_with, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
     seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
     sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
     sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
@@ -161,6 +168,7 @@ pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, Owner
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
+pub use self::on_behalf::{on_behalf_standing, on_behalf_standing_live, OnBehalfRefusal};
 pub use self::tee::{
     is_attested_tee_key_for_context, is_evidence_quote_used, is_quote_hash_used,
     is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
@@ -178,7 +186,7 @@ pub use self::tee_vault::{
 };
 pub use self::upgrade_ladder::UpgradeLadderRepository;
 pub use self::upgrades::UpgradesRepository;
-pub use self::warrant_admission::{AdmissionCut, StandingReads};
+pub use self::warrant_admission::{device_withdrawn, AdmissionCut, StandingReads};
 
 #[cfg(test)]
 use self::local_state::{append_op_log_entry, set_op_head};
@@ -1693,8 +1701,13 @@ pub fn get_context_service_name(
 pub mod test_fixtures;
 
 #[cfg(test)]
+mod void_tests;
+
+#[cfg(test)]
 mod governance_boundary_tests;
 #[cfg(test)]
 mod owner_guard_tests;
+#[cfg(test)]
+mod sealing_domain_tests;
 #[cfg(test)]
 mod tests;

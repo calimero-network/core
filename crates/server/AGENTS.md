@@ -131,7 +131,10 @@ owner and blobs are deduplicated by content hash with a `refs` count, so
 ownership is many-to-many and needs a model rather than an index (core #4019).
 It keeps requiring the node-wide `blob:list`, so a delegated session cannot
 enumerate blobs — opening it alongside the scoped reads above would hand every tenant
-the blob ids of every other one.
+the blob ids of every other one. `PUT /admin-api/blobs?context_id=` records the
+upload for that context (`record_blob_owner`) when this node owns an identity
+there, and refuses it with `400` before storing anything otherwise; a blob
+uploaded without one is never served to peers.
 
 Blob **transfer** is scoped through contexts instead (`admin/handlers/blob.rs`).
 `PUT /admin-api/blobs` requires `blob:add-own` and `GET`/`HEAD
@@ -172,6 +175,10 @@ POST /jsonrpc                         # JSON-RPC 2.0 endpoint
 ```
 WS   /ws                              # WebSocket connection
 ```
+
+The upgrade needs `context:subscribe`; each `execute` message needs `context:execute` for its
+context, checked in `ws/execute.rs` against the permissions the auth guard handed over
+(`GrantedPermissions`).
 
 ### SSE
 

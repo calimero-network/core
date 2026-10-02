@@ -60,7 +60,7 @@ async fn deleting_the_blob_that_shares_a_digest_keeps_the_other_blob() {
     let (root, colliding) = root_and_chunk_hashing_to_it(&mgr, &payload).await;
     let (other, _, _) = mgr.put(&colliding[..]).await.unwrap();
 
-    assert!(mgr.delete(other).await.unwrap());
+    assert!(mgr.delete(other).await.unwrap().existed());
 
     assert!(mgr.has(root).unwrap());
     assert_eq!(read_all(&mgr, root).await, payload);
@@ -175,7 +175,7 @@ async fn adding_a_blob_stored_under_the_old_chunk_keys_restarts_its_count() {
     assert!(mgr.has(root).unwrap());
     assert_eq!(read_all(&mgr, root).await, payload);
 
-    assert!(mgr.delete(root).await.unwrap());
+    assert!(mgr.delete(root).await.unwrap().existed());
     assert!(!mgr.has(root).unwrap());
     assert!(
         mgr.data_store
@@ -196,9 +196,9 @@ async fn a_second_add_of_a_current_blob_still_counts_two_references() {
     let (again, _, _) = mgr.put(&b"payload"[..]).await.unwrap();
     assert_eq!(root, again);
 
-    assert!(mgr.delete(root).await.unwrap());
+    assert!(mgr.delete(root).await.unwrap().existed());
     assert!(mgr.has(root).unwrap(), "the other reference keeps it");
-    assert!(mgr.delete(root).await.unwrap());
+    assert!(mgr.delete(root).await.unwrap().existed());
     assert!(!mgr.has(root).unwrap());
 }
 
@@ -210,7 +210,7 @@ async fn a_stored_blob_is_present_until_it_is_deleted() {
     let (root, _, _) = mgr.put(&b"payload"[..]).await.unwrap();
     assert!(mgr.has(root).unwrap());
 
-    assert!(mgr.delete(root).await.unwrap());
+    assert!(mgr.delete(root).await.unwrap().existed());
     assert!(!mgr.has(root).unwrap());
 }
 

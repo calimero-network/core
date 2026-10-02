@@ -279,8 +279,9 @@ pub fn xcall(_args: TokenStream, input: TokenStream) -> TokenStream {
 /// member's node, a direct call in a test — panics before the body runs.
 ///
 /// Fire one by naming it as a TEE handler on an event:
-/// `app::emit!((MyEvent::RollRequested { .. }, "tee:resolve_roll"))`. Receivers
-/// that are not the elected TEE authority skip `tee:` handlers.
+/// `app::emit!((MyEvent::RollRequested { .. }, "tee:resolve_roll"))`, with the
+/// method also marked `#[app::handler]`. Receivers that are not the elected TEE
+/// authority skip `tee:` handlers.
 ///
 /// Or on a timer, with `#[app::tee(every = "30s")]` (units `s`, `m`, `h`, `d`).
 /// The period is recorded in the ABI, and the node's TEE scheduler fires the
@@ -343,6 +344,14 @@ pub fn destructive(_args: TokenStream, input: TokenStream) -> TokenStream {
 /// arguments has no further effect. Recorded as `Method.idempotent`, a hint.
 #[proc_macro_attribute]
 pub fn idempotent(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // this is a no-op, the attribute is just a marker
+    input
+}
+
+/// Marks a logic method an event may name as its handler (`Method.handler`);
+/// peers run no other method an event names, `tee:` handlers included.
+#[proc_macro_attribute]
+pub fn handler(_args: TokenStream, input: TokenStream) -> TokenStream {
     // this is a no-op, the attribute is just a marker
     input
 }
@@ -464,8 +473,9 @@ pub fn event(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// # Handler Methods
 ///
-/// When using callback handlers, the specified handler method should be defined
-/// in your application logic by implementing handler methods in your `#[app::logic]` impl block.
+/// When using callback handlers, the specified handler method is defined in your
+/// `#[app::logic]` impl block and marked `#[app::handler]`; other nodes run no
+/// other method an event names.
 #[proc_macro]
 pub fn emit(input: TokenStream) -> TokenStream {
     // Try to parse as a tuple first to check for handler parameter

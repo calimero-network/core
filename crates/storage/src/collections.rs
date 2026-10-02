@@ -883,8 +883,8 @@ struct Collection<T, S: StorageAdaptor = MainStorage> {
 
     /// The value type of a map's entries, whose register goes without its stamp
     /// where it is the whole value (see [`lww_register::entry_stamp`]). Set by
-    /// [`UnorderedMap`] alone, so no other collection's entries are written
-    /// differently.
+    /// [`UnorderedMap`] and [`SortedMap`] alone, so no other collection's entries
+    /// are written differently.
     stamped_value: Option<&'static str>,
 
     _priv: PhantomData<(T, S)>,
@@ -922,8 +922,9 @@ impl<T, S: StorageAdaptor> BorshDeserialize for Collection<T, S> {
 impl<T, S: StorageAdaptor> Collection<T, S> {
     /// Writes every register that is a whole entry value of type `V` without
     /// its stamp, which the entry's `updated_at` gives back on reading (see
-    /// [`lww_register::entry_stamp`]). [`UnorderedMap`] calls this whenever it
-    /// makes or loads its collection, so it holds for every one of its entries.
+    /// [`lww_register::entry_stamp`]). [`UnorderedMap`] and [`SortedMap`] call
+    /// this whenever they make or load their collection, so it holds for every
+    /// one of their entries.
     pub(crate) fn stamp_values_of<V>(mut self) -> Self {
         self.stamped_value = Some(type_name::<V>());
         self

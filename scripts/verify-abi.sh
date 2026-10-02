@@ -38,14 +38,18 @@ OUT="/tmp/abi_conformance.abi.json"
 # Spot checks with jq
 echo "Running jq spot checks..."
 
-# A #[app::view] method must surface intent=read_only, and a #[app::xcall]
-# method must surface xcall_callable=true, in the emitted ABI.
+# A #[app::view] method must surface intent=read_only, a #[app::xcall] method
+# xcall_callable=true and a #[app::handler] method handler=true.
 if ! jq -e '.methods[] | select(.name=="view_constant").intent == "read_only"' "$OUT" >/dev/null; then
     echo "ERROR: view_constant (#[app::view]) missing intent=read_only"
     exit 1
 fi
 if ! jq -e '.methods[] | select(.name=="xcall_noop").xcall_callable == true' "$OUT" >/dev/null; then
     echo "ERROR: xcall_noop (#[app::xcall]) missing xcall_callable=true"
+    exit 1
+fi
+if ! jq -e '.methods[] | select(.name=="handler_noop").handler == true' "$OUT" >/dev/null; then
+    echo "ERROR: handler_noop (#[app::handler]) missing handler=true"
     exit 1
 fi
 

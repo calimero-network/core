@@ -53,6 +53,26 @@ pub struct GenerateClientKeyRequest {
 /// is what shipped.
 pub const DEFAULT_CLIENT_KEY_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
+const ADMIN_PERMISSION: &str = "admin";
+
+fn is_node_control_permission(permission: &str) -> bool {
+    let category = permission
+        .split([':', '['])
+        .next()
+        .unwrap_or_default()
+        .trim();
+
+    category.eq_ignore_ascii_case("admin") || category.eq_ignore_ascii_case("keys")
+}
+
+fn is_grantable_to_client_key(permission: &str, context_bound: bool) -> bool {
+    if !is_node_control_permission(permission) {
+        return true;
+    }
+
+    permission == ADMIN_PERMISSION && !context_bound
+}
+
 /// Client list handler
 ///
 /// This endpoint lists all client keys.
@@ -184,8 +204,20 @@ pub async fn generate_client_key_handler(
     }
 
     // Add and validate additional permissions
+    let context_bound = !context_id.is_empty() || !context_identity.is_empty();
+
     if let Some(additional_perms) = request.permissions {
         for perm in additional_perms {
+            if !is_grantable_to_client_key(&perm, context_bound) {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Permission cannot be granted to a client key: {}",
+                        escape_html(&perm)
+                    ),
+                    None,
+                );
+            }
             // Validate each permission against root key
             if !root_key.has_permission(&perm) {
                 return error_response(
@@ -401,6 +433,156 @@ mod tests {
                 "minted key {client_id} must be retrievable"
             );
         }
+    }
+
+    async fn mint(
+        state: &Arc<AppState>,
+        headers: &HeaderMap,
+        context: Option<(&str, &str)>,
+        permissions: &[&str],
+    ) -> StatusCode {
+        generate_client_key_handler(
+            Extension(Arc::clone(state)),
+            headers.clone(),
+            ValidatedJson(GenerateClientKeyRequest {
+                context_id: context.map(|(id, _)| id.to_owned()),
+                context_identity: context.map(|(_, identity)| identity.to_owned()),
+                permissions: Some(permissions.iter().map(|p| (*p).to_owned()).collect()),
+                target_node_url: None,
+                ttl_secs: None,
+            }),
+        )
+        .await
+        .into_response()
+        .status()
+    }
+
+    #[test]
+    fn node_control_permissions_are_recognised_in_any_spelling() {
+        for perm in [
+            "admin",
+            "admin:x",
+            "admin:",
+            "admin[ctx]",
+            "admin:anything[a,b]",
+            "Admin",
+            "ADMIN:x",
+            " admin",
+            "admin ",
+            "keys",
+            "keys:create",
+            "keys:clients:delete",
+            "keys[x]",
+            "KEYS:list",
+        ] {
+            assert!(is_node_control_permission(perm), "{perm:?}");
+        }
+
+        for perm in [
+            "context:execute",
+            "context[ctx,pk]",
+            "application:list",
+            "namespace",
+            "blob",
+            "administrator",
+            "keystore",
+        ] {
+            assert!(!is_node_control_permission(perm), "{perm:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_admin_client_key_without_a_context_is_still_minted() {
+        let (state, headers) = admin_state().await;
+
+        assert_eq!(
+            mint(&state, &headers, None, &["admin"]).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            mint(&state, &headers, None, &["admin", "context:execute"]).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn non_canonical_admin_and_keys_permissions_are_refused() {
+        let (state, headers) = admin_state().await;
+
+        for perm in [
+            "admin:x",
+            "admin[ctx]",
+            "admin:anything[a]",
+            "Admin",
+            "ADMIN:x",
+            " admin",
+            "keys",
+            "keys:create",
+            "keys:permissions:update",
+            "keys[x]",
+        ] {
+            assert_eq!(
+                mint(&state, &headers, None, &["context:execute", perm]).await,
+                StatusCode::BAD_REQUEST,
+                "{perm:?} must not be minted"
+            );
+        }
+
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn a_context_bound_client_key_cannot_be_admin() {
+        let (state, headers) = admin_state().await;
+
+        for context in [("ctx-1", "member-pk-1"), ("ctx-1", ""), ("", "member-pk-1")] {
+            assert_eq!(
+                mint(
+                    &state,
+                    &headers,
+                    Some(context),
+                    &["context:execute", "admin"]
+                )
+                .await,
+                StatusCode::BAD_REQUEST,
+                "{context:?}"
+            );
+        }
+
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn app_client_keys_are_unaffected() {
+        let (state, headers) = admin_state().await;
+
+        let app_permissions = [
+            "context:create",
+            "context:list",
+            "context:execute",
+            "context:subscribe",
+            "application:list",
+            "namespace",
+            "group",
+            "blob",
+        ];
+
+        assert_eq!(
+            mint(&state, &headers, None, &app_permissions).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            mint(
+                &state,
+                &headers,
+                Some(("ctx-1", "member-pk-1")),
+                &app_permissions
+            )
+            .await,
+            StatusCode::OK
+        );
     }
 
     /// A minted client key must carry an expiry even when the caller says nothing.

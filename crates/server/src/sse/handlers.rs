@@ -1983,4 +1983,164 @@ mod tests {
             );
         }
     }
+
+    /// An account removed from an Open subgroup it inherits into (kicked, or
+    /// left) observes nothing there: the removal is a deny-list entry, not a row.
+    mod removed_inherited_member_read_tests {
+        use calimero_account::AccountId;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_context_config::{MemberCapabilities, VisibilityMode};
+        use calimero_governance_store::{
+            CapabilitiesRepository, DenyListRepository, MembershipRepository, NamespaceRepository,
+        };
+        use calimero_primitives::context::GroupMemberRole;
+        use calimero_primitives::identity::DeviceId;
+
+        use super::*;
+        use crate::admin::caller_scope::list_scope;
+        use crate::ws::caller_may_observe_context;
+
+        struct Fixture {
+            state: Arc<ServiceState>,
+            _blob_dir: TempDir,
+            sub: ContextGroupId,
+            context: ContextId,
+            account: AccountId,
+            device: DeviceId,
+        }
+
+        /// A namespace member that inherits into an Open subgroup holding a context.
+        async fn fixture() -> Fixture {
+            let (state, _events, blob_dir) = sse_state_authed().await;
+            let store = &state.store;
+            let ns = ContextGroupId::from([0xE0; 32]);
+            let sub = ContextGroupId::from([0xE1; 32]);
+            let context = ContextId::from([0xE2; 32]);
+
+            let device_key = PublicKey::from([0x5E; 32]);
+            let account = calimero_context::test_support::enrol(store, &ns, &device_key);
+            MembershipRepository::new(store)
+                .add_member(&ns, &account, GroupMemberRole::Member)
+                .unwrap();
+            CapabilitiesRepository::new(store)
+                .set_member_capability(
+                    &ns,
+                    &account,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
+                .unwrap();
+            NamespaceRepository::new(store).nest(&ns, &sub).unwrap();
+            CapabilitiesRepository::new(store)
+                .set_subgroup_visibility(&sub, VisibilityMode::Open)
+                .unwrap();
+            calimero_governance_store::register_context_in_group(store, &sub, &context).unwrap();
+
+            Fixture {
+                state,
+                _blob_dir: blob_dir,
+                sub,
+                context,
+                account,
+                device: DeviceId::from(*device_key),
+            }
+        }
+
+        fn remove_from_the_subgroup(f: &Fixture) {
+            DenyListRepository::new(&f.state.store)
+                .mark(&f.sub, &f.account)
+                .unwrap();
+        }
+
+        async fn sse_subscribe(f: &Fixture, session_id: ConnectionId) -> Vec<ContextId> {
+            let (session, _tx, _rx) = session_with_connection();
+            drop(
+                f.state
+                    .sessions
+                    .write()
+                    .await
+                    .insert(session_id, session.clone()),
+            );
+            let (parts, _) = handle_subscription(
+                Extension(Arc::clone(&f.state)),
+                None,
+                None,
+                Some(Extension(AuthenticatedAccount(f.account))),
+                Some(Extension(AuthenticatedDevice(f.device))),
+                Json(
+                    serde_json::from_value(serde_json::json!({
+                        "id": session_id.to_string(),
+                        "method": "subscribe",
+                        "params": { "contextIds": [f.context] },
+                    }))
+                    .expect("subscribe request parses"),
+                ),
+            )
+            .await
+            .into_response()
+            .into_parts();
+            assert_eq!(parts.status, StatusCode::OK);
+            let subscribed = session.inner.read().await.subscriptions.clone();
+            subscribed.into_iter().collect()
+        }
+
+        #[actix::test]
+        async fn a_removed_member_cannot_subscribe_to_a_subgroup_context() {
+            let f = fixture().await;
+            assert_eq!(
+                sse_subscribe(&f, 1).await,
+                vec![f.context],
+                "precondition: the inherited member subscribes"
+            );
+
+            remove_from_the_subgroup(&f);
+
+            assert!(sse_subscribe(&f, 2).await.is_empty());
+        }
+
+        #[actix::test]
+        async fn a_removed_member_cannot_observe_a_subgroup_context_over_a_websocket() {
+            let f = fixture().await;
+            let caller = EventCaller::Account {
+                account: f.account,
+                device: Some(f.device),
+            };
+            let observes = || {
+                caller_may_observe_context(
+                    &f.state.ctx_client,
+                    true,
+                    false,
+                    Some(&caller),
+                    &f.context,
+                )
+            };
+            assert!(observes(), "precondition: the inherited member observes");
+
+            remove_from_the_subgroup(&f);
+
+            assert!(!observes());
+        }
+
+        #[actix::test]
+        async fn a_removed_member_has_the_subgroup_out_of_scope() {
+            let f = fixture().await;
+            let in_scope = || {
+                list_scope(
+                    &f.state.ctx_client,
+                    None,
+                    Some(&AuthenticatedAccount(f.account)),
+                    Some(f.device),
+                )
+                .unwrap()
+                .admits(Some(&f.sub))
+            };
+            assert!(
+                in_scope(),
+                "precondition: the inherited member has it in scope"
+            );
+
+            remove_from_the_subgroup(&f);
+
+            assert!(!in_scope());
+        }
+    }
 }

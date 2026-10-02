@@ -50,7 +50,7 @@ use crate::child_trie::ChildTrie;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
-use crate::index::Index;
+use crate::index::{Index, MAX_PARENT_CHAIN};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -162,7 +162,46 @@ pub struct ApplyContext {
     /// is accepted. Production cannot produce that pair (one delta has one author,
     /// and the account is resolved *from* that author's key), which is exactly why
     /// the resolution must stay in one place instead of being assembled from two.
+    ///
+    /// **For an on-behalf action** (`signature_data.on_behalf: Some(account)`),
+    /// this is the resolution of its AUTHOR: `Some(account)` when the node found
+    /// the signing key to belong to a party entitled to author for `account`
+    /// (a `RelayTee` in the namespace, with `account` a member who may write:
+    /// `calimero_governance_store::on_behalf_standing`), and `None` otherwise. Storage refuses an on-behalf
+    /// action whose resolution is anything but exactly its `on_behalf` account,
+    /// so a node that resolved the key to the relay's own account refuses rather
+    /// than letting the relay write as itself.
     pub signer_account: Option<AccountId>,
+}
+
+/// Why a signed `User` write is or is not accepted — the three refusals the
+/// apply path's diagnostics tell apart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AuthorVerdict {
+    /// The signature verifies and the author is the entry's owner.
+    Authorized,
+    /// The signature does not verify under the key it names, names no key, or
+    /// is the unsigned placeholder.
+    BadSignature,
+    /// The signature verifies but the node could not resolve its author (the
+    /// binding has not folded here, or an on-behalf write's signer is not
+    /// entitled to author for the account it names).
+    AuthorUnresolved,
+    /// The signature verifies and the author resolved, but it is not the
+    /// owner — or, for an on-behalf write, not the account the write names.
+    WrongAuthor,
+}
+
+impl AuthorVerdict {
+    /// The `reason` the apply path logs for a refusal; `None` when authorized.
+    pub(crate) const fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Authorized => None,
+            Self::BadSignature => Some("bad-signature"),
+            Self::AuthorUnresolved => Some("author-unresolved"),
+            Self::WrongAuthor => Some("wrong-author"),
+        }
+    }
 }
 
 impl ApplyContext {
@@ -707,7 +746,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // refused (and retried once the binding folds), because defaulting to the
         // local account would let any delta authorize itself.
         let signer = sig_data.signer?;
-        let account = signer_account?;
+        let account = Self::author_account(sig_data, signer_account.as_ref())?;
 
         // Cheap check before the expensive one — this ordering is what stage 1
         // bought: a signature that verifies under nobody used to cost one
@@ -784,32 +823,67 @@ impl<S: StorageAdaptor> Interface<S> {
     /// membership AND, for a `User` leaf, that the author's account is the
     /// entry's `owner`. Signature authenticity is still enforced here, on every
     /// path, because that needs no bindings at all.
-    fn user_action_authorized(
+    ///
+    /// **An on-behalf write is owned by the account it names**, and only when the
+    /// node resolved it to exactly that account — see
+    /// [`author_account`](Self::author_account).
+    ///
+    /// Returns which check failed, so the apply path can name it.
+    pub(crate) fn user_action_verdict(
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
         owner: &AccountId,
         signer_account: Option<&AccountId>,
-    ) -> bool {
+    ) -> AuthorVerdict {
         if !Self::snapshot_signature_verifies(sig_data, payload) {
-            return false;
+            return AuthorVerdict::BadSignature;
         }
-        match signer_account {
-            Some(account) => account == owner,
-            // Refused, matching the `Shared` and `SharedMember` arms, which bail
-            // on an unnameable writer via `resolve_signer`.
-            //
-            // This arm used to accept, from when nothing could name a signer on
-            // any path that reaches here. Both now can: a local apply states the
-            // executing account (`Root::sync`), and a repair resolves the leaf's
-            // signer (`calimero-node`'s `repair_signer_account`). So `None` no
-            // longer means "nobody asked" — it means the binding has not folded
-            // here yet, which is a retryable timing gap, not authority.
-            //
-            // Accepting it was the divergence the refusal exists to prevent: a
-            // peer that HAS folded the binding refuses the same leaf, and the two
-            // keep different state. Refusing converges them, because the leaf is
-            // re-driven once the binding lands.
-            None => false,
+        // Refused on `None`, matching the `Shared` and `SharedMember` arms, which
+        // bail on an unnameable writer via `resolve_signer`.
+        //
+        // This arm used to accept, from when nothing could name a signer on
+        // any path that reaches here. Both now can: a local apply states the
+        // executing account (`Root::sync`), and a repair resolves the leaf's
+        // signer (`calimero-node`'s `repair_signer_account`). So `None` no
+        // longer means "nobody asked" — it means the binding has not folded
+        // here yet, which is a retryable timing gap, not authority.
+        //
+        // Accepting it was the divergence the refusal exists to prevent: a
+        // peer that HAS folded the binding refuses the same leaf, and the two
+        // keep different state. Refusing converges them, because the leaf is
+        // re-driven once the binding lands.
+        let Some(resolved) = signer_account else {
+            return AuthorVerdict::AuthorUnresolved;
+        };
+        match Self::author_account(sig_data, Some(resolved)) {
+            Some(author) if author == *owner => AuthorVerdict::Authorized,
+            _ => AuthorVerdict::WrongAuthor,
+        }
+    }
+
+    /// The account a signed write is attributed to: the node's resolution of
+    /// its author, provided that resolution is consistent with what the write
+    /// itself claims.
+    ///
+    /// A direct write (`on_behalf: None`) is attributed to `signer_account`, the
+    /// account the node resolved the signing key to — unchanged.
+    ///
+    /// An on-behalf write is attributed to its `on_behalf` account, and only if
+    /// the node resolved the write to exactly that account. The node resolves an
+    /// on-behalf write to its account only when the signing key belongs to a
+    /// party entitled to author for it (a relay, by role); anything else —
+    /// the relay's own account, a third account, nothing — is refused here. So
+    /// a node that resolved the key naively, to the relay's account, cannot
+    /// thereby let the relay write as itself under a label naming someone else,
+    /// nor let a write for one account be checked against another's rights.
+    fn author_account(
+        sig_data: &crate::entities::SignatureData,
+        signer_account: Option<&AccountId>,
+    ) -> Option<AccountId> {
+        let resolved = *signer_account?;
+        match sig_data.on_behalf {
+            None => Some(resolved),
+            Some(account) => (account == resolved).then_some(account),
         }
     }
 
@@ -820,7 +894,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// that names one, immutable or not: that is what moderation is for. Both
     /// need the signature to verify and the signer's account resolved at the
     /// delete's causal cut, exactly as
-    /// [`user_action_authorized`](Self::user_action_authorized) does.
+    /// [`user_action_verdict`](Self::user_action_verdict) does.
     fn user_delete_authorized(
         sig_data: &crate::entities::SignatureData,
         payload: &[u8],
@@ -831,9 +905,10 @@ impl<S: StorageAdaptor> Interface<S> {
         if !Self::snapshot_signature_verifies(sig_data, payload) {
             return false;
         }
-        let Some(signer) = ctx.signer_account.as_ref() else {
+        let Some(signer) = Self::author_account(sig_data, ctx.signer_account.as_ref()) else {
             return false;
         };
+        let signer = &signer;
         if signer == owner && !rules.immutable {
             return true;
         }
@@ -1728,12 +1803,73 @@ impl<S: StorageAdaptor> Interface<S> {
         action
     }
 
+    /// Refuses an upsert whose links would put an entity under itself or more than
+    /// `MAX_PARENT_CHAIN` deep, before apply writes anything.
+    fn refuse_ancestor_loop(id: Id, ancestors: &[ChildInfo]) -> Result<(), StorageError> {
+        let refuse = || {
+            Err(StorageError::ActionNotAllowed(format!(
+                "the links {id} makes would loop or exceed {MAX_PARENT_CHAIN} ancestors"
+            )))
+        };
+        // An honest chain names each id once, and at most MAX_PARENT_CHAIN of them. The links
+        // apply makes: `id` under the first ancestor, each missing one under the next.
+        if ancestors.len() > MAX_PARENT_CHAIN {
+            return refuse();
+        }
+        let mut links = BTreeMap::new();
+        let missing = ancestors
+            .windows(2)
+            .filter(|pair| !<Index<S>>::has_index(pair[0].id()))
+            .map(|pair| (pair[0].id(), pair[1].id()));
+        for (child, parent) in ancestors
+            .first()
+            .map(|first| (id, first.id()))
+            .into_iter()
+            .chain(missing)
+        {
+            if links.insert(child, parent).is_some() {
+                return refuse();
+            }
+        }
+        let parent_of = |entity: Id| match links.get(&entity) {
+            Some(&parent) => Ok(Some(parent)),
+            None => <Index<S>>::get_parent_id(entity),
+        };
+        // Ancestor count of each entity walked so far, so none is walked twice.
+        let mut depths: BTreeMap<Id, usize> = BTreeMap::new();
+        for &start in links.keys() {
+            let mut path = Vec::new();
+            let mut at = start;
+            let above = loop {
+                if let Some(&depth) = depths.get(&at) {
+                    break Some(depth);
+                }
+                if path.len() > MAX_PARENT_CHAIN {
+                    return refuse();
+                }
+                path.push(at);
+                match parent_of(at)? {
+                    Some(parent) => at = parent,
+                    None => break None,
+                }
+            };
+            let top = above.map_or(0, |depth| depth + 1);
+            for (depth, entity) in (top..).zip(path.into_iter().rev()) {
+                if depth > MAX_PARENT_CHAIN {
+                    return refuse();
+                }
+                let _previous = depths.insert(entity, depth);
+            }
+        }
+        Ok(())
+    }
+
     /// The chain an upsert of `id` that names no ancestors is placed under: the
     /// parent this node stores for it.
     ///
     /// An `Update` to an entity its writer held live before the write names no
     /// ancestors (`save_raw_stamped`), and neither does an entity-level sync of
-    /// one this node holds. A stored entity is never relinked, so the parent
+    /// one this node holds. An honest writer never relinks a stored entity, so the parent
     /// this node stores is the one the writer has, and one stored with no
     /// parent stays as it is. A non-root entity this node
     /// does not hold, or holds under a parent it has since collected, cannot be
@@ -1806,6 +1942,9 @@ impl<S: StorageAdaptor> Interface<S> {
                     refuse_foreign_entity_at_cell_id(*id, metadata, !<Index<S>>::has_index(*id))?;
                 }
             }
+        }
+        if let Action::Add { id, ancestors, .. } | Action::Update { id, ancestors, .. } = &action {
+            Self::refuse_ancestor_loop(*id, ancestors)?;
         }
         // An owned entry answers to the parent it is linked under, which its
         // id is bound to in a cell and whose kind of id it must take, and a
@@ -1987,19 +2126,15 @@ impl<S: StorageAdaptor> Interface<S> {
                         // unauthenticated stale action should still
                         // reject as `InvalidSignature`, not silently
                         // disappear.
-                        let verification_result = Self::user_action_authorized(
+                        let verdict = Self::user_action_verdict(
                             sig_data,
                             &payload,
                             owner,
                             ctx.signer_account.as_ref(),
                         );
 
-                        if !verification_result {
-                            return Err(Self::reject_action_signature(
-                                "stale-action-unauthenticated",
-                                id,
-                                metadata,
-                            ));
+                        if let Some(reason) = verdict.reason() {
+                            return Err(Self::reject_action_signature(reason, id, metadata));
                         }
 
                         // An owned entry in a cell answers to the cell too. The
@@ -3539,6 +3674,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // content hash, so it is not what the signature
                         // verifies against.
                         signer: Some(crate::env::device_id().into()),
+                        on_behalf: None,
                     }),
                 };
             }
@@ -3565,6 +3701,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce: deleted_at,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
         }
@@ -3598,6 +3735,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce: deleted_at,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
         }
@@ -4605,6 +4743,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // The DEVICE writing on the owner's behalf — see the
                         // matching stamp on the delete path.
                         signer: Some(crate::env::device_id().into()),
+                        on_behalf: None,
                     }),
                 };
                 // Owner-driven convert (PR-6c): the owner's own write re-stamps
@@ -4651,6 +4790,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
             // Owner-driven convert (PR-6c): same as the User arm — a current
@@ -4690,6 +4830,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     signature: [0; 64], // Placeholder, added by signer
                     nonce,
                     signer: Some(signer), // O(1) verifier lookup
+                    on_behalf: None,
                 }),
             };
             // Owner-driven convert (PR-6c): same as the User/Shared arms — a

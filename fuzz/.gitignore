@@ -1,0 +1,6 @@
+target
+corpus
+artifacts
+coverage
+# Copied from the root lock by scripts/fuzz.sh on every run.
+Cargo.lock

@@ -272,7 +272,7 @@ pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
 /// One walk for every path, not one per path: skipping an entry still
 /// decompresses it, so a walk per artifact would multiply the archive's whole
 /// decompressed size by the number of artifacts.
-fn extract_bundle_files<'a>(
+pub(crate) fn extract_bundle_files<'a>(
     bundle_data: &[u8],
     wanted: &BTreeSet<&'a str>,
 ) -> eyre::Result<HashMap<&'a str, Arc<[u8]>>> {

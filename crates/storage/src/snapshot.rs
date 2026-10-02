@@ -88,9 +88,6 @@ pub fn generate_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError>
                     trie_rows.push((id, data));
                 }
             }
-            _ => {
-                // Skip sync state and other metadata keys
-            }
         }
     }
 
@@ -142,9 +139,6 @@ pub fn generate_full_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageE
                 if let Some(data) = S::storage_read(key) {
                     trie_rows.push((id, data));
                 }
-            }
-            _ => {
-                // Skip sync state and other metadata keys
             }
         }
     }
@@ -199,7 +193,7 @@ pub fn apply_snapshot<S: IterableStorage>(snapshot: &Snapshot) -> Result<(), Sto
     Ok(())
 }
 
-/// Clears all storage data except sync state.
+/// Clears all storage data.
 ///
 /// Used internally by `apply_snapshot` to prepare for new state.
 ///
@@ -211,14 +205,7 @@ fn clear_all_storage<S: IterableStorage>() -> Result<(), StorageError> {
     let mut keys_to_delete = Vec::new();
 
     for key in S::storage_iter_keys() {
-        match key {
-            Key::Entry(_) | Key::Index(_) | Key::ChildTrie(_) => {
-                keys_to_delete.push(key);
-            }
-            _ => {
-                // Keep sync state and other metadata
-            }
-        }
+        keys_to_delete.push(key);
     }
 
     for key in keys_to_delete {

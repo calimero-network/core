@@ -1003,6 +1003,49 @@ impl<'a> AccountBindingRepository<'a> {
         }
     }
 
+    /// Record that `account`'s own root withdrew `device` here, when this group
+    /// holds no binding that ties the two.
+    ///
+    /// The device-wide tombstone ([`apply_revocation`](Self::apply_revocation))
+    /// cannot be written from a root-signed proof alone: the proof names a
+    /// `DeviceId` its signer chose, so honouring it would let any account spend
+    /// any other account's device for good. This records the withdrawal in the
+    /// slot keyed by account AND device instead — the scope floor, raised to
+    /// [`WITHDRAWN_SCOPE_FLOOR`], which no scope epoch outranks. A proof from
+    /// another account names another slot, so it withdraws nothing of anyone
+    /// else's. A later link of this device for this account is refused by the
+    /// floor check in [`apply_link`](Self::apply_link), whatever order the two
+    /// arrive in.
+    ///
+    /// # Errors
+    /// Propagates the store failure.
+    pub fn withdraw_for_account(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<()> {
+        let _dropped = self.narrow(group, account, device, WITHDRAWN_SCOPE_FLOOR)?;
+        Ok(())
+    }
+
+    /// Did `account`'s own root withdraw `device` in `group`?
+    ///
+    /// True after [`withdraw_for_account`](Self::withdraw_for_account). A device
+    /// the group revoked outright reads [`is_revoked`](Self::is_revoked) instead;
+    /// a caller deciding whether a device may still act for its account asks both.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn is_withdrawn_for_account(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<bool> {
+        Ok(self.scope_floor(group, account, device)? == Some(WITHDRAWN_SCOPE_FLOOR))
+    }
+
     /// Withdraw a device.
     ///
     /// Writes the tombstone **unconditionally**, even for a device this group
@@ -1037,6 +1080,11 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(())
     }
 }
+
+/// The scope floor a device's own account leaves it at when it withdraws it:
+/// no scope epoch outranks it, so the withdrawal is terminal for that account.
+/// See [`AccountBindingRepository::withdraw_for_account`].
+pub const WITHDRAWN_SCOPE_FLOOR: u32 = u32::MAX;
 
 /// Account and device hashed into one slot: a statement from another account's
 /// root names a different slot, so it cannot raise this device's floor.

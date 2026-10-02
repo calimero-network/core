@@ -155,10 +155,14 @@ session. WebSockets cannot cross a POST; the node answers a sealed upgrade with
 a `501` inside the envelope, so subscribe over SSE instead.
 
 **Limits.** A sealed request body is capped at 64 MiB, and the node buffers it
-before it can tell whether the request opens, so size your proxy's concurrency
-and body limits with that in mind. Responses have no cap: they stream in frames
-of at most 64 KiB. Session and request ids travel in the clear, so a proxy can
-tell which requests share a session, though not what they contain.
+before it can tell whether the request opens. It checks the session named in the
+header first: a body for no open session is refused, and the rest of it is read
+and discarded rather than held. A `Content-Length` over
+the cap is refused before any of the body is read. A session needs no
+credential, so any client can still send a 64 MiB body: size your proxy's
+concurrency and body limits for that. Responses have no cap: they stream in
+frames of at most 64 KiB. Session and request ids travel in the clear, so a
+proxy can tell which requests share a session, though not what they contain.
 
 **Behind `NODE_PATH_PREFIX`.** The envelope is served both at the root
 (`/sealed/v2`) and under the prefix (`{prefix}/sealed/v2`), and a request opened

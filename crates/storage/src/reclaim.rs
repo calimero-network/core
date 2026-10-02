@@ -2,12 +2,15 @@
 //!
 //! A delete leaves two records behind: the deleted entity's tombstone row
 //! (its index, with `deleted_at` set and no data) and the entity's id in its
-//! parent's `deleted_children`. The tombstone is reclaimed once its retention
-//! elapses ([`expired_tombstone`]). The id in the parent exists only to point
-//! at that tombstone: the sync wire resolves each id to the child's tombstone
-//! and skips an id whose tombstone is gone. Once the tombstone has been
-//! collected, the id is inert, and [`prune_deleted_children`] drops it. Both
-//! records then go at the same moment, under the same retention rule.
+//! parent's `deleted_children`. The tombstone may be collected once every
+//! member of the context has applied the delete, which the node decides
+//! (`calimero-node`'s `tombstone_stability`); this module says only which rows
+//! are tombstones it may collect at all ([`tombstone_deleted_at`]). The id in
+//! the parent exists only to point at that tombstone: the sync wire resolves
+//! each id to the child's tombstone and skips an id whose tombstone is gone.
+//! Once the tombstone has been collected, the id is inert, and
+//! [`prune_deleted_children`] drops it. Both records then go in the same
+//! sweep.
 //!
 //! These functions read and produce whole physical entity rows
 //! ([`crate::row`]), so a node can call them on its store without running the
@@ -18,8 +21,8 @@ use borsh::to_vec;
 use crate::address::Id;
 use crate::row::{decode, encode, Row};
 
-/// The `deleted_at` of the row of entity `id`, if GC may collect it once its
-/// retention has elapsed.
+/// The `deleted_at` of the row of entity `id`, if it is a tombstone GC may
+/// collect once every member has applied the delete.
 ///
 /// A value qualifies only if it decodes as an entity row whose index carries a
 /// `deleted_at` AND re-encodes to the exact same bytes. The row codec refuses
@@ -39,17 +42,6 @@ pub fn tombstone_deleted_at(id: Id, bytes: &[u8]) -> Option<u64> {
         return None;
     }
     Some(deleted_at)
-}
-
-/// Whether the tombstone row of entity `id` is old enough to collect at
-/// `now`: strictly older than `retention` nanoseconds.
-///
-/// A clock that went backwards (`now < deleted_at`) saturates the age to zero,
-/// so a tombstone is never collected before its retention has really elapsed.
-#[must_use]
-pub fn expired_tombstone(id: Id, bytes: &[u8], now: u64, retention: u64) -> bool {
-    tombstone_deleted_at(id, bytes)
-        .is_some_and(|deleted_at| now.saturating_sub(deleted_at) > retention)
 }
 
 /// The row of entity `id` with every `deleted_children` entry whose child row

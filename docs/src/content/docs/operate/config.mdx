@@ -267,23 +267,27 @@ things:
 | Loop | Reclaims | Cadence | Operator-tunable? |
 | --- | --- | --- | --- |
 | DAG compaction | old delta-log **history** older than the recent retain window | `[dag_compaction] check_interval` (default 1h) | Yes — the `[dag_compaction]` keys above. |
-| Tombstone GC | expired CRDT **tombstones** (the markers a deleted entity leaves behind) | fixed **12h** | No — not a `config.toml` key. |
+| Tombstone GC | CRDT **tombstones** (the markers a deleted entity leaves behind) every member has applied | fixed **1h** | No — not a `config.toml` key. |
 
 When an entity is deleted, the CRDT layer keeps a **tombstone** so the deletion
-can win against a concurrent or out-of-order write that arrives later. A
-tombstone is retained for a fixed **24h** before it becomes eligible for
-collection, and the GC loop runs every **12h**, scanning each context and
-deleting tombstones older than that window. A delete also lists the entity's id
-in its parent's `deleted_children` (so sync can ship the deletion); the same
-pass drops each collected tombstone's id from that list, so once a tombstone is
-collected nothing of the delete is left. Both durations are compile-time
-constants, not config keys — there is no `[gc]` section and no `gc_interval`
-knob, so nothing here needs (or accepts) tuning. The retention window is
-deliberately longer than the GC interval, so a node that reconnects within the
-window can still reconcile deletions incrementally. A write held back for longer
-than the window is no longer recognised as older than the delete, and lands as a
-new entry. `FULL_RESYNC_THRESHOLD_NANOS` (2 days) names the offline window meant
-to force a full resync instead, but no sync path consults it yet.
+can win against a concurrent or out-of-order write that arrives later, and
+against a replica that still holds the entity. A tombstone is collected only
+once **every member device of the context has applied the delete**, with no
+time limit. Each member sends a signed state beacon (its DAG heads and root
+hash) with its heartbeat. A member is caught up when its beacon equals this
+node's own state. The GC loop runs every **1h**: it notes each tombstone it
+finds, and collects one on a later pass once every other member device was
+caught up after that. A context with no other member collects its tombstones
+on the pass after the one that finds them.
+
+A delete also lists the entity's id in its parent's `deleted_children` (so sync
+can ship the deletion); the same pass drops each collected tombstone's id from
+that list, so once a tombstone is collected nothing of the delete is left.
+
+The cost of never guessing: while any member device is silent (offline, or
+gone without being removed), the tombstones of every delete since it went
+quiet stay on disk until it returns and catches up, or an admin removes it
+from the group. There is no `[gc]` section and no `gc_interval` knob.
 
 ## `[registry]`
 

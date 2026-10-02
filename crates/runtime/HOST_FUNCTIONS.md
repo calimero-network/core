@@ -450,8 +450,8 @@ Large binary object streaming.
 | `tee_origin` | `() -> u32` | `1` in a run the node's TEE scheduler fired as the TEE authority, `0` otherwise. |
 | `tee_random_bytes` | `(dest_ptr: u64)` | `random_bytes`, but only in a TEE-triggered run; traps (`TeeOnly`) otherwise. |
 | `tee_authority_keys` | `(register_id: u64)` | Writes the keys to seal a value only the TEE may read to, 32 bytes each: the namespace TEE key once the TEE holds it, else the attested key of every TEE authority. TEE-triggered runs only; traps (`TeeOnly`) otherwise. |
-| `seal_to` | `(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32` | Seals the plaintext to a 32-byte Ed25519 key (ephemeral ECDH + AES-256-GCM) and writes the envelope. `0` if the key is not a usable point. Available in every run. |
-| `open_sealed` | `(sealed_ptr: u64, register_id: u64) -> u32` | Opens an envelope with the run's executor key, or failing that with a namespace TEE key the run holds (`SealingContext::vault_keys`, TEE-triggered runs only), and writes the plaintext; `0` if it does not open. Traps (`TeeOnly`) when the node withheld the key: a run on a TEE node the TEE scheduler did not fire, or a delegated run. |
+| `seal_to` | `(key_ptr: u64, plaintext_ptr: u64, register_id: u64) -> u32` | Seals the plaintext to a 32-byte Ed25519 key (ephemeral ECDH + AES-256-GCM, `Purpose::App` bound to the run's context id) and writes the envelope. `0` if the key is not a usable point. Available in every run. |
+| `open_sealed` | `(sealed_ptr: u64, register_id: u64) -> u32` | Opens an envelope with the run's executor key, or failing that with a namespace TEE key the run holds (`SealingContext::vault_keys`, TEE-triggered runs only), and writes the plaintext; `0` if it does not open, including an envelope sealed in another context. Traps (`TeeOnly`) when the node withheld the key: a run on a TEE node the TEE scheduler did not fire, or a delegated run. |
 
 ---
 

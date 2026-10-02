@@ -351,6 +351,40 @@ pub enum OpPayload {
     },
 }
 
+impl OpPayload {
+    /// Must a void op keep this payload when it loses its bytes? True for all the void
+    /// rule or a view reads. No wildcard: a new payload has to be decided here.
+    #[must_use]
+    pub fn outlives_void_bytes(&self) -> bool {
+        match self {
+            Self::MemberAdded { .. }
+            | Self::MemberRemoved { .. }
+            | Self::MemberCapabilitySet { .. }
+            | Self::DefaultCapabilitiesSet { .. }
+            | Self::AdminChanged { .. }
+            | Self::PolicyUpdated { .. }
+            | Self::SubgroupCreated { .. }
+            | Self::SubgroupReparented { .. }
+            | Self::SubgroupDeleted { .. }
+            | Self::SubgroupVisibilitySet { .. }
+            | Self::DeviceLinked { .. }
+            | Self::DeviceRevoked { .. }
+            | Self::DeviceDescoped { .. }
+            | Self::AccountKeysRotated { .. }
+            | Self::MemberJoinedWithDevice { .. }
+            | Self::TeeAuthoringPolicySet { .. }
+            | Self::TeeAuthorityEvidence { .. }
+            | Self::RelaySeated { .. }
+            | Self::RootGuarded { .. } => true,
+            Self::Put { .. }
+            | Self::Delete { .. }
+            | Self::SetWriters { .. }
+            | Self::Noop
+            | Self::Opaque { .. } => false,
+        }
+    }
+}
+
 /// The device credential a [`OpPayload::RelaySeated`] binds, with the same
 /// parts as [`OpPayload::DeviceLinked`].
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]

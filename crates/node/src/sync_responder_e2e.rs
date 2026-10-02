@@ -280,3 +280,51 @@ async fn a_snapshot_boundary_names_the_writing_identity() {
         assert_eq!(server_identity, hosted.writer.public_key());
     }
 }
+
+/// Whether a `BlobShare` for `blob_id` in `CONTEXT` is answered with the blob.
+async fn shares(
+    manager: &SyncManager,
+    party: &PrivateKey,
+    blob_id: calimero_primitives::blobs::BlobId,
+) -> bool {
+    match exchange(manager, party, InitPayload::BlobShare { blob_id }, None).await {
+        Some(StreamMessage::Init {
+            payload: InitPayload::BlobShare { .. },
+            ..
+        }) => true,
+        Some(StreamMessage::OpaqueError) => false,
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_blob_share_serves_only_blobs_held_for_the_context() {
+    let node = boot_test_node().await;
+    let hosted = host_contexts(&node.store);
+    let bytes = b"a file shared in another context";
+    let (blob_id, _size) = node
+        .node_client
+        .add_blob(&bytes[..], Some(bytes.len() as u64), None)
+        .await
+        .expect("store blob");
+
+    assert!(
+        !shares(&node.sync_manager, &hosted.writer, blob_id).await,
+        "a blob held for no context is not shared"
+    );
+    node.node_client
+        .record_blob_owner(&OTHER_CONTEXT.into(), &blob_id)
+        .expect("record");
+    assert!(
+        !shares(&node.sync_manager, &hosted.writer, blob_id).await,
+        "a blob held only for another context is not shared"
+    );
+    node.node_client
+        .record_blob_owner(&CONTEXT.into(), &blob_id)
+        .expect("record");
+    assert!(
+        shares(&node.sync_manager, &hosted.writer, blob_id).await,
+        "a blob held for the context is shared"
+    );
+}

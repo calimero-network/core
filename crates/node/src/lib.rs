@@ -35,6 +35,7 @@ pub mod sync;
 pub(crate) mod sync_session_bridge;
 mod tee_firing;
 mod tee_scheduler;
+pub(crate) mod tombstone_stability;
 mod utils;
 
 pub use manager::NodeManager;
@@ -52,6 +53,8 @@ pub use sync::SyncManager;
 mod cascade_dispatch_e2e;
 #[cfg(test)]
 mod crash_recovery_test;
+#[cfg(test)]
+mod delegated_apply_gate_test;
 #[cfg(test)]
 mod delta_store_batch_test;
 #[cfg(test)]
