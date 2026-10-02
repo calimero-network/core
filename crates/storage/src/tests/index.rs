@@ -2508,3 +2508,221 @@ mod slim_form {
         assert!(SlimIndex::deserialize(&mut &empty[..], false, index.id).is_err());
     }
 }
+
+/// A parent chain that loops would spin every walk up the tree, so no apply may
+/// link one and no walk follows one forever.
+mod parent_loops {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::collections::Root;
+    use crate::delta::StorageDelta;
+    use crate::interface::{Action, ApplyContext, Interface};
+    use crate::logical_clock::HybridTimestamp;
+    use crate::tests::common::EmptyData;
+
+    const MAX_PARENT_CHAIN: usize = 256;
+
+    fn x() -> Id {
+        Id::new([0x33; 32])
+    }
+
+    fn a() -> Id {
+        Id::new([0x44; 32])
+    }
+
+    fn numbered(n: usize) -> Id {
+        let mut id = [0x55; 32];
+        id[..8].copy_from_slice(&(n as u64).to_le_bytes());
+        Id::new(id)
+    }
+
+    fn named(id: Id) -> ChildInfo {
+        ChildInfo::new(id, [0; 32], Metadata::default())
+    }
+
+    fn add(id: Id, ancestors: &[Id], at: u64) -> Action {
+        Action::Add {
+            id,
+            data: id.as_bytes().to_vec(),
+            ancestors: ancestors.iter().copied().map(named).collect(),
+            metadata: Metadata::new(at, at),
+        }
+    }
+
+    fn apply(action: Action) -> Result<(), StorageError> {
+        Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+    }
+
+    fn refused(outcome: &Result<(), StorageError>) -> bool {
+        matches!(outcome, Err(StorageError::ActionNotAllowed(_)))
+    }
+
+    /// Runs `body` on a fresh thread and store, failing rather than hanging if it
+    /// spins; a spinning thread is left to the test process, which has failed.
+    fn returns<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, result) = mpsc::channel();
+        let _spinning = thread::spawn(move || {
+            Index::<MainStorage>::add_root(named(Id::root())).unwrap();
+            done.send(body())
+        });
+        result
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the walk over the tree never returned")
+    }
+
+    #[test]
+    fn an_entity_naming_itself_among_its_ancestors_is_refused() {
+        let (outcome, created) = returns(|| {
+            let outcome = apply(add(x(), &[a(), x()], 100));
+            (outcome, Index::<MainStorage>::has_index(a()))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+        assert!(!created, "a refused action created its ancestors");
+    }
+
+    #[test]
+    fn a_sync_drops_the_refused_action_and_applies_the_rest() {
+        let (outcome, a_parent, x_stored) = returns(|| {
+            crate::merge::register_crdt_merge::<EmptyData>();
+            let delta = StorageDelta::CausalActions {
+                actions: vec![add(x(), &[a(), x()], 100), add(a(), &[Id::root()], 100)],
+                delta_id: [0; 32],
+                delta_hlc: HybridTimestamp::default(),
+                effective_writers: Default::default(),
+                signer_account: None,
+                on_behalf_accounts: Default::default(),
+            };
+            let outcome =
+                Root::<EmptyData>::sync(&borsh::to_vec(&delta).unwrap(), &ApplyContext::empty());
+            let parent = Index::<MainStorage>::get_parent_id(a()).unwrap();
+            (outcome, parent, Index::<MainStorage>::has_index(x()))
+        });
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(a_parent, Some(Id::root()));
+        assert!(!x_stored);
+    }
+
+    #[test]
+    fn an_entity_is_not_moved_under_its_own_descendant() {
+        let (outcome, parent) = returns(|| {
+            apply(add(a(), &[Id::root()], 100)).unwrap();
+            apply(add(x(), &[a()], 110)).unwrap();
+            let outcome = apply(add(a(), &[x()], 120));
+            (outcome, Index::<MainStorage>::get_parent_id(a()).unwrap())
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+        assert_eq!(parent, Some(Id::root()));
+    }
+
+    #[test]
+    fn an_entity_is_not_moved_under_a_new_ancestor_of_its_descendant() {
+        let outcome = returns(|| {
+            apply(add(a(), &[Id::root()], 100)).unwrap();
+            apply(add(x(), &[a()], 110)).unwrap();
+            apply(add(a(), &[numbered(0), x()], 120))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+    }
+
+    /// A collected entity's surviving child still names it as parent.
+    #[test]
+    fn a_collected_entity_is_not_recreated_under_its_surviving_child() {
+        let outcome = returns(|| {
+            apply(add(a(), &[Id::root()], 100)).unwrap();
+            apply(add(x(), &[a()], 110)).unwrap();
+            Index::<MainStorage>::remove_index(a());
+            apply(add(a(), &[x()], 120))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+    }
+
+    #[test]
+    fn an_entity_may_have_at_most_max_parent_chain_ancestors() {
+        let (deepest, too_deep) = returns(|| {
+            // Below the root, so each id has one ancestor more than it names.
+            let chain = |from: usize, len: usize| (from..from + len).map(numbered).collect();
+            let deepest: Vec<Id> = chain(0, MAX_PARENT_CHAIN - 1);
+            let too_deep: Vec<Id> = chain(MAX_PARENT_CHAIN, MAX_PARENT_CHAIN);
+            let deepest = apply(add(x(), &deepest, 100));
+            let too_deep = apply(add(a(), &too_deep, 100));
+            (deepest, too_deep)
+        });
+        assert!(deepest.is_ok(), "{deepest:?}");
+        assert!(refused(&too_deep), "{too_deep:?}");
+    }
+
+    #[test]
+    fn a_missing_ancestor_is_not_created_too_deep() {
+        let outcome = returns(|| {
+            let chain: Vec<Id> = (0..MAX_PARENT_CHAIN - 1).map(numbered).collect();
+            apply(add(x(), &chain, 100)).unwrap();
+            apply(add(a(), &[Id::root()], 100)).unwrap();
+            // The new entity is placed under `a`; the missing one after it, under `x`.
+            apply(add(numbered(1000), &[a(), numbered(1001), x()], 110))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_chain_longer_than_any_tree_is_refused() {
+        let outcome = returns(|| {
+            apply(add(a(), &[Id::root()], 100)).unwrap();
+            apply(add(x(), &[a(); MAX_PARENT_CHAIN + 1], 110))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+    }
+
+    /// An honest chain names each id once, and apply places one named twice by its last naming.
+    #[test]
+    fn a_missing_ancestor_named_twice_is_refused() {
+        let outcome = returns(|| {
+            apply(add(a(), &[Id::root()], 100)).unwrap();
+            apply(add(x(), &[numbered(0), a(), numbered(0)], 110))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_walk_up_a_looping_chain_errors() {
+        let walks = returns(|| {
+            for (id, parent) in [(x(), a()), (a(), x())] {
+                Index::<MainStorage>::save_index(&EntityIndex::minimal_for_test_with_parent(
+                    id, parent, [0; 32],
+                ))
+                .unwrap();
+            }
+            [
+                Index::<MainStorage>::recalculate_ancestor_hashes_for_now(x()).err(),
+                Index::<MainStorage>::get_ancestors_of(x()).err(),
+                Index::<MainStorage>::get_delta_ancestors_of(x()).err(),
+            ]
+        });
+        for walk in walks {
+            assert!(walk.is_some(), "a walk up a loop returned without an error");
+        }
+    }
+
+    #[test]
+    fn a_walk_down_a_looping_child_trie_returns() {
+        let (frozen, tombstoned) = returns(|| {
+            // Written after the delete below, so the walk keeps both rows.
+            for (parent, child) in [(a(), x()), (x(), a())] {
+                Index::<MainStorage>::save_index(&EntityIndex {
+                    metadata: Metadata::new(10, 10),
+                    ..EntityIndex::minimal_for_test(parent)
+                })
+                .unwrap();
+                let _root = ChildTrie::<MainStorage>::new(parent).insert(named(child));
+            }
+            (
+                Index::<MainStorage>::find_frozen_descendant(a()),
+                Index::<MainStorage>::tombstone_descendants_of(a(), 1),
+            )
+        });
+        assert!(matches!(frozen, Ok(None)), "{frozen:?}");
+        assert!(tombstoned.is_ok(), "{tombstoned:?}");
+    }
+}
