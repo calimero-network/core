@@ -295,12 +295,14 @@ impl<'a> AccountBindingRepository<'a> {
             && self.raw_binding(&namespace, device)?.is_none())
     }
 
-    /// Did `sign_pk` sign for a device that was revoked in `group`?
+    /// Did `sign_pk` sign for a device that was revoked or narrowed out in `group`?
     ///
-    /// Recorded by [`apply_revocation`](Self::apply_revocation) from the binding it
-    /// deletes. On its own this does not mean the key is withdrawn: a re-paired
-    /// node keeps its namespace identity under a fresh device, so a caller must
-    /// first ask whether a live binding speaks for the key, as
+    /// Recorded by [`apply_revocation`](Self::apply_revocation) and
+    /// [`narrow`](Self::narrow) from the binding each deletes, and by
+    /// [`apply_link`](Self::apply_link) for a link either refuses. On its own this
+    /// does not mean the key is withdrawn: a re-paired node keeps its namespace
+    /// identity under a fresh device, so a caller must first ask whether a live
+    /// binding speaks for the key, as
     /// [`crate::DenyListRepository::is_author_denied_for_context`] does.
     ///
     /// # Errors
@@ -312,6 +314,17 @@ impl<'a> AccountBindingRepository<'a> {
     ) -> EyreResult<bool> {
         let key = GroupRevokedSigner::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
         Ok(self.store.handle().has(&key)?)
+    }
+
+    /// Record that `sign_pk` signed for a device withdrawn from `group`; see
+    /// [`is_signer_revoked`](Self::is_signer_revoked).
+    fn record_withdrawn_signer(
+        &self,
+        group: &ContextGroupId,
+        sign_pk: &PublicKey,
+    ) -> EyreResult<()> {
+        let key = GroupRevokedSigner::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
+        Ok(self.store.handle().put(&key, &())?)
     }
 
     /// The account `sign_pk` was certified for in `group`, if any certificate for
@@ -783,12 +796,14 @@ impl<'a> AccountBindingRepository<'a> {
         self.record_signer_account(group, &verified.sign_pk, verified.account)?;
 
         if self.is_revoked(group, verified.device)? {
+            self.record_withdrawn_signer(group, &verified.sign_pk)?;
             return Ok(Err(BindingRejected::DeviceRevoked));
         }
         // Consulted before the binding, like the tombstone: a narrowing that
         // arrives before the stale link it outranks must still win.
         if let Some(floor) = self.scope_floor(group, verified.account, verified.device)? {
             if scope_epoch <= floor {
+                self.record_withdrawn_signer(group, &verified.sign_pk)?;
                 return Ok(Err(BindingRejected::ScopeNarrowed {
                     offered: scope_epoch,
                     floor,
@@ -973,7 +988,9 @@ impl<'a> AccountBindingRepository<'a> {
     }
 
     /// Narrow `device` out of `group` at `scope_epoch`: raise the floor whatever
-    /// is bound, and drop a binding made under an older scope. No tombstone.
+    /// is bound, and drop a binding made under an older scope. No device
+    /// tombstone, so a widening re-enables it; the dropped binding's key is
+    /// recorded as in [`apply_revocation`](Self::apply_revocation).
     ///
     /// # Errors
     /// Propagates the store failure.
@@ -993,6 +1010,7 @@ impl<'a> AccountBindingRepository<'a> {
             Some(bound)
                 if bound.account == *account.as_bytes() && bound.scope_epoch < scope_epoch =>
             {
+                self.record_withdrawn_signer(group, &PublicKey::from(bound.sign_pk))?;
                 handle.delete(&GroupDeviceBinding::new(
                     group.to_bytes(),
                     *device.as_bytes(),
@@ -1055,20 +1073,16 @@ impl<'a> AccountBindingRepository<'a> {
     ///
     /// Also records the signing key the deleted binding named, since that is how a
     /// state delta names its author (see [`GroupRevokedSigner`]). A revocation that
-    /// arrives before its link has no binding to read, and records no key; the link
-    /// is then refused, so the device never speaks for the account here at all.
+    /// arrives before its link has no binding to read; the link it refuses records
+    /// the key instead, so the verdict does not depend on arrival order.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
     pub fn apply_revocation(&self, group: &ContextGroupId, device: DeviceId) -> EyreResult<()> {
-        let bound = self.raw_binding(group, device)?;
-        let mut handle = self.store.handle();
-        if let Some(bound) = bound {
-            handle.put(
-                &GroupRevokedSigner::new(group.to_bytes(), bound.sign_pk),
-                &(),
-            )?;
+        if let Some(bound) = self.raw_binding(group, device)? {
+            self.record_withdrawn_signer(group, &PublicKey::from(bound.sign_pk))?;
         }
+        let mut handle = self.store.handle();
         handle.put(
             &GroupRevokedDevice::new(group.to_bytes(), *device.as_bytes()),
             &(),

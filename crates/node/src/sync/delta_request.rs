@@ -368,9 +368,10 @@ fn verify_fetched_parent(
     }
 }
 
-/// Whether a head delta's author signed for a device revoked in the context's
-/// namespace, with no live binding speaking for the key again. The same rule the
-/// head-pull path applies. A lookup error leaves the head to the cut check.
+/// Whether a head delta's author signed for a device revoked or narrowed out in
+/// the context's namespace, with no live binding speaking for the key again. The
+/// same rule the head-pull path applies. A lookup error leaves the head to the
+/// cut check.
 fn head_author_is_revoked(
     datastore: &calimero_store::Store,
     context_id: &ContextId,
