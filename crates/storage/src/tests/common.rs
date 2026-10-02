@@ -821,6 +821,7 @@ pub fn build_signed_shared_delete(
                 signature: [0; 64],
                 nonce: deleted_at,
                 signer: Some(pubkey_of(signer_sk)),
+                on_behalf: None,
             }),
         },
         crdt_type: None,
