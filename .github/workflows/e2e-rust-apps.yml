@@ -45,6 +45,7 @@ on:
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
 
   pull_request:
     branches: [master]
@@ -84,6 +85,7 @@ on:
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
 
   workflow_dispatch:
 
