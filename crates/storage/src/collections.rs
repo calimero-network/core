@@ -355,7 +355,8 @@ fn writers_binding(
 }
 
 /// The wrapper id of the cell at `field_id` created with `writers`.
-pub(crate) fn cell_id(
+#[must_use]
+pub fn cell_id(
     field_id: Id,
     writers: &BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
 ) -> Id {
@@ -371,12 +372,14 @@ pub(crate) fn cell_id(
 }
 
 /// Whether `id` is a field-derived cell's wrapper id.
-pub(crate) fn is_cell_id(id: Id) -> bool {
+#[must_use]
+pub fn is_cell_id(id: Id) -> bool {
     id.as_bytes().starts_with(&CELL_ID_TAG)
 }
 
 /// Whether `id` is the wrapper id of a cell created with `writers`.
-pub(crate) fn cell_id_binds(
+#[must_use]
+pub fn cell_id_binds(
     id: Id,
     writers: &BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
 ) -> bool {

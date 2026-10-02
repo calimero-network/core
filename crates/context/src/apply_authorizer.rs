@@ -24,6 +24,7 @@ use calimero_governance_store::{
     AtCutAuthorizer, AtCutMembershipPath, GroupRows, NamespaceDagService, StandingReads,
 };
 use calimero_op::{Op, ScopeId};
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 
@@ -140,6 +141,24 @@ impl AtCutAuthorizer for VoidJudge<'_> {
         _: &AccountId,
         _: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &ContextId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
         None
     }
 
@@ -269,6 +288,36 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             calimero_authz::MemberPathAtCut::Direct { .. } => AtCutMembershipPath::Direct,
             calimero_authz::MemberPathAtCut::Inherited { .. } => AtCutMembershipPath::Inherited,
         })
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .effective_role_at_cut(self.store, *group, member, parents)
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        group: &ContextGroupId,
+        context: &ContextId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .context_rotation_group_at_cut(self.store, *group, context, parents)
     }
 
     fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {
@@ -462,6 +511,24 @@ impl AtCutAuthorizer for ProjectionAuthorizer<'_> {
         _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
         None
     }
 

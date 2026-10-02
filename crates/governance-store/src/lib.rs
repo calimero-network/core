@@ -115,6 +115,7 @@ pub use self::device_link::{
     bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
     withdraw_device_in, CarriedLink, CarriedLinkRefusal,
 };
+pub use self::ops::group::shared_writers_rotated::require_context_not_rotated;
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
 
@@ -244,7 +245,7 @@ pub fn placeholder_admin_identity() -> AccountId {
 pub use self::errors::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
-    NamespaceCreatedRejection, NamespaceError, NodeDeviceError,
+    NamespaceCreatedRejection, NamespaceError, NodeDeviceError, SharedWritersRotatedRejection,
 };
 
 // ---------------------------------------------------------------------------

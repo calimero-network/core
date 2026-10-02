@@ -503,6 +503,13 @@ pub enum ContextRegistrationError {
         group_id: String,
         context_id: String,
     },
+    /// A context whose shared cells rotated in `group_id` stays there: readers
+    /// fold its rotations from that group alone.
+    #[error("context {context_id} has shared cells rotated in group {group_id}; it cannot move")]
+    HasRotatedCells {
+        group_id: String,
+        context_id: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +702,27 @@ pub enum MemberJoinedOpenRejection {
     /// inheritance check failed.
     #[error("signer {member} has no membership path to {gid}")]
     NoMembershipPath { member: String, gid: String },
+}
+
+/// Reasons `GroupOp::SharedWritersRotated` apply can be rejected.
+#[derive(Debug, Error)]
+pub enum SharedWritersRotatedRejection {
+    #[error("{0} is not a shared cell's id")]
+    NotACell(String),
+    #[error("a rotation must leave the cell at least one writer")]
+    EmptyWriterSet,
+    #[error("a rotation's writer sets hold between 1 and {max} accounts")]
+    WriterSetSize { max: usize },
+    #[error("the signing key speaks for no account here")]
+    SignerUnbound,
+    #[error("signer {0} is not a member of the context's group at the op's cut")]
+    SignerNotMember(String),
+    #[error("signer {0} is read-only in the context's group")]
+    SignerReadOnly(String),
+    #[error("signer {0} is a TEE of the namespace; a TEE does not rotate writer sets")]
+    SignerIsTee(String),
+    #[error("signer {0} does not hold ADMIN in the set the rotation steps from")]
+    SignerNotAdminOfPrior(String),
 }
 
 /// Errors raised on the `SignedGroupOp` apply path. Only variants

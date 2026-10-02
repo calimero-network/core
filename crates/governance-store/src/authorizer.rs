@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::Op;
-use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 
 /// The apply-gate decision source, resolved at an op's causal cut (its parent op
@@ -131,6 +131,24 @@ pub trait AtCutAuthorizer: Send + Sync {
         member: &AccountId,
         parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath>;
+
+    /// `member`'s effective role in `group` at the cut: `Some(None)` is a non-member,
+    /// `None` defers to live.
+    fn effective_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>>;
+
+    /// The group `context`'s cells were rotated in if it is `group`, at the cut. `Some(None)` =
+    /// not there; `None` = defer to live. Judged in `group` only: a registration elsewhere rests on live.
+    fn context_rotation_group_at_cut(
+        &self,
+        group: &ContextGroupId,
+        context: &ContextId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>>;
 
     /// Could this authorizer decide ANY authority question for `group` at `parents`?
     ///
@@ -300,6 +318,24 @@ impl AtCutAuthorizer for LiveFallbackAuthorizer {
         _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
         None
     }
 }

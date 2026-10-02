@@ -28,6 +28,7 @@ pub mod merge;
 pub mod reclaim;
 pub mod rotation_log;
 pub mod row;
+pub mod shared_writers;
 pub mod snapshot;
 pub mod store;
 

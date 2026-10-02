@@ -71,6 +71,7 @@ The `payload` is a single enum spanning four planes of change. Folding them into
   - `Delete { entity }`
 - **Access control** (`acl`)
   - `SetWriters { object, writers }` — who may write an entity, with what capability mask
+  - `SharedWritersRotated { group, context, cell, prior, nonce, new }`: one step of a `SharedStorage` cell's writer set
 - **Membership** (`who`)
   - `MemberAdded { group, member, role }`
   - `MemberRemoved { group, member }`
@@ -167,6 +168,7 @@ _Borsh reminder for reimplementers: a `Vec<u8>` is a `u32` little-endian length 
 | Data | `Put` | `entity: Id`, `value: Vec<u8>` |
 | Data | `Delete` | `entity: Id` |
 | Access | `SetWriters` | `object: Id`, `writers: BTreeMap<PublicKey, OpMask>` (mask is a 1-byte bitflag) |
+| Access | `SharedWritersRotated` | `group`, `context`, `cell: Id`, `prior` and `new: BTreeMap<AccountId, OpMask>`, `nonce: u64` |
 | Membership | `MemberAdded` | `group: ContextGroupId`, `member: PublicKey`, `role: GroupMemberRole` |
 | Membership | `MemberRemoved` | `group: ContextGroupId`, `member: PublicKey` |
 | Admin / structure | `AdminChanged` | `new_admin: PublicKey` |

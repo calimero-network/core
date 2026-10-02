@@ -251,6 +251,24 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         None
     }
 
+    fn effective_role_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &calimero_primitives::context::ContextId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
     fn forget(&self) {
         *self.folded.lock().unwrap() = None;
     }

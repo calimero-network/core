@@ -162,6 +162,18 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
                 Err(Rejected::NotOwner)
             }
         }
+        // Op-local, so the fold checks it too: only a step's own prior set can
+        // make its author an owner of the cell.
+        OpPayload::SharedWritersRotated { prior, .. } => {
+            if prior
+                .get(&op.author())
+                .is_some_and(|mask| mask.contains(OpMask::ADMIN))
+            {
+                Ok(())
+            } else {
+                Err(Rejected::NotOwner)
+            }
+        }
         OpPayload::MemberAdded { group, .. } | OpPayload::MemberRemoved { group, .. } => {
             if acl_at_cut.is_group_admin(&op.author(), *group) {
                 Ok(())

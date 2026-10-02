@@ -925,6 +925,17 @@ pub enum GroupOp {
         /// Boxed for the same reason as `OnBehalf::delegation`.
         proof: Box<SignedOwnerOp>,
     },
+    /// One step of a `SharedStorage` cell's writer set, from `prior` to `new`. The signer
+    /// holds `ADMIN` in `prior`; `shared_writers::fold` decides which steps take effect.
+    SharedWritersRotated {
+        context_id: ContextId,
+        /// The cell's anchor id, which commits to its genesis writer set.
+        cell: calimero_storage::address::Id,
+        prior: BTreeMap<AccountId, calimero_storage::entities::OpMask>,
+        /// Breaks ties between the cell's concurrent steps, and nothing else.
+        nonce: u64,
+        new: BTreeMap<AccountId, calimero_storage::entities::OpMask>,
+    },
 }
 
 impl GroupOp {
@@ -949,9 +960,9 @@ impl GroupOp {
     /// Not delegable, deliberately: account and device credentials (already
     /// self-signed by the account's own keys), group-key rotation, TEE policy and
     /// the TEE vault, ownership transfer, application upgrades and migrations,
-    /// and every wrapper — a relay publishing the policy that decides which
-    /// relays are trusted, or re-wrapping someone else's consent, is not a
-    /// member act.
+    /// a shared cell's writer-set rotation, and every wrapper — a relay
+    /// publishing the policy that decides which relays are trusted, or
+    /// re-wrapping someone else's consent, is not a member act.
     #[must_use]
     pub fn delegable_form(&self) -> Option<Self> {
         match self {
@@ -1148,6 +1159,7 @@ impl GroupOp {
             GroupOp::OnBehalf { .. } => "on_behalf",
             GroupOp::FoundingRelayAttested { .. } => "founding_relay_attested",
             GroupOp::RootGuarded { .. } => "root_guarded",
+            GroupOp::SharedWritersRotated { .. } => "shared_writers_rotated",
         }
     }
 }
@@ -2276,7 +2288,11 @@ pub struct SignedNamespaceOp {
 ///
 /// v21: an op concurrent with its signer's removal is void; nothing moves on the wire.
 /// An older node applies it, so the two disagree: a coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 21;
+///
+/// v22: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's writer-set
+/// rotation. Appended after `RootGuarded`, so no discriminant moves; an older node
+/// cannot decode it. A coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 22;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,
@@ -2589,6 +2605,8 @@ pub mod bounds {
     pub const MAX_TEE_COLLATERAL_BYTES: usize = 64 * 1024;
     /// A sealed 32-byte key is about 100 bytes.
     pub const MAX_TEE_VAULT_ENVELOPE_BYTES: usize = 256;
+    /// Max accounts in a shared cell's writer set named by a rotation.
+    pub const MAX_SHARED_WRITERS: usize = 256;
     /// Max root-key handoffs in one device-link credential chain.
     ///
     /// Each entry costs an Ed25519 verification in `root_key_at_epoch`, on a
@@ -2796,6 +2814,23 @@ impl GroupOp {
                     "group_op.account_device_linked.applications",
                     scope.statement.applications.len(),
                     bounds::MAX_DEVICE_SCOPE_APPLICATIONS,
+                )
+            }
+            Self::SharedWritersRotated { prior, new, .. } => {
+                if prior.is_empty() {
+                    return Err(GovernanceError::Bounds(
+                        "group_op.shared_writers_rotated.prior: empty".to_owned(),
+                    ));
+                }
+                check_bound(
+                    "group_op.shared_writers_rotated.prior",
+                    prior.len(),
+                    bounds::MAX_SHARED_WRITERS,
+                )?;
+                check_bound(
+                    "group_op.shared_writers_rotated.new",
+                    new.len(),
+                    bounds::MAX_SHARED_WRITERS,
                 )
             }
             Self::AccountDeviceCertified { certificate, scope } => {
