@@ -18,9 +18,57 @@ use crate::handlers::update_application::create_storage_callbacks;
 
 /// Helper function to sign authorized actions (User and Shared storage).
 /// Iterates over actions and signs any that are local and unsigned.
+///
+/// `on_behalf` is the account a delegated run writes for, `None` for every other
+/// run. Storage stamped each placeholder with the run's DEVICE as its signer,
+/// which in a delegated run is the author's device, whose key this node does not
+/// hold. So for a delegated run each placeholder is restamped before it is
+/// signed: `signer` becomes this node's key (the one that signs) and `on_behalf`
+/// the author's account, both inside the signed payload. Peers then verify the
+/// signature under the relay's key and judge ownership and writer sets against
+/// the author's account, provided the relay may write for it
+/// (`calimero_governance_store::on_behalf_standing`).
+///
+/// # Errors
+/// Refuses, rather than signs, a placeholder whose `signer` names any key but
+/// the signing one: that entry would verify under no key its signer names, and
+/// every peer would refuse it. After the restamp this cannot happen; the check
+/// is what keeps a future path that stamps another device from publishing
+/// entries that are poisoned on arrival.
+/// Whether [`sign_authorized_actions`] would sign any of `actions`: a `User`,
+/// `Shared` or `SharedMember` entry still carrying the placeholder signature.
+///
+/// A delegated run that signs nothing writes no entry for the author, so only a
+/// run for which this holds needs a signer peers accept on the author's behalf.
+pub(crate) fn signs_entries(actions: &[Action]) -> bool {
+    actions.iter().any(|action| {
+        let metadata = match action {
+            Action::Add { metadata, .. }
+            | Action::Update { metadata, .. }
+            | Action::DeleteRef { metadata, .. } => metadata,
+        };
+        match &metadata.storage_type {
+            StorageType::User {
+                signature_data: Some(sig_data),
+                ..
+            }
+            | StorageType::Shared {
+                signature_data: Some(sig_data),
+                ..
+            }
+            | StorageType::SharedMember {
+                signature_data: Some(sig_data),
+                ..
+            } => sig_data.signature == [0; 64],
+            _ => false,
+        }
+    })
+}
+
 pub(crate) fn sign_authorized_actions(
     actions: &mut [Action],
     identity_private_key: &PrivateKey,
+    on_behalf: Option<AccountId>,
 ) -> eyre::Result<()> {
     info!(
         actions_count = actions.len(),
@@ -76,7 +124,7 @@ pub(crate) fn sign_authorized_actions(
                 // stamped with this same device.
                 let placeholder = sig_data.signature == [0; 64];
                 if placeholder {
-                    sig_data.nonce = nonce;
+                    stamp_placeholder(sig_data, nonce, executor_pk, on_behalf)?;
                 }
                 placeholder
             }
@@ -94,7 +142,7 @@ pub(crate) fn sign_authorized_actions(
                 // the rotate-self-out case.
                 let placeholder = sig_data.signature == [0; 64];
                 if placeholder {
-                    sig_data.nonce = nonce;
+                    stamp_placeholder(sig_data, nonce, executor_pk, on_behalf)?;
                 }
                 placeholder
             }
@@ -137,6 +185,29 @@ pub(crate) fn sign_authorized_actions(
             nonce = %nonce,
             payload_for_signing = ?payload_for_signing,
             "Signed authorized action (nonce stamped before payload)"
+        );
+    }
+    Ok(())
+}
+
+/// Fill a placeholder's signed fields: the nonce, and for a delegated run the
+/// signer and the account written for. Refuses a signer the signing key is not.
+fn stamp_placeholder(
+    sig_data: &mut calimero_storage::entities::SignatureData,
+    nonce: u64,
+    signing_key: calimero_primitives::identity::PublicKey,
+    on_behalf: Option<AccountId>,
+) -> eyre::Result<()> {
+    sig_data.nonce = nonce;
+    if let Some(account) = on_behalf {
+        sig_data.signer = Some(signing_key);
+        sig_data.on_behalf = Some(account);
+    }
+    if sig_data.signer != Some(signing_key) {
+        eyre::bail!(
+            "refusing to sign an entry whose signer is {:?} with the key {signing_key}: \
+             no peer could verify it",
+            sig_data.signer
         );
     }
     Ok(())
@@ -303,4 +374,154 @@ pub(crate) fn persist_signed_signatures(
         Ok(())
     });
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_account::AccountId;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use calimero_storage::action::Action;
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::{EntryRules, Metadata, SignatureData, StorageType};
+
+    use super::{sign_authorized_actions, signs_entries};
+
+    const NONCE: u64 = 42;
+
+    fn owner() -> AccountId {
+        AccountId::from([0xA1; 32])
+    }
+
+    /// A `User` add carrying the placeholder storage stamps, with `signer` the
+    /// device the run executed as.
+    fn placeholder(signer: PublicKey) -> Action {
+        let mut metadata = Metadata::new(1, NONCE);
+        metadata.storage_type = StorageType::User {
+            rules: EntryRules::OWNED,
+            owner: owner(),
+            signature_data: Some(SignatureData {
+                signature: [0; 64],
+                nonce: 0,
+                signer: Some(signer),
+                on_behalf: None,
+            }),
+        };
+        Action::Add {
+            id: Id::new([0x01; 32]),
+            data: vec![7],
+            ancestors: vec![],
+            metadata,
+        }
+    }
+
+    fn sig_data(action: &Action) -> SignatureData {
+        let Action::Add { metadata, .. } = action else {
+            panic!("an add");
+        };
+        let StorageType::User {
+            signature_data: Some(sd),
+            ..
+        } = &metadata.storage_type
+        else {
+            panic!("a signed User entry");
+        };
+        *sd
+    }
+
+    /// A run on this node's own behalf is signed as before: by the key that
+    /// storage named, with no account written for.
+    #[test]
+    fn a_direct_run_is_signed_by_the_key_it_names() {
+        let node = PrivateKey::from([0x22; 32]);
+        let mut actions = [placeholder(node.public_key())];
+        sign_authorized_actions(&mut actions, &node, None).expect("sign");
+
+        let sd = sig_data(&actions[0]);
+        assert_eq!(sd.signer, Some(node.public_key()));
+        assert_eq!(sd.on_behalf, None);
+        assert_eq!(sd.nonce, NONCE);
+        node.public_key()
+            .verify_raw_signature(&actions[0].payload_for_signing(), &sd.signature)
+            .expect("verifies under the key it names");
+    }
+
+    /// A delegated run's placeholders name the author's device, whose key this
+    /// node does not hold. They are restamped to this node's key and the
+    /// author's account before signing, so the signature verifies under the key
+    /// the entry names and commits to the account it was written for.
+    #[test]
+    fn a_delegated_run_signs_for_the_author_under_the_relays_key() {
+        let relay = PrivateKey::from([0x22; 32]);
+        let author_device = PrivateKey::from([0x44; 32]).public_key();
+        let mut actions = [placeholder(author_device)];
+        sign_authorized_actions(&mut actions, &relay, Some(owner())).expect("sign");
+
+        let sd = sig_data(&actions[0]);
+        assert_eq!(sd.signer, Some(relay.public_key()), "signed by the relay");
+        assert_eq!(sd.on_behalf, Some(owner()), "written for the author");
+        relay
+            .public_key()
+            .verify_raw_signature(&actions[0].payload_for_signing(), &sd.signature)
+            .expect("verifies under the relay's key");
+
+        // The account is inside the signed payload: naming another breaks it.
+        let mut retargeted = actions[0].clone();
+        if let Action::Add { metadata, .. } = &mut retargeted {
+            if let StorageType::User {
+                signature_data: Some(sd),
+                ..
+            } = &mut metadata.storage_type
+            {
+                sd.on_behalf = Some(AccountId::from([0x51; 32]));
+            }
+        }
+        assert!(relay
+            .public_key()
+            .verify_raw_signature(&retargeted.payload_for_signing(), &sd.signature)
+            .is_err());
+    }
+
+    /// The bug a delegated run had: an entry naming one key, signed by
+    /// another, which no peer can verify. It is refused, not signed.
+    #[test]
+    fn an_entry_naming_another_key_is_refused_not_signed() {
+        let node = PrivateKey::from([0x22; 32]);
+        let other = PrivateKey::from([0x44; 32]).public_key();
+        let mut actions = [placeholder(other)];
+        let err = sign_authorized_actions(&mut actions, &node, None)
+            .expect_err("must refuse to sign under a key the entry does not name");
+        assert!(err.to_string().contains("refusing to sign"), "{err}");
+        assert_eq!(sig_data(&actions[0]).signature, [0; 64], "left unsigned");
+    }
+
+    #[test]
+    fn a_run_that_leaves_a_signed_entry_unsigned_signs_entries() {
+        let device = PrivateKey::from([0x44; 32]).public_key();
+        assert!(signs_entries(&[placeholder(device)]));
+    }
+
+    #[test]
+    fn a_run_with_only_public_or_already_signed_entries_signs_none() {
+        let device = PrivateKey::from([0x44; 32]).public_key();
+        let public = Action::Add {
+            id: Id::new([0x02; 32]),
+            data: vec![1],
+            ancestors: vec![],
+            metadata: Metadata::new(1, NONCE),
+        };
+        let mut signed = placeholder(device);
+        let Action::Add { metadata, .. } = &mut signed else {
+            panic!("an add");
+        };
+        let StorageType::User {
+            signature_data: Some(sd),
+            ..
+        } = &mut metadata.storage_type
+        else {
+            panic!("a signed User entry");
+        };
+        sd.signature = [7; 64];
+        assert!(!signs_entries(&[]));
+        assert!(!signs_entries(&[public, signed]));
+    }
 }

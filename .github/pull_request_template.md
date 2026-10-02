@@ -41,6 +41,20 @@ To run the live SDK e2e against your paired SDK branch, add a line to this body
 sdk-ref: <your-mero-js-branch>
 ```
 
+## Trust boundary
+
+Required when this PR touches a path in `TRUST_BOUNDARY_PATHS` in `scripts/check-trust-boundary.py`; CI fails if an item is missing or unanswered.
+Tick exactly one box per line and keep the item text as is; "no" is the expected answer for items 2-4 and 6.
+The rules: [AGENTS.md](https://github.com/calimero-network/core/blob/master/AGENTS.md#security-trust-boundaries).
+
+- Adds input from peers, gossip, streams, HTTP callers or app guests: [ ] yes [ ] no
+- Some new input has no named limit constant: [ ] yes [ ] no
+- Takes an identity from a message field instead of a signature or the authenticated channel: [ ] yes [ ] no
+- A gated operation is untested for kicked, left, deny-listed, revoked, descoped, inherited or other-namespace actors: [ ] yes [ ] no
+- Changes a signed format, wire format or schema version: [ ] yes [ ] no
+- Changes a signed or wire format without naming the paired SDK PR in `sdk-ref:`: [ ] yes [ ] no
+- Changes a workflow's triggers, permissions, checkout or artifact handling: [ ] yes [ ] no
+
 ## Documentation update
 
 Mention here what part (if any) of public or internal documentation should be

@@ -762,6 +762,16 @@
       }
     },
     {
+      "name": "handler_noop",
+      "doc": "Event handler - must surface `handler: true` in the ABI.",
+      "params": [],
+      "returns": {
+        "kind": "unit"
+      },
+      "intent": "mutating",
+      "handler": true
+    },
+    {
       "name": "init",
       "params": [],
       "returns": {

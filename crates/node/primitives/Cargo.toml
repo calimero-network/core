@@ -57,6 +57,9 @@ default = []
 # packers - to dependent crates' tests, which otherwise mirror them per crate.
 testing = ["dep:tempfile"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [build-dependencies]
 toml.workspace = true
 

@@ -20,6 +20,7 @@ brought into scope with `use calimero_sdk::app;`.
 | `#[app::init]` | attribute | method | Marks the constructor run when the app is first installed in a context. |
 | `#[app::view]` | attribute | `&self` method | Marks a read-only method (shared lock; no mutation). |
 | `#[app::xcall]` | attribute | method | Marks a method callable from other contexts via cross-context call. |
+| `#[app::handler]` | attribute | mutating method | Marks a method an event may name as its handler; peers run only these. |
 | `#[app::destructive]` | attribute | mutating method | Records in the ABI that the call removes data (clear, remove, delete, unregister). |
 | `#[app::idempotent]` | attribute | mutating method | Records in the ABI that repeating the call with the same arguments has no further effect. |
 | `#[app::destroy]` | attribute | method | Opts a method into state destruction (consuming `self`). |
@@ -36,7 +37,7 @@ brought into scope with `use calimero_sdk::app;`.
 
 <Aside type="note">
   The marker attributes (`#[app::init]`, `#[app::view]`, `#[app::xcall]`,
-  `#[app::destroy]`, `#[app::destructive]`, `#[app::idempotent]`) are no-ops on
+  `#[app::handler]`, `#[app::destroy]`, `#[app::destructive]`, `#[app::idempotent]`) are no-ops on
   their own - they emit the item unchanged. They exist so `#[app::logic]` can
   read them off the methods and so they are recorded in the app's ABI. "No
   magic": any behavior that affects generated code is part of the attribute
@@ -245,8 +246,8 @@ See `apps/xcall-example` for the full ping-pong with provenance checks.
 
 `#[app::event]` declares an enum (or struct) of events your app can emit;
 `app::emit!` emits one. The single-argument form emits the event; the
-two-element-tuple form names a handler method to run after the event is
-processed.
+two-element-tuple form names a handler method the other nodes run when they
+apply the delta. The method must be marked `#[app::handler]`, or no node runs it.
 
 ```rust
 #[app::event]
@@ -260,6 +261,12 @@ app::emit!(Event::Inserted { key: &key, value: &value });
 
 // with a handler method name:
 app::emit!((Event::Inserted { key: &key, value: &value }, "on_insert"));
+
+// the handler it names:
+#[app::handler]
+pub fn on_insert(&mut self, key: &str, value: &str) -> app::Result<()> {
+    Ok(())
+}
 ```
 
 <Aside type="caution" title="Handlers may run in parallel">

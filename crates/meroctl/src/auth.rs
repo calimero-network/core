@@ -17,7 +17,7 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use url::Url;
+use url::{Host, Url};
 
 use crate::connection::ConnectionInfo;
 use crate::output::{InfoLine, Output, WarnLine};
@@ -481,6 +481,7 @@ pub async fn authenticate_and_connect(
     local_node_path: Option<&Utf8PathBuf>,
     output: Output,
 ) -> Result<ConnectionInfo> {
+    warn_if_cleartext_remote(url);
     let temp_connection = ConnectionInfo::new(
         url.clone(),
         None,
@@ -523,6 +524,28 @@ pub async fn authenticate_and_connect(
         create_cli_authenticator(output),
         FileTokenStorage::new(),
     ))
+}
+
+/// Warn on stderr when access tokens for `url` would cross the network unencrypted.
+/// Not refused: LAN setups rely on plain http, and loopback is the local-dev default.
+pub fn warn_if_cleartext_remote(url: &Url) {
+    if url.scheme() == "http" && !stays_on_host(url) {
+        let host = url.host_str().unwrap_or_default();
+        eprintln!(
+            "warning: plain http to non-loopback host {host}: access tokens are sent \
+             unencrypted; use https"
+        );
+    }
+}
+
+fn stays_on_host(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(domain)) => domain == "localhost",
+        // A node listening on 0.0.0.0 is reached there, which stays on this host.
+        Some(Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        None => false,
+    }
 }
 
 /// Persist a node entry and its fresh tokens in the meroctl config file.
@@ -778,7 +801,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use url::Url;
 
-    use super::{build_auth_url, generate_state};
+    use super::{build_auth_url, generate_state, stays_on_host};
     use crate::config::{Config, NodeConnection};
     use crate::storage::JwtToken;
 
@@ -789,6 +812,25 @@ mod tests {
         assert_eq!(a.len(), 64, "32 bytes hex-encoded");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b, "each invocation must produce a fresh nonce");
+    }
+
+    #[test]
+    fn stays_on_host_covers_localhost_the_v4_block_v6_and_unspecified() {
+        for url in [
+            "http://localhost:1",
+            "http://127.0.0.2:1",
+            "http://[::1]:1",
+            "http://0.0.0.0:1",
+        ] {
+            assert!(stays_on_host(&Url::parse(url).unwrap()), "{url}");
+        }
+        for url in [
+            "http://10.0.0.5:1",
+            "http://192.168.1.2:1",
+            "http://node.example:1",
+        ] {
+            assert!(!stays_on_host(&Url::parse(url).unwrap()), "{url}");
+        }
     }
 
     #[test]

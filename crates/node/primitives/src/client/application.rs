@@ -16,6 +16,9 @@ use tracing::debug;
 
 use super::NodeClient;
 
+pub use bind::InstallOrigin;
+pub use query::compare_versions;
+
 impl NodeClient {
     pub fn get_application(
         &self,
@@ -274,17 +277,7 @@ impl NodeClient {
         }
 
         // Newest first; non-semver strings sort lexicographically after.
-        versions.sort_by(|a, b| {
-            match (
-                semver::Version::parse(&a.version),
-                semver::Version::parse(&b.version),
-            ) {
-                (Ok(va), Ok(vb)) => vb.cmp(&va),
-                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
-                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
-                (Err(_), Err(_)) => b.version.cmp(&a.version),
-            }
-        });
+        versions.sort_by(|a, b| compare_versions(&b.version, &a.version));
         Ok(versions)
     }
 

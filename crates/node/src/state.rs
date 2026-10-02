@@ -265,6 +265,10 @@ pub(crate) struct NodeState {
     /// guessing. Advisory only — see [`SyncStatusSnapshot`] — and absent for
     /// contexts the run-loop has never touched.
     pub(crate) sync_status: Arc<DashMap<ContextId, SyncStatusSnapshot>>,
+    /// How far each member device has caught up with this node, from their
+    /// signed state beacons: what tombstone GC waits on before it collects a
+    /// delete. See [`crate::tombstone_stability`].
+    pub(crate) tombstone_stability: Arc<crate::tombstone_stability::TombstoneStability>,
 }
 
 /// Per-context backoff state for the reconcile-after-divergence path.
@@ -304,6 +308,7 @@ impl NodeState {
             peer_scores: Arc::new(Mutex::new(BTreeMap::new())),
             reconcile_attempts: Arc::new(DashMap::new()),
             sync_status: Arc::new(DashMap::new()),
+            tombstone_stability: Arc::default(),
         }
     }
 

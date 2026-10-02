@@ -285,7 +285,7 @@ impl<'a> AdmissionCut<'a> {
     /// depend on this replica's progress — the same rule
     /// [`AtCutAuthorizer::can_resolve_cut`] gives every governance gate. The
     /// caller parks and retries once the history arrives.
-    fn reads(
+    pub(crate) fn reads(
         &self,
         group: &ContextGroupId,
         author: &PublicKey,
@@ -349,6 +349,43 @@ impl<'a> AdmissionCut<'a> {
     }
 }
 
+/// Whether `device` may no longer act for `account` in `group_id`: revoked
+/// outright, or withdrawn by the account's own root.
+///
+/// Read in the group's namespace, where devices are linked and so revoked —
+/// every other revocation check reads it there — and in the group itself, for
+/// a revocation published there. Reading only the group missed every
+/// revocation for a context in a subgroup.
+///
+/// The account-scoped withdrawal is what covers a device that never linked
+/// here: a thin client's second device, which writes through a relay under a
+/// warrant and holds no binding for a revocation to delete or for the outright
+/// tombstone to be checked against (see
+/// `AccountBindingRepository::withdraw_for_account`).
+///
+/// Live, deliberately, as [`admit`] explains: the deny direction is not folded.
+///
+/// # Errors
+/// Propagates a store read failure.
+pub fn device_withdrawn(
+    store: &Store,
+    group_id: &ContextGroupId,
+    account: AccountId,
+    device: calimero_account::DeviceId,
+) -> EyreResult<bool> {
+    let bindings = AccountBindingRepository::new(store);
+    // The namespace's answer covers the root's own withdrawal: it raises this
+    // account's floor for the device to `WITHDRAWN_SCOPE_FLOOR`, and a device
+    // that never linked has no binding to outrank it.
+    if bindings.device_is_withdrawn(group_id, account, device)? {
+        return Ok(true);
+    }
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    Ok(namespace != *group_id
+        && (bindings.is_revoked(group_id, device)?
+            || bindings.is_withdrawn_for_account(group_id, account, device)?))
+}
+
 /// Admit a delegated statement in `group_id`, at `cut`: the cut reaches the
 /// author's governance floor, both devices are live, the author may write,
 /// the executor may act for members, and the nonce is unspent.
@@ -368,13 +405,16 @@ impl<'a> AdmissionCut<'a> {
 /// * **At the cut**: the floor, the author's role, and the executor's
 ///   standing. These are grants, and a grant is judged as it stood when the
 ///   change was made, as it is for a self-authored write.
-/// * **Live, deliberately**: device revocation and the deny-list. Both are the
-///   deny direction and neither is folded into the projection (`AclView` has
-///   no deny-list, and revocation is the documented "cannot be decided from
-///   the operation alone" case in `accounts.mdx`). The self-authored receive
-///   path reads both live too — its revoked-signer filter and
-///   `rejects_state_writes_from` — so a delegated write is refused exactly
-///   where the author's own would be.
+/// * **Live, deliberately**: device withdrawal and the deny-list. Revocation
+///   and the deny-list are the deny direction, and neither is folded into the
+///   projection (`AclView` has no deny-list, and revocation is the documented
+///   "cannot be decided from the operation alone" case in `accounts.mdx`). A
+///   narrowing is read live too but is not terminal: a later widening undoes it,
+///   so a replica that has folded one and not the other judges a delta
+///   differently until it catches up, and a delta written before the narrowing
+///   is refused once it has been folded. The self-authored receive path reads
+///   revocation live too (its revoked-signer filter and
+///   `rejects_state_writes_from`), but does not see a narrowing.
 ///
 /// # Errors
 /// `R` for a statement that must not be admitted,
@@ -398,11 +438,12 @@ pub(crate) fn admit<W: WarrantStatement, R: AdmissionRefusal>(
         return Err(R::FLOOR_NOT_COVERED.into());
     }
 
-    let bindings = AccountBindingRepository::new(store);
-    if bindings.is_revoked(group_id, delegation.author_proof.statement.device)? {
+    let author_cert = &delegation.author_proof.statement;
+    if device_withdrawn(store, group_id, author_cert.account, author_cert.device)? {
         return Err(R::AUTHOR_DEVICE_REVOKED.into());
     }
-    if bindings.is_revoked(group_id, delegation.executor_proof.statement.device)? {
+    let executor_cert = &delegation.executor_proof.statement;
+    if device_withdrawn(store, group_id, executor_cert.account, executor_cert.device)? {
         return Err(R::EXECUTOR_DEVICE_REVOKED.into());
     }
 
@@ -603,7 +644,7 @@ pub(crate) fn executor_standing(
 /// TEE into anything else, nor anything else into a TEE. A TEE with no TEE row
 /// at the root — admitted into the subgroup alone — keeps its subgroup row's
 /// role, as before.
-fn namespace_tee_role(
+pub(crate) fn namespace_tee_role(
     store: &Store,
     reads: &dyn StandingReads,
     group_id: &ContextGroupId,

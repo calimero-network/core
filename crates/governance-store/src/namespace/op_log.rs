@@ -131,108 +131,26 @@ impl<'a> NamespaceOpLogService<'a> {
         // does, so the persisted op id is byte-identical to the dual-write's.
         let delta = crate::unified_op_decode::signed_namespace_op_to_delta(signed)?;
 
-        // Decrypt an encrypted group op so its membership change folds; a failure
-        // (no key for this group yet) leaves it a `Noop` node — still persisted so
-        // an ancestry walk can pass through it (the late-key case is repersisted
-        // once the key arrives).
-        let decrypted = match &signed.op {
-            NamespaceOp::Group {
-                group_id,
-                key_id,
-                encrypted,
-                ..
-            } => crate::decrypt_group_op(
-                self.store,
-                self.namespace_id,
-                *group_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .ok()
-            .flatten(),
-            NamespaceOp::Root(_) => None,
-            // `NamespaceOp` is `#[non_exhaustive]`; nothing to decrypt for an
-            // unknown future op variant.
-            _ => None,
-        };
-
-        // The same question for a sealed root op. `None` here is what makes the
-        // persisted op fold as a visible hole rather than as "nothing happened",
-        // which is the difference between a reader abstaining and a reader
-        // deciding an admin question it could not see the answer to.
-        let opened_root = match &signed.op {
-            NamespaceOp::RootSealed { key_id, encrypted } => crate::open_sealed_root_op(
-                self.store,
-                self.namespace_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .ok()
-            .flatten(),
-            // Opened in the group's keyring instead. Left to the wildcard this
-            // folded as a hole even for a subgroup member holding the key, which
-            // is the abstention this reader is built to avoid.
-            NamespaceOp::RootSealedForGroup {
-                group_id,
-                key_id,
-                encrypted,
-            } => crate::open_sealed_root_op_for_group(
-                self.store,
-                self.namespace_id,
-                *group_id,
-                key_id.as_bytes(),
-                encrypted,
-            )
-            .ok()
-            .flatten(),
-            _ => None,
-        };
-
-        // A relayed join is decoded from the JOINER'S op, not the envelope.
-        //
-        // The envelope is signed by the admitter, so decoding from it would
-        // record the relay as the author of somebody else's membership — the
-        // same misattribution a sealed join had before #3850, and just as
-        // silent, because an op attributed to the wrong account still folds.
-        // The DAG identity stays the envelope's: `delta.id`/`hlc`/`parents` are
-        // passed through unchanged below, so the op-store and the gov-DAG still
-        // key the same op.
-        let relayed = match &signed.op {
-            NamespaceOp::RootRelaySealed { key_id, encrypted } => {
-                crate::open_relayed_join_for_read(
-                    self.store,
-                    self.namespace_id,
-                    key_id.as_bytes(),
-                    encrypted,
-                )
-                .ok()
-                .flatten()
-            }
-            _ => None,
-        };
-        let (decode_from, opened_root) = match relayed.as_ref() {
-            Some(inner) => match &inner.op {
-                NamespaceOp::Root(root) => (inner, Some(root.clone())),
-                // `open_relayed_join_for_read` only yields a root op.
-                _ => (signed, opened_root),
-            },
-            None => (signed, opened_root),
-        };
-
-        let signer_binding = crate::unified_op_decode::signer_binding_for(
-            self.store,
-            &self.namespace_id.to_bytes().into(),
-            &decode_from.signer,
-        );
-        let unified_op = crate::unified_op_decode::op_from_namespace_op_with_binding(
-            decode_from,
-            decrypted.as_ref(),
-            opened_root.as_ref(),
-            signer_binding,
-            delta.id,
-            delta.hlc,
-            &delta.parents,
-        );
+        // Opened with the keys present now: an op whose key has not arrived is
+        // still persisted, as the hole it is, so an ancestry walk can pass through
+        // it (the late-key case is repersisted once the key arrives). A relayed
+        // join is decoded from the JOINER'S op, not the admitter's envelope; the
+        // DAG identity stays the envelope's, so the op-store and the gov-DAG key
+        // the same op.
+        let unified_op = crate::unified_op_decode::OpenedNamespaceOp::open(self.store, signed)
+            .to_op(
+                signed,
+                |signer| {
+                    crate::unified_op_decode::signer_binding_for(
+                        self.store,
+                        &self.namespace_id.to_bytes().into(),
+                        signer,
+                    )
+                },
+                delta.id,
+                delta.hlc,
+                &delta.parents,
+            );
 
         let scope = calimero_op::ScopeId::from(self.namespace_id.to_bytes());
         let key = calimero_store::key::ScopeUnifiedOp::new(*scope.as_bytes(), unified_op.id());

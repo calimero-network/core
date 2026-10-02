@@ -9,9 +9,9 @@
 use calimero_account::AccountId;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::MembershipRepository;
+use calimero_governance_store::{AccountBindingRepository, MembershipRepository};
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{DeviceId, PublicKey};
 use tracing::warn;
 
 /// Who a connection acts as, for the gates that decide what it may observe.
@@ -35,7 +35,11 @@ use tracing::warn;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum EventCaller {
     Key(PublicKey),
-    Account(AccountId),
+    /// `device` is the one the caller proved, when the auth layer knows which.
+    Account {
+        account: AccountId,
+        device: Option<DeviceId>,
+    },
 }
 
 /// Whether `account` is a member of the group owning `context_id`.
@@ -62,6 +66,7 @@ pub(crate) fn account_is_context_member(
     ctx_client: &ContextClient,
     context_id: &ContextId,
     account: &AccountId,
+    device: Option<DeviceId>,
 ) -> bool {
     let store = ctx_client.datastore();
     let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
@@ -75,6 +80,9 @@ pub(crate) fn account_is_context_member(
             return false;
         }
     };
+    if device.is_some_and(|device| device_withdrawn(ctx_client, &group_id, *account, device)) {
+        return false;
+    }
     MembershipRepository::new(store)
         .is_member(&group_id, account)
         .unwrap_or_else(|err| {
@@ -84,6 +92,47 @@ pub(crate) fn account_is_context_member(
             );
             false
         })
+}
+
+/// Whether the namespace of `group_id` has withdrawn `device` of `account`.
+///
+/// Fails closed: a row that cannot be read is not evidence of a live device.
+pub(crate) fn device_withdrawn(
+    ctx_client: &ContextClient,
+    group_id: &ContextGroupId,
+    account: AccountId,
+    device: DeviceId,
+) -> bool {
+    AccountBindingRepository::new(ctx_client.datastore())
+        .device_is_withdrawn(group_id, account, device)
+        .unwrap_or_else(|err| {
+            warn!(
+                %err, %group_id, %account, %device,
+                "device standing: could not read the device's rows; denying observation"
+            );
+            true
+        })
+}
+
+/// Whether `device` of `account` was withdrawn in the namespace owning
+/// `context_id`. A context owned by no group has no namespace to withdraw from.
+pub(crate) fn device_withdrawn_for_context(
+    ctx_client: &ContextClient,
+    context_id: &ContextId,
+    account: AccountId,
+    device: DeviceId,
+) -> bool {
+    match calimero_governance_store::get_group_for_context(ctx_client.datastore(), context_id) {
+        Ok(Some(group_id)) => device_withdrawn(ctx_client, &group_id, account, device),
+        Ok(None) => false,
+        Err(err) => {
+            warn!(
+                %err, %context_id, %account, %device,
+                "device standing: could not read the context's group; denying observation"
+            );
+            true
+        }
+    }
 }
 
 /// The account `key` acts as in the group owning `context_id`, if any.
