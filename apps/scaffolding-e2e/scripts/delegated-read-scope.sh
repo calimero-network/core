@@ -173,12 +173,29 @@ expect_code "/admin-api/namespaces/${NAMESPACE}/groups" "${STRANGER_TOKEN}" stra
 expect_code "/admin-api/groups/${NAMESPACE}" "${STRANGER_TOKEN}" stranger 404
 expect_code "/admin-api/groups/${NAMESPACE}/contexts" "${STRANGER_TOKEN}" stranger 404
 
+# The roster and the subgroup listing are open to a member of the group, scoped
+# to its own groups: served to the member, missing (404) to the stranger, like
+# the group pair above. The roster must name someone, or a 200 over an empty
+# listing would pass.
+for opened in members subgroups; do
+    req "/admin-api/groups/${NAMESPACE}/${opened}" "${MEMBER_TOKEN}"
+    [ "${REQ_CODE}" = "200" ] \
+        || fail "member GET /admin-api/groups/*/${opened}: expected 200, got ${REQ_CODE} -- ${REQ_BODY}"
+    echo "  ok member GET /admin-api/groups/*/${opened} -> 200"
+    expect_code "/admin-api/groups/${NAMESPACE}/${opened}" "${STRANGER_TOKEN}" stranger 404
+done
+req "/admin-api/groups/${NAMESPACE}/members" "${MEMBER_TOKEN}"
+printf '%s' "${REQ_BODY}" | grep -q '"identity"' \
+    || fail "member GET /admin-api/groups/*/members lists nobody -- ${REQ_BODY}"
+echo "  ok the roster names the group's members"
+
 # Containment: the group reads that were NOT opened must stay shut. A delegated
-# session reaching a roster or a signing key would be the leak this batch is
-# meant to avoid, and `/groups/:id` is a catch-all prefix away from all of them.
-# Real routes, every one: the guard runs BEFORE routing, so a 403 comes back for
-# a path that does not exist either, and a typo here would assert nothing.
-for shut in members member-devices subgroups settings/default-capabilities; do
+# session reaching a device list or a capability default would be the leak this
+# batch is meant to avoid, and `/groups/:id` is a catch-all prefix away from
+# them. Real routes, every one: the guard runs BEFORE routing, so a 403 comes
+# back for a path that does not exist either, and a typo here would assert
+# nothing.
+for shut in member-devices settings/default-capabilities; do
     req "/admin-api/groups/${NAMESPACE}/${shut}" "${MEMBER_TOKEN}"
     [ "${REQ_CODE}" = "403" ] \
         || fail "member GET /admin-api/groups/*/${shut}: expected 403, got ${REQ_CODE} -- ${REQ_BODY}"
