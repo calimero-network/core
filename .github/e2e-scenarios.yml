@@ -189,6 +189,11 @@ scenarios:
   - workflow: group-kick-and-readd-deny-list
     file: workflows/group-kick-and-readd-deny-list.yml
     app: scaffolding-e2e
+  # Governance only: no node joins a context, so the registry is never asked.
+  - workflow: group-rejoin-keeps-admin-role
+    file: workflows/group-rejoin-keeps-admin-role.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: group-leave-then-rejoin-via-inheritance
     file: workflows/group-leave-then-rejoin-via-inheritance.yml
     app: scaffolding-e2e
