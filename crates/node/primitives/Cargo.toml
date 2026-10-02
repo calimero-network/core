@@ -18,7 +18,6 @@ async-trait.workspace = true
 borsh.workspace = true
 camino.workspace = true
 clap = { workspace = true, features = ["derive"] }
-dashmap.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 infer.workspace = true

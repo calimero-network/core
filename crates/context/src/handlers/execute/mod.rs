@@ -2369,19 +2369,11 @@ async fn internal_execute(
             // SAFETY: guarded by `read_as.is_some()` in the arm's condition.
             let account = read_as.expect("read_as is Some in this arm");
 
-            let is_member =
-                match calimero_governance_store::get_group_for_context(&datastore, &context.id)? {
-                    Some(group_id) => {
-                        calimero_governance_store::MembershipRepository::new(&datastore)
-                            .is_member(&group_id, &account)?
-                    }
-                    // A context owned by no group has no membership to check
-                    // against, so there is nothing that would authorize a stranger.
-                    // Refuse rather than fall through to "no rule, so allowed".
-                    None => false,
-                };
-
-            if !is_member {
+            if !calimero_governance_store::account_is_context_member(
+                &datastore,
+                &context.id,
+                &account,
+            )? {
                 bail!(ExecuteError::NotAMember {
                     context_id: context.id
                 });
