@@ -1702,6 +1702,9 @@ pub fn get_context_service_name(
 #[cfg(any(test, feature = "testing"))]
 pub mod test_fixtures;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod authz_matrix;
+
 #[cfg(test)]
 mod void_tests;
 

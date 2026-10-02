@@ -2998,7 +2998,7 @@ mod open_subgroup_key_tests {
 
     /// Answer one join request on `end` with `key_envelope_bytes`, mirroring what
     /// `handle_open_subgroup_join_request` puts on the wire.
-    fn spawn_responder(
+    pub(super) fn spawn_responder(
         mut end: Stream,
         key_envelope_bytes: Vec<u8>,
     ) -> tokio::task::JoinHandle<()> {
@@ -3784,6 +3784,10 @@ mod admitter_derivation_tests {
     }
 }
 
+// In the feature-gated test job, beside the other in-process governance node tests.
+#[cfg(all(test, feature = "mock-attestation"))]
+mod authz_matrix;
+
 #[cfg(test)]
 mod group_key_recovery_anchor_tests {
     //! Who `recover_missing_group_keys` believes, driven end to end against a
@@ -3838,8 +3842,17 @@ mod group_key_recovery_anchor_tests {
     /// A `SyncManager` over an in-memory store whose network is `mock`, with no
     /// actor behind it: the key-recovery path needs only the store and streams.
     pub(super) async fn manager(mock: Arc<MockSyncNetwork>) -> (SyncManager, Store, TempDir) {
-        let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (sync_manager, tmp) = manager_over(store.clone(), mock).await;
+        (sync_manager, store, tmp)
+    }
+
+    /// [`manager`] over a store the caller built.
+    pub(super) async fn manager_over(
+        store: Store,
+        mock: Arc<MockSyncNetwork>,
+    ) -> (SyncManager, TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
         let blob_store_config =
             BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
         let file_system = FileSystem::new(&blob_store_config).await.expect("blob fs");
@@ -3884,7 +3897,7 @@ mod group_key_recovery_anchor_tests {
             relay_sealed_join_rx,
         );
         sync_manager.set_sync_network(mock);
-        (sync_manager, store, tmp)
+        (sync_manager, tmp)
     }
 
     /// The joiner's state after a fleet-join pull: its own namespace identity
@@ -3914,7 +3927,7 @@ mod group_key_recovery_anchor_tests {
 
     /// Answer one group-key request on `end` the way `handle_group_key_request`
     /// does, claiming `responder_identity` and attaching no device proof.
-    fn respond(
+    pub(super) fn respond(
         mut end: Stream,
         key_envelope_bytes: Vec<u8>,
         responder_identity: PublicKey,

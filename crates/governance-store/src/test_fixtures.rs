@@ -968,3 +968,126 @@ pub fn guarded_root_op(
         op: Box::new(op),
     }
 }
+
+/// An admin-signed, non-expiring open invitation to `group_id` bearing `nonce`.
+pub fn signed_invitation_for(
+    admin_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    nonce: [u8; 32],
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use sha2::{Digest, Sha256};
+
+    let invitation = GroupInvitationFromAdmin {
+        inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
+        group_id,
+        expiration_timestamp: 0,
+        invitation_nonce: nonce,
+        invited_role: 1,
+        // The inviter names itself, which is what the mint's default would
+        // produce for an admin issuing its own invitation.
+        admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],
+    };
+    let inv_bytes = borsh::to_vec(&invitation).unwrap();
+    let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
+    SignedGroupOpenInvitation {
+        inviter_account: None,
+        invitation,
+        inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
+        bytecode_id: None,
+        admitter_addrs: Vec::new(),
+    }
+}
+
+/// The wire form production publishes for a join, given the group its
+/// invitation targets.
+///
+/// A namespace-root join stays cleartext: that joiner holds no key, and its key
+/// arrives only in answer to the join itself. A SUBGROUP-targeted join travels
+/// sealed under the key covering that subgroup (#3858) — the joiner holds it,
+/// delivered in the join bundle — and the apply refuses a cleartext one, so a
+/// fixture publishing it in the clear would be under-building the state rather
+/// than exercising a real one.
+///
+/// The covering key is minted here when the store has none, which is exactly
+/// what the join bundle would have delivered. Without it the seal returns `None`
+/// and the fixture silently falls back to the cleartext form the apply refuses —
+/// a test failing on its own fixture rather than on its subject.
+pub fn sealed_join_for_test(
+    store: &Store,
+    ns_id: [u8; 32],
+    target: ContextGroupId,
+    join: calimero_context_client::local_governance::RootOp,
+) -> calimero_context_client::local_governance::NamespaceOp {
+    use calimero_context_client::local_governance::NamespaceOp;
+
+    if target.to_bytes() == ns_id {
+        return NamespaceOp::Root(join);
+    }
+    let covering = crate::key_covering_group(store, &target).expect("resolve the covering group");
+    if crate::GroupKeyring::new(store, covering)
+        .load_current_key()
+        .expect("read the covering keyring")
+        .is_none()
+    {
+        let _ = crate::GroupKeyring::new(store, covering)
+            .store_key(&[0x5B; 32])
+            .expect("mint the key the join bundle would have delivered");
+    }
+    crate::seal_root_op_for_group_if_keyed(store, target, &join)
+        .expect("seal the join")
+        .expect("the covering key was just ensured, so the seal must produce a sealed op")
+}
+
+/// Apply a `RootOp::MemberJoinedAt` signed by the joiner themselves, endorsed
+/// by `admitter_sk`.
+///
+/// The admitter's key is a separate parameter from the joiner's because the two
+/// signatures answer different questions: the joiner's proves it owns the
+/// account being admitted, the admitter's proves somebody entitled to admit
+/// agreed. Passing one key for both would make every test's join self-endorsed
+/// and hide that distinction.
+pub fn apply_member_joined(
+    store: &Store,
+    ns_id: [u8; 32],
+    member_sk: &PrivateKey,
+    signed_invitation: calimero_context_config::types::SignedGroupOpenInvitation,
+    nonce: u64,
+    admitter_sk: &PrivateKey,
+) -> eyre::Result<()> {
+    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+    let member = crate::test_fixtures::account_for(&member_sk.public_key());
+    let admitter_endorsement = Box::new(
+        calimero_governance_types::AdmitterEndorsement::sign(
+            admitter_sk,
+            &ns_id,
+            &member,
+            &signed_invitation.invitation.invitation_nonce,
+        )
+        .expect("sign admitter endorsement"),
+    );
+
+    let target = signed_invitation.invitation.group_id;
+    let join = RootOp::MemberJoinedAt {
+        // The member and the credential beside it have to name the SAME
+        // account: the apply verifies the credential certifies the signer
+        // and speaks for the declared member. A synthetic member beside an
+        // unrelated credential is refused before the op reaches whatever
+        // the test meant to exercise.
+        member,
+        signed_invitation,
+        joined_at: 1,
+        account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
+    };
+
+    let wire = sealed_join_for_test(store, ns_id, target, join);
+    let signed = SignedNamespaceOp::sign(member_sk, ns_id.into(), vec![], nonce, wire).unwrap();
+    // On the envelope, after signing — see above.
+    let mut signed = signed;
+    signed.admitter_endorsement = Some(admitter_endorsement);
+    crate::apply_signed_namespace_op(store, &signed).map(|_result| ())
+}
