@@ -175,10 +175,11 @@ pub async fn handler(
 
 #[cfg(test)]
 mod tests {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_governance_store::test_fixtures::{
         bootstrap_namespace_with_admin_account, enrol_member, test_store,
     };
-    use calimero_governance_store::MembershipRepository;
+    use calimero_governance_store::{CapabilitiesRepository, DenyListRepository};
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -187,6 +188,7 @@ mod tests {
     use super::*;
 
     const NS: [u8; 32] = [0xAA; 32];
+    const SUBGROUP: [u8; 32] = [0xAB; 32]; // an Open subgroup of `NS`
 
     fn namespace() -> ContextGroupId {
         ContextGroupId::from(NS)
@@ -207,6 +209,92 @@ mod tests {
     fn enrolled_outsider(store: &Store) -> AccountId {
         let sk = PrivateKey::random(&mut UnwrapErr(SysRng));
         enrol_member(store, &namespace(), &sk.public_key())
+    }
+
+    /// This node, as a plain member of the namespace.
+    fn node_as_member(store: &Store) -> AccountId {
+        let sk_bytes: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
+        let sk = PrivateKey::from(sk_bytes);
+        NamespaceRepository::new(store)
+            .store_identity(&namespace(), &sk.public_key(), &sk_bytes)
+            .expect("store the node identity");
+        let account = enrol_member(store, &namespace(), &sk.public_key());
+        MembershipRepository::new(store)
+            .add_member(&namespace(), &account, GroupMemberRole::Member)
+            .expect("add this node");
+        account
+    }
+
+    /// An Open subgroup of the namespace that `account` inherits into.
+    fn open_subgroup_inherited_by(store: &Store, account: &AccountId) -> ContextGroupId {
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        NamespaceRepository::new(store)
+            .nest(&namespace(), &subgroup)
+            .expect("nest the subgroup");
+        let capabilities = CapabilitiesRepository::new(store);
+        capabilities
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .expect("open the subgroup");
+        capabilities
+            .set_member_capability(
+                &namespace(),
+                account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("let the account inherit into it");
+        subgroup
+    }
+
+    /// Kicking or leaving an Open subgroup a member inherits deny-lists it there
+    /// rather than deleting a row, and that entry is what refuses it.
+    #[test]
+    fn a_caller_removed_from_an_inherited_subgroup_is_refused() {
+        let store = test_store();
+        let caller = node_as_member(&store);
+        let subgroup = open_subgroup_inherited_by(&store, &caller);
+        let target = member_of(&store);
+        MembershipRepository::new(&store)
+            .add_member(&subgroup, &target, GroupMemberRole::Member)
+            .expect("add the target to the subgroup");
+        assert!(
+            seal(&store, &subgroup, target, b"x".to_vec())
+                .expect("an inheritor seals")
+                .is_some(),
+            "precondition: the inheritor seals before it is removed"
+        );
+
+        DenyListRepository::new(&store)
+            .mark(&subgroup, &caller)
+            .expect("remove this node from the subgroup");
+
+        let err = seal(&store, &subgroup, target, b"x".to_vec())
+            .expect_err("a removed caller must be refused, not served");
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("not a member of group"),
+            "expected the membership refusal, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_target_removed_from_an_inherited_subgroup_is_absent() {
+        let store = test_store();
+        let _ = bootstrap_namespace_with_admin_account(&store, NS);
+        let target = member_of(&store);
+        let subgroup = open_subgroup_inherited_by(&store, &target);
+        assert!(
+            seal(&store, &subgroup, target, b"x".to_vec())
+                .expect("no error")
+                .is_some(),
+            "precondition: an inheritor is sealed to before it is removed"
+        );
+
+        DenyListRepository::new(&store)
+            .mark(&subgroup, &target)
+            .expect("remove the target from the subgroup");
+
+        let out = seal(&store, &subgroup, target, b"x".to_vec()).expect("no error");
+        assert!(out.is_none(), "a removed member must not be sealed to");
     }
 
     #[test]
