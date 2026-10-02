@@ -465,7 +465,7 @@
         },
         "xcall_callable": {
           "type": "boolean",
-          "description": "Cross-context entry point declared via #[app::xcall]. Absent/false on modules compiled before this field existed. When any method in a module sets this, the node enforces that only such methods are reachable via xcall."
+          "description": "Cross-context entry point declared via #[app::xcall]. Absent/false on modules compiled before this field existed. Only methods that set this are reachable via xcall; a module with none accepts no xcall."
         },
         "xcall_callers": {
           "type": "string",
