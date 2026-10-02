@@ -63,15 +63,9 @@ pub(super) fn metered(env: RuntimeEnv, logic: &VMLogic<'_>) -> (RuntimeEnv, Writ
             charge(key.to_bytes().len(), value.len()) && write(key, value)
         })
     };
-    let mut metered = RuntimeEnv::new(
-        env.storage_read(),
-        writer,
-        env.storage_remove(),
-        env.context_id(),
-        env.device_id(),
-        env.account_id(),
-    );
-    if let Some(mut index) = env.index() {
+    let index = env.index();
+    let mut metered = env.with_storage_write(writer);
+    if let Some(mut index) = index {
         let (set, meta_set, meta_clear) = (index.set, index.meta_set, index.meta_clear);
         let (charge_set, charge_meta) = (Rc::clone(&charge), Rc::clone(&charge));
         index.set = Rc::new(move |key: &[u8], value: &[u8]| {
