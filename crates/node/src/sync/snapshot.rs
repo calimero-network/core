@@ -1452,13 +1452,8 @@ impl SyncManager {
             return;
         };
 
-        // A resynced peer runs the recovered bytecode but never ran the install,
-        // so its `ApplicationMeta` (the version migration-status reads) still
-        // reflects the version it last installed — it lingers below-target. Run
-        // the SAME in-place install the normal blob-share path runs
-        // (`install_bundle_after_blob_sharing`) against the blob the activation
-        // marker now points at, so the peer's installed version matches the
-        // adopted one — exactly as a normally-upgraded peer ends up.
+        // A resynced peer never ran the install for the bytecode it recovered, so
+        // install the marker's blob; one older than the row's release leaves the row.
         if let Some(bound) = calimero_context::activation::activated_bytecode(
             self.context_client.datastore(),
             &context_id,

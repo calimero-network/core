@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_app_downloader::RegistryMode;
+use calimero_node_primitives::client::application::InstallOrigin;
 use calimero_server_primitives::admin::{InstallApplicationRequest, InstallApplicationResponse};
 use tracing::{error, info};
 
@@ -20,10 +21,10 @@ pub async fn handler(
 
     match state
         .node_client
-        .install_by_coords(&req.package, &req.version)
+        .install_by_coords(&req.package, &req.version, InstallOrigin::Operator)
         .await
     {
-        Ok(Some(application_id)) => {
+        Ok(Some((application_id, _blob_id))) => {
             info!(application_id=%application_id, "Application installed successfully");
             super::precompile(&state, application_id);
             ApiResponse {

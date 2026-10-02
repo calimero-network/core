@@ -21,6 +21,7 @@ use calimero_account::{GovernanceOpKind, GovernanceWarrant};
 use calimero_context_client::group::DelegatedGovernanceOp;
 use calimero_context_client::local_governance::{GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_node_primitives::client::application::InstallOrigin;
 use calimero_server_primitives::admin::{
     GovernanceIntentApiRequest, GovernanceIntentApiResponse, GovernanceIntentApiResponseData,
     GovernanceIntentRelayApiResponse, GovernanceIntentRelayApiResponseData,
@@ -243,10 +244,13 @@ async fn resolve_bundle(
             && app.package == package
             && app.version.as_ref().map(ToString::to_string).as_deref() == Some(version)
     });
-    let application = match installed {
-        Some(app) if node.has_application(application_id)? => app,
+    let bytecode = match installed {
+        Some(app) if node.has_application(application_id)? => app.blob.bytecode,
         _ => {
-            let Some(resolved) = node.install_by_coords(package, version).await? else {
+            let Some((resolved, bundle_blob)) = node
+                .install_by_coords(package, version, InstallOrigin::Remote)
+                .await?
+            else {
                 eyre::bail!(ApiError {
                     status_code: StatusCode::BAD_GATEWAY,
                     message: format!(
@@ -260,13 +264,13 @@ async fn resolve_bundle(
                      the warrant pins"
                 )));
             }
-            node.get_application(application_id)?.ok_or_else(|| {
-                eyre::eyre!("application {application_id} vanished after it was installed")
-            })?
+            // The stored bundle, not the row: an older release than the row's
+            // is kept as a blob and leaves the row naming the newer one.
+            bundle_blob
         }
     };
     Ok(calimero_context_config::types::BytecodeId::from(
-        *application.blob.bytecode.digest(),
+        *bytecode.digest(),
     ))
 }
 
