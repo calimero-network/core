@@ -92,4 +92,41 @@ on whether a call is bound by CPU or by I/O.
 
 ## Criterion benches
 
-CRITERION_PLACEHOLDER
+The bench sources are unchanged between the two commits, so they measure the same work.
+Each figure is criterion's median: `--save-baseline before` at `02b9bd6`, then
+`--baseline before` at HEAD, on the same machine.
+
+`calimero-storage`:
+
+| bench | before | after | change |
+|---|---:|---:|---:|
+| `child_trie/insert/1000` | 104.8 µs | 22.2 µs | **−79%** |
+| `child_trie/insert/10000` | 177.9 µs | 32.8 µs | **−82%** |
+| `child_trie/children/1000` | 6.80 ms | 0.59 ms | **−91%** |
+| `child_trie/children/10000` | 45.6 ms | 16.0 ms | **−65%** |
+| `child_trie/get/1000` | 2.1 µs | 4.7 µs | **+130%** |
+| `child_trie/get/10000` | 3.4 µs | 8.2 µs | **+145%** |
+| `child_trie/root/10` | 3.9 µs | 6.6 µs | +69% |
+| `child_trie/root/1000` | 6.4 µs | 5.6 µs | −12% |
+| `merge_root_state/1000` | 386 µs | 541 µs | **+40%** |
+| `merge_root_state/10000` | 5.10 ms | 6.60 ms | **+29%** |
+
+The other sizes (10, 100) follow the same direction. The trie got much cheaper to insert
+into and to enumerate. A point `get` now costs 2–2.5x as much, because a bucket no
+longer carries the child's metadata and the child's own row has to be read (#4210,
+#4266). The merge framework around one `Mergeable::merge` is 29–40% slower.
+
+`calimero-store` (`db_ops`: raw `put` / `get_hit` / `get_miss` against the in-memory
+and RocksDB stores, at 100 / 1,000 / 10,000 keys): every result is within ±11% and
+moves in both directions. That is noise, which is expected, because these benches
+write fixed small values and none of the format changes reach them.
+
+## Bottom line
+
+- **Size:** state is 63% smaller logically and 76–78% smaller on disk. Deltas are 58–83%
+  smaller, and writes touch 40–60% fewer rows. That is the main win, and it is large.
+- **CPU:** per call it is 17–38% *slower* than before the work started, almost all from
+  #4266, and `child_trie/get` and `merge_root_state` regressed. No timing gate caught
+  this: the `Benchmarks` workflow only compares on PRs labelled `run-benchmarks`.
+  Worth a follow-up. Profile `row::decode`/`row::encode` first, and in particular the
+  `Sha256(data)` work that runs on every decode.
