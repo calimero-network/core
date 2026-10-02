@@ -119,7 +119,10 @@ networking, cross-context calls, governance across peers, late joiners,
 partitions, and multi-node migrations. They run in CI under the
 `e2e-rust-apps.yml`, `app-migration-e2e.yml`, and `sync-regression.yml`
 workflows, building a local `merod:local` image plus the WASM apps under
-`apps/`.
+`apps/`. A scenario joins the `e2e-rust-apps.yml` suite by an entry in
+`.github/e2e-scenarios.yml`; CI packs those entries into groups that each share
+one runner, and cleans every container, network, volume and data directory
+between the scenarios of a group.
 
 ## The pre-PR gate
 
