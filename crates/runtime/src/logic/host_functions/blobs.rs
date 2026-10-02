@@ -322,8 +322,8 @@ impl VMHostFunctions<'_> {
     /// The blob remains discoverable by probing this node, which holds it; the
     /// announcement only buys a second, always-on holder.
     ///
-    /// Announcing into the run's own context also records the blob as held for
-    /// it, so its peers are served it; other contexts record nothing.
+    /// Only a blob already held for the run's context is announced, and
+    /// announcing never makes a blob held for it.
     ///
     /// # Arguments
     ///
@@ -334,7 +334,8 @@ impl VMHostFunctions<'_> {
     ///
     /// # Returns
     ///
-    /// Returns `1` on successful announcement.
+    /// Returns `1` on successful announcement, `0` if the blob is not held for
+    /// the executing context.
     ///
     /// # Errors
     ///
@@ -367,6 +368,15 @@ impl VMHostFunctions<'_> {
             None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
         };
 
+        // Its peers would be refused the blob, and announcing must not claim one
+        // the context never received.
+        if !node_client
+            .is_blob_held_for_context(&context_id, &blob_id)
+            .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
+        {
+            return Ok(0);
+        }
+
         // Get blob metadata to get size
         // `block_in_place` hands the blocking wait off the async worker; a bare
         // `Handle::block_on` panics when called on a runtime thread.
@@ -375,14 +385,6 @@ impl VMHostFunctions<'_> {
         })
         .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
         .ok_or(VMLogicError::HostError(HostError::BlobsNotSupported))?;
-
-        // Held here and announced into the run's own context, so it is shared
-        // there. This grants no more than `blob_open` then `blob_create` would.
-        if context_id == ContextId::from(self.borrow_logic().context.context_id) {
-            node_client
-                .record_blob_owner(&context_id, &blob_id)
-                .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
-        }
 
         // Announce blob to network
         tokio::task::block_in_place(|| {
@@ -772,6 +774,24 @@ mod tests {
         ));
     }
 
+    /// A run of `context_id` with a node client, as `setup_vm!` builds one without.
+    macro_rules! run_in {
+        ($storage:expr, $limits:expr, $context_id:expr, $node_client:expr) => {{
+            let context = VMContext::new(
+                Cow::Owned(vec![]),
+                $context_id,
+                [0u8; DIGEST_SIZE],
+                calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
+            );
+            let mut store = Store::default();
+            let memory =
+                wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
+            let mut logic = VMLogic::new($storage, None, context, $limits, Some($node_client));
+            let _ = logic.with_memory(memory);
+            (logic, store)
+        }};
+    }
+
     /// Runs `blob_create`, `blob_write` and `blob_close` for `data` in a run of
     /// `context_id`, returning the node and the id the guest was handed.
     async fn write_blob_in(
@@ -786,23 +806,8 @@ mod tests {
             calimero_node_primitives::test_fixtures::node_client().await;
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
-        let context = VMContext::new(
-            Cow::Owned(vec![]),
-            context_id,
-            [0u8; DIGEST_SIZE],
-            calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
-        );
-        let mut store = Store::default();
-        let memory =
-            wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
-        let mut logic = VMLogic::new(
-            &mut storage,
-            None,
-            context,
-            &limits,
-            Some(node_client.clone()),
-        );
-        let _ = logic.with_memory(memory);
+        let (mut logic, mut store) =
+            run_in!(&mut storage, &limits, context_id, node_client.clone());
         let mut host = logic.host_functions(store.as_store_mut());
 
         host.borrow_memory().write(100, data).unwrap();
@@ -843,69 +848,97 @@ mod tests {
             .unwrap());
     }
 
-    /// The documented flow: a client uploads with no context, then the app
-    /// announces the blob to its own context. Its peers must then be served it,
-    /// while an announce into another context traps and shares nothing.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn announcing_a_held_blob_to_the_runs_own_context_shares_it() {
-        let run_context = [0xC7; DIGEST_SIZE];
-        let other_context = [0xC8; DIGEST_SIZE];
+    /// A node holding `data` for no context, as an upload naming none leaves it.
+    async fn node_holding(
+        data: &[u8],
+    ) -> (
+        calimero_node_primitives::client::NodeClient,
+        BlobId,
+        (tempfile::TempDir, tempfile::TempDir),
+    ) {
         let store = calimero_store::Store::new(std::sync::Arc::new(
             calimero_store::db::InMemoryDB::owned(),
         ));
-        let (node_client, _data_dir, _blob_dir) =
+        let (node_client, data_dir, blob_dir) =
             calimero_node_primitives::test_fixtures::node_client_over(
                 store,
                 calimero_node_primitives::test_fixtures::network_accepting_announces(),
             )
             .await;
-        let data = b"uploaded by a client with no context";
         let (blob_id, _size) = node_client
-            .add_blob(&data[..], Some(data.len() as u64), None)
+            .add_blob(data, Some(data.len() as u64), None)
             .await
             .unwrap();
+        (node_client, blob_id, (data_dir, blob_dir))
+    }
 
+    /// Announces `blob_id` into `target` from a run of `run_context`.
+    fn announce(
+        node_client: &calimero_node_primitives::client::NodeClient,
+        run_context: [u8; DIGEST_SIZE],
+        blob_id: &BlobId,
+        target: [u8; DIGEST_SIZE],
+    ) -> VMLogicResult<u32> {
         let mut storage = SimpleMockStorage::new();
         let limits = VMLimits::default();
-        let context = VMContext::new(
-            Cow::Owned(vec![]),
-            run_context,
-            [0u8; DIGEST_SIZE],
-            calimero_account::AccountId::from([0u8; DIGEST_SIZE]),
-        );
-        let mut store = Store::default();
-        let memory =
-            wasmer::Memory::new(&mut store, wasmer::MemoryType::new(1, None, false)).unwrap();
-        let mut logic = VMLogic::new(
-            &mut storage,
-            None,
-            context,
-            &limits,
-            Some(node_client.clone()),
-        );
-        let _ = logic.with_memory(memory);
+        let (mut logic, mut store) =
+            run_in!(&mut storage, &limits, run_context, node_client.clone());
         let mut host = logic.host_functions(store.as_store_mut());
-        host.borrow_memory().write(100, &*blob_id).unwrap();
+        host.borrow_memory().write(100, &**blob_id).unwrap();
         prepare_guest_buf_descriptor(&host, 16, 100, DIGEST_SIZE as u64);
-        for (ptr, target) in [(200, run_context), (300, other_context)] {
-            host.borrow_memory().write(ptr, &target).unwrap();
-            prepare_guest_buf_descriptor(&host, ptr - 150, ptr, DIGEST_SIZE as u64);
-        }
-        assert_eq!(host.blob_announce_to_context(16, 50).unwrap(), 1);
+        host.borrow_memory().write(200, &target).unwrap();
+        prepare_guest_buf_descriptor(&host, 50, 200, DIGEST_SIZE as u64);
+        host.blob_announce_to_context(16, 50)
+    }
+
+    /// A blob uploaded into the run's context is announced there, while an
+    /// announce into another context traps and shares nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_blob_held_for_the_run_is_announced_only_into_its_context() {
+        let run_context = [0xC7; DIGEST_SIZE];
+        let other_context = [0xC8; DIGEST_SIZE];
+        let (node_client, blob_id, _dirs) = node_holding(b"uploaded into the context").await;
+        node_client
+            .record_blob_owner(&ContextId::from(run_context), &blob_id)
+            .unwrap();
+
+        assert_eq!(
+            announce(&node_client, run_context, &blob_id, run_context).unwrap(),
+            1
+        );
         assert!(matches!(
-            host.blob_announce_to_context(16, 150).unwrap_err(),
+            announce(&node_client, run_context, &blob_id, other_context).unwrap_err(),
             VMLogicError::HostError(HostError::BlobContextMismatch)
         ));
-
-        assert!(node_client
-            .is_blob_held_for_context(&ContextId::from(run_context), &blob_id)
-            .unwrap());
         assert!(
             !node_client
                 .is_blob_held_for_context(&ContextId::from(other_context), &blob_id)
                 .unwrap(),
             "a run shares only into its own context"
         );
+    }
+
+    /// Naming a blob in an announce must not make it the context's, whether it
+    /// is held for no context or for another one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn announcing_a_blob_the_context_does_not_hold_claims_nothing() {
+        let (run_context, other_context) = ([0xC7; DIGEST_SIZE], [0xC8; DIGEST_SIZE]);
+        let (node_client, blob_id, _dirs) = node_holding(b"not the run's").await;
+
+        for holder in [None, Some(other_context)] {
+            if let Some(holder) = holder {
+                node_client
+                    .record_blob_owner(&ContextId::from(holder), &blob_id)
+                    .unwrap();
+            }
+            assert_eq!(
+                announce(&node_client, run_context, &blob_id, run_context).unwrap(),
+                0
+            );
+            assert!(!node_client
+                .is_blob_held_for_context(&ContextId::from(run_context), &blob_id)
+                .unwrap());
+        }
     }
 
     /// Verifies that `blob_open` returns an error when the node client is not configured.

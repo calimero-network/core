@@ -1488,7 +1488,9 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
 
 /// Announce a blob to a specific context for network discovery.
 /// This makes the blob discoverable by other nodes in the context.
-/// Returns true if the announcement was successful.
+/// Returns true if the announcement was successful, false unless the blob is
+/// held for this context: written by the app, uploaded with this context's id,
+/// or fetched from its peers.
 ///
 /// # Security
 /// For security reasons, a context can only announce blobs to itself.

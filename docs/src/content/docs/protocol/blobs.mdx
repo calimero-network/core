@@ -107,7 +107,7 @@ blob_close(fd, dst: BufferMut[32]) -> 1     // writes the final BlobId into dst[
 blob_open(blob_id: Buffer[32])              -> fd
 blob_open_in_context(blob_id: Buffer[32], context_id: Buffer[32]) -> fd  // 0 if unavailable
 blob_read(fd, dst: BufferMut)               -> bytes_read   // 0 at end of blob
-blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1
+blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1  // 0 if not held for the context
 ```
 
 <Steps>
@@ -178,6 +178,8 @@ size, auth }`, over a dedicated stream protocol,
 of the context's TEE members (`ReadOnlyTee` or `RelayTee`) and to nobody else.
 `context_id` must be the executing context; any other traps with
 `BlobContextMismatch`.
+Only a blob already held for the context is announced; any other returns `0`
+and announces nothing, because announcing never makes a blob held for a context.
 `auth` is signed the way a private blob read is: the producer's identity in the
 context signs the blob, the context, a timestamp and the producer's peer id.
 
@@ -382,11 +384,11 @@ streaming:
   denies access.
 - **Held for that context.** A signed member is served a blob only if the
   provider holds it for the context the request names: the context's app wrote
-  it or announced it into its own context, it was uploaded with that
-  `context_id`, or the provider fetched it under that context. The provider records this in a node-local index
+  it, it was uploaded with that `context_id`, or the provider fetched it under
+  that context. The provider records this in a node-local index
   (`Column::BlobOwner`, keyed `context_id ‖ blob_id`). A blob uploaded without a
-  context is in no context and is served to peers only once an app announces it
-  into its own context. Freeing a blob's last reference drops its rows. The same bytes held
+  context is in no context and is never served to peers; announcing it does not
+  change that. Freeing a blob's last reference drops its rows. The same bytes held
   for two contexts are served to members of either.
 
 ```rust

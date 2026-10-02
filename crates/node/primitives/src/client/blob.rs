@@ -1062,7 +1062,7 @@ impl NodeClient {
     /// the context's peers be served it. Call only once the bytes are verified.
     ///
     /// Not [`Self::record_blob_context`]: this one also covers what the
-    /// context's own run created or announced, which is fine to hand the
+    /// context's own run created, which is fine to hand the
     /// context's peers but is not proof the bytes entered on the context's
     /// behalf, so it must never stand in for that row (see `Column::BlobOwner`).
     pub fn record_blob_owner(&self, context_id: &ContextId, blob_id: &BlobId) -> eyre::Result<()> {
