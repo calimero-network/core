@@ -5,6 +5,7 @@ use calimero_account::AccountId;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::delta::clear_pending_delta;
 use tracing::{debug, error};
 // `CompilerConfig` brings `push_middleware`/`enable_perfmap` into scope for the
 // Cranelift config built in `create_engine`.
@@ -32,6 +33,24 @@ use memory::WasmerTunables;
 use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
+
+/// Empties this thread's pending storage delta on entry and on drop: pool threads
+/// are reused, and a run's writes may ship only through its own `flush_delta`.
+#[must_use = "the scope must be held for the duration of the execution"]
+struct PendingDeltaScope;
+
+impl PendingDeltaScope {
+    fn enter() -> Self {
+        clear_pending_delta();
+        Self
+    }
+}
+
+impl Drop for PendingDeltaScope {
+    fn drop(&mut self) {
+        clear_pending_delta();
+    }
+}
 
 /// Validates a method name for WASM execution.
 ///
@@ -489,6 +508,7 @@ impl Module {
         // its events. The guard clears any stale value on entry and restores the
         // prior one on drop (kept until the end of this fn, past `finish`).
         let _callback_handler_scope = CallbackHandlerGuard::enter();
+        let _pending_delta_scope = PendingDeltaScope::enter();
 
         let mut store = Store::new(self.engine.clone());
 
