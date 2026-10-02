@@ -65,6 +65,7 @@ jobs:
       docker_release: ${{ steps.version_info.outputs.docker_release }}
       docker_push: ${{ github.event_name == 'push' || github.event.pull_request && !github.event.pull_request.head.repo.fork }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
+      build_matrix: ${{ steps.build_matrix.outputs.matrix }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
       # PR-only: enables the profiling build and image so fuzzy-load-test.yml can
       # validate a fresh `pr-<N>-profiling` image before merge.
@@ -118,6 +119,32 @@ jobs:
           echo "crate_release=$crate_release" >> $GITHUB_OUTPUT
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
 
+      # Linux x86_64 always (a required check); arm64 on master pushes, which the
+      # multi-arch :edge image needs; macOS and Windows only when this run publishes
+      # binaries, the one job that reads them. Every other master push built them
+      # just to discard them; platforms.yml builds both nightly instead.
+      - name: Choose the build targets
+        id: build_matrix
+        env:
+          EVENT: ${{ github.event_name }}
+          BINARY_RELEASE: ${{ steps.version_info.outputs.binary_release }}
+        run: |
+          set -euo pipefail
+          # Keep legacy check names for required status checks.
+          linux='{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"}'
+          arm='{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}'
+          macos='{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}'
+          windows='{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}'
+          matrix="[$linux]"
+          if [ "$EVENT" = push ]; then
+            matrix="[$linux,$arm]"
+            if [ "$BINARY_RELEASE" = true ]; then
+              matrix="[$linux,$arm,$macos,$windows]"
+            fi
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          jq -r '.[].name' <<<"$matrix"
+
       # GITHUB_TOKEN is an integration token, and GitHub rejects release/tag creation whose target
       # is not the branch head; create it now, before master moves, so the later upload only attaches.
       - name: Create release at trigger time
@@ -165,8 +192,8 @@ jobs:
     needs: prepare
     strategy:
       matrix:
-        # Keep legacy check names for required status checks.
-        include: ${{ fromJSON(github.event_name != 'push' && '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"}]' || '[{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"},{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"},{"name":"windows-latest, x86_64-pc-windows-msvc","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]') }}
+        # Chosen in `prepare`: see "Choose the build targets".
+        include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
       fail-fast: false
     runs-on: ${{ matrix.runner }}
 
