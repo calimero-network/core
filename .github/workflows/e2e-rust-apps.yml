@@ -46,6 +46,13 @@ on:
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/merod-binaries/**"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
 
   pull_request:
     branches: [master]
@@ -86,6 +93,13 @@ on:
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/merod-binaries/**"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
 
   workflow_dispatch:
 
@@ -307,9 +321,6 @@ jobs:
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
 
-      - name: Build scaffolding-e2e app
-        run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
-
       - name: Build scaffolding-e2e bundle
         run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
 
@@ -318,149 +329,74 @@ jobs:
       - name: Build scaffolding-e2e-multi bundle
         run: (cd apps/scaffolding-e2e-multi && cargo mero bundle --dev --no-icon)
 
-      - name: Build xcall-example app
-        run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
-
       - name: Build xcall-example bundle
         run: (cd apps/xcall-example && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-with-shared-storage app
-        run: cargo mero build --manifest-path apps/kv-store-with-shared-storage/Cargo.toml
 
       - name: Build kv-store-with-shared-storage bundle
         run: (cd apps/kv-store-with-shared-storage && cargo mero bundle --dev --no-icon)
 
-      - name: Build tee-dice app
-        run: cargo mero build --manifest-path apps/tee-dice/Cargo.toml
-
       - name: Build tee-dice bundle
         run: (cd apps/tee-dice && cargo mero bundle --dev --no-icon)
-
-      - name: Build tee-cards app
-        run: cargo mero build --manifest-path apps/tee-cards/Cargo.toml
 
       - name: Build tee-cards bundle
         run: (cd apps/tee-cards && cargo mero bundle --dev --no-icon)
 
-      - name: Build name-registry app
-        run: cargo mero build --manifest-path apps/name-registry/Cargo.toml
-
       - name: Build name-registry bundle
         run: (cd apps/name-registry && cargo mero bundle --dev --no-icon)
-
-      - name: Build name-registry-admin app
-        run: cargo mero build --manifest-path apps/name-registry-admin/Cargo.toml
 
       - name: Build name-registry-admin bundle
         run: (cd apps/name-registry-admin && cargo mero bundle --dev --no-icon)
 
-      - name: Build authored-sorted-kv-store app
-        run: cargo mero build --manifest-path apps/authored-sorted-kv-store/Cargo.toml
-
       - name: Build authored-sorted-kv-store bundle
         run: (cd apps/authored-sorted-kv-store && cargo mero bundle --dev --no-icon)
-
-      - name: Build indexed-issue-tracker app
-        run: cargo mero build --manifest-path apps/indexed-issue-tracker/Cargo.toml
 
       - name: Build indexed-issue-tracker bundle
         run: (cd apps/indexed-issue-tracker && cargo mero bundle --dev --no-icon)
 
-      - name: Build indexed-forum app
-        run: cargo mero build --manifest-path apps/indexed-forum/Cargo.toml
-
       - name: Build indexed-forum bundle
         run: (cd apps/indexed-forum && cargo mero bundle --dev --no-icon)
-
-      - name: Build search-chat app
-        run: cargo mero build --manifest-path apps/search-chat/Cargo.toml
 
       - name: Build search-chat bundle
         run: (cd apps/search-chat && cargo mero bundle --dev --no-icon)
 
-      - name: Build permissions-showcase app
-        run: cargo mero build --manifest-path apps/permissions-showcase/Cargo.toml
-
       - name: Build permissions-showcase bundle
         run: (cd apps/permissions-showcase && cargo mero bundle --dev --no-icon)
-
-      - name: Build components-demo app
-        run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
 
       - name: Build components-demo bundle
         run: (cd apps/components-demo && cargo mero bundle --dev --no-icon)
 
-      - name: Build blobs app
-        run: cargo mero build --manifest-path apps/blobs/Cargo.toml
-
       - name: Build blobs bundle
         run: (cd apps/blobs && cargo mero bundle --dev --no-icon)
-
-      - name: Build abi_conformance app
-        run: cargo mero build --manifest-path apps/abi_conformance/Cargo.toml
 
       - name: Build abi_conformance bundle
         run: (cd apps/abi_conformance && cargo mero bundle --dev --no-icon)
 
-      - name: Build collaborative-editor app
-        run: cargo mero build --manifest-path apps/collaborative-editor/Cargo.toml
-
       - name: Build collaborative-editor bundle
         run: (cd apps/collaborative-editor && cargo mero bundle --dev --no-icon)
-
-      - name: Build fugue-collab app
-        run: cargo mero build --manifest-path apps/fugue-collab/Cargo.toml
 
       - name: Build fugue-collab bundle
         run: (cd apps/fugue-collab && cargo mero bundle --dev --no-icon)
 
-      - name: Build rich-collab app
-        run: cargo mero build --manifest-path apps/rich-collab/Cargo.toml
-
       - name: Build rich-collab bundle
         run: (cd apps/rich-collab && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-init app
-        run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
 
       - name: Build kv-store-init bundle
         run: (cd apps/kv-store-init && cargo mero bundle --dev --no-icon)
 
-      - name: Build kv-store-with-handlers app
-        run: cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
-
       - name: Build kv-store-with-handlers bundle
         run: (cd apps/kv-store-with-handlers && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-with-user-and-frozen-storage app
-        run: cargo mero build --manifest-path apps/kv-store-with-user-and-frozen-storage/Cargo.toml
 
       - name: Build kv-store-with-user-and-frozen-storage bundle
         run: (cd apps/kv-store-with-user-and-frozen-storage && cargo mero bundle --dev --no-icon)
 
-      - name: Build kv-store app
-        run: cargo mero build --manifest-path apps/kv-store/Cargo.toml
-
-      - name: Build nested-crdt-test app
-        run: cargo mero build --manifest-path apps/nested-crdt-test/Cargo.toml
-
       - name: Build nested-crdt-test bundle
         run: (cd apps/nested-crdt-test && cargo mero bundle --dev --no-icon)
-
-      - name: Build private_data app
-        run: cargo mero build --manifest-path apps/private_data/Cargo.toml
 
       - name: Build private_data bundle
         run: (cd apps/private_data && cargo mero bundle --dev --no-icon)
 
-      - name: Build team-metrics-custom app
-        run: cargo mero build --manifest-path apps/team-metrics-custom/Cargo.toml
-
       - name: Build team-metrics-custom bundle
         run: (cd apps/team-metrics-custom && cargo mero bundle --dev --no-icon)
-
-      - name: Build team-metrics-macro app
-        run: cargo mero build --manifest-path apps/team-metrics-macro/Cargo.toml
 
       - name: Build team-metrics-macro bundle
         run: (cd apps/team-metrics-macro && cargo mero bundle --dev --no-icon)

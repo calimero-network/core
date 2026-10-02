@@ -20,6 +20,14 @@ on:
       - "scripts/resolve-paired-ref.sh"
       - "scripts/build-all-apps.sh"
       - ".github/workflows/abi-contract.yml"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
+      - "tools/calimero-abi/README.md"
 
 env:
   CARGO_TERM_COLOR: always
@@ -87,6 +95,10 @@ jobs:
         run: |
           pnpm install --filter '@calimero-network/abi-codegen...'
           pnpm --filter '@calimero-network/abi-codegen' build
+
+      # abi-contract-check.sh takes this binary instead of compiling its own.
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
 
       - name: Run ABI contract check
         env:

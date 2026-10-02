@@ -18,6 +18,10 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
   # Only fires on profiling-image paths; release.yml publishes pr-<N>-profiling
   # for the same set first. Same-repo PRs only; crates/**/apps/** excluded for cost.
   pull_request:

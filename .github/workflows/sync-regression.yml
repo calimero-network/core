@@ -19,6 +19,9 @@ on:
       - ".github/workflows/sync-regression.yml"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/merod-binaries/**"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
       - ".github/actions/setup-merobox/**"
 
   pull_request:
@@ -31,6 +34,9 @@ on:
       - ".github/workflows/sync-regression.yml"
       - ".github/actions/build-local-merod/**"
       - ".github/actions/merod-binaries/**"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
       - ".github/actions/setup-merobox/**"
 
   workflow_dispatch:
@@ -80,9 +86,6 @@ jobs:
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
-
-      - name: Build kv-store-with-handlers WASM
-        run: cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
 
       - name: Build kv-store-with-handlers bundle
         run: (cd apps/kv-store-with-handlers && cargo mero bundle --dev --no-icon)

@@ -34,6 +34,9 @@ on:
       - "scripts/check-endpoint-coverage.sh"
       - "scripts/tests/check-endpoint-coverage.test.sh"
       - "scripts/tests/resolve-paired-ref.test.sh"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
   push:
     branches:
       - master

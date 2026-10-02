@@ -138,16 +138,19 @@ runs:
         all_there() {
           { [ "$NEED_DEFAULT" != true ] || have default; } && { [ "$NEED_MOCK" != true ] || have mock-tee; }
         }
-        # "running" while e2e-rust-apps.yml has a run for this commit whose
-        # `Build merod image` job has not completed.
+        # "running" only while e2e-rust-apps.yml has a STARTED run for this commit
+        # whose `Build merod image` job exists and has not completed. A run that
+        # is still pending (on master, queued behind the previous push by its
+        # concurrency group) has no jobs yet and may not start for an hour:
+        # treating it as in flight held SDK E2E for its whole wait.
         producer_running() {
           local run status
           run=$(gh api "repos/$REPO/actions/workflows/e2e-rust-apps.yml/runs?head_sha=$SHA&per_page=5" \
-            --jq '[.workflow_runs[] | select(.status != "completed")][0].id // empty' 2>/dev/null) || return 1
+            --jq '[.workflow_runs[] | select(.status == "in_progress")][0].id // empty' 2>/dev/null) || return 1
           [ -n "$run" ] || return 1
           status=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
-            --jq '[.jobs[] | select(.name | test("Build merod image")) | .status][0] // "queued"' 2>/dev/null) || return 1
-          [ "$status" != completed ]
+            --jq '[.jobs[] | select(.name | test("Build merod image")) | .status][0] // empty' 2>/dev/null) || return 1
+          [ -n "$status" ] && [ "$status" != completed ]
         }
         deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
         while [ "$(date +%s)" -lt "$deadline" ]; do
