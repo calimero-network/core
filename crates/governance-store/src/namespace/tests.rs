@@ -9257,6 +9257,80 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     assert_eq!(live[0].account, account_id);
 }
 
+/// An open-subgroup joiner whose device was re-keyed: it joined under `old_sk` at
+/// epoch 0, then again under `new_sk` at epoch 1, which retires `old_sk`.
+struct RekeyedJoiner {
+    store: Store,
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    root_sk: PrivateKey,
+    genesis: calimero_account::AccountGenesis,
+    device: [u8; 32],
+    old_sk: PrivateKey,
+    new_sk: PrivateKey,
+}
+
+fn rekeyed_joiner(namespace_id: [u8; 32], subgroup_id: [u8; 32]) -> RekeyedJoiner {
+    let store = test_store();
+    let (root_sk, genesis) = crate::test_fixtures::test_account_root();
+    let device = [0x7D; 32];
+    let old_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let new_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let first =
+        crate::test_fixtures::join_account_for(&root_sk, genesis, &old_sk.public_key(), device, 0);
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &first.statement.account);
+    apply_open_join_with(&store, namespace_id, subgroup_id, &old_sk, first)
+        .expect("the first join applies");
+    let rekeyed =
+        crate::test_fixtures::join_account_for(&root_sk, genesis, &new_sk.public_key(), device, 1);
+    apply_open_join_with(&store, namespace_id, subgroup_id, &new_sk, rekeyed)
+        .expect("a join under the device's next key applies");
+    RekeyedJoiner {
+        store,
+        namespace_id,
+        subgroup_id,
+        root_sk,
+        genesis,
+        device,
+        old_sk,
+        new_sk,
+    }
+}
+
+#[test]
+fn a_join_signed_with_a_rotated_out_device_key_is_refused() {
+    let j = rekeyed_joiner([0xC6; 32], [0xD6; 32]);
+    let stale = crate::test_fixtures::join_account_for(
+        &j.root_sk,
+        j.genesis,
+        &j.old_sk.public_key(),
+        j.device,
+        0,
+    );
+
+    let err = apply_open_join_with(&j.store, j.namespace_id, j.subgroup_id, &j.old_sk, stale)
+        .expect_err("a key the device was re-keyed past must not join for its account");
+    assert!(
+        format!("{err:#}").contains("re-keyed past"),
+        "expected the superseded-key refusal, got: {err:#}"
+    );
+}
+
+#[test]
+fn a_join_signed_with_the_current_device_key_is_accepted() {
+    let j = rekeyed_joiner([0xC7; 32], [0xD7; 32]);
+    let current = crate::test_fixtures::join_account_for(
+        &j.root_sk,
+        j.genesis,
+        &j.new_sk.public_key(),
+        j.device,
+        1,
+    );
+
+    apply_open_join_with(&j.store, j.namespace_id, j.subgroup_id, &j.new_sk, current)
+        .expect("the device's current key still joins");
+}
+
 /// A TEE fleet replica is bound in the same apply as its admission.
 ///
 /// The whole reason the cleartext form exists. Under the encrypted `GroupOp` the
