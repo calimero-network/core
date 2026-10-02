@@ -80,6 +80,15 @@ const GC_COMPACT_MAX_WRITE_AMP: u64 = 32;
 /// a handful of tombstone rows is not worth even a small rewrite.
 const GC_COMPACT_MIN_BYTES: u64 = 64 * 1024;
 
+/// Whether deleting `reclaimed` bytes from a slice that takes `size` bytes is
+/// worth compacting that slice now: at least [`GC_COMPACT_MIN_BYTES`], and at
+/// least 1/[`GC_COMPACT_MAX_WRITE_AMP`] of the slice. The one bar for every
+/// sweep that deletes rows and then compacts what it deleted from (this GC's
+/// state slices, DAG compaction's delta slices).
+pub(crate) fn worth_compacting(reclaimed: u64, size: u64) -> bool {
+    reclaimed >= GC_COMPACT_MIN_BYTES && reclaimed.saturating_mul(GC_COMPACT_MAX_WRITE_AMP) >= size
+}
+
 /// Message to trigger garbage collection.
 #[derive(Copy, Clone, Debug, Message)]
 #[rtype(result = "()")]
@@ -501,9 +510,6 @@ impl Sweeper {
     fn compact_reclaimed(&self, reclaimed: &BTreeMap<ContextId, u64>) -> usize {
         let mut compacted = 0;
         for (&context_id, &bytes) in reclaimed {
-            if bytes < GC_COMPACT_MIN_BYTES {
-                continue;
-            }
             let lo = ContextState::new(context_id, [0; STATE_KEY_LEN]);
             let hi = ContextState::new(context_id, [u8::MAX; STATE_KEY_LEN]);
             let (lo, hi) = (lo.as_key().as_bytes(), hi.as_key().as_bytes());
@@ -514,7 +520,7 @@ impl Sweeper {
                     continue;
                 }
             };
-            if bytes.saturating_mul(GC_COMPACT_MAX_WRITE_AMP) < size {
+            if !worth_compacting(bytes, size) {
                 continue;
             }
             let t = Instant::now();

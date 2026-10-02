@@ -64,7 +64,8 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | `pending_stats() -> PendingStats` | Snapshot of pending-queue health |
 | `has_delta(id) -> bool` / `is_applied(id) -> bool` / `get_delta(id) -> Option<&CausalDelta<T>>` | Lookups |
 | `stats() -> DagStats` / `delta_count() -> usize` | Size accounting (the latter feeds compaction eligibility elsewhere in the node) |
-| `prune_to_recent(retain_count) -> Vec<[u8; 32]>` | Drops applied history outside a BFS window back from the heads; returns pruned ids for the caller to delete from durable storage |
+| `delta_ids()` | Ids of every delta held (applied or pending); the node's durable prune keeps these rows |
+| `prune_to_recent(retain_count) -> Vec<[u8; 32]>` | Drops applied history outside a BFS window back from the heads, never a pending delta or a parent a pending delta already holds; returns pruned ids |
 | `set_delta_query_limit(n)` / `set_max_pending(n)` | Runtime-adjustable caps (`set_max_pending` clamps to a minimum of 1) |
 
 ## Mental Model

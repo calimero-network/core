@@ -606,7 +606,11 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
             config.dag_compaction.retain_recent_count,
             config.dag_compaction.min_deltas_before_compact,
         );
-        let compactor = DagCompactor::new(node_state.delta_stores_handle(), config.dag_compaction);
+        let compactor = DagCompactor::new(
+            node_state.delta_stores_handle(),
+            context_client.clone(),
+            config.dag_compaction,
+        );
         let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| compactor);
     }
 
