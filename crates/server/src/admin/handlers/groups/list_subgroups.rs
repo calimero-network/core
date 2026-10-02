@@ -56,7 +56,7 @@ pub async fn handler(
 }
 
 /// The children of `group_id` a caller may learn exist, with their names: every
-/// Open child, and a Restricted one only to an admin of `group_id` or its members.
+/// Open child, and a Restricted one only to an admin of `group_id` or a member of it.
 pub(crate) fn visible_children(
     state: &AdminState,
     group_id: &ContextGroupId,

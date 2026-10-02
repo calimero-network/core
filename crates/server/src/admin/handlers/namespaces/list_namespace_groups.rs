@@ -99,6 +99,8 @@ mod tests {
     use axum::routing::get;
     use axum::{Extension, Router};
     use calimero_context_client::client::ContextClient;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::MembershipRepository;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PublicKey;
     use calimero_server_primitives::admin::ListNamespaceGroupsApiResponse;
@@ -112,8 +114,8 @@ mod tests {
     use crate::{AdminState, NodeReadiness};
 
     /// Whether the namespace listing names its Restricted subgroup to an account
-    /// holding `role` in the namespace and no row in the subgroup.
-    async fn lists_the_restricted_subgroup(role: GroupMemberRole) -> bool {
+    /// holding `role` in the namespace, and a row in the subgroup if `in_subgroup`.
+    async fn lists_the_restricted_subgroup(role: GroupMemberRole, in_subgroup: bool) -> bool {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let (namespace, subgroup, account) =
             crate::test_support::seed_namespace_with_restricted_subgroup(
@@ -121,6 +123,15 @@ mod tests {
                 PublicKey::from([0x5C; 32]),
                 role,
             );
+        if in_subgroup {
+            MembershipRepository::new(&store)
+                .add_member(
+                    &ContextGroupId::from(*subgroup.as_bytes()),
+                    &account,
+                    GroupMemberRole::Member,
+                )
+                .expect("seat the account in the subgroup");
+        }
         let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
         let (node_client, _blob_dir) = crate::test_support::test_node_client(
             &store,
@@ -160,11 +171,12 @@ mod tests {
     }
 
     #[actix::test]
-    async fn a_restricted_subgroup_is_listed_to_a_namespace_admin_only() {
+    async fn a_restricted_subgroup_is_listed_only_to_the_namespace_admin_and_its_members() {
         assert!(
-            lists_the_restricted_subgroup(GroupMemberRole::Admin).await,
+            lists_the_restricted_subgroup(GroupMemberRole::Admin, false).await,
             "precondition: the namespace admin sees it"
         );
-        assert!(!lists_the_restricted_subgroup(GroupMemberRole::Member).await);
+        assert!(lists_the_restricted_subgroup(GroupMemberRole::Member, true).await);
+        assert!(!lists_the_restricted_subgroup(GroupMemberRole::Member, false).await);
     }
 }
