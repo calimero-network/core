@@ -645,6 +645,8 @@ mod tests {
                 issuer: "calimero-test".to_string(),
                 access_token_expiry: 3600,
                 refresh_token_expiry: 30 * 24 * 3600,
+                client_access_token_expiry: crate::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: crate::config::default_client_refresh_token_expiry(),
                 node_host: None,
             },
             Arc::clone(&storage),
