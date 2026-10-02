@@ -303,7 +303,7 @@ impl RunCommand {
             context: config.context,
             registry: config.registry,
             server: server_config,
-            gc_interval_secs: None, // Use default (12 hours)
+            gc_interval_secs: None, // Use default (1 hour)
             dag_compaction: config.dag_compaction,
             mode: node_mode,
             stop_watch,

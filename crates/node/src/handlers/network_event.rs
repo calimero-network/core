@@ -22,6 +22,7 @@ mod heartbeat;
 mod namespace;
 mod readiness;
 mod specialized;
+mod state_beacon;
 mod subscriptions;
 mod tee_fired;
 
@@ -239,6 +240,17 @@ impl Handler<NetworkEvent> for NodeManager {
                     } => {
                         tee_fired::handle_tee_fired(
                             self, source, context_id, author_id, &trigger, &signature,
+                        );
+                    }
+                    BroadcastMessage::StateBeacon {
+                        context_id,
+                        signer,
+                        root_hash,
+                        dag_heads,
+                        signature,
+                    } => {
+                        state_beacon::handle_state_beacon(
+                            self, source, context_id, signer, root_hash, &dag_heads, &signature,
                         );
                     }
                     _ => {

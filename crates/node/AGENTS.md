@@ -59,6 +59,7 @@ src/
 │   └── snapshot.rs           # Snapshot handling
 ├── delta_store.rs            # Delta storage + applier (merge-applies via `ContextClient::apply_remote_delta`, so read-only replicas keep the result)
 ├── gc.rs                     # Tombstone GC (+ parents' deleted_children), under each context's lock
+├── tombstone_stability.rs    # When a tombstone may go: every member device caught up (signed StateBeacon)
 ├── constants.rs              # Constants
 ├── arbiter_pool.rs           # Actix arbiter pool
 └── utils.rs                  # Utilities
