@@ -1667,7 +1667,10 @@ async fn origin_charges_are_released_when_pending_deltas_leave() {
     dag.add_delta(orphan(2, 2), &AdmissionApplier)
         .await
         .unwrap();
-    assert_eq!(dag.pending_by_origin.get(&origin_of(1)), Some(&2));
+    assert_eq!(
+        dag.pending_by_origin.get(&origin_of(1)).map(BTreeMap::len),
+        Some(2)
+    );
 
     // The missing parent arrives: both leave `pending` by applying.
     let parent = CausalDelta::new_test([200; 32], vec![[0; 32]], TestPayload { value: 0 });
