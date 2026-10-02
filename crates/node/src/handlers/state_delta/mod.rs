@@ -3274,6 +3274,23 @@ mod tests {
             handle
                 .put(&bytecode_id, &app_meta)
                 .expect("put ApplicationMeta");
+            // A loaded reader behind the target is a release its group named earlier.
+            if let Some(group_id) =
+                calimero_governance_store::get_group_for_context(store, context_id)
+                    .expect("read the context's group")
+            {
+                calimero_governance_store::UpgradeLadderRepository::new(store)
+                    .append(
+                        &group_id,
+                        key::LadderRung {
+                            bytecode_id: blob,
+                            application_id: ApplicationId::from([0xCC; 32]),
+                            package: String::new(),
+                            version: String::new(),
+                        },
+                    )
+                    .expect("record the rung");
+            }
         }
 
         /// REGRESSION (the PR-6b drain bug): a STALE v1 straggler delta —

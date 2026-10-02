@@ -2071,6 +2071,45 @@ mod tests {
         );
     }
 
+    /// A node in two groups for one bundle id installs the newer group's release
+    /// over the shared row. A context of the group still on v1 is at v1: the row's
+    /// version, set for the other group, must not be reported as its own.
+    #[test]
+    fn facts_never_report_another_groups_release_as_a_contexts_version() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB5u8; 32];
+        let ctx = [0xC9u8; 32];
+
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V1_BLOB);
+        let mut meta = calimero_governance_store::MetaRepository::new(&store)
+            .load(&ContextGroupId::from(ns))
+            .unwrap()
+            .expect("group meta");
+        meta.migration = None;
+        calimero_governance_store::MetaRepository::new(&store)
+            .save(&ContextGroupId::from(ns), &meta)
+            .unwrap();
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        // Another group's v3 release, installed under the shared id.
+        install_bundle_over_context(&store, ctx, [0xA3u8; 32], 3);
+
+        // Marker-less: nothing on this node knows the context's version yet.
+        let marker_less = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(marker_less.schema_version, 0, "not the other group's v3");
+        // What activating its group's v1 records.
+        calimero_context::activation::record_activation(&store, &ctx.into(), V1_BLOB);
+        calimero_context::activation::record_activated_state_version(&store, &ctx.into(), 1);
+        let activated = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            activated.schema_version, 1,
+            "its own v1, not the other group's v3"
+        );
+    }
+
     /// `join_context` stamps no activation marker, so a joined context has no
     /// per-context fact of its own - once the target bundle is installed, the
     /// shared row is the only version signal left and it reads at target. Only
