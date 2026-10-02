@@ -6,6 +6,7 @@
 //! failure refuses the op, so it never reaches the log.
 
 use calimero_account::AccountId;
+use calimero_context_client::local_governance::JoinAccountCredential;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, Result as EyreResult};
 
@@ -19,6 +20,7 @@ pub(crate) fn apply(
     quote: &[u8],
     collateral: Option<&[u8]>,
     attested_at: u64,
+    account: &JoinAccountCredential,
 ) -> EyreResult<()> {
     // The reader resolves to the root, so a subgroup copy would be dead data.
     if NamespaceRepository::new(ctx.store())
@@ -36,8 +38,15 @@ pub(crate) fn apply(
     ctx.membership_policy()
         .require_tee_attestation_verifier(&signer)?;
 
-    let verdict =
-        crate::tee::verify_authority_evidence(attested_key, quote, collateral, attested_at)?;
+    let verdict = crate::tee::verify_authority_evidence(
+        ctx.group_id(),
+        member,
+        attested_key,
+        account,
+        quote,
+        collateral,
+        attested_at,
+    )?;
     let policy = ctx
         .membership_policy()
         .read_required_tee_admission_policy()?;

@@ -35,19 +35,20 @@ where
         Ok(response)
     }
 
-    /// Announce this node as a TEE fleet member for the given group.
+    /// Ask to be admitted as a TEE fleet member of the given group.
     ///
     /// Calls POST /admin-api/tee/fleet-join. The local node generates a TDX
-    /// attestation, broadcasts `TeeAttestationAnnounce` on the namespace
-    /// topic, waits for admission (up to 30s), and auto-joins all contexts
-    /// in the group. Used by the mero-tee fleet sidecar after the manager
-    /// assigns it to a group via /api/fleet/should-join.
+    /// attestation over the challenge an admitting member offers, prompts the
+    /// namespace with `TeeAdmissionPrompt`, waits for admission (up to 30s),
+    /// and auto-joins all contexts in the group. Used by the mero-tee fleet
+    /// sidecar after the manager assigns it to a group via
+    /// /api/fleet/should-join.
     pub async fn fleet_join(&self, group_id: String) -> Result<FleetJoinResponse> {
         self.fleet_join_with_admitters(group_id, Vec::new()).await
     }
 
     /// [`Self::fleet_join`], also asking `admitter_addrs` for admission
-    /// directly before relying on the broadcast.
+    /// directly before relying on the prompt.
     ///
     /// The addresses are libp2p multiaddrs ending in `/p2p/<peer id>`, and name
     /// who to ask, never who may admit: each peer applies the vouching rule.

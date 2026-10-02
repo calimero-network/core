@@ -328,6 +328,7 @@ const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
             | InitPayload::RelaySealedJoinRequest { .. }
             | InitPayload::TeeAdmissionRequest { .. }
             | InitPayload::TeeReleaseAdmissionRequest { .. }
+            | InitPayload::TeeAdmissionChallengeRequest { .. }
     )
 }
 
@@ -352,7 +353,9 @@ fn payload_names_another_context(init_context: &ContextId, payload: &InitPayload
         | InitPayload::GroupKeyRequestWithResponderProof { .. }
         | InitPayload::RelaySealedJoinRequest { .. }
         | InitPayload::TeeAdmissionRequest { .. }
-        | InitPayload::TeeReleaseAdmissionRequest { .. } => false,
+        | InitPayload::TeeReleaseAdmissionRequest { .. }
+        | InitPayload::TeeAdmissionChallengeRequest { .. }
+        | InitPayload::TeeAdmissionChallengeOffer { .. } => false,
     }
 }
 
@@ -3628,7 +3631,8 @@ impl SyncManager {
                 | InitPayload::OpenSubgroupJoinRequest { namespace_id, .. }
                 | InitPayload::RelaySealedJoinRequest { namespace_id, .. }
                 | InitPayload::TeeAdmissionRequest { namespace_id, .. }
-                | InitPayload::TeeReleaseAdmissionRequest { namespace_id, .. } => {
+                | InitPayload::TeeReleaseAdmissionRequest { namespace_id, .. }
+                | InitPayload::TeeAdmissionChallengeRequest { namespace_id } => {
                     ContextId::from(*namespace_id)
                 }
                 _ => context_id,
@@ -3749,20 +3753,20 @@ impl SyncManager {
 
         // Namespace-scoped with a sentinel context id, like the joins above, and
         // not membership-gated: the requester is by definition not a member yet.
-        // What admits it is the attestation it carries, checked exactly as the
-        // broadcast receiver checks it.
+        // What admits it is the attestation it carries, which must answer a
+        // challenge this node issued to it.
         let tee_admission = match payload {
             InitPayload::TeeAdmissionRequest {
                 namespace_id,
                 quote_bytes,
                 public_key,
-                nonce: attestation_nonce,
+                challenge,
                 account,
             } => Ok((
                 namespace_id,
                 quote_bytes,
                 public_key,
-                attestation_nonce,
+                challenge,
                 account,
                 None,
             )),
@@ -3770,28 +3774,28 @@ impl SyncManager {
                 namespace_id,
                 quote_bytes,
                 public_key,
-                nonce: attestation_nonce,
+                challenge,
                 account,
                 release_version,
             } => Ok((
                 namespace_id,
                 quote_bytes,
                 public_key,
-                attestation_nonce,
+                challenge,
                 account,
                 Some(release_version),
             )),
             other => Err(other),
         };
         let payload = match tee_admission {
-            Ok((namespace_id, quote_bytes, public_key, attestation_nonce, account, release)) => {
+            Ok((namespace_id, quote_bytes, public_key, challenge, account, release)) => {
                 self.handle_tee_admission_request(
                     peer_id,
                     namespace_id,
                     crate::handlers::tee_attestation_admission::TeeAdmissionClaim {
                         quote_bytes,
                         public_key,
-                        nonce: attestation_nonce,
+                        challenge,
                         account,
                         release_version: release,
                     },
@@ -3803,6 +3807,29 @@ impl SyncManager {
             }
             Err(payload) => payload,
         };
+
+        // The challenge half of the same exchange, in both directions: a TEE
+        // asking for one, and a member offering one to a TEE that prompted.
+        if let InitPayload::TeeAdmissionChallengeRequest { namespace_id } = &payload {
+            self.handle_tee_challenge_request(
+                peer_id,
+                their_identity,
+                *namespace_id,
+                stream,
+                nonce,
+            )
+            .await?;
+            return Ok(Some(()));
+        }
+        if let InitPayload::TeeAdmissionChallengeOffer {
+            namespace_id,
+            challenge,
+        } = &payload
+        {
+            self.handle_tee_challenge_offer(peer_id, *namespace_id, *challenge, stream, nonce)
+                .await?;
+            return Ok(Some(()));
+        }
 
         // Both key-request variants land here. They differ only in whether the
         // reply carries this node's own device certificate: the requester asks
@@ -4062,7 +4089,9 @@ impl SyncManager {
                 unreachable!("handled by early return above")
             }
             InitPayload::TeeAdmissionRequest { .. }
-            | InitPayload::TeeReleaseAdmissionRequest { .. } => {
+            | InitPayload::TeeReleaseAdmissionRequest { .. }
+            | InitPayload::TeeAdmissionChallengeRequest { .. }
+            | InitPayload::TeeAdmissionChallengeOffer { .. } => {
                 unreachable!("handled by early return above")
             }
             InitPayload::GroupKeyRequest { .. }
@@ -4458,16 +4487,21 @@ mod init_pop_gate_tests {
                 namespace_id: [0; 32],
                 quote_bytes: vec![],
                 public_key: [0; 32].into(),
-                nonce: [0; 32],
+                challenge: [0; 32],
                 account: calimero_context::test_support::credential(&[0x42; 32].into()),
             },
             InitPayload::TeeReleaseAdmissionRequest {
                 namespace_id: [0; 32],
                 quote_bytes: vec![],
                 public_key: [0; 32].into(),
-                nonce: [0; 32],
+                challenge: [0; 32],
                 account: calimero_context::test_support::credential(&[0x42; 32].into()),
                 release_version: "2.3.72".to_owned(),
+            },
+            // A challenge is issued to the key that proved itself on this
+            // transport, so a dialer cannot collect challenges in another's name.
+            InitPayload::TeeAdmissionChallengeRequest {
+                namespace_id: [0; 32],
             },
         ];
         for p in &requires {
@@ -4503,6 +4537,12 @@ mod init_pop_gate_tests {
             InitPayload::EntityDeletePush {
                 context_id: ctx,
                 deletions: vec![],
+            },
+            // An offer names no identity and only a waiting node answers it, so there
+            // is no key for the dialer to prove.
+            InitPayload::TeeAdmissionChallengeOffer {
+                namespace_id: [0; 32],
+                challenge: [0; 32],
             },
         ];
         for p in &exempt {

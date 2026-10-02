@@ -11,6 +11,31 @@ use crate::error::AttestationError;
 #[cfg(feature = "mock-attestation")]
 use crate::generate::{is_mock_quote, MOCK_QUOTE_HEADER};
 
+/// Parse a TDX quote from bytes a peer chose.
+///
+/// The parser slices past a short input once its header parses, so a quote too
+/// short for its version's body is refused before it, and a panic is refused
+/// as a parse failure.
+pub(crate) fn parse_tdx_quote(quote_bytes: &[u8]) -> Result<TdxQuote, AttestationError> {
+    const HEADER_LEN: usize = 48;
+    let body_len = match quote_bytes
+        .get(..2)
+        .map(|v| u16::from_le_bytes([v[0], v[1]]))
+    {
+        Some(4) => 584,
+        Some(5) => 648,
+        _ => 0,
+    };
+    if quote_bytes.len() < HEADER_LEN + body_len || quote_bytes.len() < HEADER_LEN {
+        return Err(AttestationError::QuoteParsingFailed(
+            "quote is too short".to_owned(),
+        ));
+    }
+    std::panic::catch_unwind(|| TdxQuote::from_bytes(quote_bytes))
+        .map_err(|_| AttestationError::QuoteParsingFailed("quote parser panicked".to_owned()))?
+        .map_err(|err| AttestationError::QuoteParsingFailed(format!("{err:?}")))
+}
+
 /// Result of verifying a TEE attestation.
 ///
 /// This is a *report* of the crypto/structural checks the verifier performed
@@ -240,9 +265,8 @@ pub async fn verify_attestation(
     expected_app_hash: &[u8; 32],
 ) -> Result<VerificationResult, AttestationError> {
     // Parse TDX quote
-    let tdx_quote = TdxQuote::from_bytes(quote_bytes).map_err(|err| {
+    let tdx_quote = parse_tdx_quote(quote_bytes).inspect_err(|err| {
         error!(error=?err, "Failed to parse TDX quote");
-        AttestationError::QuoteParsingFailed(format!("{err:?}"))
     })?;
 
     info!("Quote parsed successfully");

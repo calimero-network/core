@@ -7,7 +7,7 @@ use crate::cli::Environment;
 pub mod fleet_join;
 
 pub const EXAMPLES: &str = r"
-  # Announce this node as a TEE fleet member and auto-join all contexts
+  # Ask to be admitted as a TEE fleet member and auto-join all contexts
   # in the group once admission succeeds.
   $ meroctl --node node1 tee fleet-join <GROUP_ID>
 ";

@@ -1,31 +1,30 @@
 use actix::{AsyncContext, WrapFuture};
 use calimero_node_primitives::sync::BroadcastMessage;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
-use crate::handlers::tee_attestation_admission;
 use crate::NodeManager;
 
-/// Why a gossipsub topic was rejected as a `TeeAttestationAnnounce`
+/// Why a gossipsub topic was rejected as a `TeeAdmissionPrompt`
 /// namespace-governance topic.
 #[derive(Debug, PartialEq, Eq)]
 enum NamespaceTopicError {
     /// Topic did not carry the `ns/` namespace-governance prefix. Fleet
     /// TEE nodes publish on `ns/<hex(namespace_id)>` via
     /// `NodeClient::publish_on_namespace`, so anything else is not an
-    /// admission announce.
+    /// admission prompt.
     NotNamespaceTopic,
     /// Topic had the `ns/` prefix but the suffix was not a 32-byte hex id.
     MalformedHex,
 }
 
-/// Parse a `TeeAttestationAnnounce` gossipsub topic into its namespace id.
+/// Parse a `TeeAdmissionPrompt` gossipsub topic into its namespace id.
 ///
-/// Fleet TEE nodes announce on `ns/<hex(namespace_id)>` (the namespace
+/// Fleet TEE nodes prompt on `ns/<hex(namespace_id)>` (the namespace
 /// governance topic — see `NodeClient::publish_on_namespace`,
 /// `governance_broadcast::ns_topic`, and the `ns/` handling in
 /// `subscriptions.rs`). The namespace IS its root group, so the returned
 /// 32-byte id is used directly as the admission group id.
-fn parse_namespace_announce_topic(topic_str: &str) -> Result<[u8; 32], NamespaceTopicError> {
+fn parse_namespace_prompt_topic(topic_str: &str) -> Result<[u8; 32], NamespaceTopicError> {
     let hex = topic_str
         .strip_prefix("ns/")
         .ok_or(NamespaceTopicError::NotNamespaceTopic)?;
@@ -42,42 +41,20 @@ pub(super) fn handle_specialized_broadcast(
     message: &BroadcastMessage<'_>,
 ) -> bool {
     match message {
-        BroadcastMessage::TeeAttestationAnnounce {
-            quote_bytes,
-            public_key,
-            nonce,
-            node_type: _,
-            account,
-        }
-        | BroadcastMessage::TeeReleaseAttestationAnnounce {
-            quote_bytes,
-            public_key,
-            nonce,
-            node_type: _,
-            account,
-            ..
-        } => {
-            // The release, for the form that names one. The rest is shared:
-            // both forms are admitted by the same `verify_and_admit`.
-            let release_version = match message {
-                BroadcastMessage::TeeReleaseAttestationAnnounce {
-                    release_version, ..
-                } => Some(release_version.clone()),
-                _ => None,
-            };
+        BroadcastMessage::TeeAdmissionPrompt => {
             let topic_str = topic.as_str();
-            // Fleet TEE nodes announce on the namespace governance topic
+            // Fleet TEE nodes prompt on the namespace governance topic
             // `ns/<hex(namespace_id)>` (see `NodeClient::publish_on_namespace`
             // and the `ns/` convention in `subscriptions.rs` /
             // `governance_broadcast::ns_topic`). The namespace IS its root
             // group, so the parsed namespace id is the admission group id.
-            let namespace_id_bytes = match parse_namespace_announce_topic(topic_str) {
+            let namespace_id_bytes = match parse_namespace_prompt_topic(topic_str) {
                 Ok(bytes) => bytes,
                 Err(NamespaceTopicError::MalformedHex) => {
                     warn!(
                         %source,
                         topic = %topic_str,
-                        "Invalid namespace topic hex in TeeAttestationAnnounce"
+                        "Invalid namespace topic hex in TeeAdmissionPrompt"
                     );
                     return true;
                 }
@@ -85,45 +62,24 @@ pub(super) fn handle_specialized_broadcast(
                     warn!(
                         %source,
                         topic = %topic_str,
-                        "TeeAttestationAnnounce received on non-namespace topic"
+                        "TeeAdmissionPrompt received on non-namespace topic"
                     );
                     return true;
                 }
             };
 
-            info!(
+            debug!(
                 %source,
-                %public_key,
-                nonce = %hex::encode(*nonce),
                 namespace_id = %hex::encode(namespace_id_bytes),
-                release = ?release_version,
-                "Received TEE attestation announce on namespace topic"
+                "Received TEE admission prompt on namespace topic"
             );
 
-            let context_client = this.clients.context.clone();
-            let claim = tee_attestation_admission::TeeAdmissionClaim {
-                quote_bytes: quote_bytes.clone(),
-                public_key: *public_key,
-                nonce: *nonce,
-                account: account.clone(),
-                release_version,
-            };
+            // The prompt admits nobody: a member that may vouch offers its source a
+            // challenge, and only a quote over it is verified.
+            let sync = this.managers.sync.clone();
             let _ignored = ctx.spawn(
                 async move {
-                    if let Err(err) = tee_attestation_admission::handle_tee_attestation_announce(
-                        &context_client,
-                        source,
-                        namespace_id_bytes,
-                        claim,
-                    )
-                    .await
-                    {
-                        warn!(
-                            %source,
-                            error = %err,
-                            "Failed to handle TEE attestation announce"
-                        );
-                    }
+                    sync.offer_tee_challenge(namespace_id_bytes, source).await;
                 }
                 .into_actor(this),
             );
@@ -135,49 +91,48 @@ pub(super) fn handle_specialized_broadcast(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_namespace_announce_topic, NamespaceTopicError};
+    use super::{parse_namespace_prompt_topic, NamespaceTopicError};
 
     /// Regression test for the `ns/` vs `group/` topic mismatch (PR #2096):
-    /// fleet TEE nodes announce `TeeAttestationAnnounce` on
+    /// fleet TEE nodes prompt with `TeeAdmissionPrompt` on
     /// `ns/<hex(namespace_id)>`, but the dispatcher used to strip
-    /// `group/`, so the announce fell into the "non-namespace topic" arm
-    /// and was dropped — `handle_tee_attestation_announce` / `admit_tee_node`
-    /// never ran, and fleet TEE nodes were never admitted to the namespace
-    /// group. The dispatcher must resolve an `ns/` topic to its namespace id
+    /// `group/`, so the prompt fell into the "non-namespace topic" arm and was
+    /// dropped — `offer_tee_challenge` never ran, and fleet TEE nodes were
+    /// never admitted to the namespace group. The dispatcher must resolve an `ns/` topic to its namespace id
     /// and route it into the admission path.
     #[test]
-    fn ns_announce_topic_resolves_to_namespace_id_for_admission() {
+    fn ns_prompt_topic_resolves_to_namespace_id_for_admission() {
         let namespace_id = [0x42u8; 32];
         let topic = format!("ns/{}", hex::encode(namespace_id));
 
-        let parsed = parse_namespace_announce_topic(&topic)
-            .expect("ns/<hex> announce topic must route into the admission path, not be dropped");
+        let parsed = parse_namespace_prompt_topic(&topic)
+            .expect("ns/<hex> prompt topic must route into the admission path, not be dropped");
 
         // The resolved id is what gets handed to
-        // `handle_tee_attestation_announce` → `admit_tee_node` as the
+        // `offer_tee_challenge` → `admit_tee_node` as the
         // admission group id (the namespace is its own root group).
         assert_eq!(parsed, namespace_id);
     }
 
     /// The old (buggy) `group/<hex>` topic must NOT match this path anymore.
-    /// `group/` is not how TEE announces are published (publish uses
+    /// `group/` is not how TEE prompts are published (publish uses
     /// `publish_on_namespace` → `ns/`), so a `group/` topic here is a
     /// non-namespace topic and is correctly rejected rather than admitted.
     #[test]
-    fn legacy_group_topic_is_not_a_namespace_announce_topic() {
+    fn legacy_group_topic_is_not_a_namespace_prompt_topic() {
         let topic = format!("group/{}", hex::encode([0x42u8; 32]));
         assert_eq!(
-            parse_namespace_announce_topic(&topic),
+            parse_namespace_prompt_topic(&topic),
             Err(NamespaceTopicError::NotNamespaceTopic),
         );
     }
 
     /// A non-prefixed topic (e.g. a raw context id) is not a namespace
-    /// announce topic.
+    /// prompt topic.
     #[test]
-    fn unprefixed_topic_is_not_a_namespace_announce_topic() {
+    fn unprefixed_topic_is_not_a_namespace_prompt_topic() {
         assert_eq!(
-            parse_namespace_announce_topic("some-context-id"),
+            parse_namespace_prompt_topic("some-context-id"),
             Err(NamespaceTopicError::NotNamespaceTopic),
         );
     }
@@ -188,12 +143,12 @@ mod tests {
     #[test]
     fn ns_topic_with_malformed_hex_is_rejected_as_malformed() {
         assert_eq!(
-            parse_namespace_announce_topic("ns/not-hex"),
+            parse_namespace_prompt_topic("ns/not-hex"),
             Err(NamespaceTopicError::MalformedHex),
         );
         // Right prefix, valid hex, wrong length (16 bytes, not 32).
         assert_eq!(
-            parse_namespace_announce_topic(&format!("ns/{}", hex::encode([0u8; 16]))),
+            parse_namespace_prompt_topic(&format!("ns/{}", hex::encode([0u8; 16]))),
             Err(NamespaceTopicError::MalformedHex),
         );
     }

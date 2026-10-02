@@ -6,7 +6,6 @@ use calimero_context_client::group::{JoinContextRequest, ListGroupContextsReques
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::NamespaceRepository;
-use calimero_node_primitives::client::TeeAdmissionParams;
 use calimero_server_primitives::admin::FleetJoinRequest;
 use reqwest::StatusCode;
 use tracing::{error, info, warn};
@@ -67,22 +66,37 @@ pub async fn handler(
     // only a namespace with measurement lists can admit this node.
     let release_version = state.tee_release_version.clone();
 
-    let announcement = match super::announce::build(
+    #[cfg(feature = "mock-attestation")]
+    let mock_tee = state.mock_tee;
+    #[cfg(not(feature = "mock-attestation"))]
+    let mock_tee = false;
+    let preflight = super::prompt::preflight(
+        #[cfg(feature = "mock-attestation")]
+        mock_tee,
+    );
+    if let Err(err) = preflight {
+        let status_code = match err {
+            super::prompt::PromptError::MockRejected => StatusCode::NOT_IMPLEMENTED,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        return ApiError {
+            status_code,
+            message: err.message().to_owned(),
+        }
+        .into_response();
+    }
+    let prompt = match super::prompt::build(
         &state.store,
         &ns_id,
         our_public_key,
         release_version.as_deref(),
-        #[cfg(feature = "mock-attestation")]
-        state.mock_tee,
+        req.admitter_addrs.clone(),
+        mock_tee,
     ) {
-        Ok(announcement) => announcement,
+        Ok(prompt) => prompt,
         Err(err) => {
-            let status_code = match err {
-                super::announce::AnnounceError::MockRejected => StatusCode::NOT_IMPLEMENTED,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
             return ApiError {
-                status_code,
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
                 message: err.message().to_owned(),
             }
             .into_response();
@@ -93,21 +107,10 @@ pub async fn handler(
     // against the ACCOUNT a key speaks for, so a caller holding only
     // `public_key` has nothing it can match a member listing against, and no
     // endpoint maps one to the other from outside the node that owns it.
-    let account_id = announcement.account.statement.account;
+    let account_id = prompt.params.account.statement.account;
 
-    // Kept for the direct request below, which carries the same attestation the
-    // broadcast does. Only built when there is someone to ask.
-    let direct_request = (!req.admitter_addrs.is_empty()).then(|| TeeAdmissionParams {
-        namespace_id: ns_id.to_bytes(),
-        admitter_addrs: req.admitter_addrs.clone(),
-        public_key: our_public_key,
-        quote_bytes: announcement.quote_bytes.clone(),
-        nonce: announcement.nonce,
-        account: announcement.account.clone(),
-        release_version: release_version.clone(),
-    });
-
-    let payloads = announcement.payloads;
+    let payload = prompt.payload;
+    let params = prompt.params;
 
     if let Err(err) = state.node_client.subscribe_namespace(group_id_bytes).await {
         error!(error=?err, "Failed to subscribe to namespace topic");
@@ -118,11 +121,35 @@ pub async fn handler(
         .into_response();
     }
 
-    // Fire the first announce up front. A single publish at fleet-join time is
+    // Register first, so the node can answer a challenge; then ask the named admitters
+    // directly. Without addresses, or if none admits, the prompt below draws an offer.
+    match state.node_client.request_tee_admission(params).await {
+        Ok(admitter) => {
+            info!(
+                group_id = %req.group_id,
+                %admitter,
+                "admitted by a directly-asked admitter; pulling namespace governance"
+            );
+            if let Err(err) = state.node_client.sync_namespace(group_id_bytes).await {
+                tracing::debug!(
+                    group_id = %req.group_id,
+                    error = ?err,
+                    "governance pull after direct admission failed; the loop retries it"
+                );
+            }
+        }
+        Err(err) => info!(
+            group_id = %req.group_id,
+            error = %format!("{err:#}"),
+            "no admitter admitted this node directly; relying on the prompt"
+        ),
+    }
+
+    // Prompt the namespace up front. A single publish at fleet-join time is
     // lost forever if it lands in an empty gossipsub mesh (no replay), which is
     // the common case for a NAT'd/relay owner whose mesh forms only
-    // intermittently. The admission loop below therefore RE-announces every
-    // poll cycle until admitted or the deadline, so a *later* mesh window still
+    // intermittently. The admission loop below therefore RE-prompts every poll
+    // cycle until admitted or the deadline, so a *later* mesh window still
     // receives a fresh copy.
     //
     // An empty mesh at t=0 is the EXPECTED cold-start outcome, not a failure:
@@ -134,13 +161,17 @@ pub async fn handler(
     // mesh forms — was ever reached. So classify it the same way the loop does:
     // empty mesh is non-fatal, fall through into the retry loop below; any
     // *other* publish error is a genuine transport failure and still bails
-    // (a subscription with no chance of an announce is useless).
-    if let Err(err) = publish_announcements(&state.node_client, group_id_bytes, &payloads).await {
+    // (a subscription with no chance of a prompt is useless).
+    if let Err(err) = state
+        .node_client
+        .publish_on_namespace_now(group_id_bytes, payload.clone())
+        .await
+    {
         if calimero_network_primitives::client::is_no_peers_subscribed_error(&err) {
             info!(
                 group_id = %req.group_id,
-                "First announce hit an empty gossipsub mesh (no peers subscribed yet); \
-                 deferring to the re-announce loop, which republishes once the mesh forms"
+                "First prompt hit an empty gossipsub mesh (no peers subscribed yet); \
+                 deferring to the re-prompt loop, which republishes once the mesh forms"
             );
         } else {
             warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
@@ -150,7 +181,7 @@ pub async fn handler(
                 .await;
             return ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to broadcast attestation".to_owned(),
+                message: "Failed to broadcast the admission prompt".to_owned(),
             }
             .into_response();
         }
@@ -159,55 +190,13 @@ pub async fn handler(
     info!(
         group_id = %req.group_id,
         %our_public_key,
-        "TeeAttestationAnnounce broadcast; re-announcing until admission then joining contexts"
+        "TeeAdmissionPrompt broadcast; re-prompting until admission then joining contexts"
     );
-
-    // Ask the named admitters directly, the way an invitation's joiner does.
-    //
-    // The broadcast above only works if a peer allowed to vouch is in the
-    // gossip mesh to hear it, and when the only one is an owner's NAT'd laptop
-    // that mesh may never form — the miss is silent. A direct request dials the
-    // peer, gets a verdict back, and names why when it is refused. The broadcast
-    // stays as the fallback for peers that predate this request, and it keeps
-    // being re-announced below either way.
-    //
-    // Admission here is not the end of the job: this node still holds no
-    // governance state and no key, so pull right away rather than waiting a
-    // poll cycle. The loop below then confirms membership and joins contexts
-    // exactly as it does after a broadcast admission.
-    if let Some(params) = direct_request {
-        match state.node_client.request_tee_admission(params).await {
-            Ok(admitter) => {
-                info!(
-                    group_id = %req.group_id,
-                    %admitter,
-                    "admitted by a directly-asked admitter; pulling namespace governance"
-                );
-                if let Err(err) = state.node_client.sync_namespace(group_id_bytes).await {
-                    tracing::debug!(
-                        group_id = %req.group_id,
-                        error = ?err,
-                        "governance pull after direct admission failed; the loop retries it"
-                    );
-                }
-            }
-            Err(err) => warn!(
-                group_id = %req.group_id,
-                error = %format!("{err:#}"),
-                "no admitter admitted this node directly; relying on the broadcast"
-            ),
-        }
-    }
 
     // Poll for group admission, then auto-join all contexts in the namespace.
     //
-    // Re-announce strategy: this loop both (a) checks for admission and (b)
-    // re-publishes the announce each cycle the node is not yet admitted. The
-    // re-announce is request-scoped (bounded by `MAX_ADMISSION_WAIT`) rather
-    // than a long-lived background task: the mdma sidecar already re-polls
-    // should-join and re-invokes fleet-join, so each call covering one mesh
-    // window is sufficient, and a request-scoped loop needs no extra actor /
-    // lifecycle management. See the handler-level rationale comment.
+    // Each cycle checks for admission and, if none, re-publishes the prompt.
+    // Request-scoped (bounded by `MAX_ADMISSION_WAIT`); the sidecar re-invokes.
     let mut contexts_joined = Vec::new();
     let mut admitted = false;
     let mut auto_follow_enabled = false;
@@ -216,7 +205,7 @@ pub async fn handler(
     // larger window, so this only needs to cover a single mesh-formation
     // attempt comfortably.
     const MAX_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-    // Interval between admission checks AND between re-announces — short enough
+    // Interval between admission checks AND between re-prompts — short enough
     // that a transient mesh window (mesh peers appear, then vanish) is hit by a
     // fresh publish, but not so tight it spams the topic.
     const ADMISSION_POLL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -376,7 +365,7 @@ pub async fn handler(
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 tokio::time::sleep(remaining.min(ADMISSION_POLL)).await;
 
-                // Re-announce AFTER the poll sleep, and only if we're still
+                // Re-prompt AFTER the poll sleep, and only if we're still
                 // before the deadline. Doing it here (rather than before the
                 // sleep) avoids both a duplicate publish fired back-to-back with
                 // the up-front one at t=0 and a wasted publish right as we give
@@ -385,23 +374,26 @@ pub async fn handler(
                 // cycle delivers a fresh copy to a mesh window that opens later.
                 // Best effort — a transport error here is logged, not fatal.
                 if tokio::time::Instant::now() < deadline {
-                    match publish_announcements(&state.node_client, group_id_bytes, &payloads).await
+                    match state
+                        .node_client
+                        .publish_on_namespace_now(group_id_bytes, payload.clone())
+                        .await
                     {
                         Ok(mesh_peers) => tracing::debug!(
                             group_id = %req.group_id,
                             mesh_peers,
-                            "re-announced TeeAttestationAnnounce while awaiting admission"
+                            "re-prompted the namespace while awaiting admission"
                         ),
-                        Err(reannounce_err) => warn!(
+                        Err(reprompt_err) => warn!(
                             group_id = %req.group_id,
-                            error = ?reannounce_err,
-                            "re-announce publish failed; will retry next cycle"
+                            error = ?reprompt_err,
+                            "re-prompt publish failed; will retry next cycle"
                         ),
                     }
 
-                    // Bootstrap pull: a bare announcer holds NO namespace
+                    // Bootstrap pull: a bare prompter holds NO namespace
                     // governance state (it only `subscribe_namespace`'d to send
-                    // the announce). Once the verifier admits it, the verifier
+                    // the prompt). Once the verifier admits it, the verifier
                     // publishes the membership op (encrypted with the namespace
                     // group key) plus a `KeyDelivery` wrapping that key for this
                     // node — but both ride the namespace governance DAG, which
@@ -417,7 +409,7 @@ pub async fn handler(
                     // self-confirm above resolves and we join + replicate contexts.
                     // Best-effort: a missing mesh peer is logged inside
                     // `sync_namespace` and retried next cycle. Guarded by the same
-                    // `now < deadline` check as the re-announce because it is a
+                    // `now < deadline` check as the re-prompt because it is a
                     // network op that should not run past the deadline.
                     if let Err(sync_err) = state.node_client.sync_namespace(group_id_bytes).await {
                         tracing::debug!(
@@ -451,20 +443,4 @@ pub async fn handler(
         }),
     }
     .into_response()
-}
-
-/// Publish each announcement form on the namespace topic, stopping at the
-/// first failure. Returns the mesh size the last publish saw.
-async fn publish_announcements(
-    node_client: &calimero_node_primitives::client::NodeClient,
-    namespace_id: [u8; 32],
-    payloads: &[Vec<u8>],
-) -> eyre::Result<usize> {
-    let mut mesh_peers = 0;
-    for payload in payloads {
-        mesh_peers = node_client
-            .publish_on_namespace_now(namespace_id, payload.clone())
-            .await?;
-    }
-    Ok(mesh_peers)
 }

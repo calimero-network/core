@@ -225,6 +225,21 @@ pub enum MembershipError {
         member: String,
     },
 
+    /// The quote a TEE admission carries does not commit to the credential the
+    /// op admits, so it was made for some other account, identity key, delivery
+    /// key, device or namespace.
+    #[error(
+        "TEE admission quote does not commit to the credential of {member} for this namespace"
+    )]
+    TeeQuoteNotBoundToCredential {
+        /// The attested key the op admits.
+        member: String,
+    },
+
+    /// The hash a TEE admission records is not the hash of the quote it carries.
+    #[error("TEE admission quote hash does not match the quote the op carries")]
+    TeeQuoteHashMismatch,
+
     /// Cannot remove the owner of a group; the owner must
     /// `TransferOwnership` to a successor first.
     #[error("cannot remove owner of group {0}; owner must transfer ownership first")]

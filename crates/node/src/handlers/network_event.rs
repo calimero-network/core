@@ -3,7 +3,7 @@
 //! **SRP Applied**: Event handling is split into focused modules:
 //! - `subscriptions` - context/group topic subscribe lifecycle
 //! - `heartbeat` - hash heartbeat divergence detection and sync trigger
-//! - `specialized` - fleet TEE attestation-announce admission dispatch
+//! - `specialized` - fleet TEE admission prompt dispatch
 //! - `namespace` - namespace governance and heartbeat handling
 //! - `blobs` - blob request/provider/download event handling
 //! - this file - dispatch wiring only
@@ -170,29 +170,7 @@ impl Handler<NetworkEvent> for NodeManager {
                             their_dag_heads,
                         );
                     }
-                    BroadcastMessage::TeeAttestationAnnounce {
-                        quote_bytes,
-                        public_key,
-                        nonce,
-                        node_type,
-                        account,
-                    } => {
-                        let specialized_message = BroadcastMessage::TeeAttestationAnnounce {
-                            quote_bytes,
-                            public_key,
-                            nonce,
-                            node_type,
-                            account,
-                        };
-                        let _handled = specialized::handle_specialized_broadcast(
-                            self,
-                            ctx,
-                            source,
-                            &topic,
-                            &specialized_message,
-                        );
-                    }
-                    message @ BroadcastMessage::TeeReleaseAttestationAnnounce { .. } => {
+                    message @ BroadcastMessage::TeeAdmissionPrompt => {
                         let _handled = specialized::handle_specialized_broadcast(
                             self, ctx, source, &topic, &message,
                         );
