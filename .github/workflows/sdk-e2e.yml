@@ -18,6 +18,7 @@ on:
     paths:
       - "crates/server/**"
       - "crates/auth/**"
+      - "crates/bundle/**"
       - "crates/primitives/**"
       - "crates/merod/**"
       - "crates/governance-types/**"
