@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use calimero_app_downloader::registry::RegistryMode;
-use calimero_blobstore::{Blob, BlobManager as BlobStore, Size};
+use calimero_blobstore::{Blob, BlobManager as BlobStore, Deleted, Size};
 use calimero_context_config::MAX_NAMESPACE_DEPTH;
 use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobProbe};
 use calimero_primitives::{
@@ -136,7 +136,7 @@ impl BlobManager {
     /// deduplicated by hash, so several owners can share the same blob; the
     /// refcount-aware, tree-aware deletion lives in
     /// [`calimero_blobstore::BlobManager::delete`].
-    pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
+    pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<Deleted> {
         self.blobstore.delete(blob_id).await
     }
 }
@@ -639,6 +639,12 @@ impl NodeClient {
                         return None;
                     }
 
+                    // The holder served it under this context, so this node now
+                    // holds it for the context too.
+                    if let Err(e) = self.record_blob_owner(context_id, blob_id) {
+                        return Some(Err(e));
+                    }
+
                     // Recorded here and nowhere else: at this point the peer
                     // served the bytes, they hashed to the id that was asked
                     // for, and the transfer finished. A probe answering "yes"
@@ -853,12 +859,12 @@ impl NodeClient {
     /// Tell the context's availability nodes that this node now holds a blob,
     /// so they can prefetch it.
     ///
-    /// This is the ONE place in the system where the blob→context association
-    /// exists: `BlobMeta` is keyed by blob id alone, and state deltas carry
-    /// opaque borsh values, so nothing downstream can recover which context a
-    /// blob belongs to. Every producer — the app host function, the admin
-    /// upload handler, and `upgrade_group` — already calls this, which is why
-    /// prefetch hangs off it.
+    /// This is how another node learns the blob→context association: the
+    /// producer's `BlobOwner` row is node-local, and state deltas carry opaque
+    /// borsh values, so nothing downstream can recover which context a blob
+    /// belongs to. Every producer (the app host function, the admin upload
+    /// handler, and `upgrade_group`) already calls this, which is why prefetch
+    /// hangs off it.
     ///
     /// Delivery is direct streams to a bounded, chosen set: the context's
     /// TEE members, resolved through the same lookup that orders
@@ -1032,6 +1038,40 @@ impl NodeClient {
         Ok(handle.has(&key::ContextBlob::new(*context_id, *blob_id))?)
     }
 
+    /// Record that this node holds `blob_id` for `context_id`, which is what lets
+    /// the context's peers be served it. Call only once the bytes are verified.
+    ///
+    /// Not [`Self::record_blob_context`]: this one also covers what the
+    /// context's own run created or announced, which is fine to hand the
+    /// context's peers but is not proof the bytes entered on the context's
+    /// behalf, so it must never stand in for that row (see `Column::BlobOwner`).
+    pub fn record_blob_owner(&self, context_id: &ContextId, blob_id: &BlobId) -> eyre::Result<()> {
+        self.datastore
+            .clone()
+            .handle()
+            .put(&key::BlobOwner::new(*context_id, *blob_id), &())?;
+        Ok(())
+    }
+
+    /// Whether this node may serve `blob_id` to members of `context_id`: it was
+    /// recorded for that context, or it is the application the context runs.
+    pub fn is_blob_held_for_context(
+        &self,
+        context_id: &ContextId,
+        blob_id: &BlobId,
+    ) -> eyre::Result<bool> {
+        let handle = self.datastore.clone().handle();
+        if handle.has(&key::BlobOwner::new(*context_id, *blob_id))? {
+            return Ok(true);
+        }
+        let Some(meta) = handle.get(&key::ContextMeta::new(*context_id))? else {
+            return Ok(false);
+        };
+        Ok(self
+            .get_application(&meta.application.application_id())?
+            .is_some_and(|app| app.blob.bytecode == *blob_id || app.blob.compiled == *blob_id))
+    }
+
     /// List all root blobs
     ///
     /// Returns every blob [`Self::has_blob`] reports present, with its size.
@@ -1086,13 +1126,20 @@ impl NodeClient {
     /// and `Ok(false)` when it was already absent. Absent is not an error: the
     /// admin API answers it with `404`, and the install paths that release a blob
     /// after a failure have nothing left to do.
+    ///
+    /// Once the last reference is gone, the contexts the blob was held for go
+    /// too, so the same bytes added again later are not served under them.
     pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
         match self.blob_manager.delete_blob(blob_id).await {
-            Ok(true) => {
+            Ok(Deleted::Freed) => {
+                tracing::info!(%blob_id, "freed blob");
+                Ok(true)
+            }
+            Ok(Deleted::Released) => {
                 tracing::info!(%blob_id, "released blob reference");
                 Ok(true)
             }
-            Ok(false) => Ok(false),
+            Ok(Deleted::Absent) => Ok(false),
             Err(err) => {
                 tracing::error!("Failed to delete blob {}: {:?}", blob_id, err);
                 bail!("Failed to delete blob: {}", err);

@@ -286,6 +286,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 for rung in &rungs {
                     let blob_id = calimero_primitives::blobs::BlobId::from(rung.bytecode_id);
                     for context_id in &contexts {
+                        if let Err(err) = node_client.record_blob_owner(context_id, &blob_id) {
+                            warn!(%err, %context_id, "failed to record upgrade rung blob for context");
+                            continue;
+                        }
                         if let Err(err) = node_client
                             .announce_blob_to_network(&blob_id, context_id, rung.size)
                             .await
@@ -1724,6 +1728,10 @@ fn dispatch_cascade(
                         }
                     };
                     for context_id in &contexts {
+                        if let Err(err) = nc_for_announce.record_blob_owner(context_id, &blob_id) {
+                            warn!(%err, %context_id, "failed to record target app blob for context");
+                            continue;
+                        }
                         if let Err(err) = nc_for_announce
                             .announce_blob_to_network(&blob_id, context_id, blob_size)
                             .await

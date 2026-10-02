@@ -294,6 +294,16 @@ cargo test -p calimero-node --test network_simulation
   `announce_blob_to_network`, `sync/blobs.rs`'s
   `handle_blob_share_request`, and `handlers/blob_protocol.rs`. Gate every
   new serve site through it. User-data blobs are untouched in both modes
+- **A peer is served a blob only for a context this node holds it for.**
+  `NodeClient::is_blob_held_for_context` (a node-local `key::BlobOwner` row, or
+  the context's own application artifact) gates the signed path of
+  `handlers/blob_protocol.rs` and `sync/blobs.rs`'s responder; gate every new
+  serve site through it too. `record_blob_owner` writes the row where bytes
+  enter for a context: the runtime's `blob_create`, the admin upload with a
+  `context_id`, `upgrade_group`, `get_blob`'s peer fetch and the `BlobShare`
+  initiator. Record only after the bytes are verified, and never on a local hit
+  or on an announcement's say-so: either would let one context's member claim
+  another context's blob by id
 - `NodeClient::get_blob`'s discovery leg does NOT trust the DHT alone: a
   provider record is opportunistic (nothing announces application
   bytecode at install, and a restart drops what was announced), so an
