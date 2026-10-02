@@ -193,12 +193,13 @@ mod tests {
     use std::time::Duration;
 
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::MetaRepository;
+    use calimero_governance_store::{placeholder_admin_identity, MetaRepository};
     use calimero_network_primitives::messages::NetworkEvent;
+    use calimero_store::key::{GroupMetaValue, GroupTarget};
     use libp2p::gossipsub::TopicHash;
     use libp2p::PeerId;
     use serial_test::serial;
-    use tokio::time::sleep;
+    use tokio::time::{sleep, timeout};
 
     use crate::test_node_harness::{boot_test_node, TestNode};
 
@@ -210,26 +211,23 @@ mod tests {
             })
             .await
             .expect("deliver Subscribed to the node actor");
-        sleep(Duration::from_millis(200)).await;
     }
 
-    /// A peer subscribing to the topic of a group this node does not hold
-    /// starts no group sync; one it holds still does.
+    /// A peer subscribing to the topic of a group this node holds starts a group
+    /// sync; one subscribing to a group it does not hold starts none.
     #[actix::test]
     #[serial(boot_test_node)]
     async fn a_subscription_to_an_unknown_group_starts_no_sync() {
         let node = boot_test_node().await;
-
-        subscribe_to_group(&node, [0x5E; 32]).await;
-        assert_eq!(node.sync_group_requests.load(Ordering::SeqCst), 0);
+        let syncs = || node.sync_group_requests.load(Ordering::SeqCst);
 
         let known = [0x5F; 32];
-        let admin = calimero_governance_store::placeholder_admin_identity();
+        let admin = placeholder_admin_identity();
         MetaRepository::new(&node.store)
             .save(
                 &ContextGroupId::from(known),
-                &calimero_store::key::GroupMetaValue {
-                    target: calimero_store::key::GroupTarget::default(),
+                &GroupMetaValue {
+                    target: GroupTarget::default(),
                     created_at: 0,
                     admin_identity: admin,
                     owner_identity: admin,
@@ -239,6 +237,16 @@ mod tests {
             )
             .expect("save the group meta");
         subscribe_to_group(&node, known).await;
-        assert_eq!(node.sync_group_requests.load(Ordering::SeqCst), 1);
+        timeout(Duration::from_secs(5), async {
+            while syncs() == 0 {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("precondition: a known group's subscription starts a sync");
+
+        subscribe_to_group(&node, [0x5E; 32]).await;
+        sleep(Duration::from_millis(200)).await;
+        assert_eq!(syncs(), 1, "an unknown group's subscription starts no sync");
     }
 }
