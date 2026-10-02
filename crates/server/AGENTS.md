@@ -394,6 +394,14 @@ request re-stamps it.
   it listens on an unspecified one, and the hosts of `allowed_origins`). A browser's `Host`
   is whatever name it resolved, so it proves nothing until the node recognises it. Clients
   that send no `Origin` are not browsers and are unaffected.
+- In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
+  sent: one with `Origin` or any `Sec-Fetch-*` header (a same-origin `GET` has no `Origin`).
+  It is admitted when the origin is listed, or when every `Host` / `X-Forwarded-Host` (or the
+  URI authority, for HTTP/2) is a loopback name, an IP address or an `allowed_origins` host and
+  the origin matches one of them or is a loopback page. Never admit a request because its
+  `Origin` equals its `Host`: under DNS rebinding the two are the attacker's name together. A
+  node served under a host name of its own must list that origin. The CORS layer calls the same
+  `admits`, so the two cannot disagree.
 - SSE streams are per-context
 - The `/sse/subscription` 200 is the client's readiness signal: once it lists a
   context, live events for it reach the stream. That holds only because

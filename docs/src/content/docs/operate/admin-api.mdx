@@ -84,19 +84,30 @@ allows `Any` origin (or the `[server.cors] allowed_origins` list when set),
 and sets `allow_private_network(true)` so requests from a public-origin page to
 a loopback node pass the browser's private-network preflight.
 
-In proxy auth mode the node checks no caller itself, so a browser request that
-carries an `Origin` is served only when that origin is:
+In proxy auth mode the node checks no caller itself, so it judges every browser
+request: one that carries an `Origin`, or the fetch metadata (`Sec-Fetch-Site`,
+`Sec-Fetch-Mode`, `Sec-Fetch-Dest`) a browser sends even on a same-origin `GET`.
+Such a request is served only when its origin is listed in `[server.cors]
+allowed_origins`, or when **every** host it names (`Host`, and
+`X-Forwarded-Host` if present) is one of the node's own and the origin is:
 
-- the node's own origin (it matches the request's `Host` or `X-Forwarded-Host`);
+- the node's own origin (it matches one of those hosts); or
 - a loopback page (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`, any
-  port), including the desktop webview's `tauri://localhost`;
-- listed in `[server.cors] allowed_origins`.
+  port), including the desktop webview's `tauri://localhost`.
 
-Any other origin gets `403` before a handler runs, on every route including
-`/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it. Private-network
-access is advertised only to origins listed in `allowed_origins`. Requests
-without an `Origin` header (curl, meroctl, SDKs outside a browser) are
-unaffected.
+A host is the node's own when it is a loopback name, an IP address, or the host
+of an `allowed_origins` entry. A browser's `Host` is whatever name it resolved,
+so on its own it proves nothing: under DNS rebinding a page on
+`attacker.example` re-points its name at the node and sends that name as both
+`Origin` and `Host`. **A node served to browsers under a host name of its own,
+for example behind a proxy at `https://node.example.com`, must list that origin
+in `allowed_origins`**, or its own pages are refused.
+
+Any other browser request gets `403` before a handler runs, on every route
+including `/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it.
+Private-network access is advertised only to origins listed in
+`allowed_origins`. Requests with neither an `Origin` nor fetch metadata (curl,
+meroctl, SDKs outside a browser) are unaffected, whatever host they name.
 
 Because the response uses `Any` origin, `allow_credentials` is **intentionally
 not set** (the two are incompatible per the CORS spec, so enabling it would be a
