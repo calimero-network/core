@@ -394,6 +394,18 @@
 
 ### Fixed
 
+- **A restarted node syncs and fetches blobs from its peers straight away.**
+  merod stopped without closing its connections, so a QUIC peer kept the old
+  connection open for about 10s. A node that restarted within that time
+  reconnected as a second connection to a peer that already knew it, and
+  gossipsub sent it none of that peer's subscriptions. The restarted node then
+  logged "none subscribe to the context or namespace topic" and could not sync
+  with that peer or fetch blobs from it until a message on each topic repaired
+  the table, which took up to tens of seconds. Shutdown now closes every peer
+  connection while the node is still running and refuses new ones, so the
+  restart reaches the peer as a new connection and both sides exchange
+  subscriptions. (#4407)
+
 - **An account that administers a namespace reads its migration status through
   a relay.** The admin check on `GET /groups/:namespace_id/migration-status`
   read the node's own account, so through a relay (a `RelayTee`, never an
