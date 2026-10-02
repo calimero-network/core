@@ -8,7 +8,8 @@
 use calimero_account::{AccountProof, DeviceCert};
 use calimero_crypto::Nonce;
 use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    AccountBindingRepository, CapabilitiesRepository, GroupKeyring, MembershipRepository,
+    MetaRepository, NamespaceRepository,
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
@@ -542,10 +543,12 @@ impl SyncManager {
     ///    credential is a bearer token: anyone who observed one could replay it
     ///    and be admitted as its owner, which is a worse hole than the one this
     ///    check closes.
+    ///
+    /// Returns the account and the device the certificate names.
     fn verified_joiner_account(
         credential_bytes: &[u8],
         joiner_public_key: &PublicKey,
-    ) -> Result<calimero_account::AccountId, String> {
+    ) -> Result<(calimero_account::AccountId, calimero_account::DeviceId), String> {
         let credential: calimero_context_client::local_governance::JoinAccountCredential =
             borsh::from_slice(credential_bytes).map_err(|e| format!("undecodable: {e}"))?;
 
@@ -567,7 +570,7 @@ impl SyncManager {
             return Err("certificate names a different signing key than the request".to_owned());
         }
 
-        Ok(credential.statement.account)
+        Ok((credential.statement.account, verified.device))
     }
 
     /// Handle an incoming NamespaceJoinRequest on the responder side.
@@ -686,9 +689,9 @@ impl SyncManager {
         // presented a device this responder held no binding for had its deny row
         // go unread, and collected the backfill and the wrapped group key ahead
         // of the apply-time check that does reject it.
-        let joiner_account =
+        let (joiner_account, joiner_device) =
             match Self::verified_joiner_account(joiner_credential_bytes, &joiner_public_key) {
-                Ok(account) => account,
+                Ok(joiner) => joiner,
                 Err(reason) => {
                     let msg = StreamMessage::Message {
                         sequence_id: 0,
@@ -701,6 +704,29 @@ impl SyncManager {
                     return Ok(());
                 }
             };
+
+        // A device the namespace revoked, or narrowed out and has not linked again,
+        // is served nothing, whether or not its account is a member.
+        if AccountBindingRepository::new(&store).device_is_withdrawn(
+            &namespace,
+            joiner_account,
+            joiner_device,
+        )? {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "rejecting namespace join: the joining device was withdrawn from this namespace"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "the joining device was withdrawn from this namespace".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
 
         let already_member = MembershipRepository::new(&store)
             .has_direct_member(&group_id, &joiner_account)
@@ -3293,7 +3319,7 @@ mod joiner_credential_tests {
         let joiner = PublicKey::from([0x11; 32]);
         let (credential, genesis) = credential_for(&joiner);
 
-        let account =
+        let (account, _device) =
             SyncManager::verified_joiner_account(&borsh::to_vec(&credential).unwrap(), &joiner)
                 .expect("a well-formed credential for this key must resolve");
 
