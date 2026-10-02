@@ -96,6 +96,7 @@ exclude = [
 [workspace]
 resolver = "2"
 members = [
+    "./tools/storage-compare",
     "./crates/account",
     "./crates/app-downloader",
     "./crates/auth",
