@@ -394,6 +394,12 @@
 
 ### Fixed
 
+- **A compacted delta's events hash and TEE trigger go with it.** DAG
+  compaction deleted a delta's row but left the rows kept beside it, so disk
+  still grew with delta history. They are now deleted in the same transaction
+  as the row, those earlier compactions left behind are swept, and the space
+  is given back. A peer asking for a compacted delta still gets "not found".
+
 - **A group context runs only a release its own group named.** A node keeps one
   application row per `ApplicationId`, shared by every group on it, and any
   group admin could point that row at their own blob; a context in another
@@ -991,6 +997,13 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Storage: about 27% less CPU per call.** The row codec hashes each row's data
+  once per read and hands index records to callers decoded instead of through a
+  borsh round trip, and a data-only read skips the hash checks it does not
+  need. A kv set takes 146 µs instead of 201, and a chat send 165 µs instead of
+  227 (`tools/storage-compare/RESULTS.md`). No format, row-count or host-call
+  change.
 
 - **A tombstone is collected only once every member device has applied the
   delete.** The 24-hour retention is gone: on every heartbeat each node sends

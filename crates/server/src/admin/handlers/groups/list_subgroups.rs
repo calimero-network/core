@@ -4,6 +4,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::admin::{ListSubgroupsApiResponse, SubgroupEntryApiResponse};
 use tracing::{info, warn};
 
@@ -37,10 +38,33 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, "Listing subgroups");
 
-    let children = match NamespaceRepository::new(&state.store).list_children(&group_id) {
-        Ok(children) => children,
+    let subgroups = match visible_children(&state, &group_id, account.map(|Extension(a)| a)) {
+        Ok(children) => children
+            .into_iter()
+            .map(|(child, name)| SubgroupEntryApiResponse {
+                group_id: hex::encode(child.to_bytes()),
+                name,
+            })
+            .collect(),
         Err(err) => return parse_api_error(err).into_response(),
     };
+
+    ApiResponse {
+        payload: ListSubgroupsApiResponse { subgroups },
+    }
+    .into_response()
+}
+
+/// The children of `group_id` a caller may learn exist, with their names: every
+/// Open child, and a Restricted one only to an admin of `group_id` or a member of it.
+pub(crate) fn visible_children(
+    state: &AdminState,
+    group_id: &ContextGroupId,
+    account: Option<crate::auth::AuthenticatedAccount>,
+) -> eyre::Result<Vec<(ContextGroupId, Option<String>)>> {
+    let group_id_str = hex::encode(group_id.to_bytes());
+
+    let children = NamespaceRepository::new(&state.store).list_children(group_id)?;
 
     // Caller identity comes from the node's *own* namespace identity for
     // the parent group — NOT from the JWT subject. The JWT's `sub` is a
@@ -51,7 +75,7 @@ pub async fn handler(
     // Visibility is decided per account, so this node's namespace identity is
     // resolved to one. An identity bound to no account here sees the same as no
     // identity at all: every Restricted child stays hidden.
-    let caller = match NamespaceRepository::new(&state.store).resolve_identity(&group_id) {
+    let caller = match NamespaceRepository::new(&state.store).resolve_identity(group_id) {
         Ok(Some((pk, _))) => Some(pk),
         Ok(None) => None,
         Err(err) => {
@@ -74,7 +98,7 @@ pub async fn handler(
     // A delegated session asks as its own account: it sees Open children and
     // the Restricted ones it belongs to, never this node's view.
     let node_account = caller.and_then(|pk| {
-        calimero_governance_store::member_account_in_namespace(&state.store, &group_id, &pk)
+        calimero_governance_store::member_account_in_namespace(&state.store, group_id, &pk)
             .unwrap_or_else(|err| {
                 warn!(
                     ?err,
@@ -85,7 +109,7 @@ pub async fn handler(
                 None
             })
     });
-    let caller_account = account.map(|Extension(account)| account.0).or(node_account);
+    let caller_account = account.map(|account| account.0).or(node_account);
 
     let mut subgroups = Vec::with_capacity(children.len());
     for child in children {
@@ -97,7 +121,7 @@ pub async fn handler(
         // no namespace identity for the parent group) likewise hides all
         // `Restricted` children.
         match MembershipRepository::new(&state.store).subgroup_visible_to(
-            &group_id,
+            group_id,
             &child,
             caller_account.as_ref(),
         ) {
@@ -114,18 +138,11 @@ pub async fn handler(
             }
         }
 
-        let name = match MetadataRepository::new(&state.store).group_metadata(&child) {
-            Ok(rec) => rec.and_then(|r| r.name),
-            Err(err) => return parse_api_error(err).into_response(),
-        };
-        subgroups.push(SubgroupEntryApiResponse {
-            group_id: hex::encode(child.to_bytes()),
-            name,
-        });
+        let name = MetadataRepository::new(&state.store)
+            .group_metadata(&child)?
+            .and_then(|r| r.name);
+        subgroups.push((child, name));
     }
 
-    ApiResponse {
-        payload: ListSubgroupsApiResponse { subgroups },
-    }
-    .into_response()
+    Ok(subgroups)
 }

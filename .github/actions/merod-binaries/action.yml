@@ -8,8 +8,9 @@ description: >
 inputs:
   variants:
     description: >
-      Comma-separated variants: `default` (release-like features) and/or
-      `mock-tee` (`--features mock-attestation`, what `merod run --mock-tee` needs).
+      Comma-separated variants: `default` (release-like features), `mock-tee`
+      (`--features mock-attestation`, what `merod run --mock-tee` needs) and/or
+      `mero-auth` (the standalone auth service, `<dir>/mero-auth/mero-auth`).
     required: false
     default: default
   wait-for-producer:
@@ -51,8 +52,8 @@ runs:
         set -euo pipefail
         for v in ${VARIANTS//,/ }; do
           case "$v" in
-            default | mock-tee) ;;
-            *) echo "::error::unknown merod variant '$v' (default, mock-tee)"; exit 1 ;;
+            default | mock-tee | mero-auth) ;;
+            *) echo "::error::unknown merod variant '$v' (default, mock-tee, mero-auth)"; exit 1 ;;
           esac
         done
         paths=(crates Cargo.lock Cargo.toml rust-toolchain.toml .cargo .github/actions/merod-binaries)
@@ -75,6 +76,7 @@ runs:
         echo "prefix=merod-bin-v1-$hash" >> "$GITHUB_OUTPUT"
         echo "default=$([[ ",$VARIANTS," == *,default,* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
         echo "mock_tee=$([[ ",$VARIANTS," == *,mock-tee,* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        echo "mero_auth=$([[ ",$VARIANTS," == *,mero-auth,* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
         echo "merod trees:"; echo "$trees"
 
     - name: Restore merod (default)
@@ -93,6 +95,14 @@ runs:
         path: merod-bin/mock-tee
         key: ${{ steps.key.outputs.prefix }}-mock-tee
 
+    - name: Restore mero-auth
+      id: hit-mero-auth
+      if: steps.key.outputs.mero_auth == 'true' && steps.key.outputs.share == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: merod-bin/mero-auth
+        key: ${{ steps.key.outputs.prefix }}-mero-auth
+
     - name: Decide what is still missing
       id: missing
       shell: bash
@@ -101,13 +111,19 @@ runs:
         WANT_MOCK: ${{ steps.key.outputs.mock_tee }}
         HIT_DEFAULT: ${{ steps.hit-default.outputs.cache-hit }}
         HIT_MOCK: ${{ steps.hit-mock-tee.outputs.cache-hit }}
+        WANT_AUTH: ${{ steps.key.outputs.mero_auth }}
+        HIT_AUTH: ${{ steps.hit-mero-auth.outputs.cache-hit }}
       run: |
-        default=false; mock=false
+        default=false; mock=false; auth=false
         [ "$WANT_DEFAULT" = true ] && [ "$HIT_DEFAULT" != true ] && default=true
         [ "$WANT_MOCK" = true ] && [ "$HIT_MOCK" != true ] && mock=true
-        echo "default=$default" >> "$GITHUB_OUTPUT"
-        echo "mock_tee=$mock" >> "$GITHUB_OUTPUT"
-        echo "missing: default=$default mock-tee=$mock"
+        [ "$WANT_AUTH" = true ] && [ "$HIT_AUTH" != true ] && auth=true
+        {
+          echo "default=$default"
+          echo "mock_tee=$mock"
+          echo "mero_auth=$auth"
+        } >> "$GITHUB_OUTPUT"
+        echo "missing: default=$default mock-tee=$mock mero-auth=$auth"
 
     # Only while the producer is demonstrably still building this exact commit:
     # with no run in flight, or once its build job has finished, stop and build.
@@ -116,7 +132,8 @@ runs:
       id: wait
       if: >-
         inputs.wait-for-producer == 'true' && steps.key.outputs.share == 'true' &&
-        (steps.missing.outputs.default == 'true' || steps.missing.outputs.mock_tee == 'true')
+        (steps.missing.outputs.default == 'true' || steps.missing.outputs.mock_tee == 'true' ||
+         steps.missing.outputs.mero_auth == 'true')
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -126,6 +143,7 @@ runs:
         PREFIX: ${{ steps.key.outputs.prefix }}
         NEED_DEFAULT: ${{ steps.missing.outputs.default }}
         NEED_MOCK: ${{ steps.missing.outputs.mock_tee }}
+        NEED_AUTH: ${{ steps.missing.outputs.mero_auth }}
         WAIT_MINUTES: ${{ inputs.wait-minutes }}
       run: |
         set -uo pipefail
@@ -136,18 +154,22 @@ runs:
           [ "${n:-0}" -gt 0 ]
         }
         all_there() {
-          { [ "$NEED_DEFAULT" != true ] || have default; } && { [ "$NEED_MOCK" != true ] || have mock-tee; }
+          { [ "$NEED_DEFAULT" != true ] || have default; } && { [ "$NEED_MOCK" != true ] || have mock-tee; } \
+            && { [ "$NEED_AUTH" != true ] || have mero-auth; }
         }
-        # "running" while e2e-rust-apps.yml has a run for this commit whose
-        # `Build merod image` job has not completed.
+        # "running" only while e2e-rust-apps.yml has a STARTED run for this commit
+        # whose `Build merod image` job exists and has not completed. A run that
+        # is still pending (on master, queued behind the previous push by its
+        # concurrency group) has no jobs yet and may not start for an hour:
+        # treating it as in flight held SDK E2E for its whole wait.
         producer_running() {
           local run status
           run=$(gh api "repos/$REPO/actions/workflows/e2e-rust-apps.yml/runs?head_sha=$SHA&per_page=5" \
-            --jq '[.workflow_runs[] | select(.status != "completed")][0].id // empty' 2>/dev/null) || return 1
+            --jq '[.workflow_runs[] | select(.status == "in_progress")][0].id // empty' 2>/dev/null) || return 1
           [ -n "$run" ] || return 1
           status=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
-            --jq '[.jobs[] | select(.name | test("Build merod image")) | .status][0] // "queued"' 2>/dev/null) || return 1
-          [ "$status" != completed ]
+            --jq '[.jobs[] | select(.name | test("Build merod image")) | .status][0] // empty' 2>/dev/null) || return 1
+          [ -n "$status" ] && [ "$status" != completed ]
         }
         deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
         while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -178,6 +200,42 @@ runs:
       with:
         path: merod-bin/mock-tee
         key: ${{ steps.key.outputs.prefix }}-mock-tee
+
+    - name: Restore mero-auth (after waiting)
+      id: late-mero-auth
+      if: steps.wait.outputs.found == 'true' && steps.missing.outputs.mero_auth == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: merod-bin/mero-auth
+        key: ${{ steps.key.outputs.prefix }}-mero-auth
+
+    - name: Decide what to build
+      id: todo
+      shell: bash
+      env:
+        DEFAULT: ${{ steps.missing.outputs.default == 'true' && steps.late-default.outputs.cache-hit != 'true' }}
+        MOCK: ${{ steps.missing.outputs.mock_tee == 'true' && steps.late-mock-tee.outputs.cache-hit != 'true' }}
+        AUTH: ${{ steps.missing.outputs.mero_auth == 'true' && steps.late-mero-auth.outputs.cache-hit != 'true' }}
+      run: |
+        build=false
+        for want in "$DEFAULT" "$MOCK" "$AUTH"; do [ "$want" = true ] && build=true; done
+        echo "build=$build" >> "$GITHUB_OUTPUT"
+        echo "to build: default=$DEFAULT mock-tee=$MOCK mero-auth=$AUTH"
+
+    # A caller that only restores (Relay) sets up no Rust; a miss there still has
+    # to build, so the toolchain and libclang come here, only when needed. Cheap
+    # no-ops for a caller that already ran setup-rust-ci.
+    - name: Install the pinned Rust toolchain (to build)
+      if: steps.todo.outputs.build == 'true'
+      uses: ./.github/actions/rust-toolchain
+
+    - name: Install libclang (to build)
+      if: steps.todo.outputs.build == 'true' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        dpkg -s libclang-dev >/dev/null 2>&1 && exit 0
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libclang-dev
 
     # Both variants in one job: the second build recompiles only the crates the
     # feature reaches. The fast e2e profile (no LTO, many codegen units) is the
@@ -222,6 +280,27 @@ runs:
         path: merod-bin/mock-tee
         key: ${{ steps.key.outputs.prefix }}-mock-tee
 
+    # Built from this tree like merod, so Relay tests this branch's `/auth/validate`.
+    - name: Build mero-auth
+      id: build-mero-auth
+      if: steps.missing.outputs.mero_auth == 'true' && steps.late-mero-auth.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        CARGO_PROFILE_RELEASE_LTO: "false"
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+      run: |
+        set -euo pipefail
+        cargo build -p mero-auth --release --target x86_64-unknown-linux-gnu
+        mkdir -p merod-bin/mero-auth
+        cp "${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-gnu/release/mero-auth" merod-bin/mero-auth/mero-auth
+
+    - name: Share mero-auth
+      if: steps.build-mero-auth.outcome == 'success' && steps.key.outputs.share == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: merod-bin/mero-auth
+        key: ${{ steps.key.outputs.prefix }}-mero-auth
+
     # A mock-attestation binary in the default slot would put a forgeable TEE
     # path into images that claim the production feature set.
     - name: Check the binaries
@@ -229,8 +308,13 @@ runs:
       env:
         WANT_DEFAULT: ${{ steps.key.outputs.default }}
         WANT_MOCK: ${{ steps.key.outputs.mock_tee }}
+        WANT_AUTH: ${{ steps.key.outputs.mero_auth }}
       run: |
         set -euo pipefail
+        if [ "$WANT_AUTH" = true ]; then
+          [ -x merod-bin/mero-auth/mero-auth ] || { echo "::error::merod-bin/mero-auth/mero-auth is missing"; exit 1; }
+          merod-bin/mero-auth/mero-auth --version
+        fi
         for v in default mock-tee; do
           want=$WANT_DEFAULT; [ "$v" = mock-tee ] && want=$WANT_MOCK
           [ "$want" = true ] || continue

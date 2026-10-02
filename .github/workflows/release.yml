@@ -14,17 +14,19 @@ on:
       - ".github/actions/**"
       # COPYed into the profiling image by prebuilt.profiling.Dockerfile.
       - "scripts/profiling/**"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "tools/calimero-abi/README.md"
+      - "tools/cargo-mero/README.md"
+      - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
+      - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
+      - "tools/mero-sign/README.md"
   merge_group:
+  # Every PR, with no `paths:` filter: a `Build Binaries` check is required, and
+  # `prepare` below decides whether this change builds anything (docs never do).
+  # A filter would need a stub workflow to report the check whenever it skipped.
   pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "crates/**"
-      - "tools/**"
-      - ".github/workflows/release.yml"
-      - ".github/workflows/deps/**"
-      - ".github/actions/**"
-      - "scripts/profiling/**"
 
 permissions:
   contents: read
@@ -66,6 +68,8 @@ jobs:
       docker_push: ${{ github.event_name == 'push' || github.event.pull_request && !github.event.pull_request.head.repo.fork }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       build_matrix: ${{ steps.build_matrix.outputs.matrix }}
+      # Whether this change can alter anything this workflow builds (scripts/ci-scope.py).
+      build: ${{ steps.scope.outputs.build }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
       # PR-only: enables the profiling build and image so fuzzy-load-test.yml can
       # validate a fresh `pr-<N>-profiling` image before merge.
@@ -118,6 +122,37 @@ jobs:
           echo "binary_release=$binary_release" >> $GITHUB_OUTPUT
           echo "crate_release=$crate_release" >> $GITHUB_OUTPUT
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
+
+      # Fails closed: a change whose files cannot be listed builds everything.
+      - name: Decide whether this change builds anything
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          FROM: ${{ github.event.before || github.event.merge_group.base_sha }}
+          TO: ${{ github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -uo pipefail
+          files=""
+          case "$EVENT" in
+            pull_request)
+              if listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 3000 ]; then
+                files=$listed
+              fi
+              ;;
+            push | merge_group)
+              if [ -n "${FROM//0/}" ] \
+                && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 300 ]; then
+                files=$listed
+              fi
+              ;;
+          esac
+          [ -n "$files" ] || echo "::notice::could not list this change's files; everything builds"
+          printf '%s\n' "$files" | python3 scripts/ci-scope.py --workflow release >> "$GITHUB_OUTPUT"
 
       # Linux x86_64 always (a required check); arm64 on master pushes, which the
       # multi-arch :edge image needs; macOS and Windows only when this run publishes
@@ -190,6 +225,9 @@ jobs:
   build-binaries:
     name: Build Binaries (${{ matrix.name }})
     needs: prepare
+    # Always runs, so its required check reports on every PR; every step is gated
+    # on `build` instead, since a job-level `if` would leave the matrix name
+    # unexpanded and the required check would never report.
     strategy:
       matrix:
         # Chosen in `prepare`: see "Choose the build targets".
@@ -209,19 +247,24 @@ jobs:
 
     steps:
       - name: Checkout code
+        if: needs.prepare.outputs.build == 'true'
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       # arm64 is evicted before its next build ever restores it, and its size evicts the caches PRs read.
-      - name: Setup rust cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      # The pinned toolchain (the runner's own `stable` used to roll this key on
+      # every Rust release) and the release cache, per runner OS and arch.
+      - name: Setup Rust CI
+        if: needs.prepare.outputs.build == 'true'
+        uses: ./.github/actions/setup-rust-ci
         with:
-          key: release
+          shared-key: release
+          libclang: false
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.target != 'aarch64-unknown-linux-gnu' }}
 
       - name: Install libclang (Linux)
-        if: runner.os == 'Linux'
+        if: ${{ needs.prepare.outputs.build == 'true' && (runner.os == 'Linux') }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libclang-dev
@@ -229,22 +272,23 @@ jobs:
       # `rocksdb` uses `bindgen-runtime`, so librocksdb-sys needs libclang everywhere;
       # the Windows image ships LLVM but nothing points bindgen at it.
       - name: Point bindgen at the image's LLVM (Windows)
-        if: runner.os == 'Windows'
+        if: ${{ needs.prepare.outputs.build == 'true' && (runner.os == 'Windows') }}
         run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
 
       # aws-lc-sys (rustls via libp2p-tls) needs NASM on windows-msvc;
       # unix uses the system assembler.
       - name: Install NASM (Windows)
-        if: runner.os == 'Windows'
+        if: ${{ needs.prepare.outputs.build == 'true' && (runner.os == 'Windows') }}
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
 
       - name: Update Bash
-        if: ${{ matrix.runner == 'macos-13' || matrix.runner == 'macos-latest' }}
+        if: ${{ needs.prepare.outputs.build == 'true' && (matrix.runner == 'macos-13' || matrix.runner == 'macos-latest') }}
         run: brew install bash
 
       # mock-attestation must never compile into a release binary: with it off, a
       # MOCK_TDX_QUOTE_V1 blob fails real DCAP parsing and is rejected.
       - name: Guard - mock-attestation must not leak into the release build
+        if: needs.prepare.outputs.build == 'true'
         run: |
           if cargo tree -e features -i calimero-tee-attestation -p merod | grep -q 'mock-attestation'; then
             echo "::error::mock-attestation leaked into production build"
@@ -254,6 +298,7 @@ jobs:
 
       # Resolved once so the steps below cannot drift from WINDOWS_BINARIES.
       - name: Resolve the binaries this target publishes
+        if: needs.prepare.outputs.build == 'true'
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\nCALIMERO_EOF\n' "$WINDOWS_BINARIES" >> "$GITHUB_ENV"
@@ -262,6 +307,7 @@ jobs:
           fi
 
       - name: Build binaries
+        if: needs.prepare.outputs.build == 'true'
         run: |
           readarray -t binaries <<< "$TARGET_BINARIES"
 
@@ -270,6 +316,7 @@ jobs:
           cargo build $binaries --release --target ${{ matrix.target }}
 
       - name: Compress artifacts using gzip
+        if: needs.prepare.outputs.build == 'true'
         run: |
           mkdir -p artifacts
 
@@ -289,7 +336,7 @@ jobs:
       # A bin target of calimero-tee-attestation behind the `cli` feature, so it cannot join $BINARIES (`-p`).
       # Ships because mdma's manager shells out to it to verify TDX quotes; linux/amd64 image only.
       - name: Build calimero-tee-verify (Linux only)
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+        if: ${{ needs.prepare.outputs.build == 'true' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
         run: |
           # With mock-attestation compiled in, the verifier would accept a forged
           # MOCK_TDX_QUOTE_V1 blob.
@@ -306,7 +353,7 @@ jobs:
             -C target/${{ matrix.target }}/release calimero-tee-verify
 
       - name: Build profiling binaries (with frame pointers and debug symbols)
-        if: ${{ (github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
+        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu')) }}
         run: |
           readarray -t binaries <<< "$BINARIES"
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
@@ -315,7 +362,7 @@ jobs:
           RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${{ matrix.target }} --features calimero-context/profiling
 
       - name: Compress profiling artifacts using gzip
-        if: ${{ (github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
+        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu')) }}
         run: |
           mkdir -p artifacts-profiling
 
@@ -326,6 +373,7 @@ jobs:
           done
 
       - name: Upload artifacts
+        if: needs.prepare.outputs.build == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: artifacts-${{ matrix.target }}
@@ -333,7 +381,7 @@ jobs:
           retention-days: 2
 
       - name: Upload profiling artifacts
-        if: ${{ (github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
+        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu')) }}
         uses: actions/upload-artifact@v7
         with:
           name: artifacts-profiling-${{ matrix.target }}
@@ -409,10 +457,16 @@ jobs:
 
   # Dev-signed kv-store .mpk: exercises `cargo mero bundle` end-to-end, giving SDK e2e suites a stable
   # ApplicationId. Dev-signed bundles are registry-refused, so this can't leak into real distribution.
+  # Only when this run publishes a release, the one thing that reads the bundle.
+  # It used to build on every PR too, to catch a `cargo mero bundle` break, which
+  # PRs still catch: e2e's Build Apps bundles kv-store (and every e2e app) when
+  # crates/** or an app moves, and ci-checks' cargo-mero e2e runs `bundle --dev
+  # --no-icon` (bundle_produces_signed_mpk, the pipeline test) when cargo-mero does.
   release-app-bundle:
     name: Release App Bundle
     runs-on: ubuntu-latest
     needs: [prepare]
+    if: needs.prepare.outputs.binary_release == 'true'
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-release-app-bundle-${{ github.event.pull_request.number || github.sha }}
@@ -428,10 +482,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: release-app-bundle
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
@@ -439,9 +492,7 @@ jobs:
       - name: Build the kv-store bundle
         run: cargo mero bundle --dev --no-icon --app-version "${{ needs.prepare.outputs.version }}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
 
-      # PRs still build the bundle so a `cargo mero bundle` break fails there; only releases publish.
       - name: Upload the bundle to the release
-        if: needs.prepare.outputs.binary_release == 'true'
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -469,17 +520,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Setup Rust
-        # Pinned to a commit SHA (supply-chain hygiene); comment tracks the tag.
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: release-crates
 
       - name: Verify Rust installation
         run: rustc --version
-
-      - name: Setup rust cache (publish)
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: release
 
       - name: Publish calimero-workspaces on crates.io
         env:
@@ -509,6 +556,7 @@ jobs:
   release-merod-container:
     name: Release Merod container
     needs: [prepare, build-binaries]
+    if: needs.prepare.outputs.build == 'true'
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-merod-container-${{ github.event.pull_request.number || github.sha }}
@@ -530,7 +578,10 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
+          # PRs build the image to prove the Dockerfile still packages the binaries,
+          # but push nothing: no PR job pulls a standard `pr-<N>` image (fuzzy-load-test
+          # pulls `pr-<N>-profiling`, which the profiling job below still pushes).
+          push: ${{ github.event_name == 'push' }}
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
@@ -541,6 +592,7 @@ jobs:
   release-mero-auth-container:
     name: Release Mero Auth container
     needs: [prepare, build-binaries]
+    if: needs.prepare.outputs.build == 'true'
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       group: ${{ github.workflow }}-mero-auth-container-${{ github.event.pull_request.number || github.sha }}
@@ -562,7 +614,8 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
+          # Built on PRs, pushed only from master; see release-merod-container.
+          push: ${{ github.event_name == 'push' }}
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
@@ -573,7 +626,7 @@ jobs:
   release-merod-profiling-container:
     name: Release Merod Profiling container
     # `prepare.outputs.docker_push` already excludes fork PRs, which cannot push to ghcr.
-    if: ${{ github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true' }}
+    if: ${{ needs.prepare.outputs.build == 'true' && (github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') }}
     needs: [prepare, build-binaries]
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.

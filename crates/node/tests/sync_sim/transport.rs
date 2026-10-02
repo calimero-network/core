@@ -45,7 +45,7 @@ use tokio::time::timeout;
 const DEFAULT_BUFFER_SIZE: usize = 64;
 
 /// Default timeout for receive operations in simulation.
-const DEFAULT_SIM_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_SIM_TIMEOUT: Duration = Duration::from_secs(30); // detects deadlocks; must survive slow CI runners
 
 /// In-memory transport for simulation testing.
 ///

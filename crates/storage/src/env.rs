@@ -320,18 +320,30 @@ pub fn storage_write(key: Key, value: &[u8]) -> bool {
     crate::row::write(key, value, imp::storage_read, imp::storage_write)
 }
 
+/// Reads entity `id`'s index, decoded (see [`crate::row::read_index`]).
+#[must_use]
+pub fn storage_read_index(id: Id) -> Option<std::io::Result<crate::index::EntityIndex>> {
+    crate::row::read_index(id, imp::storage_read)
+}
+
+/// Writes `index` to its entity's row (see [`crate::row::write_index`]).
+#[must_use]
+pub fn storage_write_index(index: &crate::index::EntityIndex) -> bool {
+    crate::row::write_index(index.id(), index, imp::storage_read, imp::storage_write)
+}
+
 /// Reads entity `id`'s index and data with one row read (see
 /// [`crate::row::read_entity`]).
 #[must_use]
-pub fn storage_read_entity(id: Id) -> crate::row::Row {
+pub fn storage_read_entity(id: Id) -> crate::row::EntityRow {
     crate::row::read_entity(id, imp::storage_read)
 }
 
-/// Writes entity `id`'s index and data in one row write (see
+/// Writes entity `index.id()`'s index and data in one row write (see
 /// [`crate::row::write_entity`]).
 #[must_use]
-pub fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) -> bool {
-    crate::row::write_entity(id, index, data, imp::storage_write)
+pub fn storage_write_entity(index: &crate::index::EntityIndex, data: &[u8]) -> bool {
+    crate::row::write_entity(index.id(), index, data, imp::storage_write)
 }
 
 // === Ordered secondary index (SortedMap, core#2559) ===
@@ -438,18 +450,37 @@ pub fn private_storage_write(key: Key, value: &[u8]) -> bool {
     )
 }
 
+/// Reads entity `id`'s index from private storage, decoded (see
+/// [`crate::row::read_index`]).
+#[must_use]
+pub fn private_storage_read_index(id: Id) -> Option<std::io::Result<crate::index::EntityIndex>> {
+    crate::row::read_index(id, imp::private_storage_read)
+}
+
+/// Writes `index` to its entity's row in private storage (see
+/// [`crate::row::write_index`]).
+#[must_use]
+pub fn private_storage_write_index(index: &crate::index::EntityIndex) -> bool {
+    crate::row::write_index(
+        index.id(),
+        index,
+        imp::private_storage_read,
+        imp::private_storage_write,
+    )
+}
+
 /// Reads entity `id`'s index and data from private storage with one row read
 /// (see [`crate::row::read_entity`]).
 #[must_use]
-pub fn private_storage_read_entity(id: Id) -> crate::row::Row {
+pub fn private_storage_read_entity(id: Id) -> crate::row::EntityRow {
     crate::row::read_entity(id, imp::private_storage_read)
 }
 
-/// Writes entity `id`'s index and data to private storage in one row write
-/// (see [`crate::row::write_entity`]).
+/// Writes entity `index.id()`'s index and data to private storage in one row
+/// write (see [`crate::row::write_entity`]).
 #[must_use]
-pub fn private_storage_write_entity(id: Id, index: &[u8], data: &[u8]) -> bool {
-    crate::row::write_entity(id, index, data, imp::private_storage_write)
+pub fn private_storage_write_entity(index: &crate::index::EntityIndex, data: &[u8]) -> bool {
+    crate::row::write_entity(index.id(), index, data, imp::private_storage_write)
 }
 
 /// Fill the buffer with random bytes.

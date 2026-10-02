@@ -1,11 +1,7 @@
 name: Setup Rust CI
-description: "Setup Rust toolchain and caching for CI workflows"
+description: "Install the pinned Rust toolchain and restore (and maybe save) a rust-cache group"
 
 inputs:
-  toolchain:
-    description: "Rust toolchain to install (stable, nightly, or specific version)"
-    required: false
-    default: "stable"
   components:
     description: "Additional rustup components to install (comma-separated)"
     required: false
@@ -15,7 +11,10 @@ inputs:
     required: false
     default: ""
   shared-key:
-    description: "Shared key for rust-cache (typically workflow name)"
+    description: >
+      The cache group: jobs that build the same thing (native dev, release-fast
+      merod, wasm apps, ...) share one, so the repo's 10 GB stays a few warm
+      caches instead of many evicted ones. Exactly one job per group saves it.
     required: true
   cache-on-failure:
     description: "Whether to save cache even when build fails"
@@ -25,6 +24,15 @@ inputs:
     description: "Condition for saving cache (e.g., github.ref == 'refs/heads/master')"
     required: false
     default: "${{ github.ref == 'refs/heads/master' }}"
+  libclang:
+    description: "Install libclang-dev on Linux (librocksdb-sys's bindgen needs it)"
+    required: false
+    default: "true"
+
+outputs:
+  channel:
+    description: The pinned toolchain channel
+    value: ${{ steps.toolchain.outputs.channel }}
 
 runs:
   using: "composite"
@@ -32,21 +40,21 @@ runs:
     # librocksdb-sys's bindgen dlopen's libclang at build-script time; ubuntu
     # runners don't ship libclang-dev by default. macOS uses Homebrew's llvm instead (.cargo/config.toml).
     - name: Install libclang (Linux)
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.libclang == 'true'
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends libclang-dev
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+    - name: Install the pinned Rust toolchain
+      id: toolchain
+      uses: ./.github/actions/rust-toolchain
       with:
-        toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
-    # rust-toolchain.toml pins the toolchain cargo runs, which is not the one
-    # above; without this a `--target` build cannot find its std.
+    # Kept although the toolchain above is now the pinned one: it is cheap, and
+    # a `--target` build cannot find its std if the active toolchain lacks it.
     - name: Add targets to the active toolchain
       if: inputs.targets != ''
       shell: bash
@@ -59,10 +67,17 @@ runs:
           rustup target add "$target"
         done
 
+    # No environment hash: it covered every installed toolchain (so the runner's
+    # own `stable` rolled every key on each Rust release) and every CARGO_*/RUST*
+    # variable (so jobs that build the same thing could not share a cache).
+    # Cargo's fingerprints already rebuild anything a different profile or flag
+    # needs; the pinned channel in `key` is what must start a fresh cache.
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       with:
-        prefix-key: v0-rust
+        prefix-key: v1-rust
         shared-key: ${{ inputs.shared-key }}
+        key: ${{ steps.toolchain.outputs.channel }}
+        add-rust-environment-hash-key: "false"
         cache-on-failure: ${{ inputs.cache-on-failure }}
         save-if: ${{ inputs.save-if }}

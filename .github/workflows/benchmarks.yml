@@ -13,44 +13,38 @@ on:
     types: [labeled, opened, synchronize, reopened]
 
 jobs:
-  # Which crates to bench. A push to master and the `run-benchmarks` label get
-  # every crate; a PR touching the storage stack gets the storage benches
-  # without the label; anything else gets none. It reads the PR's file list
-  # through the API and checks out nothing.
+  # Which crates to bench. A push to master benches every crate, keeping a
+  # baseline per commit; a PR benches only while it carries the
+  # `run-benchmarks` label, then every crate too. Wall-clock benches on shared
+  # runners are too noisy to gate on, so a PR opts in rather than paying for
+  # them on every storage change. It checks out nothing.
   plan:
     name: Plan benchmarks
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      pull-requests: read
     outputs:
       crates: ${{ steps.plan.outputs.crates }}
     steps:
       - name: Choose the crates
         id: plan
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           ACTION: ${{ github.event.action }}
           LABEL: ${{ github.event.label.name }}
-          PR: ${{ github.event.pull_request.number }}
+          # The PR's labels as of this event, so a push to a labelled PR benches again.
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'run-benchmarks') }}
         run: |
           # A crate's first `[[bench]]` goes here, or it gets no master baseline.
           all='["storage-cost","calimero-storage","calimero-store","calimero-blobstore","calimero-crypto","calimero-runtime","calimero-dag"]'
-          storage='["storage-cost","calimero-storage","calimero-store"]'
-          if [ "$EVENT" = push ] || [ "$LABEL" = run-benchmarks ]; then
+          if [ "$EVENT" = push ]; then
             crates="$all"
           elif [ "$ACTION" = labeled ]; then
-            # Another label: the opened/synchronize run already covered it.
-            crates='[]'
+            # Adding the label benches; adding any other label changes nothing.
+            if [ "$LABEL" = run-benchmarks ]; then crates="$all"; else crates='[]'; fi
+          elif [ "$LABELLED" = true ]; then
+            crates="$all"
           else
-            files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')"
-            if printf '%s\n' "$files" | grep -qE '^crates/(storage|prelude|store)/'; then
-              crates="$storage"
-            else
-              crates='[]'
-            fi
+            crates='[]'
           fi
           echo "crates=$crates" >> "$GITHUB_OUTPUT"
           echo "benchmarking: $crates"
@@ -74,7 +68,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           shared-key: bench-${{ matrix.crate }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
 

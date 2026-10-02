@@ -1,6 +1,8 @@
 //! State delta handling for BroadcastMessage::StateDelta
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
+use std::collections::HashSet;
+
 use calimero_context::scope_projection::ScopeProjections;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernanceParentEdge;
@@ -1605,7 +1607,6 @@ async fn request_missing_deltas(
     // + envelope signature so the persist step writes them to the
     // `ContextDagDelta` row (next DAG-catchup serves can pass them on)
     // and the cross-DAG check + envelope verification fire before apply.
-    let mut to_fetch = missing_ids;
     type ParentFetch = (
         calimero_dag::CausalDelta<Vec<Action>>,
         [u8; 32], // delta_id (redundant with .id but kept for log clarity)
@@ -1621,6 +1622,12 @@ async fn request_missing_deltas(
         Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
         Option<[u8; 32]>, // events hash the id covers, kept so this node can serve it
     );
+    // Every id this walk has queued, so each is requested once.
+    let mut queued: HashSet<[u8; 32]> = HashSet::new();
+    let mut to_fetch: Vec<[u8; 32]> = missing_ids
+        .into_iter()
+        .filter(|id| queued.insert(*id))
+        .collect();
     let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
     // Accumulated (delta_id, events_data) pairs from any cascades that
@@ -1985,11 +1992,7 @@ async fn request_missing_deltas(
                         if *parent_id == [0; 32] {
                             continue;
                         }
-                        // Skip if we already have it or are about to fetch it
-                        if !delta_store.has_delta(parent_id).await
-                            && !to_fetch.contains(parent_id)
-                            && !fetched_deltas.iter().any(|(d, ..)| d.id == *parent_id)
-                        {
+                        if queued.insert(*parent_id) && !delta_store.has_delta(parent_id).await {
                             to_fetch.push(*parent_id);
                         }
                     }
@@ -3659,6 +3662,158 @@ mod tests {
                 drained, 0,
                 "no contexts with pending absorbs ⇒ nothing drains"
             );
+        }
+    }
+
+    /// The gossip path's parent walk asks its peer for each missing ancestor once.
+    mod parent_fetch_walk_tests {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use actix::Actor;
+        use calimero_network_primitives::client::NetworkClient;
+        use calimero_network_primitives::messages::NetworkMessage;
+        use calimero_network_primitives::stream::Stream;
+        use calimero_node_primitives::sync::delta_auth::delta_signature_payload;
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+        use calimero_primitives::identity::PrivateKey;
+        use calimero_storage::delta::CausalDelta;
+        use calimero_storage::logical_clock::HybridTimestamp;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+        use calimero_utils_actix::LazyRecipient;
+        use libp2p::PeerId;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
+
+        use super::super::request_missing_deltas;
+        use crate::sync::helpers::generate_nonce;
+        use crate::sync::stream::{recv, send};
+        use crate::test_support::{context, delta_store_over};
+
+        const DEPTH: usize = 40; // ancestors the walk has to fetch
+        const BUDGET: Duration = Duration::from_secs(5); // walk timeout, also the fake peer's idle wait
+
+        /// Hands out one pre-opened stream, as a peer accepting the walk's dial.
+        struct OneStream(Option<Stream>);
+
+        impl Actor for OneStream {
+            type Context = actix::Context<Self>;
+        }
+
+        impl actix::Handler<NetworkMessage> for OneStream {
+            type Result = ();
+
+            fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
+                if let NetworkMessage::OpenStream { outcome, .. } = msg {
+                    let _ = outcome.send(self.0.take().ok_or_else(|| eyre::eyre!("one stream")));
+                }
+            }
+        }
+
+        /// `d[i]` names `d[i-1]` and `d[i-2]`, so each ancestor is named twice,
+        /// the second time while it is still waiting in the walk's queue.
+        fn skip_chain() -> Vec<CausalDelta> {
+            let mut deltas: Vec<CausalDelta> = Vec::new();
+            for i in 0..DEPTH {
+                let parents = match i {
+                    0 => vec![[0; 32]],
+                    1 => vec![deltas[0].id],
+                    _ => vec![deltas[i - 1].id, deltas[i - 2].id],
+                };
+                let hlc = HybridTimestamp::zero();
+                let id = CausalDelta::compute_id(&parents, &[], None, &hlc);
+                deltas.push(CausalDelta {
+                    id,
+                    parents,
+                    actions: Vec::new(),
+                    hlc,
+                    events_hash: None,
+                });
+            }
+            deltas
+        }
+
+        /// Serves `deltas` signed by `author` until the walk hangs up; returns
+        /// every id asked for.
+        async fn serve(
+            mut stream: Stream,
+            author: PrivateKey,
+            deltas: Vec<CausalDelta>,
+        ) -> Vec<[u8; 32]> {
+            let by_id: HashMap<_, _> = deltas.into_iter().map(|d| (d.id, d)).collect();
+            let mut asked = Vec::new();
+            while let Ok(Some(StreamMessage::Init {
+                payload: InitPayload::DeltaRequest { delta_id, .. },
+                ..
+            })) = recv(&mut stream, None, BUDGET).await
+            {
+                asked.push(delta_id);
+                let payload = match by_id.get(&delta_id) {
+                    Some(delta) => MessagePayload::DeltaResponse {
+                        delta: borsh::to_vec(delta).expect("encode delta").into(),
+                        author_id: author.public_key(),
+                        governance_position_blob: None,
+                        delta_signature: Some(sign(&author, delta)),
+                        delegation: None,
+                        tee_trigger: None,
+                    },
+                    None => MessagePayload::DeltaNotFound,
+                };
+                let reply = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload,
+                    next_nonce: generate_nonce(),
+                };
+                send(&mut stream, &reply, None).await.expect("send reply");
+            }
+            asked
+        }
+
+        fn sign(author: &PrivateKey, delta: &CausalDelta) -> [u8; 64] {
+            let payload =
+                delta_signature_payload(context(), delta.id, author.public_key(), None, delta.hlc)
+                    .expect("signature payload");
+            author.sign(&payload).expect("sign").to_bytes()
+        }
+
+        #[actix::test]
+        async fn each_missing_ancestor_is_requested_once() {
+            let deltas = skip_chain();
+            let head = deltas[DEPTH - 1].id;
+            let (ours, peer) = Stream::test_pair();
+            let recipient = LazyRecipient::new();
+            let network_client = NetworkClient::new(recipient.clone());
+            let _peer_addr = OneStream::create(move |ctx| {
+                assert!(recipient.init(ctx), "network recipient");
+                OneStream(Some(ours))
+            });
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let (delta_store, _tmp, _keep_alive) = delta_store_over(store.clone()).await;
+            let author = PrivateKey::random(&mut UnwrapErr(SysRng));
+            let server = tokio::spawn(serve(peer, author, deltas));
+
+            let _cascaded = request_missing_deltas(
+                network_client,
+                BUDGET,
+                context(),
+                vec![head, head],
+                PeerId::random(),
+                [0xBB; 32].into(),
+                delta_store,
+                store,
+                &crate::NodeState::new(),
+            )
+            .await
+            .expect("walk completes");
+
+            let mut asked = server.await.expect("server task");
+            let total = asked.len();
+            asked.sort_unstable();
+            asked.dedup();
+            assert_eq!(asked.len(), DEPTH, "every ancestor is fetched");
+            assert_eq!(total, DEPTH, "no ancestor is requested twice");
         }
     }
 }

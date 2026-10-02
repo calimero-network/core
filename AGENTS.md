@@ -270,6 +270,8 @@ RUST_LOG=calimero_node::sync=trace,calimero_context=debug merod --node node1 run
 | `fuzzy-load-test.yml` | manual / load paths | fuzzy load |
 | `platforms.yml` | nightly; PRs reaching Windows-only code (`scripts/needs-windows-ci.py`); label `ci:platforms` | Windows tests and e2e, macOS/Windows release builds |
 
+Documentation never starts a code workflow: every `paths:` filter ends with `!**/*.md` / `!**/*.mdx`, re-including only the Markdown some code reads (an `include_str!` target, a manifest's `guide` or `readme`); `scripts/tests/ci-paths-test.py` fails a filter that lets docs back in. `ci-checks.yml` and `release.yml` carry required checks, so they run on every PR and skip work instead: `scripts/ci-scope.py` follows each job's packages through their dependency closure and skips a job the change cannot reach (the storage cost gate, WASM size gate, cargo-mero e2e and app builds run only when their inputs move; a docs-only PR builds nothing).
+
 ### Critical blind spot - what E2E CANNOT catch
 
 Every node in a merobox run is the **same build against fresh state**. So it validates a **uniform, new-from-scratch network**, but by construction it does NOT test **mixed old/new node interop** or **reading data persisted by an older version**. A green E2E says nothing about backward compatibility or rolling upgrades. Any format / derivation / schema / borsh-layout change that must survive existing data or staggered upgrades needs a dedicated migration path and its own test - merobox will not flag the break.
