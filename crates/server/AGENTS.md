@@ -92,6 +92,7 @@ src/
 │   ├── handlers.rs           # SSE handlers
 │   └── ...
 ├── auth.rs                   # Authentication middleware
+├── proxy_permissions.rs      # Proxy mode: X-Auth-Permissions → GrantedPermissions
 ├── sealed.rs                 # Sealed transport: /sealed/v2 envelope, wraps the router
 ├── sealed/
 │   └── session.rs            # Noise NK handshake and the sessions it opens
@@ -177,8 +178,7 @@ WS   /ws                              # WebSocket connection
 ```
 
 The upgrade needs `context:subscribe`; each `execute` message needs `context:execute` for its
-context, checked in `ws/execute.rs` against the permissions the auth guard handed over
-(`GrantedPermissions`).
+context and method. See "Execute authority" below.
 
 ### SSE
 
@@ -365,6 +365,27 @@ sealed under the session and responses stream back in sealed frames. Six rules:
 - **The wire format is shared with mero-js** (`src/sealed/sealed.ts`,
   `src/sealed/noise.ts`). The vectors in `sealed/tests.rs` are repeated there
   verbatim, and mero-js runs the handshake itself, so change both or neither.
+
+## Execute authority
+
+`/ws` and `/jsonrpc` are each several authorities behind one route. The route
+check only says a token may reach the path: `/ws` is admitted on
+`context:subscribe`, and `/jsonrpc` on any `context:execute`, while the context
+and method a call names are in the body. So the guard hands the token's
+permissions over as `GrantedPermissions`, and `execute_request` in
+`src/execute.rs`, the one function both transports call, checks `may_execute`
+(`context:execute[<ctx>,,<method>]`) before it reads anything.
+
+- **Holds for the node owner too.** A client key is answered as the node
+  owner, which skips the membership check, but its token was minted for some
+  purpose. A token minted to watch events must not be spent on writes.
+- **Proxy mode reads `X-Auth-Permissions`** (`src/proxy_permissions.rs`),
+  which mero-auth's `/auth/validate` writes and the proxy forwards. It needs
+  no opt-in because it can only narrow: a request naming none is answered as
+  proxy mode always answered it. mero-auth comma-joins the list, and a
+  permission's own parameters contain commas, so it is split only outside
+  brackets.
+- **Guard ran, no permissions** is refused, never read as unrestricted.
 
 ## Subscription authority
 

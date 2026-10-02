@@ -133,13 +133,12 @@ steps:
     nodes:
       - rust-blob-announce-1
     patterns:
-      - "Skipping announce: node is not a member of the requested context"
-      - "Skipping announce: failed to verify context membership"
+      - "Not a member of the context; blob not recorded for its peers or announced"
+      - "Failed to verify context membership; blob not announced"
     tail_lines: 5000
 
-  # The app's own announce path (env::blob_announce_to_context from WASM) shares
-  # the same membership resolution, so a regression there shows up as this
-  # warning rather than the handler log above.
+  # The app's announce (env::blob_announce_to_context from WASM) shares only a
+  # blob the upload recorded for the context, so a lost record shows up here.
   - name: Register the blob through the app and check its announce too
     type: call
     node: rust-blob-announce-1

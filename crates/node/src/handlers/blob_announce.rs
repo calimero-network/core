@@ -195,8 +195,10 @@ async fn prefetch_announced_blob(
         return Ok(());
     }
 
-    if node_client.has_blob(&blob_id)? {
-        debug!(%blob_id, %context_id, "blob already held locally, nothing to prefetch");
+    // Bytes held here for another context do not count: only a fetch from
+    // this context's peers makes them this context's to serve.
+    if node_client.is_blob_held_for_context(&context_id, &blob_id)? {
+        debug!(%blob_id, %context_id, "blob already held for the context, nothing to prefetch");
         return Ok(());
     }
 
@@ -230,12 +232,12 @@ async fn prefetch_announced_blob(
     // holder if the announcer has since gone away.
     match tokio::time::timeout(
         PREFETCH_TIMEOUT,
-        node_client.get_blob_bytes(&blob_id, Some(&context_id)),
+        node_client.fetch_blob_for_context(&blob_id, &context_id),
     )
     .await
     {
-        Ok(Ok(Some(bytes))) => {
-            info!(%blob_id, %context_id, size = bytes.len(), "prefetched announced blob");
+        Ok(Ok(Some(_))) => {
+            info!(%blob_id, %context_id, size, "prefetched announced blob");
         }
         Ok(Ok(None)) => {
             warn!(%blob_id, %context_id, "announced blob could not be fetched from any holder");
@@ -457,8 +459,17 @@ mod tests {
         peer: PeerId,
         timestamp: u64,
     ) -> BlobAnnouncement {
+        announcement_of(BlobId::from(BLOB), signer, peer, timestamp)
+    }
+
+    fn announcement_of(
+        blob_id: BlobId,
+        signer: &PrivateKey,
+        peer: PeerId,
+        timestamp: u64,
+    ) -> BlobAnnouncement {
         let payload = BlobAuthPayload {
-            blob_id: BLOB,
+            blob_id: *blob_id,
             context_id: *context(),
             timestamp,
             requester: peer.to_bytes(),
@@ -468,7 +479,7 @@ mod tests {
             .expect("sign")
             .to_bytes();
         BlobAnnouncement {
-            blob_id: BlobId::from(BLOB),
+            blob_id,
             context_id: context(),
             size: 1,
             auth: BlobAuth {
@@ -599,6 +610,30 @@ mod tests {
         );
 
         running.abort();
+    }
+
+    /// Bytes this node holds only for another context are fetched for this
+    /// one all the same; bytes already held for it are not.
+    #[tokio::test(start_paused = true)]
+    #[serial(blob_prefetch_slots)]
+    async fn a_blob_held_only_for_another_context_is_prefetched_for_this_one() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let (blob, _size) = node_client
+            .add_blob(&b"the same file in two contexts"[..], None, None)
+            .await
+            .expect("store bytes");
+        node_client
+            .record_blob_owner(&ContextId::from([0xC1; 32]), &blob)
+            .expect("record");
+        let node = (node_client, context_client);
+        let peer = PeerId::random();
+
+        let first = announcement_of(blob, &PrivateKey::from(MEMBER), peer, now_secs());
+        assert!(starts_a_fetch(&node, peer, first).await, "held elsewhere");
+
+        node.0.record_blob_owner(&context(), &blob).expect("record");
+        let second = announcement_of(blob, &PrivateKey::from(OTHER_MEMBER), peer, now_secs());
+        assert!(!starts_a_fetch(&node, peer, second).await, "held here");
     }
 
     #[test]

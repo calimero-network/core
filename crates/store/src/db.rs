@@ -196,8 +196,7 @@ pub enum Column {
     /// one an account-scoped caller of the blob admin API is held to: did these
     /// bytes demonstrably enter on this context's behalf. This one answers what
     /// this node may hand the context's own peers, and so also holds what the
-    /// context's own run created or announced, which names no more than the run
-    /// could already copy into its context. Reading one as the other would widen
+    /// context's own run created. Reading one as the other would widen
     /// either what an account-scoped caller reads or what peers are served.
     BlobOwner,
 }

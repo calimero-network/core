@@ -628,9 +628,10 @@ alone. Both routes take `context_id`, and for a session it is required:
   else is `404`, the same answer as a blob nobody holds, so a member of one
   context cannot probe for another's.
 
-So an app that uploads without a context and names the blob to its WASM later
-(as `blob_announce_to_context` does) must pass `context_id` on the upload when it
-runs delegated. A node-owner session is unaffected and may still omit it.
+So an app that uploads a blob and names it to its WASM later (as
+`blob_announce_to_context` does) must pass `context_id` on the upload, in every
+session: a blob uploaded without one is held for no context, so the announce
+shares nothing.
 
 ## 6. End to end
 

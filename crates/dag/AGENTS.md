@@ -36,15 +36,16 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | `CausalDelta::is_checkpoint()` | fn | `kind == Checkpoint` |
 | `CausalDelta::new_test(id, parents, payload)` | fn (test/`testing`) | Convenience ctor with default HLC |
 | `DeltaKind` | enum | `Regular` (0) \| `Checkpoint { root_hash }` (1) \| `Genesis` (2). Discriminants are pinned by a test; `Genesis` was appended so the first two did not move. NOT a wire field — receivers derive it locally, so a peer cannot assert it |
-| `DeltaApplier<T>` | async trait | `async fn apply(&self, delta: &CausalDelta<T>) -> Result<(), ApplyError>` - dependency-injected application logic |
+| `DeltaApplier<T>` | async trait | `async fn apply(&self, delta: &CausalDelta<T>) -> Result<(), ApplyError>` - dependency-injected application logic. `fn admit_pending(&self, delta) -> Result<Option<origin>, ApplyError>` is called before a delta that is missing a parent is stored: `Err` keeps it out (`DagError::PendingRefused`), `Ok(Some(origin))` charges it to `origin`'s `MAX_PENDING_PER_ORIGIN` allowance, and the default `Ok(None)` admits it uncharged |
 | `ApplyError` | enum (`#[non_exhaustive]`) | `Application(String)` |
-| `DagError` | enum (`#[non_exhaustive]`) | `DuplicateDelta([u8; 32])`, `ApplyFailed(#[from] ApplyError)` |
+| `DagError` | enum (`#[non_exhaustive]`) | `DuplicateDelta([u8; 32])`, `ApplyFailed(#[from] ApplyError)`, `PendingRefused(ApplyError)` (the applier's `admit_pending` declined to hold the delta) |
 | `AddDeltaOutcome` | enum | `Applied` \| `Pending` \| `Duplicate`, with `is_applied()`/`is_pending()`/`is_duplicate()` |
 | `DagStore<T>` | struct | The DAG itself; see below |
 | `DagStats` | struct | `total_deltas`, `applied_deltas`, `pending_deltas`, `head_count` |
 | `PendingStats` | struct | `count`, `oldest_age_secs`, `total_missing_parents` |
 | `MAX_DELTA_QUERY_LIMIT` | const | `3000` - hard cap on query-method result size |
 | `MAX_PENDING_DELTAS` | const | `10_000` - default cap on the pending map |
+| `MAX_PENDING_PER_ORIGIN` | const | `1024` - default cap on pending deltas one origin (named by `DeltaApplier::admit_pending`) may hold; past it the origin's own oldest is evicted. When the shared map is full, the inserting origin gives up its own oldest first, then the origin holding the most does |
 | `MAX_PRUNED_TRACKED` | const | `100_000` - default cap on the pruned-ancestor tracking set |
 
 ### `DagStore<T>` methods
@@ -64,7 +65,8 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | `pending_stats() -> PendingStats` | Snapshot of pending-queue health |
 | `has_delta(id) -> bool` / `is_applied(id) -> bool` / `get_delta(id) -> Option<&CausalDelta<T>>` | Lookups |
 | `stats() -> DagStats` / `delta_count() -> usize` | Size accounting (the latter feeds compaction eligibility elsewhere in the node) |
-| `prune_to_recent(retain_count) -> Vec<[u8; 32]>` | Drops applied history outside a BFS window back from the heads; returns pruned ids for the caller to delete from durable storage |
+| `delta_ids()` | Ids of every delta held (applied or pending); the node's durable prune keeps these rows |
+| `prune_to_recent(retain_count) -> Vec<[u8; 32]>` | Drops applied history outside a BFS window back from the heads, never a pending delta or a parent a pending delta already holds; returns pruned ids |
 | `set_delta_query_limit(n)` / `set_max_pending(n)` | Runtime-adjustable caps (`set_max_pending` clamps to a minimum of 1) |
 
 ## Mental Model

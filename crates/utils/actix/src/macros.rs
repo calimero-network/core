@@ -6,10 +6,12 @@ mod macros_tests;
 pub mod __private {
     pub use core::marker::Send;
     pub use core::ops::{DerefMut, FnOnce};
+    pub use core::panic::AssertUnwindSafe;
     pub use core::pin::pin;
     pub use core::ptr;
     pub use core::task::Poll;
     pub use std::boxed::Box;
+    pub use std::panic::catch_unwind;
 
     pub use actix::dev::channel;
     use actix::dev::ToEnvelope;
@@ -22,6 +24,7 @@ pub mod __private {
     pub use tokio::task;
 
     pub use crate::actor;
+    pub use crate::supervise::{exit_after_panic, MAILBOX_CAPACITY};
 
     pub trait ActorSpawn: Actor {
         fn spawn(self, ctx: Self::Context);
@@ -108,7 +111,7 @@ macro_rules! actor {
         {
             use $crate::macros::__private::*;
 
-            let (tx, rx) = channel::channel(16);
+            let (tx, rx) = channel::channel(MAILBOX_CAPACITY);
 
             let _ignored = wrk.spawn(async move {
                 let mut ctx = Context::with_receiver(rx);
@@ -210,18 +213,22 @@ macro_rules! actor {
                     )*
                 }
 
+                // The stream tasks borrow into the actor, so it cannot be restarted on its own.
                 poll_fn(|cx| {
-                    if fut.poll_unpin(cx).is_ready() {
-                        return Poll::Ready(());
-                    }
+                    catch_unwind(AssertUnwindSafe(|| {
+                        if fut.poll_unpin(cx).is_ready() {
+                            return Poll::Ready(());
+                        }
 
-                    paste! {
-                        $(
-                            let _ignored = [<task_ $stream>].poll_unpin(cx);
-                        )*
-                    }
+                        paste! {
+                            $(
+                                let _ignored = [<task_ $stream>].poll_unpin(cx);
+                            )*
+                        }
 
-                    Poll::Pending
+                        Poll::Pending
+                    }))
+                    .unwrap_or_else(|_panic| exit_after_panic::<Self>())
                 })
                 .fuse()
                 .await
