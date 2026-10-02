@@ -4,11 +4,18 @@
 //! last delta is the context's persisted head), runs one sweep with the
 //! default thresholds, and reads the column back: how many of the context's
 //! rows are left, and how many bytes its slice of the column takes.
+//!
+//! The side-table tests also give each delta the rows kept beside it (its
+//! events hash and its TEE trigger, in `Column::Generic`) and check that they
+//! follow their delta row: gone with a pruned one, kept with a retained,
+//! pending or head one, and swept once nothing they belong to is left.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use actix::Actor;
 use calimero_context_client::messages::ContextMessage;
+use calimero_context_client::tee_trigger::TeeTriggerCause;
+use calimero_context_client::{delta_events, tee_trigger};
 use calimero_context_client::{ContextAtomicKey, ContextGuard};
 use calimero_dag::{CausalDelta, DeltaKind};
 use calimero_node_primitives::DagCompactionConfig;
@@ -24,6 +31,8 @@ use calimero_utils_actix::LazyRecipient;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
 
+use super::orphans::OrphanSweep;
+use super::side_rows::SideTable;
 use super::DagCompactor;
 use crate::delta_store::DeltaStore;
 use crate::test_support::{
@@ -115,6 +124,114 @@ fn open_rocksdb() -> (tempfile::TempDir, Store) {
     let path = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 path");
     let store = Store::open::<RocksDB>(&StoreConfig::new(path)).expect("open rocksdb");
     (dir, store)
+}
+
+/// One delta row of `context_id`, as the apply path persists it.
+fn put_row(
+    store: &Store,
+    context_id: ContextId,
+    delta: [u8; 32],
+    parents: Vec<[u8; 32]>,
+    applied: bool,
+) {
+    let record = types::ContextDagDelta {
+        delta_id: delta,
+        parents,
+        actions: borsh::to_vec(&Vec::<calimero_storage::action::Action>::new())
+            .expect("encode actions"),
+        hlc: HybridTimestamp::default(),
+        applied,
+        checkpoint_root_hash: None,
+        events: None,
+        author_id: None,
+        governance_position_blob: None,
+        delta_signature: None,
+        delegation: None,
+    };
+    store
+        .handle()
+        .put(&key::ContextDagDelta::new(context_id, delta), &record)
+        .expect("put delta row");
+}
+
+/// The trigger kept beside delta `i`.
+fn trigger(i: u32) -> TeeTriggerCause {
+    TeeTriggerCause::Timer {
+        method: "sweep".to_owned(),
+        tick: u64::from(i),
+        every_secs: 60,
+    }
+}
+
+/// Give `delta` of `context_id` both rows kept beside a delta, its events hash
+/// and its TEE trigger, through the functions every path records them with.
+fn put_side_rows(store: &Store, context_id: ContextId, delta: [u8; 32], i: u32) {
+    let events_hash = id(i ^ 0x5A5A_5A5A);
+    delta_events::record_events_hash(store, &context_id, &delta, Some(&events_hash))
+        .expect("record events hash");
+    tee_trigger::record_delta_trigger(store, &context_id, &delta, &trigger(i))
+        .expect("record trigger");
+}
+
+/// Side rows for every delta of the seeded chain.
+fn seed_side_rows(store: &Store) {
+    for i in 0..ROWS {
+        put_side_rows(store, context(), id(i), i);
+    }
+}
+
+/// Which of `delta`'s side rows are on disk: (events hash, TEE trigger).
+fn side_rows(store: &Store, context_id: ContextId, delta: [u8; 32]) -> (bool, bool) {
+    (
+        delta_events::events_hash(store, &context_id, &delta)
+            .expect("read events hash")
+            .is_some(),
+        tee_trigger::delta_trigger(store, &context_id, &delta)
+            .expect("read trigger")
+            .is_some(),
+    )
+}
+
+fn has_side_rows(store: &Store, context_id: ContextId, delta: [u8; 32]) -> bool {
+    side_rows(store, context_id, delta) == (true, true)
+}
+
+fn has_no_side_rows(store: &Store, context_id: ContextId, delta: [u8; 32]) -> bool {
+    side_rows(store, context_id, delta) == (false, false)
+}
+
+/// Every delta of the chain has its side rows exactly when it has its row.
+fn assert_side_rows_follow_their_rows(store: &Store) {
+    let (mut stray, mut missing) = (0, 0);
+    for i in 0..ROWS {
+        let row = has_row(store, id(i));
+        match side_rows(store, context(), id(i)) {
+            (true, true) if !row => stray += 1,
+            (false, false) if row => missing += 1,
+            (true, true) | (false, false) => {}
+            split => panic!("delta {i} kept only part of its side rows: {split:?}"),
+        }
+    }
+    assert_eq!(missing, 0, "retained deltas lost their side rows");
+    assert_eq!(stray, 0, "side rows outlived their pruned delta rows");
+}
+
+/// Bytes the side tables take on disk, flushed first.
+fn side_bytes(store: &Store) -> u64 {
+    store.flush().expect("flush");
+    SideTable::ALL
+        .into_iter()
+        .map(|table| {
+            let (lo, hi) = table.range();
+            store
+                .approximate_size(
+                    Column::Generic,
+                    lo.as_key().as_bytes(),
+                    hi.as_key().as_bytes(),
+                )
+                .expect("approximate size")
+        })
+        .sum()
 }
 
 /// Write [`ROWS`] applied rows of a chain rooted at `first_parent`, and the
@@ -242,11 +359,41 @@ async fn sweep(
     manager: &LazyRecipient<ContextMessage>,
     delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
 ) {
+    sweeps(store, manager, delta_stores, 1).await;
+}
+
+/// `count` sweeps in a row, as one running compactor makes them an interval
+/// apart (sharing where its orphan sweep stands).
+async fn sweeps(
+    store: &Store,
+    manager: &LazyRecipient<ContextMessage>,
+    delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
+    count: usize,
+) {
+    let orphans = Arc::new(Mutex::new(OrphanSweep::default()));
+    sweeps_from(store, manager, delta_stores, &orphans, count).await;
+}
+
+/// [`sweeps`], carrying on from where `orphans` says an earlier sweep left
+/// the orphan sweep.
+async fn sweeps_from(
+    store: &Store,
+    manager: &LazyRecipient<ContextMessage>,
+    delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
+    orphans: &Arc<Mutex<OrphanSweep>>,
+    count: usize,
+) {
     let (context_client, _tmp, _keep) =
         context_client_over_with_manager(store.clone(), manager.clone()).await;
-    let _pruned =
-        DagCompactor::compact_all(delta_stores, context_client, DagCompactionConfig::default())
-            .await;
+    for _ in 0..count {
+        let _pruned = DagCompactor::compact_all(
+            delta_stores.clone(),
+            context_client.clone(),
+            DagCompactionConfig::default(),
+            orphans.clone(),
+        )
+        .await;
+    }
 }
 
 /// The retain window, allowing the BFS's one-node overshoot.
@@ -399,6 +546,7 @@ async fn a_cold_prune_waits_for_the_context_lock() {
                 stores_with([]),
                 context_client,
                 DagCompactionConfig::default(),
+                Arc::default(),
             )
             .await
         }
@@ -415,4 +563,173 @@ async fn a_cold_prune_waits_for_the_context_lock() {
     let pruned = sweep.await.expect("sweep task");
     assert_eq!(pruned, ROWS as usize - rows_on_disk(&store));
     assert_retain_window(rows_on_disk(&store));
+}
+
+/// A pruned delta's side rows go with its row, and a retained, pending or
+/// head delta keeps them. Reports the disk the side tables give back.
+#[actix::test]
+async fn a_pruned_deltas_side_rows_go_with_it() {
+    let (_dir, store) = open_rocksdb();
+    let manager = manager();
+    seed_chain(&store, GENESIS);
+    seed_side_rows(&store);
+    // A delta whose commit a crash interrupted: never pruned, nor its side rows.
+    let unapplied = [0xEE; 32];
+    put_row(&store, context(), unapplied, vec![id(7)], false);
+    put_side_rows(&store, context(), unapplied, u32::MAX);
+    let before = (
+        rows_on_disk(&store),
+        slice_bytes(&store),
+        side_bytes(&store),
+    );
+
+    sweep(&store, &manager, stores_with([])).await;
+
+    let after = (
+        rows_on_disk(&store),
+        slice_bytes(&store),
+        side_bytes(&store),
+    );
+    eprintln!(
+        "cold context with events and TEE triggers: rows {} -> {}, delta-column bytes {} -> {}, \
+         side-table bytes {} -> {}",
+        before.0, after.0, before.1, after.1, before.2, after.2
+    );
+    assert!(
+        has_side_rows(&store, context(), id(ROWS - 1)),
+        "the head keeps its side rows"
+    );
+    assert!(
+        has_row(&store, unapplied) && has_side_rows(&store, context(), unapplied),
+        "an unapplied delta keeps its row and its side rows"
+    );
+    assert_side_rows_follow_their_rows(&store);
+    assert!(
+        after.2 * 5 < before.2,
+        "the side tables must shrink with their rows: {} of {} bytes left",
+        after.2,
+        before.2
+    );
+}
+
+/// On the live path, what the in-memory DAG holds keeps its side rows too: a
+/// pending delta (no row at all) and the old parent it holds. Two sweeps, so
+/// the orphan sweep has had its second look at rows with no delta row.
+#[actix::test]
+async fn a_pending_delta_and_its_parent_keep_their_side_rows() {
+    let (_dir, store) = open_rocksdb();
+    let manager = manager();
+    seed_chain(&store, GENESIS);
+    seed_side_rows(&store);
+    let (delta_store, _tmp, _keep) = live_store(&store, &manager).await;
+    register_chain(&delta_store).await;
+    let pending = [0xEE; 32];
+    put_side_rows(&store, context(), pending, u32::MAX);
+    let applied = delta_store
+        .add_delta(
+            CausalDelta {
+                id: pending,
+                parents: vec![id(5), [0xDD; 32]],
+                payload: Vec::new(),
+                hlc: HybridTimestamp::default(),
+                kind: DeltaKind::Regular,
+            },
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("add pending delta");
+    assert!(!applied, "the delta must be pending on its missing parent");
+
+    sweeps(&store, &manager, stores_with([delta_store.clone()]), 2).await;
+
+    assert!(
+        !has_row(&store, pending) && has_side_rows(&store, context(), pending),
+        "a pending delta has no row, and keeps its side rows"
+    );
+    assert!(
+        has_row(&store, id(5)) && has_side_rows(&store, context(), id(5)),
+        "the pending delta's parent keeps its row and its side rows"
+    );
+    assert_side_rows_follow_their_rows(&store);
+}
+
+/// Side rows an earlier compaction left behind, when it pruned their delta
+/// rows without them, are swept: after a second look, so a row recorded just
+/// ahead of its delta is never taken for one. Side rows that a reader still
+/// reaches without a row in the context's own range stay: those of a deleted
+/// context (its delta rows stay servable) and of an absorbed delta (its
+/// replay reads its trigger back).
+#[actix::test]
+async fn orphaned_side_rows_are_swept() {
+    const ORPHANS: u32 = 5_000;
+    let (_dir, store) = open_rocksdb();
+    let manager = manager();
+    // A context with a little history of its own, under the threshold.
+    seed_meta(&store, id(9));
+    for i in 0..10 {
+        put_row(&store, context(), id(i), vec![parent(i, GENESIS)], true);
+        put_side_rows(&store, context(), id(i), i);
+    }
+    // What an earlier compaction left: side rows whose delta row it pruned.
+    let orphan = |k: u32| id(1_000_000 + k);
+    for k in 0..ORPHANS {
+        put_side_rows(&store, context(), orphan(k), k);
+    }
+    // A deleted context keeps its delta rows, and they are still served.
+    let deleted = ContextId::from([0x77; 32]);
+    put_row(&store, deleted, id(3), vec![GENESIS], true);
+    put_side_rows(&store, deleted, id(3), 3);
+    // An absorbed delta has no delta row; its replay reads its trigger back.
+    let absorbed = [0xAB; 32];
+    let absorb_key = key::AbsorbBufferKey::new(*context(), [0x01; 32], absorbed);
+    store
+        .raw_put(Column::AbsorbBuffer, absorb_key.as_key().as_bytes(), &[0])
+        .expect("put absorb record");
+    put_side_rows(&store, context(), absorbed, 7);
+    let before = side_bytes(&store);
+
+    let orphans = Arc::new(Mutex::new(OrphanSweep::default()));
+    sweeps_from(&store, &manager, stores_with([]), &orphans, 1).await;
+    assert!(
+        (0..ORPHANS).all(|k| has_side_rows(&store, context(), orphan(k))),
+        "one look is not enough to sweep a side row"
+    );
+
+    sweeps_from(&store, &manager, stores_with([]), &orphans, 1).await;
+
+    let after = side_bytes(&store);
+    eprintln!("orphaned side rows: {ORPHANS} deltas' worth, side-table bytes {before} -> {after}");
+    assert!(
+        (0..ORPHANS).all(|k| has_no_side_rows(&store, context(), orphan(k))),
+        "orphaned side rows must be swept"
+    );
+    assert!(
+        (0..10).all(|i| has_side_rows(&store, context(), id(i))),
+        "a delta with a row keeps its side rows"
+    );
+    assert!(
+        has_side_rows(&store, deleted, id(3)),
+        "a deleted context's served delta keeps its side rows"
+    );
+    assert!(
+        has_side_rows(&store, context(), absorbed),
+        "an absorbed delta keeps its side rows"
+    );
+}
+
+/// A context row naming `head`.
+fn seed_meta(store: &Store, head: [u8; 32]) {
+    let meta = types::ContextMeta::new(
+        key::ApplicationMeta::new([0x01; 32].into()),
+        GENESIS,
+        vec![head],
+        None,
+    );
+    store
+        .handle()
+        .put(&key::ContextMeta::new(context()), &meta)
+        .expect("seed context meta");
 }

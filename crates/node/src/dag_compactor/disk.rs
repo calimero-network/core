@@ -19,6 +19,12 @@
 //! A row that is not `applied` is never deleted: it is a pending delta, or one
 //! whose commit a crash interrupted, and `load_persisted_deltas` re-drives it.
 //!
+//! A deleted row takes its side rows with it ([`super::side_rows`]: its events
+//! hash and its TEE trigger), in the same transaction, so neither can outlive
+//! the other across a crash. A side row goes only with its own delta's row,
+//! which is how it keeps every rule above: a retained, pending, head or kept
+//! delta keeps its side rows because it keeps its row.
+//!
 //! The caller holds the context's execution lock across all of it. Every path
 //! that commits an applied row together with the heads holds that lock (the
 //! executor for a local delta, the inbound apply across its heads commit), so
@@ -37,6 +43,8 @@ use calimero_store::tx::Transaction;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
+use super::side_rows::{SideTable, ROWS_PER_DELTA};
+
 /// The genesis parent: never a stored row, never retained or counted.
 const GENESIS: [u8; 32] = [0; 32];
 
@@ -50,16 +58,42 @@ pub(crate) const MAX_COMPACTION_SCAN_ROWS: usize = 200_000;
 /// large backlog cannot turn a sweep into an unbounded burst of deletes.
 pub(crate) const MAX_COMPACTION_DELETES_PER_CONTEXT: usize = 100_000;
 
-/// Rows deleted per write batch: each batch is one atomic transaction.
-const COMPACTION_DELETE_BATCH: usize = 10_000;
+/// Most rows one write batch deletes, delta rows and side rows alike: each
+/// batch is one atomic transaction.
+pub(crate) const COMPACTION_DELETE_BATCH: usize = 10_000;
+
+/// Deltas pruned per write batch: whole deltas, each with every side row it
+/// may have, so a batch never splits a delta from its side rows and never
+/// exceeds [`COMPACTION_DELETE_BATCH`] rows.
+const DELTAS_PER_DELETE_BATCH: usize = COMPACTION_DELETE_BATCH / ROWS_PER_DELTA;
 
 /// What pruning one context's rows did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DiskPrune {
-    /// Rows deleted.
+    /// Delta rows deleted.
     pub(crate) pruned: usize,
-    /// Key and value bytes of the deleted rows.
+    /// Side rows deleted with them.
+    pub(crate) side_rows: usize,
+    /// Key and value bytes of every row deleted, delta rows and side rows.
     pub(crate) bytes: u64,
+    /// The part of [`Self::bytes`] that was side rows, in `Column::Generic`.
+    pub(crate) side_bytes: u64,
+}
+
+impl DiskPrune {
+    /// The part of [`Self::bytes`] that was delta rows, in `Column::Delta`.
+    pub(crate) fn delta_bytes(&self) -> u64 {
+        self.bytes - self.side_bytes
+    }
+}
+
+/// An applied row to prune, with its side rows.
+struct Prunable {
+    row: key::ContextDagDelta,
+    /// Key and value bytes of the delta row.
+    bytes: u64,
+    /// The delta's side rows on disk, with their key and value bytes.
+    side: Vec<(key::Generic, u64)>,
 }
 
 /// Whether `context_id` holds more than `min_rows` rows in the delta column.
@@ -119,23 +153,63 @@ pub(crate) fn prune_context_rows(
     })?;
 
     let mut done = DiskPrune::default();
-    for batch in candidates.chunks(COMPACTION_DELETE_BATCH) {
+    for batch in candidates.chunks(DELTAS_PER_DELETE_BATCH) {
         if persisted_heads(store, context_id)? != heads {
             break;
         }
         let mut tx = Transaction::default();
-        for (row, _) in batch {
-            tx.delete(row);
+        for prunable in batch {
+            tx.delete(&prunable.row);
+            for (side, _) in &prunable.side {
+                tx.delete(side);
+            }
         }
         store.apply(&tx)?;
-        done.pruned += batch.len();
-        done.bytes += batch.iter().map(|(_, bytes)| bytes).sum::<u64>();
+        for prunable in batch {
+            let side_bytes = prunable.side.iter().map(|(_, bytes)| bytes).sum::<u64>();
+            done.pruned += 1;
+            done.side_rows += prunable.side.len();
+            done.bytes += prunable.bytes + side_bytes;
+            done.side_bytes += side_bytes;
+        }
     }
     Ok(done)
 }
 
+/// Compact the side tables after the sweep deleted `reclaimed` bytes from
+/// them (pruned deltas' side rows and swept orphans), when that is worth the
+/// rewrite by the same bar as a delta slice. Returns whether it compacted.
+///
+/// Their keys are hashed, so every context's rows are spread across each
+/// table's whole range: the bar is the sweep's total against the tables' size,
+/// and both tables are compacted together. Blocking, with no lock held.
+pub(crate) fn compact_side_tables(store: &Store, reclaimed: u64) -> EyreResult<bool> {
+    let mut size = 0u64;
+    for table in SideTable::ALL {
+        let (lo, hi) = table.range();
+        size += store.approximate_size(
+            Column::Generic,
+            lo.as_key().as_bytes(),
+            hi.as_key().as_bytes(),
+        )?;
+    }
+    if !crate::gc::worth_compacting(reclaimed, size) {
+        return Ok(false);
+    }
+    for table in SideTable::ALL {
+        let (lo, hi) = table.range();
+        store.raw_compact_range(
+            Column::Generic,
+            lo.as_key().as_bytes(),
+            hi.as_key().as_bytes(),
+        )?;
+    }
+    Ok(true)
+}
+
 /// Compact `context_id`'s slice of the delta column after a prune reclaimed
-/// `reclaimed` bytes from it, when that is worth the rewrite (the tombstone
+/// `reclaimed` bytes from it ([`DiskPrune::delta_bytes`]; its side rows live
+/// in another column, see [`compact_side_tables`]), when that is worth the rewrite (the tombstone
 /// GC's bar, [`crate::gc::worth_compacting`]). Returns whether it compacted.
 ///
 /// A deleted row frees nothing by itself: RocksDB writes a deletion marker and
@@ -197,14 +271,16 @@ fn retain_window(
     Ok(retained)
 }
 
-/// Applied rows of the context that `kept` does not claim, with their key and
-/// value bytes. Reads at most [`MAX_COMPACTION_SCAN_ROWS`] keys and returns at
-/// most [`MAX_COMPACTION_DELETES_PER_CONTEXT`] rows.
+/// Applied rows of the context that `kept` does not claim, with their side
+/// rows and the key and value bytes of each. Reads at most
+/// [`MAX_COMPACTION_SCAN_ROWS`] keys and returns at most
+/// [`MAX_COMPACTION_DELETES_PER_CONTEXT`] rows, looking up each one's side
+/// rows by key.
 fn prunable_rows(
     store: &Store,
     context_id: ContextId,
     kept: impl Fn(&[u8; 32]) -> bool,
-) -> EyreResult<Vec<(key::ContextDagDelta, u64)>> {
+) -> EyreResult<Vec<Prunable>> {
     let handle = store.handle();
     let mut iter = handle.iter::<key::ContextDagDelta>()?;
     let mut next = iter.seek(key::ContextDagDelta::new(context_id, GENESIS))?;
@@ -222,11 +298,33 @@ fn prunable_rows(
             if let Some(row) = handle.get(&row_key)? {
                 if row.applied {
                     let bytes = row_key.as_key().as_bytes().len() + borsh::object_length(&row)?;
-                    rows.push((row_key, bytes as u64));
+                    rows.push(Prunable {
+                        row: row_key,
+                        bytes: bytes as u64,
+                        side: side_rows_of(store, context_id, &row_key.delta_id())?,
+                    });
                 }
             }
         }
         next = iter.next()?;
     }
     Ok(rows)
+}
+
+/// `delta_id`'s side rows on disk, with their key and value bytes.
+fn side_rows_of(
+    store: &Store,
+    context_id: ContextId,
+    delta_id: &[u8; 32],
+) -> EyreResult<Vec<(key::Generic, u64)>> {
+    let handle = store.handle();
+    let mut side = Vec::new();
+    for table in SideTable::ALL {
+        let row = table.key(&context_id, delta_id);
+        if let Some(value) = handle.get(&row)? {
+            let bytes = row.as_key().as_bytes().len() + value.as_ref().len();
+            side.push((row, bytes as u64));
+        }
+    }
+    Ok(side)
 }
