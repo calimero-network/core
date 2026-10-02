@@ -4020,14 +4020,24 @@ impl SyncManager {
 
                 // Run the LevelWise responder via the trait method
                 use calimero_node_primitives::sync::SyncProtocolExecutor;
-                super::level_sync::LevelWiseProtocol::run_responder(
+                let deferred = super::level_sync::LevelWiseProtocol::run_responder(
                     &mut transport,
                     &store,
                     context_id,
                     our_identity,
                     first_request,
                 )
-                .await?
+                .await?;
+                if !deferred.is_empty() {
+                    super::protocol_selector::dispatch_deferred_root_merges(
+                        &self.context_client,
+                        &store,
+                        context_id,
+                        our_identity,
+                        &deferred,
+                    )
+                    .await;
+                }
             }
             InitPayload::EntityPush { .. } => {
                 // EntityPush is handled within the HashComparison and LevelWise

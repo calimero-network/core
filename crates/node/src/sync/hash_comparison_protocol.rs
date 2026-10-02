@@ -151,20 +151,9 @@ pub struct HashComparisonStats {
     /// merge did not converge the two peers — see #2407 for the
     /// failure mode this guards against.
     pub root_hash_verified: bool,
-    /// Root-state byte blobs the DFS encountered on remote leaves
-    /// that the host can't merge by itself (separate-address-space
-    /// merge registry — see [`crate::sync::helpers::apply_leaf_with_crdt_merge`]).
-    /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
-    /// The caller (`ProtocolSelector`) dispatches each one through
-    /// `ContextClient::merge_root_state` after the sync completes,
-    /// closing the loop on root-entity divergence that HC would
-    /// otherwise silently drop. Storing the entity id lets the caller
-    /// distinguish `ROOT_ID` from the `Root<T>` entry (both treated
-    /// as root by `is_app_root_entry`, both possible in HC leaves);
-    /// the timestamp is the leaf's wire-carried `hlc_timestamp` so
-    /// the dispatch uses the actual remote write time instead of a
-    /// synthetic value.
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+    /// App-state entry leaves the DFS met, which only the app's module can merge;
+    /// `ProtocolSelector` dispatches each after the session.
+    pub deferred_root_merges: Vec<TreeLeafData>,
 
     /// Custom-typed ENTRIES deferred for the same reason, with the id the
     /// entry declares so the dispatch does not have to re-read it.
@@ -213,7 +202,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
         context_id: ContextId,
         identity: PublicKey,
         first_request: Self::ResponderInit,
-    ) -> Result<()> {
+    ) -> Result<Vec<TreeLeafData>> {
         run_responder_impl(
             transport,
             store,
@@ -452,21 +441,8 @@ async fn run_initiator_impl<T: SyncTransport>(
                         continue;
                     }
 
-                    // Root entity leaves can't be merged on the host
-                    // (the host's `merge_root_state` consults a registry
-                    // that's only populated inside WASM). Hand them off
-                    // to the caller, which dispatches each through
-                    // `ContextClient::merge_root_state` after the sync
-                    // session completes. `apply_leaf_with_crdt_merge`
-                    // also short-circuits root entities — we check here
-                    // too so we can record the incoming bytes (the helper
-                    // is sync and inside `with_runtime_env`, so it can't
-                    // call into the runtime to do the merge itself).
-                    // Defer root entities with a real `crdt_type` for
-                    // WASM dispatch; opaque root entities (synthetic
-                    // `Opaque` LWW marker) fall through to
-                    // `apply_leaf_with_crdt_merge` which LWW-writes
-                    // them directly (no Mergeable to dispatch).
+                    // Only the app's module merges the app-state entry, so it is
+                    // handed to the caller, which dispatches it after the session.
                     let entity_id = calimero_storage::address::Id::new(leaf_data.key);
                     match crate::sync::helpers::classify_leaf(
                         entity_id,
@@ -478,11 +454,14 @@ async fn run_initiator_impl<T: SyncTransport>(
                         },
                     ) {
                         LeafDisposition::DeferRoot => {
-                            stats.deferred_root_merges.push((
-                                leaf_data.key,
-                                leaf_data.value.clone(),
-                                leaf_data.metadata.hlc_timestamp,
-                            ));
+                            stats.deferred_root_merges.push(leaf_data.clone());
+                            // The peer merges ours as we merge theirs, so one session converges both.
+                            pending_local_leaf_pushes.extend(local_leaf_to_push_back(
+                                context_id,
+                                &runtime_env,
+                                &remote_node,
+                                schema_bytecode_id,
+                            )?);
                             continue;
                         }
                         LeafDisposition::DeferCustom(type_id) => {
@@ -565,35 +544,12 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // chunked batch after the DFS so an N-leaf
                     // divergence is N entities over O(N/batch) round-
                     // trips, not N round-trips inline.
-                    let local_node = with_runtime_env(runtime_env.clone(), || {
-                        get_local_tree_node(context_id, &remote_node.id, false, schema_bytecode_id)
-                    })?;
-                    if let Some(local) = local_node {
-                        if local.is_leaf() && local.hash != remote_node.hash {
-                            if let Some(local_leaf) = local.leaf_data {
-                                // Same guard `collect_local_leaves`
-                                // applies on the snapshot-push path:
-                                // an oversized leaf is rejected by
-                                // the peer's `TreeLeafData::is_valid`
-                                // check inside `handle_entity_push`,
-                                // so queuing it here would silently
-                                // fail and re-enter the sticky loop
-                                // this fix exists to eliminate.
-                                if local_leaf.value.len() > MAX_LEAF_VALUE_SIZE {
-                                    warn!(
-                                        %context_id,
-                                        key = %hex::encode(local_leaf.key),
-                                        len = local_leaf.value.len(),
-                                        max = MAX_LEAF_VALUE_SIZE,
-                                        "leaf value exceeds MAX_LEAF_VALUE_SIZE, \
-                                         skipping bidirectional push"
-                                    );
-                                } else {
-                                    pending_local_leaf_pushes.push(local_leaf);
-                                }
-                            }
-                        }
-                    }
+                    pending_local_leaf_pushes.extend(local_leaf_to_push_back(
+                        context_id,
+                        &runtime_env,
+                        &remote_node,
+                        schema_bytecode_id,
+                    )?);
                 }
             } else {
                 // Internal node: compare with local version
@@ -1115,7 +1071,7 @@ async fn run_responder_impl<T: SyncTransport>(
     identity: PublicKey,
     first_node_id: [u8; 32],
     first_max_depth: Option<u8>,
-) -> Result<()> {
+) -> Result<Vec<TreeLeafData>> {
     info!(%context_id, "Starting HashComparison sync (responder)");
 
     // Defense in depth: validate first request parameters
@@ -1152,6 +1108,7 @@ async fn run_responder_impl<T: SyncTransport>(
 
     let mut sequence_id = 0u64;
     let mut requests_handled = 0u64;
+    let mut deferred_root_merges = Vec::new();
 
     // Handle the first request (already parsed by the manager)
     {
@@ -1282,25 +1239,8 @@ async fn run_responder_impl<T: SyncTransport>(
 
                 let outcome = handle_entity_push(store, &runtime_env, context_id, &entities, None);
                 let applied = outcome.applied;
-
-                // This responder runs without a `ContextClient` in
-                // scope (trait signature limitation — see
-                // `SyncProtocolExecutor`), so it can't dispatch
-                // deferred root merges itself. The production
-                // responder in `hash_comparison.rs` does have
-                // `ContextClient` and dispatches. Surface the gap as
-                // a warn so persistent occurrences are visible; in
-                // practice the initiator's DFS catches the same root
-                // divergence and dispatches from there.
-                if !outcome.deferred_root_merges.is_empty() {
-                    warn!(
-                        %context_id,
-                        deferred = outcome.deferred_root_merges.len(),
-                        "EntityPush responder: dropped root-entity deferred merges \
-                         (protocol-trait responder lacks ContextClient — initiator-side \
-                         dispatch will pick up root divergence on next sync round)"
-                    );
-                }
+                let deferred = outcome.deferred_root_merges.len();
+                deferred_root_merges.extend(outcome.deferred_root_merges);
 
                 let msg = StreamMessage::Message {
                     sequence_id,
@@ -1317,7 +1257,7 @@ async fn run_responder_impl<T: SyncTransport>(
                 info!(
                     %context_id,
                     applied,
-                    deferred_root_merges = outcome.deferred_root_merges.len(),
+                    deferred_root_merges = deferred,
                     total = entity_count,
                     "Applied pushed entities via CRDT merge"
                 );
@@ -1396,7 +1336,7 @@ async fn run_responder_impl<T: SyncTransport>(
     }
 
     info!(%context_id, requests_handled, "HashComparison responder complete");
-    Ok(())
+    Ok(deferred_root_merges)
 }
 
 /// Build a TreeNodeResponse from a local node.
@@ -1621,6 +1561,40 @@ fn collect_leaves_recursive(
     }
 
     Ok(())
+}
+
+/// Our copy of a leaf the peer holds with another hash, for the peer to merge
+/// in the same session; `None` when we hold no such leaf.
+fn local_leaf_to_push_back(
+    context_id: ContextId,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    remote_node: &TreeNode,
+    schema_bytecode_id: Option<[u8; 32]>,
+) -> Result<Option<TreeLeafData>> {
+    let local_node = with_runtime_env(runtime_env.clone(), || {
+        get_local_tree_node(context_id, &remote_node.id, false, schema_bytecode_id)
+    })?;
+    let Some(local_leaf) = local_node
+        .filter(|local| local.is_leaf() && local.hash != remote_node.hash)
+        .and_then(|local| local.leaf_data)
+    else {
+        return Ok(None);
+    };
+    // Same guard `collect_local_leaves` applies on the snapshot-push path:
+    // an oversized leaf is rejected by the peer's `TreeLeafData::is_valid`
+    // check inside `handle_entity_push`, so queuing it here would silently
+    // fail and re-enter the sticky loop this fix exists to eliminate.
+    if local_leaf.value.len() > MAX_LEAF_VALUE_SIZE {
+        warn!(
+            %context_id,
+            key = %hex::encode(local_leaf.key),
+            len = local_leaf.value.len(),
+            max = MAX_LEAF_VALUE_SIZE,
+            "leaf value exceeds MAX_LEAF_VALUE_SIZE, skipping bidirectional push"
+        );
+        return Ok(None);
+    }
+    Ok(Some(local_leaf))
 }
 
 /// Push local-only subtrees to the peer.
@@ -1995,9 +1969,9 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
-        // `Id::new([118; 32])` == `Root::<T>::entry_id()` — an opaque leaf.
+        // The `Root<T>` app-state entry, an opaque leaf.
         let root_id = Id::new(*context_id.as_ref());
-        let opaque_id = Id::new([118u8; 32]);
+        let opaque_id = calimero_storage::collections::ROOT_ENTRY_ID;
 
         with_runtime_env(runtime_env.clone(), || {
             // Create the context root.

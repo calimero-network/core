@@ -12,7 +12,7 @@ use calimero_context_client::client::crypto::ContextIdentity;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::messages::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, InternalErrorKind,
-    MigrationParams, WriteSource,
+    MethodNotExported, MigrationParams, WriteSource,
 };
 use calimero_context_client::{ContextAtomic, ContextAtomicKey, ContextGuard};
 use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
@@ -25,6 +25,7 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_runtime::errors::{FunctionCallError, MethodResolutionError};
 use calimero_runtime::logic::Outcome;
 use calimero_storage::{
     address::Id,
@@ -1592,7 +1593,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             .map_ok(
                 move |(guard, root_hash, outcome, read_only_write_discarded), _act, _ctx| {
                     ExecuteResponse {
-                        returns: outcome.returns.map_err(Into::into),
+                        returns: outcome.returns.map_err(returns_error),
                         logs: outcome.logs,
                         events: outcome
                             .events
@@ -3458,12 +3459,25 @@ fn xcall_same_owning_group(
     Ok(matches!((src, tgt), (Some(a), Some(b)) if a == b))
 }
 
+/// The report a run's error reaches the caller as, marking a missing export.
+fn returns_error(err: FunctionCallError) -> eyre::Report {
+    match err {
+        err @ FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
+            ..
+        }) => MethodNotExported(Box::new(err)).into(),
+        err => err.into(),
+    }
+}
+
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]
 mod state_write_gate_tests;
 #[cfg(test)]
 mod xcall_tests;
+
+#[cfg(test)]
+mod root_merge_export_tests;
 
 #[cfg(test)]
 mod tests {

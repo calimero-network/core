@@ -113,7 +113,9 @@ Walking two causally-related events across two nodes makes the receive rule conc
 
 ## Anti-drift protection
 
-`update` rejects a remote timestamp whose *physical* time is more than **5 seconds** ahead of the local wall clock (`DRIFT_TOLERANCE_SECS = 5`, `logical_clock.rs:360`). This bounds the damage a node with a badly skewed or malicious clock can do: it cannot drag every other node's clock arbitrarily far into the future. The comparison deliberately uses physical time only — the remote counter bits are logical ordering, not clock drift, and including them would inflate the comparison at the tick boundary. A rejected update returns `Err(())` and leaves the local clock untouched (`test_update_rejects_far_future`).
+`update` rejects a remote timestamp whose *physical* time is more than **5 seconds** ahead of the local wall clock (`max_accepted_physical`, derived from `constants::DRIFT_TOLERANCE_NANOS`). This bounds the damage a node with a badly skewed or malicious clock can do: it cannot drag every other node's clock arbitrarily far into the future. The comparison deliberately uses physical time only - the remote counter bits are logical ordering, not clock drift, and including them would inflate the comparison at the tick boundary. A rejected update returns `Err(())` and leaves the local clock untouched (`test_update_rejects_far_future`).
+
+`LwwRegister::merge` applies the same bound to the stamp a register carries in its own bytes: a stamp beyond it loses to one within it, on either side of the merge (`is_beyond_drift`).
 
 :::caution[Normative]
 - A timestamp MUST be quantized to `PHYSICAL_MASK` before the counter is OR-ed in; the counter occupies exactly the low `COUNTER_BITS` (16) bits.

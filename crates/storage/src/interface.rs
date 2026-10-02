@@ -46,11 +46,14 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::address::Id;
 use crate::child_trie::ChildTrie;
+use crate::collections::crdt_meta::CustomTypeId;
+use crate::collections::ROOT_ENTRY_ID;
 use crate::constants;
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, SignatureData, StorageType};
 use crate::env::time_now;
 use crate::hash_meter::{Digest, Sha256};
 use crate::index::{Index, MAX_PARENT_CHAIN};
+use crate::merge::{MergeCustomRequest, MergeRootStateRequest};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -349,6 +352,33 @@ fn merges_whatever_the_order(
     matches!(crdt_type, Some(CrdtType::RotationLog | CrdtType::Custom(_)))
         && !crate::collections::is_app_root_entry(id)
         || origin == WriteOrigin::Applied && matches!(crdt_type, Some(CrdtType::FugueTextBlock))
+}
+
+/// Whether a write of the app-state entry runs the app's own merge: a remote
+/// one, where this build holds that merge. A local write descends from the stored value.
+fn merges_root_entry(id: Id, origin: WriteOrigin) -> bool {
+    id == crate::collections::ROOT_ENTRY_ID
+        && origin == WriteOrigin::Applied
+        && crate::merge::has_root_merger()
+}
+
+/// Whether `action` restates the stored root shell, which then moves nothing. A root write
+/// that is not the stored shell is refused; a `Root<T>` shell is its collection bytes, a JS one is empty.
+fn restates_root_shell<S: StorageAdaptor>(action: &Action) -> Result<bool, StorageError> {
+    let (Action::Add { id, data, .. } | Action::Update { id, data, .. }) = action else {
+        return Ok(false);
+    };
+    if !id.is_root() {
+        return Ok(false);
+    }
+    let is_shell = data.is_empty() || crate::collections::is_root_collection_bytes(data);
+    match S::storage_read(Key::Entry(*id)) {
+        Some(stored) if is_shell && stored == *data => Ok(true),
+        None if is_shell => Ok(false),
+        _ => Err(StorageError::InvalidData(
+            "a write of the root collection must restate its shell".to_owned(),
+        )),
+    }
 }
 
 /// Whether a signed write whose nonce is below the stored one must still reach
@@ -1787,6 +1817,18 @@ impl<S: StorageAdaptor> Interface<S> {
         )
     }
 
+    /// Applies an action a peer sent, by whatever path it arrived: [`Self::apply_action`]
+    /// plus the root shell rule, so once a shell is stored only local writes move its stamp.
+    ///
+    /// # Errors
+    /// As [`Self::apply_action`], and `InvalidData` for a root write that is not the stored shell.
+    pub fn apply_remote_action(action: Action, ctx: &ApplyContext) -> Result<(), StorageError> {
+        if restates_root_shell::<S>(&action)? {
+            return Ok(());
+        }
+        Self::apply_action(action, ctx)
+    }
+
     /// Put back the context root a delta leaves off the end of an ancestor
     /// chain (see `Index::get_delta_ancestors_of`), so the rest of
     /// [`Self::apply_action`] sees the chain the writer's tree holds.
@@ -2600,6 +2642,12 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
             Action::DeleteRef { id, metadata, .. } => {
+                // Only a local write ever replaces these; a peer's delete would brick the app.
+                if crate::collections::is_app_root_entry(*id) {
+                    return Err(StorageError::ActionNotAllowed(
+                        "the root and the app state cannot be deleted".to_owned(),
+                    ));
+                }
                 // Get the metadata of the item being deleted to check its domain.
                 // A delete of a written-once entry can reach a node before the
                 // entry does; it is checked against the stamp it carries, which
@@ -3951,7 +3999,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         origin,
                     )?,
                 }
-            } else if last_metadata.updated_at > metadata.updated_at {
+            } else if last_metadata.updated_at > metadata.updated_at
+                && !merges_root_entry(id, origin)
+            {
                 return Ok(None);
             } else if crate::collections::is_app_root_entry(id) {
                 // App root state — either the canonical `ROOT_ID` or the
@@ -4006,15 +4056,32 @@ impl<S: StorageAdaptor> Interface<S> {
                             .crdt_type
                             .as_ref()
                             .is_some_and(|t| t.is_js_root());
-                    let merged = Self::try_merge_data(
-                        id,
-                        &existing_data,
-                        data,
-                        last_metadata.created_at,
-                        *last_metadata.updated_at,
-                        *metadata.updated_at,
-                        is_opaque_root,
-                    )?;
+                    // With the app's merger in this build, only a remote entry merges;
+                    // the shell holds no state and a local write descends from the stored one.
+                    let merged = if !crate::merge::has_root_merger() {
+                        Self::try_merge_data(
+                            id,
+                            &existing_data,
+                            data,
+                            last_metadata.created_at,
+                            *last_metadata.updated_at,
+                            *metadata.updated_at,
+                            is_opaque_root,
+                        )?
+                    } else if merges_root_entry(id, origin) {
+                        crate::merge::merge_root_entry(
+                            &existing_data,
+                            data,
+                            last_metadata.created_at,
+                            *last_metadata.updated_at,
+                            *metadata.updated_at,
+                        )
+                        .map_err(|e| {
+                            StorageError::InvalidData(format!("root state refused: {e}"))
+                        })?
+                    } else {
+                        data.to_vec()
+                    };
                     let merged_hash: [u8; 32] = Sha256::digest(&merged).into();
                     info!(
                         target: "storage::root_merge",
@@ -4308,6 +4375,104 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(full_hash)
     }
 
+    /// The app's merge request for an app-state entry a peer sent outside a delta,
+    /// once its stamp passes the bound every remote write does.
+    ///
+    /// # Errors
+    /// `InvalidTimestamp` for a stamp beyond the bound, or a failed index read.
+    pub fn root_entry_merge_request(
+        incoming: Vec<u8>,
+        incoming_ts: u64,
+    ) -> Result<MergeRootStateRequest, StorageError> {
+        verify_remote_timestamp(incoming_ts)?;
+        let stored = <Index<S>>::get_metadata(ROOT_ENTRY_ID)?.unwrap_or_default();
+        Ok(MergeRootStateRequest {
+            existing: S::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap_or_default(),
+            incoming,
+            existing_created_at: stored.created_at,
+            existing_ts: *stored.updated_at,
+            incoming_ts,
+        })
+    }
+
+    /// The app's merge request and the stored metadata for a custom entry a peer sent
+    /// outside a delta, once its stamp passes the bound; `None` when nothing is stored.
+    ///
+    /// # Errors
+    /// `InvalidTimestamp` for a stamp beyond the bound, or a failed index read.
+    pub fn custom_entry_merge_request(
+        id: Id,
+        type_id: CustomTypeId,
+        incoming: Vec<u8>,
+        incoming_ts: u64,
+    ) -> Result<Option<(MergeCustomRequest, Metadata)>, StorageError> {
+        verify_remote_timestamp(incoming_ts)?;
+        let Some(existing) = S::storage_read(Key::Entry(id)) else {
+            return Ok(None);
+        };
+        let metadata = <Index<S>>::get_metadata(id)?.unwrap_or_default();
+        let request = MergeCustomRequest {
+            type_id,
+            existing,
+            incoming,
+        };
+        Ok(Some((request, metadata)))
+    }
+
+    /// Writes the app's `merged` custom entry, as new as the newer write; `None`,
+    /// writing nothing, when the stored entry moved since `request` was read.
+    ///
+    /// # Errors
+    /// As [`Self::write_pre_merged_root_state`].
+    pub fn write_custom_entry_merge(
+        id: Id,
+        request: &MergeCustomRequest,
+        stored: &Metadata,
+        merged: &[u8],
+        incoming_ts: u64,
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        let _mutation_guard = crate::index::index_mutation_guard();
+        let now_ts = <Index<S>>::get_metadata(id)?.map(|metadata| metadata.updated_at);
+        if S::storage_read(Key::Entry(id)).as_ref() != Some(&request.existing)
+            || now_ts != Some(stored.updated_at)
+        {
+            return Ok(None);
+        }
+        let mut metadata = stored.clone();
+        metadata.updated_at = (*stored.updated_at).max(incoming_ts).into();
+        Self::write_pre_merged_root_state(id, merged, metadata).map(Some)
+    }
+
+    /// Writes the app's `merged` entry, or with no merge the incoming one by LWW (`created_at`
+    /// for a new entry); `None`, writing nothing, when the stored entry moved since `request`.
+    ///
+    /// # Errors
+    /// As [`Self::write_pre_merged_root_state`].
+    pub fn write_root_entry_merge(
+        request: &MergeRootStateRequest,
+        merged: Option<&[u8]>,
+        created_at: u64,
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        let _mutation_guard = crate::index::index_mutation_guard();
+        let stored = <Index<S>>::get_metadata(ROOT_ENTRY_ID)?;
+        let stored_ts = stored.as_ref().map_or(0, |metadata| *metadata.updated_at);
+        let stored_entry = S::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap_or_default();
+        if stored_entry != request.existing || stored_ts != request.existing_ts {
+            return Ok(None);
+        }
+
+        let existing = (request.existing_ts, request.existing.as_slice());
+        let incoming = (request.incoming_ts, request.incoming.as_slice());
+        // Without the app's merge the greater stamp wins, then the greater bytes, so every node keeps one entry.
+        let (updated_at, entry) = match merged {
+            Some(merged) => (existing.0.max(incoming.0), merged),
+            None => existing.max(incoming),
+        };
+        let mut metadata = stored.unwrap_or_else(|| Metadata::new(created_at, updated_at));
+        metadata.updated_at = updated_at.into();
+        Self::write_pre_merged_root_state(ROOT_ENTRY_ID, entry, metadata).map(Some)
+    }
+
     /// Attempt to merge two versions of data using CRDT semantics.
     ///
     /// Returns the merged data, or an error if merge fails.
@@ -4387,11 +4552,11 @@ impl<S: StorageAdaptor> Interface<S> {
                     "opaque root entity with no registered merge function; \
                      resolving by LWW (incoming wins by updated_at)"
                 );
-                if incoming_timestamp >= existing_timestamp {
-                    Ok(incoming.to_vec())
-                } else {
-                    Ok(existing.to_vec())
-                }
+                // An equal stamp falls to the greater bytes, or two nodes would swap entries.
+                Ok((incoming_timestamp, incoming)
+                    .max((existing_timestamp, existing))
+                    .1
+                    .to_vec())
             }
             // I5 Enforcement: for a NON-opaque root (a real `crdt_type`) with no
             // registered merger — and for every other merge failure — propagate
@@ -4653,19 +4818,6 @@ impl<S: StorageAdaptor> Interface<S> {
         Self::save_raw_stamped(id, data, metadata, true, false)
     }
 
-    /// [`save_raw`](Self::save_raw) for a write that is not new: the root
-    /// document a delta replay re-saves keeps the stamp its writer gave it, so a
-    /// replay older than the stored root still loses to it.
-    pub(crate) fn save_raw_replayed(
-        id: Id,
-        data: Vec<u8>,
-        metadata: Metadata,
-    ) -> Result<Option<[u8; 32]>, StorageError> {
-        Self::save_raw_stamped(id, data, metadata, false, false)
-    }
-
-    /// `newly_linked`: the caller linked `id` under its parent in this call,
-    /// so its stored index says nothing about what a peer holds.
     fn save_raw_stamped(
         id: Id,
         data: Vec<u8>,
@@ -5423,11 +5575,17 @@ pub(crate) fn stamp_after(now: u64, floor: u64) -> u64 {
 
 /// Verifies that the action timestamp is within acceptable bounds of the local clock.
 fn verify_action_timestamp(action: &Action) -> Result<(), StorageError> {
-    let timestamp = match action {
+    verify_remote_timestamp(match action {
         Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata.updated_at(),
         Action::DeleteRef { deleted_at, .. } => *deleted_at,
-    };
+    })
+}
 
+/// Refuses a remote write's stamp further ahead of the local clock than the drift tolerance.
+///
+/// # Errors
+/// `InvalidTimestamp` for a stamp beyond the bound.
+pub(crate) fn verify_remote_timestamp(timestamp: u64) -> Result<(), StorageError> {
     let now = time_now();
 
     // Allow for network latency and small clock skew

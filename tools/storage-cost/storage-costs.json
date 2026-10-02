@@ -299,7 +299,7 @@
     "tolerance_pct": 0,
     "sizes": {
       "00000010": {
-        "rows_read": 822,
+        "rows_read": 753,
         "rows_written": 169,
         "rows_removed": 0,
         "index_rows_read": 37,
@@ -308,7 +308,7 @@
         "hash_blocks": 6593
       },
       "00000100": {
-        "rows_read": 14381,
+        "rows_read": 9781,
         "rows_written": 1637,
         "rows_removed": 0,
         "index_rows_read": 352,
@@ -317,7 +317,7 @@
         "hash_blocks": 101228
       },
       "00000500": {
-        "rows_read": 204837,
+        "rows_read": 102936,
         "rows_written": 8414,
         "rows_removed": 0,
         "index_rows_read": 1752,
@@ -326,7 +326,7 @@
         "hash_blocks": 1298981
       },
       "00002000": {
-        "rows_read": 3018132,
+        "rows_read": 1324502,
         "rows_written": 35438,
         "rows_removed": 0,
         "index_rows_read": 7002,
@@ -796,7 +796,7 @@
     "tolerance_pct": 5,
     "sizes": {
       "00000010": {
-        "rows_read": 885,
+        "rows_read": 798,
         "rows_written": 178,
         "rows_removed": 0,
         "index_rows_read": 37,
@@ -805,7 +805,7 @@
         "hash_blocks": 6973
       },
       "00000100": {
-        "rows_read": 21082,
+        "rows_read": 12834,
         "rows_written": 1800,
         "rows_removed": 0,
         "index_rows_read": 352,
@@ -814,7 +814,7 @@
         "hash_blocks": 140526
       },
       "00000500": {
-        "rows_read": 402515,
+        "rows_read": 188049,
         "rows_written": 9524,
         "rows_removed": 0,
         "index_rows_read": 1752,
@@ -823,7 +823,7 @@
         "hash_blocks": 2303746
       },
       "00002000": {
-        "rows_read": 5604705,
+        "rows_read": 2375871,
         "rows_written": 38785,
         "rows_removed": 0,
         "index_rows_read": 7002,
@@ -981,7 +981,7 @@
     "tolerance_pct": 0,
     "sizes": {
       "00000010": {
-        "rows_read": 230,
+        "rows_read": 228,
         "rows_written": 52,
         "rows_removed": 0,
         "index_rows_read": 14,
@@ -989,7 +989,7 @@
         "hash_blocks": 1185
       },
       "00000100": {
-        "rows_read": 230,
+        "rows_read": 228,
         "rows_written": 52,
         "rows_removed": 0,
         "index_rows_read": 14,
@@ -997,7 +997,7 @@
         "hash_blocks": 1201
       },
       "00001000": {
-        "rows_read": 319,
+        "rows_read": 317,
         "rows_written": 70,
         "rows_removed": 0,
         "index_rows_read": 20,
@@ -1005,7 +1005,7 @@
         "hash_blocks": 2051
       },
       "00010000": {
-        "rows_read": 1537,
+        "rows_read": 1535,
         "rows_written": 339,
         "rows_removed": 0,
         "index_rows_read": 92,

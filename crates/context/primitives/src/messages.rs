@@ -186,6 +186,12 @@ pub enum WriteSource {
     RemoteDelta,
 }
 
+/// A call named a method the module does not export: the runtime's error, unchanged
+/// in its message, so a caller can tell a missing export from a failed run.
+#[derive(Debug, ThisError)]
+#[error(transparent)]
+pub struct MethodNotExported(pub Box<dyn std::error::Error + Send + Sync + 'static>);
+
 #[derive(Debug)]
 pub struct ExecuteResponse {
     pub returns: eyre::Result<Option<Vec<u8>>>,

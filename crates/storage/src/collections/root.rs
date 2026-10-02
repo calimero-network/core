@@ -425,8 +425,6 @@ where
     where
         F: Fn(&Action) -> crate::interface::ApplyContext,
     {
-        let mut root_snapshot: Option<(Vec<u8>, crate::entities::Metadata)> = None;
-
         // #2238: defer ancestor-hash recomputation until the end of
         // the action loop. Many deltas in a single merge often touch
         // the same parent; without batching, each `add_child_to`
@@ -438,84 +436,8 @@ where
         let defer_scope = DeferredAncestorScope::<S>::new();
 
         for action in actions {
-            match &action {
-                Action::Add {
-                    id, data, metadata, ..
-                }
-                | Action::Update {
-                    id, data, metadata, ..
-                } if id.is_root() => {
-                    info!(
-                        target: "storage::root",
-                        payload_len = data.len(),
-                        created_at = metadata.created_at,
-                        updated_at = metadata.updated_at(),
-                        "captured root snapshot from delta replay"
-                    );
-                    root_snapshot = Some((data.clone(), metadata.clone()));
-                }
-                _ => {}
-            }
-
             let action_ctx = ctx_for_action(&action);
-
-            match action {
-                Action::Add {
-                    id,
-                    data,
-                    metadata,
-                    ancestors,
-                } => {
-                    if !id.is_root() {
-                        info!(
-                            target: "storage::sync_child",
-                            %id,
-                            data_len = data.len(),
-                            created_at = metadata.created_at,
-                            updated_at = metadata.updated_at(),
-                            "SYNC CHILD: Applying Action::Add for child entity"
-                        );
-                        apply_child_action_lenient::<S>(
-                            Action::Add {
-                                id,
-                                data,
-                                metadata,
-                                ancestors,
-                            },
-                            &action_ctx,
-                        )?;
-                    }
-                }
-                Action::Update {
-                    id,
-                    data,
-                    metadata,
-                    ancestors,
-                } => {
-                    if !id.is_root() {
-                        info!(
-                            target: "storage::sync_child",
-                            %id,
-                            data_len = data.len(),
-                            created_at = metadata.created_at,
-                            updated_at = metadata.updated_at(),
-                            "SYNC CHILD: Applying Action::Update for child entity"
-                        );
-                        apply_child_action_lenient::<S>(
-                            Action::Update {
-                                id,
-                                data,
-                                metadata,
-                                ancestors,
-                            },
-                            &action_ctx,
-                        )?;
-                    }
-                }
-                Action::DeleteRef { .. } => {
-                    apply_child_action_lenient::<S>(action, &action_ctx)?;
-                }
-            };
+            apply_action_lenient::<S>(action, &action_ctx)?;
         }
 
         // Flush deferred ancestor walks. Errors here indicate a
@@ -523,20 +445,11 @@ where
         // caller rather than being silently logged by Drop.
         defer_scope.finish()?;
 
-        if let Some((payload, metadata)) = root_snapshot {
-            if <Interface<S>>::save_raw_replayed(Id::root(), payload, metadata)?.is_some() {
-                info!(
-                    target: "storage::root",
-                    "persisted root document from delta replay"
-                );
-            }
-        }
-
         Ok(())
     }
 }
 
-/// Apply one child action from a sync-merge batch, treating a per-action
+/// Apply one action from a sync-merge batch, treating a per-action
 /// **verification rejection** as a skip rather than aborting the whole batch.
 ///
 /// [`Root::sync`] runs inside the app's `__calimero_sync_next` export, whose
@@ -559,12 +472,12 @@ where
 /// faults) are deliberately NOT skipped — those signal a malformed batch or a
 /// real storage fault, not a single bad action, and must still surface to the
 /// caller.
-fn apply_child_action_lenient<S: StorageAdaptor>(
+fn apply_action_lenient<S: StorageAdaptor>(
     action: Action,
     ctx: &crate::interface::ApplyContext,
 ) -> Result<(), StorageError> {
     let id = action.id();
-    match <Interface<S>>::apply_action(action, ctx) {
+    match <Interface<S>>::apply_remote_action(action, ctx) {
         Ok(()) => Ok(()),
         Err(e) if is_skippable_apply_rejection(&e) => {
             record_dropped_action();
@@ -585,7 +498,7 @@ fn apply_child_action_lenient<S: StorageAdaptor>(
 
 #[cfg(any(test, feature = "testing"))]
 thread_local! {
-    /// Count of actions this thread has dropped in `apply_child_action_lenient`.
+    /// Count of actions this thread has dropped in `apply_action_lenient`.
     ///
     /// Dropping a rejected action is correct for a production merge — one bad
     /// action must not brick a whole batch — but it makes a *test* silently
@@ -611,7 +524,7 @@ fn record_dropped_action() {
 #[cfg(not(any(test, feature = "testing")))]
 const fn record_dropped_action() {}
 
-/// How many actions `apply_child_action_lenient` has dropped on this thread
+/// How many actions `apply_action_lenient` has dropped on this thread
 /// since the last [`reset_dropped_action_count`].
 #[cfg(any(test, feature = "testing"))]
 #[must_use]
@@ -627,7 +540,7 @@ pub fn reset_dropped_action_count() {
 
 /// Whether a [`StorageError`] from `apply_action` is a per-action **verification
 /// rejection** that may be skipped without aborting the sync-merge batch (see
-/// [`apply_child_action_lenient`]).
+/// [`apply_action_lenient`]).
 ///
 /// These are policy decisions about a single action — the action is
 /// unverifiable, unauthorized, stale, or carries an invalid timestamp — so the
