@@ -6726,6 +6726,158 @@ fn inherited_deny_does_not_drop_a_direct_member_of_the_owning_subgroup() {
     );
 }
 
+/// `ns <- open <- child`, all Open, with `leaver` a member of `ns` and `open`
+/// holding `CAN_JOIN_OPEN_SUBGROUPS` in both. Returns the groups, the admin and the leaver.
+fn leaver_of_an_open_chain(
+    store: &Store,
+) -> (
+    [ContextGroupId; 3],
+    calimero_primitives::identity::PrivateKey,
+    calimero_primitives::identity::PrivateKey,
+    calimero_account::AccountId,
+) {
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+
+    let ns_id = [0x3Au8; 32];
+    let ns = ContextGroupId::from(ns_id);
+    let ((admin_sk, _), admin) =
+        crate::test_fixtures::bootstrap_namespace_with_admin_account(store, ns_id);
+    let open = ContextGroupId::from([0x3Bu8; 32]);
+    let child = ContextGroupId::from([0x3Cu8; 32]);
+    nest_for_test(store, &ns, &open);
+    nest_for_test(store, &open, &child);
+    for group in [open, child] {
+        MetaRepository::new(store)
+            .save(&group, &sample_meta_with_admin(admin))
+            .unwrap();
+        CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&group, VisibilityMode::Open)
+            .unwrap();
+    }
+    let leaver_sk = PrivateKey::from([0x3Du8; 32]);
+    let leaver = enrol_member(store, &ns, &leaver_sk.public_key());
+    for group in [ns, open] {
+        MembershipRepository::new(store)
+            .add_member(&group, &leaver, GroupMemberRole::Member)
+            .unwrap();
+        can_join_open_subgroups(store, &group, &leaver);
+    }
+    ([ns, open, child], admin_sk, leaver_sk, leaver)
+}
+
+fn can_join_open_subgroups(
+    store: &Store,
+    group: &ContextGroupId,
+    member: &calimero_account::AccountId,
+) {
+    CapabilitiesRepository::new(store)
+        .set_member_capability(
+            group,
+            member,
+            calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+}
+
+fn sign_member_left(
+    leaver_sk: &calimero_primitives::identity::PrivateKey,
+    group: &ContextGroupId,
+    leaver: calimero_account::AccountId,
+) -> calimero_context_client::local_governance::SignedGroupOp {
+    calimero_context_client::local_governance::SignedGroupOp::sign(
+        leaver_sk,
+        group.to_bytes().into(),
+        vec![],
+        1,
+        calimero_context_client::local_governance::GroupOp::MemberLeft {
+            member: leaver,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_member_who_left_an_open_group_inherits_nothing_below_it() {
+    let store = test_store();
+    let ([ns, open, child], _admin_sk, leaver_sk, leaver) = leaver_of_an_open_chain(&store);
+
+    apply_local_signed_group_op(&store, &sign_member_left(&leaver_sk, &open, leaver)).unwrap();
+
+    let membership = MembershipRepository::new(&store);
+    assert!(membership.is_member(&ns, &leaver).unwrap());
+    assert!(
+        !membership.is_member(&child, &leaver).unwrap(),
+        "leaving a group leaves everything reached through it"
+    );
+}
+
+#[test]
+fn a_namespace_leaver_readmitted_at_the_root_stays_out_below_the_groups_it_left() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+
+    let store = test_store();
+    let ([ns, open, child], admin_sk, leaver_sk, leaver) = leaver_of_an_open_chain(&store);
+
+    // Leaving the namespace cascades a deny entry onto `open`; the root re-add
+    // clears the root's entries only.
+    apply_local_signed_group_op(&store, &sign_member_left(&leaver_sk, &ns, leaver)).unwrap();
+    let readd = SignedGroupOp::sign(
+        &admin_sk,
+        ns.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::MemberAdded {
+            member: leaver,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &readd).unwrap();
+    can_join_open_subgroups(&store, &ns, &leaver);
+
+    let membership = MembershipRepository::new(&store);
+    assert!(membership.is_member(&ns, &leaver).unwrap());
+    assert_eq!(
+        membership.effective_capabilities(&open, &leaver).unwrap(),
+        None
+    );
+    assert!(
+        !membership.is_member(&child, &leaver).unwrap(),
+        "the group it left stays closed, and so does everything below it"
+    );
+}
+
+#[test]
+fn a_member_removed_from_an_open_group_cannot_write_in_its_child() {
+    let store = test_store();
+    let f = crate::test_fixtures::kicked_from_open(&store);
+    let ctx = ContextId::from([0x4Fu8; 32]);
+    register_context_in_group(&store, &f.child, &ctx).unwrap();
+
+    let refused = |sk: &calimero_primitives::identity::PrivateKey| {
+        let key = sk.public_key();
+        (
+            DenyListRepository::new(&store)
+                .is_author_denied_for_context(&ctx, &key)
+                .unwrap(),
+            NamespaceRepository::new(&store)
+                .is_authorized_for_context_state_op(&ctx, &key)
+                .unwrap(),
+            is_currently_authorized_for_context(&store, &NotFolded, &ctx, &key).unwrap(),
+        )
+    };
+
+    assert_eq!(
+        refused(&f.kicked.0),
+        (true, false, false),
+        "dropped at the receive filter and refused by both write gates"
+    );
+    assert_eq!(refused(&f.honest.0), (false, true, true));
+}
+
 /// core#4070. The cross-DAG check authorizes a delta at the governance heads
 /// its author cites, so a revoked device that has not folded its own revocation
 /// passes it. The receive filter is what refuses it: the key the revoked device

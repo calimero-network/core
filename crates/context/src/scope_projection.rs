@@ -4916,4 +4916,108 @@ mod tests {
             "nobody else is seated by the founding"
         );
     }
+
+    /// `ns <- open <- child`, Open throughout, with `kicked` and `honest`
+    /// inheriting from `ns` and `kicked` removed from `open`. Returns the live
+    /// store, the fold of it (which holds no deny-list or re-entry rows, so it
+    /// still reads `kicked` as an inheritor), `child`, `kicked` and `honest`.
+    fn removed_from_open_group() -> (
+        Store,
+        calimero_authz::AclView,
+        ContextGroupId,
+        AccountId,
+        AccountId,
+    ) {
+        use calimero_context_config::{MemberCapabilities, VisibilityMode};
+        use calimero_governance_store::ReentryRepository;
+        use calimero_store::key::GroupExitReason;
+
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0xC1; 32]);
+        let open = ContextGroupId::from([0xC2; 32]);
+        let child = ContextGroupId::from([0xC3; 32]);
+        let admin = test_account(&PublicKey::from([0xC4; 32]));
+        let kicked = test_account(&PublicKey::from([0xC5; 32]));
+        let honest = test_account(&PublicKey::from([0xC6; 32]));
+
+        let namespaces = NamespaceRepository::new(&store);
+        namespaces.nest(&ns, &open).unwrap();
+        namespaces.nest(&open, &child).unwrap();
+        for group in [open, child] {
+            CapabilitiesRepository::new(&store)
+                .set_subgroup_visibility(&group, VisibilityMode::Open)
+                .unwrap();
+        }
+        for member in [kicked, honest] {
+            MembershipRepository::new(&store)
+                .add_member(&ns, &member, GroupMemberRole::Member)
+                .unwrap();
+        }
+        DenyListRepository::new(&store)
+            .mark(&open, &kicked)
+            .unwrap();
+        ReentryRepository::new(&store)
+            .block(&open, &kicked, GroupExitReason::Removed)
+            .unwrap();
+
+        let edge = |parent: ContextGroupId| calimero_authz::SubgroupEdge {
+            parent: ScopeId::from(parent.to_bytes()),
+            restricted: false,
+        };
+        let mut view = calimero_authz::AclView::default();
+        let _ = view.groups.insert(
+            ns,
+            [
+                (kicked, GroupMemberRole::Member),
+                (honest, GroupMemberRole::Member),
+            ]
+            .into(),
+        );
+        let _ = view
+            .groups
+            .insert(child, [(admin, GroupMemberRole::Admin)].into());
+        let _ = view
+            .subgroups
+            .insert(ScopeId::from(open.to_bytes()), edge(ns));
+        let _ = view
+            .subgroups
+            .insert(ScopeId::from(child.to_bytes()), edge(open));
+        let _ = view
+            .default_caps
+            .insert(ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits());
+        (store, view, child, kicked, honest)
+    }
+
+    #[test]
+    fn a_member_removed_from_an_open_group_holds_no_standing_in_its_child_at_the_cut() {
+        use calimero_governance_store::StandingReads;
+
+        let (store, view, child, kicked, honest) = removed_from_open_group();
+        let reads = CutStandingReads {
+            store: &store,
+            view,
+            root: None,
+            root_group: ContextGroupId::from([0xC1; 32]),
+            default_cap_base: 0,
+        };
+
+        assert_eq!(reads.effective_role(&child, &kicked).expect("read"), None);
+        assert_eq!(
+            reads.effective_capabilities(&child, &kicked).expect("read"),
+            None
+        );
+        assert!(reads
+            .effective_role(&child, &honest)
+            .expect("read")
+            .is_some());
+    }
+
+    #[test]
+    fn a_member_removed_from_an_open_group_is_not_listed_in_its_child() {
+        let (store, view, child, kicked, honest) = removed_from_open_group();
+        let members = ScopeProjections::member_accounts_in_view(&view, &store, [0xC1; 32], &child);
+
+        assert!(!members.contains(&kicked), "{members:?}");
+        assert!(members.contains(&honest), "{members:?}");
+    }
 }
