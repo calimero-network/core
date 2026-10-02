@@ -1387,10 +1387,15 @@ impl<S: StorageAdaptor> Index<S> {
             };
             let mut parent = row.0.parent_id;
             let _previous = rows.insert(id, row);
+            let mut steps = 0;
             while let Some(parent_id) = parent {
                 if rows.contains_key(&parent_id) {
                     break;
                 }
+                if steps == MAX_PARENT_CHAIN {
+                    return Err(StorageError::ParentChainTooLong(id));
+                }
+                steps += 1;
                 let row = Self::get_index_with_value(parent_id)?
                     .ok_or(StorageError::IndexNotFound(parent_id))?;
                 parent = row.0.parent_id;
@@ -1409,6 +1414,11 @@ impl<S: StorageAdaptor> Index<S> {
                 if let Some(&known) = depths.get(&node) {
                     depth = known + 1;
                     break;
+                }
+                // A loop or an over-long chain never ends at a row with no
+                // parent; refuse it as a single walk does.
+                if chain.len() > MAX_PARENT_CHAIN {
+                    return Err(StorageError::ParentChainTooLong(id));
                 }
                 chain.push(node);
                 at = rows.get(&node).and_then(|(index, _)| index.parent_id);
