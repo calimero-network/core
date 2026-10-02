@@ -5,6 +5,8 @@ name: Sync regression (smoke)
 
 permissions:
   contents: read
+  # build-local-merod polls the Actions cache and runs APIs for the shared merod build.
+  actions: read
 
 on:
   push:
@@ -16,6 +18,7 @@ on:
       - "workflows/sync-tests/**"
       - ".github/workflows/sync-regression.yml"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
       - ".github/actions/setup-merobox/**"
 
   pull_request:
@@ -27,6 +30,7 @@ on:
       - "workflows/sync-tests/**"
       - ".github/workflows/sync-regression.yml"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
       - ".github/actions/setup-merobox/**"
 
   workflow_dispatch:
@@ -64,8 +68,12 @@ jobs:
           shared-key: sync-regression
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
+      # e2e-rust-apps.yml runs on every path this does and builds the same
+      # merod; this takes that binary rather than compiling a second copy.
       - name: Build local merod image
         uses: ./.github/actions/build-local-merod
+        with:
+          wait-for-producer: true
         env:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

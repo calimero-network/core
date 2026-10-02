@@ -1,0 +1,248 @@
+name: merod binaries
+description: >
+  Build each requested merod variant at most once per source tree and hand the
+  binaries to every job that needs them, in any workflow: `merod-bin/<variant>/merod`.
+  The cache is keyed on the git trees merod is built from, so a job whose tree
+  another job has already built downloads it instead of compiling.
+
+inputs:
+  variants:
+    description: >
+      Comma-separated variants: `default` (release-like features) and/or
+      `mock-tee` (`--features mock-attestation`, what `merod run --mock-tee` needs).
+    required: false
+    default: default
+  wait-for-producer:
+    description: >
+      On a cache miss, wait while this commit's e2e-rust-apps.yml run is still
+      building merod (it builds both variants on an 8-cpu runner) instead of
+      compiling a second copy here. Never waits when that run is not in flight.
+    required: false
+    default: "false"
+  wait-minutes:
+    description: Upper bound on that wait; the job builds merod itself after it.
+    required: false
+    default: "25"
+  github-token:
+    description: "Token for the cache and run lookups the wait makes (needs `actions: read`)."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  dir:
+    description: Directory holding `<variant>/merod`.
+    value: ${{ github.workspace }}/merod-bin
+
+runs:
+  using: composite
+  steps:
+    # Git tree ids, not file contents or a tar: a tar records mtimes, which every
+    # checkout rewrites, so a tar-derived key can never match across jobs.
+    # merod's whole path-dependency closure lives under crates/, the toolchain is
+    # pinned by rust-toolchain.toml and the webui/auth-frontend versions are pinned
+    # in crates/*/build.rs, so these trees decide the binary. This action is in the
+    # key, so a change to how it builds can never reuse an old binary.
+    - name: Key the merod build on its source trees
+      id: key
+      shell: bash
+      env:
+        VARIANTS: ${{ inputs.variants }}
+      run: |
+        set -euo pipefail
+        for v in ${VARIANTS//,/ }; do
+          case "$v" in
+            default | mock-tee) ;;
+            *) echo "::error::unknown merod variant '$v' (default, mock-tee)"; exit 1 ;;
+          esac
+        done
+        paths=(crates Cargo.lock Cargo.toml rust-toolchain.toml .cargo .github/actions/merod-binaries)
+        # The build scripts also read CALIMERO_WEBUI_* / CALIMERO_AUTH_FRONTEND_*
+        # overrides (a source, version or repo other than the pinned one), which no
+        # tree id records. The fetch token only authenticates the pinned download.
+        overrides=$(env | cut -d= -f1 | grep -E '^CALIMERO_(WEBUI|AUTH_FRONTEND)_' | grep -v '_FETCH_TOKEN$' || true)
+        # A tree with uncommitted edits is not the tree its id names: build, never share.
+        if [ -n "$(git status --porcelain -- "${paths[@]}")" ]; then
+          echo "::warning::merod sources differ from HEAD; building without the shared cache"
+          echo "share=false" >> "$GITHUB_OUTPUT"
+        elif [ -n "$overrides" ]; then
+          echo "::warning::frontend overrides are set ($(tr '\n' ' ' <<<"$overrides")); building without the shared cache"
+          echo "share=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "share=true" >> "$GITHUB_OUTPUT"
+        fi
+        trees=$(for p in "${paths[@]}"; do printf '%s %s\n' "$p" "$(git rev-parse "HEAD:$p" 2>/dev/null || echo absent)"; done)
+        hash=$(printf '%s\n%s\n' "$trees" "$RUNNER_OS-$RUNNER_ARCH" | sha256sum | cut -c1-24)
+        echo "prefix=merod-bin-v1-$hash" >> "$GITHUB_OUTPUT"
+        echo "default=$([[ ",$VARIANTS," == *,default,* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        echo "mock_tee=$([[ ",$VARIANTS," == *,mock-tee,* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        echo "merod trees:"; echo "$trees"
+
+    - name: Restore merod (default)
+      id: hit-default
+      if: steps.key.outputs.default == 'true' && steps.key.outputs.share == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: merod-bin/default
+        key: ${{ steps.key.outputs.prefix }}-default
+
+    - name: Restore merod (mock-tee)
+      id: hit-mock-tee
+      if: steps.key.outputs.mock_tee == 'true' && steps.key.outputs.share == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: merod-bin/mock-tee
+        key: ${{ steps.key.outputs.prefix }}-mock-tee
+
+    - name: Decide what is still missing
+      id: missing
+      shell: bash
+      env:
+        WANT_DEFAULT: ${{ steps.key.outputs.default }}
+        WANT_MOCK: ${{ steps.key.outputs.mock_tee }}
+        HIT_DEFAULT: ${{ steps.hit-default.outputs.cache-hit }}
+        HIT_MOCK: ${{ steps.hit-mock-tee.outputs.cache-hit }}
+      run: |
+        default=false; mock=false
+        [ "$WANT_DEFAULT" = true ] && [ "$HIT_DEFAULT" != true ] && default=true
+        [ "$WANT_MOCK" = true ] && [ "$HIT_MOCK" != true ] && mock=true
+        echo "default=$default" >> "$GITHUB_OUTPUT"
+        echo "mock_tee=$mock" >> "$GITHUB_OUTPUT"
+        echo "missing: default=$default mock-tee=$mock"
+
+    # Only while the producer is demonstrably still building this exact commit:
+    # with no run in flight, or once its build job has finished, stop and build.
+    # Every lookup failure ends the wait, so the worst case is today's behavior.
+    - name: Wait for this commit's merod build elsewhere
+      id: wait
+      if: >-
+        inputs.wait-for-producer == 'true' && steps.key.outputs.share == 'true' &&
+        (steps.missing.outputs.default == 'true' || steps.missing.outputs.mock_tee == 'true')
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        REF: ${{ github.ref }}
+        SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        PREFIX: ${{ steps.key.outputs.prefix }}
+        NEED_DEFAULT: ${{ steps.missing.outputs.default }}
+        NEED_MOCK: ${{ steps.missing.outputs.mock_tee }}
+        WAIT_MINUTES: ${{ inputs.wait-minutes }}
+      run: |
+        set -uo pipefail
+        have() {
+          local n
+          n=$(gh api "repos/$REPO/actions/caches?ref=$REF&key=$PREFIX-$1" --jq \
+            "[.actions_caches[] | select(.key == \"$PREFIX-$1\")] | length" 2>/dev/null) || return 1
+          [ "${n:-0}" -gt 0 ]
+        }
+        all_there() {
+          { [ "$NEED_DEFAULT" != true ] || have default; } && { [ "$NEED_MOCK" != true ] || have mock-tee; }
+        }
+        # "running" while e2e-rust-apps.yml has a run for this commit whose
+        # `Build merod image` job has not completed.
+        producer_running() {
+          local run status
+          run=$(gh api "repos/$REPO/actions/workflows/e2e-rust-apps.yml/runs?head_sha=$SHA&per_page=5" \
+            --jq '[.workflow_runs[] | select(.status != "completed")][0].id // empty' 2>/dev/null) || return 1
+          [ -n "$run" ] || return 1
+          status=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name | test("Build merod image")) | .status][0] // "queued"' 2>/dev/null) || return 1
+          [ "$status" != completed ]
+        }
+        deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+          if all_there; then echo "found=true" >> "$GITHUB_OUTPUT"; echo "the producer's merod is in the cache"; exit 0; fi
+          if ! producer_running; then
+            # One last look: the job may have saved and finished between checks.
+            if all_there; then echo "found=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+            echo "no in-flight merod build for $SHA; building here"
+            exit 0
+          fi
+          echo "waiting for e2e-rust-apps to build merod for $SHA..."
+          sleep 20
+        done
+        echo "::warning::waited ${WAIT_MINUTES}m for the shared merod build; building here"
+
+    - name: Restore merod (default, after waiting)
+      id: late-default
+      if: steps.wait.outputs.found == 'true' && steps.missing.outputs.default == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: merod-bin/default
+        key: ${{ steps.key.outputs.prefix }}-default
+
+    - name: Restore merod (mock-tee, after waiting)
+      id: late-mock-tee
+      if: steps.wait.outputs.found == 'true' && steps.missing.outputs.mock_tee == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: merod-bin/mock-tee
+        key: ${{ steps.key.outputs.prefix }}-mock-tee
+
+    # Both variants in one job: the second build recompiles only the crates the
+    # feature reaches. The fast e2e profile (no LTO, many codegen units) is the
+    # one every e2e image already used; it is set per step so it cannot leak.
+    - name: Build merod (default)
+      id: build-default
+      if: steps.missing.outputs.default == 'true' && steps.late-default.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        CARGO_PROFILE_RELEASE_LTO: "false"
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+      run: |
+        set -euo pipefail
+        cargo build -p merod --release --target x86_64-unknown-linux-gnu
+        mkdir -p merod-bin/default
+        cp "${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-gnu/release/merod" merod-bin/default/merod
+
+    - name: Share merod (default)
+      if: steps.build-default.outcome == 'success' && steps.key.outputs.share == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: merod-bin/default
+        key: ${{ steps.key.outputs.prefix }}-default
+
+    - name: Build merod (mock-tee)
+      id: build-mock-tee
+      if: steps.missing.outputs.mock_tee == 'true' && steps.late-mock-tee.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        CARGO_PROFILE_RELEASE_LTO: "false"
+        CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+      run: |
+        set -euo pipefail
+        cargo build -p merod --release --features mock-attestation --target x86_64-unknown-linux-gnu
+        mkdir -p merod-bin/mock-tee
+        cp "${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-gnu/release/merod" merod-bin/mock-tee/merod
+
+    - name: Share merod (mock-tee)
+      if: steps.build-mock-tee.outcome == 'success' && steps.key.outputs.share == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: merod-bin/mock-tee
+        key: ${{ steps.key.outputs.prefix }}-mock-tee
+
+    # A mock-attestation binary in the default slot would put a forgeable TEE
+    # path into images that claim the production feature set.
+    - name: Check the binaries
+      shell: bash
+      env:
+        WANT_DEFAULT: ${{ steps.key.outputs.default }}
+        WANT_MOCK: ${{ steps.key.outputs.mock_tee }}
+      run: |
+        set -euo pipefail
+        for v in default mock-tee; do
+          want=$WANT_DEFAULT; [ "$v" = mock-tee ] && want=$WANT_MOCK
+          [ "$want" = true ] || continue
+          bin="merod-bin/$v/merod"
+          [ -x "$bin" ] || { echo "::error::$bin is missing"; exit 1; }
+          "$bin" --version
+          # Compiled only under cfg(not(feature = "mock-attestation")) in merod's run.rs.
+          if grep -aq 'built without mock-attestation support' "$bin"; then mock=false; else mock=true; fi
+          if [ "$v" = default ] && [ "$mock" = true ]; then
+            echo "::error::$bin carries mock-attestation; the default variant must not"; exit 1
+          fi
+          if [ "$v" = mock-tee ] && [ "$mock" = false ]; then
+            echo "::error::$bin was not built with mock-attestation"; exit 1
+          fi
+        done

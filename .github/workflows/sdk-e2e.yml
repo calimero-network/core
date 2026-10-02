@@ -5,6 +5,8 @@ name: SDK E2E (paired)
 
 permissions:
   contents: read
+  # merod-binaries polls the Actions cache and runs APIs for the shared merod build.
+  actions: read
 
 # Cancel superseded PR runs; never cancel a master run.
 concurrency:
@@ -27,6 +29,7 @@ on:
       - "crates/context/config/**"
       - "crates/node/**"
       - ".github/workflows/sdk-e2e.yml"
+      - ".github/actions/merod-binaries/**"
       - "scripts/resolve-paired-ref.sh"
       - "scripts/check-endpoint-coverage.sh"
       - "scripts/tests/check-endpoint-coverage.test.sh"
@@ -75,6 +78,8 @@ jobs:
   sdk-e2e:
     name: SDK E2E (paired)
     runs-on: ubuntu-latest
+    env:
+      MEROD_BIN: ${{ github.workspace }}/merod-bin/mock-tee/merod
     steps:
       - name: Checkout core (PR head)
         uses: actions/checkout@v7
@@ -91,10 +96,18 @@ jobs:
           shared-key: cargo-lock-deps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Build merod
-        # `mock-attestation` only lets a node opt into `--mock-tee`; the main node
-        # below runs without it, exactly as a default build would.
-        run: cargo build -p merod --bin merod --features mock-attestation
+      # `mock-attestation` only lets a node opt into `--mock-tee`; the main node
+      # below runs without it, exactly as a default build would. The same binary
+      # e2e-rust-apps.yml builds for its mock-TEE image, taken from the cache
+      # rather than compiled a second time on this 4-cpu runner.
+      - name: Get merod (mock-attestation)
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          variants: mock-tee
+          wait-for-producer: true
 
       - name: Resolve mero-js ref (paired)
         id: sdkref
@@ -151,7 +164,7 @@ jobs:
         # POST /contexts/{context_id}/query requires; a password session gets a
         # 401 there. `cli` is the audience the suite's login names.
         run: |
-          BIN="$PWD/target/debug/merod"
+          BIN="$MEROD_BIN"
           "$BIN" --node ci-node init --server-port "$SERVER_PORT" --swarm-port 2528 --auth-mode embedded \
             --device-key-login --device-key-login-audience cli
           CALIMERO_REGISTRY_MODE=http CALIMERO_REGISTRY_URL="http://127.0.0.1:$REGISTRY_PORT/" \
@@ -170,7 +183,7 @@ jobs:
         # transport key and drive a whole session through /sealed/v2, with
         # sealing required.
         run: |
-          BIN="$PWD/target/debug/merod"
+          BIN="$MEROD_BIN"
           "$BIN" --node ci-tee init --server-port "$TEE_SERVER_PORT" --swarm-port 2538 --auth-mode embedded
           # Sealed-only: every request but attestation must come sealed, which
           # the suite checks (NODE_TEE_SEALED_ONLY below).
@@ -194,7 +207,7 @@ jobs:
         # uses the admin API directly, which a proxy-mode node with no proxy in
         # front serves unguarded.
         run: |
-          BIN="$PWD/target/debug/merod"
+          BIN="$MEROD_BIN"
           "$BIN" --node ci-tee-relay init --server-port "$TEE_RELAY_SERVER_PORT" --swarm-port 2568 \
             --delegated-access
           "$BIN" --node ci-tee-relay run --mock-tee &
@@ -215,7 +228,7 @@ jobs:
         # have joined nothing, and the run spends it. No network link to ci-node
         # is needed; the holder answers every call itself.
         run: |
-          BIN="$PWD/target/debug/merod"
+          BIN="$MEROD_BIN"
           "$BIN" --node ci-pair init --server-port "$PAIR_SERVER_PORT" --swarm-port 2548 --auth-mode embedded
           "$BIN" --node ci-pair run &
           echo "MEROD_PAIR_PID=$!" >> "$GITHUB_ENV"
@@ -236,7 +249,7 @@ jobs:
         # a peer the join refuses with a 500 after the key-delivery timeout.
         run: |
           set -o pipefail
-          BIN="$PWD/target/debug/merod"
+          BIN="$MEROD_BIN"
           # init logs to stderr, which is where its peer id is.
           "$BIN" --node ci-mn1 init --server-port "$MN1_SERVER_PORT" --swarm-port 2558 \
             --auth-mode embedded 2>&1 | tee mn1-init.log
@@ -296,7 +309,7 @@ jobs:
           MERO_COVERAGE_OUT: "${{ github.workspace }}/_mero-js/covered-endpoints.json"
           # The warrant must be real merod output: the SDK cannot sign one, and
           # without it the delegated-authorship suite skips rather than fails.
-          MEROD_BINARY: "${{ github.workspace }}/target/debug/merod"
+          MEROD_BINARY: "${{ env.MEROD_BIN }}"
           # MERO_E2E_USER / MERO_E2E_PASS are inherited from the workflow-level env;
           # don't re-declare here, or the suite may log in with different credentials.
         run: |

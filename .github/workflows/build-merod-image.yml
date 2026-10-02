@@ -44,12 +44,16 @@ jobs:
           shared-key: e2e-rust-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      # Fat LTO + codegen-units=1 (prod profile) is the slow part, skipped for e2e.
-      # Set via $GITHUB_ENV AFTER rust-cache: it hashes these into its cache key.
-      - name: Configure fast e2e build profile
-        run: |
-          echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
-          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256" >> "$GITHUB_ENV"
+      # Both variants in this one job, each built at most once per source tree:
+      # sdk-e2e, sync-regression and app-migration-e2e restore these binaries
+      # from the cache instead of compiling their own.
+      - name: Build the merod binaries
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          variants: ${{ inputs.with-mock-tee-image && 'default,mock-tee' || 'default' }}
 
       - name: Build local merod image
         uses: ./.github/actions/build-local-merod
@@ -69,21 +73,13 @@ jobs:
           compression-level: 0
 
       # mock-attestation must stay out of the shared image so it matches the
-      # production feature set; built separately, reusing the warm target dir.
-      - name: Build mock-attestation merod binary
-        if: inputs.with-mock-tee-image
-        env:
-          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cargo build -p merod --release --features mock-attestation \
-            --target x86_64-unknown-linux-gnu
-
+      # production feature set; it gets its own image from its own binary.
       - name: Build mock-attestation Docker image
         if: inputs.with-mock-tee-image
         run: |
+          rm -rf bin/amd64
           mkdir -p bin/amd64
-          cp target/x86_64-unknown-linux-gnu/release/merod bin/amd64/
+          cp merod-bin/mock-tee/merod bin/amd64/
           # meroctl is not needed for e2e tests but the Dockerfile expects it
           touch bin/amd64/meroctl
           docker build \

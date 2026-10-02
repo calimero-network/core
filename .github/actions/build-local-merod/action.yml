@@ -1,11 +1,15 @@
 name: Build Local Merod
-description: "Build merod/meroctl binaries and create a local Docker image (amd64 only). Caches the image when core (Cargo.lock, crates/, Dockerfile) is unchanged."
+description: "Create the local merod Docker images (amd64 only) from the shared merod binary (see merod-binaries)."
 
 inputs:
   image-tag:
     description: "Tag for the local Docker image"
     required: false
     default: "merod:local"
+  wait-for-producer:
+    description: "Passed to merod-binaries: wait for this commit's e2e-rust-apps merod build instead of compiling."
+    required: false
+    default: "false"
 
 outputs:
   image:
@@ -15,56 +19,25 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: Compute merod image cache key
-      id: cache-key
-      shell: bash
-      run: |
-        # Key changes when core (Cargo.lock, crates, prebuilt Dockerfile) changes; the
-        # profile suffix keeps default- and fast-profile callers from colliding on this cache.
-        PROFILE="lto-${CARGO_PROFILE_RELEASE_LTO:-default}-cgu-${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-default}"
-        KEY="merod-image-${PROFILE}-$( (tar cf - Cargo.lock crates .github/workflows/deps/prebuilt.Dockerfile 2>/dev/null || true) | sha256sum | cut -c1-16)"
-        echo "key=${KEY}" >> "$GITHUB_OUTPUT"
-        echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
-
-    - name: Restore merod Docker image from cache
-      id: restore-image
-      uses: actions/cache/restore@v4
+    # Built at most once per source tree across every workflow. This used to
+    # compile merod in each caller and cache the image under a key hashed from a
+    # tar of the sources, which records mtimes and so never matched twice.
+    - name: Get the merod binary
+      id: merod
+      uses: ./.github/actions/merod-binaries
       with:
-        path: merod-image-cache
-        key: ${{ steps.cache-key.outputs.key }}
-
-    - name: Load cached Docker image
-      id: load-cached
-      if: steps.restore-image.outputs.cache-hit == 'true'
-      shell: bash
-      run: |
-        if [ -f merod-image-cache/merod-local.tar.gz ]; then
-          echo "Loading cached merod image..."
-          gunzip -c merod-image-cache/merod-local.tar.gz | docker load
-          docker tag merod:local ${{ inputs.image-tag }} 2>/dev/null || true
-          echo "cached=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "cached=false" >> "$GITHUB_OUTPUT"
-        fi
-
-    - name: Build merod binary
-      if: steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true'
-      shell: bash
-      env:
-        CALIMERO_WEBUI_FETCH_TOKEN: ${{ env.CALIMERO_WEBUI_FETCH_TOKEN }}
-        CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ env.CALIMERO_AUTH_FRONTEND_FETCH_TOKEN }}
-      run: |
-        echo "Building merod binary for x86_64-linux..."
-        cargo build -p merod --release --target x86_64-unknown-linux-gnu
+        variants: default
+        wait-for-producer: ${{ inputs.wait-for-producer }}
 
     - name: Build local Docker image
-      if: steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true'
       shell: bash
+      env:
+        MEROD: ${{ steps.merod.outputs.dir }}/default/merod
       run: |
         echo "Creating local Docker image: ${{ inputs.image-tag }}"
-        
+
         mkdir -p bin/amd64
-        cp target/x86_64-unknown-linux-gnu/release/merod bin/amd64/
+        cp "$MEROD" bin/amd64/merod
         # meroctl is not needed for e2e tests but the Dockerfile expects it
         touch bin/amd64/meroctl
 
@@ -77,23 +50,6 @@ runs:
         echo "Built image:"
         docker images ${{ inputs.image-tag }}
 
-    - name: Save merod Docker image to cache
-      if: (steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true') && success()
-      shell: bash
-      run: |
-        mkdir -p merod-image-cache
-        docker save ${{ inputs.image-tag }} | gzip -n > merod-image-cache/merod-local.tar.gz
-        echo "Image saved for cache (key: ${{ steps.cache-key.outputs.key }})"
-
-    - name: Persist merod image cache
-      if: (steps.restore-image.outputs.cache-hit != 'true' || steps.load-cached.outputs.cached != 'true') && success()
-      uses: actions/cache/save@v4
-      with:
-        path: merod-image-cache
-        key: ${{ steps.cache-key.outputs.key }}
-
-    # Runs on the cache-hit path too, and after the cache save, so the cached
-    # layers stay keyed on the merod build alone.
     - name: Layer the application source onto both tags
       shell: bash
       run: |
