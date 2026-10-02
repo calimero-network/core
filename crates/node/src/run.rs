@@ -53,6 +53,11 @@ pub use calimero_node_primitives::NodeMode;
 /// past a `SIGTERM` (past which an orchestrator would `SIGKILL` us anyway).
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
+/// Upper bound on closing peer connections at shutdown. Each close is local
+/// and immediate, apart from yamux's goodbye over TCP, so this is short. A
+/// peer that does not answer in time is still dropped when the process exits.
+const NETWORK_CLOSE_GRACE: Duration = Duration::from_secs(3);
+
 /// Resolve when the process receives a termination signal (`SIGINT`/Ctrl-C or,
 /// on unix, `SIGTERM`). Used as a `tokio::select!` arm so the node can drain
 /// in-flight work and flush the datastore instead of being aborted mid-request
@@ -616,7 +621,11 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
             config.dag_compaction.retain_recent_count,
             config.dag_compaction.min_deltas_before_compact,
         );
-        let compactor = DagCompactor::new(node_state.delta_stores_handle(), config.dag_compaction);
+        let compactor = DagCompactor::new(
+            node_state.delta_stores_handle(),
+            context_client.clone(),
+            config.dag_compaction,
+        );
         Some(restart_on_panic(
             &arbiter_pool.get().await?,
             record_actor_restart,
@@ -709,7 +718,27 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 3. Signal and drain the network-event bridge. Best-effort: on the
+    // 3. Close every peer connection while the actix system is still
+    //    running. A QUIC peer only learns a connection is gone from a close
+    //    packet. The task that sends it runs on the network actor's arbiter,
+    //    so once step 5 stops the system the packet cannot go out, and the
+    //    peer keeps the dead connection until its idle timeout. If this node
+    //    restarts within that time, the peer counts the new connection as a
+    //    second one and does not send its gossip subscriptions, so the
+    //    restarted node cannot sync or fetch blobs from it. The network actor
+    //    also refuses new connections from here on, so a peer reconnecting
+    //    as it is dropped cannot leave another stale connection. After the
+    //    HTTP drain, because in-flight requests may still need the network.
+    if tokio::time::timeout(NETWORK_CLOSE_GRACE, network_client.close_all_connections())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            "peer connections did not all close within the shutdown grace period; continuing"
+        );
+    }
+
+    // 4. Signal and drain the network-event bridge. Best-effort: on the
     //    system-stop exit path the Actix arbiters may already be gone, so the
     //    notify/await is a courtesy drain rather than a guarantee.
     bridge_shutdown.notify_one();
@@ -726,7 +755,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 4. Stop the Actix system, which ends every arbiter thread and with it
+    // 5. Stop the Actix system, which ends every arbiter thread and with it
     //    every actor.
     //
     //    The system did already come down without this, but only by accident and
@@ -767,7 +796,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 5. Abort + reap the detached background tasks so none of them can wake
+    // 6. Abort + reap the detached background tasks so none of them can wake
     //    up and touch the datastore after we flush. Their RocksDB writes are
     //    synchronous and inline (none use `spawn_blocking`), so a cancellation
     //    can only be observed at an `.await` boundary — after any in-progress
@@ -789,7 +818,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 6. Flush the datastore so an abrupt process exit immediately afterwards
+    // 7. Flush the datastore so an abrupt process exit immediately afterwards
     //    cannot lose what the just-drained writers persisted. The RocksDB
     //    `Drop` impl is a backstop for any path that skips this.
     if !stop_cause.flushes() {

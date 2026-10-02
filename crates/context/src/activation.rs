@@ -3,6 +3,11 @@
 //! the sync gate, the lazy trigger, and the migration rollup, with a single
 //! up-to-date rule: `marker == group.bytecode_id`.
 
+use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MAX_NAMESPACE_DEPTH;
+use calimero_governance_store::{
+    get_group_for_context, MetaRepository, NamespaceRepository, UpgradeLadderRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_store::key::LadderRung;
@@ -76,6 +81,51 @@ pub fn activated_at_group_target(store: &Store, context_id: &ContextId) -> Optio
         .flatten()?;
     (meta.target.bytecode_id != [0u8; 32])
         .then(|| activated_bytecode(store, context_id) == Some(meta.target.bytecode_id))
+}
+
+/// Whether `group_id` or an ancestor ever named `blob` as a release: the target or
+/// an upgrade rung. A group with no recorded release has nothing to judge by.
+pub fn group_registers_bytecode(store: &Store, group_id: &ContextGroupId, blob: [u8; 32]) -> bool {
+    let meta = match MetaRepository::new(store).load(group_id) {
+        Ok(Some(meta)) if meta.target.bytecode_id != [0u8; 32] => meta,
+        Ok(_) => return true,
+        Err(_) => return false,
+    };
+    if blob == meta.target.bytecode_id {
+        return true;
+    }
+    // A subgroup's creation release is a rung of the ancestor it was created under.
+    let mut group = Some(*group_id);
+    for _ in 0..=MAX_NAMESPACE_DEPTH {
+        let Some(current) = group else {
+            return false;
+        };
+        let Ok(ladder) = UpgradeLadderRepository::new(store).load(&current) else {
+            return false;
+        };
+        if ladder.iter().any(|rung| rung.bytecode_id == blob) {
+            return true;
+        }
+        let Ok(parent) = NamespaceRepository::new(store).parent(&current) else {
+            return false;
+        };
+        group = parent;
+    }
+    false
+}
+
+/// [`group_registers_bytecode`] for the group owning `context_id`. The node's
+/// application row is shared by every group naming its id, so only this vouches for it.
+pub fn context_group_registers_bytecode(
+    store: &Store,
+    context_id: &ContextId,
+    blob: [u8; 32],
+) -> bool {
+    match get_group_for_context(store, context_id) {
+        Ok(Some(group_id)) => group_registers_bytecode(store, &group_id, blob),
+        Ok(None) => true,
+        Err(_) => false,
+    }
 }
 
 /// The next upgrade rung a context bound to `bound` must replay from the
@@ -336,5 +386,59 @@ mod tests {
         // Moves forward on re-activation.
         record_activation(&store, &ctx, [8u8; 32]);
         assert_eq!(activated_bytecode(&store, &ctx), Some([8u8; 32]));
+    }
+
+    /// A group on `target`, with `rungs` recorded on its ladder.
+    fn group_on(store: &Store, gid: ContextGroupId, target: [u8; 32], rungs: &[u8]) {
+        let account = crate::test_support::account_for(
+            &calimero_primitives::identity::PublicKey::from([0x07; 32]),
+        );
+        MetaRepository::new(store)
+            .save(
+                &gid,
+                &calimero_store::key::GroupMetaValue {
+                    target: GroupTarget {
+                        application_id: target_id(),
+                        bytecode_id: target,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
+                    created_at: 0,
+                    admin_identity: account,
+                    owner_identity: account,
+                    migration: None,
+                    auto_join: false,
+                },
+            )
+            .unwrap();
+        for byte in rungs {
+            UpgradeLadderRepository::new(store)
+                .append(&gid, rung(*byte))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_group_registers_only_the_releases_it_or_an_ancestor_named() {
+        let store = store();
+        let root = ContextGroupId::from([0x70; 32]);
+        let sub = ContextGroupId::from([0x71; 32]);
+        group_on(&store, root, TARGET, &[0x01, 0x09]);
+        group_on(&store, sub, TARGET, &[0x09]);
+        NamespaceRepository::new(&store).nest(&root, &sub).unwrap();
+
+        assert!(group_registers_bytecode(&store, &sub, TARGET));
+        assert!(
+            group_registers_bytecode(&store, &sub, [0x01; 32]),
+            "a subgroup's creation release is its parent's rung"
+        );
+        assert!(!group_registers_bytecode(&store, &sub, [0xEE; 32]));
+
+        let unset = ContextGroupId::from([0x72; 32]);
+        group_on(&store, unset, [0u8; 32], &[]);
+        assert!(
+            group_registers_bytecode(&store, &unset, [0xEE; 32]),
+            "a group with no recorded release has nothing to judge by"
+        );
     }
 }

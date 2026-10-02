@@ -13,7 +13,7 @@ use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
 use calimero_node_primitives::client::NodeClient;
-use calimero_node_primitives::test_fixtures::{node_client, node_client_over};
+use calimero_node_primitives::test_fixtures::{bundle, node_client, node_client_over};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextConfigParams, ContextId};
@@ -26,7 +26,7 @@ use tempfile::TempDir;
 /// Any syntactically valid peer id; nothing below ever dials it.
 const PEER: &str = "12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh";
 
-/// The bytes the admin published; the joiner only ever learns their blob id.
+/// The wasm the admin built; the joiner only ever learns its blob's id.
 const WASM: &[u8] = b"join test wasm bytecode";
 
 /// A peer that advertises the blob and serves it, so the resolver's final leg
@@ -34,6 +34,7 @@ const WASM: &[u8] = b"join test wasm bytecode";
 struct BlobPeer {
     peer_id: PeerId,
     queries: Arc<AtomicUsize>,
+    served: Arc<[u8]>,
 }
 
 impl Actor for BlobPeer {
@@ -55,14 +56,14 @@ impl Handler<NetworkMessage> for BlobPeer {
             NetworkMessage::ProbeBlob { outcome, .. } => {
                 let _previous = self.queries.fetch_add(1, Ordering::SeqCst);
                 let _ignored = outcome.send(Ok(BlobProbe::Held {
-                    size: Some(WASM.len() as u64),
+                    size: Some(self.served.len() as u64),
                 }));
             }
             NetworkMessage::QueryBlob { outcome, .. } => {
                 let _ignored = outcome.send(Ok(vec![self.peer_id]));
             }
             NetworkMessage::RequestBlob { outcome, .. } => {
-                let _ignored = outcome.send(Ok(Some(WASM.to_vec())));
+                let _ignored = outcome.send(Ok(Some(self.served.to_vec())));
             }
             _ => {}
         }
@@ -86,15 +87,27 @@ impl Handler<ContextMessage> for SyncSink {
     }
 }
 
-/// The blob id `WASM` gets once stored - a hash over chunk ids, not content,
+/// The blob id `bytes` get once stored - a hash over chunk ids, not content,
 /// so it cannot be computed by hashing the bytes directly.
-async fn published_blob_id() -> BlobId {
+async fn published_blob_id(bytes: &[u8]) -> BlobId {
     let (node, _store, _data, _blobs) = node_client().await;
     let (blob_id, _size) = node
-        .add_blob(WASM, Some(WASM.len() as u64), None)
+        .add_blob(bytes, Some(bytes.len() as u64), None)
         .await
         .expect("store bytes");
     blob_id
+}
+
+/// What the admin published: a signed bundle of `WASM`, and the id it derives.
+async fn published_bundle() -> (Vec<u8>, ApplicationId) {
+    let dir = TempDir::new().expect("temp dir");
+    let path = bundle(&dir, "com.example.joined", "1.0.0", WASM);
+    let (node, _store, _data, _blobs) = node_client().await;
+    let application_id = node
+        .install_application_from_path(path.clone())
+        .await
+        .expect("derive the bundle's id");
+    (std::fs::read(path).expect("bundle bytes"), application_id)
 }
 
 struct Joiner {
@@ -107,28 +120,30 @@ struct Joiner {
 }
 
 impl Joiner {
-    /// A joiner whose one source is its peers.
-    async fn dht() -> Self {
-        Self::with_registry(RegistryConfig::new(RegistryMode::Dht, None)).await
+    /// A joiner whose one source is its peers, which serve `served`.
+    async fn dht(served: &[u8]) -> Self {
+        Self::with_registry(RegistryConfig::new(RegistryMode::Dht, None), served).await
     }
 
     /// A joiner whose one source is the registry at `base`.
     async fn http(base: url::Url) -> Self {
-        Self::with_registry(RegistryConfig::new(RegistryMode::Http, Some(base))).await
+        Self::with_registry(RegistryConfig::new(RegistryMode::Http, Some(base)), WASM).await
     }
 
-    async fn with_registry(registry: RegistryConfig) -> Self {
+    async fn with_registry(registry: RegistryConfig, served: &[u8]) -> Self {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let queries = Arc::new(AtomicUsize::new(0));
 
         let network = LazyRecipient::new();
         let peer = Actor::create({
             let (network, queries) = (network.clone(), Arc::clone(&queries));
+            let served = Arc::from(served);
             move |ctx| {
                 assert!(network.init(ctx), "peer must own the network recipient");
                 BlobPeer {
                     peer_id: PEER.parse().expect("peer id"),
                     queries,
+                    served,
                 }
             }
         });
@@ -159,8 +174,8 @@ impl Joiner {
         }
     }
 
-    /// Seed the row a joiner starts from: the blob id and source governance
-    /// carried, with none of the admin's own per-node metadata.
+    /// Seed the stub `ContextRegistered` writes: the blob id and source governance
+    /// carried, with no bytes and none of the admin's own per-node metadata.
     fn seed_row(
         &self,
         application_id: ApplicationId,
@@ -174,7 +189,7 @@ impl Joiner {
                 &key::ApplicationMeta::new(application_id),
                 &types::ApplicationMeta::new(
                     key::BlobMeta::new(blob_id),
-                    WASM.len() as u64,
+                    0,
                     source.to_owned().into_boxed_str(),
                     Box::default(),
                     key::BlobMeta::new(BlobId::from([0_u8; 32])),
@@ -219,19 +234,16 @@ impl Joiner {
     }
 }
 
-/// A raw-wasm id folds in the installer's own source, so a joiner must adopt
-/// the id governance named - and an unreachable source must not strand it.
+/// The joiner binds the bundle under the id governance named, and an
+/// unreachable recorded source must not strand it.
 #[actix::test]
 async fn bootstrap_keeps_the_row_under_the_governance_named_id() {
-    let joiner = Joiner::dht().await;
-    let named_id = ApplicationId::from([0x5A; 32]);
-    let blob_id = published_blob_id().await;
-    joiner.seed_row(named_id, blob_id, "http://127.0.0.1:9/app.wasm", ("", ""));
+    let (bundle, named_id) = published_bundle().await;
+    let joiner = Joiner::dht(&bundle).await;
+    let blob_id = published_blob_id(&bundle).await;
+    joiner.seed_row(named_id, blob_id, "http://127.0.0.1:9/app.mpk", ("", ""));
 
-    joiner
-        .bootstrap(named_id)
-        .await
-        .expect("bootstrap must not fail on an id it cannot re-derive");
+    joiner.bootstrap(named_id).await.expect("bootstrap");
 
     let row = joiner
         .row(named_id)
@@ -240,7 +252,7 @@ async fn bootstrap_keeps_the_row_under_the_governance_named_id() {
     assert_eq!(
         joiner.rows(),
         1,
-        "a re-derived id would have left a second row behind"
+        "the bundle must land under the named id, not beside it"
     );
     assert!(
         joiner.node.has_blob(&blob_id).expect("blob lookup"),
@@ -248,13 +260,35 @@ async fn bootstrap_keeps_the_row_under_the_governance_named_id() {
     );
 }
 
+/// A raw-wasm id cannot be derived from its bytes, so raw wasm a peer serves
+/// for a registered context would land under whatever id governance named.
+#[actix::test]
+async fn bootstrap_installs_no_raw_wasm_a_peer_serves() {
+    let joiner = Joiner::dht(WASM).await;
+    let named_id = ApplicationId::from([0x59; 32]);
+    let blob_id = published_blob_id(WASM).await;
+    joiner.seed_row(named_id, blob_id, PENDING_BLOB_SHARE_SOURCE, ("", ""));
+
+    joiner
+        .bootstrap(named_id)
+        .await
+        .expect("a refused acquisition does not fail the bootstrap");
+
+    assert_eq!(joiner.queries.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        joiner.row(named_id).expect("the stub stays").size,
+        0,
+        "raw wasm must not fill the stub governance seeded"
+    );
+}
+
 /// The recorded source belongs to whichever node installed the app. Only this
 /// node's own configured source is ever used, so nothing dials the recorded one.
 #[actix::test]
 async fn bootstrap_never_fetches_the_recorded_source() {
-    let joiner = Joiner::dht().await;
-    let named_id = ApplicationId::from([0x5B; 32]);
-    let blob_id = published_blob_id().await;
+    let (bundle, named_id) = published_bundle().await;
+    let joiner = Joiner::dht(&bundle).await;
+    let blob_id = published_blob_id(&bundle).await;
     joiner.seed_row(named_id, blob_id, "http://127.0.0.1:9/app.wasm", ("", ""));
 
     joiner.bootstrap(named_id).await.expect("bootstrap");
@@ -270,7 +304,7 @@ async fn bootstrap_never_fetches_the_recorded_source() {
 /// the bootstrap must not spend the DHT retry window before letting sync run.
 #[actix::test]
 async fn bootstrap_asks_no_peer_for_a_stub_row() {
-    let joiner = Joiner::dht().await;
+    let joiner = Joiner::dht(WASM).await;
     let named_id = ApplicationId::from([0x5C; 32]);
     joiner.seed_row(
         named_id,
@@ -292,7 +326,7 @@ async fn bootstrap_asks_no_peer_for_a_stub_row() {
 /// writes the marker row blob sharing fills in, and asks no peer for it.
 #[actix::test]
 async fn bootstrap_writes_a_stub_when_no_row_exists() {
-    let joiner = Joiner::dht().await;
+    let joiner = Joiner::dht(WASM).await;
     let named_id = ApplicationId::from([0x5D; 32]);
 
     joiner.bootstrap(named_id).await.expect("bootstrap");
@@ -336,7 +370,7 @@ async fn bootstrap_asks_the_registry_when_the_row_names_coordinates() {
     let (base, hits) = refusing_registry();
     let joiner = Joiner::http(base).await;
     let named_id = ApplicationId::from([0x5E; 32]);
-    let blob_id = published_blob_id().await;
+    let blob_id = published_blob_id(WASM).await;
     joiner.seed_row(
         named_id,
         blob_id,
@@ -369,7 +403,7 @@ async fn bootstrap_leaves_the_registry_alone_for_an_uncoordinated_row() {
     let (base, hits) = refusing_registry();
     let joiner = Joiner::http(base).await;
     let named_id = ApplicationId::from([0x5F; 32]);
-    let blob_id = published_blob_id().await;
+    let blob_id = published_blob_id(WASM).await;
     joiner.seed_row(named_id, blob_id, PENDING_BLOB_SHARE_SOURCE, ("", ""));
 
     joiner.bootstrap(named_id).await.expect("bootstrap");

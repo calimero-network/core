@@ -7,15 +7,58 @@ on:
   push:
     branches:
       - master
+  # `pull_request`, never `pull_request_target`: a fork's run gets a read-only
+  # token and no secrets, and no job here runs PR code with more than that.
   pull_request:
-    types: [labeled]
+    types: [labeled, opened, synchronize, reopened]
 
 jobs:
+  # Which crates to bench. A push to master and the `run-benchmarks` label get
+  # every crate; a PR touching the storage stack gets the storage benches
+  # without the label; anything else gets none. It reads the PR's file list
+  # through the API and checks out nothing.
+  plan:
+    name: Plan benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      crates: ${{ steps.plan.outputs.crates }}
+    steps:
+      - name: Choose the crates
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # A crate's first `[[bench]]` goes here, or it gets no master baseline.
+          all='["storage-cost","calimero-storage","calimero-store","calimero-blobstore","calimero-crypto","calimero-runtime","calimero-dag"]'
+          storage='["storage-cost","calimero-storage","calimero-store"]'
+          if [ "$EVENT" = push ] || [ "$LABEL" = run-benchmarks ]; then
+            crates="$all"
+          elif [ "$ACTION" = labeled ]; then
+            # Another label: the opened/synchronize run already covered it.
+            crates='[]'
+          else
+            files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')"
+            if printf '%s\n' "$files" | grep -qE '^crates/(storage|prelude|store)/'; then
+              crates="$storage"
+            else
+              crates='[]'
+            fi
+          fi
+          echo "crates=$crates" >> "$GITHUB_OUTPUT"
+          echo "benchmarking: $crates"
+
   criterion:
     name: Criterion trend (${{ matrix.crate }})
-    if: >-
-      github.event_name == 'push' ||
-      github.event.label.name == 'run-benchmarks'
+    needs: plan
+    if: needs.plan.outputs.crates != '[]'
     # timing on shared runners is too noisy to gate on
     continue-on-error: true
     runs-on: ubuntu-24.04-8cpu
@@ -23,14 +66,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crate:
-          - storage-cost
-          - calimero-storage
-          - calimero-store
-          - calimero-blobstore
-          - calimero-crypto
-          - calimero-runtime
-          - calimero-dag
+        crate: ${{ fromJSON(needs.plan.outputs.crates) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -52,6 +88,11 @@ jobs:
           path: target/criterion
           retention-days: 30
 
+  # Reads only artifacts: this run's (data the PR's benches wrote, parsed by
+  # critcmp, never executed) and the base commit's from a master push run. On a
+  # fork PR the token is read-only whatever this asks for, so the comment step
+  # fails and the table stays in the job log; continue-on-error keeps that from
+  # failing the PR.
   compare:
     name: Compare against master
     needs: criterion
@@ -80,6 +121,7 @@ jobs:
           run_id=$(gh run list \
             --repo "${{ github.repository }}" \
             --workflow benchmarks.yml \
+            --event push \
             --commit "${{ github.event.pull_request.base.sha }}" \
             --status success \
             --json databaseId \

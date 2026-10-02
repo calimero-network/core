@@ -884,6 +884,38 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// A context method that ran and returned an error, answered the way JSON-RPC
+/// `execute` answers it.
+///
+/// The body is the admin API's error shape, `{ "error": <message> }`, with
+/// JSON-RPC's error object beside it: `type` (`FunctionCallError`) and `data`
+/// (the method's message) are exactly what `/jsonrpc` returns under `error` for
+/// the same call. A client that already branches on the JSON-RPC error class
+/// reads it from the same two fields, and one that only reads `error` still gets
+/// the message.
+///
+/// `400` for the method's own error, as the delegated creation route answers an
+/// `init` that returned one (`ContextError::InitFailed`): the app refused this
+/// call, and the node is healthy. Anything else the mapping produces (output
+/// that is not JSON) is the node's or the app's fault, so `500`.
+pub(crate) fn method_error_response(
+    err: &calimero_server_primitives::jsonrpc::ExecutionError,
+) -> Response<Body> {
+    use calimero_server_primitives::jsonrpc::ExecutionError;
+
+    let status_code = match err {
+        ExecutionError::FunctionCallError(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let mut body = serde_json::to_value(err).unwrap_or_else(|_| json!({}));
+    if let Some(object) = body.as_object_mut() {
+        let _previous = object.insert("error".to_owned(), json!(err.to_string()));
+    } else {
+        body = json!({ "error": err.to_string() });
+    }
+    (status_code, axum::Json(body)).into_response()
+}
+
 /// The status a device-pairing refusal answers with, or `None` if `err` is not
 /// one.
 ///

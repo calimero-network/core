@@ -249,11 +249,15 @@ where
         // Carry each entry's `StorageType` so per-entry owner stamps
         // (AuthoredMap / guarded Shared writers) survive the re-key; a plain
         // `(K, V)` snapshot would re-insert as `Public` and silently strip
-        // ownership.
+        // ownership. An entry filed off its key's id is left behind, not refiled.
         let entries: Vec<((V, K), StorageType)> = self
             .inner
             .entries_with_storage_type()
-            .expect("failed to read entries for re-key");
+            .expect("failed to read entries for re-key")
+            .into_iter()
+            .filter(|(id, (_, key), _)| self.inner.filed_under(*id, key.as_ref()))
+            .map(|(_, item, storage_type)| (item, storage_type))
+            .collect();
 
         // Clear the collection (removes old entries with old IDs).
         // Uses the re-key clear so `Frozen` entries are relocated (re-inserted
@@ -410,9 +414,13 @@ where
         super::rekey::rekey_nested_value(&mut value, id, &storage_type)?;
 
         if let Some(mut entry) = self.inner.get_mut(id)? {
-            let (v, _) = &mut *entry;
+            let (v, k) = &mut *entry;
+            // A peer may have filed this entry under another key; it was never this key's value.
+            let refiled = *k != key;
+            *k = key;
+            let old = mem::replace(v, value);
 
-            return Ok(Some(mem::replace(v, value)));
+            return Ok((!refiled).then_some(old));
         }
 
         // Insert into the inner collection.
@@ -438,19 +446,35 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         Ok(self
             .entries_with_ids()?
             .map(|(_id, key, value)| (key, value)))
     }
 
-    /// [`entries`](Self::entries) with the id each entry is stored under. An
-    /// owned entry whose stored key does not derive its id is skipped.
+    /// [`entries`](Self::entries) with the id each entry is stored under. An entry filed
+    /// off its key's id is skipped, since no write or delete by that key reaches it.
+    pub(crate) fn entries_with_ids(
+        &self,
+    ) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        Ok(self
+            .raw_entries_with_ids()?
+            .filter(|(id, key, _)| self.inner.filed_under(*id, key.as_ref())))
+    }
+
+    /// Every entry with its id, including one filed off its key's id, for a collection
+    /// built on the map with its own rule for those. Owned entries are still key-checked.
     ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system.
-    pub(crate) fn entries_with_ids(
+    pub(crate) fn raw_entries_with_ids(
         &self,
     ) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError> {
         // ITER_DROP diagnostic: the inner iterator yields `Result<…>`;
@@ -492,7 +516,10 @@ where
     /// maps — diverges between replicas. Sorting by the borsh key (not the
     /// entity id) keeps cross-map comparison correct: the same key sorts the
     /// same regardless of which collection id derived its entity id.
-    fn sorted_entries(&self) -> Result<Vec<(K, V)>, StoreError> {
+    fn sorted_entries(&self) -> Result<Vec<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         let mut entries: Vec<(K, V)> = self.entries()?.collect();
         // ponytail: borsh key encode is effectively infallible for in-memory
         // keys; on the impossible error, `default()` keeps the sort total.
@@ -542,7 +569,12 @@ where
     {
         let id = self.entry_id(key);
 
-        Ok(self.inner.get_keyed(id)?.map(|(v, _)| ValueRef::new(v)))
+        // An entry a peer filed here under another key is not this key's.
+        Ok(self
+            .inner
+            .get_keyed(id)?
+            .filter(|(_, k)| k.borrow() == key)
+            .map(|(v, _)| ValueRef::new(v)))
     }
 
     /// A page of entry entity ids, ascending, at or above `from` — at least
@@ -608,7 +640,9 @@ where
 
         // Wrap it in ValueMut guard.
         // This guard only allows access to V.
-        Ok(entry_option.map(|entry_mut| ValueMut { entry_mut }))
+        Ok(entry_option
+            .filter(|entry_mut| entry_mut.1.borrow() == key)
+            .map(|entry_mut| ValueMut { entry_mut }))
     }
 
     /// Gets the given key's corresponding entry in the map for in-place manipulation.
@@ -630,10 +664,14 @@ where
         if self.inner.contains(id)? {
             // 2. If it exists, we can now safely get the mutable guard.
             // We `expect` because we literally just confirmed it exists.
-            let entry_mut = self
+            let mut entry_mut = self
                 .inner
                 .get_mut(id)?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
+            // Refile an entry a peer stored here under another key; reads leave it out.
+            if entry_mut.1 != key {
+                entry_mut.1 = key;
+            }
 
             Ok(Entry::Occupied(Box::new(OccupiedEntry { entry_mut })))
         } else {
@@ -753,7 +791,8 @@ where
         K: Borrow<Q> + PartialEq,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        self.inner.contains(self.entry_id(key))
+        // The trie probe alone answers an absent key; only a present one reads the entry.
+        Ok(self.inner.contains(self.entry_id(key))? && self.get(key)?.is_some())
     }
 
     /// Remove a key from the map, returning the value at the key if it previously existed.
@@ -775,7 +814,10 @@ where
             return Ok(None);
         };
 
-        entry.remove().map(|(v, _)| Some(v))
+        // An entry a peer filed here under another key is deleted, but was not this key's.
+        entry
+            .remove()
+            .map(|(v, k)| (k.borrow() == key).then_some(v))
     }
 
     /// Clear the map, removing all entries.
@@ -847,7 +889,7 @@ where
 
 impl<K, V, S> Eq for UnorderedMap<K, V, S>
 where
-    K: Eq + BorshSerialize + BorshDeserialize,
+    K: Eq + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: Eq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -855,7 +897,7 @@ where
 
 impl<K, V, S> PartialEq for UnorderedMap<K, V, S>
 where
-    K: PartialEq + BorshSerialize + BorshDeserialize,
+    K: PartialEq + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: PartialEq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -869,7 +911,7 @@ where
 
 impl<K, V, S> Ord for UnorderedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize,
+    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -883,7 +925,7 @@ where
 
 impl<K, V, S> PartialOrd for UnorderedMap<K, V, S>
 where
-    K: PartialOrd + BorshSerialize + BorshDeserialize,
+    K: PartialOrd + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: PartialOrd + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -897,7 +939,7 @@ where
 
 impl<K, V, S> fmt::Debug for UnorderedMap<K, V, S>
 where
-    K: fmt::Debug + BorshSerialize + BorshDeserialize,
+    K: fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -939,7 +981,7 @@ where
 
 impl<K, V, S> Serialize for UnorderedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + Serialize,
+    K: BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize + Serialize,
     S: StorageAdaptor,
 {

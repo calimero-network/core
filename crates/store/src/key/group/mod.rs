@@ -2531,18 +2531,19 @@ impl Debug for GroupRevokedDevice {
     }
 }
 
-/// Signing keys of revoked devices (see [`GroupRevokedSigner`]).
+/// Signing keys of revoked or narrowed-out devices (see [`GroupRevokedSigner`]).
 pub const GROUP_REVOKED_SIGNER_PREFIX: u8 = 0x55;
 
-/// The signing key a revoked device was bound under in a group (see
-/// [`GROUP_REVOKED_SIGNER_PREFIX`]).
+/// The signing key a revoked or narrowed-out device was bound under in a group
+/// (see [`GROUP_REVOKED_SIGNER_PREFIX`]).
 ///
-/// Written beside the [`GroupRevokedDevice`] tombstone, from the binding the
-/// revocation deletes. A state delta names its author by signing key, and a
+/// Written from the binding a revocation (beside the [`GroupRevokedDevice`]
+/// tombstone) or a scope narrowing deletes, or from the link either refuses. A
+/// state delta names its author by signing key, and a
 /// [`calimero_primitives::identity::DeviceId`] cannot be derived from one, so
-/// without this row nothing left after a revocation maps the key back to the
+/// without this row nothing left after a withdrawal maps the key back to the
 /// device it signed for. The state-delta receive filter reads it to drop a
-/// revoked device's writes at the door.
+/// withdrawn device's writes at the door.
 ///
 /// Not terminal on its own: a signing key is the node's per-namespace identity,
 /// which a re-paired node keeps under its freshly minted device. A key that a live

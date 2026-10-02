@@ -153,9 +153,8 @@ async fn a_stub_naming_no_bytecode_is_not_yet_rather_than_an_error() {
         .expect("a row with nothing to fetch is not an error"));
 }
 
-/// A raw wasm blob's application id is derived from the bytes, size, source and
-/// metadata it was installed with, none of which a stub row carries - so it is
-/// declined rather than installed under an id that names nothing.
+/// Raw wasm derives no application id, so a stub naming it is declined rather
+/// than filled under whatever id governance named.
 #[tokio::test]
 async fn a_non_bundle_blob_is_refused_rather_than_installed() {
     let (client, node_client, store, _blobs) = node().await;

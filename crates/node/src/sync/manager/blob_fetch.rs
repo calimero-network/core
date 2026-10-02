@@ -5,7 +5,6 @@
 
 use calimero_app_downloader::{AppRequest, Outcome};
 use calimero_context::handlers::upgrade_group::registry_coords;
-use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_store::key;
 use eyre::bail;
@@ -63,8 +62,8 @@ impl SyncManager {
         outcome != Outcome::Unavailable
     }
 
-    /// Install a context's bundle or raw wasm once blob sharing delivered it,
-    /// under the id the context names; sets `application` to the row.
+    /// Install a context's bundle once blob sharing delivered it, under the id
+    /// the context names; sets `application` to the row. Raw wasm is refused.
     pub(crate) async fn install_bundle_after_blob_sharing(
         &self,
         context_id: &ContextId,
@@ -77,17 +76,6 @@ impl SyncManager {
             return Ok(());
         }
 
-        // Check if blob is a bundle
-        let Some(blob_bytes) = self.node_client.get_blob_bytes(blob_id, None).await? else {
-            return Ok(());
-        };
-
-        // Wrap blocking I/O in spawn_blocking to avoid blocking async runtime
-        let blob_bytes_clone = blob_bytes.clone();
-        let is_bundle =
-            tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&blob_bytes_clone))
-                .await?;
-
         let source = self
             .context_client
             .get_context_application(context_id)
@@ -96,29 +84,17 @@ impl SyncManager {
 
         // The group named an application id; a bundle deriving a different one
         // is refused before it writes anything.
-        let installed_app_id = if is_bundle {
-            self.node_client
-                .install_expected_bundle_blob(&context.application_id, blob_id, &source)
-                .await
-                .map_err(|e| {
-                    eyre::eyre!(
-                        "Failed to install bundle application from blob {}: {}",
-                        blob_id,
-                        e
-                    )
-                })?
-        } else {
-            // Adopt the known id rather than re-deriving it: a raw-wasm id
-            // hashes source+metadata, which vary per node.
-            self.node_client.write_application_row(
-                &context.application_id,
-                blob_id,
-                blob_bytes.len() as u64,
-                &source,
-                None,
-            )?;
-            context.application_id
-        };
+        let installed_app_id = self
+            .node_client
+            .install_expected_bundle_blob(&context.application_id, blob_id, &source)
+            .await
+            .map_err(|e| {
+                eyre::eyre!(
+                    "Failed to install bundle application from blob {}: {}",
+                    blob_id,
+                    e
+                )
+            })?;
 
         // Verify installation succeeded by fetching the installed application
         let installed_application = self

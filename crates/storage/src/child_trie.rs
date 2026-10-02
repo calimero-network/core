@@ -47,11 +47,11 @@
 //! of a child is determined by its id alone.
 
 use borsh::BorshDeserialize;
-use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::admitted_count;
 use crate::entities::{ChildInfo, Metadata};
+use crate::hash_meter::{Digest, Sha256};
 use crate::index::EntityIndex;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 

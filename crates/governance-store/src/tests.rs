@@ -12,8 +12,9 @@ use calimero_store::key::{GroupMetaValue, GroupTarget, GroupUpgradeStatus, Group
 use calimero_store::Store;
 
 use super::test_fixtures::{
-    dummy_member_removed_op, enrol_member, enrolled, nest_for_test, nest_for_test_unchecked,
-    sample_meta_with_admin, test_group_id, test_meta, test_store,
+    account_for, dummy_member_removed_op, enrol_member, enrolled, nest_for_test,
+    nest_for_test_unchecked, real_join_account, sample_meta_with_admin, test_group_id, test_meta,
+    test_store,
 };
 use super::*;
 
@@ -6809,6 +6810,120 @@ fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
         "denial must not depend on which op arrived first"
     );
     assert!(!revoked(), "on either path");
+}
+
+/// A device narrowed out of the namespace's scope that has not folded the
+/// narrowing cites heads from before it, so the filters must refuse its key too.
+#[test]
+fn narrowed_device_key_is_denied_until_a_newer_scope_binds_it_again() {
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xC7u8; 32]);
+    let ctx = ContextId::from([0xC8u8; 32]);
+    let laptop_pk = PublicKey::from([0xC9; 32]);
+    let account = enrol_member(&store, &ns_gid, &laptop_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+        .unwrap();
+    register_context_in_group(&store, &ns_gid, &ctx).unwrap();
+
+    let bindings = AccountBindingRepository::new(&store);
+    let deny = DenyListRepository::new(&store);
+    let denied = || deny.is_author_denied_for_context(&ctx, &laptop_pk).unwrap();
+    let revoked = || {
+        deny.is_revoked_signer_for_context(&ctx, &laptop_pk)
+            .unwrap()
+    };
+    assert!(
+        !denied() && !revoked(),
+        "precondition: the bound device writes"
+    );
+
+    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    assert!(bindings.narrow(&ns_gid, account, laptop, 1).unwrap());
+    assert!(
+        denied(),
+        "a narrowed device's key must be refused at the receive filter"
+    );
+    assert!(revoked(), "and on the heads path");
+
+    let widened = real_join_account(&laptop_pk);
+    let _bound = bindings
+        .apply_link(
+            &ns_gid,
+            &widened.genesis,
+            &widened.chain,
+            &widened.statement,
+            2,
+        )
+        .unwrap()
+        .expect("a link under a newer scope is admitted");
+    assert!(!denied(), "widened again, the device's writes are accepted");
+    assert!(!revoked(), "on either path");
+}
+
+/// A withdrawal folded before the link it outranks must deny the key as one
+/// folded after it does, so the verdict does not depend on arrival order.
+#[test]
+fn a_link_refused_by_an_earlier_withdrawal_denies_its_key() {
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE7u8; 32]);
+    let ctx = ContextId::from([0xE8u8; 32]);
+    let admin = enrol_member(&store, &ns_gid, &PublicKey::from([0xE9; 32]));
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    register_context_in_group(&store, &ns_gid, &ctx).unwrap();
+
+    let bindings = AccountBindingRepository::new(&store);
+    let deny = DenyListRepository::new(&store);
+    let denied = |pk: &PublicKey| deny.is_author_denied_for_context(&ctx, pk).unwrap();
+    let revoked = |pk: &PublicKey| deny.is_revoked_signer_for_context(&ctx, pk).unwrap();
+    let link = |pk: &PublicKey, scope_epoch| {
+        let credential = real_join_account(pk);
+        bindings
+            .apply_link(
+                &ns_gid,
+                &credential.genesis,
+                &credential.chain,
+                &credential.statement,
+                scope_epoch,
+            )
+            .unwrap()
+    };
+
+    let laptop_pk = PublicKey::from([0xEA; 32]);
+    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    assert!(!bindings
+        .narrow(&ns_gid, account_for(&laptop_pk), laptop, 1)
+        .unwrap());
+    assert!(matches!(
+        link(&laptop_pk, 0),
+        Err(BindingRejected::ScopeNarrowed { .. })
+    ));
+    assert!(
+        denied(&laptop_pk) && revoked(&laptop_pk),
+        "a stale link refused by an earlier narrowing must leave its key denied"
+    );
+    assert!(link(&laptop_pk, 2).is_ok());
+    assert!(
+        !denied(&laptop_pk) && !revoked(&laptop_pk),
+        "widened, the device's writes are accepted"
+    );
+
+    let phone_pk = PublicKey::from([0xEB; 32]);
+    let phone = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&phone_pk));
+    bindings.apply_revocation(&ns_gid, phone).unwrap();
+    assert!(matches!(
+        link(&phone_pk, 0),
+        Err(BindingRejected::DeviceRevoked)
+    ));
+    assert!(
+        denied(&phone_pk) && revoked(&phone_pk),
+        "a link refused by an earlier revocation must leave its key denied"
+    );
 }
 
 /// #4089. A snapshot source must be admitted: bound (not revoked) and a member,

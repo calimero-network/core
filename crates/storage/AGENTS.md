@@ -215,13 +215,30 @@ switching a field between the two types needs no migration.
   does not decode, or whose key contradicts its own length, reads as absent and
   is counted, like an undecodable entry of any collection.
   `tests/owned_collisions.rs` pins all of this.
-- The read-side key check needs the key's `AsRef<[u8]>` bytes, so the policy
-  that sets the domain names them (`bind_slot_keys`, in `Guarded::from_parts`
-  and `UserStorage`'s `owned`). Iteration, `Debug`, `PartialEq`, `Ord` and
-  `Serialize` therefore ask nothing of `K` beyond borsh (and `Ord` on a
-  `SortedMap`), and `get` only that the borrowed key be bytes;
-  `tests/key_bounds.rs` holds that. An owned collection whose keys were never
-  bound reads no owned entry, so a new owning wrapper must bind them too.
+- The owned read-side key check needs the key's `AsRef<[u8]>` bytes, so the
+  policy that sets the domain names them (`bind_slot_keys`, in
+  `Guarded::from_parts` and `UserStorage`'s `owned`). An owned collection whose
+  keys were never bound reads no owned entry, so a new owning wrapper must bind
+  them too.
+- **A read leaves out an entry filed at an id its key does not derive**
+  (`Collection::filed_under` for maps, `Collection::value_filed_under` for
+  sets).
+  Apply cannot refuse one outside an owned domain, since nothing in the bytes
+  says where the key is, and a listed one would be out of reach of every write
+  and delete by its key.
+  Iteration, index-backed reads, `get`/`get_mut`, `contains` and re-keys skip it.
+  An insert at the key whose id it holds refiles it under that key and returns
+  no old value.
+  `remove` deletes it and returns none.
+  `entry` refiles it keeping its stored value, as that key's write by its author
+  would, so it is the one path that adopts a peer's value.
+  `len` still counts it, since a count reads no entry.
+  Iteration, `Debug`, `PartialEq`, `Ord` and `Serialize` therefore need
+  `K: AsRef<[u8]>` (and `Ord` on a `SortedMap`), `len` only borsh, and `get`
+  only that the borrowed key be bytes; `tests/key_bounds.rs` holds that.
+  `RGA`, `FugueText` and `RichText` read `raw_entries_with_ids` and apply their
+  own rules.
+  `src/tests/misfiled_entries.rs` pins it.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
 - **A guarded collection counts from a node-local tally, never by loading its
@@ -845,6 +862,8 @@ struct MyType {
 ```
 
 ## Common Gotchas
+
+- Hash with `crate::hash_meter::{Digest, Sha256}`, never `sha2` directly. It is `sha2::Sha256` unless the `cost-meter` feature (enabled only by `tools/storage-cost`) swaps in a counting wrapper with the same digest, and the counts are the storage-cost CPU gate; a module naming `sha2` is invisible to it, which `production_code_hashes_through_the_meter` refuses.
 
 - Use #[app::state] macro attribute - it auto-generates Mergeable impl
 - **A local write is stamped after what it overwrites, never just "now".**

@@ -975,3 +975,84 @@ mod responder_attribution {
         );
     }
 }
+
+mod blob_share_install {
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::blobs::BlobId;
+    use calimero_primitives::context::{Context, ContextId};
+    use calimero_primitives::hash::Hash;
+    use calimero_store::{key, types};
+    use serial_test::serial;
+
+    use crate::test_node_harness::boot_test_node;
+
+    const CONTEXT: [u8; 32] = [0xC2; 32];
+    const NAMED: [u8; 32] = [0x5A; 32]; // the application id the context's group named
+    const RAW: &[u8] = b"raw wasm, not a bundle";
+
+    /// The stub `ContextRegistered` seeds: it names the blob and holds no bytes.
+    fn stub(blob_id: BlobId) -> types::ApplicationMeta {
+        types::ApplicationMeta::new(
+            key::BlobMeta::new(blob_id),
+            0,
+            "calimero://pending-blob-share".into(),
+            Box::default(),
+            key::BlobMeta::new(BlobId::from([0; 32])),
+            types::PackageInfo {
+                package: "".into(),
+                version: "".into(),
+                signer_id: "".into(),
+                state_version: 0,
+            },
+        )
+    }
+
+    /// Raw wasm derives no id, so bytes a peer shared for a context would be
+    /// bound under whatever id its group named.
+    #[tokio::test]
+    #[serial(boot_test_node)]
+    async fn raw_wasm_a_peer_shared_is_never_installed() {
+        let node = boot_test_node().await;
+        let (blob_id, _size) = node
+            .node_client
+            .add_blob(RAW, Some(RAW.len() as u64), None)
+            .await
+            .expect("the shared bytes");
+        let application_id = ApplicationId::from(NAMED);
+        let context_id = ContextId::from(CONTEXT);
+        {
+            let mut handle = node.store.handle();
+            handle
+                .put(&key::ApplicationMeta::new(application_id), &stub(blob_id))
+                .expect("seed the stub");
+            handle
+                .put(
+                    &key::ContextMeta::new(context_id),
+                    &types::ContextMeta::new(
+                        key::ApplicationMeta::new(application_id),
+                        [0; 32],
+                        Vec::new(),
+                        None,
+                    ),
+                )
+                .expect("register the context");
+        }
+
+        let context = Context::new(context_id, application_id, Hash::from([0; 32]));
+        let mut application = None;
+        let _refused = node
+            .sync_manager
+            .install_bundle_after_blob_sharing(&context_id, &blob_id, &context, &mut application)
+            .await
+            .expect_err("raw wasm must not be installed from a blob share");
+
+        let row = node
+            .store
+            .handle()
+            .get(&key::ApplicationMeta::new(application_id))
+            .expect("row read")
+            .expect("the stub stays");
+        assert_eq!(row.size, 0, "raw wasm must not fill the stub");
+        assert!(application.is_none());
+    }
+}

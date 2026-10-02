@@ -20,6 +20,7 @@ pub mod domain;
 pub mod entities;
 pub mod env;
 pub mod error;
+pub mod hash_meter;
 pub mod index;
 pub mod interface;
 pub mod js;
@@ -130,6 +131,9 @@ pub mod tests {
     /// Merkle hash propagation tests.
     #[cfg(test)]
     pub mod merkle;
+    /// A peer's entry filed under an id its key does not derive.
+    #[cfg(test)]
+    pub mod misfiled_entries;
     /// Nested CRDT merge behavior tests.
     #[cfg(test)]
     pub mod nested_crdt_merge;

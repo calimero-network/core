@@ -397,13 +397,16 @@ where
             // write-back refreshes the collection's `full_hash` before we read
             // it below. (`value` is moved only on this returning path, so the
             // fall-through new-key path keeps ownership of it.)
-            let old = {
+            let (old, refiled) = {
                 let mut entry = self
                     .inner
                     .get_mut(id)?
                     .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
-                let (v, _) = &mut *entry;
-                mem::replace(v, value)
+                let (v, k) = &mut *entry;
+                // A peer may have filed this entry under another key; it was never this key's value.
+                let refiled = *k != key;
+                *k = key;
+                (mem::replace(v, value), refiled)
             };
             // The key set didn't change by THIS op, so if the index was already
             // consistent it stays correct — restamp the marker to the new
@@ -412,10 +415,10 @@ where
             // set and cleared the marker (index stale), restamping here would
             // falsely certify a stale index (core#3333); leave it stale so the
             // next ordered read rebuilds.
-            if index_was_current {
+            if index_was_current && !refiled {
                 self.stamp_index_marker();
             }
-            return Ok(Some(old));
+            return Ok((!refiled).then_some(old));
         }
 
         // Capture the row before `key` is moved, so we can warm the index
@@ -485,7 +488,12 @@ where
     {
         let id = self.entry_id(key);
 
-        Ok(self.inner.get_keyed(id)?.map(|(v, _)| ValueRef::new(v)))
+        // An entry a peer filed here under another key is not this key's.
+        Ok(self
+            .inner
+            .get_keyed(id)?
+            .filter(|(_, k)| k.borrow() == key)
+            .map(|(v, _)| ValueRef::new(v)))
     }
 
     /// Returns a mutable `ValueMut` guard for the value at `key`.
@@ -510,7 +518,9 @@ where
 
         let entry_option = self.inner.get_mut(id)?;
 
-        Ok(entry_option.map(|entry_mut| ValueMut { entry_mut }))
+        Ok(entry_option
+            .filter(|entry_mut| entry_mut.1.borrow() == key)
+            .map(|entry_mut| ValueMut { entry_mut }))
     }
 
     /// Gets the given key's corresponding entry for in-place manipulation.
@@ -526,10 +536,14 @@ where
         let id = self.entry_id(&key);
 
         if self.inner.contains(id)? {
-            let entry_mut = self
+            let mut entry_mut = self
                 .inner
                 .get_mut(id)?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
+            // Refile an entry a peer stored here under another key; reads leave it out.
+            if entry_mut.1 != key {
+                entry_mut.1 = key;
+            }
 
             Ok(Entry::Occupied(Box::new(OccupiedEntry { entry_mut })))
         } else {
@@ -549,7 +563,8 @@ where
         K: Borrow<Q> + PartialEq,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        self.inner.contains(self.entry_id(key))
+        // The trie probe alone answers an absent key; only a present one reads the entry.
+        Ok(self.inner.contains(self.entry_id(key))? && self.get(key)?.is_some())
     }
 
     /// This collection's own id; two handles holding it name the same entries.
@@ -611,7 +626,7 @@ where
         K: AsRef<[u8]>,
     {
         let id = super::owned_keyed_entry_id(self.slot_id(key), owner);
-        self.remove_at(id, key.as_ref())
+        Ok(self.remove_at(id, key.as_ref())?.map(|(v, _)| v))
     }
 
     /// Every owned entry as `(owner, key, value)`, only `owner`'s when given.
@@ -652,11 +667,14 @@ where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        self.remove_at(self.entry_id(key), key.as_ref())
+        // An entry a peer filed here under another key is deleted, but was not this key's.
+        Ok(self
+            .remove_at(self.entry_id(key), key.as_ref())?
+            .and_then(|(v, k)| (k.borrow() == key).then_some(v)))
     }
 
     /// Remove the entry stored at `id` under the order key `order_key`.
-    fn remove_at(&mut self, id: Id, order_key: &[u8]) -> Result<Option<V>, StoreError> {
+    fn remove_at(&mut self, id: Id, order_key: &[u8]) -> Result<Option<(V, K)>, StoreError> {
         // Capture index consistency BEFORE the mutation (see `insert_internal`):
         // only maintain the index incrementally + stamp when it was already
         // current; otherwise a sync-applied child change left it stale and we
@@ -668,7 +686,7 @@ where
             return Ok(None);
         };
 
-        let removed = entry.remove().map(|(v, _)| v)?;
+        let removed = entry.remove()?;
 
         // Keep the ordered index in step with the removal (no-op when the
         // adaptor doesn't back it). `entry.remove()` has already recomputed the
@@ -773,7 +791,7 @@ where
             kind = "SortedMap",
             "STAMP index marker"
         );
-        let _ = S::index_meta_put(self.inner.id(), &full);
+        let _ = S::index_meta_put(self.inner.id(), &super::sorted_index_marker(full));
     }
 
     /// `true` if the stamped marker equals the collection's current `full_hash`
@@ -781,7 +799,7 @@ where
     fn index_marker_current(&self) -> bool {
         let full = self.current_full_hash();
         let stored = S::index_meta_get(self.inner.id());
-        let current = stored.as_deref() == Some(&full[..]);
+        let current = stored.as_deref() == Some(&super::sorted_index_marker(full)[..]);
         tracing::trace!(
             target: "calimero_storage::sorted_index_dbg",
             collection = %self.inner.id(),
@@ -893,18 +911,27 @@ where
     /// public surface only ever exposes key-ordered iteration; merge and
     /// migration paths that don't care about order use it to avoid the `K: Ord`
     /// bound.
-    fn iter_unordered(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
+    fn iter_unordered(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         Ok(self.iter_keyed()?.map(|(_id, key, value)| (key, value)))
     }
 
     /// [`iter_unordered`](Self::iter_unordered) with the id each entry is
-    /// stored under. An owned entry whose stored key does not derive its id is
+    /// stored under. An entry whose stored key does not derive its id is
     /// skipped.
-    fn iter_keyed(&self) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError> {
+    fn iter_keyed(&self) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         let collection_id = self.inner.id();
         // Inner yields `(V, K)`; the public contract is `(K, V)`.
         Ok(self.inner.keyed_entries()?.filter_map(move |result| match result {
-            Ok((id, (value, key))) => Some((id, key, value)),
+            Ok((id, (value, key))) => self
+                .inner
+                .filed_under(id, key.as_ref())
+                .then_some((id, key, value)),
             Err(error) => {
                 tracing::error!(
                     target: "calimero_storage::iter_drop",
@@ -935,12 +962,18 @@ where
     ///
     /// Where every owner keeps its own entry per key, a key's entries follow
     /// each other in id order, as the index files them.
-    fn sorted_pairs(&self) -> Result<Vec<(K, V)>, StoreError> {
+    fn sorted_pairs(&self) -> Result<Vec<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         self.sorted_where(|_| true)
     }
 
     /// The entries whose key passes `keep`, in key order and then id order.
-    fn sorted_where(&self, keep: impl Fn(&K) -> bool) -> Result<Vec<(K, V)>, StoreError> {
+    fn sorted_where(&self, keep: impl Fn(&K) -> bool) -> Result<Vec<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         let mut entries: Vec<(Id, K, V)> = self.iter_keyed()?.filter(|(_, k, _)| keep(k)).collect();
         entries.sort_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)));
         Ok(entries.into_iter().map(|(_, k, v)| (k, v)).collect())
@@ -952,7 +985,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, StoreError> {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         Ok(self.sorted_pairs()?.into_iter())
     }
 
@@ -962,7 +998,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError> {
+    pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         Ok(self.sorted_pairs()?.into_iter().map(|(k, _)| k))
     }
 
@@ -972,7 +1011,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn values(&self) -> Result<impl Iterator<Item = V>, StoreError> {
+    pub fn values(&self) -> Result<impl Iterator<Item = V>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         Ok(self.sorted_pairs()?.into_iter().map(|(_, v)| v))
     }
 
@@ -1224,7 +1266,7 @@ where
 
 impl<K, V, S> Eq for SortedMap<K, V, S>
 where
-    K: Eq + Ord + BorshSerialize + BorshDeserialize,
+    K: Eq + Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: Eq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1232,7 +1274,7 @@ where
 
 impl<K, V, S> PartialEq for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize,
+    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: PartialEq + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1243,7 +1285,7 @@ where
 
 impl<K, V, S> Ord for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize,
+    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1254,7 +1296,7 @@ where
 
 impl<K, V, S> PartialOrd for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize,
+    K: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: PartialOrd + Ord + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1265,7 +1307,7 @@ where
 
 impl<K, V, S> fmt::Debug for SortedMap<K, V, S>
 where
-    K: Ord + fmt::Debug + BorshSerialize + BorshDeserialize,
+    K: Ord + fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1302,7 +1344,7 @@ where
 
 impl<K, V, S> Serialize for SortedMap<K, V, S>
 where
-    K: Ord + BorshSerialize + BorshDeserialize + Serialize,
+    K: Ord + BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize + Serialize,
     S: StorageAdaptor,
 {

@@ -12,7 +12,8 @@ use std::sync::LazyLock;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use indexmap::IndexSet;
-use sha2::{Digest, Sha256};
+
+use crate::hash_meter::{Digest, Sha256};
 
 pub mod counter;
 pub use counter::{Counter, GCounter, PNCounter};
@@ -215,6 +216,10 @@ use crate::index::Index;
 use crate::interface::{Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
+
+/// Version of a `SortedMap`/`SortedSet` index marker. Bump it when the rows an
+/// index may hold change, so an index built before is rebuilt.
+const SORTED_INDEX_MARKER_VERSION: u8 = 2;
 
 /// Domain separator for map entry IDs to prevent collision with collection IDs.
 /// This ensures that a map entry with key "X" never collides with a nested collection
@@ -508,6 +513,13 @@ pub(crate) fn compute_collection_id(parent_id: Option<Id>, field_name: &str) -> 
     hasher.update(DOMAIN_SEPARATOR_COLLECTION);
     hasher.update(field_name.as_bytes());
     derived_id(parent_id, hasher.finalize().into(), CELL_COLLECTION_ID_TAG)
+}
+
+/// The validity marker of an ordered index exact at a collection's `full` hash.
+pub(crate) fn sorted_index_marker(full: [u8; 32]) -> [u8; 33] {
+    let mut marker = [SORTED_INDEX_MARKER_VERSION; 33];
+    marker[1..].copy_from_slice(&full);
+    marker
 }
 
 /// Domain separator for the owner-bound half of an owned entry's id.
@@ -1811,19 +1823,48 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok(iter)
     }
 
-    /// Snapshot every child as `(item, storage_type)` in child-list order.
+    /// Whether `id` is where a write by `key` lands in a map. A peer can file an
+    /// entry anywhere, and one off its key's id is out of reach of that key.
+    pub(crate) fn filed_under(&self, id: Id, key: &[u8]) -> bool {
+        self.holds_owned_entries() || self.resolve_keyed(compute_id(self.id(), key)) == id
+    }
+
+    /// [`filed_under`](Self::filed_under) for a set, whose entries sit at the
+    /// id their own bytes derive.
+    pub(crate) fn value_filed_under(&self, id: Id, value: &[u8]) -> bool {
+        self.holds_owned_entries() || self.resolve(compute_id(self.id(), value)) == id
+    }
+
+    /// [`entries`](Self::entries) of a set, leaving out a value filed off its own id.
+    fn values(&self) -> StoreResult<impl Iterator<Item = StoreResult<T>> + '_>
+    where
+        T: AsRef<[u8]>,
+    {
+        let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
+        Ok(ids
+            .into_iter()
+            .filter_map(|child| match self.find_admitted(child) {
+                Ok(Some(entry)) => self
+                    .value_filed_under(child, entry.item.as_ref())
+                    .then_some(Ok(entry.item)),
+                Ok(None) => Some(Err(StoreError::StorageError(StorageError::NotFound(child)))),
+                Err(error) => Some(Err(error)),
+            }))
+    }
+
+    /// Snapshot every child as `(id, item, storage_type)` in child-list order.
     /// `storage_type` carries the per-entry owner stamp (AuthoredMap/Shared);
     /// a re-key that re-inserts plain `item`s would drop it and silently
     /// downgrade authored entries to `Public`, so callers re-insert via
     /// `insert_with_storage_type`.
-    pub(crate) fn entries_with_storage_type(&self) -> StoreResult<Vec<(T, StorageType)>> {
+    pub(crate) fn entries_with_storage_type(&self) -> StoreResult<Vec<(Id, T, StorageType)>> {
         let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
         let mut out = Vec::with_capacity(ids.len());
         for child in ids {
             let entry = self
                 .within(|| <Interface<S>>::find_by_id::<Entry<T>>(child))?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(child)))?;
-            out.push((entry.item, entry.storage.metadata.storage_type));
+            out.push((child, entry.item, entry.storage.metadata.storage_type));
         }
         Ok(out)
     }
@@ -2019,10 +2060,7 @@ where
             }
             Err(error) => return Err(error),
         };
-        Ok(entry.filter(|(_, key)| {
-            self.holds_owned_entries()
-                || self.resolve_keyed(compute_id(self.id(), key.as_ref())) == id
-        }))
+        Ok(entry.filter(|(_, key)| self.filed_under(id, key.as_ref())))
     }
 
     /// Every entry with its id, in child order. An entry whose key does not fit

@@ -59,6 +59,10 @@ src/
 │   ├── namespace_backfill.rs # decode_backfill (cap, namespace check, parents-first order) and collect_ancestry (targeted fetch of a refused op's ancestors by id)
 │   └── snapshot.rs           # Snapshot handling
 ├── delta_store.rs            # Delta storage + applier (merge-applies via `ContextClient::apply_remote_delta`, so read-only replicas keep the result)
+├── dag_compactor.rs          # DAG compaction actor: prunes live and cold contexts' delta history, then compacts the delta-column slices
+├── dag_compactor/
+│   ├── disk.rs               # Bounded on-disk prune of one context's ContextDagDelta rows (count, retain walk, batched deletes)
+│   └── sweep_tests.rs        # RocksDB sweeps: cold / restarted / pending contexts, SST bytes given back
 ├── gc.rs                     # Tombstone GC (+ parents' deleted_children), under each context's lock
 ├── tombstone_stability.rs    # When a tombstone may go: every member device caught up (signed StateBeacon)
 ├── constants.rs              # Constants
@@ -288,7 +292,7 @@ cargo test -p calimero-node --test network_simulation
   [app-downloader/AGENTS.md](../app-downloader/AGENTS.md). This crate
   owns the storage half: the `ApplicationStore` impl, the `PeerBlobs`
   impl, and the row binding (`bind_application`) in `acquire.rs`, backed
-  by `bind.rs`'s `write_application_row`. Add a source there, not by
+  by `bind.rs`'s `put_bundle_row`. Add a source there, not by
   fetching inline at a call site
 - In `Http` mode a node is not a source of application bytecode, so it
   neither announces nor serves it: `NodeClient::may_share_blob` gates
@@ -325,8 +329,10 @@ cargo test -p calimero-node --test network_simulation
   (the admin API) may set it to any release, including an older one. A
   `Remote` install (downloader, blob share, join bootstrap, relay) replaces
   a signed release only with an equal or semver-newer one, keeping any
-  other as a blob; raw wasm only fills a missing or stub row. Writes
-  re-check under `row_writes`
+  other as a blob. Raw wasm is refused on every remote path
+  (`derive_bundle_id`), and never runs: `application_bytes_from_blob`
+  refuses it, since a group target, marker or stub can name any held blob.
+  Writes re-check under `row_writes`
 - A joiner that holds no key to seal its own join does NOT publish it in
   the clear. `sync/manager/relay_sealed_join.rs` carries both halves of
   the exchange that replaced that fallback (#3904): the joiner sends
@@ -357,6 +363,7 @@ cargo test -p calimero-node --test network_simulation
 - **Presence is one `PresenceUpdate`, signed by its author inside the seal** (`calimero_node_primitives::presence`). `BroadcastMessage::Ephemeral` carries only `context_id`, `key_id`, `nonce` and the sealed update; the statement (context, author, seq, time, state hash) is the author's signature, and freshness is judged on its signed stamp after decryption. A node signs its own; an account's update carries its device certificate, and a relay publishes it through `outbound::publish_delegated` after `admit_delegated`. Receivers check an account's membership and revocation by their own data (`ephemeral/standing.rs`, shared with the relay so the two cannot disagree); a node author is gated only by holding the key, as before. A retract (`state: None`) is seq-gated in `AwarenessStore::retract`, so a replayed old one cannot remove a live entry. The relay keeps no `ephemeral_local` entry for an account: the account resends, and the relay's sweep expires it.
 - **A delegated delta's warrant is admitted, and its nonce spent, inside `ContextStorageApplier::apply`**, so every path that applies one runs the same gate: the primary of an add, a cascaded child, a persisted parent `get_missing_parents` loads, a delta re-driven after a restart. The envelope (cut and warrant) comes from the armed slot (`arm_author` takes the warrant with the author and the cut) or, with nothing armed, from the delta's `ContextDagDelta` row (`persisted_envelope`), which is why a delegated delta that goes pending gets a row (`DeltaStore::keep_pending_delegated`): without one a cascade would apply it with no warrant at all. The nonce is spent only once the apply has succeeded, never on arrival — a held-back delta has not used it, and spending early made a pending delta's own re-drive after a restart read as a replay. A re-delivery of an applied delta is a DAG duplicate and never reaches `apply`, so it is not refused. A refusal or an undecidable cut fails the apply; the DAG drops the delta and it is retried from its row or a re-fetch. A cascaded child's refusal surfaces as the error of the add that cascaded it, as any cascaded failure does.
 - **An entry a relay wrote on an account's behalf (`SignatureData::on_behalf`) is that account's only when its signer is a `RelayTee` writing for a member** (`calimero_governance_store::on_behalf_standing`). Each path places it with the cut it already uses. On the delta path `delta_store::on_behalf_accounts` judges each on-behalf action at the delta's own cut — the one armed with its author, or, for a delta applied with nothing armed (a cascaded child, a persisted parent loaded into the DAG, including after a restart), the cut its `ContextDagDelta` row records — and hands storage the account per action (`StorageDelta::CausalActions::on_behalf_accounts`). The delta's author plays no part: a `RelayTee` may write any member's entries, so a relay's entries apply in a delta the member did not author, and a delegated delta applies where no author is armed. An on-behalf action naming no signer, refused by the rule, or undecidable at the cut (not folded, or no cut known) refuses the whole delta, which is retried. Repair (`signer_account_for`, `is_leaf_currently_authorized`) asks the rule live, never through the TEE-authority mapping, and does not run the signer's own read-only gate, which would drop every such entry. Snapshot (`snapshot_leaf_authorship`, `snapshot_signer_accounts`) asks only the relay half, live, so a departed member keeps what was written for them, and what a relay wrote is dropped from cold joiners once it stops being a `RelayTee`.
+- **DAG compaction prunes the delta column by its own rows, not by the in-memory DAG** (`dag_compactor.rs`, `dag_compactor/disk.rs`). The in-memory count says nothing about the rows: a context nothing touched since start has no `DeltaStore`, and after a restart a compacted context's DAG cannot be rebuilt (the oldest retained row's parent is gone, so `load_persisted_deltas` restores none of the chain). Each sweep visits every live `DeltaStore` (`DeltaStore::compact`: in-memory prune, then the disk prune keeping every id the DAG still holds) and every other context in `ContextMeta` (disk prune only, the DAG never loaded). The disk prune counts at most `min_deltas_before_compact + 1` keys, walks back from the persisted `dag_heads` for the retain window, scans at most `MAX_COMPACTION_SCAN_ROWS` and deletes at most `MAX_COMPACTION_DELETES_PER_CONTEXT` applied rows per sweep, never a head and never an `applied: false` row. It runs under the context's execution lock (`ContextClient::acquire_lock`), taken after the `dag` write lock on the live path — the same order as an inbound apply — because that lock is held by every commit of an applied row with the heads; without it a head committed mid-scan would be judged against the old heads and deleted. No lock (unknown context) means no rows are deleted. The heads are re-read before each delete batch and a change stops the pass. A pending delta no longer blocks compaction: `prune_to_recent` keeps pending deltas and every parent they already hold. Deleted rows are given back by compacting the context's `Delta` slice when `gc::worth_compacting` (the tombstone GC's bar) says so, with no lock held. Side tables keyed by delta id (`delta_events`, `tee_trigger`) are not pruned with the rows
 - `add_blob`'s `expected_size` asserts a length the caller already
   knows; it is never a ceiling. Passing a cap through it rejects every
   correct blob under that cap. Bound a stream where the bytes arrive

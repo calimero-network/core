@@ -4719,6 +4719,7 @@ fn build_rotation_op(
     old_key_id: [u8; 32],
     new_group_key: &[u8; 32],
     tamper_new_key_id: bool,
+    nonce: u64,
 ) -> calimero_context_client::local_governance::SignedNamespaceOp {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 
@@ -4746,7 +4747,7 @@ fn build_rotation_op(
         signer_sk,
         ns_gid.to_bytes().into(),
         vec![],
-        1,
+        nonce,
         NamespaceOp::Group {
             group_id: ns_gid.to_bytes().into(),
             key_id: old_key_id.into(),
@@ -4774,6 +4775,7 @@ fn rotation_apply_stores_key_for_authorized_admin() {
         old_key_id,
         &new_group_key,
         false,
+        1,
     );
     NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
         .apply_signed_op(&op)
@@ -4817,6 +4819,7 @@ fn rotation_apply_rejects_new_key_id_mismatch() {
         old_key_id,
         &new_group_key,
         true,
+        1,
     );
     NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
         .apply_signed_op(&op)
@@ -4850,6 +4853,7 @@ fn rotation_apply_ignored_when_signer_not_admin() {
         old_key_id,
         &new_group_key,
         false,
+        1,
     );
     // Inner MemberRemoved by a non-admin fails authorization, so apply surfaces
     // an error — but crucially the key must NOT have been stored either way.
@@ -4861,6 +4865,164 @@ fn rotation_apply_ignored_when_signer_not_admin() {
             .unwrap()
             .is_none(),
         "a rotation from a non-admin signer must never poison the keyring"
+    );
+}
+
+/// A removal whose rotation reaches a new member before the key it is sealed
+/// under: the member buffers it, and `local` has not been delivered `old_key`.
+#[cfg(test)]
+fn buffered_rotation_before_its_key() -> (Store, ContextGroupId, PrivateKey, [u8; 32], [u8; 32]) {
+    use super::NamespaceGovernance;
+
+    let (store, ns_gid, admin_sk, _local_sk, removed_pk, old_key_id) = rotation_test_setup();
+    let old_key = [0x97u8; 32];
+    let new_group_key = [0x42u8; 32];
+    let op = build_rotation_op(
+        &store,
+        ns_gid,
+        &admin_sk,
+        &crate::test_fixtures::account_for(&removed_pk),
+        &old_key,
+        old_key_id,
+        &new_group_key,
+        false,
+        1,
+    );
+    GroupKeyring::new(&store, ns_gid)
+        .delete_key_by_id(&old_key_id)
+        .unwrap();
+    NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
+        .apply_signed_op(&op)
+        .expect("an op sealed under a key not yet held is buffered, not refused");
+    assert!(GroupKeyring::new(&store, ns_gid)
+        .load_key_by_id(&GroupKeyring::key_id_for(&new_group_key))
+        .unwrap()
+        .is_none());
+    (store, ns_gid, admin_sk, old_key, new_group_key)
+}
+
+#[test]
+fn a_rotation_buffered_before_its_key_is_current_after_the_delivery_replays_it() {
+    let (store, ns_gid, admin_sk, old_key, new_group_key) = buffered_rotation_before_its_key();
+    let local_pk = NamespaceRepository::new(&store)
+        .identity_record(&ns_gid)
+        .unwrap()
+        .unwrap()
+        .public_key;
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &local_pk, &ns_gid.to_bytes(), &old_key).unwrap();
+
+    apply_received_group_key(
+        &store,
+        ns_gid.to_bytes().into(),
+        ns_gid.to_bytes(),
+        &borsh::to_vec(&envelope).unwrap(),
+        admin_sk.public_key(),
+        &[GroupKeyring::key_id_for(&old_key)],
+    )
+    .unwrap();
+
+    assert_eq!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_current_key_record()
+            .unwrap()
+            .map(|current| current.group_key),
+        Some(new_group_key),
+        "the member must seal its next op under the rotated key, not the one the removed member holds"
+    );
+}
+
+#[test]
+fn chained_rotations_buffered_before_their_keys_all_apply_once_the_first_key_arrives() {
+    use super::NamespaceGovernance;
+
+    let (store, ns_gid, admin_sk, local_sk, removed_pk, old_key_id) = rotation_test_setup();
+    let later_pk =
+        PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
+    let later_removed = enrol_member(&store, &ns_gid, &later_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &later_removed, GroupMemberRole::Member)
+        .unwrap();
+    let old_key = [0x97u8; 32];
+    let middle_key = [0x42u8; 32];
+    let last_key = [0x43u8; 32];
+    let first = build_rotation_op(
+        &store,
+        ns_gid,
+        &admin_sk,
+        &crate::test_fixtures::account_for(&removed_pk),
+        &old_key,
+        old_key_id,
+        &middle_key,
+        false,
+        1,
+    );
+    // Sealed under the key the first rotation introduces.
+    let second = build_rotation_op(
+        &store,
+        ns_gid,
+        &admin_sk,
+        &later_removed,
+        &middle_key,
+        GroupKeyring::key_id_for(&middle_key),
+        &last_key,
+        false,
+        2,
+    );
+    GroupKeyring::new(&store, ns_gid)
+        .delete_key_by_id(&old_key_id)
+        .unwrap();
+    let gov = NamespaceGovernance::new(&store, ns_gid.to_bytes().into());
+    gov.apply_signed_op(&first).unwrap();
+    gov.apply_signed_op(&second).unwrap();
+
+    let envelope = GroupKeyring::wrap_for_member(
+        &admin_sk,
+        &local_sk.public_key(),
+        &ns_gid.to_bytes(),
+        &old_key,
+    )
+    .unwrap();
+    apply_received_group_key(
+        &store,
+        ns_gid.to_bytes().into(),
+        ns_gid.to_bytes(),
+        &borsh::to_vec(&envelope).unwrap(),
+        admin_sk.public_key(),
+        &[old_key_id],
+    )
+    .unwrap();
+
+    assert_eq!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_current_key_record()
+            .unwrap()
+            .map(|current| current.group_key),
+        Some(last_key),
+        "the second rotation opens only under the first one's key, and must apply in the same replay"
+    );
+}
+
+#[test]
+fn a_rotation_buffered_before_its_key_is_current_after_the_startup_redrive() {
+    let (store, ns_gid, _admin_sk, old_key, new_group_key) = buffered_rotation_before_its_key();
+    // A pulled key is stored at epoch 0, as `adopt_pulled_group_key` stores it.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&old_key)
+        .unwrap();
+
+    let applied =
+        redrive_buffered_ops_for_group(&store, ns_gid.to_bytes().into(), ns_gid.to_bytes())
+            .unwrap();
+
+    assert_eq!(applied, 1);
+    assert_eq!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_current_key_record()
+            .unwrap()
+            .map(|current| current.group_key),
+        Some(new_group_key),
+        "the re-drive must apply the rotation the buffered op carried"
     );
 }
 
@@ -9255,6 +9417,80 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     );
     assert_eq!(live[0].device, calimero_account::DeviceId::from(device));
     assert_eq!(live[0].account, account_id);
+}
+
+/// An open-subgroup joiner whose device was re-keyed: it joined under `old_sk` at
+/// epoch 0, then again under `new_sk` at epoch 1, which retires `old_sk`.
+struct RekeyedJoiner {
+    store: Store,
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    root_sk: PrivateKey,
+    genesis: calimero_account::AccountGenesis,
+    device: [u8; 32],
+    old_sk: PrivateKey,
+    new_sk: PrivateKey,
+}
+
+fn rekeyed_joiner(namespace_id: [u8; 32], subgroup_id: [u8; 32]) -> RekeyedJoiner {
+    let store = test_store();
+    let (root_sk, genesis) = crate::test_fixtures::test_account_root();
+    let device = [0x7D; 32];
+    let old_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let new_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let first =
+        crate::test_fixtures::join_account_for(&root_sk, genesis, &old_sk.public_key(), device, 0);
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &first.statement.account);
+    apply_open_join_with(&store, namespace_id, subgroup_id, &old_sk, first)
+        .expect("the first join applies");
+    let rekeyed =
+        crate::test_fixtures::join_account_for(&root_sk, genesis, &new_sk.public_key(), device, 1);
+    apply_open_join_with(&store, namespace_id, subgroup_id, &new_sk, rekeyed)
+        .expect("a join under the device's next key applies");
+    RekeyedJoiner {
+        store,
+        namespace_id,
+        subgroup_id,
+        root_sk,
+        genesis,
+        device,
+        old_sk,
+        new_sk,
+    }
+}
+
+#[test]
+fn a_join_signed_with_a_rotated_out_device_key_is_refused() {
+    let j = rekeyed_joiner([0xC6; 32], [0xD6; 32]);
+    let stale = crate::test_fixtures::join_account_for(
+        &j.root_sk,
+        j.genesis,
+        &j.old_sk.public_key(),
+        j.device,
+        0,
+    );
+
+    let err = apply_open_join_with(&j.store, j.namespace_id, j.subgroup_id, &j.old_sk, stale)
+        .expect_err("a key the device was re-keyed past must not join for its account");
+    assert!(
+        format!("{err:#}").contains("re-keyed past"),
+        "expected the superseded-key refusal, got: {err:#}"
+    );
+}
+
+#[test]
+fn a_join_signed_with_the_current_device_key_is_accepted() {
+    let j = rekeyed_joiner([0xC7; 32], [0xD7; 32]);
+    let current = crate::test_fixtures::join_account_for(
+        &j.root_sk,
+        j.genesis,
+        &j.new_sk.public_key(),
+        j.device,
+        1,
+    );
+
+    apply_open_join_with(&j.store, j.namespace_id, j.subgroup_id, &j.new_sk, current)
+        .expect("the device's current key still joins");
 }
 
 /// A TEE fleet replica is bound in the same apply as its admission.

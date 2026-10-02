@@ -321,7 +321,10 @@ macro_rules! _imports {
                         let (data, store) = env.data_and_store_mut();
                         let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
 
-                        let out = data.host_functions(store).$func($($arg),*);
+                        let out = match data.charge_host_call() {
+                            Ok(()) => data.host_functions(store).$func($($arg),*),
+                            Err(err) => Err(err),
+                        };
                         // Take whatever the call charged for its own work off
                         // the budget, now that the store is ours again.
                         let (data, mut store) = env.data_and_store_mut();

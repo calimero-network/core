@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{
@@ -141,6 +141,19 @@ impl AtCutAuthorizer for VoidJudge<'_> {
         _: &[[u8; 32]],
     ) -> Option<AtCutMembershipPath> {
         None
+    }
+
+    // No replay predates this gate, so reading the cut changes no answer a replay gave.
+    fn device_epoch_superseded_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        device: &DeviceId,
+        device_epoch: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        self.0
+            .device_epoch_superseded_at_cut(group, account, device, device_epoch, parents)
     }
 
     fn forget(&self) {
@@ -269,6 +282,28 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             calimero_authz::MemberPathAtCut::Direct { .. } => AtCutMembershipPath::Direct,
             calimero_authz::MemberPathAtCut::Inherited { .. } => AtCutMembershipPath::Inherited,
         })
+    }
+
+    fn device_epoch_superseded_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        device: &DeviceId,
+        device_epoch: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?.0.device_epoch_superseded_at_cut(
+            self.store,
+            *group,
+            account,
+            device,
+            device_epoch,
+            parents,
+        )
     }
 
     fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {

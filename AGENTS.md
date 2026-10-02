@@ -268,6 +268,7 @@ RUST_LOG=calimero_node::sync=trace,calimero_context=debug merod --node node1 run
 | `app-migration-e2e.yml` | migration paths | v1→v2 app-migration scenarios |
 | `sdk-e2e.yml` | SDK paths | SDK end-to-end |
 | `fuzzy-load-test.yml` | manual / load paths | fuzzy load |
+| `platforms.yml` | nightly; PRs reaching Windows-only code (`scripts/needs-windows-ci.py`); label `ci:platforms` | Windows tests and e2e, macOS/Windows release builds |
 
 ### Critical blind spot - what E2E CANNOT catch
 

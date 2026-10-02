@@ -62,8 +62,10 @@ pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::
 ```
 
 <Aside type="note" title="Who writes the bytes">
-  In `apps/blobs` the bytes are uploaded by a blob client and the method receives
-  the resulting `BlobId`; the contract's job is to record the id and announce it.
+  In `apps/blobs` the bytes are uploaded by a blob client with the context's
+  `context_id`, and the method receives the resulting `BlobId`; the contract's
+  job is to record the id and announce it. An upload naming no context is in no
+  context: announcing it returns `false` and shares nothing.
   Use the `blob_create`/`blob_write`/`blob_close` calls above when you produce the
   bytes inside the app itself.
 </Aside>

@@ -1,0 +1,490 @@
+name: Platforms
+
+# Windows and macOS, off the pull-request critical path.
+#
+# These lanes ran on every PR. Over 60 PRs none of them failed where every Linux
+# job passed, other than the 3-node Windows lane's flakes, while that lane set
+# the e2e wall clock in half of all runs. They now run:
+#
+#   - nightly on master, every lane, opening (or updating) an issue on failure;
+#   - on a PR whose change can reach Windows-only code (scripts/needs-windows-ci.py):
+#     the Windows lanes only;
+#   - on a PR labelled `ci:platforms`, and on dispatch: every lane.
+#
+# release.yml still builds and ships Windows and macOS from the release commit
+# itself, so nothing reaches a release without having been built for it.
+
+on:
+  schedule:
+    - cron: "37 2 * * *" # nightly, off the hour
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - ".cargo/**"
+      - "crates/**"
+      - "tools/**"
+      - "apps/kv-store/**"
+      - "workflows/auth-seam.yml"
+      - ".github/workflows/platforms.yml"
+      - ".github/actions/setup-merobox/**"
+      - "scripts/needs-windows-ci.py"
+      - "scripts/tests/needs-windows-ci-test.py"
+      - "scripts/e2e-fixture-registry.sh"
+
+permissions:
+  contents: read
+
+# Adding an unrelated label starts a run of its own; keep it out of the code
+# run's group so it cannot cancel that run, and let the gate skip it.
+concurrency:
+  group: platforms-${{ github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:platforms' && github.event.label.name || 'run' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# No workflow-level CARGO_*/RUST* env: rust-cache hashes those into its key, and
+# `build-binaries` must hash like release.yml's job of the same id to share its cache.
+
+jobs:
+  gate:
+    name: Decide which platforms run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      windows: ${{ steps.decide.outputs.windows }}
+      release_builds: ${{ steps.decide.outputs.release_builds }}
+      windows_binaries: ${{ steps.binaries.outputs.windows }}
+      macos_binaries: ${{ steps.binaries.outputs.macos }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Test the change detector
+        run: python3 scripts/tests/needs-windows-ci-test.py
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Decide
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ADDED_LABEL: ${{ github.event.label.name }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:platforms') }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          windows=false; release_builds=false
+          if [ "$EVENT" != pull_request ] || [ "$LABELLED" = true ]; then
+            windows=true; release_builds=true
+            echo "::notice::$EVENT (label ci:platforms: $LABELLED): every platform lane runs"
+          elif [ "$ACTION" = labeled ]; then
+            echo "::notice::label '$ADDED_LABEL' does not ask for platforms; the code run decides"
+          else
+            # Every failure below means Windows runs: skipping is the silent direction.
+            if ! files=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename'); then
+              echo "::warning::could not list the PR's files; running Windows"
+              windows=true
+            elif [ "$(printf '%s\n' "$files" | grep -c .)" -ge 3000 ]; then
+              echo "::warning::the files API stops at 3000 paths; running Windows"
+              windows=true
+            else
+              git fetch --no-tags --depth=1 origin "$BASE_SHA" || echo "::warning::could not fetch the base; the detector fails closed"
+              if ! windows=$(printf '%s\n' "$files" | python3 scripts/needs-windows-ci.py --base "$BASE_SHA"); then
+                echo "::warning::needs-windows-ci.py failed; running Windows"
+                windows=true
+              fi
+            fi
+            [ "$windows" = true ] || echo "::notice::no Windows-only code reached; Windows runs nightly on master. Label the PR ci:platforms to run it here."
+          fi
+          echo "windows=$windows" >> "$GITHUB_OUTPUT"
+          echo "release_builds=$release_builds" >> "$GITHUB_OUTPUT"
+
+      # Read from release.yml so the nightly builds exactly what a release ships.
+      - name: Read the released binaries from release.yml
+        id: binaries
+        if: steps.decide.outputs.release_builds == 'true'
+        run: |
+          set -euo pipefail
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import yaml
+          env = yaml.safe_load(open(".github/workflows/release.yml"))["env"]
+          names = lambda key: " ".join(f"-p {b}" for b in env[key].split())
+          print("windows=" + names("WINDOWS_BINARIES"))
+          print("macos=" + names("BINARIES") + " " + names("AUTH_BINARIES"))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  # Whether a secret written on Windows is unreadable to other local users, which Linux cannot check.
+  windows-secrets:
+    name: Windows secret permissions
+    needs: gate
+    if: needs.gate.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only # as in ci-checks.yml, where this job ran
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Test the owner-only file helper
+        run: cargo test -p calimero-utils-fs
+
+  # The only job that runs merod's own tests on Windows: RocksDB, the server bind
+  # and shutdown have no unix stand-in.
+  windows-node-smoke:
+    name: Windows node smoke
+    needs: gate
+    if: needs.gate.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only # as in ci-checks.yml, where this job ran
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: windows-node-smoke
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # librocksdb-sys needs libclang for bindgen; aws-lc-sys needs NASM.
+      - name: Point bindgen at the image's LLVM
+        shell: bash
+        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      # These drive a real node, so they are #[ignore]d by default.
+      - name: Drive a real node on Windows
+        run: cargo test -p merod --test watchdog_live -- --include-ignored --test-threads 1
+
+  # merod is built ONCE for both Windows e2e lanes and handed to them, instead of
+  # each compiling its own copy (15-22 min apiece on a cold cache).
+  windows-merod:
+    name: Windows merod build
+    needs: gate
+    if: needs.gate.outputs.windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: windows-e2e
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # Same pair the release build and windows-node-smoke need.
+      - name: Point bindgen at the image's LLVM
+        shell: bash
+        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Build merod
+        run: cargo build -p merod
+
+      - name: Upload merod.exe
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-merod
+          path: target/debug/merod.exe
+          retention-days: 2
+
+  # wasm is architecture-independent, so the bundle is built on Linux, which
+  # also sidesteps wasm-opt on windows-msvc.
+  kv-store-bundle:
+    name: kv-store bundle
+    needs: gate
+    if: needs.gate.outputs.windows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: platforms-kv-store
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
+
+      - name: Build kv-store app
+        run: cargo mero build --manifest-path apps/kv-store/Cargo.toml
+
+      - name: Build kv-store bundle
+        run: (cd apps/kv-store && cargo mero bundle --dev --no-icon)
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: platforms-app-bundles
+          path: dist/*.mpk
+          retention-days: 2
+          if-no-files-found: error
+
+  windows-auth-seam:
+    name: Windows e2e (auth seam, binary mode)
+    needs: windows-merod
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download merod.exe
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-merod
+          path: bin/
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run auth-seam e2e (merobox, embedded auth)
+        shell: bash
+        env:
+          # Same as the Linux job in e2e-rust-apps.yml: minted at merod init, and
+          # the script step inherits them to log in with. CI-only values for an
+          # ephemeral localhost node.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
+          MERO_E2E_USER: dev
+          MERO_E2E_PASS: dev-password
+        run: |
+          merobox bootstrap run workflows/auth-seam.yml \
+            --no-docker --binary-path bin/merod.exe --auth-mode embedded
+
+      - name: Logs on failure
+        if: failure()
+        shell: bash
+        run: cat data/auth-seam-1/logs/*.log || true
+
+      - name: Stop nodes
+        if: always()
+        shell: bash
+        run: merobox stop --no-docker --all || true
+
+  # Proves Windows nodes discover and converge (the auth seam only proves one node serves HTTP).
+  windows-node-workflow:
+    name: Windows e2e (3-node sync, binary mode)
+    needs: [windows-merod, kv-store-bundle]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download merod.exe
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-merod
+          path: bin/
+
+      - name: Download the app bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: platforms-app-bundles
+          path: dist/
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install merobox
+        uses: ./.github/actions/setup-merobox
+
+      # cd into the app dir since the scenario's path resolves against CWD, not the YAML's own location.
+      # Server and workflow share a step: a background process isn't guaranteed to outlive an earlier step.
+      - name: Run the 3-node workflow (merobox, binary mode)
+        shell: bash
+        run: |
+          ls -la dist/
+          FIXTURE_REGISTRY_STAGE_ONLY=1 ./scripts/e2e-fixture-registry.sh dist
+
+          python -m http.server 8080 --bind 127.0.0.1 \
+            --directory fixture-registry >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+
+          # Fail here, loudly, rather than let every node fall back to a
+          # bytecode-not-found error that reads like a sync bug.
+          for _ in $(seq 1 30); do
+            curl -sfo /dev/null http://127.0.0.1:8080/ && break
+            sleep 1
+          done
+          curl -sfo /dev/null http://127.0.0.1:8080/ \
+            || { echo "fixture registry never came up" >&2; exit 1; }
+
+          export CALIMERO_REGISTRY_MODE=http
+          export CALIMERO_REGISTRY_URL=http://127.0.0.1:8080/
+
+          MEROD="$GITHUB_WORKSPACE/bin/merod.exe"
+          cd apps/kv-store
+          merobox bootstrap run workflows/workflow-example.yml \
+            --no-docker --binary-path "$MEROD"
+
+      - name: Logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          for d in apps/kv-store/data/*/logs; do
+            echo "=== $d ==="
+            cat "$d"/*.log || true
+          done
+
+      - name: Stop nodes
+        if: always()
+        shell: bash
+        run: merobox stop --no-docker --all || true
+
+  # The release build for each target release.yml ships beyond Linux, with the
+  # same profile and binaries, so a break is found the night it lands rather than
+  # on release day. Its cache key matches release.yml's build job, so the release
+  # build also starts warm.
+  build-binaries:
+    name: Release build (${{ matrix.target }})
+    needs: gate
+    if: needs.gate.outputs.release_builds == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            binaries: macos
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            binaries: windows
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Point bindgen at the image's LLVM (Windows)
+        if: runner.os == 'Windows'
+        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      - name: Install NASM (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Build binaries
+        env:
+          PACKAGES: ${{ matrix.binaries == 'macos' && needs.gate.outputs.macos_binaries || needs.gate.outputs.windows_binaries }}
+        run: |
+          set -euo pipefail
+          test -n "$PACKAGES"
+          # shellcheck disable=SC2086 # one -p per binary
+          cargo build $PACKAGES --release --target ${{ matrix.target }}
+
+      # The two binaries every target ships, run on the platform they were built for.
+      - name: Start the node binaries
+        run: |
+          set -euo pipefail
+          suffix=""; [ "$RUNNER_OS" = Windows ] && suffix=".exe"
+          for bin in merod meroctl; do
+            "target/${{ matrix.target }}/release/$bin$suffix" --version
+          done
+
+  # A red scheduled run is otherwise read by nobody: keep one open issue for it.
+  report:
+    name: Report the nightly
+    needs: [gate, windows-secrets, windows-node-smoke, windows-merod, kv-store-bundle, windows-auth-seam, windows-node-workflow, build-binaries]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          title="Nightly platform build is failing"
+          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "- `\(.key)`: \(.value.result)"' <<<"$NEEDS")
+          issue=$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$failed" ]; then
+            body=$(printf 'The nightly Windows/macOS run on %s failed: %s\n\n%s\n' "$SHA" "$RUN_URL" "$failed")
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body"
+            else
+              gh issue create --title "$title" --body "$body"
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "Green again on $SHA: $RUN_URL"
+            gh issue close "$issue"
+          fi

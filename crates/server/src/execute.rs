@@ -191,18 +191,30 @@ pub(crate) async fn execute_request(
         info!("execution log {i:>log_index_width$}| {}", log);
     }
 
-    let Some(returns) = outcome
-        .returns
-        .map_err(|e| ExecutionError::FunctionCallError(e.to_string()))?
+    Ok(ExecutionResponse::new(method_output(outcome.returns)?))
+}
+
+/// What a method's run answers a client with: its JSON output, nothing, or the
+/// method's own error as `FunctionCallError`.
+///
+/// The one mapping every route that runs a method for a client uses — JSON-RPC
+/// and WebSocket `execute`, the delegated `/intents`, and the account `/query`
+/// — so a method that returned `Err` is reported the same way on all of them.
+/// `/intents` used to drop the `Err` and answer `200 { returns: null }`, which a
+/// client cannot tell from a method that succeeded and returned nothing.
+pub(crate) fn method_output(
+    returns: eyre::Result<Option<Vec<u8>>>,
+) -> Result<Option<serde_json::Value>, ExecutionError> {
+    let Some(returns) = returns.map_err(|e| ExecutionError::FunctionCallError(e.to_string()))?
     else {
-        return Ok(ExecutionResponse::new(None));
+        return Ok(None);
     };
 
-    let returns = serde_json::from_slice(&returns).map_err(|err| ExecutionError::SerdeError {
-        message: err.to_string(),
-    })?;
-
-    Ok(ExecutionResponse::new(Some(returns)))
+    serde_json::from_slice(&returns)
+        .map(Some)
+        .map_err(|err| ExecutionError::SerdeError {
+            message: err.to_string(),
+        })
 }
 
 /// Refuse a call whose writes the execute path discarded because this node is

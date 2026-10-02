@@ -37,13 +37,13 @@
 //! the row, or on versions that do not write it, agree on every answer.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::child_trie::{ChildTrie, EMPTY};
 use crate::collections::is_keyed_entry_of;
 use crate::domain::Domain;
 use crate::entities::ChildInfo;
+use crate::hash_meter::{Digest, Sha256};
 use crate::store::StorageAdaptor;
 
 /// Domain separator of the row's id, which is versioned with the row's layout.

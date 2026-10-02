@@ -185,8 +185,13 @@ where
         let collection = self.inner.id();
         let id = self.inner.resolve(compute_id(collection, value.as_ref()));
 
-        if self.inner.get_mut(id)?.is_some() {
-            return Ok(false);
+        if let Some(mut stored) = self.inner.get_mut(id)? {
+            if *stored == value {
+                return Ok(false);
+            }
+            // A peer filed another value here, which reads leave out: refile it.
+            *stored = value;
+            return Ok(true);
         }
 
         // Warm the ordered index for the new element (after the write, so the
@@ -256,7 +261,12 @@ where
         let id = self
             .inner
             .resolve(compute_id(self.inner.id(), value.as_ref()));
-        self.inner.contains(id)
+        // The trie probe alone answers an absent value; only a present one reads the entry.
+        Ok(self.inner.contains(id)?
+            && self
+                .inner
+                .get(id)?
+                .is_some_and(|stored| stored.borrow() == value))
     }
 
     /// This collection's own id; two handles holding it name the same entries.
@@ -301,7 +311,8 @@ where
             return Ok(false);
         };
 
-        let _ignored = entry.remove()?;
+        // A value a peer filed here under another value is deleted, but was not this one.
+        let removed = entry.remove()?.borrow() == value;
 
         // Only stamp if the index was consistent before AND the index write
         // landed; else leave the marker stale to force a rebuild on the next
@@ -310,7 +321,7 @@ where
             self.stamp_index_marker();
         }
 
-        Ok(true)
+        Ok(removed)
     }
 
     /// Clear the set.
@@ -329,9 +340,12 @@ where
 
     /// Iterate elements in storage (hash) order — *not* element order. The
     /// building block the ordered readers sort; kept private.
-    fn iter_unordered(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
+    fn iter_unordered(&self) -> Result<impl Iterator<Item = V> + '_, StoreError>
+    where
+        V: AsRef<[u8]>,
+    {
         let collection_id = self.inner.id();
-        Ok(self.inner.entries()?.filter_map(move |result| match result {
+        Ok(self.inner.values()?.filter_map(move |result| match result {
             Ok(item) => Some(item),
             Err(error) => {
                 tracing::error!(
@@ -371,14 +385,14 @@ where
             kind = "SortedSet",
             "STAMP index marker"
         );
-        let _ = S::index_meta_put(self.inner.id(), &full);
+        let _ = S::index_meta_put(self.inner.id(), &super::sorted_index_marker(full));
     }
 
     /// `true` if the stamped marker equals the current `full_hash`.
     fn index_marker_current(&self) -> bool {
         let full = self.current_full_hash();
         let stored = S::index_meta_get(self.inner.id());
-        let current = stored.as_deref() == Some(&full[..]);
+        let current = stored.as_deref() == Some(&super::sorted_index_marker(full)[..]);
         tracing::trace!(
             target: "calimero_storage::sorted_index_dbg",
             collection = %self.inner.id(),

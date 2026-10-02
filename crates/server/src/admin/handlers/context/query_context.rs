@@ -50,10 +50,11 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     QueryContextApiRequest, QueryContextApiResponse, QueryContextApiResponseData,
 };
+use calimero_server_primitives::jsonrpc::ExecutionError;
 use futures_util::StreamExt as _;
-use tracing::warn;
+use tracing::{debug, warn};
 
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::admin::service::{method_error_response, parse_api_error, ApiError, ApiResponse};
 use crate::auth::{AuthenticatedAccount, AuthenticatedDevice};
 use crate::AdminState;
 
@@ -109,7 +110,22 @@ pub async fn handler(
         }
     }
 
-    match query(&state.ctx_client, context_id, account, &req).await {
+    answer(
+        context_id,
+        account,
+        &req.method,
+        query(&state.ctx_client, context_id, account, &req).await,
+    )
+}
+
+/// The response for a read's result.
+fn answer(
+    context_id: ContextId,
+    account: calimero_account::AccountId,
+    method: &str,
+    result: eyre::Result<Option<serde_json::Value>>,
+) -> axum::response::Response {
+    match result {
         Ok(returns) => ApiResponse {
             payload: QueryContextApiResponse {
                 data: QueryContextApiResponseData { returns },
@@ -117,10 +133,16 @@ pub async fn handler(
         }
         .into_response(),
         Err(err) => {
+            // The method ran and returned an error: not a refusal. The execute
+            // path already warned with the app's message redacted; this is not.
+            if let Some(method_error) = err.downcast_ref::<ExecutionError>() {
+                debug!(%context_id, %account, %method, %err, "read's method returned an error");
+                return method_error_response(method_error);
+            }
             // The method is named here rather than inside `ExecuteError`, which
             // derives `Copy` and so cannot carry a `String`.
-            warn!(%context_id, %account, method = %req.method, %err, "refusing read");
-            refusal_status(err, &req.method).into_response()
+            warn!(%context_id, %account, %method, %err, "refusing read");
+            refusal_status(err, method).into_response()
         }
     }
 }
@@ -189,14 +211,14 @@ async fn query(
         .query_as(&context_id, account, &executor, req.method.clone(), payload)
         .await?;
 
-    let returns = response.returns?;
+    read_output(response.returns)
+}
 
-    // The guest returns JSON bytes or nothing. `None` is a method that returns
-    // unit, which is a legitimate answer and not an error.
-    returns
-        .map(|bytes| serde_json::from_slice(&bytes))
-        .transpose()
-        .map_err(Into::into)
+/// The read's output, with the method's own error kept typed as JSON-RPC
+/// `execute` keeps it (`crate::execute::method_output`). `None` is a method that
+/// returns unit, which is a legitimate answer and not an error.
+fn read_output(returns: eyre::Result<Option<Vec<u8>>>) -> eyre::Result<Option<serde_json::Value>> {
+    crate::execute::method_output(returns).map_err(eyre::Report::new)
 }
 
 #[cfg(test)]
@@ -275,6 +297,27 @@ mod tests {
     fn a_typed_refusal_keeps_its_status_through_the_fall_through() {
         let mapped = refusal_status(eyre::eyre!(ExecuteError::ContextNotFound), "get");
         assert_eq!(mapped.status_code, StatusCode::NOT_FOUND);
+    }
+
+    /// A read whose method returned `Err` answers as JSON-RPC `execute` does:
+    /// `FunctionCallError` with the method's message, as a `400`. It used to be
+    /// an untyped report, so a read of a missing key was `500 Internal server
+    /// error` with the app's reason nowhere but the node's log.
+    #[tokio::test]
+    async fn a_method_error_is_a_function_call_error() {
+        let response = answer(
+            ctx(),
+            calimero_account::AccountId::from([0x22; 32]),
+            "get_result",
+            read_output(Err(eyre::eyre!("key not found"))),
+        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(body["type"], "FunctionCallError");
+        assert_eq!(body["data"], "key not found");
     }
 
     /// Anything that is not one of the two typed refusals falls through to the
