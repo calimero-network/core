@@ -11,9 +11,14 @@ use tracing::{debug, warn};
 
 static FIRST_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
 
-/// Request headers only a browser sends. A same-origin `GET` carries no `Origin`,
-/// so these are what still mark it as a page's request.
-const FETCH_METADATA: [&str; 3] = ["sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"];
+/// The fetch-metadata header that marks a request as a browser's. A same-origin
+/// `GET` carries no `Origin`, so this is what still says a page sent it.
+///
+/// `Sec-Fetch-Site` alone, not `Sec-Fetch-Mode` or `-Dest`: Node's built-in
+/// `fetch` (undici) sends `Sec-Fetch-Mode: cors` on every request, so counting
+/// it would judge every server-side SDK client as a browser. A browser sends
+/// `Sec-Fetch-Site` on every request, and a page can neither set nor drop it.
+const FETCH_SITE: &str = "sec-fetch-site";
 
 /// The headers that name the host a request was sent to.
 const HOST_HEADERS: [&str; 2] = ["host", "x-forwarded-host"];
@@ -55,10 +60,10 @@ impl OriginGuard {
 
     /// Whether a request may reach a node that does not authenticate callers.
     ///
-    /// A request with no `Origin` and no fetch metadata is not a browser's, and
-    /// is let through as before. A browser's is admitted when its origin is
-    /// listed, or when every host it names is one of this node's own and the
-    /// origin is one of those hosts.
+    /// A request with no `Origin` and no `Sec-Fetch-Site` is not a browser's,
+    /// and is let through as before. A browser's is admitted when its origin is
+    /// listed or is a loopback page, or when every host it names is one of this
+    /// node's own and the origin is one of those hosts (or absent).
     ///
     /// The host is what makes this hold under DNS rebinding. A page on
     /// `attacker.example` whose name is re-pointed at this node sends
@@ -71,14 +76,10 @@ impl OriginGuard {
     /// must pass, because a same-origin page may set `X-Forwarded-Host` itself.
     pub(crate) fn admits(&self, headers: &HeaderMap, uri_authority: Option<&Authority>) -> bool {
         let origin = headers.get(header::ORIGIN);
-        let from_browser = origin.is_some()
-            || FETCH_METADATA
-                .iter()
-                .any(|name| headers.contains_key(*name));
-        if !from_browser {
+        if origin.is_none() && !headers.contains_key(FETCH_SITE) {
             return true;
         }
-        if origin.is_some_and(|origin| self.is_listed(origin)) {
+        if origin.is_some_and(|origin| self.is_listed(origin) || is_loopback_page(origin)) {
             return true;
         }
 
@@ -118,10 +119,6 @@ impl OriginGuard {
             return false;
         };
 
-        if is_loopback_host(authority.host()) {
-            return matches!(scheme.as_str(), "http" | "https" | "tauri");
-        }
-
         let default_port = match scheme.as_str() {
             "http" => 80,
             "https" => 443,
@@ -144,6 +141,23 @@ impl OriginGuard {
                 .is_ok()
             || self.allowed_hosts.contains(&host)
     }
+}
+
+/// A page served from this machine: a local dev server or a Tauri webview.
+/// Admitted whatever host it calls, as before. A rebound page's origin is the
+/// attacker's own name, never a loopback one.
+fn is_loopback_page(origin: &HeaderValue) -> bool {
+    origin
+        .to_str()
+        .ok()
+        .and_then(|origin| origin.split_once("://"))
+        .and_then(|(scheme, rest)| Some((scheme, rest.parse::<Authority>().ok()?)))
+        .is_some_and(|(scheme, authority)| {
+            is_loopback_host(authority.host())
+                && ["http", "https", "tauri"]
+                    .iter()
+                    .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+        })
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -324,6 +338,40 @@ mod tests {
         assert!(guard.admits(&HeaderMap::new(), None));
     }
 
+    /// Node's built-in `fetch` sends `Sec-Fetch-Mode: cors` and nothing else of
+    /// the fetch metadata, so mero-js on a server is not a browser, whatever
+    /// name it calls the node by.
+    #[test]
+    fn node_fetch_is_not_judged_as_a_browser() {
+        let guard = OriginGuard::new(false, None);
+
+        assert!(guard.admits(
+            &headers(&[
+                ("host", "relay.example.com"),
+                ("sec-fetch-mode", "cors"),
+                ("user-agent", "node"),
+            ]),
+            None,
+        ));
+    }
+
+    /// A page on this machine (a dev server, a Tauri webview) may call a node
+    /// it names by any host, as before: a rebinding page never has a loopback
+    /// origin.
+    #[test]
+    fn a_loopback_page_reaches_a_node_named_by_any_host() {
+        let guard = OriginGuard::new(false, None);
+
+        for origin in [
+            "http://localhost:5173",
+            "tauri://localhost",
+            "http://tauri.localhost",
+        ] {
+            assert!(admits(&guard, origin, "relay.example.com"), "{origin}");
+        }
+        assert!(!admits(&guard, "ftp://localhost", "relay.example.com"));
+    }
+
     /// A same-origin page may set `X-Forwarded-Host` itself, so a host header
     /// naming this node does not vouch for another that does not.
     #[test]
@@ -352,7 +400,7 @@ mod tests {
             &headers(&[("origin", "http://attacker.example:2528")]),
             Some(&rebound)
         ));
-        assert!(!guard.admits(&headers(&[("origin", "http://127.0.0.1:2528")]), None));
+        assert!(!guard.admits(&headers(&[("origin", "http://192.168.1.5:2528")]), None));
     }
 
     #[test]
