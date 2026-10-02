@@ -1064,7 +1064,7 @@ fn refresh_projection_for_cut(
             }
             node_state
                 .write_scope_projections()
-                .apply_backfill(namespace_id, ops);
+                .apply_backfill_with_base(datastore, namespace_id, ops);
         }
     }
 }

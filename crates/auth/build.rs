@@ -25,6 +25,8 @@ const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 /// below, so a warm cache did not spare it. Bumping is a deliberate edit here.
 /// `CALIMERO_AUTH_FRONTEND_VERSION=latest` still opts back in per build.
 const CALIMERO_AUTH_FRONTEND_VERSION: &str = "v1.3.6";
+const CALIMERO_AUTH_FRONTEND_SHA256: &str =
+    "2f70a88913f94ef0be74df6a649c8fd148ff21a5834f234fd48db0b7bde9ce39";
 const CALIMERO_AUTH_FRONTEND_DEFAULT_REF: &str = "master";
 const CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL: &str = "https://github.com/{repo}/releases/latest";
 
@@ -38,8 +40,11 @@ fn main() {
 
 fn try_main() -> eyre::Result<()> {
     let token = option_env!("CALIMERO_AUTH_FRONTEND_FETCH_TOKEN");
+    let sha256_override = option_env!("CALIMERO_AUTH_FRONTEND_SHA256");
 
     let mut is_local_dir = false;
+
+    let mut expected_sha256 = sha256_override;
 
     let src = match option_env!("CALIMERO_AUTH_FRONTEND_SRC") {
         Some(src) => {
@@ -68,6 +73,14 @@ fn try_main() -> eyre::Result<()> {
             let asset = option_env!("CALIMERO_AUTH_FRONTEND_ASSET");
             let default_ref = option_env!("CALIMERO_AUTH_FRONTEND_REF")
                 .unwrap_or(CALIMERO_AUTH_FRONTEND_DEFAULT_REF);
+
+            let is_default = repo == CALIMERO_AUTH_FRONTEND_REPO
+                && version == CALIMERO_AUTH_FRONTEND_VERSION
+                && asset.is_none();
+
+            if is_default && expected_sha256.is_none() {
+                expected_sha256 = Some(CALIMERO_AUTH_FRONTEND_SHA256);
+            }
 
             let release_url = if let Some(asset) = asset {
                 if version == "latest" {
@@ -107,7 +120,13 @@ fn try_main() -> eyre::Result<()> {
 
         let cache_dir = target_dir()?.join("cache").join("auth-frontend");
 
-        let workdir = fetch_with_retry(&client, &src, &cache_dir, force)?;
+        if expected_sha256.is_none() {
+            println!(
+                "cargo:warning=auth-frontend from {src} is NOT hash-verified; set CALIMERO_AUTH_FRONTEND_SHA256 to pin it"
+            );
+        }
+
+        let workdir = fetch_with_retry(&client, &src, &cache_dir, force, expected_sha256)?;
 
         let repo = fs::read_dir(workdir)?
             .filter_map(Result::ok)
@@ -137,12 +156,25 @@ fn fetch_with_retry(
     src: &str,
     cache_dir: &Path,
     force: bool,
+    expected_sha256: Option<&str>,
 ) -> eyre::Result<PathBuf> {
     let mut delay_secs = FETCH_RETRY_INITIAL_DELAY_SECS;
 
     for attempt in 1..=FETCH_RETRY_ATTEMPTS {
-        match fetch_and_extract(client, src, cache_dir, FRESHNESS_LIFETIME, force, None) {
+        match fetch_and_extract(
+            client,
+            src,
+            cache_dir,
+            FRESHNESS_LIFETIME,
+            force,
+            expected_sha256,
+        ) {
             Ok(path) => return Ok(path),
+            Err(err) if format!("{err:#}").contains("sha256 mismatch") => {
+                return Err(err.wrap_err(format!(
+                    "the auth-frontend archive at {src} does not match its pinned sha256"
+                )));
+            }
             Err(err) => {
                 let report = err.wrap_err(format!(
                     "failed to fetch the auth-frontend archive from {src} (attempt {attempt}/{FETCH_RETRY_ATTEMPTS})"

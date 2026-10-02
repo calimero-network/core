@@ -176,6 +176,10 @@ POST /jsonrpc                         # JSON-RPC 2.0 endpoint
 WS   /ws                              # WebSocket connection
 ```
 
+The upgrade needs `context:subscribe`; each `execute` message needs `context:execute` for its
+context, checked in `ws/execute.rs` against the permissions the auth guard handed over
+(`GrantedPermissions`).
+
 ### SSE
 
 ```
@@ -298,6 +302,29 @@ covers the token path.
 ## Presence for accounts
 
 `POST /admin-api/contexts/{id}/presence-intents` (`admin/handlers/context/presence_intent.rs`) is how an account with no node publishes ephemeral presence. It sits on the public `delegated_execution_routes()` router with the other intents routes: the device's signature over the `PresenceStatement` is the credential, and the certificate in `authorProof` ties the device to its account. The handler only rebuilds the update (the context from the path, the author from the certificate's key, so a client cannot name another) and hands it to `NodeClient::publish_delegated_ephemeral`, which makes every decision. Each `DelegatedPresenceError` has its own status (`status_for`). It is not `/intents`: presence runs nothing, spends no warrant nonce and changes no state.
+
+## Client key bindings
+
+A client key minted by `POST /admin/client-key` authenticates as the node owner,
+so its bindings are the only thing that narrows it. `context[<ctx>,<identity>]`
+and `application-binding[<app>]` in its permission list become a
+`ClientKeyScope` extension, and every surface that names a context or group
+checks it:
+
+- `/jsonrpc`, WS `execute` and context subscribe (WS and SSE): the context must
+  be the bound one, or run the bound application.
+- Group subscribe (WS and SSE) and admin routes with a `{group_id}` or
+  `{namespace_id}`: a context binding reaches only the groups on the chain from
+  its context's group up to the namespace; an application binding only groups
+  targeting that application.
+- Admin routes with a `{context_id}`, and `/contexts/sync/{id}`, are refused with
+  `403` outside the binding (`admin/client_key_scope.rs`). `POST /contexts/sync`
+  with no id syncs every context and is refused outright.
+- SSE: a bound key's session principal includes its binding, so it can neither
+  adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
+
+Every check fails closed when the context or group cannot be resolved. A key
+with no binding is unaffected.
 
 ## Sealed transport
 

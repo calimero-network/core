@@ -65,6 +65,13 @@ token manager:
   **refresh token**.
 - **Default lifetimes:** access token `3600` seconds (1 hour), refresh token 30
   days. Configurable via `jwt.access_token_expiry` / `jwt.refresh_token_expiry`.
+- **Application client keys** get shorter tokens: access token `900` seconds
+  (15 minutes), refresh token 7 days, set by `jwt.client_access_token_expiry` /
+  `jwt.client_refresh_token_expiry` and never longer than the two settings
+  above. Every refresh issues a new refresh token, so an app in use stays signed
+  in until its client key expires (30 days by default, or the `ttl_secs` it was
+  minted with); an app left unused for longer than the refresh lifetime signs in
+  again.
 - **Issuer:** `jwt.issuer` (the shipped example config uses `calimero-auth`).
 
 Access-token claims:
@@ -327,8 +334,6 @@ auth service directly if you need them:
   deleting keys, and per-key permission management).
 - **CORS and security-header configuration** (`[cors]`, `[security.headers]`,
   CSP) — relevant when serving the auth UI cross-origin.
-- The **callback** route, which backs an OAuth-style redirect flow that no
-  shipped provider currently drives.
 - **Standalone operation:** `mero-auth` can also run as its own service (default
   listen `127.0.0.1:3001`) rather than embedded in the node; that deployment
   shape is not covered here.
