@@ -1513,7 +1513,6 @@ dependencies = [
  "calimero-wasm-abi",
  "camino",
  "clap",
- "dashmap",
  "ed25519-dalek 3.0.0",
  "eyre",
  "flate2",

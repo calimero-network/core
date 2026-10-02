@@ -10,17 +10,6 @@ pub(super) fn handle_subscribed(
     peer_id: libp2p::PeerId,
     topic: libp2p::gossipsub::TopicHash,
 ) {
-    // Track every observed subscription so Phase-1 governance readiness
-    // (`assert_transport_ready` via `NodeClient::known_subscribers`) can
-    // cap the required mesh quorum by the population size. The
-    // bookkeeping is topic-agnostic — non-governance topics in the map
-    // are harmless because the readiness gate only queries `ns/<id>`
-    // and `group/<id>` topics.
-    manager
-        .clients
-        .node
-        .record_peer_subscribed(peer_id, topic.clone());
-
     let topic_str = topic.as_str();
 
     // Check for group topic: "group/<hex32>"
@@ -155,16 +144,7 @@ pub(super) fn handle_subscribed(
     );
 }
 
-pub(super) fn handle_unsubscribed(
-    manager: &mut NodeManager,
-    peer_id: libp2p::PeerId,
-    topic: libp2p::gossipsub::TopicHash,
-) {
-    manager
-        .clients
-        .node
-        .record_peer_unsubscribed(&peer_id, &topic);
-
+pub(super) fn handle_unsubscribed(peer_id: libp2p::PeerId, topic: libp2p::gossipsub::TopicHash) {
     let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
         return;
     };
@@ -207,7 +187,7 @@ mod tests {
         sleep(Duration::from_millis(100)).await;
 
         // The stub swarm lists no subscribers on any topic.
-        assert_eq!(node.node_client.known_subscribers(&namespace), 0);
-        assert_eq!(node.node_client.known_subscribers(&foreign), 0);
+        assert_eq!(node.node_client.known_subscribers(&namespace).await, 0);
+        assert_eq!(node.node_client.known_subscribers(&foreign).await, 0);
     }
 }
