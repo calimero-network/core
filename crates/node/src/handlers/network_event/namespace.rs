@@ -251,6 +251,31 @@ impl NamespaceDeltaApply {
             .await;
         }
 
+        // An op refused for its signer was not buffered, so nothing else will
+        // fetch its ancestry. One fetch per (namespace, sender) per interval,
+        // by id, from the sender.
+        if matches!(outcome, NamespaceApplyOutcome::NotAdmitted)
+            && self.node_state.claim_refusal_backfill(namespace_id, source)
+        {
+            debug!(
+                %source,
+                namespace_id = %hex::encode(namespace_id),
+                "gossip governance op was not admitted; fetching its ancestry from its sender"
+            );
+            fetch_and_apply_ancestry(
+                &self.context_client,
+                &self.node_client,
+                &self.network_client,
+                &self.sync_manager,
+                source,
+                namespace_id,
+                op_for_ack.clone(),
+                self.sync_timeout,
+                &self.node_state,
+            )
+            .await;
+        }
+
         // Proactive backfill fires ONLY for `Pending` - the DAG accepted the op
         // but can't apply it until missing parents arrive. `Applied` is the
         // happy path; `Duplicate` means we already have the op (common on
@@ -261,22 +286,22 @@ impl NamespaceDeltaApply {
         // `resolve_namespace_pending`: that helper seeds its `ParentPullBudget`
         // with the initial peer already marked tried, so passing `source`
         // straight to it means `source` is never actually queried - which in a
-        // 2-node mesh silently does nothing. Empty `delta_ids` means "give me
-        // everything for this namespace" on the responder side.
+        // 2-node mesh silently does nothing. The ancestry is asked for by id:
+        // an empty request only ever returns the first `MAX_BACKFILL_OPS` ops.
         if matches!(outcome, NamespaceApplyOutcome::Pending) {
             debug!(
                 %source,
                 namespace_id = %hex::encode(namespace_id),
                 "gossip governance op is pending; triggering proactive backfill"
             );
-            fetch_and_apply_namespace_backfill(
+            fetch_and_apply_ancestry(
                 &self.context_client,
                 &self.node_client,
                 &self.network_client,
                 &self.sync_manager,
                 source,
                 namespace_id,
-                Vec::new(),
+                op_for_ack.clone(),
                 self.sync_timeout,
                 &self.node_state,
             )
@@ -639,27 +664,21 @@ async fn resolve_namespace_pending(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
-)]
-async fn fetch_and_apply_namespace_backfill(
-    context_client: &calimero_context_client::client::ContextClient,
-    node_client: &calimero_node_primitives::client::NodeClient,
+/// Ask `peer` for namespace ops: all it holds when `delta_ids` is empty (capped
+/// at `MAX_BACKFILL_OPS`, always the same window in hash order), else those ids.
+async fn request_namespace_backfill(
     network_client: &NetworkClient,
-    sync_manager: &crate::sync::SyncManager,
     peer: libp2p::PeerId,
     namespace_id: [u8; 32],
     delta_ids: Vec<[u8; 32]>,
     sync_timeout: tokio::time::Duration,
-    node_state: &crate::NodeState,
-) {
+) -> Option<Vec<([u8; 32], Vec<u8>)>> {
     let Ok(mut stream) = network_client.open_stream(peer).await else {
         debug!(
             %peer,
             "failed to open stream for namespace backfill"
         );
-        return;
+        return None;
     };
 
     let msg = calimero_node_primitives::sync::StreamMessage::Init {
@@ -680,7 +699,7 @@ async fn fetch_and_apply_namespace_backfill(
 
     if let Err(err) = crate::sync::stream::send(&mut stream, &msg, None).await {
         debug!(%err, "failed to send NamespaceBackfillRequest");
-        return;
+        return None;
     }
 
     match crate::sync::stream::recv(&mut stream, None, sync_timeout).await {
@@ -688,95 +707,177 @@ async fn fetch_and_apply_namespace_backfill(
             payload:
                 calimero_node_primitives::sync::MessagePayload::NamespaceBackfillResponse { deltas },
             ..
-        })) => {
-            let mut any_applied = false;
-            // Collect divergence reports from `MemberRemoved` /
-            // `MemberLeft` ops applying via the backfill path. Same
-            // reasoning as the gossip-receive path: once the DAG
-            // marks the op `Applied`, any later gossipsub delivery of
-            // the same op becomes `Duplicate` and the apply work -
-            // including the post-apply hash check - is skipped. If
-            // divergence surfaces here and we drop it, no later path
-            // will re-emit it. Defer firing until after the batch
-            // so the apply loop is contiguous.
-            let mut pending_divergences: Vec<calimero_context_client::messages::DivergenceReport> =
-                Vec::new();
-            // Cap what we apply regardless of what the responder sent. A
-            // cooperating responder already trims to this bound, but a
-            // misbehaving one must not be able to drive unbounded apply work by
-            // overfilling the response.
-            if deltas.len() > crate::sync::MAX_BACKFILL_OPS {
+        })) => Some(deltas),
+        _ => {
+            debug!("unexpected response to NamespaceBackfillRequest");
+            None
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+)]
+async fn fetch_and_apply_namespace_backfill(
+    context_client: &calimero_context_client::client::ContextClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    network_client: &NetworkClient,
+    sync_manager: &crate::sync::SyncManager,
+    peer: libp2p::PeerId,
+    namespace_id: [u8; 32],
+    delta_ids: Vec<[u8; 32]>,
+    sync_timeout: tokio::time::Duration,
+    node_state: &crate::NodeState,
+) {
+    let Some(deltas) =
+        request_namespace_backfill(network_client, peer, namespace_id, delta_ids, sync_timeout)
+            .await
+    else {
+        return;
+    };
+    // Capped, namespace-checked and ordered parents-first before any of it
+    // reaches the DAG; the DAG entry point verifies each signature.
+    let ops = crate::sync::namespace_backfill::decode_backfill(namespace_id, deltas);
+    apply_backfilled_ops(
+        context_client,
+        node_client,
+        network_client,
+        sync_manager,
+        peer,
+        namespace_id,
+        ops,
+        sync_timeout,
+        node_state,
+    )
+    .await;
+}
+
+/// Fetch the ancestry of `op` from `peer` by id and apply it, parents first,
+/// with `op` last. An empty backfill request cannot reach ancestors past the
+/// first `MAX_BACKFILL_OPS` ops by hash, so the missing parents are asked for
+/// explicitly (see [`crate::sync::namespace_backfill::collect_ancestry`]).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+)]
+async fn fetch_and_apply_ancestry(
+    context_client: &calimero_context_client::client::ContextClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    network_client: &NetworkClient,
+    sync_manager: &crate::sync::SyncManager,
+    peer: libp2p::PeerId,
+    namespace_id: [u8; 32],
+    op: SignedNamespaceOp,
+    sync_timeout: tokio::time::Duration,
+    node_state: &crate::NodeState,
+) {
+    let store = context_client.datastore();
+    let log = calimero_governance_store::NamespaceOpLogService::new(store, namespace_id.into());
+    let ops = crate::sync::namespace_backfill::collect_ancestry(
+        namespace_id,
+        op,
+        |id| log.contains_op(*id).unwrap_or(false),
+        |ids| request_namespace_backfill(network_client, peer, namespace_id, ids, sync_timeout),
+    )
+    .await;
+    apply_backfilled_ops(
+        context_client,
+        node_client,
+        network_client,
+        sync_manager,
+        peer,
+        namespace_id,
+        ops,
+        sync_timeout,
+        node_state,
+    )
+    .await;
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "orthogonal args on a consensus sync/handler path; no cohesive grouping"
+)]
+async fn apply_backfilled_ops(
+    context_client: &calimero_context_client::client::ContextClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    network_client: &NetworkClient,
+    sync_manager: &crate::sync::SyncManager,
+    peer: libp2p::PeerId,
+    namespace_id: [u8; 32],
+    ops: Vec<([u8; 32], SignedNamespaceOp)>,
+    sync_timeout: tokio::time::Duration,
+    node_state: &crate::NodeState,
+) {
+    let mut any_applied = false;
+    // Collect divergence reports from `MemberRemoved` /
+    // `MemberLeft` ops applying via the backfill path. Same
+    // reasoning as the gossip-receive path: once the DAG
+    // marks the op `Applied`, any later gossipsub delivery of
+    // the same op becomes `Duplicate` and the apply work -
+    // including the post-apply hash check - is skipped. If
+    // divergence surfaces here and we drop it, no later path
+    // will re-emit it. Defer firing until after the batch
+    // so the apply loop is contiguous.
+    let mut pending_divergences: Vec<calimero_context_client::messages::DivergenceReport> =
+        Vec::new();
+    for (delta_id, op) in ops {
+        match context_client.apply_signed_namespace_op(op).await {
+            Ok(NamespaceApplyOutcome::Applied { divergence }) => {
+                any_applied = true;
+                if let Some(report) = divergence {
+                    pending_divergences.push(report);
+                }
+            }
+            Ok(_) => {}
+            Err(err) => {
                 warn!(
                     %peer,
                     namespace_id = %hex::encode(namespace_id),
-                    received = deltas.len(),
-                    cap = crate::sync::MAX_BACKFILL_OPS,
-                    "namespace backfill response exceeds cap; applying only the first cap ops"
+                    delta_id = %hex::encode(delta_id),
+                    ?err,
+                    "failed to apply namespace backfill op"
                 );
             }
-            for (delta_id, op_bytes) in deltas.into_iter().take(crate::sync::MAX_BACKFILL_OPS) {
-                if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(&op_bytes) {
-                    match context_client.apply_signed_namespace_op(op).await {
-                        Ok(NamespaceApplyOutcome::Applied { divergence }) => {
-                            any_applied = true;
-                            if let Some(report) = divergence {
-                                pending_divergences.push(report);
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(err) => {
-                            warn!(
-                                %peer,
-                                namespace_id = %hex::encode(namespace_id),
-                                delta_id = %hex::encode(delta_id),
-                                ?err,
-                                "failed to apply namespace backfill op"
-                            );
-                        }
-                    }
-                }
-            }
-            // Route any divergences surfaced by the apply loop to the
-            // reconcile-via-anchor path. The helper itself logs and
-            // backs off internally; no error to propagate here.
-            for report in pending_divergences {
-                sync_manager.reconcile_after_divergence(report).await;
-            }
-            if any_applied {
-                // FSM notify after the batch - same rationale as the
-                // gossip-receive path (line 120).
-                node_client.notify_namespace_op_applied(namespace_id);
-
-                // Governance-pending active drain: backfilled governance ops may unblock
-                // state deltas previously buffered as `Unknown`. Same
-                // hook as the gossip-apply path.
-                let drain_input = crate::handlers::state_delta::StateDeltaContext {
-                    node_clients: crate::state::NodeClients {
-                        context: context_client.clone(),
-                        node: node_client.clone(),
-                    },
-                    node_state: node_state.clone(),
-                    network_client: network_client.clone(),
-                    sync_timeout,
-                };
-                crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
-                // PR-6b Task 6b.5: backfilled cascade-upgrade ops may have
-                // advanced this node's target schema and triggered a lazy
-                // binary advance - drain absorbed straggler deltas the loaded
-                // reader can now read (verbatim replay). Same hook as the
-                // gossip-apply path.
-                crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
-
-                // A namespace whose first op arrives pending gets its whole DAG
-                // here and nowhere else, so the key has to be pulled here too.
-                sync_manager
-                    .recover_missing_group_keys(namespace_id, Some(peer))
-                    .await;
-            }
         }
-        _ => {
-            debug!("unexpected response to NamespaceBackfillRequest");
-        }
+    }
+    // Route any divergences surfaced by the apply loop to the
+    // reconcile-via-anchor path. The helper itself logs and
+    // backs off internally; no error to propagate here.
+    for report in pending_divergences {
+        sync_manager.reconcile_after_divergence(report).await;
+    }
+    if any_applied {
+        // FSM notify after the batch - same rationale as the
+        // gossip-receive path (line 120).
+        node_client.notify_namespace_op_applied(namespace_id);
+
+        // Governance-pending active drain: backfilled governance ops may unblock
+        // state deltas previously buffered as `Unknown`. Same
+        // hook as the gossip-apply path.
+        let drain_input = crate::handlers::state_delta::StateDeltaContext {
+            node_clients: crate::state::NodeClients {
+                context: context_client.clone(),
+                node: node_client.clone(),
+            },
+            node_state: node_state.clone(),
+            network_client: network_client.clone(),
+            sync_timeout,
+        };
+        crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+        // PR-6b Task 6b.5: backfilled cascade-upgrade ops may have
+        // advanced this node's target schema and triggered a lazy
+        // binary advance - drain absorbed straggler deltas the loaded
+        // reader can now read (verbatim replay). Same hook as the
+        // gossip-apply path.
+        crate::handlers::state_delta::drain_all_absorbed(&drain_input).await;
+
+        // A namespace whose first op arrives pending gets its whole DAG
+        // here and nowhere else, so the key has to be pulled here too.
+        sync_manager
+            .recover_missing_group_keys(namespace_id, Some(peer))
+            .await;
     }
 }
 
