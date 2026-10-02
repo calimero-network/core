@@ -14,7 +14,9 @@ use calimero_context::hlc_fence::{
     delta_fence_decision, delta_is_fenced, loaded_reader_bytecode_id, FenceDecision,
 };
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{register_context_in_group, MetaRepository, UpgradesRepository};
+use calimero_governance_store::{
+    register_context_in_group, MetaRepository, UpgradeLadderRepository, UpgradesRepository,
+};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -23,7 +25,7 @@ use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::{
     self, ApplicationMeta as ApplicationMetaKey, BlobMeta, ContextMeta as ContextMetaKey,
-    GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue,
+    GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue, LadderRung,
 };
 use calimero_store::types::{ApplicationMeta, ContextMeta};
 use calimero_store::Store;
@@ -118,6 +120,22 @@ fn setup(
 /// The application id of the locally-loaded application (the one the
 /// `ContextMeta.application` key points at).
 const LOADED_APP_ID: [u8; 32] = [0xAB; 32];
+
+/// The rung the group recorded for `bytecode_id`, as its creation or an upgrade does.
+/// A row only counts as the loaded reader for a blob its own group registered.
+fn record_rung(store: &Store, gid: ContextGroupId, bytecode_id: [u8; 32]) {
+    UpgradeLadderRepository::new(store)
+        .append(
+            &gid,
+            LadderRung {
+                bytecode_id,
+                application_id: ApplicationId::from(LOADED_APP_ID),
+                package: String::new(),
+                version: String::new(),
+            },
+        )
+        .expect("record the rung");
+}
 
 /// Install an `ApplicationMeta` value keyed by `app_id` whose `bytecode`
 /// blob-id is `bytecode_id`. `loaded_reader_bytecode_id` resolves
@@ -308,7 +326,8 @@ fn loaded_reader_prefers_activation_marker_over_stale_row() {
 #[test]
 fn loaded_reader_resolves_loaded_application_not_group_target() {
     // GroupMeta.bytecode_id = v2 (target advanced), loaded application = v1.
-    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
+    let (store, gid, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
+    record_rung(&store, gid, BYTECODE_ID_1);
     let app_id = ApplicationId::from(LOADED_APP_ID);
     install_application(&store, app_id, BYTECODE_ID_1);
     install_context_meta(&store, ctx_id, app_id);
@@ -328,7 +347,8 @@ fn loaded_reader_resolves_loaded_application_not_group_target() {
 /// exists for, and it is invisible to the `unwrap_or(meta.target.bytecode_id)` fallback.
 #[test]
 fn fence_decision_buffers_v2_delta_for_v1_loaded_reader() {
-    let (store, _, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
+    let (store, gid, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
+    record_rung(&store, gid, BYTECODE_ID_1);
     let app_id = ApplicationId::from(LOADED_APP_ID);
     install_application(&store, app_id, BYTECODE_ID_1);
     install_context_meta(&store, ctx_id, app_id);
@@ -387,4 +407,19 @@ fn loaded_reader_falls_back_to_group_target_when_application_meta_missing() {
     let apply = delta_fence_decision(&store, &ctx_id, BYTECODE_ID_2, hlc_after_zero())
         .expect("delta_fence_decision must not error");
     assert_eq!(apply, FenceDecision::Apply);
+}
+
+/// The row is shared by every group naming its id, so a blob this context's group
+/// never registered is not its loaded reader: it falls back to the group target.
+#[test]
+fn loaded_reader_ignores_a_row_its_group_never_registered() {
+    let (store, gid, ctx_id) = setup(BYTECODE_ID_2, Some(HybridTimestamp::zero()), true);
+    record_rung(&store, gid, BYTECODE_ID_2);
+    let app_id = ApplicationId::from(LOADED_APP_ID);
+    install_application(&store, app_id, BYTECODE_ID_1);
+    install_context_meta(&store, ctx_id, app_id);
+
+    let loaded = loaded_reader_bytecode_id(&store, &ctx_id)
+        .expect("loaded_reader_bytecode_id must not error");
+    assert_eq!(loaded, Some(BYTECODE_ID_2));
 }

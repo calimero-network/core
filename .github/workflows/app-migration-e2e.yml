@@ -16,6 +16,7 @@ on:
       - ".github/workflows/app-migration-e2e.yml"
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
       - ".github/actions/setup-merobox/**"
       - "scripts/e2e-fixture-registry.sh"
 
@@ -28,6 +29,7 @@ on:
       - ".github/workflows/app-migration-e2e.yml"
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
       - ".github/actions/setup-merobox/**"
       - "scripts/e2e-fixture-registry.sh"
 

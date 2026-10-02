@@ -69,6 +69,8 @@ mod local_governance_node_e2e;
 mod migration_events_e2e;
 #[cfg(test)]
 mod parent_plan_applied_flag_test;
+#[cfg(test)]
+mod registered_bytecode_e2e;
 // Also on the ungated harness: no mock attestation, runs in the default
 // `cargo test`.
 #[cfg(test)]

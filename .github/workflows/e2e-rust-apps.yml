@@ -45,6 +45,7 @@ on:
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
 
   pull_request:
     branches: [master]
@@ -84,6 +85,7 @@ on:
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
 
   workflow_dispatch:
 
@@ -180,8 +182,6 @@ jobs:
         if: always()
         run: merobox stop --no-docker --all || true
 
-  # Same declarative workflow as auth-seam, on Windows.
-  # merod is built here, not extracted from the Docker image, since there is no Docker on this runner.
   # The TEE relay topology: merod in PROXY auth mode with delegated access,
   # behind Traefik and a standalone mero-auth serving device-key login, as
   # mero-tee runs a fleet relay. Every other scenario reaches a node on its own
@@ -248,7 +248,7 @@ jobs:
       - name: Run relay-device-login
         run: |
           # Nodes fetch bundles from a fixture registry rather than each other,
-          # as the Windows binary-mode lane does.
+          # as the Windows binary-mode lane in platforms.yml does.
           FIXTURE_REGISTRY_STAGE_ONLY=1 ./scripts/e2e-fixture-registry.sh dist
           python3 -m http.server 8080 --bind 127.0.0.1 \
             --directory fixture-registry >/dev/null 2>&1 &
@@ -283,157 +283,8 @@ jobs:
         if: always()
         run: merobox stop --no-docker --all || true
 
-  windows-auth-seam:
-    name: Windows e2e (auth seam, binary mode)
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: windows-e2e
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      # librocksdb-sys needs bindgen-runtime; aws-lc-sys needs NASM for its x86_64 primitives.
-      # Same pair the release build and windows-node-smoke need.
-      - name: Point bindgen at the image's LLVM
-        shell: bash
-        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
-
-      - name: Install NASM
-        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-
-      - name: Build merod
-        run: cargo build -p merod
-
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-
-      - name: Install merobox
-        uses: ./.github/actions/setup-merobox
-
-      - name: Run auth-seam e2e (merobox, embedded auth)
-        shell: bash
-        env:
-          # Same as the Linux job above: minted at merod init, and the script step inherits
-          # them to log in with. CI-only values for an ephemeral localhost node.
-          MERO_AUTH_ADMIN_USER: dev
-          MERO_AUTH_ADMIN_PASSWORD: dev-password
-          MERO_E2E_USER: dev
-          MERO_E2E_PASS: dev-password
-        run: |
-          merobox bootstrap run workflows/auth-seam.yml \
-            --no-docker --binary-path target/debug/merod.exe --auth-mode embedded
-
-      - name: Logs on failure
-        if: failure()
-        shell: bash
-        run: cat data/auth-seam-1/logs/*.log || true
-
-      - name: Stop nodes
-        if: always()
-        shell: bash
-        run: merobox stop --no-docker --all || true
-
-  # Proves Windows nodes discover and converge (windows-auth-seam only proves one node serves HTTP).
-  # Uses the .mpk from build-apps: wasm is architecture-independent, sidestepping wasm-opt on windows-msvc.
-  windows-node-workflow:
-    name: Windows e2e (3-node sync, binary mode)
-    needs: [build-apps]
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: windows-e2e
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      - name: Point bindgen at the image's LLVM
-        shell: bash
-        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
-
-      - name: Install NASM
-        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-
-      - name: Build merod
-        run: cargo build -p merod
-
-      - name: Download the app bundles
-        uses: actions/download-artifact@v8
-        with:
-          name: e2e-app-bundles
-          path: dist/
-
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-
-      - name: Install merobox
-        uses: ./.github/actions/setup-merobox
-
-      # cd into the app dir since the scenario's path resolves against CWD, not the YAML's own location.
-      # Server and workflow share a step: a background process isn't guaranteed to outlive an earlier step.
-      - name: Run the 3-node workflow (merobox, binary mode)
-        shell: bash
-        run: |
-          ls -la dist/
-          FIXTURE_REGISTRY_STAGE_ONLY=1 ./scripts/e2e-fixture-registry.sh dist
-
-          python -m http.server 8080 --bind 127.0.0.1 \
-            --directory fixture-registry >/dev/null 2>&1 &
-          server=$!
-          trap 'kill "$server" 2>/dev/null || true' EXIT
-
-          # Fail here, loudly, rather than let every node fall back to a
-          # bytecode-not-found error that reads like a sync bug.
-          for _ in $(seq 1 30); do
-            curl -sfo /dev/null http://127.0.0.1:8080/ && break
-            sleep 1
-          done
-          curl -sfo /dev/null http://127.0.0.1:8080/ \
-            || { echo "fixture registry never came up" >&2; exit 1; }
-
-          export CALIMERO_REGISTRY_MODE=http
-          export CALIMERO_REGISTRY_URL=http://127.0.0.1:8080/
-
-          MEROD="$GITHUB_WORKSPACE/target/debug/merod.exe"
-          cd apps/kv-store
-          merobox bootstrap run workflows/workflow-example.yml \
-            --no-docker --binary-path "$MEROD"
-
-      - name: Logs on failure
-        if: failure()
-        shell: bash
-        run: |
-          for d in apps/kv-store/data/*/logs; do
-            echo "=== $d ==="
-            cat "$d"/*.log || true
-          done
-
-      - name: Stop nodes
-        if: always()
-        shell: bash
-        run: merobox stop --no-docker --all || true
+  # The Windows lanes (auth seam and 3-node sync, binary mode) live in platforms.yml:
+  # nightly, and on a PR whose change can reach Windows-only code.
 
   # ── Build WASM apps (runs in parallel with image build) ──
   build-apps:
