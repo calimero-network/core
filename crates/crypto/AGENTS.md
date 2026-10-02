@@ -26,7 +26,8 @@ cargo test -p calimero-crypto test_kdf_derivation_is_deterministic_and_interoper
 | Item | Kind | Purpose |
 | --- | --- | --- |
 | `SharedKey` | struct | Holds a zeroized 32-byte AEAD key; `Clone`, `Zeroize`, `ZeroizeOnDrop`, redacted `Debug` |
-| `SharedKey::new(sk, pk)` | fn | ECDH over the Curve25519 form of an Ed25519 `PrivateKey`/peer `PublicKey`, HKDF-derived into an AES key |
+| `SharedKey::new(sk, pk, purpose)` | fn | ECDH over the Curve25519 form of an Ed25519 `PrivateKey`/peer `PublicKey`, HKDF-derived into an AES key under the purpose's label and bound to the purpose's AAD |
+| `Purpose` | enum | What a `SharedKey::new` key is for: `GroupKey`, `TeeVault`, `App`, `Account`, `BlobTransfer` (table below) |
 | `SharedKey::from_x25519(sk, pk)` | fn | ECDH over a **native** X25519 keypair (`X25519SecretKey`/`X25519PublicKey`), HKDF-derived under a *separate* label |
 | `SharedKey::from_sk(sk)` | fn | Uses the raw private key bytes directly as the AEAD key (no ECDH) |
 | `X25519SecretKey` | struct | Agreement-only secret, `ZeroizeOnDrop`, redacted `Debug`; `random`, `public_key`, `as_bytes` |
@@ -36,9 +37,9 @@ cargo test -p calimero-crypto test_kdf_derivation_is_deterministic_and_interoper
 | `SharedKey::decrypt(cipher_text, nonce)` | fn | AES-256-GCM open; returns `None` on any authentication failure |
 | `SharedKeyError` | enum (`#[non_exhaustive]`) | `InvalidPublicKey` (bad Edwards Y / small-order point) and the X25519 identity-point case |
 | `NONCE_LEN` | const | `12` (AES-GCM standard nonce size) |
-| `seal_to_root(csprng, root_pk, plaintext)` | fn | Seals to an account **root** key with a one-shot sender keypair; returns a `SealedEnvelope` |
-| `open_sealed(root_sk, envelope)` | fn | Opens one with the root private key alone |
-| `SealedEnvelope` | struct | `ephemeral_public_key`, `nonce`, `ciphertext` - everything an opener needs but the root |
+| `seal_to_root(csprng, root_pk, plaintext, purpose)` | fn | Seals to a recipient key with a one-shot sender keypair under `purpose`; returns a `SealedEnvelope` |
+| `open_sealed(recipient_sk, envelope, purpose)` | fn | Opens one with the recipient private key alone, under the same `purpose` |
+| `SealedEnvelope` | struct | `ephemeral_public_key`, `nonce`, `ciphertext` - everything an opener needs but the recipient's private key |
 | `SealError` | enum (`#[non_exhaustive]`) | `Agreement` (bad recipient/ephemeral point) and `Aead` (wrong key or tampered - deliberately the same answer) |
 | `Nonce` | type alias | `[u8; NONCE_LEN]` |
 
@@ -46,15 +47,25 @@ All fallible AEAD operations return `Option`, not `Result` - there is no distinc
 
 ## Mental Model
 
-`SharedKey::new` is the normal path: it treats `sk` as an Ed25519 signing key, converts it to its underlying scalar (`SigningKey::to_scalar`), decompresses the peer's Edwards Y-coordinate public key, and multiplies scalar * point to get a raw ECDH secret. A raw curve point is not uniformly distributed over 256 bits, so it is never used directly as a key - it is fed as IKM into HKDF-SHA256 (`hkdf::Salt::new` with an empty salt, then `expand` with the fixed info string `AEAD_KDF_INFO = b"calimero.sharedkey.aead.v2"`) to produce the actual 32-byte AES-256-GCM key. Both peers derive the same key because ECDH is commutative: `signer_sk * verifier_pk == verifier_sk * signer_pk`.
+`SharedKey::new` is the normal path: it treats `sk` as an Ed25519 signing key, converts it to its underlying scalar (`SigningKey::to_scalar`), decompresses the peer's Edwards Y-coordinate public key, and multiplies scalar * point to get a raw ECDH secret. A raw curve point is not uniformly distributed over 256 bits, so it is never used directly as a key - it is fed as IKM into HKDF-SHA256 (`hkdf::Salt::new` with an empty salt, then `expand` with the purpose's info label) to produce the actual 32-byte AES-256-GCM key. Both peers derive the same key because ECDH is commutative: `signer_sk * verifier_pk == verifier_sk * signer_pk`.
 
-`SharedKey::from_x25519` is the same shape over a native X25519 keypair, for parties whose agreement key is deliberately *not* their signing key - a device's KEM key, which must be revocable independently of the identity that certified it. Its HKDF label (`X25519_KDF_INFO`) is distinct from `AEAD_KDF_INFO`, so even the same raw point reached through the two paths can never derive the same AES key. Its guard is the X25519 analogue of the small-order check: an agreement that collapses to the identity point is rejected, because it would make the output independent of the caller's secret and therefore predictable.
+`SharedKey::from_x25519` is the same shape over a native X25519 keypair, for parties whose agreement key is deliberately *not* their signing key - a device's KEM key, which must be revocable independently of the identity that certified it. Its HKDF label (`X25519_KDF_INFO`, `calimero.sharedkey.x25519.aead.v1`) is distinct from every purpose label, so even the same raw point reached through the two paths can never derive the same AES key. It uses empty AAD, as does `from_sk`. Its guard is the X25519 analogue of the small-order check: an agreement that collapses to the identity point is rejected, because it would make the output independent of the caller's secret and therefore predictable.
+
+Each `Purpose` has its own HKDF info label and its own AES-GCM AAD, so an envelope made for one purpose never opens through another:
+
+| Purpose | HKDF label | AAD | Used for |
+| --- | --- | --- | --- |
+| `GroupKey { group_id, recipient, sender }` | `calimero.seal.v3.group-key` | `group_id \|\| recipient \|\| sender` | Group-key delivery to a member identity |
+| `TeeVault { namespace_id, recipient }` | `calimero.seal.v3.tee-vault` | `namespace_id \|\| recipient` | Namespace TEE key delivery |
+| `App { context_id, recipient }` | `calimero.seal.v3.app` | `context_id \|\| recipient` | App `env::seal_to` / `env::open_sealed`; the runtime always passes the run's own context id |
+| `Account { recipient }` | `calimero.seal.v3.account` | `recipient` | The admin `seal_to_account` route and `meroctl account seal-to`; opened by the account root holder, not by an app |
+| `BlobTransfer` | `calimero.seal.v3.blob-transfer` | empty | Blob stream key between two peers |
 
 Before doing any of that, `new` rejects public keys that decompress to a small-order (torsion) point via `is_small_order()`. A small-order peer key would collapse the ECDH output into a tiny subgroup independent of the caller's own scalar, defeating the "shared" part of the secret - this is the standard X25519/Ed25519 small-subgroup attack guard.
 
 `SharedKey::from_sk` is a separate, non-ECDH path: it just wraps the private key's own bytes as the AES key. It is used where the "shared key" is really a single party's own symmetric secret rather than a peer-derived one - check callers before assuming ECDH semantics apply.
 
-`seal_to_root` / `open_sealed` exist because `SharedKey::new` alone is the wrong shape for a payload written now and opened much later by someone who has only their own key. The secret it derives is *shared*, so the opener must know the sender's public key - but the sender is a node that may since have rotated, been reprovisioned, or left the fleet, and the opener is recovering from a lost device with nothing but their account root and an opaque blob. So the sender is a fresh keypair per envelope and its public half travels with the ciphertext. Two things this does NOT give you: the recipient is an **account root**, never a device key (a device is exactly what is gone in the case worth sealing for), and the result proves **confidentiality, not authorship** - anyone who knows a root public key can produce an envelope for it, so whatever decides an envelope is legitimate belongs in the service that accepts the write.
+`seal_to_root` / `open_sealed` (envelope layout: ephemeral key, nonce, ciphertext) exist because `SharedKey::new` alone is the wrong shape for a payload written now and opened much later by someone who has only their own key. The secret it derives is *shared*, so the opener must know the sender's public key - but the sender is a node that may since have rotated, been reprovisioned, or left the fleet, and the opener is recovering from a lost device with nothing but their account root and an opaque blob. So the sender is a fresh keypair per envelope and its public half travels with the ciphertext. For `Purpose::Account` the recipient is an **account root**, never a device key (a device is exactly what is gone in the case worth sealing for); app sealing addresses device and TEE keys. In every purpose the result proves **confidentiality, not authorship** - anyone who knows a public key can produce an envelope for it, so whatever decides an envelope is legitimate belongs in the service that accepts the write.
 
 Nonce handling is asymmetric by design: `encrypt` generates its own random nonce (avoiding caller-side nonce reuse, which is catastrophic for AES-GCM), while `encrypt_with_nonce` exists for protocols that need to control the nonce themselves (e.g. a per-message ratchet), pushing the single-use guarantee onto the caller.
 
@@ -64,16 +75,16 @@ Nonce handling is asymmetric by design: `encrypt` generates its own random nonce
 | --- | --- |
 | `src/lib.rs` | Everything: `SharedKey`, `SharedKeyError`, `Nonce`/`NONCE_LEN`, and all tests |
 
-There is no module split - the whole crate is ~400 lines in one file, about half of it tests.
+There is no module split - the whole crate is one file, about half of it tests.
 
 ## Invariants and Gotchas
 
 - **Zeroization**: `SharedKey.key` is `Zeroizing<[u8; 32]>`; the ECDH scalar and raw ECDH point bytes inside `new` are also wrapped in `Zeroizing` so intermediate secrets don't linger in memory after the function returns. Do not add a manual `Drop` impl for `SharedKey` - `ZeroizeOnDrop` plus the `Zeroizing` field already handle it; a second wipe would double-zeroize harmlessly but is dead code.
 - **`Debug` is redacted**: never remove the custom `impl Debug for SharedKey` - the derived one would print key bytes.
-- **HKDF info string is versioned**: `AEAD_KDF_INFO` ends in `.v2`. If the derivation ever changes (salt, info, hash), bump the suffix so old and new derivations can never silently collide.
+- **HKDF labels are versioned and per purpose**: the `calimero.seal.v3.*` labels end in a version. If the derivation ever changes (salt, info, hash), bump the suffix so old and new derivations can never silently collide, and give a new purpose its own label and AAD.
 - **Small-order rejection is required, not defensive fluff**: skipping `is_small_order()` reintroduces a known subgroup-confinement attack against Curve25519-based ECDH.
 - **Nonce reuse is caller-checked, not library-checked**: `encrypt_with_nonce` trusts the caller. Only use it where single-use is already guaranteed elsewhere (e.g. a monotonic ratchet), otherwise use `encrypt`.
-- **Never seal to a device key**: `seal_to_root` takes a root public key, and the type system cannot tell the two apart - both are `PublicKey`. An envelope sealed to a device key is valid, opaque, passes every other check, and is unopenable in precisely the case an envelope is written for. `a_device_key_of_the_same_account_does_not_open_it` pins this.
+- **For `Purpose::Account`, never seal to a device key**: the recipient must be the account root, and the type system cannot tell the two apart - both are `PublicKey`. An account envelope sealed to a device key is valid, opaque, passes every other check, and is unopenable in precisely the case it is written for. `a_device_key_of_the_same_account_does_not_open_it` pins this. App sealing addresses device and TEE keys by design.
 - **The ephemeral secret must not outlive one envelope**: `seal_to_root` drops it before returning and nothing stores it. Persisting it would make every envelope that node ever wrote openable by whoever recovered it, which is the whole property the ephemerality buys.
 - **`AES_256_GCM` key construction can fail** (`aead::UnboundKey::new(...).ok()?`) only if the key length is wrong, which cannot happen given the fixed `[u8; 32]` - the `Option` plumbing exists mainly for decrypt-time authentication failures, not key-setup failures.
 

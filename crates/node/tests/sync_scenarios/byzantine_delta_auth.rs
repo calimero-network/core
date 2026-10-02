@@ -44,6 +44,9 @@
 //! republish a member's delta under its own libp2p key with `parent_ids`
 //! rewritten. Every author-keyed gate still passes, because they all resolve the
 //! honest `author_id` rather than the publisher.
+//!
+//! The events ride sealed under the group key beside the actions, so the same
+//! republisher can re-seal them; the id binds them too.
 
 use calimero_node_primitives::sync::delta_auth::{delta_signature_payload, verify_delta_signature};
 use calimero_primitives::context::ContextId;
@@ -291,6 +294,7 @@ fn content_gate_and_apply(
     signature: Option<[u8; 64]>,
     parents: &[[u8; 32]],
     actions: &[Action],
+    events: Option<&[u8]>,
     hlc: &HybridTimestamp,
     apply_entity: EntityId,
     apply_data: Vec<u8>,
@@ -305,7 +309,9 @@ fn content_gate_and_apply(
     }
 
     // Gate 2: does the signed id actually address the content that arrived?
-    if !CausalDelta::content_address_matches(&delta_id, parents, actions, hlc) {
+    let events_hash = events.map(CausalDelta::hash_events);
+    if !CausalDelta::content_address_matches(&delta_id, parents, actions, events_hash.as_ref(), hlc)
+    {
         return false;
     }
 
@@ -325,7 +331,7 @@ fn honest_delta_passes_both_gates_and_mutates_state() {
     let parents = vec![[0x31_u8; 32]];
     let actions = fixture_actions();
     let hlc = fixture_hlc();
-    let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+    let delta_id = CausalDelta::compute_id(&parents, &actions, None, &hlc);
 
     let payload = delta_signature_payload(context_id, delta_id, alice_pk, None, fixture_hlc())
         .expect("payload serializes");
@@ -340,6 +346,7 @@ fn honest_delta_passes_both_gates_and_mutates_state() {
         Some(sig),
         &parents,
         &actions,
+        None,
         &hlc,
         EntityId::from_u64(10),
         b"honest".to_vec(),
@@ -368,7 +375,7 @@ fn republished_delta_with_emptied_parents_rejected_no_state_mutation() {
     let parents = vec![[0x31_u8; 32]];
     let actions = fixture_actions();
     let hlc = fixture_hlc();
-    let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+    let delta_id = CausalDelta::compute_id(&parents, &actions, None, &hlc);
 
     // Alice's real signature over her real delta — the attacker does not forge
     // anything, it replays what Alice published.
@@ -385,6 +392,7 @@ fn republished_delta_with_emptied_parents_rejected_no_state_mutation() {
         Some(sig),
         &[], // <-- the only tampered field
         &actions,
+        None,
         &hlc,
         EntityId::from_u64(11),
         b"disconnected-head".to_vec(),
@@ -412,7 +420,7 @@ fn republished_delta_with_swapped_parents_rejected_no_state_mutation() {
     let parents = vec![[0x31_u8; 32]];
     let actions = fixture_actions();
     let hlc = fixture_hlc();
-    let delta_id = CausalDelta::compute_id(&parents, &actions, &hlc);
+    let delta_id = CausalDelta::compute_id(&parents, &actions, None, &hlc);
 
     let payload = delta_signature_payload(context_id, delta_id, alice_pk, None, fixture_hlc())
         .expect("payload serializes");
@@ -427,6 +435,7 @@ fn republished_delta_with_swapped_parents_rejected_no_state_mutation() {
         Some(sig),
         &[[0x77_u8; 32]], // a different, still non-empty, parent
         &actions,
+        None,
         &hlc,
         EntityId::from_u64(12),
         b"reparented".to_vec(),
@@ -437,4 +446,115 @@ fn republished_delta_with_swapped_parents_rejected_no_state_mutation() {
         root_before,
         "rejected delta must not mutate storage: root_hash must be unchanged"
     );
+}
+
+/// The events a delta carries name the handlers every receiver runs. Alice's
+/// delta republished VERBATIM (id, signature, author) with its events swapped
+/// no longer content-addresses its id.
+#[test]
+fn republished_delta_with_swapped_events_rejected_no_state_mutation() {
+    let mut node = initialized_node();
+    let context_id = node.context_id();
+    let (alice_sk, alice_pk) = alice();
+
+    let parents = vec![[0x31_u8; 32]];
+    let actions = fixture_actions();
+    let hlc = fixture_hlc();
+    let events: &[u8] = br#"[{"kind":"Inserted","data":[],"handler":"insert_handler"}]"#;
+    let events_hash = CausalDelta::hash_events(events);
+    let delta_id = CausalDelta::compute_id(&parents, &actions, Some(&events_hash), &hlc);
+
+    let payload = delta_signature_payload(context_id, delta_id, alice_pk, None, fixture_hlc())
+        .expect("payload serializes");
+    let sig = alice_sk.sign(&payload).expect("sign").to_bytes();
+
+    let honest = content_gate_and_apply(
+        &mut node,
+        context_id,
+        delta_id,
+        alice_pk,
+        Some(sig),
+        &parents,
+        &actions,
+        Some(events),
+        &hlc,
+        EntityId::from_u64(13),
+        b"honest".to_vec(),
+    );
+    assert!(honest, "the delta as Alice published it passes both gates");
+
+    let root_before = node.root_hash();
+    let swapped: &[u8] = br#"[{"kind":"Inserted","data":[],"handler":"transfer"}]"#;
+    for events in [Some(swapped), None] {
+        let applied = content_gate_and_apply(
+            &mut node,
+            context_id,
+            delta_id,
+            alice_pk,
+            Some(sig),
+            &parents,
+            &actions,
+            events,
+            &hlc,
+            EntityId::from_u64(14),
+            b"swapped-events".to_vec(),
+        );
+        assert!(
+            !applied,
+            "a delta whose events were changed must be rejected"
+        );
+    }
+    assert_eq!(node.root_hash(), root_before);
+}
+
+/// The other half: re-deriving the id over the swapped events makes the content
+/// address match, and then Alice's signature no longer covers the id.
+#[test]
+fn re_addressed_delta_with_swapped_events_fails_the_signature() {
+    let mut node = initialized_node();
+    let context_id = node.context_id();
+    let (alice_sk, alice_pk) = alice();
+
+    let parents = vec![[0x31_u8; 32]];
+    let actions = fixture_actions();
+    let hlc = fixture_hlc();
+    let events: &[u8] = br#"[{"kind":"Inserted","data":[],"handler":"insert_handler"}]"#;
+    let delta_id = CausalDelta::compute_id(
+        &parents,
+        &actions,
+        Some(&CausalDelta::hash_events(events)),
+        &hlc,
+    );
+    let payload = delta_signature_payload(context_id, delta_id, alice_pk, None, fixture_hlc())
+        .expect("payload serializes");
+    let sig = alice_sk.sign(&payload).expect("sign").to_bytes();
+
+    let swapped: &[u8] = br#"[{"kind":"Inserted","data":[],"handler":"transfer"}]"#;
+    let forged_id = CausalDelta::compute_id(
+        &parents,
+        &actions,
+        Some(&CausalDelta::hash_events(swapped)),
+        &hlc,
+    );
+    assert_ne!(forged_id, delta_id, "the events are part of the id");
+
+    let root_before = node.root_hash();
+    let applied = content_gate_and_apply(
+        &mut node,
+        context_id,
+        forged_id,
+        alice_pk,
+        Some(sig),
+        &parents,
+        &actions,
+        Some(swapped),
+        &hlc,
+        EntityId::from_u64(15),
+        b"re-addressed".to_vec(),
+    );
+    assert!(
+        !applied,
+        "Alice's signature must not cover the re-addressed id"
+    );
+    assert_eq!(node.root_hash(), root_before);
 }

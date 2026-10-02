@@ -268,6 +268,10 @@ pub(crate) struct NodeState {
     /// When a not-admitted gossip op last triggered an ancestry fetch, per
     /// (namespace, sender). Capped at [`MAX_REFUSAL_BACKFILL_SLOTS`].
     pub(crate) namespace_refusal_backfill: Arc<DashMap<([u8; 32], PeerId), Instant>>,
+    /// How far each member device has caught up with this node, from their
+    /// signed state beacons: what tombstone GC waits on before it collects a
+    /// delete. See [`crate::tombstone_stability`].
+    pub(crate) tombstone_stability: Arc<crate::tombstone_stability::TombstoneStability>,
 }
 
 /// Minimum spacing between ancestry fetches triggered by not-admitted gossip
@@ -316,6 +320,7 @@ impl NodeState {
             reconcile_attempts: Arc::new(DashMap::new()),
             sync_status: Arc::new(DashMap::new()),
             namespace_refusal_backfill: Arc::new(DashMap::new()),
+            tombstone_stability: Arc::default(),
         }
     }
 

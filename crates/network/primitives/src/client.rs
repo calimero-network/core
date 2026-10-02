@@ -377,6 +377,7 @@ impl NetworkClient {
         blob_id: BlobId,
         context_id: ContextId,
         size: u64,
+        auth: BlobAuth,
     ) -> eyre::Result<()> {
         let (tx, rx) = oneshot::channel();
 
@@ -387,6 +388,7 @@ impl NetworkClient {
                     blob_id,
                     context_id,
                     size,
+                    auth,
                 },
                 outcome: tx,
             })

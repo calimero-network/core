@@ -31,7 +31,7 @@ mod account_migration;
 mod account_namespace;
 pub mod activation;
 pub(crate) mod apply_authorizer;
-pub use apply_authorizer::ProjectionAuthorizer;
+pub use apply_authorizer::{ProjectionAuthorizer, VoidJudge};
 pub mod auto_follow;
 mod cache;
 pub mod config;
@@ -324,22 +324,13 @@ impl Evictable for ContextMeta {
 /// so it is always safe to evict (the default).
 impl Evictable for Application {}
 
-/// A compiled module is an `Arc`-backed clone with no exclusive handle held by
-/// the cache, so it is always safe to evict (the default).
-impl Evictable for calimero_runtime::Module {}
-
-/// A read-only method set is a plain `Arc<HashSet>` with no live handle; always
-/// safe to evict (the default). The execute path re-derives it from the
-/// embedded ABI manifest on the next compile cycle.
-impl Evictable for Arc<HashSet<String>> {}
+/// A compiled module and its ABI method sets are `Arc`-backed clones with no
+/// exclusive handle held by the cache, so they are always safe to evict.
+impl Evictable for handlers::execute::CompiledModule {}
 
 /// Per-method xcall caller policy (method name → who may call it), derived from
 /// a module's embedded ABI.
 pub(crate) type XCallPolicyMap = HashMap<String, XCallCallers>;
-
-/// The xcall caller-policy map has no live handle either; re-derived from the
-/// embedded ABI manifest on the next compile cycle, so always safe to evict.
-impl Evictable for Arc<XCallPolicyMap> {}
 
 /// A per-namespace governance DAG is lock-gated exactly like [`ContextMeta`]:
 /// an in-flight op holds the `Arc<Mutex<DagStore>>`, so the DAG is evictable
@@ -397,37 +388,16 @@ pub struct ContextManager {
     /// `get_module_for_blob` call for a given key; reused on every
     /// subsequent execute. Cheap to clone (Arc-backed inside wasmer).
     ///
+    /// Each entry also holds the method sets the execute path's ABI gates read
+    /// (read-only, xcall, handler), so a set is never cached without its module.
+    ///
     /// Size-capped to `MAX_CACHED_MODULES` via [`BoundedCache`]. Compiled
     /// modules are 2–10× larger than the source WASM, so we cap to prevent
     /// unbounded growth on multi-tenant nodes that rotate through many
     /// applications. Eviction is by-key-order rather than true LRU — good
     /// enough as a safety valve; upgrade tracked alongside the `contexts` LRU
     /// TODO above.
-    modules: BoundedCache<(BlobId, Option<String>), calimero_runtime::Module>,
-
-    /// Per-blob set of method names declared read-only via `#[app::view]`
-    /// in the module ABI. Used by the execute handler to select a shared read
-    /// lock instead of an exclusive write lock for qualifying calls.
-    ///
-    /// Keyed by `(BlobId, Option<String>)` — the same key as `modules` so
-    /// both caches stay in sync. An absent entry means the blob's manifest was
-    /// not parsed yet (cold cache) or the app has no `#[app::view]` methods; in
-    /// both cases the execute path defaults to the write lock (fail-safe).
-    /// Populated alongside the module cache in `get_module_for_blob`.
-    ///
-    /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
-    read_only_methods: BoundedCache<(BlobId, Option<String>), Arc<HashSet<String>>>,
-
-    /// Per-blob map of method names declared `#[app::xcall]` in the module ABI
-    /// to their caller policy (`XCallCallers`). An xcall to a method outside this
-    /// map is denied; a method present is allowed only if the caller satisfies
-    /// its policy. An absent entry (module declares none, or not parsed yet)
-    /// leaves the method ungated.
-    ///
-    /// Keyed by `(BlobId, Option<String>)` like `modules` / `read_only_methods`
-    /// (content-addressed, never stale), populated in `get_module_for_blob`.
-    /// Size-capped to `MAX_CACHED_MODULES` (one entry per compiled module).
-    xcall_methods: BoundedCache<(BlobId, Option<String>), Arc<XCallPolicyMap>>,
+    modules: BoundedCache<(BlobId, Option<String>), handlers::execute::CompiledModule>,
 
     /// Module compiles in flight, keyed like `modules`. A request that needs a
     /// module already being compiled waits for that compile rather than
@@ -518,8 +488,6 @@ impl ContextManager {
             contexts: BoundedCache::new(MAX_CACHED_CONTEXTS, "contexts"),
             applications: BoundedCache::new(MAX_CACHED_APPLICATIONS, "applications"),
             modules: BoundedCache::new(MAX_CACHED_MODULES, "modules"),
-            read_only_methods: BoundedCache::new(MAX_CACHED_MODULES, "read_only_methods"),
-            xcall_methods: BoundedCache::new(MAX_CACHED_MODULES, "xcall_methods"),
             compiling: HashMap::new(),
             cache_stats: ContextCacheStats::default(),
 

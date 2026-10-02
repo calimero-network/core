@@ -16,7 +16,7 @@ pub use codec::{CodecError, Message};
 
 pub const MAX_MESSAGE_SIZE: usize = 8 * 1_024 * 1_024;
 
-pub const CALIMERO_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimero/stream/0.0.3");
+pub const CALIMERO_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimero/stream/0.0.4");
 pub const CALIMERO_BLOB_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimero/blob/0.0.3");
 
 /// "I now hold this blob for this context" — a one-shot, one-message notice
@@ -29,7 +29,7 @@ pub const CALIMERO_BLOB_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimer
 /// A separate protocol leaves transfer untouched and simply is not negotiated
 /// by peers that do not speak it.
 pub const CALIMERO_BLOB_ANNOUNCE_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/calimero/blob-announce/1.0.0");
+    StreamProtocol::new("/calimero/blob-announce/2.0.0");
 
 type Libp2pFramed = Framed<BufStream<Compat<P2pStream>>, MessageCodec>;
 

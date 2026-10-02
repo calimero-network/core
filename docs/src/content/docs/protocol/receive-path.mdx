@@ -40,7 +40,7 @@ An operation arrives — from a gossip broadcast or a sync stream; the path is i
 
 1. **Verify the signature.** — Check the operation's signature against its `author` key. This is the trust boundary established when an [operation is signed](/protocol/operations/): an operation that fails verification is dropped here and never reaches the fold. Everything downstream may assume authenticity.
 
-2. **Authorize at the author's cut.** — Resolve the author's membership and writer rights at the operation's causal cut — the governance state they referenced — and check they were allowed to write it (per the [projection](/protocol/projection/) and [governance](/protocol/governance/)). Because the verdict is computed at the cut, it is the same on every node regardless of receive order: forward-only authority.
+2. **Authorize at the author's cut.** — Resolve the author's membership and writer rights at the operation's causal cut — the governance state they referenced — and check they were allowed to write it (per the [projection](/protocol/projection/) and [governance](/protocol/governance/)). Because the verdict is computed at the cut, it is the same on every node regardless of receive order: forward-only authority. A **governance** op is also judged against the log: if a removal of its signer is concurrent with it, the op is logged but applies nothing (see [governance](/protocol/governance/#a-removal-voids-the-signers-concurrent-governance-ops)), and a removal that arrives after ops it voids rebuilds the rows those ops wrote.
 
 3. **Decrypt — or wait for the key.** — Decrypt the payload with the scope key. The wait differs by plane. A **governance op** whose key hasn't arrived is held undecodable and replayed the moment the wrapped key lands (`apply_received_group_key`). A **state delta** does _not_ wait indefinitely: the node polls briefly (~3s) for the key, then drops the delta and relies on gossip rebroadcast plus the hash heartbeat to redeliver it once the key is in hand — there is no persistent per-delta key-pending buffer on the data plane.
 
@@ -48,7 +48,7 @@ An operation arrives — from a gossip broadcast or a sync stream; the path is i
 
 5. **Fold and cascade.** — Apply the operation into the [projection](/protocol/projection/), advancing state and heads, then re-check both buffers: a just-applied operation may be the missing parent of a pending child, or the key that unlocks a queued operation. Cascade until nothing new is ready. Authorization was settled against the operation's author in step 2, so the fold asks nothing of the receiving node's own rights beyond holding the context: a `ReadOnly` or `ReadOnlyTee` replica folds a writer's delta exactly as a writer does, and stays unable to author one itself.
 
-6. **Run event handlers.** — If the operation carried application events, dispatch their handlers and notify subscribed clients. This is a local side effect of applying — it never feeds back into consensus.
+6. **Run event handlers.** If the operation carried application events, dispatch their handlers and notify subscribed clients. A handler runs only if the app's ABI declares that method `#[app::handler]`, and the events are part of the delta's content id, so they are exactly the ones its author signed. This is a local side effect of applying; it never feeds back into consensus.
 
 </Steps>
 

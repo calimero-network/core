@@ -2273,7 +2273,10 @@ pub struct SignedNamespaceOp {
 ///   when the group already targets an application at the op's cut. An older
 ///   node decodes the wrapper but refuses it at its delegation gate. As at v12
 ///   and v13, refusing at this gate keeps them from sharing a namespace.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 20;
+///
+/// v21: an op concurrent with its signer's removal is void; nothing moves on the wire.
+/// An older node applies it, so the two disagree: a coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 21;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,

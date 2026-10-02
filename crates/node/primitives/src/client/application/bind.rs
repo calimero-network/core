@@ -1,17 +1,91 @@
 //! Binding acquired bytes to an application row, and releasing them when that
 //! fails - there is no content-addressed GC to reclaim a rejected artifact.
 
+use std::cmp::Ordering;
+use std::sync::PoisonError;
+
 use calimero_app_downloader::registry::RegistryCoords;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_store::key;
 use calimero_store::types;
 use eyre::bail;
+use semver::Version;
 use tracing::warn;
 
 use crate::client::NodeClient;
 
+/// Who asked for an install. Any group can name any application id, so only an
+/// operator may move the row to an older release.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstallOrigin {
+    Operator, // an admin-authenticated request on this node
+    Remote,   // a group, peer or relayed member named the release
+}
+
+/// Whether a remote party's signed `version` may replace `row`: only an equal
+/// or provably newer release may; anything else keeps the row's release.
+fn remote_bundle_may_replace(row: Option<&types::ApplicationMeta>, version: &str) -> bool {
+    let Some(row) = row.filter(|row| !row.signer_id.is_empty()) else {
+        return true;
+    };
+    if *row.version == *version {
+        return true;
+    }
+    match (Version::parse(&row.version), Version::parse(version)) {
+        (Ok(installed), Ok(incoming)) => installed.cmp_precedence(&incoming) != Ordering::Greater,
+        _ => false,
+    }
+}
+
 impl NodeClient {
+    fn application_row(
+        &self,
+        application_id: &ApplicationId,
+    ) -> eyre::Result<Option<types::ApplicationMeta>> {
+        Ok(self
+            .datastore
+            .handle()
+            .get(&key::ApplicationMeta::new(*application_id))?)
+    }
+
+    /// Whether a signed bundle at `version` may replace the row under `application_id`.
+    pub(super) fn bundle_may_replace(
+        &self,
+        application_id: &ApplicationId,
+        version: &str,
+        origin: InstallOrigin,
+    ) -> eyre::Result<bool> {
+        match origin {
+            InstallOrigin::Operator => Ok(true),
+            InstallOrigin::Remote => Ok(remote_bundle_may_replace(
+                self.application_row(application_id)?.as_ref(),
+                version,
+            )),
+        }
+    }
+
+    /// Write a signed bundle's row unless the rule refuses it, re-checked under
+    /// the row lock. Returns whether the row was written.
+    pub(super) fn put_bundle_row(
+        &self,
+        application_id: &ApplicationId,
+        row: &types::ApplicationMeta,
+        origin: InstallOrigin,
+    ) -> eyre::Result<bool> {
+        let _rows = self
+            .row_writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !self.bundle_may_replace(application_id, &row.version, origin)? {
+            return Ok(false);
+        }
+        self.datastore
+            .handle()
+            .put(&key::ApplicationMeta::new(*application_id), row)?;
+        Ok(true)
+    }
+
     /// Verify `stored` against `expected`, deleting it on mismatch so a
     /// rejected download doesn't linger forever - there is no blob GC.
     pub async fn verify_stored_blob(
@@ -46,8 +120,8 @@ impl NodeClient {
         outcome
     }
 
-    /// Write a row under a caller-named id, for ids that would vary per node.
-    /// Absent `coords` records empty coordinates, never a guessed placeholder.
+    /// Write a raw-wasm row under a caller-named id, for ids that would vary
+    /// per node. It only fills a missing row or a stub that holds no bytes yet.
     pub fn write_application_row(
         &self,
         application_id: &ApplicationId,
@@ -56,8 +130,22 @@ impl NodeClient {
         source: &ApplicationSource,
         coords: Option<RegistryCoords<'_>>,
     ) -> eyre::Result<()> {
+        // Absent coordinates stay empty, never a guessed placeholder.
         let (package, version) = coords.map_or(("", ""), |c| (c.package, c.version));
         let blob_meta = key::BlobMeta::new(*blob_id);
+        let _rows = self
+            .row_writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(row) = self.application_row(application_id)? {
+            if row.size != 0 && row.bytecode.blob_id() != *blob_id {
+                bail!(
+                    "application {application_id} already holds {}@{}; raw wasm only fills a missing or stub row",
+                    row.package,
+                    row.version
+                );
+            }
+        }
         let mut handle = self.datastore.handle();
         handle.put(
             &key::ApplicationMeta::new(*application_id),
