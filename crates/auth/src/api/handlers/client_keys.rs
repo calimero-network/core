@@ -488,6 +488,7 @@ mod tests {
                 context_identity: context.map(|(_, identity)| identity.to_owned()),
                 permissions: Some(permissions.iter().map(|p| (*p).to_owned()).collect()),
                 target_node_url: None,
+                application_id: None,
                 ttl_secs: None,
             }),
         )
