@@ -1,6 +1,8 @@
 //! State delta handling for BroadcastMessage::StateDelta
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
+use std::collections::HashSet;
+
 use calimero_context::scope_projection::ScopeProjections;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernanceParentEdge;
@@ -1605,7 +1607,6 @@ async fn request_missing_deltas(
     // + envelope signature so the persist step writes them to the
     // `ContextDagDelta` row (next DAG-catchup serves can pass them on)
     // and the cross-DAG check + envelope verification fire before apply.
-    let mut to_fetch = missing_ids;
     type ParentFetch = (
         calimero_dag::CausalDelta<Vec<Action>>,
         [u8; 32], // delta_id (redundant with .id but kept for log clarity)
@@ -1621,6 +1622,12 @@ async fn request_missing_deltas(
         Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
         Option<[u8; 32]>, // events hash the id covers, kept so this node can serve it
     );
+    // Every id this walk has queued, so each is requested once.
+    let mut queued: HashSet<[u8; 32]> = HashSet::new();
+    let mut to_fetch: Vec<[u8; 32]> = missing_ids
+        .into_iter()
+        .filter(|id| queued.insert(*id))
+        .collect();
     let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
     // Accumulated (delta_id, events_data) pairs from any cascades that
@@ -1985,11 +1992,7 @@ async fn request_missing_deltas(
                         if *parent_id == [0; 32] {
                             continue;
                         }
-                        // Skip if we already have it or are about to fetch it
-                        if !delta_store.has_delta(parent_id).await
-                            && !to_fetch.contains(parent_id)
-                            && !fetched_deltas.iter().any(|(d, ..)| d.id == *parent_id)
-                        {
+                        if queued.insert(*parent_id) && !delta_store.has_delta(parent_id).await {
                             to_fetch.push(*parent_id);
                         }
                     }
