@@ -394,6 +394,12 @@
 
 ### Fixed
 
+- **A relayed call whose method failed is reported as an error.**
+  `POST .../intents` answered a method that returned an error as
+  `200 { returns: null }`, and `POST .../query` as an opaque `500`. Both now
+  answer `400` with the error JSON-RPC `execute` gives for the same call
+  (`type: "FunctionCallError"`, the message in `data`). (#4394)
+
 - **A self-hosted relay creates a context for a member when `init` signs
   nothing.** The on-behalf check now runs after `init` and before anything
   commits or publishes, and asks for a `RelayTee` only when `init` writes an
