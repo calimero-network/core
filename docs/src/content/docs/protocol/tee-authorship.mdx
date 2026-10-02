@@ -408,8 +408,8 @@ functions, and two storage types built on them, cover a card game:
 
 | | What it does |
 | --- | --- |
-| `env::seal_to(key, bytes)` | Seals bytes to an Ed25519 key: an ephemeral key agreement, then AES-256-GCM. Any run may seal. |
-| `env::open_sealed(envelope)` | Opens an envelope with the run's executor key, or in a TEE-triggered run with a namespace TEE key the TEE holds. |
+| `env::seal_to(key, bytes)` | Seals bytes to an Ed25519 key: an ephemeral key agreement, then AES-256-GCM, bound to the run's context. Any run may seal. |
+| `env::open_sealed(envelope)` | Opens an envelope sealed in the same context with the run's executor key, or in a TEE-triggered run with a namespace TEE key the TEE holds. An envelope opens only in the context it was sealed in. |
 | `env::tee_authority_keys()` | What a TEE-triggered run seals a value only the TEE may read to: the namespace TEE key (see below). |
 | `env::account_device_keys(account)` | What a TEE-triggered run seals a value only one member may read to: the signing key of every live device of that account in the namespace. |
 | `Sealed<T>` | A `T` sealed to one or more keys (`to_key`, `to_keys`, `to_account`, `to_tee`); `open` returns it to a reader it was made for. |
@@ -447,6 +447,9 @@ all and any event it missed. Each check does two things:
 2. For each key it holds and each TEE authority without a copy, it publishes a
    `GroupOp::TeeVaultKeyDelivered` on the root: the key's private half sealed
    to that TEE's attested key.
+
+The key is sealed under a label and AAD bound to the namespace root, so a copy opens only as that namespace's key.
+Copies sealed by a release before this binding do not open, and a namespace that has only such copies never creates a new key: recreate it after upgrading.
 
 Only a TEE member (`ReadOnlyTee` or `RelayTee`) may publish one; apply refuses
 an admin as well as a plain member, because a key an admin handed the TEEs is

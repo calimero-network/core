@@ -1700,4 +1700,6 @@ mod governance_boundary_tests;
 #[cfg(test)]
 mod owner_guard_tests;
 #[cfg(test)]
+mod sealing_domain_tests;
+#[cfg(test)]
 mod tests;
