@@ -1198,6 +1198,14 @@ impl<T: Clone> DagStore<T> {
         self.deltas.len()
     }
 
+    /// Ids of every delta held in the in-memory DAG, applied or pending.
+    ///
+    /// Compaction reads this under the DAG write lock so the durable prune
+    /// never deletes a row the DAG still holds.
+    pub fn delta_ids(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.deltas.keys()
+    }
+
     /// Prune applied history older than the most-recent `retain_count`
     /// deltas, returning the ids removed (so the caller can delete the
     /// matching rows from durable storage).
@@ -1218,7 +1226,13 @@ impl<T: Clone> DagStore<T> {
     /// No re-parenting is performed, so delta content hashes are untouched.
     ///
     /// Pending deltas are never pruned: they are unapplied and may still
-    /// resolve once their missing parents arrive.
+    /// resolve once their missing parents arrive. Neither is any parent a
+    /// pending delta already holds, however old: in memory a pruned parent
+    /// would still count as satisfied, but only while `pruned` remembers it,
+    /// and the durable prune that mirrors this one would delete the row a
+    /// restart re-drives the pending delta against. Keeping them outside the
+    /// budget means a pending delta never holds back the rest of the history,
+    /// so a DAG with pending deltas can be pruned like any other.
     pub fn prune_to_recent(&mut self, retain_count: usize) -> Vec<[u8; 32]> {
         // Seed the retained set with every head so a small `retain_count`
         // can never evict a head. The genesis root is never a real delta
@@ -1252,12 +1266,21 @@ impl<T: Clone> DagStore<T> {
             }
         }
 
+        let held_by_pending: HashSet<[u8; 32]> = self
+            .pending
+            .values()
+            .flat_map(|pending| pending.delta.parents.iter().copied())
+            .collect();
+
         let pruned: Vec<[u8; 32]> = self
             .deltas
             .keys()
             .copied()
             .filter(|id| {
-                *id != self.root && !retained.contains(id) && !self.pending.contains_key(id)
+                *id != self.root
+                    && !retained.contains(id)
+                    && !self.pending.contains_key(id)
+                    && !held_by_pending.contains(id)
             })
             .collect();
 
