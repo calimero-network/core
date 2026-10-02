@@ -492,208 +492,212 @@ impl NodeClient {
 
     /// Get blob from local storage or network if context_id is provided
     /// Returns a streaming Blob that can be used to read the data
-    pub async fn get_blob<'a>(
-        &'a self,
-        blob_id: &'a BlobId,
-        context_id: Option<&'a ContextId>,
+    pub async fn get_blob(
+        &self,
+        blob_id: &BlobId,
+        context_id: Option<&ContextId>,
     ) -> eyre::Result<Option<Blob>> {
-        // First try to get locally
-        let Some(stream) = self.blob_manager.get_blob_stream(*blob_id)? else {
-            // If no context provided or blob not found locally, return None
-            if context_id.is_none() {
-                return Ok(None);
-            }
+        if let Some(stream) = self.blob_manager.get_blob_stream(*blob_id)? {
+            return Ok(Some(stream));
+        }
+        match context_id {
+            Some(context_id) => self.fetch_blob_for_context(blob_id, context_id).await,
+            None => Ok(None),
+        }
+    }
 
-            // Try network discovery
-            let context_id = context_id.unwrap();
-            tracing::info!(
-                blob_id = %blob_id,
-                context_id = %context_id,
-                "Blob not found locally, attempting network discovery"
-            );
+    /// Fetch `blob_id` from the context's peers and record it as held for the
+    /// context, even when this node already holds the bytes for another one.
+    pub async fn fetch_blob_for_context(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<Blob>> {
+        tracing::info!(
+            blob_id = %blob_id,
+            context_id = %context_id,
+            "Fetching blob from the context's peers"
+        );
 
-            // Ask the context's peers who holds this blob, rather than
-            // reading a single-valued DHT provider record: custody is a
-            // property of a peer's own blob store, so the peer is the
-            // authority on it and the answer cannot go stale.
-            //
-            // `subscribed_peers` is the full connected+subscribed set, not the
-            // grafted mesh, so probing all of it on every miss is exactly the
-            // fan-out this design exists to avoid. Probes therefore go out in
-            // bounded batches, short-circuiting on the first holder, bounded
-            // by `DISCOVERY_DEADLINE` overall with `MAX_PROBE_CANDIDATES` as a
-            // safety ceiling, and retried only while the set is still empty
-            // (a mesh that has not converged yet).
-            //
-            // Generate authorization for the blob once. The same signed proof
-            // authorizes both the probes and the fetch that follows them — a
-            // peer answers `found: false` to an unauthorized probe, so probing
-            // without it would find only public blobs.
-            let auth = self
-                .create_blob_auth_for_context(context_id, blob_id)
-                .await?;
+        // Ask the context's peers who holds this blob, rather than
+        // reading a single-valued DHT provider record: custody is a
+        // property of a peer's own blob store, so the peer is the
+        // authority on it and the answer cannot go stale.
+        //
+        // `subscribed_peers` is the full connected+subscribed set, not the
+        // grafted mesh, so probing all of it on every miss is exactly the
+        // fan-out this design exists to avoid. Probes therefore go out in
+        // bounded batches, short-circuiting on the first holder, bounded
+        // by `DISCOVERY_DEADLINE` overall with `MAX_PROBE_CANDIDATES` as a
+        // safety ceiling, and retried only while the set is still empty
+        // (a mesh that has not converged yet).
+        //
+        // Generate authorization for the blob once. The same signed proof
+        // authorizes both the probes and the fetch that follows them — a
+        // peer answers `found: false` to an unauthorized probe, so probing
+        // without it would find only public blobs.
+        let auth = self
+            .create_blob_auth_for_context(context_id, blob_id)
+            .await?;
 
-            let fetched = discover_and_fetch_blob(
-                || async {
-                    let candidates = self.context_subscribers(context_id).await;
-                    // Ordering runs BEFORE batching, so on a context whose
-                    // subscriber set outruns the deadline — or exceeds
-                    // `MAX_PROBE_CANDIDATES` — it decides which candidates are
-                    // probed at all, not just in what order. Putting
-                    // availability nodes first is therefore what keeps a large
-                    // context findable, on top of turning the common case into
-                    // a single round trip; peers that recently served this
-                    // node a blob here take the tail's front for the same
-                    // reason, one guess weaker.
-                    order_candidates(
-                        candidates,
-                        &self.member_roles.anchors_for_context(context_id),
-                        &self.recent_providers.for_context(context_id),
-                    )
-                },
-                |peer_id| async move {
-                    self.network_client
-                        .probe_blob(*blob_id, *context_id, peer_id, auth)
-                        .await
-                        .is_ok_and(BlobProbe::is_held)
-                        .then_some(())
-                },
-                |peer_id| async move {
-                    tracing::info!(
-                        blob_id = %blob_id,
-                        context_id = %context_id,
-                        peer_id = %peer_id,
-                        "Found a peer holding the blob, downloading"
-                    );
-
-                    let data = match self
-                        .network_client
-                        .request_blob(*blob_id, *context_id, peer_id, auth)
-                        .await
-                    {
-                        Ok(Some(data)) => data,
-                        Ok(None) => {
-                            // The peer said yes to the probe and no to the
-                            // fetch: custody changed underneath us, or it
-                            // declined. That is a fact about this peer, not
-                            // about the blob — keep searching.
-                            tracing::warn!(
-                                blob_id = %blob_id,
-                                peer_id = %peer_id,
-                                "Peer answered the probe but did not serve the blob"
-                            );
-                            return None;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                blob_id = %blob_id,
-                                peer_id = %peer_id,
-                                error = %e,
-                                "Failed to download blob from peer, trying the next holder"
-                            );
-                            return None;
-                        }
-                    };
-
-                    tracing::info!(
-                        blob_id = %blob_id,
-                        peer_id = %peer_id,
-                        size = data.len(),
-                        "Successfully downloaded blob from network"
-                    );
-
-                    // Store the blob locally for future use. A failure here is
-                    // local, so it will fail identically for every other
-                    // holder: end the search and surface it.
-                    let (blob_id_stored, _size) = match self
-                        .add_blob(data.as_slice(), Some(data.len() as u64), None)
-                        .await
-                    {
-                        Ok(stored) => stored,
-                        Err(e) => return Some(Err(e)),
-                    };
-
-                    // Blobs are content-addressed, so a mismatch means this
-                    // peer served different bytes than were asked for. Refuse
-                    // them and ask the next holder.
-                    if blob_id_stored != *blob_id {
-                        tracing::warn!(
-                            expected = %blob_id,
-                            actual = %blob_id_stored,
-                            peer_id = %peer_id,
-                            "Downloaded blob ID mismatch, trying the next holder"
-                        );
-                        // The bytes are already on disk under the id they
-                        // actually hash to, and nothing reclaims them: there is
-                        // no content-addressed GC, and the search continues to
-                        // the next holder, so a lying peer would otherwise cost
-                        // a fresh copy per attempt. Same cleanup rule as
-                        // `add_blob`'s own rejection path.
-                        if let Err(err) = self.delete_blob(blob_id_stored).await {
-                            tracing::warn!(
-                                blob_id = %blob_id_stored,
-                                %err,
-                                "failed to delete the bytes a peer served under the wrong id"
-                            );
-                        }
-                        return None;
-                    }
-
-                    // The holder served it under this context, so this node now
-                    // holds it for the context too.
-                    if let Err(e) = self.record_blob_owner(context_id, blob_id) {
-                        return Some(Err(e));
-                    }
-
-                    // Recorded here and nowhere else: at this point the peer
-                    // served the bytes, they hashed to the id that was asked
-                    // for, and the transfer finished. A probe answering "yes"
-                    // proves none of that, and a peer that lies or drops the
-                    // connection must not earn a place at the front of the next
-                    // sweep for having claimed custody.
-                    self.recent_providers.record(context_id, peer_id);
-
-                    // Same point, same reason: a peer of this context served
-                    // these exact bytes, so they entered this node on the
-                    // context's behalf. That is what lets an account-scoped
-                    // caller read them through this context afterwards (see
-                    // `Column::ContextBlob`). A failure to record costs that
-                    // caller a refusal, never anyone else a leak, so it is
-                    // logged and the fetch still succeeds.
-                    if let Err(err) = self.record_blob_context(blob_id, context_id) {
-                        tracing::warn!(
-                            %blob_id,
-                            %context_id,
-                            %err,
-                            "failed to record the fetched blob's context association"
-                        );
-                    }
-
-                    // Return the newly stored blob as a stream
-                    Some(self.blob_manager.get_blob_stream(*blob_id))
-                },
-            )
-            .await;
-
-            let Some(result) = fetched else {
-                // "Not found" here also covers "not asked" and "out of
-                // time": the sweep stops at `DISCOVERY_DEADLINE`, and at
-                // `MAX_PROBE_CANDIDATES` at the latest, so on a very large
-                // context a holder can still sit beyond the probed prefix.
+        let fetched = discover_and_fetch_blob(
+            || async {
+                let candidates = self.context_subscribers(context_id).await;
+                // Ordering runs BEFORE batching, so on a context whose
+                // subscriber set outruns the deadline — or exceeds
+                // `MAX_PROBE_CANDIDATES` — it decides which candidates are
+                // probed at all, not just in what order. Putting
+                // availability nodes first is therefore what keeps a large
+                // context findable, on top of turning the common case into
+                // a single round trip; peers that recently served this
+                // node a blob here take the tail's front for the same
+                // reason, one guess weaker.
+                order_candidates(
+                    candidates,
+                    &self.member_roles.anchors_for_context(context_id),
+                    &self.recent_providers.for_context(context_id),
+                )
+            },
+            |peer_id| async move {
+                self.network_client
+                    .probe_blob(*blob_id, *context_id, peer_id, auth)
+                    .await
+                    .is_ok_and(BlobProbe::is_held)
+                    .then_some(())
+            },
+            |peer_id| async move {
                 tracing::info!(
                     blob_id = %blob_id,
                     context_id = %context_id,
-                    max_probed = MAX_PROBE_CANDIDATES,
-                    deadline_secs = DISCOVERY_DEADLINE.as_secs(),
-                    "No context peer served this blob"
+                    peer_id = %peer_id,
+                    "Found a peer holding the blob, downloading"
                 );
-                return Ok(None);
-            };
 
-            return result;
+                let data = match self
+                    .network_client
+                    .request_blob(*blob_id, *context_id, peer_id, auth)
+                    .await
+                {
+                    Ok(Some(data)) => data,
+                    Ok(None) => {
+                        // The peer said yes to the probe and no to the
+                        // fetch: custody changed underneath us, or it
+                        // declined. That is a fact about this peer, not
+                        // about the blob — keep searching.
+                        tracing::warn!(
+                            blob_id = %blob_id,
+                            peer_id = %peer_id,
+                            "Peer answered the probe but did not serve the blob"
+                        );
+                        return None;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            blob_id = %blob_id,
+                            peer_id = %peer_id,
+                            error = %e,
+                            "Failed to download blob from peer, trying the next holder"
+                        );
+                        return None;
+                    }
+                };
+
+                tracing::info!(
+                    blob_id = %blob_id,
+                    peer_id = %peer_id,
+                    size = data.len(),
+                    "Successfully downloaded blob from network"
+                );
+
+                // Store the blob locally for future use. A failure here is
+                // local, so it will fail identically for every other
+                // holder: end the search and surface it.
+                let (blob_id_stored, _size) = match self
+                    .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                    .await
+                {
+                    Ok(stored) => stored,
+                    Err(e) => return Some(Err(e)),
+                };
+
+                // Blobs are content-addressed, so a mismatch means this
+                // peer served different bytes than were asked for. Refuse
+                // them and ask the next holder.
+                if blob_id_stored != *blob_id {
+                    tracing::warn!(
+                        expected = %blob_id,
+                        actual = %blob_id_stored,
+                        peer_id = %peer_id,
+                        "Downloaded blob ID mismatch, trying the next holder"
+                    );
+                    // The bytes are already on disk under the id they
+                    // actually hash to, and nothing reclaims them: there is
+                    // no content-addressed GC, and the search continues to
+                    // the next holder, so a lying peer would otherwise cost
+                    // a fresh copy per attempt. Same cleanup rule as
+                    // `add_blob`'s own rejection path.
+                    if let Err(err) = self.delete_blob(blob_id_stored).await {
+                        tracing::warn!(
+                            blob_id = %blob_id_stored,
+                            %err,
+                            "failed to delete the bytes a peer served under the wrong id"
+                        );
+                    }
+                    return None;
+                }
+
+                // The holder served it under this context, so this node now
+                // holds it for the context too.
+                if let Err(e) = self.record_blob_owner(context_id, blob_id) {
+                    return Some(Err(e));
+                }
+
+                // Recorded here and nowhere else: at this point the peer
+                // served the bytes, they hashed to the id that was asked
+                // for, and the transfer finished. A probe answering "yes"
+                // proves none of that, and a peer that lies or drops the
+                // connection must not earn a place at the front of the next
+                // sweep for having claimed custody.
+                self.recent_providers.record(context_id, peer_id);
+
+                // Same point, same reason: a peer of this context served
+                // these exact bytes, so they entered this node on the
+                // context's behalf. That is what lets an account-scoped
+                // caller read them through this context afterwards (see
+                // `Column::ContextBlob`). A failure to record costs that
+                // caller a refusal, never anyone else a leak, so it is
+                // logged and the fetch still succeeds.
+                if let Err(err) = self.record_blob_context(blob_id, context_id) {
+                    tracing::warn!(
+                        %blob_id,
+                        %context_id,
+                        %err,
+                        "failed to record the fetched blob's context association"
+                    );
+                }
+
+                // Return the newly stored blob as a stream
+                Some(self.blob_manager.get_blob_stream(*blob_id))
+            },
+        )
+        .await;
+
+        let Some(result) = fetched else {
+            // "Not found" here also covers "not asked" and "out of
+            // time": the sweep stops at `DISCOVERY_DEADLINE`, and at
+            // `MAX_PROBE_CANDIDATES` at the latest, so on a very large
+            // context a holder can still sit beyond the probed prefix.
+            tracing::info!(
+                blob_id = %blob_id,
+                context_id = %context_id,
+                max_probed = MAX_PROBE_CANDIDATES,
+                deadline_secs = DISCOVERY_DEADLINE.as_secs(),
+                "No context peer served this blob"
+            );
+            return Ok(None);
         };
 
-        Ok(Some(stream))
+        result
     }
 
     /// Get blob bytes from local storage with actor-based caching
