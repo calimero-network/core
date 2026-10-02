@@ -565,6 +565,14 @@
   session. A plain member is refused with the same not-admin error on both
   paths. (#4400)
 
+- **A peer's row at the id of the next mark no longer stops a replica
+  formatting.** A row a peer stored where this replica's next `RichText` mark
+  would go, one that does not decode or is filed under another parent, made
+  `mark` fail with a deserialization error, and a left-out row refused the
+  mark outright. The mark now keeps its lamport and moves to a replica derived
+  from the mark itself, so it is still read and still wins; it fails only after
+  `MAX_MARK_ID_ATTEMPTS` taken ids. Found by the `crdt_sync` fuzz target.
+
 - **The delegated routes take the intent permission, and an account reads its
   groups' upgrade state.** With `delegated_access` off, `presence-intents`,
   `context-intents` and `governance-intents` now take `context:intent` (the
