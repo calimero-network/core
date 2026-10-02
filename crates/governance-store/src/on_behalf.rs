@@ -413,4 +413,43 @@ mod tests {
             Some(ApplyError::AuthorityUndecidable { .. })
         ));
     }
+
+    /// A member removed from the namespace, kicked or gone of its own accord
+    /// (both delete the row), is no account a relay writes for.
+    #[test]
+    fn a_relay_does_not_write_for_a_member_that_left_or_was_removed() {
+        let w = world(GroupMemberRole::RelayTee);
+        MembershipRepository::new(&w.store)
+            .remove_member(&w.namespace, &w.author)
+            .expect("remove the author");
+        assert_eq!(live(&w), Err(OnBehalfRefusal::AccountNotAMember));
+    }
+
+    /// A relay removed from the namespace no longer signs for anyone in it.
+    #[test]
+    fn a_relay_that_left_or_was_removed_writes_for_no_one() {
+        let w = world(GroupMemberRole::RelayTee);
+        MembershipRepository::new(&w.store)
+            .remove_member(&w.namespace, &w.relay)
+            .expect("remove the relay");
+        assert_eq!(live(&w), Err(OnBehalfRefusal::SignerNotARelay));
+    }
+
+    /// A `RelayTee` of another namespace is not one here: the role is read in
+    /// the namespace owning the context, not wherever the signer holds it.
+    #[test]
+    fn a_relay_tee_of_another_namespace_does_not_write_here() {
+        let w = world(GroupMemberRole::Member);
+        let elsewhere = ContextGroupId::from([0xC1; 32]);
+        MetaRepository::new(&w.store)
+            .save(
+                &elsewhere,
+                &sample_meta_with_admin(AccountId::from([0xEE; 32])),
+            )
+            .expect("save meta");
+        MembershipRepository::new(&w.store)
+            .add_member(&elsewhere, &w.relay, GroupMemberRole::RelayTee)
+            .expect("a relay in another namespace");
+        assert_eq!(live(&w), Err(OnBehalfRefusal::SignerNotARelay));
+    }
 }
