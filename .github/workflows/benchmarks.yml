@@ -65,11 +65,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      # Saves nothing. A cache per crate was seven entries of the repo's 10 GB
+      # for jobs that never gate, and they evicted the caches that do. No other
+      # group builds the bench profile (release: fat LTO, host target), so the
+      # restore finds nothing and the benches build cold.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          shared-key: bench-${{ matrix.crate }}
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: bench
+          save-if: false
 
       - name: Run benchmarks
         run: cargo bench -p ${{ matrix.crate }} -- --save-baseline ${{ github.sha }}
