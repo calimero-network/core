@@ -42,15 +42,26 @@ fn plan(store: &Store, namespace: &ContextGroupId, cert: &KnownDeviceCert) -> Ey
     // The namespace's target application, read the way the pairing fan-out reads
     // it. A namespace whose metadata has not synced names none, and is reachable
     // only by a scope that names none either. The account namespace is exempt.
+    let account_namespace = devices.account_namespace()?;
     let application = MetaRepository::new(store)
         .load(namespace)?
         .map(|meta| meta.target.application_id);
-    if !cert.covers(application) && devices.account_namespace()? != Some(*namespace) {
+    if !cert.covers(application) && account_namespace != Some(*namespace) {
         return Ok(BindPlan::Skip(BindOutcome::OutOfScope));
     }
 
+    // The account namespace records its withdrawals, so a node naming none cannot
+    // check a device; every caller holds or follows one, so this only guards.
+    let Some(account_namespace) = account_namespace else {
+        warn!(namespace_id = ?namespace, %device,
+              "no account namespace to check this device's revocation against; not linking it");
+        return Ok(BindPlan::Skip(BindOutcome::Failed));
+    };
     let bindings = AccountBindingRepository::new(store);
-    if bindings.is_revoked(namespace, device)? {
+    let account = cert.proof.statement.account;
+    if bindings.is_spent(&account_namespace, account, device)?
+        || bindings.is_spent(namespace, account, device)?
+    {
         return Ok(BindPlan::Skip(BindOutcome::Revoked));
     }
     if bindings.is_device_linked(namespace, device)? {
@@ -272,6 +283,8 @@ pub async fn bind_known_devices(
         }
     };
 
+    replay_known_revocations(store, node_client, ack_router, namespace, signer_sk).await;
+
     let mut outcomes = Vec::with_capacity(certs.len());
     for cert in &certs {
         let outcome =
@@ -282,6 +295,68 @@ pub async fn bind_known_devices(
         info!(namespace_id = ?namespace, ?outcomes, "carried this account's devices into a namespace");
     }
     outcomes
+}
+
+/// Publish into `namespace` every withdrawal this node's account recorded in its
+/// own namespace, so a replayed link of a revoked device is refused there too.
+pub async fn replay_known_revocations(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace: &ContextGroupId,
+    signer_sk: &PrivateKey,
+) {
+    let read = NodeDeviceRepository::new(store)
+        .account_namespace()
+        .and_then(|found| match found {
+            Some(account_ns) if account_ns != *namespace => {
+                let account = crate::account_for_group(store, &account_ns)?;
+                AccountDeviceRegistry::new(store, account_ns).revocations(account)
+            }
+            _ => Ok(Vec::new()),
+        });
+    let proofs = match read {
+        Ok(proofs) => proofs,
+        Err(err) => {
+            warn!(namespace_id = ?namespace, %err,
+                  "could not read this account's revocations; replaying none here");
+            return;
+        }
+    };
+
+    let bindings = AccountBindingRepository::new(store);
+    for proof in proofs {
+        let (account, device) = (proof.statement.account, proof.statement.device);
+        match bindings.withdrawal_owed(namespace, account, device) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            // Skipped: an unread binding may be another account's, which the publish could spend.
+            Err(err) => {
+                warn!(namespace_id = ?namespace, %device, %err,
+                      "could not read whether a withdrawal is owed here; not replaying it");
+                continue;
+            }
+        }
+        let op = GroupOp::AccountDeviceUnlinked {
+            account,
+            device,
+            proof: Some(proof),
+        };
+        if let Err(err) = withdraw_device_in(
+            store,
+            node_client,
+            ack_router,
+            namespace,
+            signer_sk,
+            device,
+            op,
+        )
+        .await
+        {
+            warn!(namespace_id = ?namespace, %device, %err,
+                  "a recorded revocation was not replayed into this namespace");
+        }
+    }
 }
 
 /// Extend one device into every namespace it should reach.
@@ -307,6 +382,24 @@ pub async fn bind_device_everywhere(
     outcomes
 }
 
+/// Refuse before anything is applied where the publish would be skipped: the op
+/// applies locally first, and a local-only withdrawal stops every later retry.
+fn ensure_publishable(store: &Store, namespace: &ContextGroupId) -> EyreResult<()> {
+    if crate::NamespaceRepository::new(store)
+        .identity_record(namespace)?
+        .is_none()
+    {
+        eyre::bail!("this node holds no identity in {namespace:?} to publish with");
+    }
+    if GroupKeyring::new(store, *namespace)
+        .load_current_key()?
+        .is_none()
+    {
+        eyre::bail!("this node holds no scope key for {namespace:?} to publish under");
+    }
+    Ok(())
+}
+
 /// Publish the withdrawal of `device` into `namespace`, with the scope-key
 /// rotation where this node may sign one.
 ///
@@ -323,6 +416,7 @@ pub async fn withdraw_device_in(
     op: GroupOp,
 ) -> EyreResult<bool> {
     let what = op.op_kind_label();
+    ensure_publishable(store, namespace)?;
     // Answered where the op is going: a failed read costs the rotation, never
     // the withdrawal.
     let is_admin_here = member_account_in_namespace(store, namespace, &signer_sk.public_key())
@@ -346,6 +440,9 @@ pub async fn withdraw_device_in(
         crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, op)
             .await?
     };
+    if report.is_none() {
+        eyre::bail!("the {what} of {device} was applied here but not published to {namespace:?}");
+    }
 
     if bound_here && !is_admin_here {
         warn!(

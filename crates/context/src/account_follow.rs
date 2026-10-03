@@ -18,9 +18,9 @@ use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
-    bind_device_everywhere, withdraw_device_in, AccountBindingRepository, AccountDeviceRegistry,
-    AccountNamespaceSet, KnownDeviceCert, MetaRepository, NamespaceDagService, NamespaceRepository,
-    NodeDeviceRepository,
+    account_for_group, bind_device_everywhere, replay_known_revocations, withdraw_device_in,
+    AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert,
+    MetaRepository, NamespaceDagService, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -108,6 +108,25 @@ async fn run(
     // after the one that read the new scope kept it, and no later event
     // re-follows it.
     let topics = Arc::new(AsyncMutex::new(()));
+
+    // A replay dropped by a restart or a failed publish is repaired here; each is
+    // idempotent, since only a withdrawal still owed is published.
+    {
+        let store = store.clone();
+        let node_client = node_client.clone();
+        let ack_router = Arc::clone(&ack_router);
+        let _ = tasks.spawn(async move {
+            match NamespaceRepository::new(&store).participating_namespaces() {
+                Ok(namespaces) => {
+                    replay_revocations_into(&store, &node_client, &ack_router, &namespaces).await;
+                }
+                Err(err) => warn!(
+                    ?err,
+                    "account-follow: failed to read namespaces to replay into"
+                ),
+            }
+        });
+    }
 
     loop {
         // Reap finished handlers so the set does not grow across a long run.
@@ -499,12 +518,26 @@ fn namespaces_to_bind_into(
 fn namespaces_to_revoke_in(
     store: &Store,
     group_id: [u8; 32],
-    _account: AccountId,
+    account: AccountId,
     device: DeviceId,
 ) -> Vec<ContextGroupId> {
     let Some(account_namespace) = account_namespace_if_ours(store, group_id) else {
         return Vec::new();
     };
+    match account_for_group(store, &account_namespace) {
+        Ok(own) if own == account => {}
+        Ok(_) => {
+            warn!(%account, %device, "account-follow: not carrying another account's revocation");
+            return Vec::new();
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                "account-follow: failed to read which account this node speaks for"
+            );
+            return Vec::new();
+        }
+    }
     let namespaces = match NamespaceRepository::new(store).participating_namespaces() {
         Ok(namespaces) => namespaces,
         Err(err) => {
@@ -521,7 +554,7 @@ fn namespaces_to_revoke_in(
         if namespace == account_namespace {
             continue;
         }
-        match bindings.is_device_linked(&namespace, device) {
+        match bindings.withdrawal_owed(&namespace, account, device) {
             Ok(true) => targets.push(namespace),
             Ok(false) => {}
             // Skipped, not fatal: the other namespaces still get the carry.
@@ -655,18 +688,21 @@ async fn carry_into(
     ack_router: &AckRouter,
     targets: &[ContextGroupId],
     signer_sk: &PrivateKey,
-    _account: AccountId,
+    account: AccountId,
     device: DeviceId,
     op: &GroupOp,
 ) {
     let bindings = AccountBindingRepository::new(store);
     for namespace in targets {
-        match bindings.is_device_linked(namespace, device) {
+        match bindings.withdrawal_owed(namespace, account, device) {
             Ok(true) => {}
             Ok(false) => continue,
-            // A read fault costs a duplicate publish at worst, so carry anyway.
-            Err(err) => warn!(?err, ?namespace, %device,
-                              "account-follow: failed to re-read a carried device's binding"),
+            // Skipped: an unread binding may be another account's, which the publish could spend.
+            Err(err) => {
+                warn!(?err, ?namespace, %device,
+                      "account-follow: failed to re-read a carried device's binding; skipping");
+                continue;
+            }
         }
         if let Err(err) = withdraw_device_in(
             store,
@@ -722,6 +758,31 @@ async fn unfollow(node_client: &NodeClient, namespace: ContextGroupId) {
             ?namespace,
             "account-follow: failed to unfollow a namespace"
         ),
+    }
+}
+
+/// Publish this account's recorded withdrawals into each of `namespaces`.
+async fn replay_revocations_into(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespaces: &[ContextGroupId],
+) {
+    if namespaces.is_empty() {
+        return;
+    }
+    let signer_sk = match signing_identity(store, namespaces) {
+        Ok(secret) => PrivateKey::from(secret),
+        Err(err) => {
+            warn!(
+                ?err,
+                "account-follow: no identity to replay this account's withdrawals with"
+            );
+            return;
+        }
+    };
+    for namespace in namespaces {
+        replay_known_revocations(store, node_client, ack_router, namespace, &signer_sk).await;
     }
 }
 

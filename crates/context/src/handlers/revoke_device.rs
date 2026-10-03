@@ -34,7 +34,8 @@ use calimero_context_client::group::{
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    withdraw_device_in, NamespaceRepository, NodeDeviceRepository, RevocationTarget,
+    withdraw_device_in, AccountBindingRepository, NamespaceRepository, NodeDeviceRepository,
+    RevocationTarget,
 };
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
@@ -53,19 +54,28 @@ pub(crate) fn revocation_namespaces(store: &Store) -> EyreResult<Vec<ContextGrou
     Ok(namespaces)
 }
 
-/// Where a withdrawal of `device` is published: where it is bound, and with the
-/// account's proof everywhere, so a later link of it is refused there too.
+/// Where `account`'s withdrawal of `device` is published: where it is bound to the
+/// account, and with its proof everywhere it is unbound too, so a later link is refused.
 pub(crate) fn revocation_targets(
     store: &Store,
-    _account: AccountId,
+    account: AccountId,
     device: DeviceId,
-    _proven: bool,
+    proven: bool,
 ) -> EyreResult<Vec<ContextGroupId>> {
     let devices = NodeDeviceRepository::new(store);
+    let bindings = AccountBindingRepository::new(store);
     let mut targets = Vec::new();
     for namespace in revocation_namespaces(store)? {
         match devices.revocation_target(&namespace, device) {
-            Ok(Some(_)) => targets.push(namespace),
+            Ok(Some(target)) if target.account == account => targets.push(namespace),
+            // The same id bound to another account: the withdrawal is not theirs.
+            Ok(Some(_)) => {}
+            Ok(None) if proven => match bindings.withdrawal_owed(&namespace, account, device) {
+                Ok(true) => targets.push(namespace),
+                Ok(false) => {}
+                Err(err) => warn!(namespace_id = ?namespace, %device, %err,
+                                  "revocation: could not read the withdrawal; skipping here"),
+            },
             Ok(None) => {}
             Err(err) => warn!(namespace_id = ?namespace, %device, %err,
                               "revocation: could not read the binding; skipping this namespace"),

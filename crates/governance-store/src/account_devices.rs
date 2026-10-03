@@ -134,7 +134,7 @@ impl<'a> AccountDeviceRegistry<'a> {
     }
 
     /// Keep the account's own proof that it withdrew one of its devices. The caller
-    /// verifies it; the first one kept stands, since each withdraws the same device.
+    /// verifies it; one row per signed op that carries it, so the op limits bound it.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
