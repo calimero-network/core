@@ -16,8 +16,8 @@ inputs:
   wait-for-producer:
     description: >
       On a cache miss, wait while this commit's e2e-rust-apps.yml run is still
-      building merod (it builds both variants on an 8-cpu runner) instead of
-      compiling a second copy here. Never waits when that run is not in flight.
+      building merod (every variant, on 8-cpu runners) instead of compiling a
+      second copy here. Never waits when that run is not in flight.
     required: false
     default: "false"
   wait-minutes:
@@ -158,18 +158,21 @@ runs:
             && { [ "$NEED_AUTH" != true ] || have mero-auth; }
         }
         # "running" only while e2e-rust-apps.yml has a STARTED run for this commit
-        # whose `Build merod image` job exists and has not completed. A run that
-        # is still pending (on master, queued behind the previous push by its
-        # concurrency group) has no jobs yet and may not start for an hour:
-        # treating it as in flight held SDK E2E for its whole wait.
+        # with a `Build merod image` job that has not completed. There are two (the
+        # default image, and mock-tee + mero-auth beside it), so any one of them
+        # still running counts: the default finishing first says nothing about
+        # mock-tee. A run that is still pending (on master, queued behind the
+        # previous push by its concurrency group) has no jobs yet and may not
+        # start for an hour: treating it as in flight held SDK E2E for its whole wait.
         producer_running() {
-          local run status
+          local run building
           run=$(gh api "repos/$REPO/actions/workflows/e2e-rust-apps.yml/runs?head_sha=$SHA&per_page=5" \
             --jq '[.workflow_runs[] | select(.status == "in_progress")][0].id // empty' 2>/dev/null) || return 1
           [ -n "$run" ] || return 1
-          status=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
-            --jq '[.jobs[] | select(.name | test("Build merod image")) | .status][0] // empty' 2>/dev/null) || return 1
-          [ -n "$status" ] && [ "$status" != completed ]
+          building=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name | test("Build merod image")) | select(.status != "completed")] | length' \
+            2>/dev/null) || return 1
+          [ "${building:-0}" -gt 0 ]
         }
         deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
         while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -233,8 +236,8 @@ runs:
       if: steps.todo.outputs.build == 'true' && runner.os == 'Linux'
       uses: ./.github/actions/check-libclang
 
-    # Both variants in one job: the second build recompiles only the crates the
-    # feature reaches. The fast e2e profile (no LTO, many codegen units) is the
+    # Several variants in one job: each later build recompiles only the crates
+    # its feature reaches. The fast e2e profile (no LTO, many codegen units) is the
     # one every e2e image already used; it is set per step so it cannot leak.
     - name: Build merod (default)
       id: build-default

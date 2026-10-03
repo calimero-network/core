@@ -139,11 +139,64 @@ jobs:
   build-image:
     name: Build Image
     uses: ./.github/workflows/build-merod-image.yml
-    with:
-      # blob-presence-tee-serves boots merod run --mock-tee, which needs the mock-attestation
-      # feature; a separate image keeps the rest of the matrix on a release-like feature set.
-      with-mock-tee-image: true
-      with-mero-auth: true
+
+  # ── The mock-TEE image and mero-auth, beside the default image ──
+  # Only the mock-TEE groups and Relay need these, so they build in parallel with
+  # Build Image instead of after it, and every other group starts without them.
+  # The name keeps "Build merod image": merod-binaries' wait-for-producer (sdk-e2e
+  # waits here for mock-tee) watches every job of that name in this workflow.
+  build-mock-tee-image:
+    name: Build merod image (mock-tee, mero-auth)
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Reads Build Image's warm cache; that job is its one saver.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: merod-release-fast
+          save-if: false
+
+      # sdk-e2e (mock-tee) and Relay (mero-auth) restore these from the cache.
+      - name: Build the mock-tee merod and mero-auth binaries
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          variants: mock-tee,mero-auth
+
+      # blob-presence-tee-serves and the other mock-TEE scenarios boot `merod run
+      # --mock-tee`, which needs the mock-attestation feature. It stays out of the
+      # shared image so that one matches the production feature set.
+      - name: Build mock-attestation Docker image
+        run: |
+          mkdir -p bin/amd64
+          cp merod-bin/mock-tee/merod bin/amd64/
+          # meroctl is not needed for e2e tests but the Dockerfile expects it
+          touch bin/amd64/meroctl
+          docker build \
+            -f .github/workflows/deps/prebuilt.Dockerfile \
+            -t merod:local-mock-tee \
+            --build-arg TARGETARCH=amd64 \
+            .
+          docker images merod:local-mock-tee
+
+      - name: Save mock-attestation Docker image
+        run: docker save merod:local-mock-tee | zstd -T0 -3 -o /tmp/merod-local-mock-tee.tar.zst
+
+      - name: Upload mock-attestation Docker image
+        uses: actions/upload-artifact@v7
+        with:
+          name: merod-image-mock-tee
+          path: /tmp/merod-local-mock-tee.tar.zst
+          retention-days: 1
+          compression-level: 0
 
   # ── Scenario convergence lint ──
   # Ratcheted against scripts/e2e-convergence-baseline.txt: only a NEW finding fails.
@@ -232,7 +285,7 @@ jobs:
   # ingress needs a mero-auth built from this branch and a traefik beside it.
   relay-device-login:
     name: Relay device login (proxy mode behind Traefik + mero-auth)
-    needs: [build-image, build-apps]
+    needs: [build-image, build-mock-tee-image, build-apps]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -259,9 +312,9 @@ jobs:
           chmod +x ./merod
 
       # Not a published image: what is under test is the `/auth/validate` of THIS
-      # branch naming the session's account. Build Image built it from this tree
-      # (merod-binaries' mero-auth variant), so this restores it rather than
-      # compiling it again; a miss builds it here.
+      # branch naming the session's account. build-mock-tee-image built it from
+      # this tree (merod-binaries' mero-auth variant), so this restores it rather
+      # than compiling it again; a miss builds it here.
       - name: Get mero-auth
         uses: ./.github/actions/merod-binaries
         env:
@@ -326,9 +379,12 @@ jobs:
   # nightly, and on a PR whose change can reach Windows-only code.
 
   # ── Build WASM apps (runs in parallel with image build) ──
+  # big-machine, as ci-checks' Rust apps: a miss builds every app, and this job
+  # gates every scenario group. Same HOME, checkout and target dirs as there, so
+  # the two still share one wasm-apps cache key.
   build-apps:
     name: Build Apps
-    runs-on: ubuntu-latest
+    runs-on: big-machine
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -432,13 +488,17 @@ jobs:
   # fixture registry, merobox) was half of every one-scenario job, and each job
   # queued for an 8-cpu runner of its own. The scenarios are listed in
   # .github/e2e-scenarios.yml; scripts/e2e-scenario-groups.py packs them into
-  # GROUP_COUNT groups balanced by measured duration, one image per group.
+  # GROUP_COUNT groups balanced by measured duration, one image per group. The
+  # groups run in two jobs, each waiting only for the image its groups boot
+  # (the script's JOBS): `test` on merod:local / merod:local-dht, `test-mock-tee`
+  # on merod:local-mock-tee. The plan is made whole and then split.
   plan:
     name: Plan scenario groups
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+      matrix-default: ${{ steps.plan.outputs.matrix-default }}
+      matrix-mock-tee: ${{ steps.plan.outputs.matrix-mock-tee }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -454,9 +514,16 @@ jobs:
         run: |
           python3 scripts/e2e-scenario-groups.py --manifest .github/e2e-scenarios.yml --summary \
             >> "$GITHUB_STEP_SUMMARY"
-          matrix=$(python3 scripts/e2e-scenario-groups.py --manifest .github/e2e-scenarios.yml)
-          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          default=$(python3 scripts/e2e-scenario-groups.py --manifest .github/e2e-scenarios.yml --job default)
+          mock_tee=$(python3 scripts/e2e-scenario-groups.py --manifest .github/e2e-scenarios.yml --job mock-tee)
+          {
+            echo "matrix-default=${default}"
+            echo "matrix-mock-tee=${mock_tee}"
+          } >> "$GITHUB_OUTPUT"
 
+  # The groups on merod:local and merod:local-dht. `test-mock-tee` runs the same
+  # steps (a YAML alias) on the mock-TEE groups; each job downloads only the image
+  # its groups boot, which is all its `needs` waits for.
   test:
     name: Test (${{ matrix.group }})
     needs: [plan, build-image, build-apps]
@@ -466,20 +533,22 @@ jobs:
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    steps:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix-default) }}
+    steps: &test-steps
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download Docker image
+        if: matrix.image != 'merod:local-mock-tee'
         uses: actions/download-artifact@v8
         with:
           name: merod-image
           path: /tmp
 
       - name: Load Docker image
+        if: matrix.image != 'merod:local-mock-tee'
         run: zstd -d /tmp/merod-local.tar.zst --stdout | docker load
 
       # Only the mock-TEE groups need it, and it is a second full image —
@@ -570,10 +639,20 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  test-mock-tee:
+    name: Test (${{ matrix.group }})
+    needs: [plan, build-mock-tee-image, build-apps]
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix-mock-tee) }}
+    steps: *test-steps
+
   # ── Report phase: notify on PR failure ──
   projection-coverage:
     name: Assert the projection gate compared something
-    needs: test
+    needs: [test, test-mock-tee]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -592,16 +671,16 @@ jobs:
 
       - name: Assert the suite concluded comparisons
         run: |
-          # Missing logs is benign only if the matrix never ran. A download failure, or a matrix that ran
+          # Missing logs is benign only if neither matrix ran. A download failure, or a matrix that ran
           # and left nothing, is the fail-open case this job exists to prevent.
           if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
-              case "${{ needs.test.result }}" in
-                skipped|cancelled)
-                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}) — nothing to inspect"
+              case "${{ needs.test.result }}/${{ needs.test-mock-tee.result }}" in
+                skipped/skipped|skipped/cancelled|cancelled/skipped|cancelled/cancelled)
+                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}/${{ needs.test-mock-tee.result }}) — nothing to inspect"
                   exit 0
                   ;;
               esac
-              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, artifact download=${{ steps.logs.outcome }}) — the coverage floor could not be checked"
+              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, test-mock-tee=${{ needs.test-mock-tee.result }}, artifact download=${{ steps.logs.outcome }}) — the coverage floor could not be checked"
               exit 1
           fi
           strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
@@ -626,7 +705,7 @@ jobs:
 
   key-recovery-coverage:
     name: Assert both key-serve grounds were exercised
-    needs: test
+    needs: [test, test-mock-tee]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -645,16 +724,16 @@ jobs:
 
       - name: Assert each ground was exercised somewhere
         run: |
-          # Missing logs is benign only if the matrix never ran. A download failure, or a matrix that ran
+          # Missing logs is benign only if neither matrix ran. A download failure, or a matrix that ran
           # and left nothing, is the fail-open case this job exists to prevent.
           if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
-              case "${{ needs.test.result }}" in
-                skipped|cancelled)
-                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}) — nothing to inspect"
+              case "${{ needs.test.result }}/${{ needs.test-mock-tee.result }}" in
+                skipped/skipped|skipped/cancelled|cancelled/skipped|cancelled/cancelled)
+                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}/${{ needs.test-mock-tee.result }}) — nothing to inspect"
                   exit 0
                   ;;
               esac
-              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, artifact download=${{ steps.logs.outcome }}) — the key-serve coverage floor could not be checked"
+              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, test-mock-tee=${{ needs.test-mock-tee.result }}, artifact download=${{ steps.logs.outcome }}) — the key-serve coverage floor could not be checked"
               exit 1
           fi
           # ANSI escapes sit between a field name and its `=` in node logs, so the
@@ -714,16 +793,16 @@ jobs:
 
   comment:
     name: Report Failed Workflow
-    needs: [plan, test, auth-seam, relay-device-login, projection-coverage, key-recovery-coverage]
+    needs: [plan, test, test-mock-tee, auth-seam, relay-device-login, projection-coverage, key-recovery-coverage]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.plan.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.relay-device-login.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
+          if [ "${{ needs.plan.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.test-mock-tee.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.relay-device-login.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.plan.result }}" == "cancelled" ] || [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.relay-device-login.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
+            if [ "${{ needs.plan.result }}" == "cancelled" ] || [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.test-mock-tee.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.relay-device-login.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT

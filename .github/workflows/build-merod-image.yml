@@ -3,26 +3,12 @@ name: Build merod image (reusable)
 # Reusable workflow, called by e2e-rust-apps.yml and app-migration-e2e.yml. The
 # e2e-rust-apps call is the one writer of the "merod-release-fast" rust-cache: two
 # callers saving the same key on the same push raced, and the loser's save failed.
+# The default variant only: e2e-rust-apps builds its mock-TEE image and mero-auth
+# in a job beside this one, so the groups on this image never wait for them.
 
 on:
   workflow_call:
     inputs:
-      with-mock-tee-image:
-        description: >
-          Also build and upload `merod:local-mock-tee` — the same merod compiled
-          with `--features mock-attestation`, which is what `merod run
-          --mock-tee` requires. Off by default so callers that have no mock-TEE
-          scenario (app-migration-e2e) do not pay for a second compile.
-        type: boolean
-        required: false
-        default: false
-      with-mero-auth:
-        description: >
-          Also build mero-auth into the shared merod-binaries cache, for the
-          Relay device login lane, which otherwise compiled it on every run.
-        type: boolean
-        required: false
-        default: false
       save-cache:
         description: Save the merod-release-fast rust-cache on master. Exactly one caller should.
         type: boolean
@@ -56,16 +42,15 @@ jobs:
           shared-key: merod-release-fast
           save-if: ${{ github.ref == 'refs/heads/master' && inputs.save-cache }}
 
-      # Every variant in this one job, each built at most once per source tree:
-      # sdk-e2e, sync-regression, app-migration-e2e and Relay restore these
-      # binaries from the cache instead of compiling their own.
-      - name: Build the merod binaries
+      # Built at most once per source tree: sync-regression and app-migration-e2e
+      # restore this binary from the cache instead of compiling their own.
+      - name: Build the merod binary
         uses: ./.github/actions/merod-binaries
         env:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          variants: ${{ format('default{0}{1}', inputs.with-mock-tee-image && ',mock-tee' || '', inputs.with-mero-auth && ',mero-auth' || '') }}
+          variants: default
 
       - name: Build local merod image
         uses: ./.github/actions/build-local-merod
@@ -81,35 +66,5 @@ jobs:
         with:
           name: merod-image
           path: /tmp/merod-local.tar.zst
-          retention-days: 1
-          compression-level: 0
-
-      # mock-attestation must stay out of the shared image so it matches the
-      # production feature set; it gets its own image from its own binary.
-      - name: Build mock-attestation Docker image
-        if: inputs.with-mock-tee-image
-        run: |
-          rm -rf bin/amd64
-          mkdir -p bin/amd64
-          cp merod-bin/mock-tee/merod bin/amd64/
-          # meroctl is not needed for e2e tests but the Dockerfile expects it
-          touch bin/amd64/meroctl
-          docker build \
-            -f .github/workflows/deps/prebuilt.Dockerfile \
-            -t merod:local-mock-tee \
-            --build-arg TARGETARCH=amd64 \
-            .
-          docker images merod:local-mock-tee
-
-      - name: Save and upload mock-attestation Docker image
-        if: inputs.with-mock-tee-image
-        run: docker save merod:local-mock-tee | zstd -T0 -3 -o /tmp/merod-local-mock-tee.tar.zst
-
-      - name: Upload mock-attestation Docker image
-        if: inputs.with-mock-tee-image
-        uses: actions/upload-artifact@v7
-        with:
-          name: merod-image-mock-tee
-          path: /tmp/merod-local-mock-tee.tar.zst
           retention-days: 1
           compression-level: 0
