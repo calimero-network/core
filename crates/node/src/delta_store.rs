@@ -544,9 +544,10 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // `outcome.atomic`; we stash it in `apply_lock_slot` for the caller to
         // hold across its `dag_heads` commit. A cascaded buffered-child apply in
         // the same `dag.add_delta` reuses the already-held guard via
-        // `ContextAtomic::Held` (the lock is not re-entrant). When not armed
-        // (e.g. the local path's `try_process_pending`), behavior is unchanged
-        // (`None`).
+        // `ContextAtomic::Held` (the lock is not re-entrant). Every
+        // `try_process_pending` sweep arms it too, so its cascaded applies and
+        // the heads commit after them share one lock hold. When not armed,
+        // behavior is unchanged (`None`).
         //
         // The slot is empty only between the `take()` here and the stash-back
         // after the await. That window cannot be observed by another `apply()`:
@@ -2179,8 +2180,21 @@ impl DeltaStore {
         // were loaded from the database.
         {
             let mut dag = self.dag.write().await;
-            match dag.try_process_pending(&*self.applier).await {
+            // Retain the execution lock from the first cascaded apply through
+            // the heads commit, as `add_delta_internal` does: the applies move
+            // `root_hash`, and the heads must land in the same lock hold.
+            self.applier
+                .retain_apply_lock
+                .store(true, std::sync::atomic::Ordering::Release);
+            let processed = dag.try_process_pending(&*self.applier).await;
+            self.applier
+                .retain_apply_lock
+                .store(false, std::sync::atomic::Ordering::Release);
+            let apply_lock_guard = self.applier.lock_apply_slot().take();
+            let mut cascaded_any = false;
+            match processed {
                 Ok(processed) if processed > 0 => {
+                    cascaded_any = true;
                     info!(
                         context_id = %self.applier.context_id,
                         processed,
@@ -2196,6 +2210,14 @@ impl DeltaStore {
                 }
                 _ => {}
             }
+            let heads = dag.get_heads();
+            // No DAG lock while the execution lock is held (lock order: `dag`
+            // write, then the context).
+            drop(dag);
+            if cascaded_any {
+                self.commit_heads_after_sweep(heads, "load_persisted_deltas");
+            }
+            drop(apply_lock_guard);
         }
 
         Ok(LoadPersistedResult {
@@ -2578,7 +2600,7 @@ impl DeltaStore {
 
         // Register topology, nudge cascades, collect cascaded IDs + heads
         // all under one write-lock scope (matches add_delta_internal).
-        let (cascaded_ids, heads) = {
+        let (cascaded_bodies, heads, apply_lock_guard) = {
             let mut dag = self.dag.write().await;
 
             let pending_before: HashSet<[u8; 32]> =
@@ -2594,6 +2616,13 @@ impl DeltaStore {
             // until restart or an unrelated remote-delta application
             // happens to trigger `apply_pending`.
             let mut cascaded: Vec<[u8; 32]> = Vec::new();
+            // Retain the execution lock from the first cascaded apply through
+            // the heads commit below, as `add_delta_internal` does: each
+            // cascaded apply moves `root_hash`, and a reader under the lock
+            // must not see that root beside the pre-cascade heads.
+            self.applier
+                .retain_apply_lock
+                .store(true, std::sync::atomic::Ordering::Release);
             if added {
                 match dag.try_process_pending(&*self.applier).await {
                     Ok(0) => {}
@@ -2616,7 +2645,18 @@ impl DeltaStore {
                     }
                 }
             }
-            (cascaded, dag.get_heads())
+            self.applier
+                .retain_apply_lock
+                .store(false, std::sync::atomic::Ordering::Release);
+            let apply_lock_guard = self.applier.lock_apply_slot().take();
+            // Bodies are read here, under the write lock already held: taking
+            // a fresh `dag` read while the execution lock is held would invert
+            // the lock order every inbound apply takes (`dag`, then context).
+            let bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = cascaded
+                .iter()
+                .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
+                .collect();
+            (bodies, dag.get_heads(), apply_lock_guard)
         };
 
         // Persist cascaded children's DB state + updated dag_heads. Without
@@ -2635,17 +2675,9 @@ impl DeltaStore {
         // NodeManager / NodeClients and is tracked as a follow-up — the
         // restart-replay path is the existing safety net for cascaded events
         // whose handlers couldn't run synchronously (#2185 contract).
-        if cascaded_ids.is_empty() {
+        if cascaded_bodies.is_empty() {
             return Ok(Vec::new());
         }
-
-        let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = {
-            let dag = self.dag.read().await;
-            cascaded_ids
-                .iter()
-                .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
-                .collect()
-        };
 
         // Cascade-only path: no `primary`, so ignore `committed` and keep the
         // warn-and-continue behaviour (a failed heads write is corrected by
@@ -2654,6 +2686,7 @@ impl DeltaStore {
             .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, Vec::new(), heads)
             .await
             .forwarded_events;
+        drop(apply_lock_guard);
 
         Ok(cascaded_events)
     }
@@ -3290,11 +3323,19 @@ impl DeltaStore {
             cascaded_bodies,
             added_parent_bodies,
             heads_after_cascade,
+            apply_lock_guard,
         ) = if plans.is_empty() {
-            (false, Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            (false, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None)
         } else {
             let mut dag = self.dag.write().await;
             let lock_start = std::time::Instant::now();
+            // Retain the execution lock from the first apply below (a parent's
+            // `add_delta`, or the pending sweep) through the phase-3 heads
+            // commit, as `add_delta_internal` does: each apply moves
+            // `root_hash`, and the heads must land in the same lock hold.
+            self.applier
+                .retain_apply_lock
+                .store(true, std::sync::atomic::Ordering::Release);
             let pending_before: HashSet<[u8; 32]> =
                 dag.get_pending_delta_ids().into_iter().collect();
             let mut any_parent_added = false;
@@ -3414,6 +3455,10 @@ impl DeltaStore {
             cascaded_ids.extend(added_parent_bodies.iter().map(|(id, _)| *id));
 
             let heads = dag.get_heads();
+            self.applier
+                .retain_apply_lock
+                .store(false, std::sync::atomic::Ordering::Release);
+            let apply_lock_guard = self.applier.lock_apply_slot().take();
             hold = Some(lock_start.elapsed());
             (
                 any_parent_added,
@@ -3421,6 +3466,7 @@ impl DeltaStore {
                 cascaded_bodies,
                 added_parent_bodies,
                 heads,
+                apply_lock_guard,
             )
         };
         if let Some(hold) = hold {
@@ -3465,6 +3511,7 @@ impl DeltaStore {
                 .forwarded_events,
             );
         }
+        drop(apply_lock_guard);
 
         if !actually_missing.is_empty() && actually_missing.len() < potentially_missing.len() {
             tracing::info!(
@@ -3521,6 +3568,30 @@ impl DeltaStore {
     /// Holds no DAG lock. The caller is expected to have pre-cloned the
     /// `CausalDelta` bodies out of the DAG under whatever lock the caller
     /// chose. This keeps DB I/O out of the DAG critical section.
+    /// Commit `heads` as the context's `dag_heads` after a pending sweep that
+    /// cascaded deltas this path does not persist the records of (startup
+    /// load, snapshot checkpoints: their rows stay `applied: false` with any
+    /// events, so restart replay still runs the handlers). Each cascaded apply
+    /// already moved `root_hash`; without this the heads stayed behind it until
+    /// an unrelated delta arrived, and every heartbeat and handshake in between
+    /// advertised a `(heads, root)` pair no node held. Call it with the
+    /// retained execution-lock guard still held, so a reader under that lock
+    /// sees both or neither.
+    fn commit_heads_after_sweep(&self, heads: Vec<[u8; 32]>, site: &'static str) {
+        if let Err(e) = self.applier.context_client.persist_deltas_and_dag_heads(
+            &self.applier.context_id,
+            &[],
+            heads,
+        ) {
+            warn!(
+                ?e,
+                context_id = %self.applier.context_id,
+                site,
+                "Failed to commit dag_heads after a pending sweep; the next applied delta corrects it"
+            );
+        }
+    }
+
     async fn persist_cascaded_deltas_and_update_heads(
         &self,
         applied_bodies: &[([u8; 32], CausalDelta<Vec<Action>>)],
@@ -4038,8 +4109,20 @@ impl DeltaStore {
         // This is critical because deltas received via gossip before the checkpoint was added
         // would be stuck in pending state waiting for the checkpoint parent.
         if added_count > 0 {
-            match dag.try_process_pending(&*self.applier).await {
+            // Retain the execution lock from the first cascaded apply through
+            // the heads commit, as `add_delta_internal` does.
+            self.applier
+                .retain_apply_lock
+                .store(true, std::sync::atomic::Ordering::Release);
+            let processed = dag.try_process_pending(&*self.applier).await;
+            self.applier
+                .retain_apply_lock
+                .store(false, std::sync::atomic::Ordering::Release);
+            let apply_lock_guard = self.applier.lock_apply_slot().take();
+            let mut cascaded_any = false;
+            match processed {
                 Ok(processed) if processed > 0 => {
+                    cascaded_any = true;
                     tracing::info!(
                         context_id = %self.applier.context_id,
                         processed,
@@ -4055,6 +4138,14 @@ impl DeltaStore {
                 }
                 _ => {}
             }
+            let heads = dag.get_heads();
+            // No DAG lock while the execution lock is held (lock order: `dag`
+            // write, then the context).
+            drop(dag);
+            if cascaded_any {
+                self.commit_heads_after_sweep(heads, "add_snapshot_checkpoints");
+            }
+            drop(apply_lock_guard);
         }
 
         tracing::info!(

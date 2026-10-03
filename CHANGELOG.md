@@ -403,6 +403,16 @@
 
 ### Fixed
 
+- **A pending sweep no longer leaves the root hash ahead of the DAG heads.**
+  When a delta's parent arrived by a path other than an inbound apply (a
+  local execute, a parent restored from the database, snapshot checkpoints, or
+  the startup load), the deltas waiting on it were applied without holding the
+  context's execution lock through the `dag_heads` commit, so a heartbeat or
+  handshake could pair their new root with the old heads. The snapshot and
+  startup sweeps never committed the cascaded heads at all, leaving that pair
+  torn until an unrelated delta arrived. Every sweep now holds the lock from
+  its first apply through the heads commit, as an inbound apply does.
+
 - **Sync cost, live data and execution errors are measured.**
   `sync_round_trips`, `sync_comparisons` and `sync_entities_transferred`
   (by `protocol`) are recorded once per completed initiator session from the
