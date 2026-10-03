@@ -1,0 +1,25 @@
+name: Check libclang
+description: >
+  Fail fast, with a message naming the cause, when a Linux runner has no
+  libclang for librocksdb-sys's bindgen. Installs nothing: the ubuntu images
+  ship libclang1-NN with their clang packages, and bindgen's `runtime` loading
+  (clang-sys) finds its versioned libclang.so.N without libclang-dev.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check libclang
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        # The directories and names clang-sys searches under /usr/lib for a
+        # runtime-loaded libclang.
+        found=(/usr/lib/llvm-*/lib/libclang.so* /usr/lib/llvm-*/lib/libclang-[0-9]*.so* \
+          /usr/lib/*-linux-gnu/libclang.so* /usr/lib/*-linux-gnu/libclang-[0-9]*.so*)
+        if [ "${#found[@]}" -eq 0 ]; then
+          echo "::error::No libclang on this runner (looked in /usr/lib/llvm-*/lib and /usr/lib/*-linux-gnu)." \
+            "librocksdb-sys's bindgen needs one: install libclang1 (or libclang-dev), or set LIBCLANG_PATH."
+          exit 1
+        fi
+        printf 'libclang: %s\n' "${found[@]}"

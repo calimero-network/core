@@ -551,6 +551,8 @@ pub(crate) fn apply_device_descoped(
                        "account device descoped: the signer does not speak for this account");
         return Ok(());
     }
+    // No membership gate: a descope only narrows the account's own device, so even
+    // a removed account may shed one, much as it may revoke one by root proof.
 
     // The floor is what refuses a stale link replayed later; it is raised even
     // when nothing is bound, so the outcome does not depend on arrival order.
@@ -618,6 +620,11 @@ pub(crate) fn apply_device_labelled(
         );
         return Ok(());
     }
+    if !account_is_member(ctx, account, ctx.signer())? {
+        tracing::warn!(group_id = ?group_id, %account, %device,
+                       "account device labelled: the account is not a member at this op's cut");
+        return Ok(());
+    }
 
     if !crate::AccountDeviceRegistry::new(ctx.store(), group_id).record_label(
         *device,
@@ -672,13 +679,22 @@ pub(super) fn key_is_member(
         ctx.ensure_live_fallback_is_sound(&endorser_key)?;
         return Ok(false);
     };
-    let endorser = &endorser;
-    let projected = ctx.projection_membership_path(endorser);
+    account_is_member(ctx, &endorser, &endorser_key)
+}
+
+/// Is `account` a member of this group at the op's causal cut? `key` names who is
+/// asking, for the park an unfolded cut raises. See [`key_is_member`].
+fn account_is_member(
+    ctx: &GroupApplyCtx<'_>,
+    account: &AccountId,
+    key: &calimero_primitives::identity::PublicKey,
+) -> EyreResult<bool> {
+    let projected = ctx.projection_membership_path(account);
     let path = match projected {
         Some(projected) => projected,
         None => {
-            ctx.ensure_live_fallback_is_sound(&endorser_key)?;
-            match MembershipRepository::new(ctx.store()).check_path(ctx.group_id(), endorser)? {
+            ctx.ensure_live_fallback_is_sound(key)?;
+            match MembershipRepository::new(ctx.store()).check_path(ctx.group_id(), account)? {
                 MembershipPath::None => AtCutMembershipPath::None,
                 MembershipPath::Direct => AtCutMembershipPath::Direct,
                 MembershipPath::Inherited { .. } => AtCutMembershipPath::Inherited,
@@ -691,18 +707,18 @@ pub(super) fn key_is_member(
         // Read live too, purely to classify the refusal. Best-effort: a store
         // fault here must not turn a decided refusal into an error.
         let live = MembershipRepository::new(ctx.store())
-            .check_path(ctx.group_id(), endorser)
+            .check_path(ctx.group_id(), account)
             .ok();
         let live_is_member = live.map(|path| path != MembershipPath::None);
         tracing::warn!(
             group_id = ?ctx.group_id(),
-            %endorser,
+            %account,
             verdict = if projected.is_some() { "projection" } else { "live-fallback" },
             ?live_is_member,
             cut_len = ctx.cut().len(),
             cut_head = ?ctx.cut().first().map(hex::encode),
             divergence_risk = projected.is_some() && live_is_member == Some(true),
-            "key is not a member at this op's cut"
+            "not a member at this op's cut"
         );
     }
     Ok(is_member)

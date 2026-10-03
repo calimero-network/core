@@ -2,16 +2,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use actix::{Actor, Addr};
+use actix::{Actor, Addr, Arbiter, Supervised};
 use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
+use calimero_utils_actix::supervise::restart_on_panic;
 use prometheus_client::metrics::counter::Counter;
 
 use crate::migration_status::{MigrationEmitter, MigrationStatusCache, DEFAULT_EMIT_INTERVAL};
+use crate::node_metrics::record_actor_restart;
 use crate::readiness::{ReadinessCache, ReadinessCacheNotify, ReadinessConfig, ReadinessManager};
 use crate::sync::SyncManager;
 use crate::{NodeClients, NodeManagers, NodeState};
@@ -42,6 +44,23 @@ pub(crate) struct DivergenceMark {
     /// convergence is what normally removes the entry), so the map can't grow
     /// without bound on peer churn.
     pub(crate) last_seen: Instant,
+}
+
+/// Counters for the same-DAG / different-root divergence the hash-heartbeat
+/// observes (#2319), registered under the `sync` prefix in `run.rs`.
+///
+/// The two answer different questions. `detected` counts every observation,
+/// including the transient ones a concurrent sync apply produces mid-flight:
+/// every applied remote delta also heartbeats, so under write load it rises
+/// with writes x peers and is a load signal, not a failure signal. `escalated`
+/// counts divergences that persisted unchanged for `DIVERGENCE_PERSIST_FOR`
+/// (once per stuck hash pair, on the same transition that logs
+/// `DIVERGENCE DETECTED` at ERROR), which background sync did not heal. Alert
+/// and gate on `escalated`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DivergenceMetrics {
+    pub(crate) detected: Counter,
+    pub(crate) escalated: Counter,
 }
 
 /// What one more observation of a divergence means for its streak.
@@ -144,12 +163,8 @@ pub struct NodeManager {
     /// inbound sync streams here instead of `ctx.spawn`'ing them on
     /// this actor's Arbiter (issue #2316).
     pub(crate) sync_session_tx: crate::sync_session_bridge::SyncSessionSender,
-    /// `sync_root_hash_divergence_detected_total` — incremented by the
-    /// hash-heartbeat handler each time it observes a peer with the same
-    /// DAG heads but a different storage root hash (#2319). Lets vmagent
-    /// alert on divergence rate without grepping logs; with the #2319
-    /// determinism fixes this should stay near zero.
-    pub(crate) divergence_detected: Counter,
+    /// Same-DAG / different-root counters bumped by the hash-heartbeat handler.
+    pub(crate) divergence_metrics: DivergenceMetrics,
     /// Per-(context, peer) persistence tracker for same-DAG / different-root
     /// divergence (#2319 follow-up). The hash-heartbeat escalates to `error!`
     /// (and an active recovery sync) only after the SAME divergence persists for
@@ -265,7 +280,7 @@ impl NodeManager {
         state: NodeState,
         state_delta_tx: crate::state_delta_bridge::StateDeltaSender,
         sync_session_tx: crate::sync_session_bridge::SyncSessionSender,
-        divergence_detected: Counter,
+        divergence_metrics: DivergenceMetrics,
     ) -> Self {
         Self {
             clients: NodeClients {
@@ -283,7 +298,7 @@ impl NodeManager {
             readiness_addr: None,
             state_delta_tx,
             sync_session_tx,
-            divergence_detected,
+            divergence_metrics,
             divergence_streak: HashMap::new(),
             behind_sync_at: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
@@ -314,6 +329,8 @@ impl Actor for NodeManager {
     }
 }
 
+impl Supervised for NodeManager {}
+
 impl NodeManager {
     /// Mount the [`ReadinessManager`] actor and store its address so
     /// receiver-side handlers can post `ApplyBeaconLocal` /
@@ -332,7 +349,11 @@ impl NodeManager {
             last_probe_response_at: std::collections::HashMap::new(),
             pending_republish: std::collections::HashMap::new(),
         };
-        self.readiness_addr = Some(manager.start());
+        self.readiness_addr = Some(restart_on_panic(
+            &Arbiter::current(),
+            record_actor_restart,
+            |_ctx| manager,
+        ));
     }
 
     /// Mount the [`MigrationEmitter`] actor (PR-6c Task 6c.8 emit side) and
@@ -350,7 +371,11 @@ impl NodeManager {
             interval: DEFAULT_EMIT_INTERVAL,
             last_emitted: std::collections::HashMap::new(),
         };
-        self.migration_emitter_addr = Some(emitter.start());
+        self.migration_emitter_addr = Some(restart_on_panic(
+            &Arbiter::current(),
+            record_actor_restart,
+            |_ctx| emitter,
+        ));
     }
 
     /// Drive the [`MigrationEmitter`] with the node's freshly-computed migration

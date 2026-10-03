@@ -808,6 +808,7 @@ impl Actor for ContextManager {
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
         self.start_namespace_heartbeat(ctx);
+        self.start_namespace_pending_sweep(ctx);
         // Periodically report in-memory context-cache effectiveness.
         // Runs on the actor thread, so it reads cache state without locking.
         // The returned SpawnHandle is intentionally dropped: this interval

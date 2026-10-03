@@ -22,8 +22,8 @@ use calimero_store::key::{
 use calimero_store::Store;
 
 use super::super::test_fixtures::{
-    nest_for_test, nest_for_test_unchecked, sample_meta_with_admin, test_group_id, test_meta,
-    test_store,
+    kicked_from_open, nest_for_test, nest_for_test_unchecked, sample_meta_with_admin,
+    test_group_id, test_meta, test_store,
 };
 use super::super::*;
 use super::TeeAttestationClaims;
@@ -1671,6 +1671,78 @@ fn the_bootstrap_inviter_hint_is_admitted_only_before_an_admin_exists() {
     );
 }
 
+/// `is_namespace_account` is the point-read form of
+/// `namespace_accounts().contains(..)`, which every gossip verifier used to
+/// build per message. The two must give the same answer for every way an
+/// account can be in the set or out of it, before genesis and after.
+#[test]
+fn is_namespace_account_agrees_with_namespace_accounts() {
+    let store = test_store();
+    let namespace_id = [0xD2; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let repo = MembershipRepository::new(&store);
+
+    let member = AccountId::from([0x10; 32]);
+    let admin = AccountId::from([0x01; 32]);
+    let hint = AccountId::from([0x77; 32]);
+    let stranger = AccountId::from([0x99; 32]);
+    // A member of a different namespace: in neither view of this one.
+    let elsewhere = AccountId::from([0x55; 32]);
+    repo.add_member(&gid, &member, GroupMemberRole::Member)
+        .expect("add member");
+    repo.add_member(
+        &ContextGroupId::from([0xD3; 32]),
+        &elsewhere,
+        GroupMemberRole::Member,
+    )
+    .expect("add the other namespace's member");
+    repo.set_bootstrap_inviter(namespace_id.into(), hint)
+        .expect("record the hint");
+
+    let placeholder = crate::placeholder_admin_identity();
+    let agree = |phase: &str| {
+        let set = repo.namespace_accounts(namespace_id.into()).expect("list");
+        for account in [member, admin, hint, stranger, elsewhere, placeholder] {
+            assert_eq!(
+                repo.is_namespace_account(namespace_id.into(), &account)
+                    .expect("point read"),
+                set.contains(&account),
+                "{phase}: the two disagree about {account:?}"
+            );
+        }
+    };
+
+    // Before genesis: no meta, so the hint is admitted.
+    agree("before genesis");
+
+    // Meta written with the placeholder admin: still cold start, hint admitted.
+    let mut meta = GroupMetaValue {
+        target: calimero_store::key::GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
+        created_at: 1_700_000_000,
+        admin_identity: placeholder,
+        owner_identity: placeholder,
+        migration: None,
+        auto_join: true,
+    };
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    agree("with the placeholder admin");
+
+    // Genesis names a real admin with no member row; the hint stops counting.
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    agree("after genesis");
+
+    // A removed member leaves both views together.
+    repo.remove_member(&gid, &member).expect("remove");
+    agree("after a removal");
+}
+
 #[test]
 fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     let store = test_store();
@@ -2263,6 +2335,119 @@ fn get_effective_member_capabilities_none_for_denied_inherited_member() {
         None,
         "deny-listed (kicked) inherited member must resolve to None — \
          consistent with their absence from list_group_members"
+    );
+}
+
+#[test]
+fn a_member_removed_from_an_open_group_inherits_into_none_of_its_descendants() {
+    let store = test_store();
+    let f = kicked_from_open(&store);
+    let membership = MembershipRepository::new(&store);
+
+    for group in [f.child, f.grandchild] {
+        assert!(
+            !membership.is_member(&group, &f.kicked.1).unwrap(),
+            "a removal from an ancestor ends inheritance below it"
+        );
+        assert_eq!(
+            membership
+                .effective_capabilities(&group, &f.kicked.1)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            membership.effective_role(&group, &f.kicked.1).unwrap(),
+            None
+        );
+        assert!(
+            membership.is_member(&group, &f.honest.1).unwrap(),
+            "an honest inheritor still reaches every descendant"
+        );
+        let inherited: Vec<AccountId> = membership
+            .enumerate_inherited(&group)
+            .unwrap()
+            .into_iter()
+            .map(|(account, _)| account)
+            .collect();
+        assert!(!inherited.contains(&f.kicked.1));
+        assert!(inherited.contains(&f.honest.1));
+    }
+}
+
+#[test]
+fn a_removal_block_ends_inheritance_and_a_leave_block_alone_does_not() {
+    use calimero_store::key::GroupExitReason;
+
+    let store = test_store();
+    let f = kicked_from_open(&store);
+    let membership = MembershipRepository::new(&store);
+    let reentry = ReentryRepository::new(&store);
+
+    // A leaver an attestation readmitted keeps its `Left` block with no deny entry.
+    reentry
+        .block(&f.open, &f.honest.1, GroupExitReason::Left)
+        .unwrap();
+    assert!(membership.is_member(&f.child, &f.honest.1).unwrap());
+
+    reentry
+        .block(&f.open, &f.honest.1, GroupExitReason::Removed)
+        .unwrap();
+    assert!(
+        !membership.is_member(&f.child, &f.honest.1).unwrap(),
+        "a removal block ends inheritance even with no deny entry"
+    );
+}
+
+#[test]
+fn an_admin_above_the_removal_still_reaches_below_it() {
+    let store = test_store();
+    let f = kicked_from_open(&store);
+    let chief = AccountId::from([0x63; 32]);
+    MembershipRepository::new(&store)
+        .add_member(&f.restricted, &chief, GroupMemberRole::Admin)
+        .unwrap();
+    DenyListRepository::new(&store)
+        .mark(&f.open, &chief)
+        .unwrap();
+
+    let membership = MembershipRepository::new(&store);
+    assert_eq!(
+        membership.check_path(&f.child, &chief).unwrap(),
+        MembershipPath::Inherited {
+            anchor: f.restricted,
+            via_admin: true
+        },
+        "membership agrees with admin authority, which reaches past the removal"
+    );
+    assert!(membership.is_inherited_admin(&f.child, &chief).unwrap());
+}
+
+#[test]
+fn a_row_below_the_removal_keeps_its_own_inheritance() {
+    use calimero_context_config::MemberCapabilities;
+
+    let store = test_store();
+    let f = kicked_from_open(&store);
+    MembershipRepository::new(&store)
+        .add_member(&f.child, &f.kicked.1, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &f.child,
+            &f.kicked.1,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .check_path(&f.grandchild, &f.kicked.1)
+            .unwrap(),
+        MembershipPath::Inherited {
+            anchor: f.child,
+            via_admin: false
+        },
+        "a member added back below the removal inherits from that row"
     );
 }
 

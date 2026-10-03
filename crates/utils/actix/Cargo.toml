@@ -16,6 +16,7 @@ futures-util.workspace = true
 itertools.workspace = true
 pastey.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+tracing.workspace = true
 calimero-primitives.workspace = true
 
 [dev-dependencies]

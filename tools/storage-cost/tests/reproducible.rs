@@ -59,6 +59,14 @@ fn declared_tolerances_bound_the_observed_spread() {
                 .entry("index_rows_removed")
                 .or_default()
                 .push(costs.index_rows_removed);
+            counts
+                .entry("hash_calls")
+                .or_default()
+                .push(costs.hash_calls);
+            counts
+                .entry("hash_blocks")
+                .or_default()
+                .push(costs.hash_blocks);
         }
 
         for (metric, values) in counts {

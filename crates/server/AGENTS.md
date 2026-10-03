@@ -92,6 +92,7 @@ src/
 │   ├── handlers.rs           # SSE handlers
 │   └── ...
 ├── auth.rs                   # Authentication middleware
+├── proxy_permissions.rs      # Proxy mode: X-Auth-Permissions → GrantedPermissions
 ├── sealed.rs                 # Sealed transport: /sealed/v2 envelope, wraps the router
 ├── sealed/
 │   └── session.rs            # Noise NK handshake and the sessions it opens
@@ -177,8 +178,7 @@ WS   /ws                              # WebSocket connection
 ```
 
 The upgrade needs `context:subscribe`; each `execute` message needs `context:execute` for its
-context, checked in `ws/execute.rs` against the permissions the auth guard handed over
-(`GrantedPermissions`).
+context and method. See "Execute authority" below.
 
 ### SSE
 
@@ -366,6 +366,39 @@ sealed under the session and responses stream back in sealed frames. Six rules:
   `src/sealed/noise.ts`). The vectors in `sealed/tests.rs` are repeated there
   verbatim, and mero-js runs the handshake itself, so change both or neither.
 
+## Execute authority
+
+`/ws` and `/jsonrpc` are each several authorities behind one route. The route
+check only says a token may reach the path: `/ws` is admitted on
+`context:subscribe`, and `/jsonrpc` on any `context:execute`, while the context
+and method a call names are in the body. So the guard hands the token's
+permissions over as `GrantedPermissions`, and `execute_request` in
+`src/execute.rs`, the one function both transports call, checks `may_execute`
+(`context:execute[<ctx>,,<method>]`) before it reads anything.
+
+- **Holds for the node owner too.** A client key is answered as the node
+  owner, which skips the membership check, but its token was minted for some
+  purpose. A token minted to watch events must not be spent on writes.
+- **Proxy mode reads `X-Auth-Permissions`** (`src/proxy_permissions.rs`),
+  which mero-auth's `/auth/validate` writes and the proxy forwards. It needs
+  no opt-in because it can only narrow: a request naming none is answered as
+  proxy mode always answered it. mero-auth comma-joins the list, and a
+  permission's own parameters contain commas, so it is split only outside
+  brackets.
+- **Guard ran, no permissions** is refused, never read as unrestricted.
+- **An account-anchored session never acts as the node.** `/jsonrpc` (through
+  `jsonrpc::caller_identity`) and WS `execute` refuse a caller holding only
+  `AuthenticatedAccount`, whether the embedded guard or `proxy_identity` set it:
+  `execute` and `set_ephemeral` run as this node's own context identity. Its
+  writes go through `/intents` with a warrant, its presence through
+  `/presence-intents`.
+- **A method's own `Err` is mapped once**, by `execute::method_output`, into
+  `ExecutionError::FunctionCallError`. JSON-RPC, WS, the delegated `/intents`
+  and the account `/query` all use it; the two admin routes answer it with
+  `admin::service::method_error_response` (`400`, JSON-RPC's `type`/`data` plus
+  an `error` string). Never answer a method error as a success with a `null`
+  return.
+
 ## Subscription authority
 
 Subscribing is authorized once, at subscribe time, by the gates in
@@ -373,6 +406,8 @@ Subscribing is authorized once, at subscribe time, by the gates in
 `authorize_group_subscriptions`). Keeping that decision true afterwards is
 `src/subscription_grants.rs`, and there are three rules worth knowing before
 touching either.
+A caller with an identity must be a member in every auth mode, proxy included, since a proxy tenant is one caller among many.
+Only the node owner and an identity-less caller on an auth-off node bypass this.
 
 **The gate is the only authority.** A grant never *grants* anything; it only
 records what a connection's subscriptions depend on, so a membership change can

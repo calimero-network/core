@@ -34,6 +34,7 @@ pub mod jsonrpc;
 mod metrics;
 mod proof_auth;
 mod proxy_identity;
+mod proxy_permissions;
 pub mod sealed;
 mod service_mounts;
 pub mod sse;

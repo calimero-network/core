@@ -43,11 +43,12 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     PerformIntentApiRequest, PerformIntentApiResponse, PerformIntentApiResponseData,
 };
+use calimero_server_primitives::jsonrpc::ExecutionError;
 use eyre::WrapErr as _;
 use futures_util::StreamExt;
 use tracing::{debug, warn};
 
-use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::admin::service::{method_error_response, parse_api_error, ApiResponse};
 use crate::AdminState;
 
 /// Seconds since the Unix epoch, for the one check that needs a clock.
@@ -205,6 +206,13 @@ pub async fn handler(
     match perform(&state.ctx_client, context_id, req).await {
         Ok(response) => ApiResponse { payload: response }.into_response(),
         Err(err) => {
+            // The method ran and returned an error. Not a refusal, and not
+            // logged as one: the execute path already warned with the app's
+            // message redacted, and this one is not.
+            if let Some(method_error) = err.downcast_ref::<ExecutionError>() {
+                debug!(%context_id, %err, "intent's method returned an error");
+                return method_error_response(method_error);
+            }
             warn!(%context_id, %err, "refusing intent");
             parse_api_error(err).into_response()
         }
@@ -351,15 +359,23 @@ async fn perform(
         // than this node's. Formatting it away turns a clean 403 into a 500.
         .wrap_err("execution failed")?;
 
+    // A method that returned `Err` ran and committed nothing, so nothing was
+    // published and the warrant's nonce is unspent (it is spent only when the
+    // delta applies). The error goes back typed, for `handler` to answer.
     Ok(PerformIntentApiResponse {
-        data: PerformIntentApiResponseData {
-            root_hash: outcome.root_hash.to_string(),
-            returns: outcome
-                .returns
-                .ok()
-                .flatten()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok()),
-        },
+        data: intent_response_data(outcome).map_err(eyre::Report::new)?,
+    })
+}
+
+/// The run's answer, with the method's own error kept as JSON-RPC `execute`
+/// keeps it (`crate::execute::method_output`) rather than reported as a `null`
+/// return.
+fn intent_response_data(
+    outcome: calimero_context_client::messages::ExecuteResponse,
+) -> Result<PerformIntentApiResponseData, ExecutionError> {
+    Ok(PerformIntentApiResponseData {
+        root_hash: outcome.root_hash.to_string(),
+        returns: crate::execute::method_output(outcome.returns)?,
     })
 }
 
@@ -415,7 +431,8 @@ mod tests {
     use calimero_governance_store::warrant_gate::WarrantRefusal;
 
     use super::{
-        decode_author_proof, decode_warrant, warrant_authorises_intent, ContextId, IntentRefusal,
+        decode_author_proof, decode_warrant, intent_response_data, warrant_authorises_intent,
+        ContextId, IntentRefusal,
     };
 
     const METHOD: &str = "set";
@@ -457,6 +474,77 @@ mod tests {
             || format!("not an IntentRefusal: {err}"),
             ToString::to_string,
         )
+    }
+
+    fn outcome(
+        returns: eyre::Result<Option<Vec<u8>>>,
+    ) -> calimero_context_client::messages::ExecuteResponse {
+        calimero_context_client::messages::ExecuteResponse {
+            returns,
+            logs: Vec::new(),
+            events: Vec::new(),
+            root_hash: calimero_primitives::hash::Hash::default(),
+            artifact: Vec::new(),
+            atomic: None,
+            read_only_write_discarded: false,
+        }
+    }
+
+    /// A method that returned `Err` is an error, exactly as JSON-RPC `execute`
+    /// reports it: `FunctionCallError` carrying the method's message. It used to
+    /// be dropped, so a contract refusal (a write outside the writer set, a read
+    /// of a missing key) reached the client as `200 { returns: null }`.
+    #[test]
+    fn a_method_error_is_a_function_call_error_not_a_null_return() {
+        let err = intent_response_data(outcome(Err(eyre::eyre!("key not found"))))
+            .expect_err("a method that returned Err must not answer as a success");
+        let wire = serde_json::to_value(&err).expect("the error serializes");
+        assert_eq!(wire["type"], "FunctionCallError");
+        assert_eq!(wire["data"], "key not found");
+    }
+
+    /// What `/intents` sends for that error: a `400` whose body holds exactly
+    /// the object `/jsonrpc` puts under `error` for the same call (`type`,
+    /// `data`), plus the admin API's `error` string, so a client reading either
+    /// shape gets the method's message rather than a success.
+    #[tokio::test]
+    async fn a_method_error_answers_400_with_the_json_rpc_error_object() {
+        let err = intent_response_data(outcome(Err(eyre::eyre!("key not found"))))
+            .expect_err("a method that returned Err is an error");
+        let json_rpc_error = serde_json::to_value(&err).expect("the error serializes");
+
+        let response = crate::admin::service::method_error_response(&err);
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let mut body: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+
+        assert_eq!(
+            body["error"], "function call error: key not found",
+            "{body}"
+        );
+        let _message = body.as_object_mut().expect("an object").remove("error");
+        assert_eq!(body, json_rpc_error, "the rest is JSON-RPC's error object");
+    }
+
+    /// Output that is not JSON is the node path's `SerdeError`, not a `null`.
+    #[test]
+    fn undecodable_output_is_a_serde_error_not_a_null_return() {
+        let err = intent_response_data(outcome(Ok(Some(b"not json".to_vec()))))
+            .expect_err("output that is not JSON must not answer as null");
+        let wire = serde_json::to_value(&err).expect("the error serializes");
+        assert_eq!(wire["type"], "SerdeError");
+    }
+
+    /// A method's value, and a method returning nothing, still answer as before.
+    #[test]
+    fn a_returned_value_and_a_unit_return_are_unchanged() {
+        let data = intent_response_data(outcome(Ok(Some(br#"{"v":1}"#.to_vec()))))
+            .expect("a value is a success");
+        assert_eq!(data.returns, Some(serde_json::json!({ "v": 1 })));
+        let data = intent_response_data(outcome(Ok(None))).expect("unit is a success");
+        assert_eq!(data.returns, None);
     }
 
     #[test]

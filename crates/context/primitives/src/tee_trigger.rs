@@ -36,8 +36,10 @@ const FIRED_SCOPE: [u8; 16] = *b"calimero-teefire";
 /// Domain separator for the store key of a delta's trigger.
 const DELTA_TRIGGER_KEY_DOMAIN: &[u8] = b"calimero.tee-trigger.delta";
 
-/// Store scope of the triggers kept beside TEE deltas.
-const DELTA_TRIGGER_SCOPE: [u8; 16] = *b"calimero-teedelt";
+/// Store scope of the triggers kept beside TEE deltas, in `Column::Generic`.
+/// Their keys are hashed, so the scope is the only range they can be walked by
+/// (DAG compaction does, to sweep rows whose delta row is gone).
+pub const DELTA_TRIGGER_SCOPE: [u8; 16] = *b"calimero-teedelt";
 
 /// How far past this node's clock a timer's tick may begin and its firing
 /// still be recorded: the drift the HLC allows a peer.
@@ -94,7 +96,10 @@ pub fn record_tee_fired(
         .map_err(|err| eyre::eyre!("recording a TEE fired marker: {err}"))
 }
 
-fn delta_trigger_key(context_id: &ContextId, delta_id: &[u8; 32]) -> GenericKey {
+/// The store key of the trigger kept beside `delta_id`, for a caller that
+/// deletes the row with its delta's.
+#[must_use]
+pub fn delta_trigger_key(context_id: &ContextId, delta_id: &[u8; 32]) -> GenericKey {
     GenericKey::new(
         DELTA_TRIGGER_SCOPE,
         domain_hash(

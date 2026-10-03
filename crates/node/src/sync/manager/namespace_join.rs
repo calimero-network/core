@@ -163,9 +163,16 @@ pub(super) async fn dial_admitter_machines<F, Fut>(
 ///
 /// An address with no `/p2p/<peer-id>` is dropped: without it the joiner cannot
 /// tell who answers there, which is the one thing the address exists to carry.
+///
+/// So is an address naming `local_peer`, before the cap is applied. This node
+/// cannot admit itself, and dialing itself does not fail the way a dead peer
+/// does: libp2p refuses the dial with `LocalPeerId`, and the stream open waiting
+/// on it is never answered. A founding relay handed its own addresses as
+/// admitters hung fleet-join on exactly that.
 pub(super) fn group_admitter_routes(
     addrs: &[String],
     max_peers: usize,
+    local_peer: &libp2p::PeerId,
 ) -> Vec<(libp2p::PeerId, Vec<libp2p::Multiaddr>)> {
     let mut by_peer: Vec<(libp2p::PeerId, Vec<libp2p::Multiaddr>)> = Vec::new();
     for addr in addrs {
@@ -177,6 +184,10 @@ pub(super) fn group_admitter_routes(
             tracing::debug!(%addr, "skipping admitter address with no peer id");
             continue;
         };
+        if peer == *local_peer {
+            tracing::debug!(%addr, "skipping admitter address naming this node");
+            continue;
+        }
         // Split the lookup from the insert: a machine already in the list keeps
         // collecting routes even once the cap is reached, while a new one past
         // the cap contributes nothing.
@@ -1169,6 +1180,33 @@ mod admitter_route_tests {
     const A: &str = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN";
     const B: &str = "12D3KooWQYhTNQdmr3ArTeUHRYzFg94BKyTkoWBDWez9kSCVe2Xo";
 
+    /// A local peer named by none of the addresses, for the tests that are not
+    /// about this node's own addresses.
+    fn stranger() -> libp2p::PeerId {
+        libp2p::PeerId::random()
+    }
+
+    /// This node's own addresses are never an admitter route, and they do not
+    /// use up a slot: dialing ourselves cannot admit us, and libp2p fails that
+    /// dial with `LocalPeerId` while the stream open it was meant to serve
+    /// waits forever. On a founding relay handed its own addresses this hung
+    /// fleet-join and the sync loop behind it.
+    #[test]
+    fn this_nodes_own_addresses_are_dropped_without_costing_a_slot() {
+        let own: libp2p::PeerId = A.parse().expect("peer id");
+        let addrs = vec![addr(A, 1), addr(A, 2), addr(B, 1)];
+
+        let grouped = group_admitter_routes(&addrs, 1, &own);
+
+        assert_eq!(grouped.len(), 1, "only the other machine is left");
+        assert_eq!(
+            grouped[0].0.to_string(),
+            B,
+            "our own addresses took no slot from it"
+        );
+        assert!(group_admitter_routes(&[addr(A, 1)], 8, &own).is_empty());
+    }
+
     #[test]
     fn several_routes_to_one_machine_cost_one_slot() {
         // Four addresses, one machine. If the machine is off they all fail and
@@ -1176,7 +1214,7 @@ mod admitter_route_tests {
         // slots and starve the next admitter.
         let addrs = vec![addr(A, 1), addr(A, 2), addr(A, 3), addr(A, 4), addr(B, 1)];
 
-        let grouped = group_admitter_routes(&addrs, 2);
+        let grouped = group_admitter_routes(&addrs, 2, &stranger());
 
         assert_eq!(grouped.len(), 2, "two machines, not five addresses");
         assert_eq!(
@@ -1194,7 +1232,7 @@ mod admitter_route_tests {
         // here would silently discard that.
         let addrs = vec![addr(B, 1), addr(A, 1)];
 
-        let grouped = group_admitter_routes(&addrs, 8);
+        let grouped = group_admitter_routes(&addrs, 8, &stranger());
 
         assert_eq!(grouped[0].0.to_string(), B, "first offered is tried first");
         assert_eq!(grouped[1].0.to_string(), A);
@@ -1204,7 +1242,7 @@ mod admitter_route_tests {
     fn the_cap_drops_machines_not_routes() {
         let addrs = vec![addr(A, 1), addr(B, 1), addr(A, 2)];
 
-        let grouped = group_admitter_routes(&addrs, 1);
+        let grouped = group_admitter_routes(&addrs, 1, &stranger());
 
         assert_eq!(grouped.len(), 1, "only the first machine survives the cap");
         assert_eq!(
@@ -1218,7 +1256,7 @@ mod admitter_route_tests {
     fn an_address_with_no_peer_id_is_dropped() {
         let addrs = vec!["/ip4/10.0.0.1/tcp/2528".to_owned(), addr(A, 1)];
 
-        let grouped = group_admitter_routes(&addrs, 8);
+        let grouped = group_admitter_routes(&addrs, 8, &stranger());
 
         assert_eq!(grouped.len(), 1);
         assert_eq!(grouped[0].0.to_string(), A);

@@ -148,6 +148,24 @@ context, call a couple of methods, and add blobs:
 }
 ```
 
+### Where a scope is checked
+
+A route is admitted on the permission its path needs, and some paths are
+several authorities in one. `/ws` is admitted on `context:subscribe`, yet the
+same socket takes `execute` frames; `/jsonrpc` is admitted on
+`context:execute`, yet the context and method are in the request body. So
+every execute call, on either transport, is checked again against the token's
+`context:execute` grants for the context and method it actually names. A
+subscribe-only token cannot write over `/ws`, and a grant scoped to `get`
+cannot call `set`. This holds for client keys too, though they are otherwise
+treated as the node owner.
+
+In proxy mode the node reads the token's permissions from the
+`X-Auth-Permissions` header that mero-auth's `/auth/validate` returns, which the
+proxy must forward onto the request (Traefik: list it in `authResponseHeaders`).
+A request that names none is answered as before, so a proxy that does not
+forward it loses this check rather than breaking.
+
 :::caution[Two different permission systems]
 This is the **auth-service** permission model: it gates the node's **HTTP API**
 (who may call which admin / JSON-RPC / WebSocket route). It is entirely separate
