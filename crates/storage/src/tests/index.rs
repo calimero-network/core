@@ -2652,6 +2652,123 @@ mod parent_loops {
         assert!(refused(&too_deep), "{too_deep:?}");
     }
 
+    /// `x` sits at the deepest legal depth, so `numbered(0)` above it is one level short of it.
+    fn deepest_spine() {
+        let spine: Vec<Id> = (0..MAX_PARENT_CHAIN - 1).map(numbered).collect();
+        apply(add(x(), &spine, 100)).unwrap();
+    }
+
+    fn entity_with_child(child: Id) {
+        apply(add(a(), &[Id::root()], 100)).unwrap();
+        apply(add(child, &[a()], 100)).unwrap();
+    }
+
+    #[test]
+    fn a_move_cannot_push_a_descendant_past_the_limit() {
+        let (outcome, parent) = returns(|| {
+            deepest_spine();
+            entity_with_child(numbered(1000));
+            // `numbered(0)` is at depth 255: `a` would land at 256, its child at 257.
+            let outcome = apply(add(a(), &[numbered(0)], 110));
+            (outcome, Index::<MainStorage>::get_parent_id(a()).unwrap())
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+        assert_eq!(parent, Some(Id::root()));
+    }
+
+    #[test]
+    fn a_move_within_the_limit_succeeds() {
+        let (outcome, parent) = returns(|| {
+            entity_with_child(numbered(1000));
+            apply(add(numbered(7), &[Id::root()], 100)).unwrap();
+            let outcome = apply(add(a(), &[numbered(7)], 110));
+            (outcome, Index::<MainStorage>::get_parent_id(a()).unwrap())
+        });
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(parent, Some(numbered(7)));
+    }
+
+    #[test]
+    fn a_deep_subtree_may_move_to_the_deepest_legal_position() {
+        let (outcome, parent) = returns(|| {
+            deepest_spine();
+            entity_with_child(numbered(1000));
+            // `numbered(1)` is at depth 254: `a` lands at 255, its child at 256.
+            let outcome = apply(add(a(), &[numbered(1)], 110));
+            (outcome, Index::<MainStorage>::get_parent_id(a()).unwrap())
+        });
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(parent, Some(numbered(1)));
+    }
+
+    fn delete(id: Id, at: u64) {
+        let metadata = Index::<MainStorage>::get_metadata(id).unwrap().unwrap();
+        apply(Action::DeleteRef {
+            id,
+            deleted_at: at,
+            metadata,
+        })
+        .unwrap();
+    }
+
+    /// A child written after a delete outlives it, and keeps naming the deleted entity as parent.
+    #[test]
+    fn a_deleted_entity_is_not_re_added_deep_over_a_surviving_child() {
+        let outcome = returns(|| {
+            deepest_spine();
+            apply(add(a(), &[Id::root()], 100)).unwrap();
+            apply(add(numbered(1000), &[a()], 200)).unwrap();
+            delete(a(), 150);
+            // `a` lands at 256, the surviving child at 257.
+            apply(add(a(), &[numbered(0)], 300))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_deleted_ancestor_is_not_recreated_deep_over_a_surviving_grandchild() {
+        let outcome = returns(|| {
+            deepest_spine();
+            apply(add(a(), &[Id::root()], 100)).unwrap();
+            apply(add(numbered(1000), &[a()], 100)).unwrap();
+            apply(add(numbered(1001), &[numbered(1000)], 200)).unwrap();
+            delete(a(), 150);
+            Index::<MainStorage>::remove_index(a());
+            // `a` is made again as a missing ancestor at 255, so its grandchild lands at 257.
+            apply(add(numbered(2000), &[a(), numbered(1)], 300))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_child_relinked_elsewhere_does_not_count_under_its_old_parent() {
+        let outcome = returns(|| {
+            deepest_spine();
+            entity_with_child(numbered(1000));
+            apply(add(numbered(7), &[Id::root()], 100)).unwrap();
+            // The old parent's trie still lists the child.
+            apply(add(numbered(1000), &[numbered(7)], 110)).unwrap();
+            apply(add(a(), &[numbered(0)], 120))
+        });
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_parentless_entity_is_not_linked_deep_over_its_subtree() {
+        let outcome = returns(|| {
+            deepest_spine();
+            for index in [
+                EntityIndex::minimal_for_test(a()),
+                EntityIndex::minimal_for_test_with_parent(numbered(1000), a(), [0; 32]),
+            ] {
+                Index::<MainStorage>::save_index(&index).unwrap();
+            }
+            let _root = ChildTrie::<MainStorage>::new(a()).insert(named(numbered(1000)));
+            apply(add(a(), &[numbered(0)], 110))
+        });
+        assert!(refused(&outcome), "{outcome:?}");
+    }
+
     #[test]
     fn a_missing_ancestor_is_not_created_too_deep() {
         let outcome = returns(|| {

@@ -1316,6 +1316,36 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(Self::get_index(child_id)?.and_then(|index| index.parent_id))
     }
 
+    /// Number of ancestors `id` has, or `None` when it has more than `MAX_PARENT_CHAIN`.
+    pub(crate) fn depth_within_limit(id: Id) -> Result<Option<usize>, StorageError> {
+        let mut at = id;
+        for depth in 0..=MAX_PARENT_CHAIN {
+            match Self::get_parent_id(at)? {
+                Some(parent) => at = parent,
+                None => return Ok(Some(depth)),
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether `id` has a descendant more than `levels` below it; a child counts only
+    /// if it names its trie's owner as parent.
+    pub(crate) fn has_descendant_deeper_than(id: Id, levels: usize) -> Result<bool, StorageError> {
+        let mut stack = vec![(id, 0)];
+        while let Some((at, depth)) = stack.pop() {
+            for child in <ChildTrie<S>>::new(at).child_ids() {
+                if Self::get_parent_id(child)? != Some(at) {
+                    continue;
+                }
+                if depth == levels {
+                    return Ok(true);
+                }
+                stack.push((child, depth + 1));
+            }
+        }
+        Ok(false)
+    }
+
     /// Checks if a collection has any children.
     ///
     /// Collection param ignored - just checks if entity has any children.
@@ -1635,13 +1665,33 @@ impl<S: StorageAdaptor> Index<S> {
         // data gone with no tombstone while the parent still lists it live.
         Self::mark_deleted(id, deleted_at)?;
         let _ignored = S::storage_remove(Key::Entry(id));
-        // The entity's own child trie goes with its data. Nothing else reaches
-        // those rows — they are their own keyspace, so tombstone GC (which
-        // requires a row to decode as a tombstoned `EntityIndex`) never sees
+        // The entity's own child trie goes with its data, bar the survivors below.
+        // Nothing else reaches those rows — they are their own keyspace, so tombstone
+        // GC (which requires a row to decode as a tombstoned `EntityIndex`) never sees
         // them. Left behind, they resurrect as ghost children the next time a
         // deterministically-named collection is re-created at the same id.
-        <ChildTrie<S>>::new(id).drop_all();
+        let trie = <ChildTrie<S>>::new(id);
+        let mut kept = Vec::new();
+        for child in trie.children() {
+            if Self::outlives_delete(child.id(), id)? {
+                kept.push(child);
+            }
+        }
+        trie.drop_all();
+        // A child that survived the delete, or has a survivor under it, stays listed
+        // so a walk down from here still reaches it.
+        for child in kept {
+            let _root = trie.insert(child);
+        }
         Ok(())
+    }
+
+    /// Whether `child` is still under `parent` and live, or tombstoned with children listed.
+    fn outlives_delete(child: Id, parent: Id) -> Result<bool, StorageError> {
+        Ok(Self::get_index(child)?.is_some_and(|index| {
+            index.parent_id == Some(parent)
+                && (index.deleted_at.is_none() || !<ChildTrie<S>>::new(child).is_empty())
+        }))
     }
 
     /// Tombstones every descendant of `root_id` at `deleted_at`.
@@ -1689,11 +1739,12 @@ impl<S: StorageAdaptor> Index<S> {
     ) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
 
-        // Single depth-first pass: read each node's index once, descend via the
-        // `children` read BEFORE tombstoning it, then tombstone the node itself
-        // — except the root, which the caller tombstones. The guard is held for
+        // Single depth-first pass: read each node's index once and descend via
+        // its `children`, then tombstone the nodes found, descendants first —
+        // except the root, which the caller tombstones. The guard is held for
         // the whole walk, so a concurrent native writer can't insert a child
         // that the traversal would miss.
+        let mut doomed = Vec::new();
         let mut stack = vec![root_id];
         let mut seen = BTreeSet::new();
         while let Some(id) = stack.pop() {
@@ -1735,6 +1786,11 @@ impl<S: StorageAdaptor> Index<S> {
             if deleted_at < *index.metadata.updated_at {
                 continue;
             }
+            doomed.push(id);
+        }
+        // A node comes before all its descendants in `doomed`, so reversed, the
+        // survivors under one are known when its child trie is dropped.
+        for id in doomed.into_iter().rev() {
             Self::delete_entity_and_create_tombstone(id, deleted_at)?;
         }
 
