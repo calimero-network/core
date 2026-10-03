@@ -1686,15 +1686,23 @@ fn is_namespace_account_agrees_with_namespace_accounts() {
     let admin = AccountId::from([0x01; 32]);
     let hint = AccountId::from([0x77; 32]);
     let stranger = AccountId::from([0x99; 32]);
+    // A member of a different namespace: in neither view of this one.
+    let elsewhere = AccountId::from([0x55; 32]);
     repo.add_member(&gid, &member, GroupMemberRole::Member)
         .expect("add member");
+    repo.add_member(
+        &ContextGroupId::from([0xD3; 32]),
+        &elsewhere,
+        GroupMemberRole::Member,
+    )
+    .expect("add the other namespace's member");
     repo.set_bootstrap_inviter(namespace_id.into(), hint)
         .expect("record the hint");
 
     let placeholder = crate::placeholder_admin_identity();
     let agree = |phase: &str| {
         let set = repo.namespace_accounts(namespace_id.into()).expect("list");
-        for account in [member, admin, hint, stranger, placeholder] {
+        for account in [member, admin, hint, stranger, elsewhere, placeholder] {
             assert_eq!(
                 repo.is_namespace_account(namespace_id.into(), &account)
                     .expect("point read"),
