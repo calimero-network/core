@@ -197,6 +197,11 @@ pub struct InitCommand {
     #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
     pub server_port: u16,
 
+    /// Address to serve `/metrics` on, apart from the RPC listener (e.g.
+    /// `/ip4/10.0.0.5/tcp/9528`). Unset serves it on loopback only.
+    #[clap(long, value_name = "MULTIADDR")]
+    pub metrics_listen: Option<Multiaddr>,
+
     /// Authentication mode for server endpoints
     #[clap(long, value_enum)]
     pub auth_mode: Option<AuthModeArg>,
@@ -686,6 +691,7 @@ impl InitCommand {
             embedded_auth,
         );
         server_config.proxy_identity = self.proxy_identity;
+        server_config.metrics_listen = self.metrics_listen;
 
         let mut config = ConfigFile::new(
             IdentityConfig { keypair: identity },
@@ -907,6 +913,17 @@ mod tests {
             !off.proxy_identity,
             "reading the proxy's headers must be opt-in"
         );
+    }
+
+    #[test]
+    fn metrics_listen_is_unset_unless_asked_for() {
+        let addr = "/ip4/0.0.0.0/tcp/9528";
+        let on = InitCommand::try_parse_from(["merod", "--metrics-listen", addr])
+            .expect("--metrics-listen must parse");
+        assert_eq!(on.metrics_listen, Some(addr.parse().unwrap()));
+
+        let off = InitCommand::try_parse_from(["merod"]).expect("no flags must parse");
+        assert_eq!(off.metrics_listen, None);
     }
 
     #[test]

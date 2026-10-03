@@ -1,4 +1,4 @@
-use core::net::{IpAddr, SocketAddr};
+use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 use core::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
-use multiaddr::Protocol;
+use multiaddr::{Multiaddr, Protocol};
 use prometheus_client::registry::Registry;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -183,29 +183,14 @@ pub async fn start(
         bail!("invalid CORS configuration: {e}");
     }
 
-    // Register HTTP request metrics on the same registry before the
-    // metrics service consumes ownership of it via `mount_runtime_services`
-    // → `metrics::service`. The middleware below will resolve the handle
-    // out of the request `Extension`s.
+    // Registered before the metrics router takes ownership of the registry.
     let http_metrics = crate::metrics::HttpMetrics::new(&mut prom_registry);
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
 
     while let Some(addr) = want_listeners.next() {
-        let mut components = addr.iter();
-
-        let host: IpAddr = match components.next() {
-            Some(Protocol::Ip4(host)) => host.into(),
-            Some(Protocol::Ip6(host)) => host.into(),
-            _ => bail!("Invalid multiaddr, expected IP4 component"),
-        };
-
-        let Some(Protocol::Tcp(port)) = components.next() else {
-            bail!("Invalid multiaddr, expected TCP component");
-        };
-
-        match TcpListener::bind(SocketAddr::from((host, port))).await {
+        match TcpListener::bind(socket_addr(&addr)?).await {
             Ok(listener) => {
                 let local_port = listener.local_addr()?.port();
                 addrs.push(
@@ -222,6 +207,12 @@ pub async fn start(
         }
     }
     config.listen = addrs;
+
+    let metrics_listener = metrics::bind(
+        config.metrics_listen.as_ref(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, config::DEFAULT_METRICS_PORT)),
+    )
+    .await?;
 
     let mut app = Router::new();
 
@@ -299,11 +290,11 @@ pub async fn start(
             node_client: node_client.clone(),
             datastore: datastore.clone(),
             shared_state,
-            prom_registry,
         },
     );
+    let metrics_app = metrics::router(prom_registry);
     app = mounted.router;
-    let mut service_count = mounted.added_count;
+    let mut service_count = mounted.added_count + usize::from(metrics_listener.is_some());
 
     if let Some(bundled_auth) = embedded_auth.take() {
         app = app.merge(bundled_auth.into_router());
@@ -370,11 +361,35 @@ pub async fn start(
         }));
     }
 
+    if let Some(listener) = metrics_listener {
+        drop(set.spawn(async move {
+            axum::serve(listener, metrics_app)
+                .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                .await
+        }));
+    }
+
     while let Some(result) = set.join_next().await {
         result??;
     }
 
     Ok(())
+}
+
+fn socket_addr(addr: &Multiaddr) -> EyreResult<SocketAddr> {
+    let mut components = addr.iter();
+
+    let host: IpAddr = match components.next() {
+        Some(Protocol::Ip4(host)) => host.into(),
+        Some(Protocol::Ip6(host)) => host.into(),
+        _ => bail!("Invalid multiaddr, expected IP4 component"),
+    };
+
+    let Some(Protocol::Tcp(port)) = components.next() else {
+        bail!("Invalid multiaddr, expected TCP component");
+    };
+
+    Ok(SocketAddr::from((host, port)))
 }
 
 /// CORS layer applied to every mounted route.

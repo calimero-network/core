@@ -39,7 +39,7 @@ clean stop/replace/restart.
    beacon carries `version` and `peer_id`) so you know what you are replacing:
 
    ```sh
-   curl -s http://127.0.0.1:2528/metrics | grep merod_build_info
+   curl -s http://127.0.0.1:9528/metrics | grep merod_build_info
    ```
 
 2. **Quiesce client traffic.** Stop new JSON-RPC / admin calls against this node
@@ -71,7 +71,7 @@ clean stop/replace/restart.
 6. **Verify.** Confirm the new version is live and the node re-converges:
 
    ```sh
-   curl -s http://127.0.0.1:2528/metrics | grep merod_build_info
+   curl -s http://127.0.0.1:9528/metrics | grep merod_build_info
    meroctl --node node1 peers
    ```
 

@@ -96,7 +96,9 @@ src/
 ├── sealed.rs                 # Sealed transport: /sealed/v2 envelope, wraps the router
 ├── sealed/
 │   └── session.rs            # Noise NK handshake and the sessions it opens
-└── metrics.rs                # Prometheus metrics
+├── metrics/
+│   └── tests.rs              # Metrics served on their own listener only
+└── metrics.rs                # Prometheus metrics and their listener
 primitives/                   # calimero-server-primitives
 └── src/
     ├── lib.rs                # Shared types
@@ -442,6 +444,8 @@ request re-stamps it.
   local directory in `CALIMERO_WEBUI_SRC` is never hashed. Bumping the dashboard
   means updating the version and sha256 constants together
 - Admin API requires authentication
+- `/metrics` is never served on the `listen` addresses: it has a listener of its own
+  (`server.metrics_listen`, loopback by default), outside the auth guard and the sealed transport
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
 - A WebSocket upgrade from a browser (`Origin` present) is refused with `403` unless the

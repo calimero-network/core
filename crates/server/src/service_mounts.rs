@@ -4,13 +4,12 @@ use axum::Router;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
-use prometheus_client::registry::Registry;
 use tracing::{info, warn};
 
 use crate::admin::service::{setup, site};
 use crate::auth;
 use crate::config::ServerConfig;
-use crate::{jsonrpc, metrics, proxy_identity, proxy_permissions, sse, ws, AdminState};
+use crate::{jsonrpc, proxy_identity, proxy_permissions, sse, ws, AdminState};
 
 #[derive(Debug)]
 pub(crate) struct MountedService {
@@ -29,7 +28,6 @@ pub(crate) fn mount_runtime_services(
         node_client,
         datastore,
         shared_state,
-        prom_registry,
     } = deps;
     let mut app = app;
     let mut service_count = 0usize;
@@ -124,11 +122,6 @@ pub(crate) fn mount_runtime_services(
         service_count += 1;
     }
 
-    if let Some((path, router)) = metrics::service(config, prom_registry) {
-        app = app.nest(path, router);
-        service_count += 1;
-    }
-
     MountedService {
         router: app,
         added_count: service_count,
@@ -216,5 +209,4 @@ pub(crate) struct RuntimeServiceDeps {
     pub node_client: NodeClient,
     pub datastore: Store,
     pub shared_state: Arc<AdminState>,
-    pub prom_registry: Registry,
 }

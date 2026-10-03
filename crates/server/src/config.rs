@@ -12,6 +12,7 @@ use mero_auth::config::AuthConfig;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PORT: u16 = 2528; // (CHAT in T9) + 100
+pub const DEFAULT_METRICS_PORT: u16 = 9528; // loopback `/metrics` listener
 pub const DEFAULT_ADDRS: [IpAddr; 2] = [
     IpAddr::V4(Ipv4Addr::LOCALHOST),
     IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -177,6 +178,10 @@ pub struct ServerConfig {
     /// [`AuthMode::Proxy`]; see [`crate::proxy_identity`] for what it trusts.
     pub proxy_identity: bool,
 
+    /// Where `/metrics` is served (`server.metrics_listen`). `None` serves it on
+    /// loopback at [`DEFAULT_METRICS_PORT`]; it is never on the `listen` addresses.
+    pub metrics_listen: Option<Multiaddr>,
+
     /// The mero-tee node release this node runs, when it is a fleet TEE node
     /// told so (`MERO_TEE_VERSION`). Not read from the config file.
     pub tee_release_version: Option<String>,
@@ -207,6 +212,7 @@ impl ServerConfig {
             },
             sealed: SealedConfig::new(false),
             proxy_identity: false,
+            metrics_listen: None,
             tee_release_version: None,
         }
     }
@@ -240,6 +246,7 @@ impl ServerConfig {
             },
             sealed: SealedConfig::new(false),
             proxy_identity: false,
+            metrics_listen: None,
             tee_release_version: None,
         }
     }

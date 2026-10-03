@@ -14,32 +14,44 @@ the node actually registers.
 
 ## The metrics endpoint
 
-The metrics service is mounted on the node's **HTTP server** (the same listener
-as the admin API and JSON-RPC), at the fixed path `/metrics`. With the default
-`[server]` config that is:
+The metrics service has a listener of its own, apart from the admin API and
+JSON-RPC, and serves the fixed path `/metrics`. By default it listens on
+loopback only, at port `9528`:
 
 ```sh
-curl http://127.0.0.1:2528/metrics
+curl http://127.0.0.1:9528/metrics
 ```
+
+The node's `server.listen` addresses answer `/metrics` with `404`. Run the
+scraper on the node's host, or set `server.metrics_listen` (below) to reach it
+from elsewhere.
 
 The body is Prometheus / OpenMetrics text format, produced by the
 `prometheus-client` crate. All node, sync, and HTTP metrics register against a
 single registry that the server encodes on each scrape.
 
+To listen elsewhere, set the address in `config.toml`, or pass it to
+`merod init --metrics-listen`:
+
+```toml
+[server]
+metrics_listen = "/ip4/10.0.0.5/tcp/9528"
+```
+
 <Aside type="note">
-The path is currently hard-coded to `/metrics` (not yet config-driven). Point
-your scraper at each node's server `listen` address. Every scrape also emits a
-`debug`-level `metrics scrape served` log line with the response size, which is
-useful when triaging "scraper reaches the node but the body looks empty".
+Every scrape emits a `debug`-level `metrics scrape served` log line with the
+response size, which is useful when triaging "scraper reaches the node but the
+body looks empty". If the default port is already taken, for instance by a
+second node on the same host, the node starts without serving metrics and logs
+a warning; an address set in `server.metrics_listen` that cannot be bound stops
+the node instead.
 </Aside>
 
-<Aside type="caution" title="/metrics is always unauthenticated">
-Unlike the admin API, JSON-RPC, WebSocket, and SSE surfaces, `/metrics` is
-mounted **without** the auth guard. It stays open **even when embedded auth is
-enabled** on the same listener — enabling auth does not protect it. Treat the
-metrics endpoint as public on its listener: bind the server to a private
-interface, or firewall `/metrics` so only your scraper can reach it. Do not
-expose it to the public internet.
+<Aside type="caution" title="/metrics is unauthenticated">
+`/metrics` has no auth guard in either auth mode, and is not reachable through
+the sealed transport. Anyone who can reach its listener can read it, so the node
+logs a warning when `server.metrics_listen` is not a loopback address. Point it
+only at a private interface your scraper reaches, never the public internet.
 </Aside>
 
 <Aside type="caution">

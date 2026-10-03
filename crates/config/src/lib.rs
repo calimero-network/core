@@ -426,6 +426,11 @@ pub struct ServerConfig {
     /// of a written config while off.
     #[serde(default, skip_serializing_if = "core::ops::Not::not")]
     pub proxy_identity: bool,
+
+    /// `server.metrics_listen`: where `/metrics` is served, apart from `listen`.
+    /// Unset means loopback on the default metrics port; left out of a written config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_listen: Option<Multiaddr>,
 }
 
 impl ServerConfig {
@@ -448,6 +453,7 @@ impl ServerConfig {
             sealed: SealedConfig::new(false),
             cors: None,
             proxy_identity: false,
+            metrics_listen: None,
         }
     }
 
@@ -472,6 +478,7 @@ impl ServerConfig {
             sealed: SealedConfig::new(false),
             cors: None,
             proxy_identity: false,
+            metrics_listen: None,
         }
     }
 
@@ -812,6 +819,27 @@ mod tests {
         assert!(toml::to_string(&on)
             .unwrap()
             .contains("proxy_identity = true"));
+    }
+
+    #[test]
+    fn server_metrics_listen_is_unset_unless_configured_and_written_only_when_set() {
+        let parse = |extra: &str| -> super::ServerConfig {
+            toml::from_str(&format!("{extra}listen = [\"/ip4/127.0.0.1/tcp/2528\"]\n"))
+                .expect("server config parses")
+        };
+
+        let absent = parse("");
+        assert_eq!(absent.metrics_listen, None);
+        assert!(!toml::to_string(&absent).unwrap().contains("metrics_listen"));
+
+        let set = parse("metrics_listen = \"/ip4/10.0.0.5/tcp/9528\"\n");
+        assert_eq!(
+            set.metrics_listen,
+            Some("/ip4/10.0.0.5/tcp/9528".parse().unwrap())
+        );
+        assert!(toml::to_string(&set)
+            .unwrap()
+            .contains("metrics_listen = \"/ip4/10.0.0.5/tcp/9528\""));
     }
 
     fn make_strict_production_config() -> KmsAttestationConfig {

@@ -23,7 +23,7 @@ against `src/content/docs/`. Ordered by priority. `file:line` anchors included.
 - **A "hot" peer can never serve a snapshot.** Any write during transfer aborts it (`InvalidBoundary`) → a node bootstrapping against a busy peer retries forever. `crates/node/src/sync/snapshot.rs:152,214`. → `operate/troubleshooting.mdx`.
 - **Networking reconnect story.** Gossipsub mesh tuning (2/4/8, not libp2p defaults) coupled to the readiness gate; `flood_publish=true`; per-overlay demand-driven rendezvous (not one global ns); persistent peer-address cache (24h TTL, on-disk); liveness ping reaping (3 fails → force close). `crates/network/...`. → `protocol/networking.mdx` + `operate/networking.mdx`.
 - **HTTP client contract.** CORS exposes `x-auth-error/user/permissions`, 401 `token_expired`; WS auth at upgrade + `?token=` fallback; SSE skip-on-disconnect + `Last-Event-ID` + 24h session TTL. Integrator-blocking. `crates/server/...`. → `operate/admin-api.mdx`.
-- **`/metrics` is unauthenticated even with embedded auth on.** Security-relevant. `crates/server/src/service_mounts.rs:62`. → `operate/observability.mdx`/`security.mdx`.
+- **`/metrics` is unauthenticated in both auth modes.** Security-relevant; served on its own loopback listener (`server.metrics_listen`). `crates/server/src/metrics.rs`. → `operate/observability.mdx`/`security.mdx`.
 - **Startup version check phones home to GitHub** (~10% of starts, no opt-out). Air-gapped operators. `crates/merod/src/version.rs:40`. → `operate/merod.mdx`.
 
 ## 2. Important missing details (P2)
