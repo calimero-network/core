@@ -260,14 +260,7 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: release
-          libclang: false
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.target != 'aarch64-unknown-linux-gnu' }}
-
-      - name: Install libclang (Linux)
-        if: ${{ needs.prepare.outputs.build == 'true' && (runner.os == 'Linux') }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libclang-dev
 
       # `rocksdb` uses `bindgen-runtime`, so librocksdb-sys needs libclang everywhere;
       # the Windows image ships LLVM but nothing points bindgen at it.

@@ -430,7 +430,6 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: release
-          libclang: false
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Point bindgen at the image's LLVM (Windows)

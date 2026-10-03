@@ -76,6 +76,7 @@ WORKFLOWS = {
             "scripts/check-like-ci.py",
             "scripts/check-naming.sh",
             "scripts/check-no-user-data-at-info.py",
+            "scripts/check-rust-cache-groups.py",
             "scripts/check-scenario-coverage.py",
             "scripts/scenario-coverage-baseline.json",
             "scripts/check-storage-cost.sh",
