@@ -345,8 +345,11 @@ jobs:
           tar -czf artifacts/calimero-tee-verify_${{ matrix.target }}.tar.gz \
             -C target/${{ matrix.target }}/release calimero-tee-verify
 
+      # x86_64 only: every consumer of the profiling image (fuzzy-load-test, the
+      # sync-regression scenarios) runs on amd64, and on the arm64 runner this build
+      # took 22 of the job's 42 minutes, holding back every master push's :edge image.
       - name: Build profiling binaries (with frame pointers and debug symbols)
-        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu')) }}
+        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && matrix.target == 'x86_64-unknown-linux-gnu') }}
         run: |
           readarray -t binaries <<< "$BINARIES"
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
@@ -355,7 +358,7 @@ jobs:
           RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${{ matrix.target }} --features calimero-context/profiling
 
       - name: Compress profiling artifacts using gzip
-        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu')) }}
+        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && matrix.target == 'x86_64-unknown-linux-gnu') }}
         run: |
           mkdir -p artifacts-profiling
 
@@ -374,7 +377,7 @@ jobs:
           retention-days: 2
 
       - name: Upload profiling artifacts
-        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu')) }}
+        if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && matrix.target == 'x86_64-unknown-linux-gnu') }}
         uses: actions/upload-artifact@v7
         with:
           name: artifacts-profiling-${{ matrix.target }}
@@ -646,8 +649,9 @@ jobs:
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.profiling.Dockerfile
           container_name: merod
-          platforms: ${{ env.DOCKER_PLATFORMS }}
-          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
+          # amd64 only, like the profiling binaries above: nothing pulls an arm64 variant.
+          platforms: linux/amd64
+          include_aarch64: false
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   brew-update:
