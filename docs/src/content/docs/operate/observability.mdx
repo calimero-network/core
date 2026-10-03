@@ -90,6 +90,15 @@ bounded.
 | `sync_lww_fallback` | Counter | Last-writer-wins fallback when CRDT-type metadata is missing. Occasional is tolerable; sustained growth is a bug signal. |
 | `sync_buffer_drops` | Counter | Deltas dropped from a bounded buffer (arriving faster than they apply). Any increment can mean catch-up sync is needed. |
 
+**Root-hash divergence** (registered in `crates/node/src/run.rs`, bumped by the
+hash-heartbeat handler when a peer reports the same DAG heads as this node but a
+different storage root hash):
+
+| Series | Type | Meaning |
+| --- | --- | --- |
+| `sync_root_hash_divergence_detected_total_total` | Counter | Every such observation, transient ones included. Every applied remote delta also sends a heartbeat, so under write load this rises with writes × peers while a concurrent sync apply is in flight — thousands per run on a fuzzy load test is normal. A load signal, **not** a failure signal: do not alert on it. (The doubled suffix is real: the name was registered ending in `_total` and the client library appends another.) |
+| `sync_root_hash_divergence_escalated_total` | Counter | Divergences whose (ours, theirs) hash pair stayed unchanged past the persistence window (just under one 30s heartbeat period), counted once per stuck pair — the same transition that logs `DIVERGENCE DETECTED` at ERROR and kicks a recovery sync. **Should stay at zero**; any increment is a stuck split-brain worth investigating. |
+
 ### DAG / delta application (node)
 
 Registered in `crates/node/src/node_metrics.rs`. These are node-wide sums (no
@@ -188,6 +197,8 @@ that divergence is detected without a full sync. See
   picks `HashComparison`.
 - `delta_outcomes_total{outcome="error"}` and
   `hc_leaf_drops_total{reason="lookup_error"}` are near zero.
+- `sync_root_hash_divergence_escalated_total` stays at **0** (the `..._detected_total_total`
+  counter may still rise under write load; that is expected).
 - `merod_build_info` is present (scrape pipeline alive, identity confirmed).
 
 </TabItem>
@@ -196,6 +207,10 @@ that divergence is detected without a full sync. See
 - Heartbeats report a root-hash / `scope_root` mismatch against the signed
   canonical expected; the node's reconciler kicks in (see
   [Troubleshooting](/operate/troubleshooting/)).
+- `sync_root_hash_divergence_escalated_total` increments: a same-DAG /
+  different-root mismatch persisted across a heartbeat period and the log
+  carries `DIVERGENCE DETECTED` plus a `sync::divergence_dump` of the root's
+  children to diff between peers.
 - `sync_protocol_selections_total{protocol="Snapshot"}` starts rising —
   growing snapshot selection means growing state divergence across the cluster.
 - `sync_failures_total` climbs and `sync_duration_seconds` p99 stretches out.
@@ -208,10 +223,9 @@ that divergence is detected without a full sync. See
 
 <Aside type="caution">
 The `scope_root` and per-context root hash are internal convergence values, not
-(yet) exported as their own Prometheus gauges. Today they surface in logs and in
-the reconciler's divergence handling rather than as a scrape-able heartbeat
-metric. Treat root-hash agreement as a log/RPC signal, and use the sync /
-governance counters above as the numeric proxy.
+exported as their own Prometheus gauges. Root-hash agreement between peers is
+counted only through the two `sync_root_hash_divergence_*` counters above; for
+the hashes themselves, use logs and the `contextStateHash` the admin API serves.
 </Aside>
 
 ## Sync status & readiness

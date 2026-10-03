@@ -394,6 +394,20 @@
 
 ### Fixed
 
+- **Execution latency percentiles are real numbers.** The
+  `execution_duration_seconds` histogram's lowest bucket was 1s, so every
+  execution landed in it and `histogram_quantile` reported a constant p95 of
+  950ms whatever the latency was. Buckets now run from 0.5ms to about 16s.
+
+- **A stuck root-hash divergence has its own counter.**
+  `sync_root_hash_divergence_detected_total_total` counts every same-DAG /
+  different-root heartbeat observation, transient ones included, so it climbs
+  into the thousands under write load with nothing wrong.
+  `sync_root_hash_divergence_escalated_total` counts only divergences that
+  persisted past the heartbeat window (the ones logged as
+  `DIVERGENCE DETECTED`), once per stuck hash pair; alert on that one. The
+  kv-store fuzzy load test now fails if any node logs `DIVERGENCE DETECTED`.
+
 - **An account that is not a member of a group cannot name a device in it.**
   An `AccountDeviceLabelled` op was checked only against a root statement or
   the device's own binding, and an account's bindings outlive its removal, so

@@ -164,8 +164,13 @@ impl Metrics {
             "Context runtime execution counter",
             execution_count.clone(),
         );
+        // 0.5ms .. ~16s. Executions run in milliseconds, so the buckets must
+        // start well below a second: with the lowest bound at 1s every
+        // execution landed in the first bucket, and `histogram_quantile` then
+        // interpolated a constant (p95 = 950ms, p50 = 500ms) whatever the
+        // real latency was.
         let execution_duration = Family::<ExecutionLabels, Histogram>::new_with_constructor(|| {
-            Histogram::new(exponential_buckets(1.0, 2.0, 10))
+            Histogram::new(exponential_buckets(0.0005, 2.0, 16))
         });
         runtime_registry.register(
             "execution_duration_seconds",
@@ -745,6 +750,44 @@ mod tests {
         assert!(
             out.contains("context_cache_application_size 3"),
             "missing application size gauge:\n{out}"
+        );
+    }
+
+    /// A millisecond execution lands in a millisecond bucket. With the lowest
+    /// bucket at 1s every execution shared it, and `histogram_quantile`
+    /// reported a constant p95 of 950ms regardless of the real latency.
+    #[test]
+    fn execution_duration_resolves_sub_second_latency() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+
+        metrics
+            .execution_duration
+            .get_or_create(&ExecutionLabels {
+                context_id: "ctx".to_owned(),
+                method: "set".to_owned(),
+                status: "success".to_owned(),
+            })
+            .observe(0.003);
+
+        let mut out = String::new();
+        encode(&mut out, &registry).expect("encode registry");
+
+        let bucket = |le: &str| {
+            out.lines()
+                .find(|line| {
+                    line.starts_with("context_runtime_execution_duration_seconds_bucket{")
+                        && line.contains(&format!("le=\"{le}\""))
+                })
+                .and_then(|line| line.rsplit(' ').next())
+                .and_then(|count| count.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("no le={le} bucket:\n{out}"))
+        };
+        assert_eq!(bucket("0.002"), 0, "3ms counted at or below 2ms:\n{out}");
+        assert_eq!(
+            bucket("0.004"),
+            1,
+            "3ms not counted at or below 4ms:\n{out}"
         );
     }
 
