@@ -809,6 +809,43 @@ impl<'a> MembershipRepository<'a> {
         Ok(accounts)
     }
 
+    /// Whether `account` is in [`namespace_accounts`](Self::namespace_accounts),
+    /// answered from point reads.
+    ///
+    /// For a caller asking about ONE account, which is every per-message gossip
+    /// verifier. Building the whole set to test one entry listed every member row
+    /// and then searched the list, on each readiness beacon, ack and heartbeat;
+    /// this reads the account's member row, the meta, and at cold start the
+    /// inviter hint. The membership rules are those of `namespace_accounts`, and
+    /// `is_namespace_account_agrees_with_namespace_accounts` holds the two
+    /// together.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn is_namespace_account(
+        &self,
+        namespace_id: NamespaceId,
+        account: &AccountId,
+    ) -> EyreResult<bool> {
+        let group_id = ContextGroupId::from(namespace_id.to_bytes());
+        if self.member_value(&group_id, account)?.is_some() {
+            return Ok(true);
+        }
+        let admin = MetaRepository::new(self.store)
+            .load(&group_id)?
+            .map(|meta| meta.admin_identity);
+        if admin == Some(*account) {
+            return Ok(true);
+        }
+        // The cold-start hint, under the same placeholder gate as
+        // `namespace_accounts`; see the comment there for why the gate is the
+        // whole safety argument.
+        if admin.is_none_or(|admin| admin == crate::placeholder_admin_identity()) {
+            return Ok(self.bootstrap_inviter(namespace_id)? == Some(*account));
+        }
+        Ok(false)
+    }
+
     /// The unverified inviter hint recorded at join, if this node kept one.
     ///
     /// See [`calimero_store::key::NamespaceBootstrapInviter`] for why it is not

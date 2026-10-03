@@ -1671,6 +1671,70 @@ fn the_bootstrap_inviter_hint_is_admitted_only_before_an_admin_exists() {
     );
 }
 
+/// `is_namespace_account` is the point-read form of
+/// `namespace_accounts().contains(..)`, which every gossip verifier used to
+/// build per message. The two must give the same answer for every way an
+/// account can be in the set or out of it, before genesis and after.
+#[test]
+fn is_namespace_account_agrees_with_namespace_accounts() {
+    let store = test_store();
+    let namespace_id = [0xD2; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let repo = MembershipRepository::new(&store);
+
+    let member = AccountId::from([0x10; 32]);
+    let admin = AccountId::from([0x01; 32]);
+    let hint = AccountId::from([0x77; 32]);
+    let stranger = AccountId::from([0x99; 32]);
+    repo.add_member(&gid, &member, GroupMemberRole::Member)
+        .expect("add member");
+    repo.set_bootstrap_inviter(namespace_id.into(), hint)
+        .expect("record the hint");
+
+    let placeholder = crate::placeholder_admin_identity();
+    let agree = |phase: &str| {
+        let set = repo.namespace_accounts(namespace_id.into()).expect("list");
+        for account in [member, admin, hint, stranger, placeholder] {
+            assert_eq!(
+                repo.is_namespace_account(namespace_id.into(), &account)
+                    .expect("point read"),
+                set.contains(&account),
+                "{phase}: the two disagree about {account:?}"
+            );
+        }
+    };
+
+    // Before genesis: no meta, so the hint is admitted.
+    agree("before genesis");
+
+    // Meta written with the placeholder admin: still cold start, hint admitted.
+    let mut meta = GroupMetaValue {
+        target: calimero_store::key::GroupTarget {
+            application_id: ApplicationId::from([0xCC; 32]),
+            bytecode_id: [0xBB; 32],
+            package: Box::default(),
+            version: Box::default(),
+        },
+        created_at: 1_700_000_000,
+        admin_identity: placeholder,
+        owner_identity: placeholder,
+        migration: None,
+        auto_join: true,
+    };
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    agree("with the placeholder admin");
+
+    // Genesis names a real admin with no member row; the hint stops counting.
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    agree("after genesis");
+
+    // A removed member leaves both views together.
+    repo.remove_member(&gid, &member).expect("remove");
+    agree("after a removal");
+}
+
 #[test]
 fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
     let store = test_store();
