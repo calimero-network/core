@@ -64,7 +64,7 @@ pub async fn auth_middleware(
             debug!(
                 method = %method,
                 path = %safe_path,
-                user = %auth_response.key_id,
+                user = %auth_response.user_id,
                 "Successful authentication"
             );
 
@@ -102,13 +102,13 @@ pub async fn auth_middleware(
             let duration = start_time.elapsed();
             debug!(method = %method, path = %safe_path, ?duration, "Request completed");
 
-            if let Ok(user_value) = HeaderValue::from_str(&auth_response.key_id) {
+            if let Ok(user_value) = HeaderValue::from_str(&auth_response.user_id) {
                 response.headers_mut().insert("X-Auth-User", user_value);
             } else {
                 warn!(
                     method = %method,
                     path = %safe_path,
-                    "Skipping X-Auth-User header: key_id is not a valid header value"
+                    "Skipping X-Auth-User header: user_id is not a valid header value"
                 );
             }
 

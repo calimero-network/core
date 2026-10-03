@@ -26,12 +26,10 @@ use crate::AuthError;
 /// the two notions of "expired" cannot disagree.
 const JWT_EXPIRY_LEEWAY_SECS: u64 = 60;
 
-/// Whether an access token and a refresh token belong to the same subject.
-///
-/// Enforces finding #3: the refresh endpoint must reject a request that pairs a
-/// refresh token with an access token issued to a different subject.
-fn tokens_share_subject(access: &Claims, refresh: &Claims) -> bool {
-    access.sub == refresh.sub
+/// Whether an access token and a refresh token were issued for the same key.
+/// The key, not `sub`: every client key of one user shares its `sub`.
+fn tokens_share_key(access: &Claims, refresh: &Claims) -> bool {
+    access.key_id == refresh.key_id
 }
 
 // Common response type used by all helper functions
@@ -433,17 +431,16 @@ pub async fn refresh_token_handler(
         }
     };
 
-    // Bind access <-> refresh: both must belong to the same subject (finding #3).
-    // Without this, any valid refresh token could be paired with an unrelated
-    // expired access token to mint a fresh pair for the refresh token's subject.
-    if !tokens_share_subject(&access_claims, &refresh_claims) {
+    // Bind access <-> refresh to one key, or any refresh token could be paired
+    // with an unrelated expired access token to mint a fresh pair.
+    if !tokens_share_key(&access_claims, &refresh_claims) {
         warn!(
-            "Refresh rejected: access/refresh subject mismatch ({} != {})",
-            access_claims.sub, refresh_claims.sub
+            "Refresh rejected: access/refresh key mismatch ({} != {})",
+            access_claims.key_id, refresh_claims.key_id
         );
         return error_response(
             StatusCode::UNAUTHORIZED,
-            "Access and refresh tokens do not belong to the same subject",
+            "Access and refresh tokens do not belong to the same key",
             None,
         );
     }
@@ -558,9 +555,9 @@ fn classify(headers: &HeaderMap) -> Probe {
 /// Name an account-anchored session's account and device, for a node that sits
 /// behind this service rather than embedding it.
 ///
-/// `X-Auth-User` cannot say this. It is the key id, which for an
+/// `X-Auth-User` cannot say this. It is the user id, which for an
 /// `account_proof` session happens to be the account and for a
-/// username/password one is a username, so a node reading it would have to
+/// username/password one is an opaque id, so a node reading it would have to
 /// guess which it holds — and a wrong guess reads a node owner as a tenant or a
 /// tenant as the owner. The record's own `auth_method` says which provider
 /// minted it, so that decides, as it does in the embedded guard.
@@ -655,7 +652,7 @@ pub async fn validate_handler(
             }
 
             // Verify the key exists and is valid
-            let key = match state.0.key_manager.get_key(&claims.sub).await {
+            let key = match state.0.key_manager.get_key(&claims.key_id).await {
                 Ok(Some(key)) if key.is_valid() => key,
                 Ok(Some(_)) => {
                     let mut error_headers = HeaderMap::new();
@@ -1061,6 +1058,7 @@ mod tests {
         Claims {
             device: None,
             sub: sub.to_string(),
+            key_id: sub.to_string(),
             iss: "calimero-test".to_string(),
             aud: "calimero-test".to_string(),
             exp: 0,
@@ -1114,8 +1112,8 @@ mod tests {
         );
     }
 
-    /// A username/password session's subject is a username. Naming it as an
-    /// account would read the node owner as a tenant.
+    /// A username/password session's subject is no account. Naming it as one
+    /// would read the node owner as a tenant.
     #[test]
     fn a_password_session_names_no_account() {
         let mut claims = claims_for("admin");
@@ -1124,22 +1122,25 @@ mod tests {
     }
 
     #[test]
-    fn tokens_share_subject_accepts_same_subject() {
-        // finding #3: matching subjects bind the access/refresh pair.
-        assert!(tokens_share_subject(
-            &claims_for("user-a"),
-            &claims_for("user-a")
+    fn tokens_share_key_accepts_same_key() {
+        assert!(tokens_share_key(&claims_for("key-a"), &claims_for("key-a")));
+    }
+
+    #[test]
+    fn tokens_share_key_rejects_mismatched_key() {
+        assert!(!tokens_share_key(
+            &claims_for("key-a"),
+            &claims_for("key-b")
         ));
     }
 
     #[test]
-    fn tokens_share_subject_rejects_mismatched_subject() {
-        // finding #3: a refresh token must not be paired with an access token
-        // issued to a different subject.
-        assert!(!tokens_share_subject(
-            &claims_for("user-a"),
-            &claims_for("user-b")
-        ));
+    fn tokens_share_key_rejects_two_keys_of_one_user() {
+        let mut other_client = claims_for("client-b");
+        other_client.sub = "user".to_owned();
+        let mut client = claims_for("client-a");
+        client.sub = "user".to_owned();
+        assert!(!tokens_share_key(&client, &other_client));
     }
 }
 

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::config::JwtConfig;
 use crate::secrets::{SecretManager, SecretType};
-use crate::storage::models::KeyType;
+use crate::storage::models::{Key, KeyType};
 use crate::storage::{KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
 
@@ -29,7 +29,7 @@ const CONSUMED_REFRESH_PREFIX: &str = "system:refresh:consumed:";
 ///
 /// Written on every client-key rotation. When a replayed refresh token names a
 /// key id that a later successful rotation already deleted, family revocation
-/// chases this chain to find the LIVE key — otherwise revoke-by-sub would
+/// chases this chain to find the LIVE key; otherwise revoke-by-key-id would
 /// silently miss it and the stolen family would stay valid. Entries carry the
 /// old refresh token's expiry (after which a replay fails on expiry alone) and
 /// are GC'd by the same throttled sweep as the consumed denylist.
@@ -60,8 +60,12 @@ pub enum TokenType {
 /// JWT Claims structure
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    /// Subject (key ID)
+    /// Subject: the opaque, stable id of the user the session belongs to, which
+    /// is the root key it descends from and the value of `X-Auth-User`.
     pub sub: String,
+    /// The key this token authenticates with; a client key's rotates on every
+    /// refresh while `sub` stays put. Required, so a token minted without it is refused.
+    pub key_id: String,
     /// Issuer
     pub iss: String,
     /// Audience (client ID)
@@ -99,6 +103,22 @@ pub struct Claims {
     /// node owner, who is not a device of anybody's account.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+}
+
+/// Who a token pair is for: the user it names and the key it authenticates with.
+struct Subject {
+    user_id: String,
+    key_id: String,
+}
+
+impl Subject {
+    /// A client key names the root it was minted under, so its user survives rotation.
+    fn of(key_id: String, key: &Key) -> Self {
+        Self {
+            user_id: key.root_key_id.clone().unwrap_or_else(|| key_id.clone()),
+            key_id,
+        }
+    }
 }
 
 /// JWT Token Manager
@@ -272,7 +292,7 @@ impl TokenManager {
     /// Generate a JWT token
     async fn generate_token(
         &self,
-        key_id: String,
+        subject: &Subject,
         permissions: Vec<String>,
         expiry: Duration,
         node_url: Option<String>,
@@ -283,7 +303,8 @@ impl TokenManager {
         let exp = now + expiry;
 
         let claims = Claims {
-            sub: key_id.clone(),
+            sub: subject.user_id.clone(),
+            key_id: subject.key_id.clone(),
             iss: self.config.issuer.clone(),
             aud: self.config.issuer.clone(),
             exp: exp.timestamp() as u64,
@@ -313,7 +334,7 @@ impl TokenManager {
     /// Generate a pair of JWT tokens without key validation.
     async fn generate_raw_token_pair(
         &self,
-        key_id: String,
+        subject: Subject,
         permissions: Vec<String>,
         node_url: Option<String>,
         access_expiry: Duration,
@@ -322,7 +343,7 @@ impl TokenManager {
     ) -> Result<(String, String), AuthError> {
         let access_token = self
             .generate_token(
-                key_id.clone(),
+                &subject,
                 permissions.clone(),
                 access_expiry,
                 node_url.clone(),
@@ -336,7 +357,7 @@ impl TokenManager {
         // and a session that forgets is a session revocation stops reaching.
         let refresh_token = self
             .generate_token(
-                key_id,
+                &subject,
                 permissions,
                 refresh_expiry,
                 node_url,
@@ -366,7 +387,10 @@ impl TokenManager {
         // No device: a mock token stands in for a caller, not for a device of
         // anybody's account, so naming one would be inventing a fact.
         self.generate_raw_token_pair(
-            key_id,
+            Subject {
+                user_id: key_id.clone(),
+                key_id,
+            },
             permissions,
             node_url,
             access_expiry,
@@ -406,7 +430,7 @@ impl TokenManager {
         let (access_expiry, refresh_expiry) = self.expiries_for(&key.key_type);
 
         self.generate_raw_token_pair(
-            key_id,
+            Subject::of(key_id, &key),
             permissions,
             node_url,
             access_expiry,
@@ -556,7 +580,7 @@ impl TokenManager {
     /// **This does NOT assert that the token is expired** — a still-valid access
     /// token also passes. It only guarantees signature validity (with the
     /// rotation-safe backup fallback) and the `Access` token type. The refresh
-    /// endpoint uses it to read the subject of an access token regardless of
+    /// endpoint uses it to read the key of an access token regardless of
     /// expiry, then applies its own "must be expired" policy on the returned
     /// claims. Any new caller must add its own expiry policy too.
     pub async fn decode_access_claims_ignore_expiry(
@@ -607,7 +631,7 @@ impl TokenManager {
         // found" here leaves the client unable to tell "reconnect" from "retry".
         let key = self
             .key_manager
-            .get_key_including_invalid(&claims.sub)
+            .get_key_including_invalid(&claims.key_id)
             .await
             .map_err(|e| AuthError::StorageError(e.into()))?
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
@@ -635,7 +659,8 @@ impl TokenManager {
 
         Ok(AuthResponse {
             is_valid: true,
-            key_id: claims.sub,
+            user_id: claims.sub,
+            key_id: claims.key_id,
             permissions: effective_permissions,
             device: claims.device,
         })
@@ -839,11 +864,11 @@ impl TokenManager {
 
         let key = self
             .key_manager
-            .get_key(&claims.sub)
+            .get_key(&claims.key_id)
             .await
             .map_err(|e| AuthError::StorageError(e.into()))?;
         if key.is_some_and(|key| key.key_type == KeyType::Client && key.is_valid()) {
-            self.revoke_client_tokens(&claims.sub).await?;
+            self.revoke_client_tokens(&claims.key_id).await?;
         }
 
         Ok(())
@@ -853,7 +878,7 @@ impl TokenManager {
     ///
     /// A replayed refresh token names the key id it was minted for; for client
     /// keys that id may have been deleted by a later successful rotation, so
-    /// revoking by `sub` alone would silently miss the live key and leave the
+    /// revoking by `key_id` alone would silently miss the live key and leave the
     /// (presumed stolen) family valid. Chase the rotation mapping first.
     ///
     /// **Root keys are never revoked here.** A user_password login mints its
@@ -976,10 +1001,14 @@ impl TokenManager {
         // key, a replayed (already-consumed) refresh token names a key id that
         // a later successful rotation deleted — reuse detection below must still
         // fire for it and revoke the LIVE key via the rotation chain.
-        let key = self.key_manager.get_key(&claims.sub).await.map_err(|e| {
-            tracing::error!("Storage error while getting key {}: {}", claims.sub, e);
-            AuthError::StorageError(e.into())
-        })?;
+        let key = self
+            .key_manager
+            .get_key(&claims.key_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("Storage error while getting key {}: {}", claims.key_id, e);
+                AuthError::StorageError(e.into())
+            })?;
 
         // Single-use enforcement (finding #2): atomically claim this refresh
         // token's jti BEFORE minting anything. The lock makes the consumed-check
@@ -995,13 +1024,13 @@ impl TokenManager {
             let _consume_guard = self.consume_refresh_lock.lock().await;
             if self.is_refresh_consumed(&claims.jti).await? {
                 tracing::warn!(
-                    "Refresh token reuse detected for subject {} (jti {}); revoking family",
-                    claims.sub,
+                    "Refresh token reuse detected for key {} (jti {}); revoking family",
+                    claims.key_id,
                     claims.jti
                 );
                 // Best-effort family revocation; reject regardless of its outcome.
-                if let Err(e) = self.revoke_token_family(&claims.sub).await {
-                    tracing::error!("Failed to revoke token family for {}: {}", claims.sub, e);
+                if let Err(e) = self.revoke_token_family(&claims.key_id).await {
+                    tracing::error!("Failed to revoke token family for {}: {}", claims.key_id, e);
                 }
                 return Err(AuthError::TokenReuse);
             }
@@ -1009,10 +1038,10 @@ impl TokenManager {
             // Not a replay: from here on the key must exist and be valid.
             match &key {
                 None => {
-                    tracing::error!("Key not found: {}", claims.sub);
+                    tracing::error!("Key not found: {}", claims.key_id);
                     return Err(AuthError::InvalidToken(format!(
                         "Key not found: {}",
-                        claims.sub
+                        claims.key_id
                     )));
                 }
                 Some(key) if !key.is_valid() => {
@@ -1034,14 +1063,14 @@ impl TokenManager {
             sweeper.maybe_sweep_consumed_refresh().await;
         }));
 
-        // Captured before the match moves `claims.sub`/`claims.permissions`.
+        // Captured before the match moves `claims.key_id`/`claims.permissions`.
         let rotated_from_exp = claims.exp;
 
         let result = match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
             KeyType::Root => {
                 self.generate_token_pair(
-                    claims.sub,
+                    claims.key_id,
                     key.permissions,
                     claims.node_url.clone(),
                     // Carried forward rather than dropped: a refresh that
@@ -1059,7 +1088,7 @@ impl TokenManager {
                 // Log only short id prefixes; the full client key ids are
                 // sensitive and add noise to debug logs.
                 tracing::debug!(
-                    from = claims.sub.get(..8).unwrap_or(claims.sub.as_str()),
+                    from = claims.key_id.get(..8).unwrap_or(claims.key_id.as_str()),
                     to = new_client_id.get(..8).unwrap_or(new_client_id.as_str()),
                     "Rotating client key (ids truncated)"
                 );
@@ -1071,7 +1100,7 @@ impl TokenManager {
 
                 let (access_token, refresh_token) = self
                     .generate_raw_token_pair(
-                        new_client_id.clone(),
+                        Subject::of(new_client_id.clone(), &key),
                         key.permissions.clone(),
                         claims.node_url.clone(),
                         access_expiry,
@@ -1102,24 +1131,24 @@ impl TokenManager {
                 // the live key (see revoke_token_family). Best-effort: a missing
                 // mapping degrades reuse handling, it doesn't break the refresh.
                 if let Err(e) = self
-                    .record_rotated_key(&claims.sub, &new_client_id, rotated_from_exp)
+                    .record_rotated_key(&claims.key_id, &new_client_id, rotated_from_exp)
                     .await
                 {
                     tracing::warn!(
                         "Failed to record key-rotation mapping {} -> {}: {}",
-                        claims.sub,
+                        claims.key_id,
                         new_client_id,
                         e
                     );
                 }
 
                 // Now safely delete the old key
-                if let Err(e) = self.key_manager.delete_key(&claims.sub).await {
+                if let Err(e) = self.key_manager.delete_key(&claims.key_id).await {
                     // Log the error but don't fail the refresh - tokens are already generated
                     // and new key is stored. User can use the new tokens.
                     tracing::warn!(
                         "Failed to delete old client key {} after successful rotation: {}",
-                        claims.sub,
+                        claims.key_id,
                         e
                     );
                 }
@@ -1738,10 +1767,8 @@ mod tests {
 
     #[tokio::test]
     async fn replayed_client_refresh_after_rotation_revokes_live_key() {
-        // Review finding: after a client-key rotation deletes the old key id,
-        // revoking the family by the replayed token's `sub` finds no key and the
-        // live (rotated) key silently survives. The rotation mapping must let
-        // reuse handling chase and revoke the LIVE key.
+        // A rotation deletes the replayed token's key, so revocation must chase
+        // the rotation mapping to reach the live key.
         let (tm, _sm) = test_manager().await;
         let root = crate::storage::models::Key::new_root_key_with_permissions(
             "pk".to_string(),

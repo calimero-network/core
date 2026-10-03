@@ -67,8 +67,8 @@ pub(crate) fn visible_children(
     let children = NamespaceRepository::new(&state.store).list_children(group_id)?;
 
     // Caller identity comes from the node's *own* namespace identity for
-    // the parent group — NOT from the JWT subject. The JWT's `sub` is a
-    // node-level key fingerprint that doesn't parse as a `PublicKey`
+    // the parent group, NOT from the JWT subject. The JWT's `sub` is an
+    // opaque user id that doesn't parse as a `PublicKey`
     // (see calimero_server::auth — emits a WARN and skips the
     // AuthenticatedKey extension), so the node's namespace identity is the
     // only thing here that resolves to a governance principal.

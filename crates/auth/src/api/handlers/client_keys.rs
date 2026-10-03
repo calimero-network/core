@@ -160,7 +160,8 @@ pub async fn generate_client_key_handler(
         );
     }
 
-    let root_key_id = auth_response.key_id;
+    // The user's root, so a key minted from a client session joins the same user.
+    let root_key_id = auth_response.user_id;
 
     // Extract node URL from request for node-specific token generation
     let node_url = request.target_node_url.clone();
