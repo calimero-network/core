@@ -830,8 +830,31 @@ impl<'a> MembershipRepository<'a> {
     }
 
     /// Enumerate the trusted-anchor set: `{Owner} ∪ {Admins} ∪ {TEE members}`,
-    /// where a TEE member is a replica (`ReadOnlyTee`) or a relay (`RelayTee`).
-    /// See original `trusted_anchors_for_group` doc.
+    /// where a TEE member is a replica (`ReadOnlyTee`) or a relay (`RelayTee`),
+    /// plus, for a namespace founded through a relay, that founding relay while
+    /// it still holds a row at the namespace root.
+    ///
+    /// # Why the founding relay
+    ///
+    /// In a namespace a NODE founded, the founder's node is an anchor from the
+    /// cleartext genesis on: it is the namespace's admin, and it minted the
+    /// namespace key. A namespace founded through a relay has no such node. The
+    /// founder is an account with no node, and the node that minted the key and
+    /// serves it is the relay the founder named as executor in the signed
+    /// genesis warrant. That relay becomes a TEE anchor (`RelayTee`) only through
+    /// `GroupOp::FoundingRelayAttested`, which is sealed under the very key a
+    /// newcomer is trying to get, so a node admitted later, holding only
+    /// cleartext state, saw no anchor with a node at all and refused the one peer
+    /// that could serve it the key.
+    ///
+    /// The genesis already names the relay, in the clear, on every peer
+    /// (`NamespaceFoundingRepository::founding_relay`, written by the delegated
+    /// genesis apply together with the relay's device binding). Recognising it
+    /// here gives the relay-founded namespace the anchor a node-founded one has
+    /// from its genesis: the party the founder chose, and the one that chose the
+    /// key. It grants nothing the relay did not already have, since it minted
+    /// that key. It stops with the relay's row, so a founding relay removed from
+    /// the namespace is no longer trusted for its key.
     pub fn trusted_anchors(
         &self,
         group_id: &ContextGroupId,
@@ -840,6 +863,16 @@ impl<'a> MembershipRepository<'a> {
         if let Some(meta) = MetaRepository::new(self.store).load(group_id)? {
             let _ = anchors.insert(meta.owner_identity);
             let _ = anchors.insert(meta.admin_identity);
+        }
+        // Keyed by namespace id, so a subgroup never matches: the founding relay
+        // anchors the namespace root only. A subgroup's own anchors (its admin,
+        // the TEEs seated in it) are unaffected.
+        if let Some((relay, _attested)) =
+            crate::NamespaceFoundingRepository::new(self.store).founding_relay(group_id)?
+        {
+            if self.role_of(group_id, &relay)?.is_some() {
+                let _ = anchors.insert(relay);
+            }
         }
         for (account, role) in self.list(group_id, 0, usize::MAX)? {
             match role {

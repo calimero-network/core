@@ -1270,6 +1270,42 @@ pub fn tee_admission_records(
     Ok(out)
 }
 
+/// Every account admitted into `group_id` as a TEE, however it was admitted.
+///
+/// [`tee_admission_records`] answers only for a `MemberJoinedViaTeeAttestation`,
+/// because that is the one admission carrying measurements to reuse. A
+/// namespace founded through a relay has a TEE that op never names: the
+/// founding relay, admitted by `GroupOp::FoundingRelayAttested`. A caller asking
+/// WHO the TEEs are, rather than for their verdicts, has to see it too, or a
+/// relay-founded namespace's only TEE drops out of its default admitters and
+/// out of the TEE band of its invitations' addresses.
+///
+/// The founding relay counts once it has attested and while it still holds a
+/// TEE role in `group_id` — the namespace root, since the founding record is
+/// keyed by namespace.
+///
+/// # Errors
+/// Any governance store read error.
+pub fn tee_admitted_accounts(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<std::collections::BTreeSet<AccountId>> {
+    let mut out: std::collections::BTreeSet<AccountId> = tee_admission_records(store, group_id)?
+        .into_keys()
+        .collect();
+    if let Some((relay, true)) =
+        crate::NamespaceFoundingRepository::new(store).founding_relay(group_id)?
+    {
+        if MembershipRepository::new(store)
+            .role_of(group_id, &relay)?
+            .is_some_and(|role| role.is_tee())
+        {
+            let _ = out.insert(relay);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use calimero_account::AccountId;
