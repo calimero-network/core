@@ -394,6 +394,20 @@
 
 ### Fixed
 
+- **`fleet-join` on a node that is already a member answers at once.** The
+  relay a namespace was founded through is its first TEE member, and when it
+  was handed its own addresses as admitters `fleet-join` asked itself for
+  admission and never returned; the request also held the sync loop, so
+  periodic sync, namespace pulls and outbound joins stopped with it. A node
+  that is already a member and holds the namespace key now answers
+  `admitted=true` without attesting or asking anyone. Admitter addresses
+  naming this node are dropped, opening a stream for an admission or a
+  namespace pull gives up after `open_stream_timeout`, a direct admission
+  runs beside the sync loop instead of inside it and is answered as refused
+  after 30 s, and meroctl requests are bounded by the 30 s default request
+  timeout (longer for fleet-join, joins, syncs, upgrades, installs, context
+  creation, JSON-RPC calls and blob transfers). No wire change.
+
 - **Sync safety counters count.** `sync_snapshot_blocked_total`,
   `sync_verification_failures_total`, `sync_buffer_drops_total` and
   `sync_protocol_selections_total` were registered but never incremented
