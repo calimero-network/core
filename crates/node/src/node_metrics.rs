@@ -90,6 +90,14 @@ pub(crate) struct StoreDirLabels {
     pub(crate) store: String,
 }
 
+/// Which kind of RocksDB file a `storage_datastore_file_bytes` series sums.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct DatastoreFileLabels {
+    /// One of: `sst` (table files, live and not yet compacted away), `wal`
+    /// (write-ahead logs), `other` (MANIFEST, OPTIONS, info `LOG` files).
+    pub(crate) kind: &'static str,
+}
+
 /// Per-namespace, per-column slice of the datastore.
 ///
 /// A namespace-level label rather than a per-context one (see "Cardinality
@@ -145,6 +153,11 @@ pub(crate) struct NodeMetrics {
     // HC / LevelWise / EntityPush per-leaf authorization drops.
     pub(crate) hc_leaf_drops_total: Family<LeafDropLabels, Counter>,
 
+    // Deltas lost from a snapshot-sync session's bounded buffer (I6). Lives
+    // here rather than on the sync collector because the drop happens in
+    // `NodeState::buffer_delta`, which has no handle to it.
+    pub(crate) sync_buffer_drops: Counter,
+
     // Governance-pending drain outcomes (B2 buffer-on-unknown lifecycle).
     pub(crate) governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter>,
 
@@ -172,6 +185,7 @@ pub(crate) struct NodeMetrics {
     // On-disk footprint, sampled on the tick by `StorageProbe` (off the async
     // runtime, via `spawn_blocking`).
     pub(crate) storage_disk_usage_bytes: Family<StoreDirLabels, Gauge>,
+    pub(crate) storage_datastore_file_bytes: Family<DatastoreFileLabels, Gauge>,
     pub(crate) storage_namespace_bytes: Family<NamespaceStorageLabels, Gauge>,
     pub(crate) storage_namespace_contexts: Family<NamespaceLabels, Gauge>,
 }
@@ -307,6 +321,14 @@ impl NodeMetrics {
             hc_leaf_drops_total.clone(),
         );
 
+        let sync_buffer_drops = Counter::default();
+        registry.register(
+            "sync_buffer_drops",
+            "Deltas lost from a snapshot-sync session's bounded buffer, evicted or refused \
+             (I6 violation risk: the node needs a catch-up sync to recover them)",
+            sync_buffer_drops.clone(),
+        );
+
         let governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter> =
             Family::default();
         registry.register(
@@ -387,6 +409,14 @@ impl NodeMetrics {
              (datastore = RocksDB, blobstore = blob files)",
             storage_disk_usage_bytes.clone(),
         );
+        let storage_datastore_file_bytes: Family<DatastoreFileLabels, Gauge> = Family::default();
+        registry.register(
+            "storage_datastore_file_bytes",
+            "Length of the RocksDB datastore's files by kind (sst, wal, other). Unlike \
+             storage_disk_usage_bytes this excludes preallocated-but-unwritten WAL space, and \
+             splits table data from write-ahead log so a compaction or WAL roll is visible",
+            storage_datastore_file_bytes.clone(),
+        );
         let storage_namespace_bytes: Family<NamespaceStorageLabels, Gauge> = Family::default();
         registry.register(
             "storage_namespace_bytes",
@@ -418,6 +448,7 @@ impl NodeMetrics {
             dag_heads_count,
             dag_compaction_deltas_pruned_total,
             hc_leaf_drops_total,
+            sync_buffer_drops,
             governance_drain_outcomes_total,
             actor_restarts_total,
             #[cfg(target_os = "linux")]
@@ -431,6 +462,7 @@ impl NodeMetrics {
             #[cfg(target_os = "linux")]
             process_cpu_seconds,
             storage_disk_usage_bytes,
+            storage_datastore_file_bytes,
             storage_namespace_bytes,
             storage_namespace_contexts,
         }
@@ -578,9 +610,18 @@ pub(crate) struct StorageProbe {
 pub(crate) struct StorageSample {
     datastore_bytes: Option<u64>,
     blobstore_bytes: Option<u64>,
+    datastore_files: Option<DatastoreFiles>,
     /// `None` when the usage walk failed: the previous namespace series are
     /// then kept rather than wiped.
     namespaces: Option<Vec<NamespaceStorage>>,
+}
+
+/// File lengths under the datastore directory, by RocksDB file kind.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DatastoreFiles {
+    sst: u64,
+    wal: u64,
+    other: u64,
 }
 
 #[derive(Debug)]
@@ -615,6 +656,7 @@ impl StorageProbe {
         StorageSample {
             datastore_bytes: dir_disk_usage(&self.datastore_dir),
             blobstore_bytes: dir_disk_usage(&self.blobstore_dir),
+            datastore_files: datastore_files(&self.datastore_dir),
             namespaces,
         }
     }
@@ -632,6 +674,18 @@ impl StorageSample {
                     .get_or_create(&StoreDirLabels {
                         store: store.to_owned(),
                     })
+                    .set(i64::try_from(bytes).unwrap_or(i64::MAX));
+            }
+        }
+        if let Some(files) = &self.datastore_files {
+            for (kind, bytes) in [
+                ("sst", files.sst),
+                ("wal", files.wal),
+                ("other", files.other),
+            ] {
+                metrics
+                    .storage_datastore_file_bytes
+                    .get_or_create(&DatastoreFileLabels { kind })
                     .set(i64::try_from(bytes).unwrap_or(i64::MAX));
             }
         }
@@ -660,6 +714,37 @@ impl StorageSample {
             }
         }
     }
+}
+
+/// File lengths in the RocksDB directory `root`, by kind. Lengths, not
+/// allocated blocks: RocksDB preallocates each WAL (tens of MB), so the
+/// `du`-style figure in `storage_disk_usage_bytes` is dominated by WAL space
+/// nothing has been written to yet, and moves in WAL-sized steps rather than
+/// with the data. RocksDB keeps its files flat in one directory; `None` if
+/// `root` can't be read.
+fn datastore_files(root: &Path) -> Option<DatastoreFiles> {
+    let mut files = DatastoreFiles::default();
+    for entry in std::fs::read_dir(root).ok()?.filter_map(Result::ok) {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // `LOG` / `LOG.old.<ts>` are RocksDB's info logs, not WALs; WALs are
+        // `<number>.log`.
+        let slot = if name.ends_with(".sst") {
+            &mut files.sst
+        } else if name.ends_with(".log") {
+            &mut files.wal
+        } else {
+            &mut files.other
+        };
+        *slot = slot.saturating_add(meta.len());
+    }
+    Some(files)
 }
 
 /// Bytes allocated on disk under `root`, like `du -s`. Counts allocated
@@ -911,6 +996,13 @@ pub(crate) fn record_hc_leaf_drop(reason: &str) {
     }
 }
 
+/// Count one delta lost from a snapshot-sync session buffer.
+pub(crate) fn record_sync_buffer_drop() {
+    if let Some(m) = global() {
+        m.sync_buffer_drops.inc();
+    }
+}
+
 /// Bump a blob-cache eviction counter for the given reason
 /// (`"age"`, `"count"`, `"memory"`).
 pub(crate) fn record_blob_cache_eviction(reason: &str, n: u64) {
@@ -1001,6 +1093,7 @@ mod tests {
         StorageSample {
             datastore_bytes: Some(4096),
             blobstore_bytes: None,
+            datastore_files: None,
             namespaces: Some(vec![ns("aa"), ns("bb")]),
         }
         .publish(&metrics);
@@ -1040,7 +1133,49 @@ mod tests {
         let sample = probe.sample();
         assert_eq!(sample.datastore_bytes, Some(0));
         assert_eq!(sample.blobstore_bytes, None);
+        assert_eq!(sample.datastore_files, Some(DatastoreFiles::default()));
         assert_eq!(sample.namespaces.map(|n| n.len()), Some(0));
+    }
+
+    #[test]
+    fn datastore_files_split_tables_from_wal_and_info_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, len) in [
+            ("000012.sst", 300),
+            ("000013.sst", 200),
+            ("000014.log", 70),
+            ("LOG", 5),
+            ("LOG.old.1700000000", 4),
+            ("MANIFEST-000005", 3),
+        ] {
+            std::fs::write(dir.path().join(name), vec![0u8; len]).unwrap();
+        }
+        assert_eq!(
+            datastore_files(dir.path()),
+            Some(DatastoreFiles {
+                sst: 500,
+                wal: 70,
+                other: 12,
+            })
+        );
+
+        let mut registry = Registry::default();
+        let metrics = NodeMetrics::new(&mut registry);
+        StorageSample {
+            datastore_files: datastore_files(dir.path()),
+            ..StorageSample::default()
+        }
+        .publish(&metrics);
+        let mut out = String::new();
+        encode(&mut out, &registry).unwrap();
+        assert!(
+            out.contains("storage_datastore_file_bytes{kind=\"sst\"} 500"),
+            "{out}"
+        );
+        assert!(
+            out.contains("storage_datastore_file_bytes{kind=\"wal\"} 70"),
+            "{out}"
+        );
     }
 
     #[test]

@@ -420,6 +420,7 @@ impl SyncManager {
                     );
                 }
                 calimero_node_primitives::sync::SnapshotSafety::Initialized => {
+                    self.metrics().record_snapshot_blocked();
                     return Err(eyre::eyre!(
                         "Snapshot safety check failed: {:?}",
                         SnapshotError::SnapshotOnInitializedNode
@@ -480,7 +481,8 @@ impl SyncManager {
             self.context_client.datastore(),
             context_id,
             boundary.boundary_root_hash,
-        )?;
+        )
+        .inspect_err(|_| self.metrics().record_verification_failure())?;
 
         // Publish root_hash + dag_heads in one atomic ContextMeta write. Two
         // separate read-modify-writes (force_root_hash then update_dag_heads)

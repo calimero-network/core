@@ -9,7 +9,7 @@ use prometheus_client::registry::Registry;
 
 #[derive(Clone, Debug)]
 pub struct Metrics {
-    pub execution_count: Family<ExecutionLabels, Gauge>,
+    pub execution_count: Family<ExecutionLabels, Counter>,
     pub execution_duration: Family<ExecutionLabels, Histogram>,
 
     /// Cumulative count of in-memory context-cache hits (the requested
@@ -158,7 +158,10 @@ impl Metrics {
 
         let runtime_registry = context_registry.sub_registry_with_prefix("runtime");
 
-        let execution_count = Family::<ExecutionLabels, Gauge>::default();
+        // A counter, exposed as `context_runtime_execution_count_total`. It was
+        // a gauge that was only ever incremented, so a restart read as a drop
+        // and `rate()`/`increase()` did not apply.
+        let execution_count = Family::<ExecutionLabels, Counter>::default();
         runtime_registry.register(
             "execution_count",
             "Context runtime execution counter",

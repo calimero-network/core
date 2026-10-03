@@ -394,6 +394,27 @@
 
 ### Fixed
 
+- **Sync safety counters count.** `sync_snapshot_blocked_total`,
+  `sync_verification_failures_total`, `sync_buffer_drops_total` and
+  `sync_protocol_selections_total` were registered but never incremented
+  outside tests, so they read 0 whatever happened; they are now recorded where
+  the event occurs. Failed syncs are recorded in `sync_duration_seconds`
+  under `outcome="failure"`, so timeouts show in its tail. Eight sync families
+  with no production writer (`sync_messages_sent`, `sync_bytes_sent`,
+  `sync_round_trips`, `sync_entities_transferred`, `sync_merges`,
+  `sync_comparisons`, `sync_phase_duration_seconds`, `sync_lww_fallback`) are
+  no longer exported. (breaking for dashboards that query them)
+
+- **`context_runtime_execution_count` is a counter.** It was a gauge that was
+  only incremented, so restarts read as drops and `rate()` did not apply. It
+  is now exposed as `context_runtime_execution_count_total`. (breaking for
+  dashboards that query the old name)
+
+- **The datastore's size is split by file kind.** `storage_datastore_file_bytes{kind}`
+  reports SST, WAL and other RocksDB file lengths. `storage_disk_usage_bytes`
+  counts allocated blocks, so on a small node it is mostly preallocated WAL
+  and does not move with the data.
+
 - **Execution latency percentiles are real numbers.** The
   `execution_duration_seconds` histogram's lowest bucket was 1s, so every
   execution landed in it and `histogram_quantile` reported a constant p95 of
