@@ -947,9 +947,14 @@ pub(crate) async fn apply_authorized_state_delta(
 
     // After successfully applying a remote delta, immediately broadcast our
     // updated root hash so lagging peers detect the divergence without waiting
-    // for the 30-second periodic heartbeat.
+    // for the 30-second periodic heartbeat. Read under the execution lock so a
+    // concurrent apply's two-step root / heads write can't be caught half done.
     if applied {
-        if let Ok(Some(ctx)) = node_clients.context.get_context(&context_id) {
+        if let Ok(Some(ctx)) = node_clients
+            .context
+            .get_context_consistent(&context_id)
+            .await
+        {
             if !ctx.root_hash.is_zero() {
                 let _ = node_clients
                     .node

@@ -4006,15 +4006,26 @@ impl SyncManager {
                 // Handle tree node request from peer (HashComparison sync)
                 // Wrap stream in transport abstraction
                 let mut transport = super::stream::StreamTransport::new(stream);
-                self.handle_tree_node_request(
+                let outcome = self
+                    .handle_tree_node_request(
+                        context_id,
+                        node_id,
+                        max_depth,
+                        &mut transport,
+                        nonce,
+                        Some(their_identity),
+                    )
+                    .await;
+                // The responder merges the initiator's `EntityPush` leaves
+                // into storage without writing `root_hash`; re-anchor even
+                // when the session errored, since earlier pushes landed.
+                super::helpers::reanchor_after_entity_merge(
+                    &self.context_client,
                     context_id,
-                    node_id,
-                    max_depth,
-                    &mut transport,
-                    nonce,
-                    Some(their_identity),
+                    "hash-comparison responder",
                 )
-                .await?
+                .await;
+                outcome?
             }
             InitPayload::LevelWiseRequest {
                 level: first_level,
@@ -4041,14 +4052,22 @@ impl SyncManager {
 
                 // Run the LevelWise responder via the trait method
                 use calimero_node_primitives::sync::SyncProtocolExecutor;
-                super::level_sync::LevelWiseProtocol::run_responder(
+                let outcome = super::level_sync::LevelWiseProtocol::run_responder(
                     &mut transport,
                     &store,
                     context_id,
                     our_identity,
                     first_request,
                 )
-                .await?
+                .await;
+                // Same as the HashComparison responder above.
+                super::helpers::reanchor_after_entity_merge(
+                    &self.context_client,
+                    context_id,
+                    "level-wise responder",
+                )
+                .await;
+                outcome?
             }
             InitPayload::EntityPush { .. } => {
                 // EntityPush is handled within the HashComparison and LevelWise

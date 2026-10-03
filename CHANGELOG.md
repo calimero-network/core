@@ -394,6 +394,15 @@
 
 ### Fixed
 
+- **Heartbeats no longer advertise a root hash the node does not hold.** A
+  heartbeat could pair a delta's new root with the old DAG heads (it read the
+  two between the apply's two writes), and after a HashComparison responder
+  or a LevelWise session the node kept advertising its pre-session root, since
+  those merges bypass the executor that updates it. Both made peers count a
+  same-heads / different-root divergence for a state no node was in. The
+  heartbeat now reads under the context's execution lock, and every such
+  session re-anchors the cached root to storage.
+
 - **`fleet-join` on a node that is already a member answers at once.** The
   relay a namespace was founded through is its first TEE member, and when it
   was handed its own addresses as admitters `fleet-join` asked itself for
