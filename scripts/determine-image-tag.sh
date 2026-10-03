@@ -266,6 +266,31 @@ elif [ "$EVENT_NAME" = "push" ] && [ "$HEAD_BRANCH" = "master" ]; then
             TAG="edge${TAG_SUFFIX}"
         fi
     fi
+elif [ "$EVENT_NAME" = "workflow_run" ] && [ -n "${WORKFLOW_RUN_HEAD_SHA:-}" ]; then
+    # Opt-in (the caller sets WORKFLOW_RUN_HEAD_SHA): pin to the image Release
+    # built from the triggering commit. Overlapping runs make the moving
+    # `:edge${TAG_SUFFIX}` unsafe, since a later commit's Release can repoint it
+    # mid-run. Release's container actions also push an immutable per-commit
+    # tag: docker/metadata-action `type=sha,format=short` is the 7-char sha.
+    COMMIT_TAG="${WORKFLOW_RUN_HEAD_SHA:0:7}${TAG_SUFFIX}"
+    IMAGE_EXISTS="true"
+
+    if command -v docker >/dev/null 2>&1; then
+        echo "${GH_TOKEN}" | docker login ghcr.io -u "${REPO_OWNER}" --password-stdin >/dev/null 2>&1 || true
+        if ! docker manifest inspect "ghcr.io/calimero-network/merod:${COMMIT_TAG}" >/dev/null 2>&1; then
+            IMAGE_EXISTS="false"
+        fi
+    fi
+
+    if [ "$IMAGE_EXISTS" = "true" ]; then
+        echo "Using the image Release built from ${WORKFLOW_RUN_HEAD_SHA}"
+        TAG="${COMMIT_TAG}"
+    else
+        # A successful Release that built nothing (its scope check found no
+        # input change) pushes no per-commit tag; its binary is the previous one.
+        echo "::warning::No ${COMMIT_TAG} image for ${WORKFLOW_RUN_HEAD_SHA} (Release built nothing for it, or the lookup failed) - falling back to :edge${TAG_SUFFIX}"
+        TAG="edge${TAG_SUFFIX}"
+    fi
 else
     TAG="edge${TAG_SUFFIX}"
 fi
