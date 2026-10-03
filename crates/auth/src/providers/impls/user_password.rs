@@ -817,6 +817,156 @@ mod tests {
             .is_some());
     }
 
+    #[tokio::test]
+    async fn a_wrong_password_is_refused() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let _key_id = crate::provisioning::provision_admin_key(
+            &provider.storage,
+            &provider.config,
+            "alice",
+            "right-password",
+        )
+        .await
+        .unwrap();
+
+        assert!(provider
+            .authenticate_core("alice", "wrong-password")
+            .await
+            .is_err());
+        assert!(provider
+            .authenticate_core("alice", "right-password")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_root_key_assigns_a_random_key_id() {
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let provider = test_provider(UserPasswordConfig::default());
+            let _created = provider
+                .create_root_key(
+                    "pk",
+                    "user_password",
+                    serde_json::json!({ "username": "alice", "password": "password-1" }),
+                    None,
+                )
+                .await
+                .unwrap();
+            let (key_id, _) = provider
+                .authenticate_core("alice", "password-1")
+                .await
+                .unwrap();
+            ids.push(key_id);
+        }
+
+        assert_ne!(
+            ids[0], ids[1],
+            "the same credentials must not give the same id"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_root_key_with_a_new_password_retires_the_old_one() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let mut replaced = Vec::new();
+        for password in ["password-1", "password-2"] {
+            replaced.push(
+                provider
+                    .create_root_key(
+                        "pk",
+                        "user_password",
+                        serde_json::json!({ "username": "alice", "password": password }),
+                        None,
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        assert_eq!(replaced, [false, true], "the second call replaces alice");
+
+        assert!(provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .is_err());
+        assert!(provider
+            .authenticate_core("alice", "password-2")
+            .await
+            .is_ok());
+        assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_registrations_of_one_user_agree_on_one_id() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let register = || {
+            crate::provisioning::provision_admin_key(
+                &provider.storage,
+                &provider.config,
+                "alice",
+                "password-1",
+            )
+        };
+
+        let (a, b) = tokio::join!(register(), register());
+
+        assert_eq!(a.unwrap(), b.unwrap());
+        assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_user_is_refused_with_the_right_password() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let key_id = crate::provisioning::provision_admin_key(
+            &provider.storage,
+            &provider.config,
+            "alice",
+            "password-1",
+        )
+        .await
+        .unwrap();
+        let mut key = provider
+            .key_manager
+            .get_key(&key_id)
+            .await
+            .unwrap()
+            .unwrap();
+        key.revoke();
+        let _ = provider.key_manager.set_key(&key_id, &key).await.unwrap();
+
+        assert!(provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_login_whose_key_is_gone_is_refused_until_reprovisioned() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let provision = || {
+            crate::provisioning::provision_admin_key(
+                &provider.storage,
+                &provider.config,
+                "alice",
+                "password-1",
+            )
+        };
+        let key_id = provision().await.unwrap();
+        provider.key_manager.delete_key(&key_id).await.unwrap();
+
+        assert!(provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .is_err());
+
+        let _ = provision().await.unwrap();
+        assert!(provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .is_ok());
+    }
+
     // --- password bounds apply to CREATION, not to existing logins -------
 
     #[tokio::test]

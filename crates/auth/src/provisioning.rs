@@ -357,6 +357,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_key_id_is_random_not_derived_from_the_credentials() {
+        let first = provision_admin_key(
+            &memory_storage(),
+            &UserPasswordConfig::default(),
+            "admin",
+            "password-1",
+        )
+        .await
+        .unwrap();
+        let second = provision_admin_key(
+            &memory_storage(),
+            &UserPasswordConfig::default(),
+            "admin",
+            "password-1",
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(
+            first, second,
+            "the same credentials must not give the same id"
+        );
+    }
+
+    #[tokio::test]
     async fn reprovisioning_same_credentials_is_idempotent() {
         let storage = memory_storage();
         let config = UserPasswordConfig::default();
@@ -368,6 +393,27 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(root_keys(&storage).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rotating_the_password_of_a_revoked_admin_succeeds() {
+        let storage = memory_storage();
+        let config = UserPasswordConfig::default();
+        let old = provision_admin_key(&storage, &config, "admin", "old-password-1")
+            .await
+            .unwrap();
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let mut revoked = key_manager.get_key(&old).await.unwrap().unwrap();
+        revoked.revoke();
+        let _ = key_manager.set_key(&old, &revoked).await.unwrap();
+
+        let new_id = provision_admin_key(&storage, &config, "admin", "new-password-2")
+            .await
+            .unwrap();
+
+        let roots = root_keys(&storage).await;
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].0, new_id);
     }
 
     #[tokio::test]

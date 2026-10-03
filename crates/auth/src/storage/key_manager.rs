@@ -651,6 +651,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_key_removes_a_revoked_key() {
+        let key_manager = KeyManager::new(Arc::new(MemoryStorage::new()));
+        let mut root = Key::new_root_key_with_permissions(
+            "admin".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        root.revoke();
+        key_manager.set_key("root-1", &root).await.unwrap();
+
+        key_manager.delete_key("root-1").await.unwrap();
+
+        assert!(key_manager
+            .get_key_including_invalid("root-1")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn get_key_hides_revoked_keys_while_the_raw_lookup_still_finds_them() {
         let storage = Arc::new(MemoryStorage::new());
         let key_manager = KeyManager::new(storage);

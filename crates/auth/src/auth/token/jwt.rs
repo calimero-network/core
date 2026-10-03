@@ -1189,6 +1189,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_token_that_names_no_key_is_refused() {
+        let (tm, sm) = test_manager().await;
+        let secret = sm.get_jwt_auth_secret().await.unwrap();
+        let now = Utc::now().timestamp();
+        let mut claims = serde_json::json!({
+            "sub": "key-1",
+            "iss": "calimero-test",
+            "aud": "calimero-test",
+            "exp": now + 600,
+            "iat": now,
+            "jti": "jti-1",
+            "token_type": "access",
+            "permissions": ["admin"],
+        });
+        let sign = |claims: &serde_json::Value| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                claims,
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap()
+        };
+
+        assert!(tm.verify_token(&sign(&claims)).await.is_err());
+
+        claims["key_id"] = "key-1".into();
+        assert!(tm.verify_token(&sign(&claims)).await.is_ok());
+    }
+
+    #[tokio::test]
     async fn verify_token_fails_once_backup_is_evicted() {
         let (tm, sm) = test_manager().await;
         let (access, _refresh) = tm
