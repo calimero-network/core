@@ -121,6 +121,11 @@ pub enum HostError {
     InvalidRegisterId { id: u64 },
     #[error("{function} is only available in a TEE-triggered execution")]
     TeeOnly { function: &'static str },
+    #[error(
+        "{function} is unavailable in a delegated execution: a run made for someone else keeps no \
+         private state"
+    )]
+    PrivateWriteUnderDelegation { function: &'static str },
     #[error("search_query is only available in a view (#[app::view]) on a node with search")]
     SearchUnavailable,
     #[error("more than {max} search_query calls in one execution")]

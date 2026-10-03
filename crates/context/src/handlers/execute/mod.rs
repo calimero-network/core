@@ -2468,7 +2468,8 @@ async fn internal_execute(
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Kept for the on-behalf gate after the run; private storage takes the store.
     let on_behalf_store = delegation.is_some().then(|| datastore.clone());
-    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    let private_storage =
+        ContextPrivateStorage::for_run(datastore, context.id, delegation, read_as);
 
     // Search: only for an app that declares an index; any other app pays one
     // export lookup. A view gets the query host function, and tells the
@@ -3320,6 +3321,9 @@ pub(crate) async fn execute(
                 // a private collection can still create the root element it
                 // hangs off. Wrapping it bought no safety and cost exactly that:
                 // `my_secrets()` panicked with `CannotCreateOrphan`.
+                //
+                // Delegated runs get an empty discarded store, so `my_secrets()`
+                // there finds nothing.
                 module.run_with_origin(
                     context_id,
                     principal.account,
@@ -3464,6 +3468,8 @@ fn xcall_same_owning_group(
     Ok(matches!((src, tgt), (Some(a), Some(b)) if a == b))
 }
 
+#[cfg(test)]
+mod private_state_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]

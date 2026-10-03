@@ -56,7 +56,7 @@ const MODULE: &str = r#"
 
 /// Module compiles run on the node's global runtime, which must be
 /// multi-threaded; `actix::test` runs on a current-thread one.
-fn global_runtime() {
+pub(super) fn global_runtime() {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     let runtime = RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()

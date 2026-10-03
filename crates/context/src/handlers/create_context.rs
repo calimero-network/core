@@ -466,8 +466,10 @@ async fn create_context(
     // Kept for the on-behalf check after `init`; private storage takes the store.
     let on_behalf_store = delegation.is_some().then(|| datastore.clone());
     let storage = ContextStorage::from(datastore.clone(), context.id);
-    // Create private storage (node-local, NOT synchronized)
-    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    // Create private storage (node-local, NOT synchronized). On a member's
+    // behalf `init` gets a discarded one, as a delegated write does.
+    let private_storage =
+        ContextPrivateStorage::for_run(datastore, context.id, delegation.as_deref(), None);
 
     let (outcome, storage, private_storage) = execute(
         &guard,

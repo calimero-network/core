@@ -82,6 +82,10 @@ writer — this node**. Because nothing about it crosses the wire, two nodes run
 same app will hold *different* private state, and that per-node divergence is the whole
 point, not a bug.
 
+A call made on someone else's behalf (a relayed write under a warrant, or a read through an
+authenticated session) sees empty private state, and a write or remove there fails the
+call (`PrivateWriteUnderDelegation`) rather than report a success that keeps nothing.
+
 | | Synced state (`#[app::state]`) | Node-local state (`#[app::private]`) |
 |---|---|---|
 | Replicated to other nodes | Yes — in the Merkle root | No — outside it, never on the wire |

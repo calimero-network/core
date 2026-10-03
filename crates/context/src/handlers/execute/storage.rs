@@ -5,10 +5,11 @@ use core::mem;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use calimero_account::AccountId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::utils::prefix_upper_bound;
 use calimero_runtime::store::{Key, Storage, Value};
-use calimero_store::db::Column;
+use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::layer::temporal::Temporal;
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::tx::Transaction;
@@ -54,6 +55,8 @@ pub struct ContextPrivateStorage {
     // Interned like `ContextStorage::keys` — bounded by distinct keys, not by
     // operation count.
     keys: RefCell<HashMap<[u8; key::STATE_KEY_LEN], Arc<key::ContextPrivateState>>>,
+    /// The run was made for someone else and this store is dropped on commit.
+    discarded: bool,
 }
 
 // safety: ContextStorage is constructed exclusively for the runtime
@@ -356,8 +359,31 @@ impl ContextPrivateStorage {
             store,
             inner_builder: |store| Temporal::new(store),
             keys: RefCell::default(),
+            discarded: false,
         }
         .build()
+    }
+
+    /// Private storage for one run. A run made for someone else (a warrant, or
+    /// an authenticated session's account) gets an empty store dropped on
+    /// commit: it reads nothing, and a write or remove fails the run with
+    /// `HostError::PrivateWriteUnderDelegation` rather than report a success
+    /// that keeps nothing.
+    pub fn for_run<D>(
+        store: Store,
+        context_id: ContextId,
+        delegation: Option<&D>,
+        read_as: Option<AccountId>,
+    ) -> Self {
+        let delegated = delegation.is_some() || read_as.is_some();
+        let store = if delegated {
+            Store::new(Arc::new(InMemoryDB::owned()))
+        } else {
+            store
+        };
+        let mut this = Self::from(store, context_id);
+        this.with_discarded_mut(|discarded| *discarded = delegated);
+        this
     }
 
     fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextPrivateState> {
@@ -401,6 +427,10 @@ impl ContextPrivateStorage {
 }
 
 impl Storage for ContextPrivateStorage {
+    fn refuses_writes(&self) -> bool {
+        *self.borrow_discarded()
+    }
+
     fn get(&self, key: &Key) -> Option<Vec<u8>> {
         let key = self.state_key(key)?;
 
@@ -608,7 +638,11 @@ mod tests {
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
-    use super::{ContextStorage, ReadOnlyContextStorage};
+    use calimero_account::{AccountId, AccountProof, Delegation, Warrant, WarrantTerms};
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+
+    use super::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 
     fn storage() -> ContextStorage {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -616,6 +650,67 @@ mod tests {
     }
 
     const LEN: usize = calimero_store::key::STATE_KEY_LEN;
+
+    fn delegation() -> Delegation {
+        let device = PrivateKey::from([0x22; 32]);
+        let credential = crate::test_support::credential(&device.public_key());
+        let proof = AccountProof {
+            genesis: credential.genesis,
+            chain: credential.chain,
+            statement: credential.statement,
+        };
+        let account = proof.genesis.account_id();
+        let warrant = Warrant::sign(
+            &device,
+            WarrantTerms {
+                context: ContextId::from([0xC7; 32]),
+                author_account: account,
+                executor: account,
+                app_version: ApplicationId::from([0; 32]),
+                method: "set".to_owned(),
+                intent_hash: Warrant::intent_hash("set", b"{}"),
+                account_heads: vec![],
+                governance_floor: vec![],
+                nonce: 1,
+                not_after: u64::MAX,
+            },
+        )
+        .expect("the warrant signs");
+        Delegation {
+            warrant: Box::new(warrant),
+            author_proof: Box::new(proof.clone()),
+            executor_proof: Box::new(proof),
+            executor_key: PublicKey::from([0x55; 32]),
+        }
+    }
+
+    /// Whether a run built for this combination finds a value the node itself
+    /// stored.
+    fn sees_node_private_state(
+        delegation: Option<&Delegation>,
+        read_as: Option<AccountId>,
+    ) -> bool {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context = ContextId::from([0xC7; 32]);
+        let key = vec![0x44u8; LEN];
+        let mut own =
+            ContextPrivateStorage::for_run::<Delegation>(store.clone(), context, None, None);
+        own.set(key.clone(), vec![1]);
+        own.commit().expect("commit the node's own private state");
+        ContextPrivateStorage::for_run(store, context, delegation, read_as)
+            .get(&key)
+            .is_some()
+    }
+
+    #[test]
+    fn only_a_run_for_the_node_itself_sees_its_private_state() {
+        let delegation = delegation();
+        let account = AccountId::from([0x66; 32]);
+        assert!(sees_node_private_state(None, None));
+        assert!(!sees_node_private_state(Some(&delegation), None));
+        assert!(!sees_node_private_state(None, Some(account)));
+        assert!(!sees_node_private_state(Some(&delegation), Some(account)));
+    }
 
     #[test]
     fn exact_length_key_roundtrips() {

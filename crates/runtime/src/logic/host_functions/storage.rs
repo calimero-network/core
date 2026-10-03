@@ -361,6 +361,10 @@ impl VMHostFunctions<'_> {
     ///
     /// * Returns `1` if the key was found and removed.
     /// * Returns `0` if the key was not found or private storage is not available.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::PrivateWriteUnderDelegation`, as for [`private_storage_write`](Self::private_storage_write).
     pub fn private_storage_remove(
         &mut self,
         src_key_ptr: u64,
@@ -390,9 +394,18 @@ impl VMHostFunctions<'_> {
 
         // Access private storage
         let value = self.with_logic_mut(|logic| {
-            let private_storage = logic.private_storage.as_mut()?;
-            private_storage.remove(&key)
-        });
+            let Some(private_storage) = logic.private_storage.as_mut() else {
+                return Ok(None);
+            };
+            if private_storage.refuses_writes() {
+                return Err(crate::logic::VMLogicError::from(
+                    HostError::PrivateWriteUnderDelegation {
+                        function: "private_storage_remove",
+                    },
+                ));
+            }
+            Ok(private_storage.remove(&key))
+        })?;
 
         if let Some(value) = value {
             let value_len = value.len();
@@ -436,6 +449,12 @@ impl VMHostFunctions<'_> {
     ///
     /// * Returns `1` if the write was successful.
     /// * Returns `0` if private storage is not available.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::PrivateWriteUnderDelegation` when the run was made for someone else (a
+    ///   warrant, or an authenticated session's account): it gets an empty private store that is
+    ///   dropped on commit, so a write would report success and keep nothing.
     pub fn private_storage_write(
         &mut self,
         src_key_ptr: u64,
@@ -493,6 +512,12 @@ impl VMHostFunctions<'_> {
             let Some(private_storage) = logic.private_storage.as_mut() else {
                 return Ok(false);
             };
+            if private_storage.refuses_writes() {
+                return Err(HostError::PrivateWriteUnderDelegation {
+                    function: "private_storage_write",
+                }
+                .into());
+            }
             crate::logic::charge_write_counters(
                 &mut logic.storage_writes,
                 &mut logic.storage_write_bytes,
