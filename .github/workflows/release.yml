@@ -252,15 +252,16 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      # arm64 is evicted before its next build ever restores it, and its size evicts the caches PRs read.
-      # The pinned toolchain (the runner's own `stable` used to roll this key on
-      # every Rust release) and the release cache, per runner OS and arch.
+      # The pinned toolchain only: this job saves no Rust cache. The x86 release
+      # cache was 3.8 GB of the repo's 10 GB, and next to ci-checks' 3.5 GB it got
+      # the cache PR jobs read evicted within minutes. A cold fat-LTO build still
+      # finishes before E2E, so PRs wait no longer; arm64 never restored one anyway.
       - name: Setup Rust CI
         if: needs.prepare.outputs.build == 'true'
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: release
-          save-if: ${{ github.ref == 'refs/heads/master' && matrix.target != 'aarch64-unknown-linux-gnu' }}
+          save-if: false
 
       # `rocksdb` uses `bindgen-runtime`, so librocksdb-sys needs libclang everywhere;
       # the Windows image ships LLVM but nothing points bindgen at it.
