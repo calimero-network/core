@@ -394,11 +394,144 @@
 
 ### Fixed
 
+- **An account that is not a member of a group cannot name a device in it.**
+  An `AccountDeviceLabelled` op was checked only against a root statement or
+  the device's own binding, and an account's bindings outlive its removal, so
+  a removed account could keep writing device names. The named account must
+  now be a member of the group at the op's causal cut; otherwise the label
+  records nothing and the op still takes its place in the DAG. Labels in the
+  account namespace and by current members are unaffected, and a removed
+  account's descope still narrows its own device. (breaking for
+  mixed-version namespaces: peers on an older build still record such a
+  label) (#4425)
+
+- **HA works for a namespace founded through a relay.** A TEE fleet node
+  admitted into such a namespace never got its group key: the founding relay
+  is attested in an op sealed under the namespace key, so to a node admitted
+  later it was a plain member, not a trusted anchor, and the fleet node
+  refused its key and `fleet-join` reported `admitted=false`. A namespace's
+  founding relay is now a trusted anchor of the namespace root while it still
+  holds a row there. Default invitation admitters and the invitation address
+  resolver now count the founding relay as a TEE. A direct admission request
+  refused as a replay because the broadcast already admitted the node now
+  answers `admitted=true`. No wire change. (#4434)
+
+- **The sealed-root replay no longer re-applies a group creation or re-stores
+  a key it already applied.** Each key arrival re-fed every sealed root op in
+  the log. A replayed `GroupCreated` for a group since moved was refused on
+  every pass, and for one not moved it re-seated the creator as admin after a
+  later removal. A replayed `KeyDelivery` stored its key again at a newer
+  epoch, which could put it above a key a later rotation installed. Each
+  replay also started another retry pass, so a late-joining node could spend
+  tens of seconds re-walking the log and hold up governance intents. The
+  replay now skips a `GroupCreated` whose group is already folded, and a
+  replayed delivery of a key the node already holds is a no-op. (#4435)
+
 - **A compacted delta's events hash and TEE trigger go with it.** DAG
   compaction deleted a delta's row but left the rows kept beside it, so disk
   still grew with delta history. They are now deleted in the same transaction
   as the row, those earlier compactions left behind are swept, and the space
   is given back. A peer asking for a compacted delta still gets "not found".
+
+- **The gossip parent walk asks a peer for each missing ancestor once.** It
+  checked each parent with linear scans, quadratic in the walk length, and
+  re-requested a parent queued later in the same batch, so a DAG with merge
+  edges asked for the same delta several times (79 requests for 40 ids in the
+  test). The walk now keeps one set of queued ids, as the sync-manager parent
+  pull already did. An id that failed once in a walk is retried on the next
+  sync round. (#4421)
+
+- **A namespace's group list shows a Restricted subgroup only to those who may
+  see it.** `GET /admin-api/namespaces/{id}/groups` listed every child to any
+  caller in scope, so a member learned the id and name of a Restricted
+  subgroup it was not in. It now applies the filter
+  `GET /groups/{id}/subgroups` already used: every Open child, and a
+  Restricted child only to a namespace admin or a member of that child.
+  Response shapes are unchanged. (#4374)
+
+- **A run's unflushed storage actions no longer ship in a later run's delta.**
+  JS-SDK host functions record sync actions on the host thread, and nothing
+  cleared them when a run trapped, panicked or ran out of gas, so they shipped
+  in the next run's delta on that thread, for whichever context ran next.
+  Every execution now clears the thread's pending delta on entry and on exit.
+  Rust-SDK apps were not affected, and the JS SDK's normal persist-then-flush
+  path is unchanged. (#4416)
+
+- **A member removed from an inherited Open subgroup cannot list its devices
+  or seal to its members.** `GET /groups/:group_id/member-devices` and
+  `POST /groups/:group_id/accounts/:account/seal` judged membership without the
+  deny-list, which is where such a removal is recorded. Both now use the
+  deny-list-aware check: a removed caller gets `403 NotAGroupMember`, and a
+  removed target reads as absent (404) on the seal route. (#4405)
+
+- **A key rotation that arrives before the key it is sealed under is
+  applied.** Such an op was buffered, and the replay once the key arrived
+  applied only the inner op, so the rotation was lost and the node kept
+  sealing under the pre-rotation key, which the removed member still holds.
+  The node now records the buffered rotation and applies it when the key
+  arrives (by delivery, pull or the startup re-drive), including a second
+  rotation sealed under the first one's key. Ops buffered by an older build
+  stay as before. (#4410)
+
+- **A join signed with a device key rotated out at the op's cut is refused.**
+  The join ownership check accepted a certificate whose device had since been
+  re-keyed to a later epoch, and the join applied for the account under the
+  retired key. It now refuses a certificate whose device is bound to the same
+  account at a later epoch at the join's cut. A join with the device's current
+  certificate is unchanged. No schema version bump: an older node still
+  admits such a join. (#4411)
+
+- **Maps and sets leave out an entry filed under an id its key does not
+  derive.** A peer delta can file a map or set entry at an id its key does not
+  derive, which apply cannot refuse. Iteration listed it, `get`, `contains`
+  and `remove` at that id returned it, and honest code could not remove it.
+  `UnorderedMap`, `SortedMap`, `IndexedMap`, `UnorderedSet` and `SortedSet` now
+  leave it out of every read, merge and re-key; an insert at its key refiles it
+  and a remove of its key deletes it. `len` still counts it. Node-local sorted
+  and indexed indexes rebuild once on first ordered read. (breaking: iteration,
+  `Debug`, `PartialEq`, `Ord` and `Serialize` of these collections now need
+  `K: AsRef<[u8]>`, or `V` for sets) (#4403)
+
+- **An execution's host calls and the bytes they move are capped.** Gas meters
+  wasm operators but not host calls, so a guest could loop a cheap host call,
+  or one copying a large buffer, far past any honest workload. Each execution
+  now allows at most 1,000,000 host calls (`max_host_calls`) and 6720 MiB of
+  copied bytes (`max_host_bytes`), and traps with `HostCallLimitExceeded` or
+  `HostBytesLimitExceeded` past them. The heaviest honest app measured made
+  98,949 calls. The caps are deterministic and not tunable through
+  `[runtime.limits]`; a deployment that raises `max_gas` more than about 10x
+  could reach the call cap with an honest app. (#4408)
+
+- **A device narrowed out of a namespace cannot keep writing state deltas.**
+  Narrowing a device's scope dropped its binding but, unlike a revocation,
+  recorded nothing about its signing key, so a narrowed device that had not
+  folded its own narrowing could keep writing by citing older governance heads.
+  The narrowing, and a link refused because the device was already revoked or
+  narrowed out, now deny the key at the receive filter and on the heads path
+  while no live binding speaks for it; a later widening lets it through
+  again. (#4412)
+
+- **A proxy-identity tenant subscribes only to what it is a member of.** In
+  proxy auth mode with `server.proxy_identity`, the subscribe gate allowed
+  every caller because no embedded guard runs, so every tenant could subscribe
+  to every context and group over WS and SSE, and a membership removal never
+  revoked it. A caller with an identity is now held to its membership in every
+  auth mode: subscribes are filtered to its contexts and groups, admin-only
+  group payloads go only to admins, and removal revokes live subscriptions.
+  An identity-less caller on a no-auth node is still allowed. (#4406)
+
+- **A remote install accepts only signed bundles, and raw wasm never runs.**
+  Raw wasm derives no application id, so the join bootstrap, lazy upgrade,
+  sync, blob-share and resync installs, and the relay's release resolution
+  bound it under whatever id a group named, and a group target could name a
+  raw blob the node held for another reason and run it. These paths now
+  accept only signed bundles, every compile, ABI and migration read refuses a
+  non-bundle, and `GET /admin-api/applications/{id}/abi` answers 400 for a raw
+  row instead of 500. Operator installs already required a signed `.mpk`.
+  (breaking: a context whose application row holds raw wasm now fails with
+  "raw wasm, which never runs"; rebuild it as a signed bundle with
+  `cargo mero bundle`, install it with `meroctl app install --path app.mpk`
+  and upgrade the group to it) (#4413)
 
 - **A group context runs only a release its own group named.** A node keeps one
   application row per `ApplicationId`, shared by every group on it, and any
@@ -997,6 +1130,16 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Storage writes and delta applies read and write fewer rows.** A write
+  walked its ancestors twice and rewrote every level above even when the hash
+  had not moved; the walk now runs once and stops at the first parent that
+  already holds the hash. Applying a peer's delta walked once per action, so a
+  shared ancestor was rewritten once per entity beneath it; a delta's walks now
+  run as one pass that writes each ancestor once. A map insert reads 41% and
+  writes 18% fewer rows, and a delta updating one map writes 84% fewer (kv set
+  139 µs instead of 199). Stored bytes and root hashes are unchanged; host-call
+  counts drop, identically on every node. (#4401)
 
 - **Storage: about 27% less CPU per call.** The row codec hashes each row's data
   once per read and hands index records to callers decoded instead of through a
