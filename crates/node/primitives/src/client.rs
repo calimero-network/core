@@ -112,6 +112,17 @@ pub struct TeeAdmissionParams {
 /// this node, or an error naming every refusal.
 pub type TeeAdmissionReply = oneshot::Sender<eyre::Result<PeerId>>;
 
+/// How long the sync manager lets one direct TEE admission run before it
+/// answers it as a refusal.
+///
+/// The same order as `fleet-join`'s own wait for admission, which follows the
+/// direct request and still has the broadcast to fall back on.
+pub const TEE_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How much longer than [`TEE_ADMISSION_DEADLINE`] the requester waits for that
+/// answer, covering the time the request queues for the sync manager.
+const TEE_ADMISSION_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Clone, Debug)]
 pub struct SyncClient {
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
@@ -265,17 +276,31 @@ impl SyncClient {
     /// An `Err` means nobody admitted it — every address refused, or none could
     /// be reached — and names each refusal. The caller still has the broadcast
     /// to fall back on; this path only replaces hoping with asking.
+    ///
+    /// Bounded: the sync manager answers within [`TEE_ADMISSION_DEADLINE`], and
+    /// a reply that has not come by then plus a grace is reported as a timeout
+    /// rather than waited on.
     pub async fn request_tee_admission(&self, params: TeeAdmissionParams) -> eyre::Result<PeerId> {
+        let budget = TEE_ADMISSION_DEADLINE + TEE_ADMISSION_REPLY_GRACE;
         let Some(tx) = &self.tee_admission_tx else {
             eyre::bail!("this node was built without the direct TEE admission channel");
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send((params, reply_tx))
+        let exchange = async {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            tx.send((params, reply_tx))
+                .await
+                .map_err(|_| eyre::eyre!("TEE admission channel closed"))?;
+            reply_rx
+                .await
+                .map_err(|_| eyre::eyre!("TEE admission response channel dropped"))?
+        };
+        tokio::time::timeout(budget, exchange)
             .await
-            .map_err(|_| eyre::eyre!("TEE admission channel closed"))?;
-        reply_rx
-            .await
-            .map_err(|_| eyre::eyre!("TEE admission response channel dropped"))?
+            .unwrap_or_else(|_elapsed| {
+                Err(eyre::eyre!(
+                    "no answer to the direct TEE admission request within {budget:?}"
+                ))
+            })
     }
 }
 
@@ -740,7 +765,7 @@ impl NodeClient {
 
     /// This node's own `PeerId`, read from the network once: it is fixed for the
     /// process, and every signed blob read names it.
-    async fn local_peer_id(&self) -> PeerId {
+    pub async fn local_peer_id(&self) -> PeerId {
         *self
             .local_peer_id
             .get_or_init(|| async { self.network_client.network_status().await.local_peer_id })
@@ -1664,5 +1689,76 @@ mod publish_on_namespace_now_tests {
             1 + ADMIT_AFTER_CYCLES,
             "must stop announcing the instant admission is observed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tee_admission_request_tests {
+    use tokio::sync::mpsc;
+
+    use super::SyncClient;
+
+    /// A direct TEE admission whose answer never comes is reported as a timeout
+    /// rather than waited on. `fleet-join` awaits this before its own bounded
+    /// wait, and on a node that asked itself it waited forever.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_tee_admission_request_times_out() {
+        let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(1);
+        let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(1);
+        let (ns_join_tx, _ns_join_rx) = mpsc::channel(1);
+        let (open_subgroup_join_tx, _open_rx) = mpsc::channel(1);
+        let (relay_sealed_join_tx, _relay_rx) = mpsc::channel(1);
+        let (tee_tx, mut tee_rx) = mpsc::channel(1);
+        let sync_client = SyncClient::new(
+            ctx_sync_tx,
+            ns_sync_tx,
+            ns_join_tx,
+            open_subgroup_join_tx,
+            relay_sealed_join_tx,
+        )
+        .with_tee_admission(tee_tx);
+
+        // Takes the request and holds its reply open without ever answering,
+        // the way the sync manager did while its admission hung.
+        let holder = tokio::spawn(async move {
+            let request = tee_rx.recv().await;
+            std::future::pending::<()>().await;
+            drop(request);
+        });
+
+        let public_key = calimero_primitives::identity::PublicKey::from([0x11; 32]);
+        let genesis = calimero_account::AccountGenesis::new(public_key);
+        let params = super::TeeAdmissionParams {
+            namespace_id: [0x7E; 32],
+            admitter_addrs: Vec::new(),
+            public_key,
+            quote_bytes: Vec::new(),
+            nonce: [0x22; 32],
+            account: Box::new(calimero_governance_types::JoinAccountCredential {
+                statement: calimero_account::DeviceCert {
+                    account: genesis.account_id(),
+                    device: calimero_account::DeviceId::from([0u8; 32]),
+                    sign_pk: public_key,
+                    kem_pk: calimero_account::KemPublicKey::from([0u8; 32]),
+                    key_epoch: 0,
+                    device_epoch: 0,
+                    signature: [0u8; 64],
+                },
+                genesis,
+                chain: Vec::new(),
+            }),
+            release_version: None,
+        };
+
+        let started = tokio::time::Instant::now();
+        let refusal = sync_client
+            .request_tee_admission(params)
+            .await
+            .expect_err("nobody answered, so nobody admitted us");
+
+        let bound = super::TEE_ADMISSION_DEADLINE + super::TEE_ADMISSION_REPLY_GRACE;
+        assert_eq!(started.elapsed(), bound, "{refusal:#}");
+        assert!(format!("{refusal:#}").contains("no answer"), "{refusal:#}");
+        holder.abort();
     }
 }

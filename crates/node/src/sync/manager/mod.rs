@@ -1286,6 +1286,21 @@ impl SyncManager {
         Ok((peer_id, protocol))
     }
 
+    /// Open a stream to `peer`, giving up after `open_stream_timeout`.
+    ///
+    /// `open_stream` itself has no deadline. A dial that libp2p refuses without
+    /// ever establishing a connection — a dial to this node's own peer id ends
+    /// in `DialError::LocalPeerId` — leaves the pending open unanswered, so an
+    /// unbounded await there never returns. Every open on a path a caller
+    /// waits on goes through this instead.
+    pub(super) async fn open_stream_bounded(&self, peer: PeerId) -> eyre::Result<Stream> {
+        let budget = self.sync_config.open_stream_timeout;
+        match time::timeout(budget, self.sync_network.open_stream(peer)).await {
+            Ok(opened) => opened,
+            Err(_elapsed) => eyre::bail!("opening a stream to {peer} timed out after {budget:?}"),
+        }
+    }
+
     /// This node's own libp2p `PeerId`, fetched once and memoized.
     ///
     /// Used to sign the transport-binding [`InitProof`] on outbound `Init`s.
