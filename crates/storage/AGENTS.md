@@ -241,6 +241,23 @@ switching a field between the two types needs no migration.
   `src/tests/misfiled_entries.rs` pins it.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
+- **A collection reads only its own children.** `Collection::find_admitted`
+  goes through `Interface::find_child_by_id`, so an entity whose index names
+  another parent, or none, reads as absent before its bytes are decoded. A
+  key's id is derived from its collection, but a peer's delta can store an
+  entity at that id under another parent or as an orphan; without the check a
+  map read it as its own value, or failed decoding it. The app root entry
+  (`is_app_root_entry`) is exempt: its id is fixed, not key-derived.
+- **A sync that leaves the app root unreadable is refused.** The root
+  collection and its entry sit at fixed ids a peer's delta can write any bytes
+  to, and `Root::fetch`/`Root::get` panic on a read that fails. So `Root::sync`
+  reads both back through those decoders before it commits
+  (`refuse_unreadable_root`) and returns the error, and the node stores none of
+  a refused sync's writes. That costs two row reads per sync.
+  `tests/root_payload.rs` pins it. The runtime's host-side apply for JS apps
+  calls `Root::sync_opaque` instead: a JS root is opaque bytes (empty at the
+  root id, the document at the entry) read raw, never through `fetch`, and
+  would fail the check.
 - **A guarded collection counts from a node-local tally, never by loading its
   children** (`admitted_count.rs`). Its trie's `count` includes entries its
   domain does not admit, which apply cannot refuse (the domain is the
@@ -397,7 +414,7 @@ switching a field between the two types needs no migration.
   That is sound for exactly one reason: a mark row is written ONCE and never rewritten, so two replicas holding one `MarkId` hold byte-identical values, and the last-writer-wins that an untagged entry falls back to cannot pick wrong.
   Removing formatting is a NEW row with a greater id and `value: None`, never an edit or a delete. Stamping a mark row with a converging type would route it through the wrong arm; `sync_sim`'s `rich_text` scenarios pin that it stays opaque.
 - The read rule is the whole format contract: per character, per key, the covering mark with the greatest `MarkId` wins, and a `None` value means the key is absent. A future compaction may replace any set of marks by an equivalent one as long as that rule still renders the same spans.
-- `marks()` leaves out a row whose lamport exceeds the number of mark rows, or whose key is not its own id, or that is filed under an id its key does not derive, so minting and every read ignore it. An honest lamport is one more than the greatest the writer saw, hence at most the row count. This assumes rows are never removed or compacted: a compaction must keep the row count at or above the greatest lamport. Under partial sync a replica can hide a row until the earlier rows arrive. Padding rows raise the bar only by their own number, and one left out at the id the next mark would take (found by the stored id of the row, whatever its own id says) makes that mark fail (`mark id already in use`) instead of being written where it cannot be read. A hidden high-lamport row becomes visible once the document reaches that many mark rows and then wins over its whole range. A row at (local replica, greatest visible lamport + 1) keeps failing that replica's marks until another replica mints past it.
+- `marks()` leaves out a row whose lamport exceeds the number of mark rows, or whose key is not its own id, or that is filed under an id its key does not derive, so minting and every read ignore it. An honest lamport is one more than the greatest the writer saw, hence at most the row count. This assumes rows are never removed or compacted: a compaction must keep the row count at or above the greatest lamport. Under partial sync a replica can hide a row until the earlier rows arrive. Padding rows raise the bar only by their own number. Anything already stored at the id the next mark would take (a left-out row, a row that does not decode, or an entity filed under another parent; checked on the raw row, never decoded) is never written over: the mark keeps its lamport and moves to another replica (`next_replica`), trying at most `MAX_MARK_ID_ATTEMPTS` ids before failing with `mark id already in use`. Outside a migration that replica is random, so no peer can plant rows ahead of it; in a migration (merge mode) it is a hash of the mark itself (`derived_replica`), so every node mints the same id, and a peer that guesses the exact mark can still plant all its ids. A hidden high-lamport row becomes visible once the document reaches that many mark rows and then wins over its whole range.
 - `MarkId` is `(lamport, replica)` with `lamport = 1 + the greatest this replica can see`, NOT an HLC. The WASM clock is quantised to about 15 microseconds and re-seeded per instance, so two marks minted in one call would share a timestamp - harmless for a register's value, silent data loss for a map KEY.
 - Where a mark grows when text is typed at its edge is decided ONCE, at write time, as the two stored anchor biases; `MarkSchema` is consulted on the write side only. A replica running an older schema therefore renders identical spans, and a removal uses `Expand::inverted()` so turning bold off keeps growing the way turning it on did.
 - A boundary insert follows Peritext: scan the tombstones in the gap, and if one carries the `After` anchor of any mark, insert after the last such tombstone. It reads stored anchor sides, never the schema, which is what makes it identical on every replica. `FugueTree::insert_after_in` exists for it, because a visible index cannot name a position among tombstones.

@@ -3535,6 +3535,27 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `IndexNotFound` if entity exists but has no index
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        Self::find_under::<D>(id, None)
+    }
+
+    /// [`find_by_id`](Self::find_by_id) for a child of `parent`: an entity whose
+    /// index names another parent, or none, reads as absent, before its data is
+    /// decoded.
+    ///
+    /// A key's id is derived from its collection, but a peer's delta can store an
+    /// entity at that id under another parent, or as an orphan no collection
+    /// lists. Only the parent the index names holds the entity, so no other
+    /// collection reads it as its own, nor fails on bytes that are not its type.
+    /// The app's root entry is exempt: its id is fixed rather than derived from a
+    /// key, and its index names whichever root it was linked under.
+    ///
+    /// # Errors
+    /// As [`find_by_id`](Self::find_by_id).
+    pub fn find_child_by_id<D: Data>(parent: Id, id: Id) -> Result<Option<D>, StorageError> {
+        Self::find_under::<D>(id, Some(parent))
+    }
+
+    fn find_under<D: Data>(id: Id, parent: Option<Id>) -> Result<Option<D>, StorageError> {
         // One row read serves the tombstone check, the merkle_hash and metadata
         // below AND the data: reading the index and the data apart read the
         // same row twice for every child of every collection scan.
@@ -3547,6 +3568,12 @@ impl<S: StorageAdaptor> Interface<S> {
         // Check if entity is deleted (tombstone)
         if index.as_ref().and_then(|index| index.deleted_at).is_some() {
             return Ok(None); // Entity is deleted
+        }
+
+        if let (Some(parent), Some(index)) = (parent, index.as_ref()) {
+            if index.parent_id() != Some(parent) && !crate::collections::is_app_root_entry(id) {
+                return Ok(None);
+            }
         }
 
         let value = row.data;

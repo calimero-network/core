@@ -1653,11 +1653,13 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         }
     }
 
-    /// Load the entry at `id` if it belongs to this collection's domain. An entry
-    /// the domain does not admit is one no honest writer could have made (a
-    /// patched peer's), and reads as absent on every node.
+    /// Load the entry at `id` if it is this collection's child and belongs to its
+    /// domain. An entry the domain does not admit is one no honest writer could
+    /// have made (a patched peer's), and reads as absent on every node, as does
+    /// one filed under another parent (see [`Interface::find_child_by_id`]).
     fn find_admitted(&self, id: Id) -> StoreResult<Option<Entry<T>>> {
-        let entry = self.within(|| <Interface<S>>::find_by_id::<Entry<_>>(id))?;
+        let parent = self.id();
+        let entry = self.within(|| <Interface<S>>::find_child_by_id::<Entry<_>>(parent, id))?;
         Ok(entry.filter(|entry| {
             self.storage
                 .domain
