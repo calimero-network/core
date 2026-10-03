@@ -32,7 +32,7 @@ use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_op_adapter::set_writers_payload;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
-use calimero_projection::{AuthorityBase, CutAncestry, ScopeState};
+use calimero_projection::{Acting, AuthorityBase, CutAncestry, ScopeState};
 use calimero_storage::address::Id;
 use calimero_storage::collections::decode_rotation_log_entry_child;
 use calimero_storage::index::EntityIndex;
@@ -783,15 +783,16 @@ impl ScopeProjections {
         })
     }
 
-    /// Would `op`, about to join `scope`'s log, carry no authority? `group` names where
-    /// it acts when its payload does not; `None` when its cut is not whole here.
+    /// Would `op`, about to join `scope`'s log, carry no authority? `acting` names where
+    /// it acts, and what admits it, when its payload does not; `None` when its cut is
+    /// not whole here.
     #[must_use]
     pub fn op_is_void(
         &self,
         scope: &ScopeId,
         base: AuthorityBase,
         op: &Op,
-        group: Option<ContextGroupId>,
+        acting: Option<Acting>,
     ) -> Option<bool> {
         let log = self.logs.get(scope)?;
         if op.parents.is_empty() {
@@ -800,7 +801,7 @@ impl ScopeProjections {
         if !ScopeState::cut_ancestry(log, &op.parents).is_complete() {
             return None;
         }
-        Some(ScopeState::void_ops_with(log, base, Some((op, group))).contains(&op.id()))
+        Some(ScopeState::void_ops_with(log, base, Some((op, acting))).contains(&op.id()))
     }
 
     /// The convergence `scope_root` for `scope`, folding this scope's ACL +
