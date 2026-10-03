@@ -15,6 +15,7 @@ ever a red X nobody had to read.
 
 import importlib.util
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -28,12 +29,15 @@ e2e_scenario_groups = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(e2e_scenario_groups)
 # The workflows that build bundles and then run merobox scenarios against them.
 WORKFLOW_GLOB = ".github/workflows/e2e-rust-apps*.yml"
-# `(cd apps/<dir> && cargo mero bundle ...)` -- the only way `dist/` gets filled.
+# `(cd apps/<dir> && cargo mero bundle ...)`, in a step or in BUNDLE_SCRIPT, is
+# how `dist/` gets filled.
 BUNDLE_RE = re.compile(r"cd\s+(apps/[\w.-]+)\s*&&\s*cargo\s+mero\s+bundle")
 SCENARIO_RE = re.compile(r"(workflows/[\w./-]+\.yml)")
 # A workflow that runs its scenarios in groups names their manifest to the planner;
 # each entry is then a reference, already resolved to `apps/<app>/<file>`.
 MANIFEST_RE = re.compile(r"scripts/e2e-scenario-groups\.py\b[^\n]*?--manifest\s+\"?([\w./-]+)")
+# A step that runs this script bundles every app it lists (`--list-bundled`).
+BUNDLE_SCRIPT = "scripts/build-all-apps.sh"
 
 
 def app_packages():
@@ -94,6 +98,12 @@ def check(workflow, packages):
     values = list(strings(doc))
 
     app_dirs = {d for value in values for d in BUNDLE_RE.findall(value)}
+    if any(BUNDLE_SCRIPT in value for value in values):
+        listed = subprocess.run(
+            ["bash", str(ROOT / BUNDLE_SCRIPT), "--list-bundled"],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        ).stdout
+        app_dirs |= set(listed.split())
     built = {packages[d] for d in app_dirs if d in packages}
     references = {r for value in values for r in SCENARIO_RE.findall(value)}
     for manifest in {m for value in values for m in MANIFEST_RE.findall(value)}:

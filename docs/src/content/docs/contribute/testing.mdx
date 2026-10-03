@@ -152,7 +152,8 @@ The steps below are the same commands, grouped by job.
    ```
 
 3. **Build every app.**
-   CI builds and bundles all in-repo apps in its own job.
+   CI builds and bundles all in-repo apps in its own job, and the script ends by checking that every wasm embeds its ABI.
+   The result is cached under a key made of the git trees it is built from (every app and the crates it reaches, cargo-mero, the lockfile, the toolchain, the script and the workflows that run it), and only master saves it, so a PR whose change cannot reach the apps restores the set master already built and checked; e2e's Build Apps restores the same entry (`.github/actions/wasm-apps`).
 
    ```sh
    ./scripts/build-all-apps.sh
