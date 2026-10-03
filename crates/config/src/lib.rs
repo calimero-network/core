@@ -18,7 +18,7 @@ use url::Url;
 
 use mero_auth::config::AuthConfig;
 
-pub use calimero_node_primitives::{DagCompactionConfig, NodeMode};
+pub use calimero_node_primitives::{DagCompactionConfig, GcConfig, NodeMode};
 
 pub const CONFIG_FILE: &str = "config.toml";
 
@@ -76,6 +76,12 @@ pub struct ConfigFile {
     /// (set `enabled = false` to opt out).
     #[serde(default)]
     pub dag_compaction: DagCompactionConfig,
+
+    /// Tombstone garbage collection (`[gc]`): how often a sweep looks for
+    /// tombstones every member has applied. An absent section falls back to
+    /// [`GcConfig::default`].
+    #[serde(default)]
+    pub gc: GcConfig,
 
     /// Where bytecode comes from. An absent section is `http` with no `base_url`,
     /// resolving and serving nothing; `merod init` writes it, an upgrade must add it.
@@ -531,6 +537,7 @@ impl ConfigFile {
             runtime: RuntimeConfig::default(),
             tee: None,
             dag_compaction: DagCompactionConfig::default(),
+            gc: GcConfig::default(),
             registry: RegistryConfig::default(),
         }
     }

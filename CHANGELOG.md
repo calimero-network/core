@@ -1325,6 +1325,15 @@
 
 ### Changed
 
+- **Tombstone GC sweeps every 10 minutes, and the interval is configurable.**
+  The new `[gc] check_interval` (seconds, default `600`) replaces the fixed
+  one-hour cadence, so a tombstone every member has applied goes within about
+  one to two intervals instead of up to two hours. When a tombstone may go is
+  unchanged: only after every member device has applied the delete. A sweep
+  reads every state row, so `gc_sweep_duration_seconds`, `gc_rows_scanned`,
+  `gc_tombstones_collected` and `gc_sweeps` now show what it costs; lengthen
+  the interval on a node where sweeps take a meaningful share of it.
+
 - **Per-message signer and membership checks are point reads.** Every
   readiness beacon, ack, migration heartbeat and blob announce resolved its
   signing key to an account by building the namespace's live bindings, even

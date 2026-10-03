@@ -151,7 +151,7 @@ pub struct NodeConfig {
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
     pub server: ServerConfig,
-    pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 1 hour)
+    pub gc: calimero_node_primitives::GcConfig,
     /// DAG compaction settings (issue #2026). Enabled by default.
     pub dag_compaction: calimero_node_primitives::DagCompactionConfig,
     pub mode: NodeMode,
@@ -597,14 +597,15 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     // Start garbage collection actor
     // A tombstone goes on the first sweep after every member has caught up
     // past it, so the interval is roughly how long it outlives that.
-    let gc_interval = Duration::from_secs(
-        config.gc_interval_secs.unwrap_or(3600), // Default: 1 hour
+    eyre::ensure!(
+        config.gc.is_valid(),
+        "invalid [gc] config: check_interval must be non-zero"
     );
     let gc = GarbageCollector::new(
         datastore.clone(),
         context_client.clone(),
         Arc::clone(&node_state.tombstone_stability),
-        gc_interval,
+        config.gc.check_interval,
     );
 
     // Held until shutdown, here and for the compactor: restarting an actor needs a live sender.

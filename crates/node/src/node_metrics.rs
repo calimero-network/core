@@ -33,7 +33,7 @@ use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
-use prometheus_client::metrics::histogram::Histogram;
+use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
 use prometheus_client::registry::Registry;
 use tracing::trace;
 
@@ -173,6 +173,13 @@ pub(crate) struct NodeMetrics {
     // not know which protocol a message belongs to, so these are unlabelled.
     pub(crate) sync_messages_sent: Counter,
     pub(crate) sync_bytes_sent: Counter,
+
+    // Tombstone GC sweeps (`gc.rs`). A sweep reads every state row, so rows
+    // scanned and duration are its cost whether or not it collects anything.
+    pub(crate) gc_sweeps: Counter,
+    pub(crate) gc_rows_scanned: Counter,
+    pub(crate) gc_tombstones_collected: Counter,
+    pub(crate) gc_sweep_duration_seconds: Histogram,
 
     // Governance-pending drain outcomes (B2 buffer-on-unknown lifecycle).
     pub(crate) governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter>,
@@ -357,6 +364,32 @@ impl NodeMetrics {
             "Wire bytes of the sync stream messages this node sent (after encryption)",
             sync_bytes_sent.clone(),
         );
+        let gc_sweeps = Counter::default();
+        registry.register(
+            "gc_sweeps",
+            "Tombstone GC sweeps completed",
+            gc_sweeps.clone(),
+        );
+        let gc_rows_scanned = Counter::default();
+        registry.register(
+            "gc_rows_scanned",
+            "State rows read by tombstone GC sweeps; every sweep reads every row",
+            gc_rows_scanned.clone(),
+        );
+        let gc_tombstones_collected = Counter::default();
+        registry.register(
+            "gc_tombstones_collected",
+            "Tombstones collected by GC sweeps",
+            gc_tombstones_collected.clone(),
+        );
+        // 10ms .. ~5.5min: a sweep over a small store is milliseconds, over a
+        // large one minutes.
+        let gc_sweep_duration_seconds = Histogram::new(exponential_buckets(0.01, 2.0, 16));
+        registry.register(
+            "gc_sweep_duration_seconds",
+            "Wall time of one tombstone GC sweep (scan, reclaim and compaction)",
+            gc_sweep_duration_seconds.clone(),
+        );
 
         let governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter> =
             Family::default();
@@ -488,6 +521,10 @@ impl NodeMetrics {
             sync_buffer_drops,
             sync_messages_sent,
             sync_bytes_sent,
+            gc_sweeps,
+            gc_rows_scanned,
+            gc_tombstones_collected,
+            gc_sweep_duration_seconds,
             governance_drain_outcomes_total,
             actor_restarts_total,
             #[cfg(target_os = "linux")]
@@ -1067,6 +1104,17 @@ pub(crate) fn record_sync_message_sent(bytes: usize) {
     if let Some(m) = global() {
         m.sync_messages_sent.inc();
         m.sync_bytes_sent.inc_by(bytes as u64);
+    }
+}
+
+/// Record one completed tombstone GC sweep.
+pub(crate) fn record_gc_sweep(elapsed: Duration, rows_scanned: u64, tombstones_collected: usize) {
+    if let Some(m) = global() {
+        m.gc_sweeps.inc();
+        m.gc_rows_scanned.inc_by(rows_scanned);
+        m.gc_tombstones_collected
+            .inc_by(tombstones_collected as u64);
+        m.gc_sweep_duration_seconds.observe(elapsed.as_secs_f64());
     }
 }
 
