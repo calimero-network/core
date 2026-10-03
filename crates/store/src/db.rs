@@ -189,8 +189,9 @@ pub enum Column {
     /// `delete_context`. Auto-created from `Column::iter()` (no DB migration).
     ContextBlob,
     /// Which context each blob is held for, keyed `context_id(32) ‖ blob_id(32)`
-    /// (see `key::BlobOwner`); the blob protocol serves a context's peers only
-    /// blobs with a row here. Node-local, not synchronized.
+    /// (see `key::BlobOwner`); the blob protocol serves a context's peers, and
+    /// the runtime's `blob_open` opens for its app, only blobs with a row here.
+    /// Node-local, not synchronized.
     ///
     /// Not [`Column::ContextBlob`]. That column answers a stricter question, the
     /// one an account-scoped caller of the blob admin API is held to: did these

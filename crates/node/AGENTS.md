@@ -304,10 +304,11 @@ cargo test -p calimero-node --test network_simulation
 - **A peer is served a blob only for a context this node holds it for.**
   `NodeClient::is_blob_held_for_context` (a node-local `key::BlobOwner` row, or
   the context's own application artifact) gates the signed path of
-  `handlers/blob_protocol.rs` and `sync/blobs.rs`'s responder; gate every new
-  serve site through it too. `record_blob_owner` writes the row where bytes
-  enter for a context: the runtime's `blob_create`, the admin upload with a
-  `context_id`, `upgrade_group`, `get_blob`'s peer fetch and the `BlobShare`
+  `handlers/blob_protocol.rs`, `sync/blobs.rs`'s responder and the runtime's
+  `blob_open`; gate every new serve or read site through it too.
+  `record_blob_owner` writes the row where bytes enter for a context: the
+  runtime's `blob_create`, the admin upload with a `context_id`,
+  `upgrade_group`, `fetch_blob_for_context`'s peer fetch and the `BlobShare`
   initiator. Record only after the bytes are verified, and never on a local hit
   or on an announcement's say-so: either would let one context's member claim
   another context's blob by id
