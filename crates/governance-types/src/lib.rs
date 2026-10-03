@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 use std::io;
 
+use borsh::de::EnumExt;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
@@ -301,6 +302,48 @@ impl BorshDeserialize for ContextCapabilityBits {
             )
         })
     }
+}
+
+/// Borsh tags of the [`GroupOp`] wrappers, whose first field is another `GroupOp`.
+const GROUP_OP_ON_BEHALF_TAG: u8 = 40;
+const GROUP_OP_ROOT_GUARDED_TAG: u8 = 42;
+/// Borsh tags of the [`RootOp`] wrappers, whose first field is another `RootOp`.
+const ROOT_OP_ON_BEHALF_TAG: u8 = 11;
+const ROOT_OP_ROOT_GUARDED_TAG: u8 = 12;
+
+/// The error a wrapper carrying another wrapper decodes to.
+fn nested_wrapper(kind: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{kind}: a wrapper op may not carry another wrapper"),
+    )
+}
+
+/// Decodes the op a [`GroupOp::OnBehalf`] or [`GroupOp::RootGuarded`] carries,
+/// refusing a wrapper by its tag before decoding anything else.
+///
+/// The derived decoder would recurse once per nested wrapper before reading
+/// any other field, so a payload of repeated wrapper tags drives one stack
+/// frame per byte. A 64 KiB gossip message is enough to overflow the stack and
+/// abort the node, before the op's signature is checked. Apply refuses a
+/// wrapper inside a wrapper anyway (it is neither delegable nor a guarded
+/// kind), so this costs no valid op and bounds the nesting at one wrapper on
+/// every decode path: gossip, backfill, decryption and storage reads.
+fn unwrapped_group_op<R: io::Read>(reader: &mut R) -> io::Result<Box<GroupOp>> {
+    let tag = u8::deserialize_reader(reader)?;
+    if matches!(tag, GROUP_OP_ON_BEHALF_TAG | GROUP_OP_ROOT_GUARDED_TAG) {
+        return Err(nested_wrapper("GroupOp"));
+    }
+    GroupOp::deserialize_variant(reader, tag).map(Box::new)
+}
+
+/// [`unwrapped_group_op`] for [`RootOp::OnBehalf`] and [`RootOp::RootGuarded`].
+fn unwrapped_root_op<R: io::Read>(reader: &mut R) -> io::Result<Box<RootOp>> {
+    let tag = u8::deserialize_reader(reader)?;
+    if matches!(tag, ROOT_OP_ON_BEHALF_TAG | ROOT_OP_ROOT_GUARDED_TAG) {
+        return Err(nested_wrapper("RootOp"));
+    }
+    RootOp::deserialize_variant(reader, tag).map(Box::new)
 }
 
 /// Group mutation for local governance (signed, gossip-replicated).
@@ -866,8 +909,10 @@ pub enum GroupOp {
     /// the AUTHOR as the acting principal — so the author's own authority
     /// decides, never the relay's.
     ///
-    /// Appended at the end; nested wrappers are refused on apply.
+    /// Appended at the end. A nested wrapper is refused on decode (so a chain
+    /// of them cannot exhaust the stack) and again on apply.
     OnBehalf {
+        #[borsh(deserialize_with = "unwrapped_group_op")]
         op: Box<GroupOp>,
         delegation: Box<calimero_account::GovernanceDelegation>,
     },
@@ -921,6 +966,7 @@ pub enum GroupOp {
     /// Appended at the END so every earlier ordinal holds. Not delegable, and
     /// never nested: the inner op must itself be a bare guarded kind.
     RootGuarded {
+        #[borsh(deserialize_with = "unwrapped_group_op")]
         op: Box<GroupOp>,
         /// Boxed for the same reason as `OnBehalf::delegation`.
         proof: Box<SignedOwnerOp>,
@@ -1745,8 +1791,10 @@ pub enum RootOp {
     /// AUTHOR as the acting principal — so the author's own authority decides,
     /// never the relay's.
     ///
-    /// Appended at the end; nested wrappers are refused on apply.
+    /// Appended at the end. A nested wrapper is refused on decode (so a chain
+    /// of them cannot exhaust the stack) and again on apply.
     OnBehalf {
+        #[borsh(deserialize_with = "unwrapped_root_op")]
         op: Box<RootOp>,
         delegation: Box<calimero_account::GovernanceDelegation>,
     },
@@ -1758,6 +1806,7 @@ pub enum RootOp {
     ///
     /// Appended at the END so every earlier ordinal holds.
     RootGuarded {
+        #[borsh(deserialize_with = "unwrapped_root_op")]
         op: Box<RootOp>,
         proof: Box<SignedOwnerOp>,
     },
