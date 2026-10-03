@@ -263,6 +263,7 @@ The op is not delegable, so a relay cannot publish it for a member.
 Which steps take effect is a fold over the cell's steps in the cut's ancestry (`calimero_storage::shared_writers::fold`), ordered by the governance DAG, never by clock.
 Only steps published in the context's group count, each only when its signer stood at the step's own parents as the apply requires: the key speaks for an account there, that account is a member of the group and not read-only, and it is not a TEE of the namespace.
 A node that got the group's key late therefore folds the same steps as every other node.
+A step whose op is void, because its signer was removed or demoted concurrently (see above), does not count either. A rotation needs no member capability, so a capability revoke does not void it.
 Only steps that rest on the genesis set count, that is a step from it or from a set another such step left, signed by an admin of the set it steps from.
 A cell folds at most 256 such steps (`MAX_STEPS_PER_CELL`), which bounds the cost of a cut: past that it has no answer, so writes to it wait, rather than a truncated history rolling a rotation back. That is a lifetime budget of rotations for a cell until governance history is checkpointed, and an admin of the cell, a removed one included, can spend it by publishing steps.
 

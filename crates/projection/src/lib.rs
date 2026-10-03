@@ -235,6 +235,12 @@ impl<'a> CutAncestry<'a> {
         &self.ops
     }
 
+    /// Does `op` carry no authority (see [`ScopeState::void_ops`])?
+    #[must_use]
+    pub fn is_void(&self, op: &Op) -> bool {
+        self.void.contains(&op.id())
+    }
+
     /// Is every referenced ancestor present in the log?
     ///
     /// `false` names a genuine gap: sync has to fetch the op before any answer
@@ -1298,7 +1304,8 @@ impl ScopeState {
     }
 
     /// The steps of `cell` in `context` and `group` that `walked` reached, with the cell's steps in
-    /// their pasts. Only genesis-anchored steps by an `ADMIN` of their prior count; `Err` past the budget.
+    /// their pasts. Only genesis-anchored steps by an `ADMIN` of their prior count, and none that is
+    /// void in `walked`; `Err` past the budget.
     pub fn shared_writer_steps<'a>(
         walked: &CutAncestry<'a>,
         group: ContextGroupId,
@@ -1307,10 +1314,13 @@ impl ScopeState {
         key_hint: impl Fn(&PublicKey) -> Option<AccountId>,
         mut signer_of: impl FnMut(&Op) -> Option<AccountId>,
     ) -> Result<Vec<(&'a Op, RotationStep)>, OverBudget> {
+        // A step whose signer was removed, demoted or revoked concurrently carries no
+        // authority (see [`Self::void_ops`]), so it is no step at all.
         let candidate = |op: &Op| {
-            matches!(&op.payload, OpPayload::SharedWritersRotated {
-                group: g, context: c, cell: x, new, ..
-            } if *g == group && *c == context && *x == cell && !new.is_empty())
+            !walked.is_void(op)
+                && matches!(&op.payload, OpPayload::SharedWritersRotated {
+                    group: g, context: c, cell: x, new, ..
+                } if *g == group && *c == context && *x == cell && !new.is_empty())
         };
         if !calimero_storage::collections::is_cell_id(cell) {
             return Ok(Vec::new());

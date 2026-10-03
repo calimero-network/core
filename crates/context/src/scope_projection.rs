@@ -2865,8 +2865,12 @@ impl ScopeProjections {
             .resolve(&group)
             .ok()?
             .to_bytes();
-        let log = self.logs.get(&ScopeId::from(namespace_id))?;
-        let walked = ScopeState::cut_ancestry(log, heads);
+        let scope = ScopeId::from(namespace_id);
+        let log = self.logs.get(&scope)?;
+        // Walked with the void set, so a step whose signer lost standing concurrently
+        // pins nothing, and standing is read without the void ops.
+        let base = authority_base(store, namespace_id)?;
+        let walked = self.walk(&scope, log, heads, base);
         if !walked.is_complete() || walked.first_opaque_in(group).is_some() {
             return None;
         }
@@ -2877,7 +2881,7 @@ impl ScopeProjections {
             [ContextGroupId::from(namespace_id)].into();
         relevant.extend(ScopeState::acl_view_from_ancestry(&walked).group_and_ancestors(group));
         let mut pinned = false;
-        for op in walked.ops() {
+        for op in walked.ops().iter().filter(|op| !walked.is_void(op)) {
             let OpPayload::SharedWritersRotated {
                 group: g,
                 context: c,
@@ -2894,7 +2898,8 @@ impl ScopeProjections {
             {
                 continue;
             }
-            let view = ScopeState::acl_view_at(log, &op.parents);
+            let view =
+                ScopeState::acl_view_from_ancestry(&self.walk(&scope, log, &op.parents, base));
             relevant.extend(view.group_and_ancestors(group));
             pinned |= standing(&view, op.device_key()).is_some_and(|account| {
                 prior
@@ -2961,8 +2966,12 @@ impl ScopeProjections {
             .resolve(&group)
             .map_err(|_| cut)?
             .to_bytes();
-        let log = self.logs.get(&ScopeId::from(namespace_id)).ok_or(cut)?;
-        let walked = ScopeState::cut_ancestry(log, heads);
+        let scope = ScopeId::from(namespace_id);
+        let log = self.logs.get(&scope).ok_or(cut)?;
+        // Walked with the void set: a step whose signer was removed, demoted or revoked
+        // concurrently is left out of the fold, and no standing rests on a void op.
+        let base = authority_base(store, namespace_id).ok_or(cut)?;
+        let walked = self.walk(&scope, log, heads, base);
         if !walked.is_complete() {
             return Err(cut);
         }
@@ -2984,9 +2993,9 @@ impl ScopeProjections {
             |op| {
                 let mut parents = op.parents.clone();
                 parents.sort_unstable();
-                let view = views
-                    .entry(parents)
-                    .or_insert_with(|| ScopeState::acl_view_at(log, &op.parents));
+                let view = views.entry(parents).or_insert_with(|| {
+                    ScopeState::acl_view_from_ancestry(&self.walk(&scope, log, &op.parents, base))
+                });
                 relevant.extend(view.group_and_ancestors(group));
                 standing(view, op.device_key())
             },
@@ -5420,6 +5429,70 @@ mod tests {
         ] {
             assert_eq!(w.at(&[id]), Some(CellWriters::Genesis), "{what}");
         }
+    }
+
+    /// A step whose signer was removed from the group concurrently carries no authority,
+    /// so it neither moves the writer set nor pins the context (the removal rule, v21).
+    #[test]
+    fn a_step_concurrent_with_its_signers_removal_neither_rotates_nor_pins() {
+        use calimero_governance_types::GroupOp;
+
+        let (mut w, ..) = rotations();
+        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+        let owner_pk = PublicKey::from([0x5A; 32]);
+        let owner = test_account(&owner_pk);
+        MetaRepository::new(&w.store)
+            .save(
+                &group,
+                &calimero_store::key::GroupMetaValue {
+                    target: calimero_store::key::GroupTarget {
+                        application_id: calimero_primitives::application::ApplicationId::from(
+                            [0xBB; 32],
+                        ),
+                        bytecode_id: [0xAA; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
+                    created_at: 1_700_000_000,
+                    admin_identity: owner,
+                    owner_identity: owner,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the namespace meta");
+        w.rotate(admin, group, [0xB1; 32], &joins);
+        let pinned = |w: &Rotations| {
+            w.reg
+                .context_rotation_group_at_cut(&w.store, group, &w.context, &[[0xB1; 32]])
+        };
+        assert_eq!(
+            w.at(&[[0xB1; 32]]),
+            Some(CellWriters::Rotated(w.rotated.clone())),
+            "control: no removal yet"
+        );
+        assert_eq!(pinned(&w), Some(Some(group)), "control: pinned");
+
+        // The owner removes the step's signer on a branch that has not seen the step.
+        w.reg.ingest_op(
+            &calimero_governance_store::op_from_namespace_op_with_binding(
+                &signed_group(w.ns, owner_pk, group),
+                Some(&GroupOp::MemberRemoved {
+                    member: w.accounts[&admin],
+                    expected_group_state_hash: [0u8; 32],
+                    expected_context_state_hashes: Vec::new(),
+                }),
+                None,
+                Some((owner, calimero_account::DeviceId::from([0x5B; 32]))),
+                [0xB2; 32],
+                hlc(0),
+                &joins,
+            ),
+        );
+        for heads in [&[[0xB1; 32]][..], &[[0xB1; 32], [0xB2; 32]]] {
+            assert_eq!(w.at(heads), Some(CellWriters::Genesis), "{heads:?}");
+        }
+        assert_eq!(pinned(&w), Some(None), "a void step pins nothing");
     }
 
     fn signed_group(
