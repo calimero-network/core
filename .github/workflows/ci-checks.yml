@@ -57,6 +57,9 @@ jobs:
       - name: Check no docs-only change starts a code workflow
         run: python3 scripts/tests/ci-paths-test.py
 
+      - name: Check every rust-cache group hashes one environment
+        run: python3 scripts/check-rust-cache-groups.py
+
       - name: Decide which jobs this change reaches
         id: decide
         env:
