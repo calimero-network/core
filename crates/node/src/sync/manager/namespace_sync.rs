@@ -267,22 +267,9 @@ impl SyncManager {
         let ops_count = response.len();
         let mut applied = 0usize;
         let mut newly_applied = 0usize;
-        for (_delta_id, op_bytes) in response {
-            let op = match borsh::from_slice::<
-                calimero_context_client::local_governance::SignedNamespaceOp,
-            >(&op_bytes)
-            {
-                Ok(o) => o,
-                Err(err) => {
-                    debug!(
-                        %context_id,
-                        %their_identity,
-                        %err,
-                        "failed to decode catch-up op"
-                    );
-                    continue;
-                }
-            };
+        for (_delta_id, op) in
+            crate::sync::namespace_backfill::decode_backfill(namespace_id, response)
+        {
             match self.context_client.apply_signed_namespace_op(op).await {
                 Ok(NamespaceApplyOutcome::Applied { .. }) => {
                     applied += 1;
@@ -1341,7 +1328,10 @@ impl SyncManager {
     /// could hold an entry per address (up to `MAX_ADMITTER_ADDRS`), each of
     /// which the connect loop would try ahead of discovery at a full
     /// stream-open timeout apiece.
-    fn admitter_routes(invitation_bytes: &[u8]) -> Vec<(PeerId, Vec<libp2p::Multiaddr>)> {
+    fn admitter_routes(
+        invitation_bytes: &[u8],
+        local_peer: &PeerId,
+    ) -> Vec<(PeerId, Vec<libp2p::Multiaddr>)> {
         let Ok(invitation) = borsh::from_slice::<
             calimero_context_config::types::SignedGroupOpenInvitation,
         >(invitation_bytes) else {
@@ -1351,6 +1341,7 @@ impl SyncManager {
         super::namespace_join::group_admitter_routes(
             &invitation.admitter_addrs,
             MAX_ADMITTER_MACHINES_DIALED,
+            local_peer,
         )
     }
 
@@ -1443,7 +1434,8 @@ impl SyncManager {
         // Only an admitter can complete this join, so trying one first is not a
         // preference so much as the difference between a round trip that can
         // succeed and one that can only be refused.
-        let admitter_routes = Self::admitter_routes(&params.invitation_bytes);
+        let admitter_routes =
+            Self::admitter_routes(&params.invitation_bytes, &self.local_peer_id().await);
         let admitter_peers: Vec<libp2p::PeerId> =
             admitter_routes.iter().map(|(peer, _)| *peer).collect();
 
@@ -1727,7 +1719,7 @@ impl SyncManager {
             }
         };
 
-        let Ok(mut stream) = self.sync_network.open_stream(peer).await else {
+        let Ok(mut stream) = self.open_stream_bounded(peer).await else {
             debug!("failed to open stream for namespace sync");
             return 0;
         };
@@ -1791,78 +1783,62 @@ impl SyncManager {
                 let mut pending_divergences: Vec<
                     calimero_context_client::messages::DivergenceReport,
                 > = Vec::new();
-                for (delta_id, op_bytes) in deltas {
-                    match borsh::from_slice::<
-                        calimero_context_client::local_governance::SignedNamespaceOp,
-                    >(&op_bytes)
+                for (delta_id, op) in
+                    crate::sync::namespace_backfill::decode_backfill(namespace_id, deltas)
+                {
+                    match self
+                        .context_client
+                        .apply_signed_namespace_op(op.clone())
+                        .await
                     {
-                        Ok(op) => {
-                            match self
-                                .context_client
-                                .apply_signed_namespace_op(op.clone())
-                                .await
-                            {
-                                Err(err) => {
-                                    // Capture enough context to diagnose codec/schema
-                                    // mismatches (observed as "Unexpected length of
-                                    // input" from the inner GroupOp decode when a
-                                    // variant's binary layout has drifted). The
-                                    // op-type tag + byte-length give us a fingerprint
-                                    // without logging potentially sensitive payload.
-                                    let op_kind = match &op.op {
-                                        calimero_context_client::local_governance::NamespaceOp::Root(r) => {
-                                            format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
-                                        }
-                                        calimero_context_client::local_governance::NamespaceOp::RootSealed { .. } => {
-                                            "RootSealed".to_owned()
-                                        }
-                                        calimero_context_client::local_governance::NamespaceOp::RootSealedForGroup { .. } => {
-                                            "RootSealedForGroup".to_owned()
-                                        }
-                                        calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
-                                            "Group".to_owned()
-                                        }
-                                        // `NamespaceOp` is `#[non_exhaustive]`.
-                                        _ => "Unknown".to_owned(),
-                                    };
-                                    warn!(
-                                        namespace_id = %hex::encode(namespace_id),
-                                        delta_id = %hex::encode(delta_id),
-                                        op_kind = %op_kind,
-                                        signer = %op.signer,
-                                        nonce = op.nonce,
-                                        op_bytes_len = op_bytes.len(),
-                                        ?err,
-                                        "failed to apply namespace governance op from backfill"
-                                    );
-                                }
-                                Ok(NamespaceApplyOutcome::Applied { divergence }) => {
-                                    newly_applied = true;
-                                    if let Some(report) = divergence {
-                                        pending_divergences.push(report);
-                                    }
-                                    // Group-key delivery is no longer pushed
-                                    // from the apply path (the one-shot
-                                    // receiver-side push was the #2613
-                                    // defect). The joiner pulls any key it
-                                    // lacks at the end of this sync round
-                                    // (see `recover_missing_group_keys`);
-                                    // admin-initiated pushes still come from
-                                    // `add_group_members`/`admit_tee_node`.
-                                }
-                                Ok(_) => {}
-                            }
-                        }
                         Err(err) => {
+                            // Capture enough context to diagnose codec/schema
+                            // mismatches (observed as "Unexpected length of
+                            // input" from the inner GroupOp decode when a
+                            // variant's binary layout has drifted). The
+                            // op-type tag gives us a fingerprint without
+                            // logging potentially sensitive payload.
+                            let op_kind = match &op.op {
+                                calimero_context_client::local_governance::NamespaceOp::Root(r) => {
+                                    format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
+                                }
+                                calimero_context_client::local_governance::NamespaceOp::RootSealed { .. } => {
+                                    "RootSealed".to_owned()
+                                }
+                                calimero_context_client::local_governance::NamespaceOp::RootSealedForGroup { .. } => {
+                                    "RootSealedForGroup".to_owned()
+                                }
+                                calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
+                                    "Group".to_owned()
+                                }
+                                // `NamespaceOp` is `#[non_exhaustive]`.
+                                _ => "Unknown".to_owned(),
+                            };
                             warn!(
                                 namespace_id = %hex::encode(namespace_id),
                                 delta_id = %hex::encode(delta_id),
-                                op_bytes_len = op_bytes.len(),
-                                op_bytes_prefix = %hex::encode(&op_bytes[..op_bytes.len().min(64)]),
-                                %err,
-                                "failed to decode namespace governance op from backfill"
+                                op_kind = %op_kind,
+                                signer = %op.signer,
+                                nonce = op.nonce,
+                                ?err,
+                                "failed to apply namespace governance op from backfill"
                             );
                         }
+                        Ok(NamespaceApplyOutcome::Applied { divergence }) => {
+                            newly_applied = true;
+                            if let Some(report) = divergence {
+                                pending_divergences.push(report);
+                            }
+                            // Group-key delivery is no longer pushed
+                            // from the apply path (the one-shot
+                            // receiver-side push was the #2613
+                            // defect). The joiner pulls any key it
+                            // lacks at the end of this sync round
+                            // (see `recover_missing_group_keys`);
+                            // admin-initiated pushes still come from
+                            // `add_group_members`/`admit_tee_node`.
+                        }
+                        Ok(_) => {}
                     }
                 }
                 // FSM notify after the batch — gated on at least one
@@ -2303,7 +2279,7 @@ impl SyncManager {
     ) -> Option<(Vec<u8>, PublicKey, Vec<u8>)> {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
-        let mut stream = match self.sync_network.open_stream(peer).await {
+        let mut stream = match self.open_stream_bounded(peer).await {
             Ok(s) => s,
             Err(err) => {
                 debug!(%err, "failed to open stream for group-key request");
@@ -3749,7 +3725,7 @@ mod admitter_derivation_tests {
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
 
-    use super::{SyncManager, MAX_ADMITTER_MACHINES_DIALED};
+    use super::{PeerId, SyncManager, MAX_ADMITTER_MACHINES_DIALED};
 
     /// An invitation carrying `count` addresses, each naming a different peer.
     fn invitation_naming_distinct_machines(count: usize) -> Vec<u8> {
@@ -3785,7 +3761,10 @@ mod admitter_derivation_tests {
     #[test]
     fn more_machines_than_the_cap_are_dropped_not_carried() {
         let over = MAX_ADMITTER_MACHINES_DIALED + 4;
-        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(over));
+        let routes = SyncManager::admitter_routes(
+            &invitation_naming_distinct_machines(over),
+            &PeerId::random(),
+        );
 
         assert_eq!(
             routes.len(),
@@ -3798,7 +3777,10 @@ mod admitter_derivation_tests {
 
     #[test]
     fn fewer_machines_than_the_cap_are_all_kept() {
-        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(3));
+        let routes = SyncManager::admitter_routes(
+            &invitation_naming_distinct_machines(3),
+            &PeerId::random(),
+        );
         assert_eq!(routes.len(), 3, "the cap must not drop what fits under it");
     }
 
@@ -3807,14 +3789,14 @@ mod admitter_derivation_tests {
     #[test]
     fn an_invitation_that_does_not_decode_yields_no_machines() {
         assert!(
-            SyncManager::admitter_routes(b"not an invitation").is_empty(),
+            SyncManager::admitter_routes(b"not an invitation", &PeerId::random()).is_empty(),
             "a hint set that cannot be read is empty, not an error"
         );
     }
 }
 
 #[cfg(test)]
-mod group_key_recovery_anchor_tests {
+pub(super) mod group_key_recovery_anchor_tests {
     //! Who `recover_missing_group_keys` believes, driven end to end against a
     //! scripted [`MockSyncNetwork`] with a real store behind the manager.
     //!
@@ -3866,7 +3848,9 @@ mod group_key_recovery_anchor_tests {
 
     /// A `SyncManager` over an in-memory store whose network is `mock`, with no
     /// actor behind it: the key-recovery path needs only the store and streams.
-    pub(super) async fn manager(mock: Arc<MockSyncNetwork>) -> (SyncManager, Store, TempDir) {
+    pub(in crate::sync::manager) async fn manager(
+        mock: Arc<MockSyncNetwork>,
+    ) -> (SyncManager, Store, TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let blob_store_config =

@@ -108,12 +108,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
 use super::{LwwRegister, StorageKey, StoreError, UnorderedMap, ValueRef};
 use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
+use crate::hash_meter::{Digest, Sha256};
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -125,9 +125,9 @@ const DOMAIN_INDEX_SPACE: &[u8] = b"__calimero_indexed_map_index__";
 /// Domain separator for the id the validity marker is stored under.
 const DOMAIN_MARKER: &[u8] = b"__calimero_indexed_map_marker__";
 
-/// Version of the key encoding, folded into the marker fingerprint: changing
-/// the encoding must invalidate every index built under the old one.
-const ENCODING_VERSION: u8 = 1;
+/// Version of the rows an index holds, folded into the marker fingerprint: a change
+/// to their encoding, or to which entries they cover, must invalidate older indexes.
+const ENCODING_VERSION: u8 = 2;
 
 /// Escape byte: a literal `0x00` inside a component is written `0x00 0xFF`.
 const ESCAPED_ZERO: [u8; 2] = [0x00, 0xFF];
@@ -739,7 +739,10 @@ where
     /// # Errors
     ///
     /// Returns any underlying storage error.
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         self.inner.entries()
     }
 
@@ -1106,7 +1109,7 @@ fn descending<S: StorageAdaptor>(
 
 impl<K, V, S> fmt::Debug for IndexedMap<K, V, S>
 where
-    K: fmt::Debug + BorshSerialize + BorshDeserialize,
+    K: fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
@@ -1130,7 +1133,7 @@ where
 
 impl<K, V, S> Serialize for IndexedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + Serialize,
+    K: BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize + Serialize,
     S: StorageAdaptor,
 {

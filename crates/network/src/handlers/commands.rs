@@ -6,6 +6,7 @@ use crate::NetworkManager;
 
 mod announce_blob;
 mod bootstrap;
+pub(crate) mod close_all_connections;
 mod connected_peers;
 pub(crate) mod dial;
 mod listen;
@@ -92,6 +93,9 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::ProbeBlob { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::CloseAllConnections { request, outcome } => {
                 self.forward_handler(ctx, request, outcome);
             }
         }

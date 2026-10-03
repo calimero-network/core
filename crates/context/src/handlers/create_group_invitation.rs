@@ -60,7 +60,7 @@ async fn resolve_admitter_addrs(
     // the difference between a first attempt that answers and a budget spent on
     // machines that are asleep.
     let tee_accounts =
-        calimero_governance_store::tee_admission_records(datastore, &group_id).unwrap_or_default();
+        calimero_governance_store::tee_admitted_accounts(datastore, &group_id).unwrap_or_default();
     let mut addrs = Vec::new();
 
     // This node's own addresses, held back until its band is reached. It is
@@ -75,7 +75,7 @@ async fn resolve_admitter_addrs(
     } else {
         Vec::new()
     };
-    let self_is_tee = tee_accounts.contains_key(&signer_account);
+    let self_is_tee = tee_accounts.contains(&signer_account);
 
     // Every other admitter, through the two durable caches. An account is not
     // an address: it fans out to the signing keys its live devices hold, each
@@ -87,7 +87,7 @@ async fn resolve_admitter_addrs(
         .iter()
         .filter(|account| **account != signer_account)
         .copied()
-        .partition(|account| tee_accounts.contains_key(account));
+        .partition(|account| tee_accounts.contains(account));
 
     let by_account = calimero_governance_store::AccountBindingRepository::new(datastore)
         .live_devices_by_account(&group_id)

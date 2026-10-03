@@ -842,7 +842,7 @@ pub(super) enum FenceOutcome {
 ///   cascade boundary) → persist the original signed [`BufferedDelta`] into the
 ///   [`AbsorbBuffer`] for verbatim replay once the binary advances, record the
 ///   `absorbed_for_migration` metric, return [`FenceOutcome::Handled`].
-///   Idempotent: the `delta_id` keys the record, so a re-delivery overwrites.
+///   A re-delivery keeps the first parked copy (see [`park_first_copy`]).
 /// - [`FenceDecision::Drop`] (non-migration fences) → record
 ///   `fenced_stale_schema` and return [`FenceOutcome::Handled`] without
 ///   persisting (genuinely unrecoverable).
@@ -863,7 +863,7 @@ pub(super) fn fence_and_maybe_absorb(
     build_buffered: impl FnOnce() -> calimero_node_primitives::delta_buffer::BufferedDelta,
 ) -> Result<FenceOutcome> {
     use calimero_context::hlc_fence::{delta_fence_decision, FenceDecision};
-    use calimero_governance_store::{AbsorbRecord, AbsorbRepository};
+    use calimero_governance_store::AbsorbRecord;
 
     // Drain-replay bypass: an absorb-drain re-feeds an already-decided straggler
     // through the apply path once the node reached the migration target. The
@@ -883,7 +883,7 @@ pub(super) fn fence_and_maybe_absorb(
             // replay once the binary advances — never drop, never translate.
             let buffered = build_buffered();
             let record = AbsorbRecord::from_buffered(&buffered);
-            AbsorbRepository::new(store).save(context_id, producing_bytecode_id, &record)?;
+            park_first_copy(store, context_id, producing_bytecode_id, &record)?;
             info!(
                 %context_id,
                 %author_id,
@@ -906,4 +906,19 @@ pub(super) fn fence_and_maybe_absorb(
             Ok(FenceOutcome::Handled)
         }
     }
+}
+
+/// Parks a gossip delta unless its id is already parked: the payload is
+/// unchecked until replay, so a replayed envelope must not replace the first copy.
+pub(super) fn park_first_copy(
+    store: &calimero_store::Store,
+    context_id: &ContextId,
+    key_bytecode_id: [u8; 32],
+    record: &calimero_governance_store::AbsorbRecord,
+) -> Result<()> {
+    let repo = calimero_governance_store::AbsorbRepository::new(store);
+    if repo.load(context_id, key_bytecode_id, record.id)?.is_none() {
+        repo.save(context_id, key_bytecode_id, record)?;
+    }
+    Ok(())
 }

@@ -1,0 +1,44 @@
+name: Rust toolchain
+description: >
+  Install the toolchain rust-toolchain.toml pins, and make it the default, with
+  any extra components and targets. Never `stable`: cargo runs the pinned
+  toolchain anyway, and a second one only changed every rust-cache key each time
+  a new stable shipped (2026-10-01 orphaned every Rust cache in the repo).
+
+inputs:
+  components:
+    description: "Additional rustup components (comma-separated)"
+    required: false
+    default: ""
+  targets:
+    description: "Additional rustup targets (comma-separated)"
+    required: false
+    default: ""
+
+outputs:
+  channel:
+    description: The pinned channel, e.g. 1.98.0
+    value: ${{ steps.pin.outputs.channel }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Read the pinned toolchain
+      id: pin
+      shell: bash
+      run: |
+        set -euo pipefail
+        channel=$(sed -n 's/^channel *= *"\(.*\)"[[:space:]]*$/\1/p' rust-toolchain.toml)
+        if [ -z "$channel" ]; then
+          echo "::error::no channel in rust-toolchain.toml"
+          exit 1
+        fi
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+        echo "pinned toolchain: $channel"
+
+    - name: Install it
+      uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}

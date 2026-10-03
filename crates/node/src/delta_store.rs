@@ -36,6 +36,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::cell_writers::{self, ProjectionCuts, WritersVerdict};
+use crate::dag_compactor::disk::{self, DiskPrune};
 
 /// Maximum governance positions the applier remembers by delta id. Past it the oldest are
 /// evicted first; a parent not remembered is read back from its stored row instead.
@@ -503,9 +504,10 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // `outcome.atomic`; we stash it in `apply_lock_slot` for the caller to
         // hold across its `dag_heads` commit. A cascaded buffered-child apply in
         // the same `dag.add_delta` reuses the already-held guard via
-        // `ContextAtomic::Held` (the lock is not re-entrant). When not armed
-        // (e.g. the local path's `try_process_pending`), behavior is unchanged
-        // (`None`).
+        // `ContextAtomic::Held` (the lock is not re-entrant). Every
+        // `try_process_pending` sweep arms it too, so its cascaded applies and
+        // the heads commit after them share one lock hold. When not armed,
+        // behavior is unchanged (`None`).
         //
         // The slot is empty only between the `take()` here and the stash-back
         // after the await. That window cannot be observed by another `apply()`:
@@ -1893,8 +1895,21 @@ impl DeltaStore {
         // were loaded from the database.
         {
             let mut dag = self.dag.write().await;
-            match dag.try_process_pending(&*self.applier).await {
+            // Retain the execution lock from the first cascaded apply through
+            // the heads commit, as `add_delta_internal` does: the applies move
+            // `root_hash`, and the heads must land in the same lock hold.
+            self.applier
+                .retain_apply_lock
+                .store(true, std::sync::atomic::Ordering::Release);
+            let processed = dag.try_process_pending(&*self.applier).await;
+            self.applier
+                .retain_apply_lock
+                .store(false, std::sync::atomic::Ordering::Release);
+            let apply_lock_guard = self.applier.lock_apply_slot().take();
+            let mut cascaded_any = false;
+            match processed {
                 Ok(processed) if processed > 0 => {
+                    cascaded_any = true;
                     info!(
                         context_id = %self.applier.context_id,
                         processed,
@@ -1910,6 +1925,14 @@ impl DeltaStore {
                 }
                 _ => {}
             }
+            let heads = dag.get_heads();
+            // No DAG lock while the execution lock is held (lock order: `dag`
+            // write, then the context).
+            drop(dag);
+            if cascaded_any {
+                self.commit_heads_after_sweep(heads, "load_persisted_deltas");
+            }
+            drop(apply_lock_guard);
         }
 
         Ok(LoadPersistedResult {
@@ -2306,7 +2329,7 @@ impl DeltaStore {
 
         // Register topology, nudge cascades, collect cascaded IDs + heads
         // all under one write-lock scope (matches add_delta_internal).
-        let (cascaded_ids, heads) = {
+        let (cascaded_bodies, heads, apply_lock_guard) = {
             let mut dag = self.dag.write().await;
 
             let pending_before: HashSet<[u8; 32]> =
@@ -2322,6 +2345,13 @@ impl DeltaStore {
             // until restart or an unrelated remote-delta application
             // happens to trigger `apply_pending`.
             let mut cascaded: Vec<[u8; 32]> = Vec::new();
+            // Retain the execution lock from the first cascaded apply through
+            // the heads commit below, as `add_delta_internal` does: each
+            // cascaded apply moves `root_hash`, and a reader under the lock
+            // must not see that root beside the pre-cascade heads.
+            self.applier
+                .retain_apply_lock
+                .store(true, std::sync::atomic::Ordering::Release);
             if added {
                 match dag.try_process_pending(&*self.applier).await {
                     Ok(0) => {}
@@ -2344,7 +2374,18 @@ impl DeltaStore {
                     }
                 }
             }
-            (cascaded, dag.get_heads())
+            self.applier
+                .retain_apply_lock
+                .store(false, std::sync::atomic::Ordering::Release);
+            let apply_lock_guard = self.applier.lock_apply_slot().take();
+            // Bodies are read here, under the write lock already held: taking
+            // a fresh `dag` read while the execution lock is held would invert
+            // the lock order every inbound apply takes (`dag`, then context).
+            let bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = cascaded
+                .iter()
+                .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
+                .collect();
+            (bodies, dag.get_heads(), apply_lock_guard)
         };
 
         // Persist cascaded children's DB state + updated dag_heads. Without
@@ -2363,17 +2404,9 @@ impl DeltaStore {
         // NodeManager / NodeClients and is tracked as a follow-up — the
         // restart-replay path is the existing safety net for cascaded events
         // whose handlers couldn't run synchronously (#2185 contract).
-        if cascaded_ids.is_empty() {
+        if cascaded_bodies.is_empty() {
             return Ok(Vec::new());
         }
-
-        let cascaded_bodies: Vec<([u8; 32], CausalDelta<Vec<Action>>)> = {
-            let dag = self.dag.read().await;
-            cascaded_ids
-                .iter()
-                .filter_map(|cid| dag.get_delta(cid).map(|d| (*cid, d.clone())))
-                .collect()
-        };
 
         // Cascade-only path: no `primary`, so ignore `committed` and keep the
         // warn-and-continue behaviour (a failed heads write is corrected by
@@ -2382,6 +2415,7 @@ impl DeltaStore {
             .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, Vec::new(), heads)
             .await
             .forwarded_events;
+        drop(apply_lock_guard);
 
         Ok(cascaded_events)
     }
@@ -3024,11 +3058,19 @@ impl DeltaStore {
             cascaded_bodies,
             added_parent_bodies,
             heads_after_cascade,
+            apply_lock_guard,
         ) = if plans.is_empty() {
-            (false, Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            (false, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None)
         } else {
             let mut dag = self.dag.write().await;
             let lock_start = std::time::Instant::now();
+            // Retain the execution lock from the first apply below (a parent's
+            // `add_delta`, or the pending sweep) through the phase-3 heads
+            // commit, as `add_delta_internal` does: each apply moves
+            // `root_hash`, and the heads must land in the same lock hold.
+            self.applier
+                .retain_apply_lock
+                .store(true, std::sync::atomic::Ordering::Release);
             let pending_before: HashSet<[u8; 32]> =
                 dag.get_pending_delta_ids().into_iter().collect();
             let mut any_parent_added = false;
@@ -3148,6 +3190,10 @@ impl DeltaStore {
             cascaded_ids.extend(added_parent_bodies.iter().map(|(id, _)| *id));
 
             let heads = dag.get_heads();
+            self.applier
+                .retain_apply_lock
+                .store(false, std::sync::atomic::Ordering::Release);
+            let apply_lock_guard = self.applier.lock_apply_slot().take();
             hold = Some(lock_start.elapsed());
             (
                 any_parent_added,
@@ -3155,6 +3201,7 @@ impl DeltaStore {
                 cascaded_bodies,
                 added_parent_bodies,
                 heads,
+                apply_lock_guard,
             )
         };
         if let Some(hold) = hold {
@@ -3199,6 +3246,7 @@ impl DeltaStore {
                 .forwarded_events,
             );
         }
+        drop(apply_lock_guard);
 
         if !actually_missing.is_empty() && actually_missing.len() < potentially_missing.len() {
             tracing::info!(
@@ -3255,6 +3303,30 @@ impl DeltaStore {
     /// Holds no DAG lock. The caller is expected to have pre-cloned the
     /// `CausalDelta` bodies out of the DAG under whatever lock the caller
     /// chose. This keeps DB I/O out of the DAG critical section.
+    /// Commit `heads` as the context's `dag_heads` after a pending sweep that
+    /// cascaded deltas this path does not persist the records of (startup
+    /// load, snapshot checkpoints: their rows stay `applied: false` with any
+    /// events, so restart replay still runs the handlers). Each cascaded apply
+    /// already moved `root_hash`; without this the heads stayed behind it until
+    /// an unrelated delta arrived, and every heartbeat and handshake in between
+    /// advertised a `(heads, root)` pair no node held. Call it with the
+    /// retained execution-lock guard still held, so a reader under that lock
+    /// sees both or neither.
+    fn commit_heads_after_sweep(&self, heads: Vec<[u8; 32]>, site: &'static str) {
+        if let Err(e) = self.applier.context_client.persist_deltas_and_dag_heads(
+            &self.applier.context_id,
+            &[],
+            heads,
+        ) {
+            warn!(
+                ?e,
+                context_id = %self.applier.context_id,
+                site,
+                "Failed to commit dag_heads after a pending sweep; the next applied delta corrects it"
+            );
+        }
+    }
+
     async fn persist_cascaded_deltas_and_update_heads(
         &self,
         applied_bodies: &[([u8; 32], CausalDelta<Vec<Action>>)],
@@ -3606,6 +3678,16 @@ impl DeltaStore {
         dag.has_delta(id)
     }
 
+    /// Ids of every delta this store holds in memory, with or without a row:
+    /// the DAG's, applied or pending, and the orphaned members waiting on
+    /// their anchor. DAG compaction keeps their side rows, which are served
+    /// once a pending delta applies.
+    pub(crate) async fn held_delta_ids(&self) -> Vec<[u8; 32]> {
+        let mut ids: Vec<[u8; 32]> = self.dag.read().await.delta_ids().copied().collect();
+        ids.extend(self.anchor_pending.read().await.seen.iter().copied());
+        ids
+    }
+
     /// Get a specific delta (for sending to peers)
     pub async fn get_delta(&self, id: &[u8; 32]) -> Option<CausalDelta<Vec<Action>>> {
         let dag = self.dag.read().await;
@@ -3773,8 +3855,20 @@ impl DeltaStore {
         // This is critical because deltas received via gossip before the checkpoint was added
         // would be stuck in pending state waiting for the checkpoint parent.
         if added_count > 0 {
-            match dag.try_process_pending(&*self.applier).await {
+            // Retain the execution lock from the first cascaded apply through
+            // the heads commit, as `add_delta_internal` does.
+            self.applier
+                .retain_apply_lock
+                .store(true, std::sync::atomic::Ordering::Release);
+            let processed = dag.try_process_pending(&*self.applier).await;
+            self.applier
+                .retain_apply_lock
+                .store(false, std::sync::atomic::Ordering::Release);
+            let apply_lock_guard = self.applier.lock_apply_slot().take();
+            let mut cascaded_any = false;
+            match processed {
                 Ok(processed) if processed > 0 => {
+                    cascaded_any = true;
                     tracing::info!(
                         context_id = %self.applier.context_id,
                         processed,
@@ -3790,6 +3884,14 @@ impl DeltaStore {
                 }
                 _ => {}
             }
+            let heads = dag.get_heads();
+            // No DAG lock while the execution lock is held (lock order: `dag`
+            // write, then the context).
+            drop(dag);
+            if cascaded_any {
+                self.commit_heads_after_sweep(heads, "add_snapshot_checkpoints");
+            }
+            drop(apply_lock_guard);
         }
 
         tracing::info!(
@@ -3801,108 +3903,114 @@ impl DeltaStore {
         added_count
     }
 
-    /// Compact this context's DAG history, bounding on-disk delta growth
-    /// (issue #2026).
+    /// Compact this context's DAG history, bounding both the in-memory DAG and
+    /// the context's rows in the delta column (issue #2026).
     ///
-    /// When the in-memory DAG holds more than `min_deltas_before_compact`
-    /// deltas, history older than the most-recent `retain_recent_count` is
-    /// dropped from both the in-memory DAG and the durable delta column. The
-    /// retained window keeps cheap incremental delta catch-up working for
-    /// peers with small gaps; a peer that needs older history will request a
-    /// pruned delta, get "not found", and fall back to HashComparison — which
-    /// reconciles current state without the delta log, so the pruned history
-    /// is never required for convergence.
+    /// The two are pruned on their own counts, because neither tells the
+    /// other's: after a restart a compacted context's DAG cannot be rebuilt
+    /// from its rows (the oldest retained row's parent is gone, so
+    /// `load_persisted_deltas` restores none of the chain above it), and the
+    /// DAG holds pending deltas that have no row.
     ///
-    /// The whole operation runs under the DAG write lock so it serialises
-    /// against `get_delta`/`has_delta` (the responder send path) and the apply
-    /// path: a peer either sees a delta or sees it gone, never a torn view.
-    /// Pruning is skipped while pending deltas exist — a mid-sync DAG whose
-    /// heads are about to advance is not a good moment to draw the retain
-    /// window.
+    /// - **In memory**: when the DAG holds more than
+    ///   `min_deltas_before_compact` deltas, history outside the most-recent
+    ///   `retain_recent_count` is dropped (`DagStore::prune_to_recent`).
+    ///   Pending deltas do not hold this back: they are never pruned, and
+    ///   neither are the parents they already hold, so a delta stuck pending
+    ///   no longer blocks its context's compaction until it ages out.
+    /// - **On disk**: when the context holds more than
+    ///   `min_deltas_before_compact` rows, the rows outside the window drawn
+    ///   back from its persisted heads are deleted, except any the DAG still
+    ///   holds ([`disk::prune_context_rows`]).
     ///
-    /// The in-memory prune happens first, then the DB delete. Order is not
-    /// correctness-critical: a crash between them leaves extra delta rows that
-    /// the next sweep re-prunes (and that `load_persisted_deltas` would simply
-    /// reload), never lost state — context state lives in the storage tree,
-    /// not the delta log.
+    /// Heads are never pruned, in either. The whole operation runs under the
+    /// DAG write lock, so it serialises against `get_delta`/`has_delta` (the
+    /// responder send path) and the apply path: a peer either sees a delta or
+    /// sees it gone. The disk half also holds the context's execution lock,
+    /// taken in the order every inbound apply takes it (`dag` write, then the
+    /// context), because that lock is what a local execute and an inbound
+    /// apply hold while they commit an applied row with the heads: without it
+    /// a head committed mid-scan could be judged against the old ones and
+    /// deleted. When the lock cannot be had (an unknown context) no row is
+    /// deleted.
     ///
-    /// Returns the number of deltas pruned (0 when not eligible or skipped).
-    pub async fn compact(
+    /// The in-memory prune happens first, then the DB delete. A crash between
+    /// them leaves extra rows that the next sweep re-prunes (and that
+    /// `load_persisted_deltas` would simply reload), never lost state —
+    /// context state lives in the storage tree, not the delta log.
+    pub(crate) async fn compact(
         &self,
         min_deltas_before_compact: usize,
         retain_recent_count: usize,
-    ) -> usize {
+    ) -> Compaction {
+        let context_id = self.applier.context_id;
         let mut dag = self.dag.write().await;
 
-        // `delta_count()` is the in-memory DAG size (applied + pending). It is
-        // NOT the number of DB rows: after a restart `load_persisted_deltas`
-        // is bounded by the in-memory caps, so a
-        // context with far more rows on disk can report a smaller count here
-        // and under-prune the DB. Bounding cold/large contexts' on-disk rows
-        // is the separate "cold-context compaction" follow-up; this sweep only
-        // bounds the live working set.
-        let total = dag.delta_count();
-        if total <= min_deltas_before_compact {
-            return 0;
-        }
+        let in_memory = if dag.delta_count() > min_deltas_before_compact {
+            dag.prune_to_recent(retain_recent_count).len()
+        } else {
+            0
+        };
+        let keep: HashSet<[u8; 32]> = dag.delta_ids().copied().collect();
 
-        // Don't compact mid-catch-up: pending deltas mean heads are still
-        // advancing, so the retain window would be drawn against a moving
-        // target. `prune_to_recent` already refuses to drop pending deltas,
-        // but skipping wholesale here also avoids needless churn. A delta
-        // stuck pending blocks its context's compaction until it resolves or
-        // the existing stale-pending eviction (PENDING_DELTA_MAX_AGE) clears
-        // it — so this never wedges a context permanently.
-        let pending = dag.pending_stats().count;
-        if pending > 0 {
-            debug!(
-                context_id = %self.applier.context_id,
-                total,
-                pending,
-                "Skipping DAG compaction: pending deltas present (mid-sync)"
-            );
-            return 0;
-        }
+        let Some(lock) = self.applier.context_client.acquire_lock(&context_id).await else {
+            debug!(%context_id, "DAG compaction left the rows alone: no context lock");
+            return Compaction {
+                in_memory,
+                on_disk: DiskPrune::default(),
+            };
+        };
+        let store = self.applier.context_client.datastore().clone();
+        let on_disk = tokio::task::spawn_blocking(move || {
+            let _lock = lock;
+            disk::prune_context_rows(
+                &store,
+                context_id,
+                min_deltas_before_compact,
+                retain_recent_count,
+                &keep,
+            )
+        })
+        .await;
+        let remaining = dag.delta_count();
+        drop(dag);
 
-        let pruned_ids = dag.prune_to_recent(retain_recent_count);
-        if pruned_ids.is_empty() {
-            return 0;
-        }
-
-        // Mirror the prune to durable storage. Done while the write lock is
-        // still held so the in-memory and on-disk views can't diverge under a
-        // concurrent responder read.
-        let delta_keys: Vec<calimero_store::key::ContextDagDelta> = pruned_ids
-            .iter()
-            .map(|id| calimero_store::key::ContextDagDelta::new(self.applier.context_id, *id))
-            .collect();
-
-        match self.applier.context_client.prune_delta_records(&delta_keys) {
-            Ok(()) => {
-                let remaining = dag.delta_count();
-                tracing::info!(
-                    context_id = %self.applier.context_id,
-                    pruned = pruned_ids.len(),
-                    remaining,
-                    "Compacted DAG history"
-                );
+        let on_disk = match on_disk {
+            Ok(Ok(on_disk)) => on_disk,
+            Ok(Err(e)) => {
+                // In-memory is already pruned; the rows are still there.
+                // That's the safe direction — the next sweep retries.
+                warn!(?e, %context_id, "DAG compaction failed to prune rows; next sweep retries");
+                DiskPrune::default()
             }
             Err(e) => {
-                // In-memory is already pruned; the DB still carries the rows.
-                // That's the safe direction — the next sweep re-deletes them,
-                // and a restart reloads them into the DAG (no lost state). Log
-                // and report the in-memory prune count regardless.
-                tracing::warn!(
-                    ?e,
-                    context_id = %self.applier.context_id,
-                    pruned = pruned_ids.len(),
-                    "DAG compaction pruned in-memory but failed to delete rows; next sweep retries"
-                );
+                warn!(?e, %context_id, "DAG compaction row prune panicked; next sweep retries");
+                DiskPrune::default()
             }
+        };
+
+        if in_memory > 0 || on_disk.pruned > 0 {
+            info!(
+                %context_id,
+                in_memory,
+                rows = on_disk.pruned,
+                side_rows = on_disk.side_rows,
+                remaining,
+                "Compacted DAG history"
+            );
         }
 
-        pruned_ids.len()
+        Compaction { in_memory, on_disk }
     }
+}
+
+/// What [`DeltaStore::compact`] pruned.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Compaction {
+    /// Deltas dropped from the in-memory DAG.
+    pub(crate) in_memory: usize,
+    /// Rows deleted from the delta column.
+    pub(crate) on_disk: DiskPrune,
 }
 
 #[cfg(test)]

@@ -280,6 +280,7 @@ The runtime enforces strict limits on memory operations:
 | `max_log_size` | Maximum log message length | 16KB |
 | `max_event_kind_size` | Maximum event type string | 100 bytes |
 | `max_event_data_size` | Maximum event payload | 16KB |
+| `max_host_bytes` | Bytes host calls copy into registers or across guest memory, per execution | 6720MB |
 
 Shared memories and the threads proposal are not supported: modules using them
 fail to compile, and a shared memory is never instantiated.

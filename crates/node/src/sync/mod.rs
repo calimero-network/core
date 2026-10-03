@@ -107,22 +107,53 @@ pub(crate) fn availability_accounts_for_group(
     group_id: &calimero_context_config::types::ContextGroupId,
 ) -> std::collections::BTreeSet<calimero_account::AccountId> {
     let members = calimero_governance_store::MembershipRepository::new(store);
-    let namespaces = calimero_governance_store::NamespaceRepository::new(store);
-
     let mut accounts = std::collections::BTreeSet::new();
-    let mut current = *group_id;
-    // `<=` because reaching the root at depth D takes D+1 parent hops to
-    // observe the root's `None` parent (mirrors `NamespaceRepository::resolve`).
-    for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+    for level in availability_levels(store, group_id) {
         // A failed read at one level is not fatal: keep walking, and the
         // conservative outcome is a smaller set (a missed announce, never a
         // wrong one).
-        if let Ok(list) = members.list(&current, 0, usize::MAX) {
+        if let Ok(list) = members.list(&level, 0, usize::MAX) {
             accounts.extend(
                 list.into_iter()
                     .filter_map(|(account, role)| role.is_tee().then_some(account)),
             );
         }
+    }
+    accounts
+}
+
+/// Whether `account` is in [`availability_accounts_for_group`], answered with
+/// one member-row read per level instead of listing every member of every level.
+///
+/// For the receive side, which asks about one announcer per inbound blob
+/// announce. It walks the same levels through [`availability_levels`] and
+/// applies the same TEE-role test, so the two cannot disagree about which
+/// ancestors count; a failed read at one level is skipped the same way.
+pub(crate) fn is_availability_account(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    account: &calimero_account::AccountId,
+) -> bool {
+    let members = calimero_governance_store::MembershipRepository::new(store);
+    availability_levels(store, group_id)
+        .iter()
+        .any(|level| matches!(members.role_of(level, account), Ok(Some(role)) if role.is_tee()))
+}
+
+/// `group_id` and each ancestor up to the namespace root: the levels whose TEE
+/// members are availability nodes for `group_id`. The one walk both
+/// [`availability_accounts_for_group`] and [`is_availability_account`] read.
+fn availability_levels(
+    store: &calimero_store::Store,
+    group_id: &calimero_context_config::types::ContextGroupId,
+) -> Vec<calimero_context_config::types::ContextGroupId> {
+    let namespaces = calimero_governance_store::NamespaceRepository::new(store);
+    let mut levels = Vec::new();
+    let mut current = *group_id;
+    // `<=` because reaching the root at depth D takes D+1 parent hops to
+    // observe the root's `None` parent (mirrors `NamespaceRepository::resolve`).
+    for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+        levels.push(current);
         match namespaces.parent(&current) {
             Ok(Some(parent)) => current = parent,
             // Root reached (`None`), or a store error: either way there is no
@@ -130,7 +161,7 @@ pub(crate) fn availability_accounts_for_group(
             _ => break,
         }
     }
-    accounts
+    levels
 }
 
 /// Expand governance ACCOUNTS to the live DEVICE signing keys that speak for
@@ -166,6 +197,7 @@ fn device_keys_for_accounts(
 
 mod blobs;
 mod config;
+pub(crate) use config::DEFAULT_MAX_CONCURRENT_SYNCS;
 pub(crate) mod delta_request;
 
 /// Maximum ops exchanged in a single namespace backfill response, capping
@@ -181,6 +213,7 @@ pub(crate) mod helpers;
 pub mod level_sync;
 mod manager;
 pub mod metrics;
+pub(crate) mod namespace_backfill;
 pub(crate) mod network;
 pub(crate) mod parent_pull;
 pub(crate) mod peers;

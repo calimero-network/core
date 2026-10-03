@@ -68,8 +68,8 @@ struct MockHost {
     rng_state: u64,
     /// Last value handed out by `time_now`, to keep timestamps strictly increasing.
     last_time: u64,
-    /// Finalized blobs, keyed by their content hash.
-    blobs: BTreeMap<[u8; 32], Vec<u8>>,
+    /// Finalized blobs, keyed by the context that wrote them and their content hash.
+    blobs: BTreeMap<([u8; 32], [u8; 32]), Vec<u8>>,
     /// Open write handles: file descriptor -> accumulated bytes.
     blob_write_handles: BTreeMap<u64, Vec<u8>>,
     /// Open read handles: file descriptor -> (blob id, data, cursor).
@@ -372,10 +372,16 @@ pub(crate) fn blob_write(fd: u64, data: &[u8]) -> u64 {
     })
 }
 
+/// Whether the current context wrote `blob_id`, the double's "held for the context".
+pub(crate) fn is_blob_held(blob_id: &[u8; 32]) -> bool {
+    with(|h| h.blobs.contains_key(&(h.context_id, *blob_id)))
+}
+
+/// Panics where the node traps: on a blob not held for the current context.
 pub(crate) fn blob_open(blob_id: &[u8; 32]) -> u64 {
     with(|h| {
-        let Some(data) = h.blobs.get(blob_id).cloned() else {
-            return 0;
+        let Some(data) = h.blobs.get(&(h.context_id, *blob_id)).cloned() else {
+            panic!("a blob may be opened only if it is held for the executing context");
         };
         let fd = h.next_fd;
         h.next_fd += 1;
@@ -384,10 +390,16 @@ pub(crate) fn blob_open(blob_id: &[u8; 32]) -> u64 {
     })
 }
 
-/// `context_id` is ignored: this in-memory double has no network, so a blob
-/// that isn't in the local map isn't held by any peer either — "unavailable"
-/// is exactly the local-only result.
-pub(crate) fn blob_open_in_context(blob_id: &[u8; 32], _context_id: &[u8; 32]) -> u64 {
+/// No network here, so a blob the context does not hold is served by no peer.
+pub(crate) fn blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64 {
+    assert_eq!(
+        *context_id,
+        self::context_id(),
+        "a blob call may only name the executing context"
+    );
+    if !is_blob_held(blob_id) {
+        return 0;
+    }
     blob_open(blob_id)
 }
 
@@ -413,7 +425,7 @@ pub(crate) fn blob_close(fd: u64) -> Option<[u8; 32]> {
             let mut hasher = Sha256::new();
             hasher.update(&buf);
             let blob_id: [u8; 32] = hasher.finalize().into();
-            h.blobs.insert(blob_id, buf);
+            h.blobs.insert((h.context_id, blob_id), buf);
             return Some(blob_id);
         }
         if let Some((blob_id, _, _)) = h.blob_read_handles.remove(&fd) {
@@ -462,7 +474,26 @@ pub(crate) fn random_bytes(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{device_id, open_sealed, seal_to, set_context_id};
+    use super::{
+        blob_close, blob_create, blob_open, blob_open_in_context, blob_write, context_id,
+        device_id, is_blob_held, open_sealed, seal_to, set_context_id,
+    };
+
+    /// Like the node, a blob opens only in the context that wrote it.
+    #[test]
+    fn a_blob_opens_only_in_the_context_that_wrote_it() {
+        let fd = blob_create();
+        let _written = blob_write(fd, b"bytes");
+        let blob_id = blob_close(fd).expect("finalized");
+        assert!(is_blob_held(&blob_id));
+        assert_ne!(blob_open(&blob_id), 0);
+
+        set_context_id([0x42; 32]);
+        assert!(!is_blob_held(&blob_id));
+        assert_eq!(blob_open_in_context(&blob_id, &context_id()), 0);
+        let refused = std::panic::catch_unwind(|| blob_open(&blob_id));
+        assert!(refused.is_err(), "the node traps here");
+    }
 
     /// Like the node, a mock envelope opens only in the context that sealed it.
     #[test]

@@ -1600,6 +1600,47 @@ impl ContextClient {
         }
     }
 
+    /// Read a context's `ContextMeta` under the per-context execution lock.
+    ///
+    /// A remote delta apply writes the new `root_hash` (from the executor) and
+    /// the new `dag_heads` (from the delta store's commit) in two steps, both
+    /// inside one hold of this lock. A plain [`Self::get_context`] can land
+    /// between them and read the new root with the old heads; a peer comparing
+    /// that pair against its own then sees "same heads, different root" for a
+    /// state neither node is in. Use this wherever the `(root_hash, dag_heads)`
+    /// pair is published as one claim, i.e. the hash heartbeat.
+    pub async fn get_context_consistent(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<Context>> {
+        let _guard = self.acquire_lock(context_id).await;
+        self.get_context(context_id)
+    }
+
+    /// Re-read the storage merkle root and publish it as `ContextMeta.root_hash`,
+    /// under the per-context execution lock.
+    ///
+    /// `root_hash` is otherwise only written by a WASM execute / delta apply, so
+    /// a sync session that converges storage by merging entities directly (a
+    /// HashComparison or LevelWise push) leaves it pointing at a state the node
+    /// has moved past, and the node keeps advertising that stale root to peers.
+    /// Reading and writing inside one lock hold keeps a concurrent execute from
+    /// committing in between and being rolled back. A no-op for an unknown
+    /// context, an empty state, or a root that is already current. Returns the
+    /// live root when it was written.
+    pub async fn reanchor_root_hash(&self, context_id: &ContextId) -> eyre::Result<Option<Hash>> {
+        let _guard = self.acquire_lock(context_id).await;
+        let Some(context) = self.get_context(context_id)? else {
+            return Ok(None);
+        };
+        let live = Hash::from(self.compute_root_hash(context_id)?);
+        if live.is_zero() || live == context.root_hash {
+            return Ok(None);
+        }
+        self.force_root_hash(context_id, live)?;
+        Ok(Some(live))
+    }
+
     /// Invoke the app's typed root-state CRDT merge inside WASM and return
     /// the merged bytes.
     ///

@@ -49,6 +49,7 @@ mod context_registration;
 mod context_tree;
 mod contexts;
 pub mod creation_gate;
+mod deferred_rotation;
 pub mod delegation_gate;
 mod deny_list;
 pub mod device_link;
@@ -70,6 +71,7 @@ mod on_behalf;
 mod op_budget;
 mod ops;
 mod owner_guard;
+mod pending_admission;
 mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
@@ -166,6 +168,7 @@ pub use self::node_device::{
     KnownDeviceCert, NodeDevice, NodeDeviceRepository, RevocationTarget,
 };
 pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, OwnerGuardRefusal};
+pub use self::pending_admission::{pending_standing, PendingStanding};
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
@@ -174,12 +177,13 @@ pub use self::tee::{
     is_attested_tee_key_for_context, is_evidence_quote_used, is_quote_hash_used,
     is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
     is_tee_member_key_for_context, read_tee_admission_policy, read_tee_authoring_policy,
-    tee_admission_record, tee_admission_records, tee_authorities_for_context,
-    tee_authority_evidence, tee_authority_key, tee_authority_keys_for_context,
-    tee_authority_keys_in_namespace, tee_evidence_owed, tee_evidence_refresh_due, writer_account,
-    FoldedTee, FoldedTeeAuthority, NotFolded, ScanOnce, TeeAdmissionPolicy, TeeAdmissionPolicyRead,
-    TeeAdmissionRecord, TeeAuthorityEvidenceRecord, TeeReleaseTrust, UndecodableOpLogEntry,
-    TEE_EVIDENCE_MAX_AGE_SECS, TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
+    tee_admission_record, tee_admission_records, tee_admitted_accounts,
+    tee_authorities_for_context, tee_authority_evidence, tee_authority_key,
+    tee_authority_keys_for_context, tee_authority_keys_in_namespace, tee_evidence_owed,
+    tee_evidence_refresh_due, writer_account, FoldedTee, FoldedTeeAuthority, NotFolded, ScanOnce,
+    TeeAdmissionPolicy, TeeAdmissionPolicyRead, TeeAdmissionRecord, TeeAuthorityEvidenceRecord,
+    TeeReleaseTrust, UndecodableOpLogEntry, TEE_EVIDENCE_MAX_AGE_SECS,
+    TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
 };
 pub use self::tee_vault::{
     retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries, tee_vault_keys,

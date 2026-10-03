@@ -108,9 +108,9 @@ pub fn should_fence(
 ///
 /// Resolution mirrors execution's per-context binding: the activation marker
 /// (set when a migration commits or a code-only swap activates) → the
-/// application row's `bytecode.blob_id()` (a context that never activated an
-/// upgrade executes its installed row; on receivers the row is only a
-/// download cache and may lag the marker) → `GroupMeta.bytecode_id`.
+/// application row's `bytecode.blob_id()`, when the context's group registered
+/// that blob (the row is shared by every group naming the id) →
+/// `GroupMeta.bytecode_id`.
 ///
 /// Returns `None` for non-group contexts (no owning group) and when no source
 /// can supply a key. Store errors are propagated as `Err`.
@@ -123,10 +123,13 @@ pub fn loaded_reader_bytecode_id(
         return Ok(Some(blob));
     }
 
-    // No activation yet: the installed application row is what executes.
+    // No activation yet: the installed row, if this context's group registered it.
     if let Some(ctx_meta) = store.handle().get(&key::ContextMeta::new(*context_id))? {
         if let Some(app_meta) = store.handle().get(&ctx_meta.application)? {
-            return Ok(Some(*app_meta.bytecode.blob_id().as_ref()));
+            let row_blob = *app_meta.bytecode.blob_id().as_ref();
+            if crate::activation::context_group_registers_bytecode(store, context_id, row_blob) {
+                return Ok(Some(row_blob));
+            }
         }
     }
 

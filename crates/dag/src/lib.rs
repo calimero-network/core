@@ -10,7 +10,7 @@
 //! - **DagStore**: Manages DAG topology and applies deltas in topological order
 //! - **DeltaApplier**: Trait for applying deltas (dependency injection)
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -32,6 +32,12 @@ pub const MAX_DELTA_QUERY_LIMIT: usize = 3000;
 /// bounds memory regardless of sweep cadence. Evicted deltas can be re-fetched
 /// in a future sync.
 pub const MAX_PENDING_DELTAS: usize = 10_000;
+
+/// Maximum number of pending deltas one origin (as named by
+/// [`DeltaApplier::admit_pending`]) may hold at once. Past it the origin's own
+/// oldest pending delta is evicted. When the shared [`MAX_PENDING_DELTAS`] map
+/// is full, the origin holding the most gives up an entry first.
+pub const MAX_PENDING_PER_ORIGIN: usize = 1024;
 
 /// Maximum number of pruned-ancestor ids remembered by [`DagStore::prune_to_recent`]
 /// so a later delta that references a deliberately-dropped parent is treated as
@@ -211,6 +217,17 @@ impl<T> CausalDelta<T> {
 #[async_trait::async_trait]
 pub trait DeltaApplier<T> {
     async fn apply(&self, delta: &CausalDelta<T>) -> Result<(), ApplyError>;
+
+    /// Decide whether `delta`, which is missing a parent, may wait in the
+    /// pending map.
+    ///
+    /// Called before the delta is stored, so an `Err` keeps it out entirely.
+    /// `Ok(Some(origin))` admits it and charges it to `origin`, which is capped
+    /// at [`MAX_PENDING_PER_ORIGIN`]; `Ok(None)` admits it without a per-origin
+    /// charge. The default admits everything uncharged.
+    fn admit_pending(&self, _delta: &CausalDelta<T>) -> Result<Option<[u8; 32]>, ApplyError> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -228,6 +245,9 @@ pub enum DagError {
 
     #[error("Failed to apply delta: {0}")]
     ApplyFailed(#[from] ApplyError),
+
+    #[error("Delta not admitted to the pending map: {0}")]
+    PendingRefused(ApplyError),
 }
 
 /// Tracks a pending delta with timeout metadata
@@ -239,14 +259,17 @@ struct PendingDelta<T> {
     /// without a wall-clock comparison. Mirrors the key under which this entry
     /// is registered in `DagStore::pending_order`.
     seq: u64,
+    /// The origin this entry is charged to in `DagStore::pending_by_origin`.
+    origin: Option<[u8; 32]>,
 }
 
 impl<T> PendingDelta<T> {
-    fn new(delta: CausalDelta<T>, seq: u64) -> Self {
+    fn new(delta: CausalDelta<T>, seq: u64, origin: Option<[u8; 32]>) -> Self {
         Self {
             delta,
             received_at: Instant::now(),
             seq,
+            origin,
         }
     }
 
@@ -349,7 +372,15 @@ pub struct DagStore<T> {
     /// oldest entry can be found and evicted in O(log n) (the first key) without
     /// scanning the whole map. Kept in lockstep with `pending` via
     /// `insert_pending` / `remove_pending`.
-    pending_order: std::collections::BTreeMap<u64, [u8; 32]>,
+    pending_order: BTreeMap<u64, [u8; 32]>,
+
+    /// The pending deltas charged to each origin (see
+    /// [`DeltaApplier::admit_pending`]), in arrival order: the map's length is
+    /// the origin's charge, and its first key the origin's oldest entry. Finding
+    /// that entry by walking `pending_order` instead cost O(pending) per insert
+    /// from an origin at its cap. Kept in lockstep with `pending` via
+    /// `insert_pending` / `remove_pending`.
+    pending_by_origin: HashMap<[u8; 32], BTreeMap<u64, [u8; 32]>>,
 
     /// Next sequence number to assign to a pending insert.
     next_pending_seq: u64,
@@ -358,8 +389,10 @@ pub struct DagStore<T> {
     /// list it as a parent]`. Lets the cascade after an apply visit only the
     /// deltas actually unblocked by it, instead of rescanning the whole pending
     /// map every pass (was O(N^2)). Kept in lockstep via `insert_pending` /
-    /// `remove_pending` / `evict_oldest_pending`.
-    pending_children: HashMap<[u8; 32], Vec<[u8; 32]>>,
+    /// `remove_pending` / `evict_oldest_pending`. A set, not a list: dropping one
+    /// waiter from a list is a scan of the bucket, so evicting the waiters of a
+    /// parent many deltas share cost O(N^2).
+    pending_children: HashMap<[u8; 32], BTreeSet<[u8; 32]>>,
 
     /// Current heads (deltas with no children yet)
     heads: HashSet<[u8; 32]>,
@@ -389,6 +422,10 @@ pub struct DagStore<T> {
     /// exceed this, the oldest pending delta is evicted first. By default,
     /// equal to `MAX_PENDING_DELTAS`.
     max_pending: usize,
+
+    /// Maximum pending deltas charged to one origin. By default, equal to
+    /// `MAX_PENDING_PER_ORIGIN`.
+    max_pending_per_origin: usize,
 }
 
 impl<T: Clone> DagStore<T> {
@@ -404,7 +441,8 @@ impl<T: Clone> DagStore<T> {
             deltas: HashMap::new(),
             applied,
             pending: HashMap::new(),
-            pending_order: std::collections::BTreeMap::new(),
+            pending_order: BTreeMap::new(),
+            pending_by_origin: HashMap::new(),
             next_pending_seq: 0,
             pending_children: HashMap::new(),
             heads,
@@ -413,6 +451,7 @@ impl<T: Clone> DagStore<T> {
             pruned_order: VecDeque::new(),
             delta_query_limit: MAX_DELTA_QUERY_LIMIT,
             max_pending: MAX_PENDING_DELTAS,
+            max_pending_per_origin: MAX_PENDING_PER_ORIGIN,
         }
     }
 
@@ -587,12 +626,32 @@ impl<T: Clone> DagStore<T> {
             let cascaded = self.cascade_ready(seed, applier).await?;
             Ok(AddDeltaOutcome::Applied { cascaded })
         } else {
-            // Missing parents - store as pending. Cap the pending map so a
-            // flood of out-of-order deltas arriving faster than the time-based
-            // `cleanup_stale` sweep can't grow it unboundedly; evict the oldest
-            // entry to make room (it can be re-fetched in a future sync).
+            // Missing parents - store as pending, if the applier admits it.
+            let origin = match applier.admit_pending(&delta) {
+                Ok(origin) => origin,
+                Err(e) => {
+                    let _ = self.deltas.remove(&delta_id);
+                    return Err(DagError::PendingRefused(e));
+                }
+            };
+            if let Some(origin) = origin {
+                if self.pending_by_origin.get(&origin).map_or(0, BTreeMap::len)
+                    >= self.max_pending_per_origin
+                {
+                    if let Some(evicted) = self.evict_oldest_pending_of(&origin) {
+                        warn!(
+                            evicted_delta_id = ?evicted,
+                            max_pending_per_origin = %self.max_pending_per_origin,
+                            "Origin at its pending capacity; evicted its oldest pending delta"
+                        );
+                    }
+                }
+            }
+            // Cap the pending map so out-of-order deltas arriving faster than the
+            // `cleanup_stale` sweep can't grow it unboundedly. Evicted deltas can
+            // be re-fetched in a future sync.
             if self.pending.len() >= self.max_pending {
-                if let Some(evicted) = self.evict_oldest_pending() {
+                if let Some(evicted) = self.evict_for_capacity(origin.as_ref()) {
                     warn!(
                         evicted_delta_id = ?evicted,
                         max_pending = %self.max_pending,
@@ -600,14 +659,14 @@ impl<T: Clone> DagStore<T> {
                     );
                 }
             }
-            self.insert_pending(delta);
+            self.insert_pending(delta, origin);
             Ok(AddDeltaOutcome::Pending)
         }
     }
 
     /// Inserts a delta into the pending map and the arrival-order index,
     /// assigning it the next monotonic sequence number.
-    fn insert_pending(&mut self, delta: CausalDelta<T>) {
+    fn insert_pending(&mut self, delta: CausalDelta<T>, origin: Option<[u8; 32]>) {
         let delta_id = delta.id;
         let seq = self.next_pending_seq;
         self.next_pending_seq = self.next_pending_seq.wrapping_add(1);
@@ -616,14 +675,23 @@ impl<T: Clone> DagStore<T> {
             if *parent == [0; 32] {
                 continue;
             }
-            self.pending_children
+            let _ = self
+                .pending_children
                 .entry(*parent)
                 .or_default()
-                .push(delta_id);
+                .insert(delta_id);
         }
 
         self.pending_order.insert(seq, delta_id);
-        self.pending.insert(delta_id, PendingDelta::new(delta, seq));
+        if let Some(origin) = origin {
+            let _ = self
+                .pending_by_origin
+                .entry(origin)
+                .or_default()
+                .insert(seq, delta_id);
+        }
+        self.pending
+            .insert(delta_id, PendingDelta::new(delta, seq, origin));
     }
 
     /// Removes a delta from the pending map, keeping the arrival-order index in
@@ -631,6 +699,7 @@ impl<T: Clone> DagStore<T> {
     fn remove_pending(&mut self, id: &[u8; 32]) -> Option<PendingDelta<T>> {
         let removed = self.pending.remove(id)?;
         let _ = self.pending_order.remove(&removed.seq);
+        Self::release_origin(&mut self.pending_by_origin, removed.origin, removed.seq);
         Self::deindex_pending_children(&mut self.pending_children, id, &removed.delta.parents);
         Some(removed)
     }
@@ -643,23 +712,62 @@ impl<T: Clone> DagStore<T> {
     /// mirroring `cleanup_stale`. Returns the evicted ID, or `None` if the
     /// pending map is empty.
     fn evict_oldest_pending(&mut self) -> Option<[u8; 32]> {
-        let (&seq, &oldest) = self.pending_order.iter().next()?;
-        let _ = self.pending_order.remove(&seq);
-        if let Some(removed) = self.pending.remove(&oldest) {
-            Self::deindex_pending_children(
-                &mut self.pending_children,
-                &oldest,
-                &removed.delta.parents,
-            );
+        let (_, &oldest) = self.pending_order.iter().next()?;
+        self.evict_pending(&oldest)
+    }
+
+    /// Makes room in a full pending map: the inserting origin gives up its own
+    /// oldest entry first, then the origin holding the most does, and only
+    /// uncharged deltas fall back to the globally oldest.
+    fn evict_for_capacity(&mut self, inserting: Option<&[u8; 32]>) -> Option<[u8; 32]> {
+        let victim = inserting
+            .filter(|origin| self.pending_by_origin.contains_key(*origin))
+            .copied()
+            .or_else(|| {
+                self.pending_by_origin
+                    .iter()
+                    .max_by_key(|(_, held)| held.len())
+                    .map(|(origin, _)| *origin)
+            });
+        victim
+            .and_then(|origin| self.evict_oldest_pending_of(&origin))
+            .or_else(|| self.evict_oldest_pending())
+    }
+
+    /// Evicts the oldest pending delta charged to `origin`, if it has any.
+    fn evict_oldest_pending_of(&mut self, origin: &[u8; 32]) -> Option<[u8; 32]> {
+        let (_, &oldest) = self.pending_by_origin.get(origin)?.iter().next()?;
+        self.evict_pending(&oldest)
+    }
+
+    /// Drops `id` from the pending and deltas maps so it can be re-fetched in a
+    /// future sync.
+    fn evict_pending(&mut self, id: &[u8; 32]) -> Option<[u8; 32]> {
+        let _ = self.remove_pending(id)?;
+        let _ = self.deltas.remove(id);
+        Some(*id)
+    }
+
+    /// Uncharges the pending delta that arrived as `seq` from `origin`,
+    /// dropping the origin's entry once it holds nothing.
+    fn release_origin(
+        charges: &mut HashMap<[u8; 32], BTreeMap<u64, [u8; 32]>>,
+        origin: Option<[u8; 32]>,
+        seq: u64,
+    ) {
+        let Some(origin) = origin else { return };
+        if let Some(held) = charges.get_mut(&origin) {
+            let _ = held.remove(&seq);
+            if held.is_empty() {
+                let _ = charges.remove(&origin);
+            }
         }
-        let _ = self.deltas.remove(&oldest);
-        Some(oldest)
     }
 
     /// Remove `child` from the reverse-edge lists of each of its `parents`,
     /// dropping now-empty entries so the index can't grow without bound.
     fn deindex_pending_children(
-        index: &mut HashMap<[u8; 32], Vec<[u8; 32]>>,
+        index: &mut HashMap<[u8; 32], BTreeSet<[u8; 32]>>,
         child: &[u8; 32],
         parents: &[[u8; 32]],
     ) {
@@ -668,7 +776,7 @@ impl<T: Clone> DagStore<T> {
                 continue;
             }
             if let Some(children) = index.get_mut(parent) {
-                children.retain(|c| c != child);
+                let _ = children.remove(child);
                 if children.is_empty() {
                     let _ = index.remove(parent);
                 }
@@ -777,7 +885,7 @@ impl<T: Clone> DagStore<T> {
     /// rescan of the pending map. Returns the number applied.
     async fn cascade_ready<A: DeltaApplier<T> + Sync>(
         &mut self,
-        seed: Vec<[u8; 32]>,
+        seed: impl IntoIterator<Item = [u8; 32]>,
         applier: &A,
     ) -> Result<Vec<[u8; 32]>, DagError>
     where
@@ -1097,6 +1205,14 @@ impl<T: Clone> DagStore<T> {
         self.deltas.len()
     }
 
+    /// Ids of every delta held in the in-memory DAG, applied or pending.
+    ///
+    /// Compaction reads this under the DAG write lock so the durable prune
+    /// never deletes a row the DAG still holds.
+    pub fn delta_ids(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.deltas.keys()
+    }
+
     /// Prune applied history older than the most-recent `retain_count`
     /// deltas, returning the ids removed (so the caller can delete the
     /// matching rows from durable storage).
@@ -1117,7 +1233,13 @@ impl<T: Clone> DagStore<T> {
     /// No re-parenting is performed, so delta content hashes are untouched.
     ///
     /// Pending deltas are never pruned: they are unapplied and may still
-    /// resolve once their missing parents arrive.
+    /// resolve once their missing parents arrive. Neither is any parent a
+    /// pending delta already holds, however old: in memory a pruned parent
+    /// would still count as satisfied, but only while `pruned` remembers it,
+    /// and the durable prune that mirrors this one would delete the row a
+    /// restart re-drives the pending delta against. Keeping them outside the
+    /// budget means a pending delta never holds back the rest of the history,
+    /// so a DAG with pending deltas can be pruned like any other.
     pub fn prune_to_recent(&mut self, retain_count: usize) -> Vec<[u8; 32]> {
         // Seed the retained set with every head so a small `retain_count`
         // can never evict a head. The genesis root is never a real delta
@@ -1151,12 +1273,21 @@ impl<T: Clone> DagStore<T> {
             }
         }
 
+        let held_by_pending: HashSet<[u8; 32]> = self
+            .pending
+            .values()
+            .flat_map(|pending| pending.delta.parents.iter().copied())
+            .collect();
+
         let pruned: Vec<[u8; 32]> = self
             .deltas
             .keys()
             .copied()
             .filter(|id| {
-                *id != self.root && !retained.contains(id) && !self.pending.contains_key(id)
+                *id != self.root
+                    && !retained.contains(id)
+                    && !self.pending.contains_key(id)
+                    && !held_by_pending.contains(id)
             })
             .collect();
 

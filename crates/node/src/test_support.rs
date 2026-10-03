@@ -71,6 +71,29 @@ pub(crate) async fn delta_store_over_governance(
     context_manager: LazyRecipient<ContextMessage>,
     projections: Arc<std::sync::RwLock<calimero_context::scope_projection::ScopeProjections>>,
 ) -> (DeltaStore, tempfile::TempDir, KeepAlive) {
+    let (context_client, tmp, keep_alive) =
+        context_client_over_with_manager(store, context_manager).await;
+    let our_identity = PublicKey::from([0xBB; 32]);
+
+    (
+        DeltaStore::new(
+            GENESIS,
+            context_client,
+            context(),
+            our_identity,
+            projections,
+        ),
+        tmp,
+        keep_alive,
+    )
+}
+
+/// The `ContextClient` a [`delta_store_over_with_manager`] store is built on,
+/// for a test that drives a component taking the client itself.
+pub(crate) async fn context_client_over_with_manager(
+    store: Store,
+    context_manager: LazyRecipient<ContextMessage>,
+) -> (ContextClient, tempfile::TempDir, KeepAlive) {
     let tmp = tempfile::tempdir().expect("tempdir");
 
     let blob_config =
@@ -116,17 +139,8 @@ pub(crate) async fn delta_store_over_governance(
         None,
     );
 
-    let context_client = ContextClient::new(store, node_client, context_manager);
-    let our_identity = PublicKey::from([0xBB; 32]);
-
     (
-        DeltaStore::new(
-            GENESIS,
-            context_client,
-            context(),
-            our_identity,
-            projections,
-        ),
+        ContextClient::new(store, node_client, context_manager),
         tmp,
         keep_alive,
     )

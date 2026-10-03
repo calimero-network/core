@@ -36,7 +36,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupAccountEndorser, GroupAccountKey, GroupAccountKeyValue, GroupDeviceBinding,
     GroupDeviceBindingValue, GroupDeviceScopeFloor, GroupRevokedDevice, GroupRevokedSigner,
-    GroupSignerAccount,
+    GroupSignerAccount, GroupSignerDevice,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -295,12 +295,14 @@ impl<'a> AccountBindingRepository<'a> {
             && self.raw_binding(&namespace, device)?.is_none())
     }
 
-    /// Did `sign_pk` sign for a device that was revoked in `group`?
+    /// Did `sign_pk` sign for a device that was revoked or narrowed out in `group`?
     ///
-    /// Recorded by [`apply_revocation`](Self::apply_revocation) from the binding it
-    /// deletes. On its own this does not mean the key is withdrawn: a re-paired
-    /// node keeps its namespace identity under a fresh device, so a caller must
-    /// first ask whether a live binding speaks for the key, as
+    /// Recorded by [`apply_revocation`](Self::apply_revocation) and
+    /// [`narrow`](Self::narrow) from the binding each deletes, and by
+    /// [`apply_link`](Self::apply_link) for a link either refuses. On its own this
+    /// does not mean the key is withdrawn: a re-paired node keeps its namespace
+    /// identity under a fresh device, so a caller must first ask whether a live
+    /// binding speaks for the key, as
     /// [`crate::DenyListRepository::is_author_denied_for_context`] does.
     ///
     /// # Errors
@@ -312,6 +314,17 @@ impl<'a> AccountBindingRepository<'a> {
     ) -> EyreResult<bool> {
         let key = GroupRevokedSigner::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
         Ok(self.store.handle().has(&key)?)
+    }
+
+    /// Record that `sign_pk` signed for a device withdrawn from `group`; see
+    /// [`is_signer_revoked`](Self::is_signer_revoked).
+    fn record_withdrawn_signer(
+        &self,
+        group: &ContextGroupId,
+        sign_pk: &PublicKey,
+    ) -> EyreResult<()> {
+        let key = GroupRevokedSigner::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
+        Ok(self.store.handle().put(&key, &())?)
     }
 
     /// The account `sign_pk` was certified for in `group`, if any certificate for
@@ -545,23 +558,111 @@ impl<'a> AccountBindingRepository<'a> {
     /// to `None` — revocation therefore withdraws the right to author, not only
     /// the right to receive keys.
     ///
-    /// **For one key.** A caller resolving *several* signers against the same
-    /// group must use
-    /// [`live_bindings_by_sign_pk`](Self::live_bindings_by_sign_pk) instead: this
-    /// searches a full scan, so calling it in a loop rescans the binding column
-    /// once per item and makes the loop quadratic in the group's device count.
+    /// Answered from the [`GroupSignerDevice`] index: the devices whose binding
+    /// names `sign_pk`, each checked with [`Self::live_binding`]. It runs once
+    /// per gossip message, for any validly signed message including a
+    /// stranger's, so it must not scan the group's bindings. When several of the
+    /// key's devices are live the lowest device id wins, which is the one a
+    /// search of [`Self::live_bindings`] finds first.
     ///
     /// # Errors
-    /// Propagates the store scan failure.
+    /// Propagates the store read failure.
     pub fn binding_for_sign_pk(
         &self,
         group: &ContextGroupId,
         sign_pk: &PublicKey,
     ) -> EyreResult<Option<DeviceBinding>> {
-        Ok(self
-            .live_bindings(group)?
-            .into_iter()
-            .find(|binding| binding.sign_pk == *sign_pk))
+        let gid = group.to_bytes();
+        let pk = *AsRef::<[u8; 32]>::as_ref(sign_pk);
+        let devices = collect_keys_with_prefix(
+            self.store,
+            GroupSignerDevice::new(gid, pk, [0u8; 32]),
+            calimero_store::key::GROUP_SIGNER_DEVICE_PREFIX,
+            |k| k.group_id() == gid && k.sign_pk() == pk,
+        )?;
+        for key in devices {
+            if let Some(binding) = self.live_binding(group, DeviceId::from(key.device_id()))? {
+                if binding.sign_pk == *sign_pk {
+                    return Ok(Some(binding));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// `device`'s binding, if it is in force: the rules of
+    /// [`Self::live_bindings`] for one device, from point reads and a scan of
+    /// only the bindings that share its replica seed.
+    ///
+    /// Stored, not revoked, not signed by a root key the account has rotated
+    /// past, and not losing a replica-seed collision: no other device with the
+    /// same seed that passes the first three checks has a lower id. Bindings are
+    /// keyed by device id and the seed is its first 16 bytes, so the colliding
+    /// devices are one contiguous run of keys.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn live_binding(
+        &self,
+        group: &ContextGroupId,
+        device: DeviceId,
+    ) -> EyreResult<Option<DeviceBinding>> {
+        let Some(value) = self.raw_binding(group, device)? else {
+            return Ok(None);
+        };
+        if !self.in_force(group, device, &value)? {
+            return Ok(None);
+        }
+
+        let gid = group.to_bytes();
+        let seed = device.hlc_seed();
+        let mut first = [0u8; 32];
+        first[..16].copy_from_slice(&seed);
+        let same_seed = collect_keys_with_prefix(
+            self.store,
+            GroupDeviceBinding::new(gid, first),
+            calimero_store::key::GROUP_DEVICE_BINDING_PREFIX,
+            |k| k.group_id() == gid && k.device_id()[..16] == seed,
+        )?;
+        let handle = self.store.handle();
+        for key in same_seed {
+            let other = DeviceId::from(key.device_id());
+            if other >= device {
+                break;
+            }
+            let Some(other_value) = handle.get(&key)? else {
+                continue;
+            };
+            if self.in_force(group, other, &other_value)? {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(DeviceBinding {
+            device,
+            account: AccountId::from(value.account),
+            sign_pk: PublicKey::from(value.sign_pk),
+            kem_pk: value.kem_pk,
+            device_epoch: value.device_epoch,
+        }))
+    }
+
+    /// Whether a stored binding passes the per-device rules of
+    /// [`Self::live_bindings`]: its device is not revoked, and its account has not
+    /// rotated past the root key that signed it.
+    fn in_force(
+        &self,
+        group: &ContextGroupId,
+        device: DeviceId,
+        value: &GroupDeviceBindingValue,
+    ) -> EyreResult<bool> {
+        if self.is_revoked(group, device)? {
+            return Ok(false);
+        }
+        let epoch = self
+            .account_key(group, AccountId::from(value.account))?
+            .map(|(epoch, _)| epoch);
+        Ok(!epoch.is_some_and(|epoch| value.key_epoch < epoch))
     }
 
     /// Whether `device` has a live binding in `group`.
@@ -573,10 +674,7 @@ impl<'a> AccountBindingRepository<'a> {
     /// # Errors
     /// Propagates the store scan failure.
     pub fn is_device_linked(&self, group: &ContextGroupId, device: DeviceId) -> EyreResult<bool> {
-        Ok(self
-            .live_bindings(group)?
-            .into_iter()
-            .any(|binding| binding.device == device))
+        Ok(self.live_binding(group, device)?.is_some())
     }
 
     /// Every live device of `account` in `group` — the scope-key fan-out unit.
@@ -783,12 +881,14 @@ impl<'a> AccountBindingRepository<'a> {
         self.record_signer_account(group, &verified.sign_pk, verified.account)?;
 
         if self.is_revoked(group, verified.device)? {
+            self.record_withdrawn_signer(group, &verified.sign_pk)?;
             return Ok(Err(BindingRejected::DeviceRevoked));
         }
         // Consulted before the binding, like the tombstone: a narrowing that
         // arrives before the stale link it outranks must still win.
         if let Some(floor) = self.scope_floor(group, verified.account, verified.device)? {
             if scope_epoch <= floor {
+                self.record_withdrawn_signer(group, &verified.sign_pk)?;
                 return Ok(Err(BindingRejected::ScopeNarrowed {
                     offered: scope_epoch,
                     floor,
@@ -823,8 +923,9 @@ impl<'a> AccountBindingRepository<'a> {
                     // The scope stamp still moves: a re-link under a newer scope
                     // is what retires the descopes signed before it.
                     if scope_epoch > existing.scope_epoch {
-                        self.store.handle().put(
-                            &GroupDeviceBinding::new(group.to_bytes(), *verified.device.as_bytes()),
+                        self.put_binding(
+                            group,
+                            verified.device,
                             &GroupDeviceBindingValue {
                                 scope_epoch,
                                 ..existing
@@ -860,9 +961,9 @@ impl<'a> AccountBindingRepository<'a> {
             }
         }
 
-        let key = GroupDeviceBinding::new(group.to_bytes(), *verified.device.as_bytes());
-        self.store.handle().put(
-            &key,
+        self.put_binding(
+            group,
+            verified.device,
             &GroupDeviceBindingValue {
                 account: *verified.account.as_bytes(),
                 sign_pk: *AsRef::<[u8; 32]>::as_ref(&verified.sign_pk),
@@ -921,6 +1022,12 @@ impl<'a> AccountBindingRepository<'a> {
             calimero_store::key::GROUP_SIGNER_ACCOUNT_PREFIX,
             |k| k.group_id() == gid,
         )?;
+        let signer_devices = collect_keys_with_prefix(
+            self.store,
+            GroupSignerDevice::new(gid, [0u8; 32], [0u8; 32]),
+            calimero_store::key::GROUP_SIGNER_DEVICE_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
         let accounts = collect_keys_with_prefix(
             self.store,
             GroupAccountKey::new(gid, [0u8; 32]),
@@ -945,6 +1052,9 @@ impl<'a> AccountBindingRepository<'a> {
             handle.delete(&key)?;
         }
         for key in signer_accounts {
+            handle.delete(&key)?;
+        }
+        for key in signer_devices {
             handle.delete(&key)?;
         }
         for key in accounts {
@@ -973,7 +1083,9 @@ impl<'a> AccountBindingRepository<'a> {
     }
 
     /// Narrow `device` out of `group` at `scope_epoch`: raise the floor whatever
-    /// is bound, and drop a binding made under an older scope. No tombstone.
+    /// is bound, and drop a binding made under an older scope. No device
+    /// tombstone, so a widening re-enables it; the dropped binding's key is
+    /// recorded as in [`apply_revocation`](Self::apply_revocation).
     ///
     /// # Errors
     /// Propagates the store failure.
@@ -993,10 +1105,8 @@ impl<'a> AccountBindingRepository<'a> {
             Some(bound)
                 if bound.account == *account.as_bytes() && bound.scope_epoch < scope_epoch =>
             {
-                handle.delete(&GroupDeviceBinding::new(
-                    group.to_bytes(),
-                    *device.as_bytes(),
-                ))?;
+                self.record_withdrawn_signer(group, &PublicKey::from(bound.sign_pk))?;
+                self.delete_binding(group, device)?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -1055,28 +1165,63 @@ impl<'a> AccountBindingRepository<'a> {
     ///
     /// Also records the signing key the deleted binding named, since that is how a
     /// state delta names its author (see [`GroupRevokedSigner`]). A revocation that
-    /// arrives before its link has no binding to read, and records no key; the link
-    /// is then refused, so the device never speaks for the account here at all.
+    /// arrives before its link has no binding to read; the link it refuses records
+    /// the key instead, so the verdict does not depend on arrival order.
     ///
     /// # Errors
     /// Propagates the store read or write failure.
     pub fn apply_revocation(&self, group: &ContextGroupId, device: DeviceId) -> EyreResult<()> {
-        let bound = self.raw_binding(group, device)?;
-        let mut handle = self.store.handle();
-        if let Some(bound) = bound {
-            handle.put(
-                &GroupRevokedSigner::new(group.to_bytes(), bound.sign_pk),
-                &(),
-            )?;
+        if let Some(bound) = self.raw_binding(group, device)? {
+            self.record_withdrawn_signer(group, &PublicKey::from(bound.sign_pk))?;
         }
-        handle.put(
+        self.store.handle().put(
             &GroupRevokedDevice::new(group.to_bytes(), *device.as_bytes()),
             &(),
         )?;
-        handle.delete(&GroupDeviceBinding::new(
-            group.to_bytes(),
-            *device.as_bytes(),
-        ))?;
+        self.delete_binding(group, device)
+    }
+
+    /// Store `device`'s binding and keep the [`GroupSignerDevice`] index in step:
+    /// the row for the binding's key is written, and the one for the key it
+    /// replaces, if any, is removed. Every binding write goes through here.
+    fn put_binding(
+        &self,
+        group: &ContextGroupId,
+        device: DeviceId,
+        value: &GroupDeviceBindingValue,
+    ) -> EyreResult<()> {
+        let gid = group.to_bytes();
+        let mut handle = self.store.handle();
+        if let Some(previous) = self.raw_binding(group, device)? {
+            if previous.sign_pk != value.sign_pk {
+                handle.delete(&GroupSignerDevice::new(
+                    gid,
+                    previous.sign_pk,
+                    *device.as_bytes(),
+                ))?;
+            }
+        }
+        handle.put(&GroupDeviceBinding::new(gid, *device.as_bytes()), value)?;
+        handle.put(
+            &GroupSignerDevice::new(gid, value.sign_pk, *device.as_bytes()),
+            &(),
+        )?;
+        Ok(())
+    }
+
+    /// Delete `device`'s binding and its [`GroupSignerDevice`] index row. Every
+    /// binding delete goes through here.
+    fn delete_binding(&self, group: &ContextGroupId, device: DeviceId) -> EyreResult<()> {
+        let gid = group.to_bytes();
+        let mut handle = self.store.handle();
+        if let Some(previous) = self.raw_binding(group, device)? {
+            handle.delete(&GroupSignerDevice::new(
+                gid,
+                previous.sign_pk,
+                *device.as_bytes(),
+            ))?;
+        }
+        handle.delete(&GroupDeviceBinding::new(gid, *device.as_bytes()))?;
         Ok(())
     }
 }
@@ -1132,6 +1277,34 @@ mod tests {
             device_epoch,
         )
         .expect("sign")
+    }
+
+    /// The point reads must answer exactly what a search of `live_bindings` does:
+    /// `binding_for_sign_pk` for each key seed, `is_device_linked` and
+    /// `live_binding` for each device.
+    fn assert_point_reads_agree(
+        repo: &AccountBindingRepository<'_>,
+        gid: &ContextGroupId,
+        key_seeds: &[u8],
+        devices: &[DeviceId],
+    ) {
+        let live = repo.live_bindings(gid).expect("read");
+        for seed in key_seeds {
+            let sign_pk = key(*seed).public_key();
+            assert_eq!(
+                repo.binding_for_sign_pk(gid, &sign_pk).expect("read"),
+                live.iter().find(|b| b.sign_pk == sign_pk).copied(),
+                "binding_for_sign_pk disagrees for key {seed}"
+            );
+        }
+        for device in devices {
+            let expected = live.iter().find(|b| b.device == *device).copied();
+            assert_eq!(repo.live_binding(gid, *device).expect("read"), expected);
+            assert_eq!(
+                repo.is_device_linked(gid, *device).expect("read"),
+                expected.is_some()
+            );
+        }
     }
 
     #[test]
@@ -1234,6 +1407,13 @@ mod tests {
         assert!(repo
             .device_is_withdrawn(&sub, account, cert.device)
             .expect("read"));
+        assert_point_reads_agree(&repo, &ns, &[5], &[cert.device]);
+        assert_eq!(
+            repo.binding_for_sign_pk(&ns, &key(5).public_key())
+                .expect("read"),
+            None,
+            "a narrowed-out device's key resolves to nobody"
+        );
 
         repo.apply_link(&ns, &g, &[], &cert, 2)
             .expect("store")
@@ -1243,6 +1423,52 @@ mod tests {
                 .device_is_withdrawn(&sub, account, cert.device)
                 .expect("read"),
             "widened again, the device is bound and acts"
+        );
+        assert_point_reads_agree(&repo, &ns, &[5], &[cert.device]);
+    }
+
+    /// A re-paired node keeps its signing key under a fresh device, so one key
+    /// can name several bindings. The index holds one row per device, and the
+    /// lookup answers what a search of `live_bindings` does whichever of them is
+    /// live: the lower device id while both are, the other once it is revoked.
+    #[test]
+    fn a_signing_key_bound_to_two_devices_resolves_to_its_live_one() {
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let g = genesis_for(1);
+        let account = g.account_id();
+        let cert_on = |nonce: u8| {
+            DeviceCert::sign(
+                &key(1),
+                account,
+                DeviceId::mint(account, [nonce; 16]),
+                &key(5).public_key(),
+                &KemPublicKey::from([nonce; 32]),
+                0,
+                0,
+            )
+            .expect("sign")
+        };
+        let (first, second) = (cert_on(0x10), cert_on(0x20));
+        for cert in [&first, &second] {
+            let _ = repo
+                .apply_link(&gid, &g, &[], cert, 0)
+                .expect("store")
+                .expect("admitted");
+        }
+        let devices = [first.device, second.device];
+        assert_point_reads_agree(&repo, &gid, &[5], &devices);
+
+        let lower = first.device.min(second.device);
+        let higher = first.device.max(second.device);
+        repo.apply_revocation(&gid, lower).expect("revoke");
+        assert_point_reads_agree(&repo, &gid, &[5], &devices);
+        assert_eq!(
+            repo.binding_for_sign_pk(&gid, &key(5).public_key())
+                .expect("read")
+                .map(|b| b.device),
+            Some(higher)
         );
     }
 
@@ -1446,6 +1672,7 @@ mod tests {
             for cert in order {
                 let _ = repo.apply_link(&gid, &g, &[], cert, 0).expect("store");
             }
+            assert_point_reads_agree(&repo, &gid, &[5, 6], &[low, high]);
             let mut live: Vec<DeviceId> = repo
                 .live_bindings(&gid)
                 .expect("read")
@@ -1550,6 +1777,7 @@ mod tests {
                     Step::Revoke => repo.apply_revocation(&gid, doomed.device).expect("revoke"),
                 }
             }
+            assert_point_reads_agree(&repo, &gid, &[1, 2, 5, 6, 7], &[low, high, doomed.device]);
             let mut live: Vec<DeviceId> = repo
                 .live_bindings(&gid)
                 .expect("read")
@@ -1673,6 +1901,11 @@ mod tests {
             None
         );
         assert!(repo.live_bindings(&gid).expect("read").is_empty());
+        assert_eq!(
+            repo.binding_for_sign_pk(&gid, &key(5).public_key())
+                .expect("read"),
+            None
+        );
         assert!(
             !repo.is_revoked(&gid, doomed.device).expect("read"),
             "a terminal tombstone must not outlive the group it describes"
@@ -1684,6 +1917,7 @@ mod tests {
 
         // The other group is untouched.
         assert_eq!(repo.live_bindings(&other).expect("read").len(), 1);
+        assert_point_reads_agree(&repo, &other, &[5, 6], &[live.device, doomed.device]);
         assert!(repo.is_revoked(&other, doomed.device).expect("read"));
         assert!(repo
             .account_key(&other, g.account_id())
@@ -1846,6 +2080,15 @@ mod tests {
         let live = repo.live_bindings(&gid).expect("read");
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].sign_pk, key(7).public_key());
+
+        // The rotation moved the signer index with the binding: the retired key
+        // resolves to nothing, the new one to the device.
+        assert_point_reads_agree(&repo, &gid, &[5, 7], &[v0.device]);
+        assert_eq!(
+            repo.binding_for_sign_pk(&gid, &key(5).public_key())
+                .expect("read"),
+            None
+        );
     }
 
     #[test]

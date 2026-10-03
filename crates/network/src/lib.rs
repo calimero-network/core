@@ -116,6 +116,14 @@ pub struct NetworkManager {
     /// Detects and repairs a subscriber table that has fallen out of step with
     /// the peers we are actually meshed with. See [`subscription_repair`].
     subscription_repair: SubscriptionRepair,
+    /// Set by [`CloseAllConnections`] at shutdown, after which the node
+    /// connects to nothing. See [`handlers::commands::close_all_connections`].
+    ///
+    /// [`CloseAllConnections`]: calimero_network_primitives::messages::CloseAllConnections
+    closing_all_connections: bool,
+    /// Callers of `CloseAllConnections` waiting for the last connection to
+    /// close.
+    pending_close_all: Vec<oneshot::Sender<()>>,
     metrics: Metrics,
 }
 
@@ -181,6 +189,8 @@ impl NetworkManager {
             identity: config.identity.clone(),
             inbound_record_quota: InboundRecordQuota::default(),
             subscription_repair: SubscriptionRepair::default(),
+            closing_all_connections: false,
+            pending_close_all: Vec::new(),
             metrics: Metrics::new(prom_registry),
         };
 

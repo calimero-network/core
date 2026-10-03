@@ -351,6 +351,12 @@ const DEFAULT_MAX_GAS: u64 = 1_000_000_000;
 /// depending on the value, so treat it as consensus-affecting: every node must
 /// use the same one.
 const DEFAULT_MAX_TABLE_ELEMENTS: u32 = 100_000;
+const DEFAULT_MAX_HOST_CALLS: u64 = 1_000_000; // 10x the ~99k calls a real app makes before gas runs out
+const DEFAULT_MAX_HOST_BYTES_MIB: u64 = 10
+    * (DEFAULT_MAX_BLOB_TOTAL_SIZE_MIB
+        + DEFAULT_MAX_STORAGE_WRITE_BYTES_MIB
+        + DEFAULT_MAX_RETURN_VALUE_SIZE_MIB
+        + DEFAULT_MAX_ARTIFACT_SIZE_MIB); // filling every output budget uses a tenth
 /// Fixed capacity, in chunks, of the channel feeding each blob writer task.
 ///
 /// A blob is streamed chunk-by-chunk to the writer task over this channel; a
@@ -476,6 +482,12 @@ pub struct VMLimits {
     /// instantiation and after `table.grow`. A module declaring a larger
     /// minimum is not instantiated, and a smaller declared maximum still wins.
     pub max_table_elements: u32,
+    /// The maximum number of host calls one execution may make. Gas charges the guest's
+    /// side of a call, not the host's work; every node must use the same value.
+    pub max_host_calls: u64,
+    /// The maximum bytes host calls may copy into registers or across guest memory in
+    /// one execution; every node must use the same value.
+    pub max_host_bytes: u64,
 }
 
 impl VMLimits {
@@ -548,6 +560,8 @@ impl Default for VMLimits {
                 * u64::from(ONE_MIB),
             max_gas: DEFAULT_MAX_GAS,
             max_table_elements: DEFAULT_MAX_TABLE_ELEMENTS,
+            max_host_calls: DEFAULT_MAX_HOST_CALLS,
+            max_host_bytes: DEFAULT_MAX_HOST_BYTES_MIB * u64::from(ONE_MIB),
         }
     }
 }
@@ -637,6 +651,8 @@ pub struct VMLogic<'a> {
     blob_bytes_written: u64,
     /// `search_query` calls made so far, capped at `MAX_SEARCH_CALLS`.
     search_calls: u64,
+    /// Host calls made so far, capped at [`VMLimits::max_host_calls`].
+    host_calls: u64,
     /// The instance's gas meter, when it is metered. Set by the runtime once
     /// the instance exists; host functions charge their own work through
     /// [`owe_gas`](Self::owe_gas).
@@ -754,6 +770,7 @@ impl<'a> VMLogic<'a> {
             storage_read_bytes: 0,
             blob_bytes_written: 0,
             search_calls: 0,
+            host_calls: 0,
             gas_meter: None,
             host_gas_owed: 0,
             gas_used: None,
@@ -793,6 +810,33 @@ impl<'a> VMLogic<'a> {
             self.limits.max_storage_write_bytes,
             bytes,
         )
+    }
+
+    /// Charges one host call against [`VMLimits::max_host_calls`]; the import
+    /// wrapper runs it before every host function.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::HostCallLimitExceeded`] once the count would exceed the limit.
+    pub(crate) fn charge_host_call(&mut self) -> VMLogicResult<()> {
+        if self.host_calls >= self.limits.max_host_calls {
+            return Err(HostError::HostCallLimitExceeded {
+                max: self.limits.max_host_calls,
+            }
+            .into());
+        }
+        self.host_calls += 1;
+        Ok(())
+    }
+
+    /// Charges `bytes` read from or written to guest memory against the budget
+    /// register writes also draw on.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::HostBytesLimitExceeded`] once the total would exceed [`VMLimits::max_host_bytes`].
+    fn charge_host_bytes(&self, bytes: usize) -> VMLogicResult<()> {
+        self.registers.charge_host_bytes(self.limits, bytes)
     }
 
     /// Charges `bytes` of blob write payload against the per-execution total
@@ -1157,6 +1201,17 @@ impl VMHostFunctions<'_> {
             "read_guest_memory_slice"
         );
 
+        self.read_guest_memory(ptr, len)
+    }
+
+    /// Reads `len` bytes of guest memory at `ptr`, for a host function handed a
+    /// raw pointer and length rather than a `sys::Buffer` descriptor.
+    ///
+    /// # Errors
+    ///
+    /// * `HostError::InvalidMemoryAccess` if `ptr..ptr + len` is out of bounds.
+    /// * `HostError::HostBytesLimitExceeded` past [`VMLimits::max_host_bytes`].
+    fn read_guest_memory(&self, ptr: usize, len: usize) -> VMLogicResult<&[u8]> {
         let memory = self.borrow_memory();
         let memory_size = memory.data_size() as usize;
 
@@ -1165,6 +1220,7 @@ impl VMHostFunctions<'_> {
         if end > memory_size {
             return Err(HostError::InvalidMemoryAccess.into());
         }
+        self.borrow_logic().charge_host_bytes(len)?;
 
         // SAFETY: We have verified that ptr..ptr+len is within the memory bounds
         Ok(unsafe { &memory.data_unchecked()[ptr..end] })
@@ -1255,6 +1311,7 @@ impl VMHostFunctions<'_> {
         if end > memory_size {
             return Err(HostError::InvalidMemoryAccess.into());
         }
+        self.borrow_logic().charge_host_bytes(data.len())?;
 
         // Safe copy-out: `MemoryView::write` copies the bytes into guest memory
         // without exposing an aliasing mutable reference.
@@ -1621,6 +1678,8 @@ mod tests {
         assert_eq!(limits.max_return_value_size, 16 << 20); // 16 MiB
         assert_eq!(limits.max_method_name_length, 256);
         assert_eq!(limits.max_artifact_size, 16 << 20); // 16 MiB
+        assert_eq!(limits.max_host_calls, 1_000_000);
+        assert_eq!(limits.max_host_bytes, 6720 << 20); // 6720 MiB
     }
 
     /// A smoke test for the successful path of the `finish` method.

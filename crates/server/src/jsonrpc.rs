@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, field, info, info_span, warn, Instrument};
 use uuid::Uuid;
 
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner, ClientKeyScope};
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner, ClientKeyScope,
+    GrantedPermissions,
+};
 use crate::config::ServerConfig;
 use crate::execute::CallerIdentity;
 
@@ -43,8 +46,8 @@ pub(crate) struct ServiceState {
     node_client: NodeClient,
     /// Whether the auth guard is active on this service's routes. When `false`
     /// the server was intentionally started without auth (no-auth mode); when
-    /// `true` both `AuthenticatedKey` and `AuthenticatedNodeOwner` extensions
-    /// are expected to be injected by the guard on every request.
+    /// `true` the guard is expected to inject an identity extension on every
+    /// request.
     pub(crate) auth_enabled: bool,
 }
 
@@ -92,6 +95,8 @@ async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
+    auth_account: Option<Extension<AuthenticatedAccount>>,
+    granted: Option<Extension<GrantedPermissions>>,
     client_scope: Option<Extension<ClientKeyScope>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
@@ -116,6 +121,8 @@ async fn handle_request(
         state,
         auth_key.map(|ext| ext.0),
         auth_node_owner.map(|ext| ext.0),
+        auth_account.map(|ext| ext.0),
+        granted.map(|ext| ext.0),
         client_scope.map(|ext| ext.0),
         request,
     )
@@ -144,6 +151,8 @@ async fn handle_request_inner(
     state: Arc<ServiceState>,
     auth_key: Option<AuthenticatedKey>,
     auth_node_owner: Option<AuthenticatedNodeOwner>,
+    auth_account: Option<AuthenticatedAccount>,
+    granted: Option<GrantedPermissions>,
     client_scope: Option<ClientKeyScope>,
     request: PrimitiveRequest<serde_json::Value>,
 ) -> Json<PrimitiveResponse> {
@@ -200,7 +209,7 @@ async fn handle_request_inner(
                 debug!(args=%exec_request.args_json, "Received execution request");
 
                 let result = exec_request
-                    .handle(state, auth_key, auth_node_owner)
+                    .handle(state, auth_key, auth_node_owner, auth_account, granted)
                     .await
                     .to_res_body();
 
@@ -221,7 +230,7 @@ async fn handle_request_inner(
                 span.record("method", "sync_status");
 
                 status_request
-                    .handle(state, auth_key, auth_node_owner)
+                    .handle(state, auth_key, auth_node_owner, auth_account, granted)
                     .await
                     .to_res_body()
             }
@@ -231,7 +240,7 @@ async fn handle_request_inner(
                 span.record("method", "set_ephemeral");
 
                 set_req
-                    .handle(state, auth_key, auth_node_owner)
+                    .handle(state, auth_key, auth_node_owner, auth_account, granted)
                     .await
                     .to_res_body()
             }
@@ -263,17 +272,21 @@ pub(crate) trait Request {
         state: Arc<ServiceState>,
         auth_key: Option<AuthenticatedKey>,
         auth_node_owner: Option<AuthenticatedNodeOwner>,
+        auth_account: Option<AuthenticatedAccount>,
+        granted: Option<GrantedPermissions>,
     ) -> Result<Self::Response, RpcError<Self::Error>>;
 }
 
 /// Derive the caller identity for a JSON-RPC method from the auth extensions.
 ///
-/// Three auth paths, identical for every method that gates on it:
+/// Four auth paths, identical for every method that gates on it:
 ///   AuthenticatedKey       → token with a verified Ed25519 key; the caller
 ///                            must still pass the per-method membership check
 ///   AuthenticatedNodeOwner → non-key auth (embedded username/password);
 ///                            implicitly authorized for all contexts
-///   neither                → no extensions injected; two sub-cases
+///   AuthenticatedAccount   → an account-anchored session; `execute` and
+///                            `set_ephemeral` act as the node's own identity, so refused
+///   none of them           → no extensions injected; two sub-cases
 ///                            distinguished by `state.auth_enabled`:
 ///                             - auth enabled  → the guard ran but injected
 ///                               nothing; a misconfiguration. Reject rather
@@ -287,23 +300,29 @@ fn caller_identity<'a, E>(
     state: &ServiceState,
     auth_key: Option<&'a AuthenticatedKey>,
     auth_node_owner: Option<&AuthenticatedNodeOwner>,
+    auth_account: Option<&AuthenticatedAccount>,
     method: &str,
+    account_refusal: impl FnOnce() -> E,
 ) -> Result<CallerIdentity<'a>, RpcError<E>> {
-    match auth_key {
-        Some(k) => Ok(CallerIdentity::Key(&k.0)),
-        None => {
-            if auth_node_owner.is_none() {
-                if state.auth_enabled {
-                    warn!(
-                        %method,
-                        "No auth extensions present on JSON-RPC request — auth guard may not be running"
-                    );
-                    return Err(RpcError::InternalError(eyre::eyre!(
-                        "authentication required"
-                    )));
-                }
-                debug!(%method, "No-auth mode: JSON-RPC request proceeding without membership check");
+    match (auth_key, auth_node_owner, auth_account) {
+        (Some(k), _, _) => Ok(CallerIdentity::Key(&k.0)),
+        // Ahead of the node-owner arm, so a request ever carrying both fails closed.
+        (None, _, Some(AuthenticatedAccount(account))) => {
+            debug!(%method, %account, "refusing JSON-RPC call from an account-anchored session");
+            Err(RpcError::MethodCallError(account_refusal()))
+        }
+        (None, Some(_), None) => Ok(CallerIdentity::NodeOwner),
+        (None, None, None) => {
+            if state.auth_enabled {
+                warn!(
+                    %method,
+                    "No auth extensions present on JSON-RPC request - auth guard may not be running"
+                );
+                return Err(RpcError::InternalError(eyre::eyre!(
+                    "authentication required"
+                )));
             }
+            debug!(%method, "No-auth mode: JSON-RPC request proceeding without membership check");
             Ok(CallerIdentity::NodeOwner)
         }
     }
@@ -387,5 +406,123 @@ mod client_key_binding_tests {
         let s = scope(&[application_binding("app-a"), "context:execute".to_owned()]);
 
         assert!(binding_refusal(&t.state, Some(&s), &ContextId::from([3; 32])).is_some());
+    }
+}
+
+#[cfg(test)]
+mod proxy_tenant_tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{header, Request as HttpRequest};
+    use axum::routing::{post, Router};
+    use axum::Extension;
+    use calimero_account::AccountId;
+    use calimero_primitives::context::ContextId;
+    use calimero_server_primitives::jsonrpc::{
+        ExecutionRequest, Request as PrimitiveRequest, RequestId, RequestPayload,
+        SetEphemeralRequest, Version,
+    };
+    use calimero_utils_actix::LazyRecipient;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    use super::test_support::state_with;
+    use super::{caller_identity, handle_request, RpcError};
+    use crate::auth::{AuthenticatedAccount, AuthenticatedNodeOwner};
+
+    /// `/jsonrpc` as a proxy-mode node mounts it with `proxy_identity` on: no
+    /// embedded guard, identity taken from the proxy's headers.
+    async fn call_behind_proxy(account: Option<AccountId>, payload: RequestPayload) -> Value {
+        let t = state_with(false, LazyRecipient::new()).await;
+        let router = Router::new().route(
+            "/",
+            post(handle_request).layer(Extension(Arc::clone(&t.state))),
+        );
+        let app = crate::service_mounts::with_optional_auth(router, None, None, true);
+
+        let body = PrimitiveRequest::new(Version::TwoPointZero, RequestId::Number(1), payload);
+        let mut request = HttpRequest::post("/").header(header::CONTENT_TYPE, "application/json");
+        if let Some(account) = account {
+            request = request.header("x-auth-account", account.to_string());
+        }
+        let response = app
+            .oneshot(
+                request
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn execute() -> RequestPayload {
+        RequestPayload::Execute(ExecutionRequest::new(
+            ContextId::from([0x51; 32]),
+            "set".to_owned(),
+            json!({}),
+        ))
+    }
+
+    fn set_ephemeral() -> RequestPayload {
+        RequestPayload::SetEphemeral(SetEphemeralRequest::new(
+            ContextId::from([0x52; 32]),
+            vec![1, 2, 3],
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_proxy_tenant_cannot_execute_as_the_node() {
+        let resp = call_behind_proxy(Some(AccountId::from([0x53; 32])), execute()).await;
+
+        assert!(
+            resp.to_string().contains("submit a warranted intent"),
+            "refused as an account session, before the node's identity is resolved: {resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proxy_tenant_cannot_publish_presence_as_the_node() {
+        let resp = call_behind_proxy(Some(AccountId::from([0x54; 32])), set_ephemeral()).await;
+
+        assert_eq!(
+            resp["error"]["type"],
+            json!("Unauthorized"),
+            "refused before the node's identity is resolved: {resp}"
+        );
+    }
+
+    /// No guard sets both today; if one ever does, the account still decides.
+    #[tokio::test]
+    async fn an_account_beside_a_node_owner_marker_is_still_refused() {
+        let t = state_with(true, LazyRecipient::new()).await;
+        let account = AuthenticatedAccount(AccountId::from([0x55; 32]));
+
+        let result = caller_identity(
+            &t.state,
+            None,
+            Some(&AuthenticatedNodeOwner),
+            Some(&account),
+            "execute",
+            || "refused",
+        );
+
+        assert!(matches!(result, Err(RpcError::MethodCallError("refused"))));
+    }
+
+    /// A request the proxy names no account for is still the operator's.
+    #[tokio::test]
+    async fn a_proxy_request_without_an_account_keeps_the_node_owners_reach() {
+        let resp = call_behind_proxy(None, set_ephemeral()).await;
+
+        assert_eq!(
+            resp["error"]["type"],
+            json!("NoOwnedIdentity"),
+            "reaches identity resolution: {resp}"
+        );
     }
 }

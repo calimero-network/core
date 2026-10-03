@@ -50,6 +50,7 @@ use tracing::{debug, info, warn};
 
 use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
 use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
+use super::metrics::SessionCost;
 
 /// Methods on `SyncManager` that the protocol-dispatch path calls
 /// back into. Mirrors the [`super::reconciler::ReconcileSyncDispatch`]
@@ -89,6 +90,13 @@ pub(crate) trait ProtocolDispatch {
     /// `party_id`. See [`InitProof`].
     async fn build_init_pop(&self, context_id: ContextId, party_id: PublicKey)
         -> Option<InitProof>;
+
+    /// Where session cost is recorded. The selector is built before the
+    /// node installs its collector, so it reads it through the dispatcher.
+    fn metrics(&self) -> &dyn super::metrics::SyncMetricsCollector {
+        static NOOP: super::metrics::NoOpMetrics = super::metrics::NoOpMetrics;
+        &NOOP
+    }
 }
 
 /// Protocol-dispatch component.
@@ -306,6 +314,16 @@ impl ProtocolSelector {
                             deferred_root_merges = stats.deferred_root_merges.len(),
                             "HashComparison sync completed successfully"
                         );
+                        dispatch.metrics().record_session_cost(
+                            "HashComparison",
+                            SessionCost {
+                                round_trips: stats.requests_sent,
+                                comparisons: stats.nodes_compared,
+                                entities_transferred: stats
+                                    .entities_merged
+                                    .saturating_add(stats.entities_pushed),
+                            },
+                        );
 
                         // Dispatch any deferred root-entity merges through
                         // the WASM module. HC's DFS can't merge root
@@ -449,15 +467,25 @@ impl ProtocolSelector {
                     init_pop: dispatch.build_init_pop(context_id, our_identity).await,
                 };
 
-                match LevelWiseProtocol::run_initiator(
+                let outcome = LevelWiseProtocol::run_initiator(
                     &mut transport,
                     &store,
                     context_id,
                     our_identity,
                     config,
                 )
-                .await
-                {
+                .await;
+                // LevelWise merges into storage without writing `root_hash`
+                // (HashComparison re-anchors inside its initiator). A failed
+                // session may still have merged some levels, so re-anchor
+                // either way.
+                super::helpers::reanchor_after_entity_merge(
+                    &self.context_client,
+                    context_id,
+                    "level-wise initiator",
+                )
+                .await;
+                match outcome {
                     Ok(stats) => {
                         info!(
                             %context_id,
@@ -467,6 +495,14 @@ impl ProtocolSelector {
                             nodes_skipped = stats.nodes_skipped,
                             deferred_root_merges = stats.deferred_root_merges.len(),
                             "LevelWise sync completed successfully"
+                        );
+                        dispatch.metrics().record_session_cost(
+                            "LevelWise",
+                            SessionCost {
+                                round_trips: stats.requests_sent,
+                                comparisons: stats.nodes_compared,
+                                entities_transferred: stats.entities_merged,
+                            },
                         );
 
                         // Same deferred-root-merge dispatch as HC; the

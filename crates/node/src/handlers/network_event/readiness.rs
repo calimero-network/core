@@ -18,7 +18,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use actix::{AsyncContext, WrapFuture};
 use calimero_context_client::local_governance::{ReadinessProbe, SignedReadinessBeacon};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::verify_readiness_beacon;
@@ -141,7 +140,7 @@ fn participant_without_governance_state(store: &Store, namespace_id: [u8; 32]) -
 
 pub(super) fn handle_readiness_beacon(
     manager: &mut NodeManager,
-    ctx: &mut actix::Context<NodeManager>,
+    _ctx: &mut actix::Context<NodeManager>,
     peer_id: PeerId,
     beacon: SignedReadinessBeacon,
 ) {
@@ -197,28 +196,26 @@ pub(super) fn handle_readiness_beacon(
                     "stranded member: unverifiable beacon signals a reachable peer, pulling from it"
                 );
                 let sync_manager = manager.managers.sync.clone();
-                let _ignored = ctx.spawn(
-                    async move {
-                        let ops = sync_manager
-                            .sync_namespace_from_peer(stranded_ns, Some(peer_id), None)
-                            .await;
-                        debug!(
-                            %peer_id,
-                            namespace_id = %hex::encode(stranded_ns),
-                            ops,
-                            "stranded-member recovery: pulled governance from beacon signer"
-                        );
-                        sync_manager
-                            .recover_missing_group_keys(stranded_ns, Some(peer_id))
-                            .await;
-                        debug!(
-                            %peer_id,
-                            namespace_id = %hex::encode(stranded_ns),
-                            "stranded-member recovery: key pull complete"
-                        );
-                    }
-                    .into_actor(manager),
-                );
+                // Detached from the actor context so a restart cannot cancel an apply halfway.
+                drop(actix::spawn(async move {
+                    let ops = sync_manager
+                        .sync_namespace_from_peer(stranded_ns, Some(peer_id), None)
+                        .await;
+                    debug!(
+                        %peer_id,
+                        namespace_id = %hex::encode(stranded_ns),
+                        ops,
+                        "stranded-member recovery: pulled governance from beacon signer"
+                    );
+                    sync_manager
+                        .recover_missing_group_keys(stranded_ns, Some(peer_id))
+                        .await;
+                    debug!(
+                        %peer_id,
+                        namespace_id = %hex::encode(stranded_ns),
+                        "stranded-member recovery: key pull complete"
+                    );
+                }));
                 return;
             }
         }
@@ -247,7 +244,6 @@ pub(super) fn handle_readiness_beacon(
 
     spawn_beacon_divergence_sync(
         manager,
-        ctx,
         namespace_id,
         beacon.dag_head,
         applied_through,
@@ -274,7 +270,6 @@ pub(super) fn handle_readiness_beacon(
 /// Debounced through `ns_beacon_sync_debounce`; see that field's docs.
 fn spawn_beacon_divergence_sync(
     manager: &mut NodeManager,
-    ctx: &mut actix::Context<NodeManager>,
     namespace_id: [u8; 32],
     dag_head: [u8; 32],
     peer_applied_through: u64,
@@ -283,104 +278,102 @@ fn spawn_beacon_divergence_sync(
     let datastore = manager.datastore.clone();
     let sync_manager = manager.managers.sync.clone();
     let debounce = manager.ns_beacon_sync_debounce.clone();
-    let _ignored = ctx.spawn(
-        async move {
-            // No local state means mid-join, and the join flow owns that first
-            // sync (see `beacon_indicates_divergence`).
-            let Ok(local_has_state) = namespace_has_governance_state(&datastore, namespace_id)
-                .inspect_err(|err| {
-                    warn!(?err, namespace_id = %hex::encode(namespace_id),
-                          "beacon-divergence: namespace head read failed; skipping sync");
-                })
-            else {
-                return;
-            };
-            // `dag_head` is the beacon peer's namespace governance DAG
-            // head — an op `delta_id`, which is exactly the second
-            // component of the `NamespaceGovOp` store key. A point `get`
-            // therefore tests whether we have applied that op locally.
-            let handle = datastore.handle();
-            let head_op_present = match handle.get(&calimero_store::key::NamespaceGovOp::new(
-                namespace_id,
-                dag_head,
-            )) {
-                Ok(present) => present.is_some(),
-                Err(err) => {
-                    // A failed read is datastore-level and unexpected — do
-                    // NOT trigger a sync on unknown state. The next beacon
-                    // (~5s) retries.
-                    warn!(
-                        ?err,
-                        namespace_id = %hex::encode(namespace_id),
-                        "beacon-divergence: local DAG read failed; skipping sync"
-                    );
-                    return;
-                }
-            };
-            drop(handle);
-            // A namespace identity is what makes this node a member of the
-            // namespace at all — it is written by the join, before any key or
-            // governance state exists. So it is exactly the signal that
-            // separates "joined, but stranded with nothing" from "not our
-            // namespace", which must still be ignored.
-            let is_namespace_member = NamespaceRepository::new(&datastore)
-                .identity_record(&ContextGroupId::from(namespace_id))
-                .map(|record| record.is_some())
-                .unwrap_or(false);
-            // A failed read falls back to the peer's own count, so it reads as
-            // "not ahead": never sync on state we could not read.
-            let peer_applied_more = peer_applied_through
-                > read_local_applied_through(&datastore, namespace_id, peer_applied_through);
-            if !beacon_indicates_divergence(
-                local_has_state,
-                is_namespace_member,
-                dag_head,
-                head_op_present,
-                peer_applied_more,
-            ) {
+    // Detached from the actor context so a restart cannot cancel an apply halfway.
+    drop(actix::spawn(async move {
+        // No local state means mid-join, and the join flow owns that first
+        // sync (see `beacon_indicates_divergence`).
+        let Ok(local_has_state) = namespace_has_governance_state(&datastore, namespace_id)
+            .inspect_err(|err| {
+                warn!(?err, namespace_id = %hex::encode(namespace_id),
+                      "beacon-divergence: namespace head read failed; skipping sync");
+            })
+        else {
+            return;
+        };
+        // `dag_head` is the beacon peer's namespace governance DAG
+        // head — an op `delta_id`, which is exactly the second
+        // component of the `NamespaceGovOp` store key. A point `get`
+        // therefore tests whether we have applied that op locally.
+        let handle = datastore.handle();
+        let head_op_present = match handle.get(&calimero_store::key::NamespaceGovOp::new(
+            namespace_id,
+            dag_head,
+        )) {
+            Ok(present) => present.is_some(),
+            Err(err) => {
+                // A failed read is datastore-level and unexpected — do
+                // NOT trigger a sync on unknown state. The next beacon
+                // (~5s) retries.
+                warn!(
+                    ?err,
+                    namespace_id = %hex::encode(namespace_id),
+                    "beacon-divergence: local DAG read failed; skipping sync"
+                );
                 return;
             }
-            // Divergence confirmed. Claim the debounce slot atomically;
-            // if another beacon already triggered a sync for this
-            // namespace on this path within the window, skip. The guard
-            // is dropped before the `.await` below, so the lock is never
-            // held across an await point.
-            {
-                let mut guard = debounce
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !debounce_allows_sync(&mut guard, namespace_id, Instant::now()) {
-                    return;
-                }
-            }
-            info!(
-                namespace_id = %hex::encode(namespace_id),
-                dag_head = %hex::encode(dag_head),
-                %beacon_peer,
-                peer_applied_more,
-                "beacon shows the peer holds namespace governance we do not; \
-                 triggering governance sync"
-            );
-            // Ask the beacon's own signer: it just advertised state we lack, while
-            // a discovered subscriber may be exactly as far behind as we are.
-            //
-            // Run inline rather than queueing through `NodeClient::sync_namespace`:
-            // that queue carries only a namespace id, with nowhere to name the peer.
-            //
-            // The slot is deliberately NOT released on a zero-op pull, or every
-            // beacon would re-trigger one; the debounce window IS the retry interval.
-            let ops = sync_manager
-                .sync_namespace_from_peer(namespace_id, Some(beacon_peer), None)
-                .await;
-            debug!(
-                namespace_id = %hex::encode(namespace_id),
-                %beacon_peer,
-                ops,
-                "beacon-triggered namespace governance pull finished"
-            );
+        };
+        drop(handle);
+        // A namespace identity is what makes this node a member of the
+        // namespace at all — it is written by the join, before any key or
+        // governance state exists. So it is exactly the signal that
+        // separates "joined, but stranded with nothing" from "not our
+        // namespace", which must still be ignored.
+        let is_namespace_member = NamespaceRepository::new(&datastore)
+            .identity_record(&ContextGroupId::from(namespace_id))
+            .map(|record| record.is_some())
+            .unwrap_or(false);
+        // A failed read falls back to the peer's own count, so it reads as
+        // "not ahead": never sync on state we could not read.
+        let peer_applied_more = peer_applied_through
+            > read_local_applied_through(&datastore, namespace_id, peer_applied_through);
+        if !beacon_indicates_divergence(
+            local_has_state,
+            is_namespace_member,
+            dag_head,
+            head_op_present,
+            peer_applied_more,
+        ) {
+            return;
         }
-        .into_actor(manager),
-    );
+        // Divergence confirmed. Claim the debounce slot atomically;
+        // if another beacon already triggered a sync for this
+        // namespace on this path within the window, skip. The guard
+        // is dropped before the `.await` below, so the lock is never
+        // held across an await point.
+        {
+            let mut guard = debounce
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !debounce_allows_sync(&mut guard, namespace_id, Instant::now()) {
+                return;
+            }
+        }
+        info!(
+            namespace_id = %hex::encode(namespace_id),
+            dag_head = %hex::encode(dag_head),
+            %beacon_peer,
+            peer_applied_more,
+            "beacon shows the peer holds namespace governance we do not; \
+             triggering governance sync"
+        );
+        // Ask the beacon's own signer: it just advertised state we lack, while
+        // a discovered subscriber may be exactly as far behind as we are.
+        //
+        // Run inline rather than queueing through `NodeClient::sync_namespace`:
+        // that queue carries only a namespace id, with nowhere to name the peer.
+        //
+        // The slot is deliberately NOT released on a zero-op pull, or every
+        // beacon would re-trigger one; the debounce window IS the retry interval.
+        let ops = sync_manager
+            .sync_namespace_from_peer(namespace_id, Some(beacon_peer), None)
+            .await;
+        debug!(
+            namespace_id = %hex::encode(namespace_id),
+            %beacon_peer,
+            ops,
+            "beacon-triggered namespace governance pull finished"
+        );
+    }));
 }
 
 pub(super) fn handle_readiness_probe(

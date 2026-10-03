@@ -20,6 +20,13 @@ use tracing::{debug, error, info, warn};
 // Timeout settings for blob serving
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
 
+// A requester sends its request as soon as the stream opens (shorter under test).
+pub(crate) const BLOB_REQUEST_READ_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(3)
+} else {
+    Duration::from_secs(10)
+};
+
 // Replay-protection window for a signed blob request: the auth envelope's
 // timestamp must be within 30s in the past / 10s in the future. Tight on
 // purpose — it bounds how long a captured BlobAuth can be replayed — while
@@ -40,7 +47,15 @@ pub async fn handle_blob_protocol_stream(
     info!(%peer_id, "Starting blob protocol stream handler");
 
     // Read the first message which should be a blob request
-    let first_message = match stream.next().await {
+    let Ok(first_message) = timeout(BLOB_REQUEST_READ_TIMEOUT, stream.next()).await else {
+        debug!(
+            %peer_id,
+            timeout_secs = BLOB_REQUEST_READ_TIMEOUT.as_secs(),
+            "Blob protocol stream sent no request in time; dropping it"
+        );
+        return Ok(());
+    };
+    let first_message = match first_message {
         Some(Ok(msg)) => msg,
         Some(Err(e)) => {
             debug!(%peer_id, error = %e, "Error reading blob request from stream");
@@ -514,13 +529,7 @@ mod tests {
             .expect("store user data");
         let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
         node_client
-            .write_application_row(
-                &ApplicationId::from([0x7A; 32]),
-                &bytecode,
-                size,
-                &source,
-                None,
-            )
+            .write_application_row(&ApplicationId::from([0x7A; 32]), &bytecode, size, &source)
             .expect("install the application");
 
         let http = node_client.clone().with_registry(RegistryConfig::new(
@@ -847,7 +856,7 @@ mod tests {
         let application_id = ApplicationId::from(*context_id);
         let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
         node_client
-            .write_application_row(&application_id, &bytecode_id, size, &source, None)
+            .write_application_row(&application_id, &bytecode_id, size, &source)
             .expect("install the application");
 
         let mut handle = store.handle();

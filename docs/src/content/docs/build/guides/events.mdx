@@ -91,10 +91,10 @@ impl KvStore {
   arguments.
 </Aside>
 
-<Aside type="note" title="Handlers can mutate state">
-  A handler is just another method, so it can write state — here it bumps a
-  `Counter`. Use the plain one-argument `emit!` when you only want to notify
-  clients, and the tuple form when you also want in-app logic to run.
+<Aside type="note" title="Handlers change only this context's state">
+  A handler is just another method, so it can write state: here it bumps a `Counter`.
+  It runs on every receiving node, possibly more than once, with arguments the emitter chose, so it must be idempotent and commutative, with no external side effects.
+  Use the plain one-argument `emit!` when you only want to notify clients, and the tuple form when you also want in-app logic to run.
 </Aside>
 
 ## Exercise it
