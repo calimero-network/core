@@ -13453,3 +13453,210 @@ fn group_created_for_existing_foreign_group_is_rejected() {
         parent == Some(root_b),
     );
 }
+
+/// Re-feeding a `KeyDelivery` this node already applied must not re-rank its key.
+///
+/// The sealed-root retry has no applied marker: every pass re-feeds every sealed
+/// root op in the log, and a `KeyDelivery` replayed that way used to store its
+/// key again, stamped with the namespace head as it stands at REPLAY time. The
+/// epoch of a key delivered long ago then climbed past that of a key a later
+/// rotation installed, and the stale key became the group's current key again —
+/// the key a removed member still holds. Seen on a relay as the same key
+/// "received via direct delivery" over and over, its epoch rising each time.
+///
+/// It also kept the retry chain busy: each re-stored key re-drove its group,
+/// which re-fed every sealed root op again one level down.
+#[test]
+fn a_replayed_key_delivery_does_not_outrank_a_later_rotation() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE8u8; 32]);
+    let sub_gid = ContextGroupId::from([0xE9u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0x41u8; 32]);
+    let admin_pk = admin_sk.public_key();
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0x42u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    let namespace_key = [0x5Au8; 32];
+    let delivered_key = [0x77u8; 32];
+    let rotated_key = [0x78u8; 32];
+
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &delivered_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+    let delivery = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], 1, sealed)
+        .expect("the admin signs the delivery");
+    crate::NamespaceOpLogService::new(&store, namespace_id.into())
+        .store_signed_operation(&delivery)
+        .expect("land the delivery in the log, unopened");
+
+    // The namespace key arrives and the parked delivery lands: the first, real
+    // application of the op.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+    super::governance::retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id)
+        .expect("the first retry pass runs");
+    let keyring = GroupKeyring::new(&store, sub_gid);
+    let delivered_id = GroupKeyring::key_id_for(&delivered_key);
+    let delivered_epoch = keyring
+        .key_epoch(&delivered_id)
+        .unwrap()
+        .expect("precondition: the delivery stored its key");
+
+    // Later, a removal rotates the subgroup key, and the namespace DAG moves on.
+    let rotation_epoch = delivered_epoch + 10;
+    let _ = keyring
+        .store_key_with_epoch(&rotated_key, rotation_epoch)
+        .unwrap();
+    store
+        .handle()
+        .put(
+            &calimero_store::key::NamespaceGovHead::new(namespace_id),
+            &calimero_store::key::NamespaceGovHeadValue {
+                sequence: rotation_epoch + 10,
+                dag_heads: vec![[0xAB; 32]],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        keyring.load_current_key().unwrap().map(|(_, key)| key),
+        Some(rotated_key),
+        "precondition: the rotated key is current"
+    );
+
+    // Any later key arrival runs the pass again, and it re-feeds the delivery.
+    super::governance::retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id)
+        .expect("a later retry pass runs");
+
+    assert_eq!(
+        keyring.key_epoch(&delivered_id).unwrap(),
+        Some(delivered_epoch),
+        "a re-fed delivery of a key already held must leave its epoch where it was"
+    );
+    assert_eq!(
+        keyring.load_current_key().unwrap().map(|(_, key)| key),
+        Some(rotated_key),
+        "and must not make the pre-rotation key current again"
+    );
+}
+
+/// Re-feeding a `GroupCreated` this node already folded must change nothing.
+///
+/// The sealed-root retry re-feeds every sealed root op in the log on every
+/// pass. A `GroupCreated` is not a no-op the second time: its fold seats the
+/// creator as the group's admin, so a creator removed since had its row put
+/// back by the next key arrival. And once the group had been moved, the replay
+/// was refused on every pass ("already exists under <new parent>") — the
+/// warning a relay logged several times a second, for an op it had applied
+/// long before.
+#[test]
+fn a_replayed_group_created_does_not_undo_later_governance() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    let store = test_store();
+    let ns_id = [0xB0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+
+    // The creator is a remote admin; this node is another member. Its own ops
+    // are skipped by the retry pass, so the creator must not be this node.
+    let creator_sk = PrivateKey::from([0x51u8; 32]);
+    let creator = enrol_member(&store, &ns_gid, &creator_sk.public_key());
+    let our_sk = PrivateKey::from([0x52u8; 32]);
+    let our_account = enrol_member(&store, &ns_gid, &our_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(creator))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &creator, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_sk.public_key(), our_sk.as_bytes())
+        .unwrap();
+
+    let moved = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &creator, ns_id, true, 0xC1,
+    ));
+    let kept = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &creator, ns_id, true, 0xC2,
+    ));
+    for (nonce, tag) in [(1, 0xC1), (2, 0xC2)] {
+        let op = SignedNamespaceOp::sign(
+            &creator_sk,
+            ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &store,
+                ns_gid,
+                crate::test_fixtures::group_created(creator, ns_id, true, tag),
+            ),
+        )
+        .expect("sign GroupCreated");
+        let _ = NamespaceGovernance::new(&store, ns_id.into())
+            .apply_signed_op(&op)
+            .expect("the creator's subgroup folds on arrival");
+    }
+
+    // Later governance: one group is moved under the other, and the creator is
+    // removed from the one that stayed.
+    let _ = NamespaceRepository::new(&store)
+        .reparent(&moved, &kept)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&kept, &creator)
+        .unwrap();
+
+    // A key arrival runs the pass, which re-feeds both creates.
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id.into(), ns_id)
+        .expect("the retry pass runs");
+
+    assert_eq!(
+        NamespaceRepository::new(&store).parent(&moved).unwrap(),
+        Some(kept),
+        "a re-fed create must not move a group back"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&kept, &creator)
+            .unwrap(),
+        "a re-fed create must not re-seat a creator who was removed since"
+    );
+}
