@@ -2341,6 +2341,8 @@ pub struct SignedNamespaceOp {
 /// v22: `GroupOp::SharedWritersRotated` carries a `SharedStorage` cell's writer-set
 /// rotation. Appended after `RootGuarded`, so no discriminant moves; an older node
 /// cannot decode it. A coordinated upgrade.
+/// - core#4453: a capability revoke voids the member's concurrent ops that needed
+///   a removed bit. Nothing moves on the wire, but a v21 node applies them.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 22;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
