@@ -13,6 +13,7 @@ use eyre::Result;
 use serde::Serialize;
 
 use super::{ClientAuthenticator, ClientStorage};
+use crate::connection::NETWORK_BOUND_REQUEST_TIMEOUT;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -251,9 +252,10 @@ where
     ) -> Result<JoinNamespaceApiResponse> {
         let response = self
             .connection
-            .post(
+            .post_with_timeout(
                 &format!("admin-api/namespaces/{namespace_id}/join"),
                 request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
             )
             .await?;
         Ok(response)

@@ -70,12 +70,15 @@ impl SyncManager {
             release_version,
         } = params;
 
-        let routes =
-            super::namespace_join::group_admitter_routes(&admitter_addrs, MAX_ADMITTER_MACHINES);
+        let routes = super::namespace_join::group_admitter_routes(
+            &admitter_addrs,
+            MAX_ADMITTER_MACHINES,
+            &self.local_peer_id().await,
+        );
         if routes.is_empty() {
             eyre::bail!(
                 "no dialable admitter address for namespace {} (need multiaddrs ending in \
-                 /p2p/<peer id>)",
+                 /p2p/<peer id> naming a peer other than this node)",
                 hex::encode(namespace_id)
             );
         }
@@ -141,8 +144,7 @@ impl SyncManager {
         pop: Option<calimero_node_primitives::sync::InitProof>,
     ) -> Result<(), String> {
         let mut stream = self
-            .sync_network
-            .open_stream(peer)
+            .open_stream_bounded(peer)
             .await
             .map_err(|e| format!("could not open a stream: {e}"))?;
 
@@ -354,6 +356,61 @@ mod tests {
                 panic!("a verdict is not re-checked")
             });
         assert!(!admitted);
+    }
+}
+
+#[cfg(test)]
+mod initiator_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_node_primitives::sync::InitPayload;
+    use calimero_primitives::identity::PublicKey;
+    use libp2p::PeerId;
+
+    use crate::sync::manager::namespace_sync::group_key_recovery_anchor_tests::manager;
+    use crate::sync::network::mock::MockSyncNetwork;
+
+    fn request() -> InitPayload {
+        InitPayload::TeeAdmissionRequest {
+            namespace_id: [0x7E; 32],
+            quote_bytes: Vec::new(),
+            public_key: PublicKey::from([0x11; 32]),
+            nonce: [0x22; 32],
+            account: calimero_governance_store::test_fixtures::real_join_account(&PublicKey::from(
+                [0x11; 32],
+            )),
+        }
+    }
+
+    /// An admitter whose stream open is never answered costs the open budget,
+    /// not forever. libp2p leaves the open pending when the dial it waits on
+    /// fails without a connection — a dial to this node's own peer id does —
+    /// and fleet-join, and the sync loop running the request, waited with it.
+    #[tokio::test(start_paused = true)]
+    async fn a_stream_open_that_never_answers_gives_up_at_the_open_budget() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let _ = mock.push_open_stream_hang(Duration::from_secs(24 * 60 * 60), "never");
+        let (sync_manager, _store, _tmp) = manager(Arc::clone(&mock)).await;
+        let budget = sync_manager.sync_config.open_stream_timeout;
+
+        let started = tokio::time::Instant::now();
+        let refused = sync_manager
+            .ask_one_for_tee_admission(
+                PeerId::random(),
+                request(),
+                PublicKey::from([0x11; 32]),
+                None,
+            )
+            .await
+            .expect_err("a peer that never answers does not admit us");
+
+        assert!(
+            started.elapsed() <= budget + Duration::from_secs(1),
+            "gave up after {:?}, not at the {budget:?} open budget",
+            started.elapsed()
+        );
+        assert!(refused.contains("timed out"), "{refused}");
     }
 }
 
