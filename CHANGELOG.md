@@ -581,6 +581,13 @@
   Every collection read now treats an entity whose index names another parent
   as absent, before decoding it.
 
+- **A peer can no longer stop a node by storing an unreadable app root.** A
+  delta whose `Add` or `Update` at the root id carried bytes that do not decode
+  as the app's root was stored as is, and every later call on that node
+  panicked in `Root::fetch`. `Root::sync` now reads the root and its entry back
+  through the decoders every call uses and refuses the delta when either fails,
+  so none of its writes are stored. Found by the `crdt_sync` fuzz target.
+
 - **The delegated routes take the intent permission, and an account reads its
   groups' upgrade state.** With `delegated_access` off, `presence-intents`,
   `context-intents` and `governance-intents` now take `context:intent` (the

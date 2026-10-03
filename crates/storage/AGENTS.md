@@ -248,6 +248,16 @@ switching a field between the two types needs no migration.
   entity at that id under another parent or as an orphan; without the check a
   map read it as its own value, or failed decoding it. The app root entry
   (`is_app_root_entry`) is exempt: its id is fixed, not key-derived.
+- **A sync that leaves the app root unreadable is refused.** The root
+  collection and its entry sit at fixed ids a peer's delta can write any bytes
+  to, and `Root::fetch`/`Root::get` panic on a read that fails. So `Root::sync`
+  reads both back through those decoders before it commits
+  (`refuse_unreadable_root`) and returns the error, and the node stores none of
+  a refused sync's writes. That costs two row reads per sync.
+  `tests/root_payload.rs` pins it. The runtime's host-side apply for JS apps
+  calls `Root::sync_opaque` instead: a JS root is opaque bytes (empty at the
+  root id, the document at the entry) read raw, never through `fetch`, and
+  would fail the check.
 - **A guarded collection counts from a node-local tally, never by loading its
   children** (`admitted_count.rs`). Its trie's `count` includes entries its
   domain does not admit, which apply cannot refuse (the domain is the
