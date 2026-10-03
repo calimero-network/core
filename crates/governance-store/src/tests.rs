@@ -12251,8 +12251,8 @@ mod account_plane_apply {
         ))
     }
 
-    /// A device of a fresh account, linked into `gid` by its admin. The account's
-    /// root key comes back beside it: only that key can sign a revocation proof.
+    /// A device of a fresh account seated in `gid`, linked by its admin as the planner
+    /// links only members. Returns the account's root key, which signs revocation proofs.
     fn a_linked_device(
         store: &Store,
         gid: &ContextGroupId,
@@ -12298,6 +12298,9 @@ mod account_plane_apply {
             },
         )
         .unwrap();
+        MembershipRepository::new(store)
+            .add_member(gid, &account, GroupMemberRole::Member)
+            .unwrap();
         (owner_sk, genesis, device)
     }
 
@@ -14190,6 +14193,9 @@ mod account_plane_apply {
             },
         )
         .unwrap();
+        MembershipRepository::new(store)
+            .add_member(gid, &account, GroupMemberRole::Member)
+            .unwrap();
         signer_sk
     }
 
@@ -14235,6 +14241,34 @@ mod account_plane_apply {
                 .unwrap(),
             None,
             "and must not raise a floor a later re-link would have to cross"
+        );
+    }
+
+    #[test]
+    fn a_removed_accounts_descope_still_narrows_its_own_device() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        let account = genesis.account_id();
+        sign_apply_local_group_op_borsh(&store, &gid, &admin_sk, dummy_member_removed_op(account))
+            .unwrap();
+
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &descoped(&owner_sk, device, elsewhere(), 1),
+            &CUT,
+            &FixedAuthorizer(true),
+        )
+        .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert!(
+            !is_live(&store, &gid, account, device),
+            "a descope only narrows the account's own device, so it applies"
         );
     }
 
@@ -15162,6 +15196,68 @@ mod account_plane_apply {
         .unwrap();
 
         assert_eq!(label_of(&store, &gid, device), None);
+    }
+
+    #[test]
+    fn a_removed_accounts_label_is_refused() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        let sibling = an_account_key_bound_here(&store, &gid, &admin_sk, &owner_sk, 0x5A);
+        let account = genesis.account_id();
+        sign_apply_local_group_op_borsh(&store, &gid, &admin_sk, dummy_member_removed_op(account))
+            .unwrap();
+
+        for (signer, op) in [
+            (&owner_sk, labelled(account, device, "Still mine", 1)),
+            (
+                &sibling,
+                labelled_by_root(&owner_sk, device, "Still mine", 1),
+            ),
+        ] {
+            let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
+                &store,
+                &gid,
+                &signer.public_key(),
+                &op,
+                &CUT,
+                &FixedAuthorizer(true),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            label_of(&store, &gid, device),
+            None,
+            "an account removed from the group names nothing in it"
+        );
+    }
+
+    #[test]
+    fn a_label_is_judged_at_its_cut_not_against_live_rows() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+
+        let (_handled, _divergence, _events) = crate::apply_group_op_mutations(
+            &store,
+            &gid,
+            &owner_sk.public_key(),
+            &labelled(genesis.account_id(), device, "Not yet", 1),
+            &CUT,
+            &crate::test_fixtures::NotMemberAtCut,
+        )
+        .unwrap();
+
+        assert_eq!(
+            label_of(&store, &gid, device),
+            None,
+            "a cut the account is not a member at names nothing, whatever live rows say"
+        );
     }
 
     /// A re-delivered narrowing is older than the widening that re-bound the

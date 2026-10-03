@@ -489,6 +489,68 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
 /// non-emptiness matters (see [`FixedAuthorizer`]).
 pub const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];
 
+/// A projection whose cut holds nobody as a member, to tell a gate that reads the
+/// cut from one that reads live rows.
+pub struct NotMemberAtCut;
+
+impl crate::authorizer::AtCutAuthorizer for NotMemberAtCut {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        Some(crate::authorizer::AtCutMembershipPath::None)
+    }
+}
+
 /// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) standing in for a
 /// projection that has NOT folded the ancestry the op's cut cites — the
 /// catching-up replica, mid-backfill.
