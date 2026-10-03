@@ -120,7 +120,9 @@ impl TeeAdmissionVerdict {
 ///
 /// `Err` is reserved for the refusals `admit_tee_node` raises (policy mismatch,
 /// reused quote, no policy set) and for faults. Everything that is an ordinary
-/// answer comes back as a [`TeeAdmissionVerdict`].
+/// answer comes back as a [`TeeAdmissionVerdict`]. Every `Err` comes after the
+/// challenge is spent and the credential found to certify the attested key; the
+/// direct responder relies on that to read the requester's account from it.
 pub(crate) async fn verify_and_admit(
     context_client: &calimero_context_client::client::ContextClient,
     challenges: &TeeChallenges,

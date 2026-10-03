@@ -315,11 +315,12 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         let public_key = claim.public_key;
-        // Who the requester is, if its credential is for the key it proved
-        // possession of. Read before the claim is consumed below.
-        let requester_account =
-            calimero_op_adapter::join_credential_certifies(&public_key, &claim.account)
-                .then_some(claim.account.statement.account);
+        // The account the requester's credential names. Read before the claim is
+        // consumed below, but trusted only on an `Err`: `verify_and_admit` raises
+        // one only after the challenge is spent and the credential is found to
+        // certify the key the requester proved. Verifying the credential here
+        // instead would cost its root-key chain before any challenge is checked.
+        let requester_account = claim.account.statement.account;
         let result = verify_and_admit(
             &self.context_client,
             &self.node_state.tee_challenges,
@@ -329,10 +330,8 @@ impl SyncManager {
         )
         .await;
         let (admitted, reason) = direct_admission_answer(result, || {
-            requester_account.is_some_and(|account| {
-                let store = self.context_client.datastore_handle().into_inner();
-                is_tee_member_at_root(&store, namespace_id, &account)
-            })
+            let store = self.context_client.datastore_handle().into_inner();
+            is_tee_member_at_root(&store, namespace_id, &requester_account)
         });
 
         if admitted {
@@ -486,8 +485,10 @@ impl SyncManager {
 ///
 /// So a refusal is checked against what it is about: if the requester is in
 /// fact a TEE member of the namespace, it is told so. Only a refusal is
-/// re-checked, and only by `already_in`, which the caller confines to a
-/// requester whose credential certifies the key it proved possession of — an
+/// re-checked, and only by `already_in`; a refusal is an `Err` only after
+/// [`verify_and_admit`] spent the challenge and found the requester's credential
+/// certifies the key it proved possession of, so the account it names is the
+/// requester's — an
 /// ordinary verdict (not a voucher, invalid attestation, spent challenge,
 /// foreign credential) is reported as it is.
 fn direct_admission_answer(
