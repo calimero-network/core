@@ -4159,6 +4159,7 @@ mod namespace_join_device_tests {
     use std::time::Duration;
 
     use calimero_account::DeviceId;
+    use calimero_context_client::local_governance::JoinAccountCredential;
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -4249,6 +4250,17 @@ mod namespace_join_device_tests {
         joiner_sk: &PrivateKey,
         invitation_bytes: Vec<u8>,
     ) -> Result<Vec<u8>, String> {
+        let credential = calimero_context::test_support::credential(&joiner_sk.public_key());
+        join_presenting(sm, joiner_sk, &credential, invitation_bytes).await
+    }
+
+    /// [`join`], presenting `credential` for the joiner's key.
+    async fn join_presenting(
+        sm: &SyncManager,
+        joiner_sk: &PrivateKey,
+        credential: &JoinAccountCredential,
+        invitation_bytes: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
         let peer = PeerId::random();
         let party_id = joiner_sk.public_key();
         let pop = InitProof {
@@ -4268,10 +4280,7 @@ mod namespace_join_device_tests {
                 namespace_id: NAMESPACE,
                 invitation_bytes,
                 joiner_public_key: party_id,
-                joiner_credential_bytes: borsh::to_vec(
-                    &calimero_context::test_support::credential(&party_id),
-                )
-                .expect("borsh the credential"),
+                joiner_credential_bytes: borsh::to_vec(credential).expect("borsh the credential"),
             },
             next_nonce: crate::sync::helpers::generate_nonce(),
             pop: Some(pop),
@@ -4368,6 +4377,57 @@ mod namespace_join_device_tests {
         assert!(
             served(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x04)).await),
             "a device linked again above its floor is served the key"
+        );
+    }
+
+    /// A key the joining device was re-keyed past proves nothing: its old
+    /// certificate is refused the namespace key, the current one is served.
+    #[tokio::test]
+    async fn a_rotated_out_device_key_is_not_served_the_namespace_key() {
+        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let ns = ContextGroupId::from(NAMESPACE);
+        let admin_sk = PrivateKey::from([0x62; 32]);
+        let admitter = found(&store, &admin_sk);
+
+        let (root_sk, genesis) = calimero_governance_store::test_fixtures::test_account_root();
+        let device = [0x74; 32];
+        let old_sk = PrivateKey::from([0x75; 32]);
+        let new_sk = PrivateKey::from([0x76; 32]);
+        let old = calimero_governance_store::test_fixtures::join_account_for(
+            &root_sk,
+            genesis,
+            &old_sk.public_key(),
+            device,
+            0,
+        );
+        let new = calimero_governance_store::test_fixtures::join_account_for(
+            &root_sk,
+            genesis,
+            &new_sk.public_key(),
+            device,
+            1,
+        );
+        let _bound = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &new.genesis, &new.chain, &new.statement, 0)
+            .expect("store")
+            .expect("bind the device at its current key");
+        MembershipRepository::new(&store)
+            .add_member(&ns, &new.statement.account, GroupMemberRole::Member)
+            .expect("seat the member");
+
+        assert!(
+            join_presenting(&sm, &new_sk, &new, invitation(&admin_sk, admitter, 0x05))
+                .await
+                .is_ok_and(|key| !key.is_empty()),
+            "precondition: the device's current key is served"
+        );
+        let reply =
+            join_presenting(&sm, &old_sk, &old, invitation(&admin_sk, admitter, 0x06)).await;
+        assert!(
+            reply
+                .as_ref()
+                .is_err_and(|reason| reason.contains("re-keyed past")),
+            "a key the device was re-keyed past must be refused, got {reply:?}"
         );
     }
 }

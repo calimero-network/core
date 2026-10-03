@@ -7016,6 +7016,44 @@ fn narrowed_device_key_is_denied_until_a_newer_scope_binds_it_again() {
     assert!(!revoked(), "on either path");
 }
 
+/// A device id another account binds after this account narrowed it out is still
+/// withdrawn for this account: the row left is not this account's binding.
+#[test]
+fn a_device_id_bound_by_another_account_stays_withdrawn_for_the_first() {
+    let store = test_store();
+    let ns = ContextGroupId::from([0xD4; 32]);
+    let alice_pk = PublicKey::from([0xD5; 32]);
+    let alice = account_for(&alice_pk);
+    let device = *AsRef::<[u8; 32]>::as_ref(&alice_pk);
+    let bindings = AccountBindingRepository::new(&store);
+    let _dropped = bindings
+        .narrow(&ns, alice, calimero_account::DeviceId::from(device), 1)
+        .unwrap();
+    let withdrawn = || {
+        bindings
+            .device_is_withdrawn(&ns, alice, calimero_account::DeviceId::from(device))
+            .unwrap()
+    };
+    assert!(withdrawn(), "precondition: narrowed out");
+
+    let mallory_root = calimero_primitives::identity::PrivateKey::from([0xD6; 32]);
+    let mallory = super::test_fixtures::join_account_for(
+        &mallory_root,
+        calimero_account::AccountGenesis::new(mallory_root.public_key()),
+        &PublicKey::from([0xD7; 32]),
+        device,
+        0,
+    );
+    let _bound = bindings
+        .apply_link(&ns, &mallory.genesis, &mallory.chain, &mallory.statement, 0)
+        .unwrap()
+        .expect("an unbound device id links under another account");
+    assert!(
+        withdrawn(),
+        "another account's binding of the same id does not re-admit this account's device"
+    );
+}
+
 /// A withdrawal folded before the link it outranks must deny the key as one
 /// folded after it does, so the verdict does not depend on arrival order.
 #[test]
@@ -7608,6 +7646,37 @@ fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
     );
     assert!(MembershipRepository::new(&store)
         .has_direct_member(&subgroup, &member)
+        .unwrap());
+}
+
+/// An invitation does not outrank the namespace's revocation of the device signing the join.
+#[test]
+fn an_invited_join_signed_by_a_revoked_device_is_refused() {
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_sk.public_key());
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    // `real_join_account` certifies the device whose id is the signing key's bytes.
+    let device: [u8; 32] = *member_pk.as_ref();
+    crate::AccountBindingRepository::new(&store)
+        .apply_revocation(&ns_gid, calimero_account::DeviceId::from(device))
+        .unwrap();
+
+    let invitation = signed_invitation_for(&admin_sk, subgroup, [0xA7; 32]);
+    let err = apply_member_joined(&store, ns_id, &member_sk, invitation, 1, &admin_sk)
+        .expect_err("a revoked device must not join for its account");
+
+    assert!(
+        format!("{err:#}").contains("withdrawn"),
+        "expected the withdrawn-device refusal, got: {err:#}"
+    );
+    assert!(!MembershipRepository::new(&store)
+        .has_direct_member(&subgroup, &crate::test_fixtures::account_for(&member_pk))
         .unwrap());
 }
 

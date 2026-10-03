@@ -9513,6 +9513,129 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     assert_eq!(live[0].account, account_id);
 }
 
+/// An open-subgroup joiner's device withdrawn from the namespace before it signs a join.
+struct WithdrawnJoiner {
+    store: Store,
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    root_sk: PrivateKey,
+    genesis: calimero_account::AccountGenesis,
+}
+
+fn withdrawn_joiner(
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    device: [u8; 32],
+    withdraw: impl FnOnce(
+        &crate::AccountBindingRepository<'_>,
+        &ContextGroupId,
+        calimero_account::AccountId,
+        calimero_account::DeviceId,
+    ),
+) -> WithdrawnJoiner {
+    let store = test_store();
+    let (root_sk, genesis) = crate::test_fixtures::test_account_root();
+    let account = genesis.account_id();
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &account);
+    withdraw(
+        &crate::AccountBindingRepository::new(&store),
+        &ContextGroupId::from(namespace_id),
+        account,
+        calimero_account::DeviceId::from(device),
+    );
+    WithdrawnJoiner {
+        store,
+        namespace_id,
+        subgroup_id,
+        root_sk,
+        genesis,
+    }
+}
+
+impl WithdrawnJoiner {
+    fn join_with(&self, device: [u8; 32]) -> eyre::Result<()> {
+        let sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+        let account = crate::test_fixtures::join_account_for(
+            &self.root_sk,
+            self.genesis,
+            &sk.public_key(),
+            device,
+            0,
+        );
+        apply_open_join_with(
+            &self.store,
+            self.namespace_id,
+            self.subgroup_id,
+            &sk,
+            account,
+        )
+        .map(|_| ())
+    }
+
+    fn assert_refused(&self, device: [u8; 32]) {
+        let err = self
+            .join_with(device)
+            .expect_err("a withdrawn device must not join for its account");
+        assert!(
+            format!("{err:#}").contains("withdrawn"),
+            "expected the withdrawn-device refusal, got: {err:#}"
+        );
+    }
+}
+
+#[test]
+fn a_join_signed_by_a_revoked_device_is_refused() {
+    let device = [0x7E; 32];
+    withdrawn_joiner([0xC8; 32], [0xD8; 32], device, |bindings, ns, _, device| {
+        bindings.apply_revocation(ns, device).unwrap();
+    })
+    .assert_refused(device);
+}
+
+#[test]
+fn a_join_signed_by_a_narrowed_out_device_is_refused() {
+    let device = [0x7F; 32];
+    withdrawn_joiner(
+        [0xC9; 32],
+        [0xD9; 32],
+        device,
+        |bindings, ns, account, device| {
+            let _ = bindings.narrow(ns, account, device, 1).unwrap();
+        },
+    )
+    .assert_refused(device);
+}
+
+#[test]
+fn a_join_signed_by_a_device_its_account_withdrew_is_refused() {
+    let device = [0x80; 32];
+    withdrawn_joiner(
+        [0xCA; 32],
+        [0xDA; 32],
+        device,
+        |bindings, ns, account, device| {
+            bindings.withdraw_for_account(ns, account, device).unwrap();
+        },
+    )
+    .assert_refused(device);
+}
+
+#[test]
+fn another_device_of_the_account_still_joins_after_one_is_revoked() {
+    let revoked = [0x81; 32];
+    let j = withdrawn_joiner(
+        [0xCB; 32],
+        [0xDB; 32],
+        revoked,
+        |bindings, ns, _, device| {
+            bindings.apply_revocation(ns, device).unwrap();
+        },
+    );
+
+    j.join_with([0x82; 32])
+        .expect("the account's live device still joins");
+}
+
 /// An open-subgroup joiner whose device was re-keyed: it joined under `old_sk` at
 /// epoch 0, then again under `new_sk` at epoch 1, which retires `old_sk`.
 struct RekeyedJoiner {
