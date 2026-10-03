@@ -16,6 +16,12 @@ differently is followed automatically:
     cd apps/${{ matrix.app }} && merobox bootstrap run "${{ matrix.file }}"
     FUZZY_CONFIG="workflows/.../fuzzy-test.yml"; merobox bootstrap run "$FUZZY_CONFIG"
 
+The grouped layout of e2e-rust-apps.yml counts too, and only as a whole: a
+workflow that both plans a scenario manifest (`scripts/e2e-scenario-groups.py
+--manifest <file>`) and runs the groups (`scripts/e2e-run-scenario-group.sh`,
+whose own `merobox bootstrap run` must be live) registers every manifest entry,
+as `apps/<app>/<file>`.
+
 Nothing else counts. Scanning for any string that merely *names* a scenario
 would re-admit the drift this exists to catch: a path in an `echo`, a step
 name, or a `#` comment inside a `run:` block (which YAML keeps as part of the
@@ -33,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import importlib.util
 import itertools
 import json
 import os
@@ -40,6 +47,13 @@ import re
 import sys
 
 import yaml
+
+sys.dont_write_bytecode = True  # imports a sibling script; leave no __pycache__ in the tree
+_spec = importlib.util.spec_from_file_location(
+    "e2e_scenario_groups", os.path.join(os.path.dirname(os.path.abspath(__file__)), "e2e-scenario-groups.py")
+)
+e2e_scenario_groups = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(e2e_scenario_groups)
 
 SCENARIO_GLOBS = ("apps/*/workflows/**/*.y*ml", "workflows/**/*.y*ml")
 
@@ -135,6 +149,49 @@ def strip_shell_comments(run: str) -> str:
     return "".join(out)
 
 
+GROUP_PLANNER_RE = re.compile(r'scripts/e2e-scenario-groups\.py\b[^\n]*?--manifest\s+"?([\w./-]+)')
+GROUP_RUNNER = "scripts/e2e-run-scenario-group.sh"
+
+
+def runs(doc: dict) -> list[str]:
+    """Every step's run block in a workflow, comments blanked."""
+    out = []
+    for job in (doc.get("jobs") or {}).values():
+        if not isinstance(job, dict):
+            continue
+        for step in job.get("steps", []) or []:
+            run = step.get("run") if isinstance(step, dict) else None
+            if run:
+                out.append(strip_shell_comments(run))
+    return out
+
+
+def grouped_registrations(doc: dict) -> tuple[list[str], list[str]]:
+    """(scenario paths, manifest entries resolving to nothing) the grouped layout runs."""
+    blocks = runs(doc)
+    manifests = sorted({m for b in blocks for m in GROUP_PLANNER_RE.findall(b)})
+    if not manifests or not any(GROUP_RUNNER in b for b in blocks):
+        return [], []
+    # The runner has to actually invoke merobox, or naming it registers nothing.
+    try:
+        runner = strip_shell_comments(open(GROUP_RUNNER, encoding="utf-8").read())
+    except OSError:
+        return [], []
+    if not RUN_RE.search(runner):
+        return [], []
+    found, dangling = [], []
+    for manifest in manifests:
+        try:
+            scenarios = e2e_scenario_groups.load_manifest(e2e_scenario_groups.Path(manifest))
+        except (OSError, yaml.YAMLError, e2e_scenario_groups.ManifestError) as err:
+            raise SystemExit(f"{manifest}: could not read the scenario manifest, so its "
+                             f"registrations cannot be checked:\n{err}")
+        for scenario in scenarios:
+            path = os.path.normpath(os.path.join("apps", scenario["app"], scenario["file"]))
+            (found if os.path.isfile(path) else dangling).append(path)
+    return found, dangling
+
+
 def run_templates(job: dict) -> list[tuple[str, str]]:
     """(cwd, path) template pairs the job hands to `merobox bootstrap run`.
 
@@ -192,6 +249,9 @@ def registered_scenarios() -> tuple[set[str], list[tuple[str, str]]]:
                              f"cannot be read:\n{err}")
         if not isinstance(doc, dict):
             continue
+        found, missing = grouped_registrations(doc)
+        registered.update(found)
+        dangling.extend((os.path.basename(wf), p) for p in missing)
         for job in (doc.get("jobs") or {}).values():
             if not isinstance(job, dict):
                 continue
@@ -250,7 +310,8 @@ def main() -> int:
 
     if orphaned:
         print(
-            "\nScenario(s) in no CI matrix (add a matrix entry, or add to "
+            "\nScenario(s) in no CI matrix (add an entry to .github/e2e-scenarios.yml "
+            "or another workflow's matrix, or add to "
             f"{args.baseline} with a reason):"
         )
         for s in orphaned:
