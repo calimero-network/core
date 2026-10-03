@@ -68,10 +68,13 @@ fixture_fetches() { docker logs fixture-registry 2>&1 | grep -c "$FETCH_LINE" ||
 # Data dirs are written by root inside the containers.
 remove_path() { rm -rf "$1" 2>/dev/null || sudo rm -rf "$1"; }
 
-# Prints what it could not remove; empty output means the runner is back to
-# its pre-scenario state.
+# Sets `leftover` to what it could not remove; empty means the runner is back
+# to its pre-scenario state. It reports through that variable, not stdout, so
+# what merobox and docker print while tearing down goes to the log and can
+# never read as something left behind.
 teardown() {
-  local app_dir=$1 id path left=""
+  local app_dir=$1 id path
+  leftover=""
   (cd "$app_dir" && merobox stop --all) || true
   (cd "$app_dir" && merobox nuke --force) || true
 
@@ -94,12 +97,12 @@ teardown() {
     [ -n "$path" ] && git -C "$root" checkout -q -- "$path"
   done < <(added "$base_modified" "$(modified_now)")
 
-  [ -z "$(added "$base_containers" "$(containers_now)")" ] || left+=" containers"
-  [ -z "$(added "$base_networks" "$(networks_now)")" ] || left+=" networks"
-  [ -z "$(added "$base_volumes" "$(volumes_now)")" ] || left+=" volumes"
-  [ -z "$(added "$base_untracked" "$(untracked_now)")" ] || left+=" files"
-  [ -z "$(added "$base_modified" "$(modified_now)")" ] || left+=" tracked-files"
-  echo "${left# }"
+  [ -z "$(added "$base_containers" "$(containers_now)")" ] || leftover+=" containers"
+  [ -z "$(added "$base_networks" "$(networks_now)")" ] || leftover+=" networks"
+  [ -z "$(added "$base_volumes" "$(volumes_now)")" ] || leftover+=" volumes"
+  [ -z "$(added "$base_untracked" "$(untracked_now)")" ] || leftover+=" files"
+  [ -z "$(added "$base_modified" "$(modified_now)")" ] || leftover+=" tracked-files"
+  leftover=${leftover# }
 }
 
 mkdir -p "$logroot"
@@ -172,10 +175,10 @@ for ((i = 0; i < count; i++)); do
     done
   fi
 
-  left=$(teardown "$app_dir")
-  if [ -n "$left" ]; then
-    echo "::error::${name} left${left:+ }${left} behind that could not be removed; later scenarios in ${group} may not start clean"
-    why+=("teardown left ${left} behind")
+  teardown "$app_dir"
+  if [ -n "$leftover" ]; then
+    echo "::error::${name} left ${leftover} behind that could not be removed; later scenarios in ${group} may not start clean"
+    why+=("teardown left ${leftover} behind")
   fi
 
   if ! "$gates" "$logdir" "$name"; then

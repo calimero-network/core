@@ -37,18 +37,30 @@ case "$1 $2" in
   "volume ls") ls "$s/volumes" ;;
   "network rm") rm -f "$s/networks/$3" ;;
   "volume rm") rm -f "$s/volumes/$4" ;;
-  "rm -f") rm -f "$s/containers/$4" ;;
+  # A container named stuck-* survives the first attempt to remove it.
+  "rm -f")
+    case $4 in
+      stuck-*) [ -e "$s/tried-$4" ] || { touch "$s/tried-$4"; exit 1; } ;;
+    esac
+    rm -f "$s/containers/$4"
+    ;;
   "inspect -f") echo "/$4" ;;
   logs\ fixture-registry) cat "$s/fetches" 2>/dev/null ;;
   logs\ *) echo "log of $2" ;;
 esac
 EOF
 # merobox: `bootstrap run <file>` runs the scenario file as a script, from the
-# app dir, with the runner's environment.
+# app dir, with the runner's environment. `stop` and `nuke` chatter on stdout
+# the way the real ones do; none of it may read as something teardown left.
 cat >"$bin/merobox" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   bootstrap) exec bash "$3" ;;
+  stop)
+    echo "Stopping 2 Calimero nodes with graceful shutdown..."
+    echo "Stop Summary: 2/2 nodes stopped successfully"
+    ;;
+  nuke) echo "No Calimero node data directories found." ;;
   *) exit 0 ;;
 esac
 EOF
@@ -101,6 +113,14 @@ echo stray > ../../stray.txt
 echo edited >> ../../tracked.txt
 $(node_log "littered")
 EOF
+# Leaves a container that survives teardown's attempt to remove it; that fails
+# the scenario, naming what was left rather than anything teardown printed.
+scenario sticks <<EOF
+$clean_start
+$fetch
+touch "\$STUB_STATE/containers/stuck-node"
+$(node_log "stuck")
+EOF
 # Killed by its timeout before merobox could persist any log.
 scenario hangs <<EOF
 $clean_start
@@ -126,7 +146,7 @@ entry() {
   printf '{"workflow":"%s","file":"workflows/%s.yml","app":"demo","image":"merod:local","registry_fetch":"%s","timeout_seconds":%s}' \
     "$1" "$1" "${2:-true}" "${3:-60}"
 }
-json="[$(entry pass),$(entry fails),$(entry no-fetch),$(entry no-fetch-needed false),$(entry diverges),$(entry litters),$(entry hangs true 2),$(entry last)]"
+json="[$(entry pass),$(entry fails),$(entry no-fetch),$(entry no-fetch-needed false),$(entry diverges),$(entry litters),$(entry sticks),$(entry hangs true 2),$(entry last)]"
 
 out="$work/out.txt"
 summary="$work/summary.md"
@@ -149,7 +169,7 @@ check() {
 row() { grep -E "^\| [0-9]+ \| $1 \| $2" "$summary" >/dev/null; }
 
 check "the group fails when any scenario fails" '[ "$status" -eq 1 ]'
-check "every scenario ran and has a summary line" '[ "$(grep -cE "^\| [0-9]+ \|" "$summary")" -eq 8 ]'
+check "every scenario ran and has a summary line" '[ "$(grep -cE "^\| [0-9]+ \|" "$summary")" -eq 9 ]'
 check "a scenario after a failure still runs and passes" 'row last pass'
 check "a passing scenario passes" 'row pass pass'
 check "a failing scenario fails" 'row fails "\*\*FAIL\*\*"'
@@ -159,10 +179,14 @@ check "registry_fetch false is exempt from the fetch check" 'row no-fetch-needed
 check "a node-log gate fails its scenario" 'row diverges "\*\*FAIL\*\*.*node-log gate"'
 check "a hung scenario is killed by its timeout and fails" 'row hangs "\*\*FAIL\*\*.*timed out"'
 check "a littering scenario still passes, and the next starts clean" 'row litters pass && ! grep -q "DIRTY START" "$out"'
+check "what merobox prints during teardown never reads as something left behind" \
+  '! grep -q "Calimero" "$summary" && ! grep -q "left.*Calimero" "$out"'
+check "something teardown could not remove fails its scenario, named by kind" \
+  'row sticks "\*\*FAIL\*\*.*teardown left containers behind" && grep -q "::error::sticks left containers behind" "$out"'
 check "each failure is annotated with its scenario" \
-  'for n in fails no-fetch diverges hangs; do grep -q "::error title=e2e scenario $n failed::" "$out" || exit 1; done'
+  'for n in fails no-fetch diverges sticks hangs; do grep -q "::error title=e2e scenario $n failed::" "$out" || exit 1; done'
 check "the final error names every failed scenario" \
-  'grep -q "4 of 8 scenario(s) failed: fails no-fetch diverges hangs" "$out"'
+  'grep -q "5 of 9 scenario(s) failed: fails no-fetch diverges sticks hangs" "$out"'
 check "node logs land in a per-scenario dir, prefixed with the scenario" \
   '[ -f "$repo/docker-logs/pass/pass-node-1.log" ] && [ -f "$repo/docker-logs/last/last-node-1.log" ]'
 check "a scenario never carries another one's logs" \
