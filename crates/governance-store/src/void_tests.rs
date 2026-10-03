@@ -661,6 +661,44 @@ fn ops_a_removed_admin_sends_from_a_cut_before_its_removal_have_no_effect() {
 }
 
 #[test]
+fn ops_a_demoted_admin_sends_from_a_cut_before_its_demotion_have_no_effect() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+
+    // Alice demotes Sam to a member, then Sam's ops from the cut before it arrive.
+    let demotion = w.add(&w.alice, &[&s], &w.sam, GroupMemberRole::Member);
+    w.apply(&demotion).expect("alice demotes sam");
+    let current = w.current_key();
+
+    let old = sam_from_the_old_cut(&w, &s);
+    for op in [&old.readd, &old.promote, &old.kick_and_rotate] {
+        w.apply(op)
+            .expect("the op is stored; it just carries no authority");
+    }
+
+    assert_eq!(
+        w.role(&w.sam),
+        Some(GroupMemberRole::Member),
+        "Sam did not promote himself back"
+    );
+    assert_eq!(
+        w.role(&w.xavier),
+        None,
+        "the admin Sam added is not an admin"
+    );
+    assert_eq!(
+        w.role(&w.bob),
+        Some(GroupMemberRole::Member),
+        "Bob was not removed"
+    );
+    assert!(
+        !w.key_held(&K_SAM),
+        "the key Sam rotated to was never taken"
+    );
+    assert_eq!(w.current_key(), current);
+}
+
+#[test]
 fn a_removal_that_arrives_after_the_ops_it_voids_rebuilds_the_group() {
     let w = World::new();
     let [_, s, _] = w.founded();
