@@ -443,6 +443,88 @@
   `DIVERGENCE DETECTED`), once per stuck hash pair; alert on that one. The
   kv-store fuzzy load test now fails if any node logs `DIVERGENCE DETECTED`.
 
+- **A member who left or was removed from an Open group inherits nothing
+  below it.** Inheritance anchored on any ancestor's row and checked the deny
+  list and re-entry block of the target group only, so a member kicked from an
+  Open group stayed a member of its Open children and grandchildren: it could
+  join them, write in their contexts and be served their keys. A deny-list
+  entry or a removal block on an Open ancestor now ends inheritance below it
+  for joins, writes, key pulls, delegated standing and member lists; only an
+  admin of a group above it still reaches below. An honest inherited member
+  and a member an admin re-added below the removal are unaffected. The groups
+  a namespace leave or a root TEE eviction closed stay closed after a root
+  re-admission, until an admin re-adds the member there or it accepts a fresh
+  invitation. No wire change. (breaking for mixed-version namespaces: peers on
+  an older build still admit such a member's joins and writes) (#4424)
+
+- **A member's concurrent ops that relied on a revoked capability have no
+  effect.** Taking a capability away with `MemberCapabilitySet` did not void
+  the member's ops that cited a cut from before the revoke, so a member could
+  keep using a revoked `MANAGE_MEMBERS`, `CAN_MANAGE_METADATA`,
+  `MANAGE_APPLICATION` or similar bit. An admin's revoke now voids the
+  member's ops in that group that are concurrent with it and needed a revoked
+  bit, and a revoke that arrives after such an op takes back the rows it
+  wrote, as a removal does. Ops that needed no revoked bit, ops by a member
+  who was an admin at its cut, and grants are unaffected, and the revoke
+  reaches only the group it names. A metadata or application-target write a
+  voided op made before the node heard of the revoke is not undone. Nothing
+  signed or on the wire changes. (breaking for mixed-version namespaces: a
+  node on an older build applies an op a new node voids) (#4453)
+
+- **A nested wrapper op is refused while it is decoded.** The op inside an
+  `OnBehalf` or `RootGuarded` wrapper is never itself a wrapper, and apply
+  already refused one, but decoding recursed once per wrapper before any
+  authentication, so a malformed payload from any peer on a namespace topic
+  could abort the node. The decoder now refuses a wrapper inside a wrapper,
+  for gossip, backfill, decrypted group and sealed root ops and storage reads
+  alike. Encoding is unchanged and no valid op is refused. (#4446)
+
+- **An app opens only blobs held for its running context.** `blob_open`
+  returned a handle for any blob id, so an app could read bytes this node held
+  for another context by naming their id. It now opens a blob only if the app
+  wrote it, it was uploaded with that `context_id` on a member node, it was
+  fetched from the context's peers, or it is the context's own application;
+  any other blob, including one the node does not have, traps with
+  `BlobNotHeldForContext`. `blob_open_in_context` still reads a blob by
+  fetching it from the context's peers. The SDK's test host follows the same
+  rule, so app unit tests that announce made-up blob ids now see `false`.
+  (breaking: a blob written or uploaded on a node older than rc.74 is held for
+  no context, so plain `blob_open` traps on it; read it with
+  `blob_open_in_context`) (#4389)
+
+- **A stub application row no longer overwrites an install.** The
+  `ContextRegistered` stub, the upgrade-target stub (`TargetApplicationSet`,
+  `CascadeUpgrade`) and the join bootstrap stub checked for an application row
+  and wrote a size-0 stub outside the lock the install paths took, so an
+  install landing in between was replaced by the stub. All of them now take
+  one process-wide row lock: a stub write waits for an install of the same
+  application and then leaves its row alone. (#4414)
+
+- **A link that pushes an entity's existing subtree past the depth limit is
+  refused.** The ancestor check bounded only the links an action carried, so
+  moving a stored entity under a deeper parent could leave its descendants
+  past 256 ancestors, and every later walk over them failed with
+  `ParentChainTooLong`. An Add or Update that would do so, including a re-add
+  of a deleted entity or the recreation of a deleted ancestor, is now refused
+  with `ActionNotAllowed`, and sync drops it like other refused links. A
+  delete also keeps listing the children that outlive it (newer than the
+  delete, or `Frozen`). Honest writes never make such a move. (#4397)
+
+- **Inbound sync streams are bounded per peer and in total.** A peer could
+  open sync streams faster than they timed out and hold an unbounded number
+  of them and their waiting responders. A node now holds at most 256 inbound
+  sync streams, 60 from one peer, and closes a stream past either limit at
+  once; the dialer's request fails and periodic sync reconciles. Blob stream
+  limits are unchanged. (#4451)
+
+- **A re-delivered gossip delta no longer replaces the copy already parked.**
+  A delta that cannot be applied yet (its application is not runnable, or the
+  HLC fence buffers it) is parked before its payload is checked, and the
+  envelope signature does not cover the payload, so a re-delivery with
+  another payload replaced the honest copy and the honest delta was lost
+  until a later sync. Both parking sites now keep the first copy. A lost
+  delta is still recovered by parent fetch or sync. (#4450)
+
 - **An account that is not a member of a group cannot name a device in it.**
   An `AccountDeviceLabelled` op was checked only against a root statement or
   the device's own binding, and an account's bindings outlive its removal, so
@@ -1202,6 +1284,34 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Per-message signer and membership checks are point reads.** Every
+  readiness beacon, ack, migration heartbeat and blob announce resolved its
+  signing key to an account by building the namespace's live bindings, even
+  for a stranger's freshly signed message, and checked membership by listing
+  every member. A new `GroupSignerDevice` index (store prefix `0x58`; the
+  ledger pointer moves to `0x59`), kept in step with every binding write,
+  rotation, revocation, narrowing and teardown, and point membership reads
+  make each check flat in namespace size: a key lookup at 1,000 devices takes
+  about 21 µs instead of 18 ms. (breaking: there is no backfill, so in a store
+  written before this release a signing key resolves to no account until its
+  device is relinked) (#4447)
+
+- **A storage write re-reads fewer rows.** A local write now hands along the
+  rows it has just read or written instead of reading them again, and a link
+  descends the parent's trie once instead of three times. An `UnorderedMap`
+  insert at 1,000 entries reads 11 rows instead of 21, and an update 9
+  instead of 13. Rows written, stored bytes and root hashes are unchanged;
+  host-call counts drop, identically on every node. The storage index lock
+  now spans from the read to the write. (#4432)
+
+- **The DAG's pending set no longer scans once per delta.** Cleaning up or
+  evicting pending deltas that wait on one missing parent, and evicting an
+  origin's oldest pending delta at its cap, each scanned the pending set once
+  per delta, which a peer could drive to quadratic time. Both are now indexed:
+  an insert from an origin at its cap behind 8,000 older deltas takes 1.8 µs
+  instead of 762 µs. Waiters one apply unblocks on the same parent now
+  cascade in id order rather than arrival order. (#4439)
 
 - **Storage writes and delta applies read and write fewer rows.** A write
   walked its ancestors twice and rewrote every level above even when the hash
