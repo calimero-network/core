@@ -21,6 +21,7 @@ use calimero_governance_store::{
     register_context_in_group, GroupKeyring, MembershipRepository, MetaRepository,
     NamespaceRepository, NodeDeviceRepository,
 };
+use calimero_node_primitives::test_fixtures::signed_wasm;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -192,7 +193,7 @@ impl Chat {
 
         let (blob_id, size) = harness
             .node_client
-            .add_blob(Cursor::new(wasm.clone()), Some(wasm.len() as u64), None)
+            .add_blob(Cursor::new(signed_wasm(&wasm)), None, None)
             .await
             .expect("store the wasm");
         let application_id = ApplicationId::from([0x5C; 32]);
@@ -327,7 +328,7 @@ impl Chat {
         let _ = self
             .harness
             .node_client
-            .add_blob(Cursor::new(wasm.clone()), Some(wasm.len() as u64), None)
+            .add_blob(Cursor::new(signed_wasm(&wasm)), None, None)
             .await
             .expect("store the wasm again");
         self

@@ -5,6 +5,7 @@ use eyre::Result;
 use serde::Serialize;
 
 use super::Client;
+use crate::connection::NETWORK_BOUND_REQUEST_TIMEOUT;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
 impl<A, S> Client<A, S>
@@ -16,7 +17,10 @@ where
     where
         P: Serialize,
     {
-        let response = self.connection.post("jsonrpc", request).await?;
+        let response = self
+            .connection
+            .post_with_timeout("jsonrpc", request, NETWORK_BOUND_REQUEST_TIMEOUT)
+            .await?;
         Ok(response)
     }
 }

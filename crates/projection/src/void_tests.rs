@@ -604,6 +604,51 @@ fn an_op_the_projection_models_nothing_about_is_judged_by_the_group_it_acted_in(
     );
 }
 
+/// A rotation names the group it acts in, so the log alone voids one its signer's
+/// removal is concurrent with, and no capability revoke reaches it.
+#[test]
+fn a_shared_writers_rotation_concurrent_with_its_signers_removal_is_void() {
+    let rotation = |author: u8, parents: &[&Op]| {
+        gov(
+            author,
+            parents,
+            OpPayload::SharedWritersRotated {
+                group: group(),
+                context: calimero_primitives::context::ContextId::from([0x44; 32]),
+                cell: calimero_storage::address::Id::new([0x11; 32]),
+                prior: [(acct(author), calimero_storage::entities::OpMask::FULL)].into(),
+                nonce: 1,
+                new: [(acct(author), calimero_storage::entities::OpMask::WRITE)].into(),
+            },
+        )
+    };
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+    let removal = remove(ALICE, &[head], SAM);
+    let by_sam = rotation(SAM, &[head]);
+    let by_bob = rotation(BOB, &[head]);
+    log.extend([removal, by_sam.clone(), by_bob.clone()]);
+    let void = void(&log);
+    assert!(void.contains(&by_sam.id()));
+    assert!(!void.contains(&by_bob.id()), "Bob was not removed");
+
+    let mut log = yara_holding(
+        MemberCapabilities::MANAGE_MEMBERS
+            | MemberCapabilities::CAN_MANAGE_METADATA
+            | MemberCapabilities::MANAGE_APPLICATION
+            | MemberCapabilities::CAN_CREATE_CONTEXT,
+    );
+    let head = log[log.len() - 1].clone();
+    log.push(grant(ALICE, &[&head], YARA, MemberCapabilities::empty()));
+    let by_yara = rotation(YARA, &[&head]);
+    log.push(by_yara.clone());
+    assert!(
+        !ScopeState::void_ops(&log, base()).contains(&by_yara.id()),
+        "a rotation needs no member capability"
+    );
+}
+
 #[test]
 fn a_tee_policy_a_removed_admin_set_concurrently_is_void() {
     let ad = admins();
@@ -736,6 +781,14 @@ fn a_payload_the_void_rule_reads_outlives_the_bytes_of_its_op() {
             group: group(),
             allowed_mrtd: Vec::new(),
         },
+        OpPayload::SharedWritersRotated {
+            group: group(),
+            context: calimero_primitives::context::ContextId::from([0x44; 32]),
+            cell: calimero_storage::address::Id::new([0x11; 32]),
+            prior: [(acct(ALICE), calimero_storage::entities::OpMask::FULL)].into(),
+            nonce: 1,
+            new: [(acct(ALICE), calimero_storage::entities::OpMask::FULL)].into(),
+        },
     ];
     for payload in payloads {
         let op = gov(ALICE, &[], payload);
@@ -779,4 +832,96 @@ fn a_void_policy_with_its_bytes_dropped_is_still_void() {
     log.extend([removal, policy.clone()]);
 
     assert!(ScopeState::void_ops(&log, base()).contains(&policy.id()));
+}
+
+/// Admins as in [`admins`], then Yara a member holding `held`.
+fn yara_holding(held: MemberCapabilities) -> Vec<Op> {
+    let mut log = admins();
+    let joined = add(ALICE, &[&log[2]], YARA, GroupMemberRole::Member);
+    let granted = grant(ALICE, &[&joined], YARA, held);
+    log.extend([joined, granted]);
+    log
+}
+
+#[test]
+fn a_capability_revoke_voids_the_concurrent_ops_that_needed_the_bit() {
+    let mut log = yara_holding(MemberCapabilities::MANAGE_MEMBERS);
+    let head = log[log.len() - 1].clone();
+
+    let revoke = grant(ALICE, &[&head], YARA, MemberCapabilities::empty());
+    let by_yara = add(YARA, &[&head], ZED, GroupMemberRole::Member);
+    let kick = remove(YARA, &[&by_yara], WILL);
+    let leave = remove(YARA, &[&head], YARA);
+    log.extend([revoke.clone(), by_yara.clone(), kick.clone(), leave.clone()]);
+
+    let voided = void(&log);
+    assert!(
+        voided.contains(&by_yara.id()),
+        "the add needed MANAGE_MEMBERS"
+    );
+    assert!(voided.contains(&kick.id()), "so did the removal");
+    assert!(!voided.contains(&leave.id()), "leaving needs no bit");
+    assert!(!voided.contains(&revoke.id()));
+    let v = view(&log, &[&revoke, &kick]);
+    assert!(
+        !is_member(&v, ZED),
+        "the member Yara added from the old cut is not added"
+    );
+}
+
+#[test]
+fn a_grant_or_a_revoke_of_a_bit_the_op_did_not_need_voids_nothing() {
+    let both = MemberCapabilities::MANAGE_MEMBERS | MemberCapabilities::CAN_MANAGE_METADATA;
+    for (held, kept) in [
+        (MemberCapabilities::MANAGE_MEMBERS, both),
+        (both, MemberCapabilities::MANAGE_MEMBERS),
+    ] {
+        let mut log = yara_holding(held);
+        let head = log[log.len() - 1].clone();
+        let set = grant(ALICE, &[&head], YARA, kept);
+        let by_yara = add(YARA, &[&head], ZED, GroupMemberRole::Member);
+        log.extend([set, by_yara.clone()]);
+        assert!(!void(&log).contains(&by_yara.id()));
+    }
+}
+
+#[test]
+fn an_op_whose_author_was_an_admin_at_its_cut_needed_no_capability() {
+    let mut log = admins();
+    let head = log[2].clone();
+    let granted = grant(ALICE, &[&head], SAM, MemberCapabilities::MANAGE_MEMBERS);
+    let revoke = grant(ALICE, &[&granted], SAM, MemberCapabilities::empty());
+    let by_sam = add(SAM, &[&granted], ZED, GroupMemberRole::Member);
+    log.extend([granted, revoke, by_sam.clone()]);
+    assert!(!void(&log).contains(&by_sam.id()));
+}
+
+#[test]
+fn a_capability_set_by_a_non_admin_revokes_nothing() {
+    let mut log = yara_holding(MemberCapabilities::MANAGE_MEMBERS);
+    let head = log[log.len() - 1].clone();
+    let joined = add(ALICE, &[&head], WILL, GroupMemberRole::Member);
+    let by_will = grant(WILL, &[&joined], YARA, MemberCapabilities::empty());
+    let by_yara = add(YARA, &[&joined], ZED, GroupMemberRole::Member);
+    log.extend([joined, by_will, by_yara.clone()]);
+    assert!(!void(&log).contains(&by_yara.id()));
+}
+
+#[test]
+fn an_op_the_projection_models_nothing_about_is_judged_by_the_capability_it_names() {
+    let mut log = yara_holding(MemberCapabilities::CAN_MANAGE_METADATA);
+    let head = log[log.len() - 1].clone();
+    let revoke = grant(ALICE, &[&head], YARA, MemberCapabilities::empty());
+    log.push(revoke);
+    let metadata = gov(YARA, &[&head], OpPayload::Noop);
+    let acting = |capability: MemberCapabilities| crate::Acting {
+        group: group(),
+        capability: capability.bits(),
+    };
+    let judged = |capability| {
+        ScopeState::void_ops_with(&log, base(), Some((&metadata, Some(acting(capability)))))
+            .contains(&metadata.id())
+    };
+    assert!(judged(MemberCapabilities::CAN_MANAGE_METADATA));
+    assert!(!judged(MemberCapabilities::empty()));
 }

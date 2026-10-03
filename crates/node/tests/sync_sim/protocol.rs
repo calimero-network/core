@@ -1803,7 +1803,7 @@ mod tests {
         let identity = PublicKey::from([0u8; 32]);
 
         let initiator_fut = async {
-            HashComparisonProtocol::run_initiator(
+            let result = HashComparisonProtocol::run_initiator(
                 &mut init_stream,
                 alice.storage().store(),
                 alice.context_id(),
@@ -1815,7 +1815,11 @@ mod tests {
                     init_pop: None,
                 },
             )
-            .await
+            .await;
+            // Closing the stream ends the responder's request loop at once
+            // instead of leaving it to wait out the receive timeout.
+            drop(init_stream);
+            result
         };
 
         let responder_fut = async {
@@ -1848,9 +1852,9 @@ mod tests {
         };
 
         // The responder may return an error when the initiator bails
-        // and drops the stream mid-session (broken-pipe on its next
-        // recv). That's expected behaviour for the failure mode we're
-        // exercising — only the initiator's Err is load-bearing.
+        // and drops the stream mid-session. That's expected behaviour
+        // for the failure mode we're exercising - only the initiator's
+        // Err is load-bearing.
         let (init_result, _resp_result_expected_stream_close) =
             tokio::join!(initiator_fut, responder_fut);
 

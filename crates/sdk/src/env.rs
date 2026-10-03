@@ -1430,7 +1430,9 @@ pub fn blob_create() -> u64 {
 
 /// Open a blob for reading by its 32-byte ID.
 /// Returns a file descriptor that can be used with blob_read() and blob_close().
-/// Returns 0 if the blob is not found.
+/// The host traps unless the blob is held for this context: written by the app,
+/// uploaded with this context's id, fetched from its peers, or its application.
+/// Use [`blob_open_in_context`] to read a blob another node produced.
 pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
@@ -1441,9 +1443,9 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
 }
 
 /// Open a blob for reading, fetching it from the context's peers if this node
-/// does not already hold it.
+/// does not already hold it for this context.
 ///
-/// Returns 0 if the blob is available neither locally nor from any peer.
+/// Returns 0 if the blob is neither held for this context nor served by its peers.
 ///
 /// Produces no state delta, which is what makes it legal to call from a
 /// `#[app::view]` method — but it is not a cheap read. It can block for
@@ -1524,7 +1526,9 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
 
 /// Announce a blob to a specific context for network discovery.
 /// This makes the blob discoverable by other nodes in the context.
-/// Returns true if the announcement was successful.
+/// Returns true if the announcement was successful, false unless the blob is
+/// held for this context: written by the app, uploaded with this context's id,
+/// fetched from its peers, or its application.
 ///
 /// # Security
 /// For security reasons, a context can only announce blobs to itself.
@@ -1568,11 +1572,8 @@ pub fn blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // The in-process host has no network; the announce is a no-op that
-        // succeeds once the (already-checked) context match holds — unless a
-        // test opted into failure via the harness so it can exercise the
-        // announce-failure branch (see `TestHost::set_blob_announce_should_fail`).
-        let _ = blob_id;
-        !host::blob_announce_should_fail()
+        // No network here: succeeds for a blob this context wrote, unless a test
+        // forced failure (`TestHost::set_blob_announce_should_fail`).
+        host::is_blob_held(blob_id) && !host::blob_announce_should_fail()
     }
 }

@@ -68,18 +68,16 @@ bounded.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `sync_messages_sent` | Counter | `protocol` | Sync protocol messages sent. |
-| `sync_bytes_sent` | Counter | `protocol` | Bytes sent, by protocol. |
-| `sync_round_trips` | Counter | `protocol` | Round trips, by protocol. |
-| `sync_entities_transferred` | Counter | — | Entities transferred during sync. Near-zero in steady state. |
-| `sync_merges` | Counter | `crdt_type` | CRDT merge operations (conflict resolutions). |
-| `sync_comparisons` | Counter | — | Entity hash comparisons performed. |
-| `sync_phase_duration_seconds` | Histogram | `phase` | Per-phase duration (buckets 1ms–16s). |
-| `sync_duration_seconds` | Histogram | `protocol`, `outcome` | End-to-end session duration (buckets 10ms–160s). |
-| `sync_attempts` | Counter | `protocol` | Sync attempts started. |
+| `sync_duration_seconds` | Histogram | `protocol`, `outcome` | End-to-end session duration (buckets 10ms–160s). `outcome` ∈ `success`, `failure`; failed attempts carry `protocol="unknown"`. |
+| `sync_attempts` | Counter | `protocol` | Sync attempts started. Always `protocol="unknown"`: the protocol is not chosen yet when an attempt starts, so compare it with `sync_successes` summed over `protocol`. |
 | `sync_successes` | Counter | `protocol` | Successful syncs. |
 | `sync_failures` | Counter | `protocol` | Failed syncs. |
 | `sync_protocol_selections` | Counter | `protocol` | Which protocol the adaptive selector chose. |
+| `sync_round_trips` | Counter | `protocol` | Request/response exchanges with the peer, added once per completed initiator session (HashComparison, LevelWise, DeltaSync). |
+| `sync_comparisons` | Counter | `protocol` | Tree-node hash comparisons per completed initiator session (HashComparison, LevelWise). |
+| `sync_entities_transferred` | Counter | `protocol` | Entities merged or pushed (HashComparison, LevelWise), snapshot records applied (Snapshot) or deltas received (DeltaSync), per completed initiator session. Near-zero in steady state. |
+| `sync_messages_sent` | Counter | — | Every sync stream message this node sends, any protocol and direction (counted at the transport, which does not know the protocol). |
+| `sync_bytes_sent` | Counter | — | Wire bytes of those messages, after encryption. |
 
 **Safety / invariant counters** (all should sit at zero in normal operation):
 
@@ -87,8 +85,21 @@ bounded.
 | --- | --- | --- |
 | `sync_snapshot_blocked` | Counter | Snapshot attempt blocked on an already-initialised node. Any increment warrants investigation. |
 | `sync_verification_failures` | Counter | Post-snapshot state-hash mismatch — possible corruption or non-determinism. |
-| `sync_lww_fallback` | Counter | Last-writer-wins fallback when CRDT-type metadata is missing. Occasional is tolerable; sustained growth is a bug signal. |
 | `sync_buffer_drops` | Counter | Deltas dropped from a bounded buffer (arriving faster than they apply). Any increment can mean catch-up sync is needed. |
+
+Per-CRDT-type merges, per-phase durations and LWW fallbacks are not exported:
+no production code path records them, and a series that is registered but never
+written reads a flat 0 that looks like health. Session costs come from the
+initiator's totals, so a session that fails part-way records no cost.
+
+**Root-hash divergence** (registered in `crates/node/src/run.rs`, bumped by the
+hash-heartbeat handler when a peer reports the same DAG heads as this node but a
+different storage root hash):
+
+| Series | Type | Meaning |
+| --- | --- | --- |
+| `sync_root_hash_divergence_detected_total_total` | Counter | Every such observation, transient ones included. Every applied remote delta also sends a heartbeat, so under write load this rises with writes × peers while a concurrent sync apply is in flight — thousands per run on a fuzzy load test is normal. A load signal, **not** a failure signal: do not alert on it. (The doubled suffix is real: the name was registered ending in `_total` and the client library appends another.) |
+| `sync_root_hash_divergence_escalated_total` | Counter | Divergences whose (ours, theirs) hash pair stayed unchanged past the persistence window (just under one 30s heartbeat period), counted once per stuck pair — the same transition that logs `DIVERGENCE DETECTED` at ERROR and kicks a recovery sync. **Should stay at zero**; any increment is a stuck split-brain worth investigating. |
 
 ### DAG / delta application (node)
 
@@ -156,9 +167,37 @@ Sampled on the same 30s tick as the process gauges, off the async runtime.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `storage_disk_usage_bytes` | Gauge | `store` | Bytes allocated on disk under each store directory, like `du -s`. `store` ∈ `datastore` (RocksDB), `blobstore` (blob files). |
+| `storage_disk_usage_bytes` | Gauge | `store` | Bytes allocated on disk under each store directory, like `du -s`. `store` ∈ `datastore` (RocksDB), `blobstore` (blob files). The disk footprint, not the data: see below. |
+| `storage_datastore_file_bytes` | Gauge | `kind` | Length of the RocksDB directory's files by kind: `sst` (table files), `wal` (write-ahead logs), `other` (MANIFEST, OPTIONS, info `LOG`s). |
+| `storage_datastore_table_bytes` | Gauge | `kind` | RocksDB's own table accounting, summed over column families: `live_data` (estimated bytes still holding live data), `live_sst` (table files the current version uses), `total_sst` (every table file on disk), `memtable` (unflushed). `live_sst - live_data` is garbage waiting for compaction; `total_sst - live_sst` is replaced files an open iterator still pins. |
 | `storage_namespace_bytes` | Gauge | `namespace_id`, `column` | Approximate datastore bytes per namespace this node is a member of. `column` ∈ `state`, `private_state`, `delta` (summed over the namespace's contexts), `governance` (its op log). Same RocksDB estimate as `GET /admin-api/usage`. |
 | `storage_namespace_contexts` | Gauge | `namespace_id` | Contexts in each namespace, so bytes per context is one division. |
+| `gc_sweeps` | Counter | — | Tombstone GC sweeps completed (every `[gc] check_interval`). |
+| `gc_rows_scanned` | Counter | — | State rows those sweeps read. A sweep reads every row, so this rises by the node's row count each sweep, whether or not anything was deleted. |
+| `gc_tombstones_collected` | Counter | — | Tombstones collected. |
+| `gc_sweep_duration_seconds` | Histogram | — | Wall time of one sweep (buckets 10ms–~5.5min). A large share of `check_interval` means the interval is too short for this store. |
+
+<Aside type="caution">
+None of these is the size of the live data, and none drops promptly when data
+is overwritten or deleted:
+
+- `storage_disk_usage_bytes{store="datastore"}` counts allocated blocks, and
+  RocksDB preallocates each WAL (tens of MB) and keeps up to
+  `max_total_wal_size` (256MB) of them. On a small node it is mostly WAL, and
+  it moves in WAL-sized steps. `storage_datastore_file_bytes` shows the split.
+- SST bytes include overwritten versions and tombstones until compaction
+  rewrites the files, so they shrink only after a compaction.
+  `storage_datastore_table_bytes{kind="live_data"}` is the figure that tracks
+  the data itself; the gap to `live_sst` is what compaction will give back.
+- `storage_namespace_bytes` is a RocksDB range estimate (compressed SST bytes
+  plus uncompressed memtable bytes; a key in both counts twice), so it
+  saw-tooths at flush and compaction rather than tracking the logical size.
+- `column="delta"` grows with every applied delta until DAG compaction prunes
+  it, which by default runs hourly and only once a context holds more than
+  10,000 deltas. Tombstone GC runs every `[gc] check_interval` (default 10
+  minutes) and collects a delete only once every member has caught up past
+  it, so a run shorter than about two intervals never shows that drop.
+</Aside>
 
 <Aside type="note">
 The exact exported prefix for the network channel and context-execution
@@ -188,6 +227,8 @@ that divergence is detected without a full sync. See
   picks `HashComparison`.
 - `delta_outcomes_total{outcome="error"}` and
   `hc_leaf_drops_total{reason="lookup_error"}` are near zero.
+- `sync_root_hash_divergence_escalated_total` stays at **0** (the `..._detected_total_total`
+  counter may still rise under write load; that is expected).
 - `merod_build_info` is present (scrape pipeline alive, identity confirmed).
 
 </TabItem>
@@ -196,6 +237,10 @@ that divergence is detected without a full sync. See
 - Heartbeats report a root-hash / `scope_root` mismatch against the signed
   canonical expected; the node's reconciler kicks in (see
   [Troubleshooting](/operate/troubleshooting/)).
+- `sync_root_hash_divergence_escalated_total` increments: a same-DAG /
+  different-root mismatch persisted across a heartbeat period and the log
+  carries `DIVERGENCE DETECTED` plus a `sync::divergence_dump` of the root's
+  children to diff between peers.
 - `sync_protocol_selections_total{protocol="Snapshot"}` starts rising —
   growing snapshot selection means growing state divergence across the cluster.
 - `sync_failures_total` climbs and `sync_duration_seconds` p99 stretches out.
@@ -208,10 +253,9 @@ that divergence is detected without a full sync. See
 
 <Aside type="caution">
 The `scope_root` and per-context root hash are internal convergence values, not
-(yet) exported as their own Prometheus gauges. Today they surface in logs and in
-the reconciler's divergence handling rather than as a scrape-able heartbeat
-metric. Treat root-hash agreement as a log/RPC signal, and use the sync /
-governance counters above as the numeric proxy.
+exported as their own Prometheus gauges. Root-hash agreement between peers is
+counted only through the two `sync_root_hash_divergence_*` counters above; for
+the hashes themselves, use logs and the `contextStateHash` the admin API serves.
 </Aside>
 
 ## Sync status & readiness

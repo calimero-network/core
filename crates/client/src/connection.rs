@@ -5,6 +5,7 @@
 
 // Standard library
 use std::sync::Arc;
+use std::time::Duration;
 
 // External crates
 use eyre::{bail, eyre, Result, WrapErr};
@@ -48,6 +49,28 @@ const MAX_TOKEN_BODY_BYTES: usize = 64 * 1024;
 /// because blobs are the data plane, but still bounded so a lying
 /// `Content-Length` or an endless stream can't exhaust memory.
 const MAX_BINARY_BODY_BYTES: usize = 512 * 1024 * 1024;
+
+/// How long a request may take, start to finish, unless it says otherwise.
+///
+/// Without one a node that accepts a request and never answers it holds the
+/// caller forever: `meroctl tee fleet-join` against a node stuck asking itself
+/// for admission never returned.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration =
+    Duration::from_secs(crate::traits::DEFAULT_REQUEST_TIMEOUT_SECS);
+
+/// How long a request the node answers only after work of its own that can
+/// outlast [`DEFAULT_REQUEST_TIMEOUT`] may take: joining a namespace (its peer
+/// discovery alone waits up to 45 s), joining a context or a group, syncing,
+/// upgrading, installing from a URL, creating a context, and running an
+/// application method over JSON-RPC.
+pub const NETWORK_BOUND_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// How long a blob upload or download may take. Sized for the
+/// [`MAX_BINARY_BODY_BYTES`] cap over a slow link, not for a typical blob.
+pub const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// How long reaching the node may take, for every request.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Authentication mode for a connection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +150,8 @@ where
     // connection may carry both — a node owner's token and a device key — and
     // the node decides which it honours.
     request_proof: Option<Arc<RequestProofSigner>>,
+    // What a request is bounded by unless its call names a longer bound.
+    request_timeout: Duration,
     // Opt-in: every request, the token refresh included, is sealed to the
     // node's attested transport key and sent as an envelope, so nothing a proxy
     // in front of the node can read crosses it.
@@ -175,8 +200,12 @@ fn same_origin_client() -> Client {
         }
     });
 
+    // The total timeout here bounds what does not go through `dispatch` — the
+    // token refresh and auth-mode probe. `dispatch` sets each request's own.
     Client::builder()
         .redirect(policy)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(DEFAULT_REQUEST_TIMEOUT)
         .build()
         // SAFETY: only a TLS backend that fails to initialise can fail here, which
         // `Client::new` would also panic on.
@@ -202,9 +231,26 @@ where
             client_storage,
             auth_lock: Arc::new(Mutex::new(())),
             request_proof: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
             #[cfg(feature = "tee")]
             sealed: None,
         }
+    }
+
+    /// Bound every request by `timeout` instead of [`DEFAULT_REQUEST_TIMEOUT`].
+    ///
+    /// Calls that name their own, longer bound — fleet-join, joins, syncs,
+    /// blob transfers — keep it.
+    #[must_use]
+    pub const fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
+    }
+
+    /// What a request is bounded by unless its call names a longer bound.
+    #[cfg(test)]
+    pub(crate) const fn request_timeout(&self) -> Duration {
+        self.request_timeout
     }
 
     /// Seal every request to the node's attested transport key
@@ -220,11 +266,21 @@ where
     }
 
     /// Send a request the way this connection sends everything: sealed when
-    /// it seals, directly otherwise.
-    async fn dispatch(&self, builder: reqwest::RequestBuilder) -> Result<Response> {
+    /// it seals, directly otherwise. Either way it gives up after `timeout`,
+    /// reading the response body included.
+    async fn dispatch(
+        &self,
+        builder: reqwest::RequestBuilder,
+        timeout: Duration,
+    ) -> Result<Response> {
+        let builder = builder.timeout(timeout);
         #[cfg(feature = "tee")]
         if let Some(sealed) = &self.sealed {
-            return sealed.execute(builder.build()?).await;
+            // The sealed transport sends through its own client, so the
+            // request's timeout does not reach it; bound it here.
+            return tokio::time::timeout(timeout, sealed.execute(builder.build()?))
+                .await
+                .map_err(|_elapsed| eyre!("the node did not answer within {timeout:?}"))?;
         }
         Ok(builder.send().await?)
     }
@@ -281,7 +337,8 @@ where
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.request(RequestType::Get, path, None::<()>).await
+        self.request(RequestType::Get, path, None::<()>, self.request_timeout)
+            .await
     }
 
     /// Check if a path requires authentication
@@ -295,15 +352,40 @@ where
         I: Serialize,
         O: DeserializeOwned,
     {
-        self.request(RequestType::Post, path, Some(body)).await
+        self.request(RequestType::Post, path, Some(body), self.request_timeout)
+            .await
     }
 
     pub async fn post_no_body<O: DeserializeOwned>(&self, path: &str) -> Result<O> {
-        self.request(RequestType::Post, path, None::<()>).await
+        self.request(RequestType::Post, path, None::<()>, self.request_timeout)
+            .await
+    }
+
+    /// [`Self::post`] for a call the node legitimately takes longer than the
+    /// connection's request timeout to answer, bounded by `timeout` instead.
+    pub async fn post_with_timeout<I, O>(&self, path: &str, body: I, timeout: Duration) -> Result<O>
+    where
+        I: Serialize,
+        O: DeserializeOwned,
+    {
+        self.request(RequestType::Post, path, Some(body), timeout)
+            .await
+    }
+
+    /// [`Self::post_no_body`], bounded by `timeout` instead of the connection's
+    /// request timeout. See [`Self::post_with_timeout`].
+    pub async fn post_no_body_with_timeout<O: DeserializeOwned>(
+        &self,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<O> {
+        self.request(RequestType::Post, path, None::<()>, timeout)
+            .await
     }
 
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.request(RequestType::Delete, path, None::<()>).await
+        self.request(RequestType::Delete, path, None::<()>, self.request_timeout)
+            .await
     }
 
     pub async fn delete_with_body<I, O>(&self, path: &str, body: I) -> Result<O>
@@ -311,8 +393,13 @@ where
         I: Serialize,
         O: DeserializeOwned,
     {
-        self.request(RequestType::DeleteWithBody, path, Some(body))
-            .await
+        self.request(
+            RequestType::DeleteWithBody,
+            path,
+            Some(body),
+            self.request_timeout,
+        )
+        .await
     }
 
     pub async fn patch<I, O>(&self, path: &str, body: I) -> Result<O>
@@ -320,7 +407,8 @@ where
         I: Serialize,
         O: DeserializeOwned,
     {
-        self.request(RequestType::Patch, path, Some(body)).await
+        self.request(RequestType::Patch, path, Some(body), self.request_timeout)
+            .await
     }
 
     pub async fn put_json<I, O>(&self, path: &str, body: I) -> Result<O>
@@ -328,7 +416,8 @@ where
         I: Serialize,
         O: DeserializeOwned,
     {
-        self.request(RequestType::Put, path, Some(body)).await
+        self.request(RequestType::Put, path, Some(body), self.request_timeout)
+            .await
     }
 
     pub async fn put_binary(&self, path: &str, data: Vec<u8>) -> Result<reqwest::Response> {
@@ -353,7 +442,7 @@ where
                 if let Some(p) = proof_header {
                     builder = builder.header(PROOF_HEADER, p);
                 }
-                self.dispatch(builder)
+                self.dispatch(builder, TRANSFER_TIMEOUT)
             },
         )
         .await
@@ -381,7 +470,7 @@ where
                     if let Some(p) = proof_header {
                         builder = builder.header(PROOF_HEADER, p);
                     }
-                    self.dispatch(builder)
+                    self.dispatch(builder, TRANSFER_TIMEOUT)
                 },
             )
             .await?;
@@ -411,7 +500,7 @@ where
                     if let Some(p) = proof_header {
                         builder = builder.header(PROOF_HEADER, p);
                     }
-                    self.dispatch(builder)
+                    self.dispatch(builder, self.request_timeout)
                 },
             )
             .await?;
@@ -419,7 +508,13 @@ where
         Ok(response.headers().clone())
     }
 
-    async fn request<I, O>(&self, req_type: RequestType, path: &str, body: Option<I>) -> Result<O>
+    async fn request<I, O>(
+        &self,
+        req_type: RequestType,
+        path: &str,
+        body: Option<I>,
+        timeout: Duration,
+    ) -> Result<O>
     where
         I: Serialize,
         O: DeserializeOwned,
@@ -470,7 +565,7 @@ where
                     if let Some(p) = proof_header {
                         builder = builder.header(PROOF_HEADER, p);
                     }
-                    self.dispatch(builder)
+                    self.dispatch(builder, timeout)
                 },
             )
             .await?;
@@ -773,7 +868,10 @@ where
         };
 
         let response = self
-            .dispatch(self.client.post(refresh_url).json(&request_body))
+            .dispatch(
+                self.client.post(refresh_url).json(&request_body),
+                self.request_timeout,
+            )
             .await?;
 
         if !response.status().is_success() {
@@ -832,7 +930,10 @@ where
         // relative `join` drops the last base segment when it doesn't).
         let probe_url = resolve_path(&self.api_url, "admin-api/contexts")?;
 
-        match self.dispatch(self.client.get(probe_url)).await {
+        match self
+            .dispatch(self.client.get(probe_url), self.request_timeout)
+            .await
+        {
             Ok(response) => {
                 if response.status() == 401 {
                     // 401 Unauthorized means authentication is required

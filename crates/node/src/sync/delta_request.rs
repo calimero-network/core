@@ -368,9 +368,10 @@ fn verify_fetched_parent(
     }
 }
 
-/// Whether a head delta's author signed for a device revoked in the context's
-/// namespace, with no live binding speaking for the key again. The same rule the
-/// head-pull path applies. A lookup error leaves the head to the cut check.
+/// Whether a head delta's author signed for a device revoked or narrowed out in
+/// the context's namespace, with no live binding speaking for the key again. The
+/// same rule the head-pull path applies. A lookup error leaves the head to the
+/// cut check.
 fn head_author_is_revoked(
     datastore: &calimero_store::Store,
     context_id: &ContextId,
@@ -461,6 +462,19 @@ impl SyncManager {
         // Fetch all missing ancestors, then add them in topological order (oldest first)
         let mut to_fetch = missing_ids.clone();
         let mut fetch_count = 0;
+        let mut received_count: u64 = 0;
+        // One request/response per fetch attempt; only deltas that arrived
+        // count as transferred.
+        let record_cost = |fetch_count: usize, received: u64| {
+            self.metrics().record_session_cost(
+                "DeltaSync",
+                super::metrics::SessionCost {
+                    round_trips: fetch_count as u64,
+                    entities_transferred: received,
+                    ..Default::default()
+                },
+            );
+        };
 
         // Track visited IDs to prevent cycles/loops from malicious peers
         let mut visited_ids = std::collections::HashSet::new();
@@ -506,6 +520,7 @@ impl SyncManager {
                     .await;
 
                     // Stop syncing. Progress so far is saved in DeltaStore (Pending).
+                    record_cost(fetch_count, received_count);
                     return Ok(());
                 }
 
@@ -516,6 +531,7 @@ impl SyncManager {
                     .await
                 {
                     Ok(Some(fetched)) => {
+                        received_count += 1;
                         info!(
                             %context_id,
                             delta_id = ?missing_id,
@@ -675,6 +691,7 @@ impl SyncManager {
                 );
             }
         }
+        record_cost(fetch_count, received_count);
 
         Ok(())
     }

@@ -18,7 +18,7 @@ use core::fmt;
 use std::cell::OnceCell;
 use std::ops::{Deref, DerefMut};
 
-use super::{Collection, ROOT_ENTRY_ID, ROOT_ID};
+use super::{Collection, StoreError, ROOT_ENTRY_ID, ROOT_ID};
 use crate::address::Id;
 use crate::delta::StorageDelta;
 use crate::index::DeferredAncestorScope;
@@ -315,8 +315,32 @@ where
     ///
     /// Takes `&ApplyContext` (not by-value) for parity with
     /// [`Interface::apply_action`]; per #2272 review.
+    ///
+    /// Refuses a delta that leaves the root unreadable as a `Root<T>` (see
+    /// [`Self::refuse_unreadable_root`]).
     #[expect(clippy::missing_errors_doc, reason = "NO")]
     pub fn sync(args: &[u8], ctx: &crate::interface::ApplyContext) -> Result<(), StorageError> {
+        Self::sync_then(args, ctx, Self::refuse_unreadable_root)
+    }
+
+    /// [`Self::sync`] for a root that is never read as a `Root<T>`: the
+    /// runtime's host-side apply for JS apps, whose root document is opaque
+    /// bytes read raw through [`Interface::read_root_entry`], never through
+    /// [`Self::fetch`], so it has no layout to check.
+    #[expect(clippy::missing_errors_doc, reason = "as `sync`")]
+    pub fn sync_opaque(
+        args: &[u8],
+        ctx: &crate::interface::ApplyContext,
+    ) -> Result<(), StorageError> {
+        Self::sync_then(args, ctx, || Ok(()))
+    }
+
+    /// Applies the delta, then runs `check` before committing the root.
+    fn sync_then(
+        args: &[u8],
+        ctx: &crate::interface::ApplyContext,
+        check: impl FnOnce() -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
         let artifact =
             from_slice::<StorageDelta>(args).map_err(StorageError::DeserializationError)?;
 
@@ -403,6 +427,7 @@ where
                 "Root::sync returned Err — will bubble up to __calimero_sync_next's .expect()"
             );
         })?;
+        check()?;
 
         info!(
             target: "storage::root",
@@ -412,6 +437,28 @@ where
         Self::commit_headless();
 
         Ok(())
+    }
+
+    /// Refuses a sync that leaves the root collection or its single entry
+    /// unreadable.
+    ///
+    /// Both sit at fixed ids, and a peer's delta can carry any bytes there.
+    /// Every later call loads both through [`Self::fetch`] and [`Self::get`],
+    /// which panic on a read that fails, so a delta stored with such bytes would
+    /// stop every node that applied it. Reading both back through the same
+    /// decoders refuses the delta instead, and a refused sync stores none of its
+    /// writes. An entry missing under a stored root is refused for the same
+    /// reason.
+    fn refuse_unreadable_root() -> Result<(), StorageError> {
+        let Some(inner) = <Interface<S>>::root::<Collection<T, S>>()? else {
+            return Ok(());
+        };
+        match inner.get(Self::entry_id()) {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(StorageError::NotFound(Self::entry_id())),
+            Err(StoreError::StorageError(e)) => Err(e),
+            Err(e) => Err(StorageError::InvalidData(e.to_string())),
+        }
     }
 
     /// Apply a batch of actions, deriving the per-action [`ApplyContext`]

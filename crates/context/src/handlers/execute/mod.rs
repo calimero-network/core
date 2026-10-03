@@ -612,7 +612,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 // resolves to no blob) and failed fetches: the
                                 // row's bytecode is the only available truth.
                                 act.evict_application_caches(target_app);
-                                act.get_module(target_app, service_name)
+                                act.get_row_module_for_context(cid, target_app, service_name)
                                     .map_ok(|(_blob, module), _act, _ctx| module)
                                     .boxed_local()
                             };
@@ -794,7 +794,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .map_ok(move |module, _act, _ctx| (blob, module))
                     .boxed_local(),
                 None => act
-                    .get_module(context.application_id, context.service_name.clone())
+                    .get_row_module_for_context(
+                        context.id,
+                        context.application_id,
+                        context.service_name.clone(),
+                    )
                     .boxed_local(),
             };
             module_fut.map_ok(move |(blob, module), _act, _ctx| (guard, context, module, blob))
@@ -948,13 +952,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let start = Instant::now();
 
-                let (
-                    outcome,
-                    causal_delta,
-                    delta_signature,
-                    signing_governance_position,
-                    read_only_write_discarded,
-                ) = internal_execute(
+                let executed = internal_execute(
                         datastore,
                         &scope_projections,
                         &node_client,
@@ -978,13 +976,17 @@ impl Handler<ExecuteRequest> for ContextManager {
                         governance_position.as_ref(),
                         &ack_router,
                     )
-                    .await?;
+                    .await;
 
                 let duration = start.elapsed().as_secs_f64();
-                let status = if outcome.returns.is_ok() {
-                    "success"
-                } else {
-                    "failure"
+                // `failure`: the method ran and returned an error. `error`: the
+                // node could not run it to completion (storage, module, signing,
+                // admission). Recorded before the `?` below, which used to skip
+                // both execution metrics on exactly the runs worth counting.
+                let status = match &executed {
+                    Ok((outcome, ..)) if outcome.returns.is_ok() => "success",
+                    Ok(_) => "failure",
+                    Err(_) => "error",
                 };
 
                 // Update execution count metrics
@@ -1010,6 +1012,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                         })
                         .observe(duration);
                 }
+
+                let (
+                    outcome,
+                    causal_delta,
+                    delta_signature,
+                    signing_governance_position,
+                    read_only_write_discarded,
+                ) = executed?;
 
                 info!(
                     %context_id,
@@ -1513,11 +1523,6 @@ impl Handler<ExecuteRequest> for ContextManager {
 }
 
 impl ContextManager {
-    /// Load the module for `application_id` via its row: resolve the row's
-    /// top-level bytecode blob (the bundle blob for bundles, the raw wasm
-    /// blob otherwise) and delegate to [`Self::get_module_for_blob`]. The
-    /// row is a download-cache pointer ("latest fetched") — contexts bound
-    /// to a specific version load through their blob directly.
     /// Max ladder hops one access replays — bounds a pathological
     /// marker-write failure loop; ladders are realistically 1-3 rungs and a
     /// longer one resumes on the next access from the last committed rung.
@@ -1769,8 +1774,11 @@ impl ContextManager {
         .boxed_local()
     }
 
-    pub fn get_module(
+    /// Load the module of `application_id`'s row for `context_id`, refused before
+    /// compiling when the context's group never named its blob: every group shares the row.
+    pub(crate) fn get_row_module_for_context(
         &self,
+        context_id: ContextId,
         application_id: ApplicationId,
         service_name: Option<String>,
     ) -> impl ActorFuture<
@@ -1788,12 +1796,26 @@ impl ContextManager {
                     };
                     let _ = act.applications.insert_new(application_id, app);
                 }
-                let app = act
+                let blob = act
                     .applications
                     .get(&application_id)
-                    .expect("application just inserted or already cached");
-
-                Ok(app.blob.bytecode)
+                    .expect("application just inserted or already cached")
+                    .blob
+                    .bytecode;
+                if !crate::activation::context_group_registers_bytecode(
+                    &act.datastore,
+                    &context_id,
+                    *blob.digest(),
+                ) {
+                    warn!(
+                        %context_id,
+                        %application_id,
+                        %blob,
+                        "refusing an application release the context's group never named"
+                    );
+                    bail!(ExecuteError::ApplicationNotInstalled { application_id });
+                }
+                Ok(blob)
             })
             .and_then(move |blob, act, _ctx| {
                 act.get_module_for_blob(blob, service_name)

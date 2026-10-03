@@ -7,10 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities as Caps;
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_projection::{AuthorityBase, ScopeState};
+use calimero_projection::{Acting, AuthorityBase, ScopeState};
 use calimero_store::Store;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
@@ -273,13 +274,17 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         *self.folded.lock().unwrap() = None;
     }
 
-    fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {
+    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
         if op.parents.is_empty() {
             return Some(false);
         }
         let log = self.log();
+        let acting = Acting {
+            group: *group,
+            capability,
+        };
         Some(
-            ScopeState::void_ops_with(&log, self.base(), Some((op, Some(*group))))
+            ScopeState::void_ops_with(&log, self.base(), Some((op, Some(acting))))
                 .contains(&op.id()),
         )
     }
@@ -661,6 +666,44 @@ fn ops_a_removed_admin_sends_from_a_cut_before_its_removal_have_no_effect() {
     }
 
     assert_eq!(w.role(&w.sam), None, "Sam did not re-add himself");
+    assert_eq!(
+        w.role(&w.xavier),
+        None,
+        "the admin Sam added is not an admin"
+    );
+    assert_eq!(
+        w.role(&w.bob),
+        Some(GroupMemberRole::Member),
+        "Bob was not removed"
+    );
+    assert!(
+        !w.key_held(&K_SAM),
+        "the key Sam rotated to was never taken"
+    );
+    assert_eq!(w.current_key(), current);
+}
+
+#[test]
+fn ops_a_demoted_admin_sends_from_a_cut_before_its_demotion_have_no_effect() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+
+    // Alice demotes Sam to a member, then Sam's ops from the cut before it arrive.
+    let demotion = w.add(&w.alice, &[&s], &w.sam, GroupMemberRole::Member);
+    w.apply(&demotion).expect("alice demotes sam");
+    let current = w.current_key();
+
+    let old = sam_from_the_old_cut(&w, &s);
+    for op in [&old.readd, &old.promote, &old.kick_and_rotate] {
+        w.apply(op)
+            .expect("the op is stored; it just carries no authority");
+    }
+
+    assert_eq!(
+        w.role(&w.sam),
+        Some(GroupMemberRole::Member),
+        "Sam did not promote himself back"
+    );
     assert_eq!(
         w.role(&w.xavier),
         None,
@@ -1886,5 +1929,201 @@ fn a_void_op_over_its_budget_keeps_its_kind_and_loses_a_policy_s_bulk() {
             calimero_op::OpPayload::PolicyUpdated { policy_bytes } if policy_bytes.is_empty()
         ),
         "still a policy the void rule can judge, without its bulk"
+    );
+}
+
+impl World {
+    fn set_caps(
+        &self,
+        by: &Person,
+        parents: &[&SignedNamespaceOp],
+        who: &Person,
+        capabilities: Caps,
+    ) -> SignedNamespaceOp {
+        self.sign(
+            by,
+            parents,
+            &GroupOp::MemberCapabilitySet {
+                member: who.account,
+                capabilities,
+            },
+            None,
+        )
+    }
+
+    fn metadata(
+        &self,
+        by: &Person,
+        parents: &[&SignedNamespaceOp],
+        name: &str,
+    ) -> SignedNamespaceOp {
+        self.sign(
+            by,
+            parents,
+            &GroupOp::GroupMetadataSet {
+                name: Some(name.to_owned()),
+                data: Default::default(),
+            },
+            None,
+        )
+    }
+
+    fn group_name(&self) -> Option<String> {
+        crate::MetadataRepository::new(&self.store)
+            .group_metadata(&LogAuthorizer::group())
+            .expect("metadata")
+            .and_then(|record| record.name)
+    }
+
+    /// The owner grants Bob `granted`; applied. Returns the grant.
+    fn bob_granted(&self, granted: Caps) -> SignedNamespaceOp {
+        let [_, _, b] = self.founded();
+        let grant = self.set_caps(&self.owner, &[&b], &self.bob, granted);
+        self.apply(&grant).expect("the owner grants bob");
+        grant
+    }
+}
+
+#[test]
+fn an_op_a_revoked_capability_admitted_from_the_cut_before_the_revoke_has_no_effect() {
+    let w = World::new();
+    let grant = w.bob_granted(Caps::MANAGE_MEMBERS);
+    let revoke = w.set_caps(&w.alice, &[&grant], &w.bob, Caps::empty());
+    w.apply(&revoke).expect("alice revokes it");
+    let current = w.current_key();
+
+    // From the cut that holds the revoke, the gate refuses outright.
+    let fresh = w.add(&w.bob, &[&revoke], &w.xavier, GroupMemberRole::Member);
+    assert!(
+        w.apply(&fresh).is_err(),
+        "bob no longer holds MANAGE_MEMBERS"
+    );
+
+    // From the cut before it, the op is logged and carries no authority, nor does the
+    // rotation it carries.
+    let old = w.sign(
+        &w.bob,
+        &[&grant],
+        &GroupOp::MemberAdded {
+            member: w.xavier.account,
+            role: GroupMemberRole::Member,
+        },
+        Some(&K_SAM),
+    );
+    w.apply(&old).expect("stored; it carries no authority");
+    assert_eq!(w.role(&w.xavier), None, "Xavier was not added");
+    assert!(
+        !w.key_held(&K_SAM),
+        "the key Bob rotated to was never taken"
+    );
+    assert_eq!(w.current_key(), current);
+}
+
+#[test]
+fn a_revoke_that_arrives_after_the_op_it_voids_takes_its_effect_back() {
+    let w = World::new();
+    let grant = w.bob_granted(Caps::MANAGE_MEMBERS);
+    let old = w.add(&w.bob, &[&grant], &w.xavier, GroupMemberRole::Member);
+    w.apply(&old).expect("applies while the revoke is unknown");
+    assert_eq!(w.role(&w.xavier), Some(GroupMemberRole::Member));
+
+    let revoke = w.set_caps(&w.alice, &[&grant], &w.bob, Caps::empty());
+    w.apply(&revoke).expect("alice revokes it");
+    assert_eq!(
+        w.role(&w.xavier),
+        None,
+        "the member Bob added is taken back out"
+    );
+}
+
+#[test]
+fn an_op_needing_no_revoked_bit_stands() {
+    let w = World::new();
+    let grant = w.bob_granted(Caps::MANAGE_MEMBERS | Caps::CAN_MANAGE_METADATA);
+    // Alice takes MANAGE_MEMBERS away and leaves the metadata bit.
+    let revoke = w.set_caps(&w.alice, &[&grant], &w.bob, Caps::CAN_MANAGE_METADATA);
+    w.apply(&revoke).expect("alice revokes one bit");
+
+    let renamed = w.metadata(&w.bob, &[&grant], "kept");
+    w.apply(&renamed).expect("applies");
+    assert_eq!(w.group_name().as_deref(), Some("kept"));
+
+    // Setting his own metadata needs no bit at all, even with every bit gone.
+    let all_gone = w.set_caps(&w.alice, &[&revoke], &w.bob, Caps::empty());
+    w.apply(&all_gone).expect("alice revokes the rest");
+    let own = w.sign(
+        &w.bob,
+        &[&grant],
+        &GroupOp::MemberMetadataSet {
+            member: w.bob.account,
+            name: Some("bob".to_owned()),
+            data: Default::default(),
+        },
+        None,
+    );
+    w.apply(&own).expect("applies");
+    assert_eq!(
+        crate::MetadataRepository::new(&w.store)
+            .member_metadata(&LogAuthorizer::group(), &w.bob.account)
+            .expect("metadata")
+            .and_then(|record| record.name)
+            .as_deref(),
+        Some("bob")
+    );
+}
+
+#[test]
+fn an_op_the_payload_hides_is_void_when_the_bit_it_needed_is_revoked() {
+    let w = World::new();
+    let grant = w.bob_granted(Caps::CAN_MANAGE_METADATA);
+    let revoke = w.set_caps(&w.alice, &[&grant], &w.bob, Caps::empty());
+    w.apply(&revoke).expect("alice revokes it");
+
+    let renamed = w.metadata(&w.bob, &[&grant], "takeover");
+    w.apply(&renamed).expect("logged");
+    assert_eq!(w.group_name(), None, "the metadata Bob set was not written");
+}
+
+#[test]
+fn a_grant_or_a_revoke_of_another_bit_voids_nothing() {
+    // A grant, concurrent with Bob's op.
+    let w = World::new();
+    let grant = w.bob_granted(Caps::MANAGE_MEMBERS);
+    let more = w.set_caps(
+        &w.alice,
+        &[&grant],
+        &w.bob,
+        Caps::MANAGE_MEMBERS | Caps::CAN_MANAGE_METADATA,
+    );
+    w.apply(&more).expect("alice grants more");
+    let old = w.add(&w.bob, &[&grant], &w.xavier, GroupMemberRole::Member);
+    w.apply(&old).expect("applies");
+    assert_eq!(w.role(&w.xavier), Some(GroupMemberRole::Member));
+
+    // A revoke of a bit Bob's op did not need.
+    let w = World::new();
+    let grant = w.bob_granted(Caps::MANAGE_MEMBERS | Caps::CAN_MANAGE_METADATA);
+    let revoke = w.set_caps(&w.alice, &[&grant], &w.bob, Caps::MANAGE_MEMBERS);
+    w.apply(&revoke).expect("alice revokes the metadata bit");
+    let old = w.add(&w.bob, &[&grant], &w.xavier, GroupMemberRole::Member);
+    w.apply(&old).expect("applies");
+    assert_eq!(w.role(&w.xavier), Some(GroupMemberRole::Member));
+}
+
+#[test]
+fn an_admin_whose_capability_is_revoked_needed_none_of_it() {
+    let w = World::new();
+    let [_, s, _] = w.founded();
+    let grant = w.set_caps(&w.owner, &[&s], &w.sam, Caps::MANAGE_MEMBERS);
+    w.apply(&grant).expect("the owner grants sam, an admin");
+    let revoke = w.set_caps(&w.alice, &[&grant], &w.sam, Caps::empty());
+    w.apply(&revoke).expect("alice revokes it");
+
+    let by_sam = w.add(&w.sam, &[&grant], &w.xavier, GroupMemberRole::Member);
+    w.apply(&by_sam).expect("applies");
+    assert_eq!(
+        w.role(&w.xavier),
+        Some(GroupMemberRole::Member),
+        "Sam added Xavier as an admin, not through the bit"
     );
 }

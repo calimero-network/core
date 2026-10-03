@@ -16,6 +16,7 @@ use calimero_governance_store::{
     get_group_for_context, CapabilitiesRepository, GroupKeyring, MembershipRepository,
     MetaRepository, MetadataRepository, NamespaceRepository, NodeDeviceRepository,
 };
+use calimero_node_primitives::test_fixtures::signed_wasm;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -177,7 +178,7 @@ async fn fixture_with(
     let wasm = wat::parse_str(module_with(init_signs)).expect("parse the module");
     let (blob_id, size) = harness
         .node_client
-        .add_blob(Cursor::new(wasm.clone()), Some(wasm.len() as u64), None)
+        .add_blob(Cursor::new(signed_wasm(&wasm)), None, None)
         .await
         .expect("store the wasm");
     let application_id = ApplicationId::from(APP);

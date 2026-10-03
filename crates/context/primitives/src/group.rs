@@ -1720,6 +1720,14 @@ pub struct GetMigrationStatusRequest {
     /// Freshest per-member heartbeat reports (peer → report), snapshotted from
     /// the node-side TTL cache by the caller.
     pub member_reports: BTreeMap<PublicKey, MemberMigrationReport>,
+    /// The account the read is made for, when it is not this node's own.
+    ///
+    /// `None` for a node session: the caller is the node, and the admin gate
+    /// checks the account the node's namespace identity is bound to. `Some` for
+    /// a delegated account session (an account served through a relay): the
+    /// gate checks THIS account instead, because the node is only the relay
+    /// carrying the request and its own role says nothing about the caller.
+    pub requester: Option<AccountId>,
 }
 
 impl Message for GetMigrationStatusRequest {

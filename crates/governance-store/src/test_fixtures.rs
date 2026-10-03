@@ -507,6 +507,249 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
 /// non-emptiness matters (see [`FixedAuthorizer`]).
 pub const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];
 
+/// A projection whose cut holds nobody as a member, to tell a gate that reads the
+/// cut from one that reads live rows.
+pub struct NotMemberAtCut;
+
+impl crate::authorizer::AtCutAuthorizer for NotMemberAtCut {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        Some(crate::authorizer::AtCutMembershipPath::None)
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        Some(None)
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+}
+
+/// A projection that folds every member in as an inheritor, as the fold does for
+/// one removed from an ancestor: it holds no deny-list or re-entry rows.
+pub struct InheritsAtCut;
+
+impl crate::authorizer::AtCutAuthorizer for InheritsAtCut {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        Some(crate::authorizer::AtCutMembershipPath::Inherited)
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+}
+
+/// The groups and members [`kicked_from_open`] builds.
+pub struct KickedFromOpen {
+    pub ns: ContextGroupId,
+    pub restricted: ContextGroupId,
+    pub open: ContextGroupId,
+    pub child: ContextGroupId,
+    pub grandchild: ContextGroupId,
+    pub kicked: (PrivateKey, AccountId),
+    pub honest: (PrivateKey, AccountId),
+}
+
+/// `ns <- restricted <- open <- child <- grandchild` (Open below `restricted`, so `child`
+/// keys itself); `kicked` and `honest` inherit from `restricted`, and `kicked` was removed from `open`.
+pub fn kicked_from_open(store: &Store) -> KickedFromOpen {
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let ns_id = [0x4Au8; 32];
+    let ns = ContextGroupId::from(ns_id);
+    let ((admin_sk, _), admin) = bootstrap_namespace_with_admin_account(store, ns_id);
+    let restricted = ContextGroupId::from([0x4Bu8; 32]);
+    let open = ContextGroupId::from([0x4Cu8; 32]);
+    let child = ContextGroupId::from([0x4Du8; 32]);
+    let grandchild = ContextGroupId::from([0x4Eu8; 32]);
+
+    let mut parent = ns;
+    for group in [restricted, open, child, grandchild] {
+        nest_for_test(store, &parent, &group);
+        MetaRepository::new(store)
+            .save(&group, &sample_meta_with_admin(admin))
+            .unwrap();
+        let visibility = if group == restricted {
+            VisibilityMode::Restricted
+        } else {
+            VisibilityMode::Open
+        };
+        crate::CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&group, visibility)
+            .unwrap();
+        parent = group;
+    }
+
+    let member = |seed: u8| {
+        let sk = PrivateKey::from([seed; 32]);
+        let account = enrol_member(store, &ns, &sk.public_key());
+        for group in [ns, restricted] {
+            MembershipRepository::new(store)
+                .add_member(&group, &account, GroupMemberRole::Member)
+                .unwrap();
+            crate::CapabilitiesRepository::new(store)
+                .set_member_capability(
+                    &group,
+                    &account,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
+                .unwrap();
+        }
+        (sk, account)
+    };
+    let kicked = member(0x61);
+    let honest = member(0x62);
+
+    let kick = SignedGroupOp::sign(
+        &admin_sk,
+        open.to_bytes().into(),
+        vec![],
+        1,
+        dummy_member_removed_op(kicked.1),
+    )
+    .expect("sign MemberRemoved");
+    crate::apply_local_signed_group_op(store, &kick).expect("apply MemberRemoved");
+
+    KickedFromOpen {
+        ns,
+        restricted,
+        open,
+        child,
+        grandchild,
+        kicked,
+        honest,
+    }
+}
+
 /// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) standing in for a
 /// projection that has NOT folded the ancestry the op's cut cites — the
 /// catching-up replica, mid-backfill.

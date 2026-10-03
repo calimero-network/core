@@ -119,19 +119,37 @@ impl Handler<CreateContextRequest> for ContextManager {
         // marker on success, so every new context is positioned on its
         // group's upgrade ladder from day one (a marker-less context can only
         // take the legacy single-jump lazy path).
-        let birth_blob: [u8; 32] = pinned_blob
-            .as_ref()
-            .map(|b| *b.as_ref())
-            .unwrap_or_else(|| *application.blob.bytecode.as_ref());
-        let module_task = match pinned_blob {
-            Some(blob) => self
-                .get_module_for_blob(blob, context_meta.service_name.clone())
-                .boxed_local(),
-            None => self
-                .get_module(application.id, context_meta.service_name.clone())
-                .map_ok(|(_blob, module), _act, _ctx| module)
-                .boxed_local(),
+        let birth_blob = match pinned_blob {
+            Some(blob) => blob,
+            None => match self
+                .datastore
+                .handle()
+                .get(&key::ApplicationMeta::new(application.id))
+            {
+                // Every group shares the row, so it may name another group's blob.
+                Ok(Some(row))
+                    if crate::activation::group_registers_bytecode(
+                        &self.datastore,
+                        &group_id,
+                        *row.bytecode.blob_id().digest(),
+                    ) =>
+                {
+                    row.bytecode.blob_id()
+                }
+                _ => {
+                    let _ignored = self.contexts.remove(&context_meta.id);
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "application {} on this node holds a release its group never named; \
+                         the group's own release must be fetched first",
+                        application.id
+                    )));
+                }
+            },
         };
+        let module_task = self
+            .get_module_for_blob(birth_blob, context_meta.service_name.clone())
+            .boxed_local();
+        let birth_blob = *birth_blob.digest();
 
         let context_meta_for_map_ok = context_meta.clone();
         let context_meta_for_map_err = context_meta.clone();

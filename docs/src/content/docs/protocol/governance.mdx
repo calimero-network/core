@@ -224,10 +224,11 @@ The same mechanism covers data writes: an entity's **writer set** (the access-co
 
 ### A removal voids the signer's concurrent governance ops
 
-Resolving authority at the cut alone would let a removed admin keep acting: an op it signs against a cut from before its removal is authorized at that cut, on every node, however late it arrives. So a **governance** op is also void when the log holds a removal of its signer that is neither its ancestor nor its descendant. The removal can be a member removal, a demotion from admin, or the revocation of the device that signed the op. Once a node knows of the removal, no op of that signer concurrent with it carries authority, and every node computes the same answer from the same log in any arrival order.
+Resolving authority at the cut alone would let a removed admin keep acting: an op it signs against a cut from before its removal is authorized at that cut, on every node, however late it arrives. So a **governance** op is also void when the log holds a removal of its signer that is neither its ancestor nor its descendant. The removal can be a member removal, a demotion from admin, the revocation of the device that signed the op, or the revocation of a capability the op relied on. Once a node knows of the removal, no op of that signer concurrent with it carries authority, and every node computes the same answer from the same log in any arrival order.
 
 - A device revocation counts as a removal only if its author was an admin of the root group at its own cut. The apply logs a revocation it refused, so one from anyone else removes nothing. A self-service revocation rests on a root-signed proof that the log does not carry, and a subgroup admin's ejection is scoped to that subgroup, so neither voids the device's concurrent ops.
 - A role change counts as a demotion only if its author was an admin too.
+- A capability set counts as a revocation of the bits the member held at its cut and does not keep, only if its author was an admin of the group at that cut. It voids only the member's concurrent ops in that group that needed one of those bits: an op a non-admin needs the bit for (adding or removing members for `MANAGE_MEMBERS`, metadata for `CAN_MANAGE_METADATA`, an application target, migration or upgrade for `MANAGE_APPLICATION`, a context registration for `CAN_CREATE_CONTEXT`, a subgroup's creation, deletion or visibility for its own bit), made when the member was not an admin at the op's cut. An op that needed no removed bit stands, as does any op of a member who was an admin at its cut. A grant voids nothing. Capabilities are not inherited, so the revocation reaches only the group it names.
 - Ops before the removal stand. Ops after it are refused by the cut check, as before.
 - A void op is still logged and still part of the causal graph, so descendants keep their parents. It is not applied, its nonce is spent, and a key rotation riding on it is not taken. A node keeps only so many bytes of such ops per signer and per namespace; past that it keeps an op's place in the log and not its contents, so the DAG still moves on. A void op keeps what the rule reads of it (only the bulk of a policy is dropped), so every node still reads the same void set. For an op the node cannot read the cost is real: the contents cannot be replayed when the key arrives, and authority questions about that group stay undecided on that node.
 - Ops by other members stay valid, including ones concurrent with the removal.
@@ -243,7 +244,7 @@ Two consequences are worth telling users. An admin removed while offline loses t
 
 What the rule does not reach: a change of the namespace admin or owner that a void op made before the node heard of the removal is not undone (and the owner the rule exempts moves with it), a TEE removal a node applied has already purged it, an invitation signed by an admin before its removal still admits the joiner, because the inviter is not part of the logged join; and an op sent on an admin's behalf through a relay is attributed to the relay. Both need the inviter or the warrant's author in the logged op.
 
-This rule is part of `SignedNamespaceOp` version 21: a node on an older version applies such an op, so nodes of one namespace must be upgraded together.
+The removal and demotion rule is part of `SignedNamespaceOp` version 21, and the capability-revoke rule of version 22: a node on an older version applies such an op, so nodes of one namespace must be upgraded together.
 
 ## Shared writer-set rotations
 
@@ -262,6 +263,7 @@ The op is not delegable, so a relay cannot publish it for a member.
 Which steps take effect is a fold over the cell's steps in the cut's ancestry (`calimero_storage::shared_writers::fold`), ordered by the governance DAG, never by clock.
 Only steps published in the context's group count, each only when its signer stood at the step's own parents as the apply requires: the key speaks for an account there, that account is a member of the group and not read-only, and it is not a TEE of the namespace.
 A node that got the group's key late therefore folds the same steps as every other node.
+A step whose op is void, because its signer was removed or demoted concurrently (see above), does not count either. A rotation needs no member capability, so a capability revoke does not void it.
 Only steps that rest on the genesis set count, that is a step from it or from a set another such step left, signed by an admin of the set it steps from.
 A cell folds at most 256 such steps (`MAX_STEPS_PER_CELL`), which bounds the cost of a cut: past that it has no answer, so writes to it wait, rather than a truncated history rolling a rotation back. That is a lifetime budget of rotations for a cell until governance history is checkpointed, and an admin of the cell, a removed one included, can spend it by publishing steps.
 

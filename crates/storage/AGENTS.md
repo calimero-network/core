@@ -216,15 +216,49 @@ switching a field between the two types needs no migration.
   does not decode, or whose key contradicts its own length, reads as absent and
   is counted, like an undecodable entry of any collection.
   `tests/owned_collisions.rs` pins all of this.
-- The read-side key check needs the key's `AsRef<[u8]>` bytes, so the policy
-  that sets the domain names them (`bind_slot_keys`, in `Guarded::from_parts`
-  and `UserStorage`'s `owned`). Iteration, `Debug`, `PartialEq`, `Ord` and
-  `Serialize` therefore ask nothing of `K` beyond borsh (and `Ord` on a
-  `SortedMap`), and `get` only that the borrowed key be bytes;
-  `tests/key_bounds.rs` holds that. An owned collection whose keys were never
-  bound reads no owned entry, so a new owning wrapper must bind them too.
+- The owned read-side key check needs the key's `AsRef<[u8]>` bytes, so the
+  policy that sets the domain names them (`bind_slot_keys`, in
+  `Guarded::from_parts` and `UserStorage`'s `owned`). An owned collection whose
+  keys were never bound reads no owned entry, so a new owning wrapper must bind
+  them too.
+- **A read leaves out an entry filed at an id its key does not derive**
+  (`Collection::filed_under` for maps, `Collection::value_filed_under` for
+  sets).
+  Apply cannot refuse one outside an owned domain, since nothing in the bytes
+  says where the key is, and a listed one would be out of reach of every write
+  and delete by its key.
+  Iteration, index-backed reads, `get`/`get_mut`, `contains` and re-keys skip it.
+  An insert at the key whose id it holds refiles it under that key and returns
+  no old value.
+  `remove` deletes it and returns none.
+  `entry` refiles it keeping its stored value, as that key's write by its author
+  would, so it is the one path that adopts a peer's value.
+  `len` still counts it, since a count reads no entry.
+  Iteration, `Debug`, `PartialEq`, `Ord` and `Serialize` therefore need
+  `K: AsRef<[u8]>` (and `Ord` on a `SortedMap`), `len` only borsh, and `get`
+  only that the borrowed key be bytes; `tests/key_bounds.rs` holds that.
+  `RGA`, `FugueText` and `RichText` read `raw_entries_with_ids` and apply their
+  own rules.
+  `src/tests/misfiled_entries.rs` pins it.
 - `GuardedEntries` and `Policy` are sealed: a policy is only as strong as the
   check the storage layer runs for it on apply.
+- **A collection reads only its own children.** `Collection::find_admitted`
+  goes through `Interface::find_child_by_id`, so an entity whose index names
+  another parent, or none, reads as absent before its bytes are decoded. A
+  key's id is derived from its collection, but a peer's delta can store an
+  entity at that id under another parent or as an orphan; without the check a
+  map read it as its own value, or failed decoding it. The app root entry
+  (`is_app_root_entry`) is exempt: its id is fixed, not key-derived.
+- **A sync that leaves the app root unreadable is refused.** The root
+  collection and its entry sit at fixed ids a peer's delta can write any bytes
+  to, and `Root::fetch`/`Root::get` panic on a read that fails. So `Root::sync`
+  reads both back through those decoders before it commits
+  (`refuse_unreadable_root`) and returns the error, and the node stores none of
+  a refused sync's writes. That costs two row reads per sync.
+  `tests/root_payload.rs` pins it. The runtime's host-side apply for JS apps
+  calls `Root::sync_opaque` instead: a JS root is opaque bytes (empty at the
+  root id, the document at the entry) read raw, never through `fetch`, and
+  would fail the check.
 - **A guarded collection counts from a node-local tally, never by loading its
   children** (`admitted_count.rs`). Its trie's `count` includes entries its
   domain does not admit, which apply cannot refuse (the domain is the
@@ -381,7 +415,7 @@ switching a field between the two types needs no migration.
   That is sound for exactly one reason: a mark row is written ONCE and never rewritten, so two replicas holding one `MarkId` hold byte-identical values, and the last-writer-wins that an untagged entry falls back to cannot pick wrong.
   Removing formatting is a NEW row with a greater id and `value: None`, never an edit or a delete. Stamping a mark row with a converging type would route it through the wrong arm; `sync_sim`'s `rich_text` scenarios pin that it stays opaque.
 - The read rule is the whole format contract: per character, per key, the covering mark with the greatest `MarkId` wins, and a `None` value means the key is absent. A future compaction may replace any set of marks by an equivalent one as long as that rule still renders the same spans.
-- `marks()` leaves out a row whose lamport exceeds the number of mark rows, or whose key is not its own id, or that is filed under an id its key does not derive, so minting and every read ignore it. An honest lamport is one more than the greatest the writer saw, hence at most the row count. This assumes rows are never removed or compacted: a compaction must keep the row count at or above the greatest lamport. Under partial sync a replica can hide a row until the earlier rows arrive. Padding rows raise the bar only by their own number, and one left out at the id the next mark would take (found by the stored id of the row, whatever its own id says) makes that mark fail (`mark id already in use`) instead of being written where it cannot be read. A hidden high-lamport row becomes visible once the document reaches that many mark rows and then wins over its whole range. A row at (local replica, greatest visible lamport + 1) keeps failing that replica's marks until another replica mints past it.
+- `marks()` leaves out a row whose lamport exceeds the number of mark rows, or whose key is not its own id, or that is filed under an id its key does not derive, so minting and every read ignore it. An honest lamport is one more than the greatest the writer saw, hence at most the row count. This assumes rows are never removed or compacted: a compaction must keep the row count at or above the greatest lamport. Under partial sync a replica can hide a row until the earlier rows arrive. Padding rows raise the bar only by their own number. Anything already stored at the id the next mark would take (a left-out row, a row that does not decode, or an entity filed under another parent; checked on the raw row, never decoded) is never written over: the mark keeps its lamport and moves to another replica (`next_replica`), trying at most `MAX_MARK_ID_ATTEMPTS` ids before failing with `mark id already in use`. Outside a migration that replica is random, so no peer can plant rows ahead of it; in a migration (merge mode) it is a hash of the mark itself (`derived_replica`), so every node mints the same id, and a peer that guesses the exact mark can still plant all its ids. A hidden high-lamport row becomes visible once the document reaches that many mark rows and then wins over its whole range.
 - `MarkId` is `(lamport, replica)` with `lamport = 1 + the greatest this replica can see`, NOT an HLC. The WASM clock is quantised to about 15 microseconds and re-seeded per instance, so two marks minted in one call would share a timestamp - harmless for a register's value, silent data loss for a map KEY.
 - Where a mark grows when text is typed at its edge is decided ONCE, at write time, as the two stored anchor biases; `MarkSchema` is consulted on the write side only. A replica running an older schema therefore renders identical spans, and a removal uses `Expand::inverted()` so turning bold off keeps growing the way turning it on did.
 - A boundary insert follows Peritext: scan the tombstones in the gap, and if one carries the `After` anchor of any mark, insert after the last such tombstone. It reads stored anchor sides, never the schema, which is what makes it identical on every replica. `FugueTree::insert_after_in` exists for it, because a visible index cannot name a position among tombstones.
@@ -835,7 +869,42 @@ struct MyType {
 
 ## Common Gotchas
 
+- Hash with `crate::hash_meter::{Digest, Sha256}`, never `sha2` directly. It is `sha2::Sha256` unless the `cost-meter` feature (enabled only by `tools/storage-cost`) swaps in a counting wrapper with the same digest, and the counts are the storage-cost CPU gate; a module naming `sha2` is invisible to it, which `production_code_hashes_through_the_meter` refuses.
+
 - Use #[app::state] macro attribute - it auto-generates Mergeable impl
+- **An ancestor walk starts only where a full hash moved, and stops at the first
+  parent whose trie slot already holds the child's hash** (`Index::write_value_for`,
+  `add_child_with_value_to`, `recalculate_ancestor_hashes_for_now`,
+  `ChildTrie::refresh`). That is sound because every path that moves an
+  entity's full hash walks from that entity, so above a current slot every
+  ancestor already folds it. A new path that changes a full hash or a trie
+  without calling `recalculate_ancestor_hashes_for` leaves the stale hash in
+  place for good: no later walk repairs it in passing.
+  Under `Root::sync` the walks are deferred to the end of the delta and run as
+  one pass (`recalculate_ancestor_hashes_for_all`, `ChildTrie::refresh_all`):
+  deepest parents first, each ancestor and each trie row read and written once
+  however many of the delta's entries sit beneath it. So `apply_action` relinks
+  an entity only when its parent does not list it yet; relinking a listed one
+  did the walk's work eagerly, once per action, and defeated the batch.
+  `tests/ancestor_walk_cost.rs` pins the rows a write and a delta cost and the
+  root they leave.
+- **A local write hands the row it holds down the path instead of reading it
+  again** (`HeldRow`, `Index::row_of`). `save_raw` reads the entity's row once
+  (index and data together) and passes it to `save_internal`, which passes the
+  index to `write_value_for`/`rehashed`; the walk starts from the index just
+  saved (`recalculate_ancestor_hashes_above`), the action's ancestors from the
+  parent that row names, and the schema re-stamp from the row just written
+  (`restamp_schema_version`). `Interface::add_child_to` hands `save_raw` the row
+  its link wrote (`Index::add_child_through`), and settles the entry's position
+  and links it in ONE descent of the parent's trie (`ChildTrie::link`, a
+  `child_trie::Link` that holds the rows it read until it writes them). A held
+  row is only valid while nothing has written it: `save_internal` drops it
+  across an app root's merge and any merge that runs code
+  (`picks_one_side`), since merging a value that holds a collection writes its
+  entries and their walk rewrites this row; and the index mutation guard spans
+  from the read (or the descent) to the write, so on a node the sync apply
+  thread cannot write in between. Do not hold a row across app code, a merge or
+  a write you have not checked; read it instead.
 - **A local write is stamped after what it overwrites, never just "now".**
   `save_raw` stamps `max(now, stored updated_at + 1, deleted_at + 1)` (the
   `stamp_after_stored` helper, on the index row it already reads), a delete
@@ -947,10 +1016,13 @@ struct MyType {
   entity under its first ancestor, each missing ancestor under the next) would put an
   entity under itself, give it more than `MAX_PARENT_CHAIN` ancestors, or link one id
   twice (`refuse_ancestor_loop`), before it writes anything, so a sync merge drops it.
-  Moving a stored entity does not re-check the depth of what is under it. Every walk up
-  the tree stops after `MAX_PARENT_CHAIN` steps with `StorageError::ParentChainTooLong`, a
-  hard error, and the walks down a subtree visit each entity once, so a loop or an
-  over-deep chain fails the call instead of spinning it. `tests/index.rs` `parent_loops`.
+  `refuse_deepened_subtrees` also refuses a link that moves an entity deeper while what
+  is under it would pass that limit (`Index::has_descendant_deeper_than`, which stops at
+  the limit). A delete keeps listing the children that outlive it in the deleted
+  entity's child trie, so that walk still reaches them. Every walk up the tree stops
+  after `MAX_PARENT_CHAIN` steps with `StorageError::ParentChainTooLong`, a hard error,
+  and the other walks down a subtree visit each entity once, so a loop or an over-deep
+  chain fails the call instead of spinning it. `tests/index.rs` `parent_loops`.
 
 - **A cell's writers come from the host, and a rotation is a request.** `Interface::resolve_anchor_writers(anchor)` asks `env::shared_writers(anchor)`: `Some(Rotated(w))` is `w`, `Some(Genesis)` is the `Shared { writers }` stored with the anchor, and `None` is the empty set (every caller refuses). Nothing on the local write path or on resolve reads the rotation log any more; a receiver no longer appends a rotation-log child on apply and the author never did, so a new cell hashes the same on every node; `rotation_log.rs` and `CrdtType::RotationLog` stay for a later change to delete. `WriterSetCell::rotate_writers_scoped` requires `ADMIN` in the current set, refuses a rotation the node could not publish (`SharedRotation::refusal`: an empty set on either side, a cell that is not a cell id, or a set over `MAX_WRITERS_PER_ROTATION`; the wasm host function applies the same rule), then calls `env::record_shared_rotation(&SharedRotation { cell, prior, new })` and invalidates its value cache: it does not re-stamp the wrapper, save anything or touch the index, so a rotation writes no byte and ships no delta (the node publishes the request from the run's `Outcome` as a governance op). The env keeps a per-run overlay, so the run that rotated reads the new set back at once (on wasm the instance is one run; on native `with_runtime_env` clears the overlay on entry and puts the outer run's back on exit). Native `mocked` answers `Some(Genesis)` with no resolver and keeps unsunk requests for `env::take_recorded_rotations()` (tests); `RuntimeEnv::with_shared_writers` and `with_rotation_sink` install the host's. `tests::common::env_resolving` plays the governance fold in a test. `apply_action`'s `Shared` arm refuses an update to an existing anchor whose claimed `writers` differ from the stored set (`ActionNotAllowed`), after the signature and mask checks; writer sets change by governance op alone. The same arm reads the writers it checks from `ApplyContext::effective_writers` when the node resolved a rotated set at the delta's position, and otherwise from the host exactly as `resolve_anchor_writers` does (the stored set at genesis, the empty set when the host cannot resolve), so a write with no cut of its own (a repair, a pushed leaf) is judged by the host's answer for repairs: every writer the cell has had by the node's current heads (`shared_writers::ever_writers`), so a since-removed writer's earlier write still reaches a repairing node. A `Shared` wrapper delete (`DeleteRef`) is judged the same way, by `ctx.effective_writers` else `resolve_anchor_writers`, and so is the local stamp (`authorize_local_shared_stamp`), never by the stored set alone. `tests/shared_cell_creator_and_applier.rs` pins that the node that writes a cell and a node that applies its deltas hold the same anchor hash and root hash through creation, a member entry, an update, a rotation (which writes nothing), and both deletes.
 - **A cell's writer set is the fold of its governance rotation steps** (`shared_writers::fold`, the rules are in the governance chapter of the docs). It takes the steps and their causal pasts and nothing else, so its answer cannot depend on arrival order or on this node's store. It takes at most `MAX_STEPS_PER_CELL` steps and has no answer past that, which bounds its cost without dropping history, and treats two identical concurrent rotations as one so a step built on either still counts. Its `Ok(None)` means no step took effect and `Err(OverBudget)` that there is no answer; the reader, not this crate, knows whether the cut could be read at all. `ever_writers` shares the counting loop (`count_steps`) and returns the genesis set unioned (accounts; `OpMask` bits OR-ed) with the `new` set of every counted step, void or not, because each was a real writer set at some cut.

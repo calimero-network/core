@@ -11,6 +11,7 @@ use calimero_server_primitives::admin::{
 use eyre::Result;
 
 use super::Client;
+use crate::connection::NETWORK_BOUND_REQUEST_TIMEOUT;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
 impl<A, S> Client<A, S>
@@ -86,7 +87,10 @@ where
         &self,
         request: CreateContextRequest,
     ) -> Result<CreateContextResponse> {
-        let response = self.connection.post("admin-api/contexts", request).await?;
+        let response = self
+            .connection
+            .post_with_timeout("admin-api/contexts", request, NETWORK_BOUND_REQUEST_TIMEOUT)
+            .await?;
         Ok(response)
     }
 
@@ -130,7 +134,10 @@ where
     pub async fn sync_context(&self, context_id: &ContextId) -> Result<SyncContextResponse> {
         let response = self
             .connection
-            .post_no_body(&format!("admin-api/contexts/sync/{context_id}"))
+            .post_no_body_with_timeout(
+                &format!("admin-api/contexts/sync/{context_id}"),
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
             .await?;
         Ok(response)
     }
@@ -145,7 +152,11 @@ where
     ) -> Result<ResyncContextApiResponse> {
         let response = self
             .connection
-            .post(&format!("admin-api/contexts/{context_id}/resync"), request)
+            .post_with_timeout(
+                &format!("admin-api/contexts/{context_id}/resync"),
+                request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
             .await?;
         Ok(response)
     }
@@ -154,7 +165,7 @@ where
     pub async fn sync_all_contexts(&self) -> Result<SyncContextResponse> {
         let response = self
             .connection
-            .post_no_body("admin-api/contexts/sync")
+            .post_no_body_with_timeout("admin-api/contexts/sync", NETWORK_BOUND_REQUEST_TIMEOUT)
             .await?;
         Ok(response)
     }

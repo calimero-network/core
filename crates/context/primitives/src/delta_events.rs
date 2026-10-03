@@ -9,11 +9,18 @@ use calimero_store::types::GenericData;
 use calimero_store::Store;
 
 const KEY_DOMAIN: &[u8] = b"calimero.delta.events-hash"; // store-key domain separator
-const SCOPE: [u8; 16] = *b"calimero-deltevh"; // store scope of these rows
 
-fn key(context_id: &ContextId, delta_id: &[u8; 32]) -> GenericKey {
+/// Store scope of these rows in `Column::Generic`. Their keys are hashed, so
+/// the scope is the only range they can be walked by (DAG compaction does, to
+/// sweep rows whose delta row is gone).
+pub const EVENTS_HASH_SCOPE: [u8; 16] = *b"calimero-deltevh";
+
+/// The store key of `delta_id`'s events-hash row, for a caller that deletes
+/// the row with its delta's.
+#[must_use]
+pub fn events_hash_key(context_id: &ContextId, delta_id: &[u8; 32]) -> GenericKey {
     GenericKey::new(
-        SCOPE,
+        EVENTS_HASH_SCOPE,
         domain_hash(
             KEY_DOMAIN,
             &[
@@ -40,7 +47,7 @@ pub fn record_events_hash(
     store
         .handle()
         .put(
-            &key(context_id, delta_id),
+            &events_hash_key(context_id, delta_id),
             &GenericData::from(Slice::from(events_hash.to_vec())),
         )
         .map_err(|err| eyre::eyre!("recording a delta's events hash: {err}"))
@@ -57,7 +64,7 @@ pub fn events_hash(
 ) -> eyre::Result<Option<[u8; 32]>> {
     let handle = store.handle();
     let Some(data) = handle
-        .get(&key(context_id, delta_id))
+        .get(&events_hash_key(context_id, delta_id))
         .map_err(|err| eyre::eyre!("reading a delta's events hash: {err}"))?
     else {
         return Ok(None);

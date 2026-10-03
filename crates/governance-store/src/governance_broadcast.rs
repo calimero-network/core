@@ -202,8 +202,7 @@ pub fn signer_is_namespace_member(
         return false;
     };
     MembershipRepository::new(store)
-        .namespace_accounts(namespace_id)
-        .map(|members| members.contains(&account))
+        .is_namespace_account(namespace_id, &account)
         .unwrap_or(false)
 }
 
@@ -218,7 +217,7 @@ pub fn signer_is_namespace_member(
 /// field-substitution replays (proven by the `signed_readiness_beacon_*`
 /// tamper tests in that module).
 ///
-/// The membership check uses [`MembershipRepository::namespace_accounts`],
+/// The membership check uses [`MembershipRepository::is_namespace_account`],
 /// which includes the meta admin even when the admin has no member row —
 /// matching `verify_ack`'s behaviour and ensuring legitimate beacons
 /// from the namespace creator are not silently dropped.
@@ -242,7 +241,7 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
 /// payload and rejects field-substitution replays such as zeroing
 /// `residue_auto` to fake completion), and the `peer_pubkey` must be a
 /// member of the heartbeat's namespace cohort. The membership check reuses
-/// [`MembershipRepository::namespace_accounts`], which includes the meta admin
+/// [`MembershipRepository::is_namespace_account`], which includes the meta admin
 /// even when the admin has no member row.
 ///
 /// Returns `false` on any failure (signature, membership, store error) so
@@ -290,8 +289,7 @@ pub fn classify_migration_heartbeat(
     match crate::member_account_in_namespace(store, &group_id, &heartbeat.peer_pubkey) {
         Ok(Some(account)) => {
             if MembershipRepository::new(store)
-                .namespace_accounts(heartbeat.namespace_id)
-                .map(|members| members.contains(&account))
+                .is_namespace_account(heartbeat.namespace_id, &account)
                 .unwrap_or(false)
             {
                 HeartbeatVerdict::Admit
