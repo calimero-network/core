@@ -9172,6 +9172,18 @@ fn apply_open_join_with(
     joiner_sk: &PrivateKey,
     account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 ) -> eyre::Result<crate::namespace::governance::ApplyNamespaceOpResult> {
+    let join = sign_open_join(store, namespace_id, subgroup_id, joiner_sk, account);
+    super::NamespaceGovernance::new(store, namespace_id.into()).apply_signed_op(&join)
+}
+
+/// An open self-join into `subgroup_id` carrying `account`, on the current head.
+fn sign_open_join(
+    store: &Store,
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    joiner_sk: &PrivateKey,
+    account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+) -> calimero_context_client::local_governance::SignedNamespaceOp {
     use super::NamespaceGovernance;
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
@@ -9192,15 +9204,14 @@ fn apply_open_join_with(
             account,
         },
     );
-    let join = SignedNamespaceOp::sign(
+    SignedNamespaceOp::sign(
         joiner_sk,
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
         op,
     )
-    .expect("joiner signs MemberJoinedOpen");
-    gov.apply_signed_op(&join)
+    .expect("joiner signs MemberJoinedOpen")
 }
 
 /// Seed a namespace with an Open subgroup that `joiner` reaches by INHERITANCE.
@@ -9272,6 +9283,73 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
         "a bound joiner must resolve to its account, or it gets no scope keys \
          and cannot be selected as an executing identity"
     );
+}
+
+#[test]
+fn a_member_removed_from_an_open_group_cannot_join_its_child() {
+    use super::super::test_fixtures::{kicked_from_open, InheritsAtCut, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let f = kicked_from_open(&store);
+    let ns = f.ns.to_bytes();
+    let join = |sk: &PrivateKey| {
+        let op = sign_open_join(
+            &store,
+            ns,
+            f.child.to_bytes(),
+            sk,
+            crate::test_fixtures::real_join_account(&sk.public_key()),
+        );
+        // The fold holds no deny-list or re-entry rows, so it reads the removed
+        // member as an inheritor; the refusal has to come from the live rows.
+        NamespaceGovernance::new(&store, ns.into())
+            .with_apply_auth(&TEST_CUT, &InheritsAtCut)
+            .apply_signed_op(&op)
+    };
+
+    let err = join(&f.kicked.0).expect_err("a removal from an ancestor ends inheritance");
+    assert!(
+        err.chain().any(|c| matches!(
+            c.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::MemberJoinedOpenRejected(
+                crate::MemberJoinedOpenRejection::ReentryBlocked { .. }
+            ))
+        )),
+        "{err:?}"
+    );
+    join(&f.honest.0).expect("an honest inheritor still joins");
+}
+
+#[test]
+fn a_member_removed_from_an_open_group_is_served_no_key_for_its_child() {
+    let store = test_store();
+    let f = super::super::test_fixtures::kicked_from_open(&store);
+    GroupKeyring::new(&store, f.child)
+        .store_key(&[0x7Cu8; 32])
+        .unwrap();
+
+    let served = |sk: &PrivateKey| {
+        let identity = sk.public_key();
+        let (bytes, _) = build_group_key_delivery(
+            &store,
+            f.ns.to_bytes().into(),
+            f.child.to_bytes(),
+            crate::KeyRequester {
+                identity,
+                device: Some(crate::test_fixtures::device_secret_for(&identity).device),
+            },
+            None,
+        )
+        .unwrap();
+        !bytes.is_empty()
+    };
+
+    assert!(
+        !served(&f.kicked.0),
+        "a removal from an ancestor ends the right to the child's key"
+    );
+    assert!(served(&f.honest.0), "an honest inheritor is still served");
 }
 
 #[test]
