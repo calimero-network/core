@@ -386,6 +386,12 @@ permissions over as `GrantedPermissions`, and `execute_request` in
   permission's own parameters contain commas, so it is split only outside
   brackets.
 - **Guard ran, no permissions** is refused, never read as unrestricted.
+- **An account-anchored session never acts as the node.** `/jsonrpc` (through
+  `jsonrpc::caller_identity`) and WS `execute` refuse a caller holding only
+  `AuthenticatedAccount`, whether the embedded guard or `proxy_identity` set it:
+  `execute` and `set_ephemeral` run as this node's own context identity. Its
+  writes go through `/intents` with a warrant, its presence through
+  `/presence-intents`.
 - **A method's own `Err` is mapped once**, by `execute::method_output`, into
   `ExecutionError::FunctionCallError`. JSON-RPC, WS, the delegated `/intents`
   and the account `/query` all use it; the two admin routes answer it with
