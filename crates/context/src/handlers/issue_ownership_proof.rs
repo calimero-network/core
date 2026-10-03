@@ -107,6 +107,15 @@ fn validate_proof_field(name: &str, value: &str) -> eyre::Result<()> {
 ///     keeps no issued-nonce record — replay defence lives entirely here);
 ///   * treat `subject` as an admin-vouched claim and independently authorize
 ///     what that subject is allowed to do (an admin can assert any subject).
+///
+/// A verifier that cannot read the namespace's governance — mdma — cannot do
+/// the admin check, and must not stand `issuer_identity == signer_public_key`
+/// in for it: both are the caller's. For a namespace proof the admin API
+/// returns, unsigned, the founding pair and this node's credential, from which
+/// such a verifier can establish something weaker but checkable: the signer is
+/// a node of the account that FOUNDED the namespace (the credential's root
+/// certifies `signer_public_key`, and that account with the salt derives
+/// `group_id`). An admin the founder promoted later cannot pass that check.
 fn validate_proof_fields(audience: &str, subject: &str, nonce: &str) -> eyre::Result<()> {
     validate_proof_field("audience", audience)?;
     validate_proof_field("subject", subject)?;
@@ -1106,5 +1115,115 @@ mod tests {
             SIGNED_PAYLOAD
         );
         assert_eq!(hex::encode(out.signature), SIGNATURE);
+    }
+
+    /// The full envelope mdma verifies, attachments included, for fixed inputs.
+    ///
+    /// mdma accepts a namespace proof only when the attached credential's
+    /// account root certifies the signing key and that account, with the
+    /// attached salt, derives the namespace id. mdma re-implements all three
+    /// (borsh `AccountProof<DeviceCert>` layout, the device-cert preimage, the
+    /// founding derivation) in Python, so it pins these bytes in
+    /// `tests/test_ownership_proof_contract_vector.py`; a drift on either side
+    /// turns one of the two red.
+    ///
+    /// Inputs: account root seed `[0x11; 32]`, node signing seed `[0x33; 32]`,
+    /// device id `[0x44; 32]`, agreement key `[0x55; 32]`, salt `[0x66; 32]`,
+    /// subject `owner@example.com`, nonce `deadbeefcafebabe1122334455667788`,
+    /// issued at `NOW_MS`, expiring 60 s later.
+    #[test]
+    fn founder_bound_namespace_proof_matches_the_mdma_contract_vector() {
+        const ACCOUNT_ID: &str = "c15796f6e49d99e61402c021b59a7f13f40bd86e535716dce10853d31cd7cca4";
+        const NAMESPACE_ID: &str =
+            "443e4cdc43ec81e977586ff486e79ec6006d089afef1f918da2a6773c0e72008";
+        const CREDENTIAL: &str = concat!(
+            "02d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c97787",
+            "3700000000c15796f6e49d99e61402c021b59a7f13f40bd86e535716dce10853",
+            "d31cd7cca4444444444444444444444444444444444444444444444444444444",
+            "444444444417cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b",
+            "85e18080ce555555555555555555555555555555555555555555555555555555",
+            "5555555555000000000000000079134dff69d925fb3a0eafc911cfca9b619795",
+            "356823a9d386f6935546618cac243dc46ae2d59faae92be8129d5337543dddd3",
+            "b502aa10e52ef6b90b739c0e00",
+        );
+        const SIGNED_PAYLOAD: &str = concat!(
+            r#"{"v":1,"audience":"mdma:enable-ha-namespace","#,
+            r#""group_id":"443e4cdc43ec81e977586ff486e79ec6006d089afef1f918da2a6773c0e72008","#,
+            r#""issuer_identity":"17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce","#,
+            r#""context_id":"","subject":"owner@example.com","#,
+            r#""nonce":"deadbeefcafebabe1122334455667788","#,
+            r#""issued_at_ms":1700000000000,"expires_at_ms":1700000060000}"#,
+        );
+        const SIGNATURE: &str = concat!(
+            "c141aaf2605b2a0cf3be0bd51bf61f1d0b4ecab0cfed24c7350aef510b427b6b",
+            "20db0a9f84ff5671a0714201f3e722ee32b0d844bedc332ac4d23d2d2104360f",
+        );
+
+        let root = PrivateKey::from([0x11; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let salt = [0x66; 32];
+        let group_id =
+            ContextGroupId::from(calimero_account::founded_namespace_id(&account, &salt));
+
+        let signing_priv = PrivateKey::from([0x33; 32]);
+        let signing_pub = signing_priv.public_key();
+        let credential = calimero_context_client::local_governance::JoinAccountCredential {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceCert::sign(
+                &root,
+                account,
+                calimero_account::DeviceId::from([0x44; 32]),
+                &signing_pub,
+                &calimero_account::KemPublicKey::from([0x55; 32]),
+                0,
+                0,
+            )
+            .expect("the root certifies the node key"),
+        };
+
+        let store = test_store();
+        MembershipRepository::new(&store)
+            .add_member(
+                &group_id,
+                &crate::test_support::enrol(&store, &group_id, &signing_pub),
+                GroupMemberRole::Admin,
+            )
+            .expect("add admin");
+        NamespaceRepository::new(&store)
+            .replace_identity(&group_id, &signing_pub, signing_priv.as_bytes())
+            .expect("seed node identity");
+        let out = build_namespace_ownership_proof(
+            &store,
+            signing_pub,
+            group_id,
+            ProofClaim {
+                audience: "mdma:enable-ha-namespace",
+                subject: "owner@example.com",
+                nonce: "deadbeefcafebabe1122334455667788",
+            },
+            NOW_MS + 60_000,
+            NOW_MS,
+        )
+        .expect("namespace proof");
+
+        let got = [
+            hex::encode(account.as_bytes()),
+            hex::encode(group_id.to_bytes()),
+            hex::encode(borsh::to_vec(&credential).expect("encode")),
+            String::from_utf8(out.signed_payload).expect("payload is UTF-8"),
+            hex::encode(out.signature),
+        ];
+        assert_eq!(
+            got,
+            [
+                ACCOUNT_ID,
+                NAMESPACE_ID,
+                CREDENTIAL,
+                SIGNED_PAYLOAD,
+                SIGNATURE
+            ],
+        );
     }
 }

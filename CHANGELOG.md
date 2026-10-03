@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A namespace ownership proof says who founded the namespace.**
+  `issue-namespace-ownership-proof` now answers `founding` (founder account and
+  salt) and `credential` (this node's `AccountProof<DeviceCert>` over the
+  signing key) beside the signed proof. Neither is signed and neither needs to
+  be: the root certifies the key, and the account and salt derive the
+  namespace id. mdma needs both to accept a claim, since it cannot check the
+  signer against governance; it refuses a proof from a node without them.
+  Nothing is minted to produce them, and the signed payload is unchanged.
+
 - **A relay writes an account's signed storage on its behalf.** A delegated
   run's `User`, `Shared` and `SharedMember` entries were signed by the relay
   but named the author's device, so every peer refused them. `SignatureData`

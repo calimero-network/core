@@ -63,6 +63,10 @@ pub async fn handler(
                     signer_public_key: resp.signer_public_key.to_string(),
                     signed_payload: base64_engine.encode(&resp.signed_payload),
                     signature: base64_engine.encode(resp.signature),
+                    // A context proof carries no founder attachments; mdma
+                    // verifies only namespace proofs against the founder.
+                    founding: None,
+                    credential: None,
                 },
             }
             .into_response()
