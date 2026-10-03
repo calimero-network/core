@@ -148,6 +148,12 @@ match (local_scope_root, peer_scope_root):
 ### State-transfer protocols
 
 When data diverges, the node selects by tree shape and how much differs: **tree comparison** (`TreeNodeRequest` walking only differing subtrees, request depth clamped to 16), **level-wise** (breadth-first when differences are widespread), or **snapshot** (a fresh or far-behind node bootstraps with full, compressed pages). Pushed entities pass an authorization gate — the host drops any leaf whose author is no longer a member, and per-operation signatures are still verified on apply — so sync can never introduce an unauthorized write.
+Every entity a snapshot ships is checked on arrival: its index row must name it, its bytes must hash to the `own_hash` that row carries, and its update time may be at most 5 s (the storage drift tolerance) ahead of the joiner's clock.
+A stamp further ahead is rejected, never clamped, so a joiner whose clock runs more than 5 s behind its source cannot bootstrap.
+An entity that fails any check fails the whole snapshot rather than being left out, since its parent's hash still counts it.
+The pages are staged on disk, not in the context's state, and installed only once the staged tree folds to the `boundary_root_hash` the serving peer named; a snapshot that fails a check leaves the context as it was.
+Staging on disk keeps memory bounded, so a context of any size can bootstrap by snapshot.
+The boundary root is still the serving peer's own claim: the check proves the rows it served are consistent with it.
 
 ### Post-sync governance reconciliation
 
