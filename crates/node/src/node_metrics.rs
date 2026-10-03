@@ -90,6 +90,16 @@ pub(crate) struct StoreDirLabels {
     pub(crate) store: String,
 }
 
+/// Which figure a `storage_datastore_table_bytes` series reports (see
+/// `calimero_store::db::TableStats`).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct DatastoreTableLabels {
+    /// One of: `live_data` (RocksDB's estimate of the live bytes),
+    /// `live_sst` (table files the current version uses), `total_sst` (every
+    /// table file on disk), `memtable` (unflushed).
+    pub(crate) kind: &'static str,
+}
+
 /// Which kind of RocksDB file a `storage_datastore_file_bytes` series sums.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct DatastoreFileLabels {
@@ -158,6 +168,12 @@ pub(crate) struct NodeMetrics {
     // `NodeState::buffer_delta`, which has no handle to it.
     pub(crate) sync_buffer_drops: Counter,
 
+    // Every sync stream message this node sends and its wire length, counted
+    // at the two transport send points (`sync::stream`). The transport does
+    // not know which protocol a message belongs to, so these are unlabelled.
+    pub(crate) sync_messages_sent: Counter,
+    pub(crate) sync_bytes_sent: Counter,
+
     // Governance-pending drain outcomes (B2 buffer-on-unknown lifecycle).
     pub(crate) governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter>,
 
@@ -186,6 +202,7 @@ pub(crate) struct NodeMetrics {
     // runtime, via `spawn_blocking`).
     pub(crate) storage_disk_usage_bytes: Family<StoreDirLabels, Gauge>,
     pub(crate) storage_datastore_file_bytes: Family<DatastoreFileLabels, Gauge>,
+    pub(crate) storage_datastore_table_bytes: Family<DatastoreTableLabels, Gauge>,
     pub(crate) storage_namespace_bytes: Family<NamespaceStorageLabels, Gauge>,
     pub(crate) storage_namespace_contexts: Family<NamespaceLabels, Gauge>,
 }
@@ -328,6 +345,18 @@ impl NodeMetrics {
              (I6 violation risk: the node needs a catch-up sync to recover them)",
             sync_buffer_drops.clone(),
         );
+        let sync_messages_sent = Counter::default();
+        registry.register(
+            "sync_messages_sent",
+            "Sync stream messages sent by this node, every protocol and direction",
+            sync_messages_sent.clone(),
+        );
+        let sync_bytes_sent = Counter::default();
+        registry.register(
+            "sync_bytes_sent",
+            "Wire bytes of the sync stream messages this node sent (after encryption)",
+            sync_bytes_sent.clone(),
+        );
 
         let governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter> =
             Family::default();
@@ -417,6 +446,14 @@ impl NodeMetrics {
              splits table data from write-ahead log so a compaction or WAL roll is visible",
             storage_datastore_file_bytes.clone(),
         );
+        let storage_datastore_table_bytes: Family<DatastoreTableLabels, Gauge> = Family::default();
+        registry.register(
+            "storage_datastore_table_bytes",
+            "RocksDB table accounting summed over column families: live_data (estimated live \
+             bytes), live_sst (table files in use), total_sst (all table files on disk), memtable \
+             (unflushed). live_sst - live_data is garbage awaiting compaction",
+            storage_datastore_table_bytes.clone(),
+        );
         let storage_namespace_bytes: Family<NamespaceStorageLabels, Gauge> = Family::default();
         registry.register(
             "storage_namespace_bytes",
@@ -449,6 +486,8 @@ impl NodeMetrics {
             dag_compaction_deltas_pruned_total,
             hc_leaf_drops_total,
             sync_buffer_drops,
+            sync_messages_sent,
+            sync_bytes_sent,
             governance_drain_outcomes_total,
             actor_restarts_total,
             #[cfg(target_os = "linux")]
@@ -463,6 +502,7 @@ impl NodeMetrics {
             process_cpu_seconds,
             storage_disk_usage_bytes,
             storage_datastore_file_bytes,
+            storage_datastore_table_bytes,
             storage_namespace_bytes,
             storage_namespace_contexts,
         }
@@ -611,6 +651,8 @@ pub(crate) struct StorageSample {
     datastore_bytes: Option<u64>,
     blobstore_bytes: Option<u64>,
     datastore_files: Option<DatastoreFiles>,
+    /// `None` when the backend has no table files or the read failed.
+    table_stats: Option<calimero_store::db::TableStats>,
     /// `None` when the usage walk failed: the previous namespace series are
     /// then kept rather than wiped.
     namespaces: Option<Vec<NamespaceStorage>>,
@@ -657,6 +699,10 @@ impl StorageProbe {
             datastore_bytes: dir_disk_usage(&self.datastore_dir),
             blobstore_bytes: dir_disk_usage(&self.blobstore_dir),
             datastore_files: datastore_files(&self.datastore_dir),
+            table_stats: self.store.table_stats().unwrap_or_else(|err| {
+                trace!(%err, "datastore table stats read failed");
+                None
+            }),
             namespaces,
         }
     }
@@ -686,6 +732,19 @@ impl StorageSample {
                 metrics
                     .storage_datastore_file_bytes
                     .get_or_create(&DatastoreFileLabels { kind })
+                    .set(i64::try_from(bytes).unwrap_or(i64::MAX));
+            }
+        }
+        if let Some(stats) = &self.table_stats {
+            for (kind, bytes) in [
+                ("live_data", stats.live_data_estimate),
+                ("live_sst", stats.live_sst),
+                ("total_sst", stats.total_sst),
+                ("memtable", stats.memtable),
+            ] {
+                metrics
+                    .storage_datastore_table_bytes
+                    .get_or_create(&DatastoreTableLabels { kind })
                     .set(i64::try_from(bytes).unwrap_or(i64::MAX));
             }
         }
@@ -1003,6 +1062,14 @@ pub(crate) fn record_sync_buffer_drop() {
     }
 }
 
+/// Count one sync stream message of `bytes` wire bytes sent by this node.
+pub(crate) fn record_sync_message_sent(bytes: usize) {
+    if let Some(m) = global() {
+        m.sync_messages_sent.inc();
+        m.sync_bytes_sent.inc_by(bytes as u64);
+    }
+}
+
 /// Bump a blob-cache eviction counter for the given reason
 /// (`"age"`, `"count"`, `"memory"`).
 pub(crate) fn record_blob_cache_eviction(reason: &str, n: u64) {
@@ -1094,6 +1161,7 @@ mod tests {
             datastore_bytes: Some(4096),
             blobstore_bytes: None,
             datastore_files: None,
+            table_stats: None,
             namespaces: Some(vec![ns("aa"), ns("bb")]),
         }
         .publish(&metrics);
@@ -1176,6 +1244,32 @@ mod tests {
             out.contains("storage_datastore_file_bytes{kind=\"wal\"} 70"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn table_stats_publish_live_data_beside_table_files() {
+        let mut registry = Registry::default();
+        let metrics = NodeMetrics::new(&mut registry);
+        StorageSample {
+            table_stats: Some(calimero_store::db::TableStats {
+                live_data_estimate: 100,
+                live_sst: 400,
+                total_sst: 450,
+                memtable: 7,
+            }),
+            ..StorageSample::default()
+        }
+        .publish(&metrics);
+        let mut out = String::new();
+        encode(&mut out, &registry).unwrap();
+        for line in [
+            "storage_datastore_table_bytes{kind=\"live_data\"} 100",
+            "storage_datastore_table_bytes{kind=\"live_sst\"} 400",
+            "storage_datastore_table_bytes{kind=\"total_sst\"} 450",
+            "storage_datastore_table_bytes{kind=\"memtable\"} 7",
+        ] {
+            assert!(out.contains(line), "missing {line}:\n{out}");
+        }
     }
 
     #[test]

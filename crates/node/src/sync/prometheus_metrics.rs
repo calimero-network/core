@@ -3,9 +3,10 @@
 //! Exports only what a production code path records. The
 //! [`SyncMetricsCollector`] trait also carries per-message, per-merge and
 //! per-phase hooks that the sync simulator (`crates/node/tests/sync_sim`)
-//! drives; no production call site feeds them, so they are not registered
-//! here. A series that is registered but never written reads a flat 0, which
-//! a dashboard cannot tell apart from "nothing went wrong".
+//! drives; production records cost once per session instead
+//! ([`SyncMetricsCollector::record_session_cost`]), so those hooks are not
+//! registered here. A series that is registered but never written reads a
+//! flat 0, which a dashboard cannot tell apart from "nothing went wrong".
 //!
 //! # Metric Categories
 //!
@@ -26,6 +27,17 @@
 //! - `sync_successes_total{protocol}`: Successful syncs
 //! - `sync_failures_total{protocol}`: Failed syncs
 //! - `sync_protocol_selections_total{protocol}`: Adaptive selector decisions
+//!
+//! ## Session Cost (initiator side, per completed session)
+//! - `sync_round_trips_total{protocol}`: Request/response exchanges
+//! - `sync_comparisons_total{protocol}`: Tree-node hash comparisons
+//! - `sync_entities_transferred_total{protocol}`: Entities, records or deltas
+//!   applied or pushed
+//!
+//! Messages and bytes on the wire are counted at the transport by
+//! `node_metrics` (`sync_messages_sent_total`, `sync_bytes_sent_total`), both
+//! directions of every protocol, because the transport does not know which
+//! protocol a message belongs to.
 
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
@@ -35,7 +47,7 @@ use prometheus_client::registry::Registry;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use super::metrics::{PhaseTimer, SyncMetricsCollector};
+use super::metrics::{PhaseTimer, SessionCost, SyncMetricsCollector};
 
 /// Known sync protocol names for label sanitization.
 ///
@@ -95,6 +107,11 @@ pub struct PrometheusSyncMetrics {
 
     // Protocol selection metrics
     protocol_selections_total: Family<ProtocolLabels, Counter>,
+
+    // Session cost metrics
+    round_trips_total: Family<ProtocolLabels, Counter>,
+    comparisons_total: Family<ProtocolLabels, Counter>,
+    entities_transferred_total: Family<ProtocolLabels, Counter>,
 }
 
 impl PrometheusSyncMetrics {
@@ -124,6 +141,9 @@ impl PrometheusSyncMetrics {
             sync_successes_total: Family::default(),
             sync_failures_total: Family::default(),
             protocol_selections_total: Family::default(),
+            round_trips_total: Family::default(),
+            comparisons_total: Family::default(),
+            entities_transferred_total: Family::default(),
         };
 
         registry.register(
@@ -160,6 +180,21 @@ impl PrometheusSyncMetrics {
             "sync_protocol_selections",
             "Total protocol selection decisions by protocol",
             metrics.protocol_selections_total.clone(),
+        );
+        registry.register(
+            "sync_round_trips",
+            "Request/response exchanges with the peer per completed initiator session, by protocol",
+            metrics.round_trips_total.clone(),
+        );
+        registry.register(
+            "sync_comparisons",
+            "Tree-node hash comparisons per completed initiator session, by protocol",
+            metrics.comparisons_total.clone(),
+        );
+        registry.register(
+            "sync_entities_transferred",
+            "Entities, snapshot records or deltas applied or pushed per completed initiator session, by protocol",
+            metrics.entities_transferred_total.clone(),
         );
 
         metrics
@@ -259,6 +294,21 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
         };
         self.protocol_selections_total.get_or_create(&labels).inc();
     }
+
+    fn record_session_cost(&self, protocol: &str, cost: SessionCost) {
+        let labels = ProtocolLabels {
+            protocol: sanitize_protocol(protocol),
+        };
+        self.round_trips_total
+            .get_or_create(&labels)
+            .inc_by(cost.round_trips);
+        self.comparisons_total
+            .get_or_create(&labels)
+            .inc_by(cost.comparisons);
+        self.entities_transferred_total
+            .get_or_create(&labels)
+            .inc_by(cost.entities_transferred);
+    }
 }
 
 #[cfg(test)]
@@ -279,14 +329,12 @@ mod tests {
 
         assert!(buffer.contains("sync_snapshot_blocked"));
         assert!(buffer.contains("sync_verification_failures"));
-        // Never written in production, so never exported.
+        // Never written in production, so never exported. (Messages and
+        // bytes are exported, but by `node_metrics` at the transport.)
         for absent in [
             "sync_messages_sent",
             "sync_bytes_sent",
-            "sync_round_trips",
-            "sync_entities_transferred",
             "sync_merges",
-            "sync_comparisons",
             "sync_phase_duration_seconds",
             "sync_lww_fallback",
         ] {
@@ -311,8 +359,23 @@ mod tests {
         metrics.record_sync_complete("ctx-123", "HashComparison", Duration::from_millis(100), 50);
         metrics.record_sync_failure("ctx-456", "Snapshot", Duration::from_secs(30), "timeout");
         metrics.record_protocol_selected("HashComparison", "test", 0.05);
+        metrics.record_session_cost(
+            "LevelWise",
+            SessionCost {
+                round_trips: 7,
+                comparisons: 40,
+                entities_transferred: 3,
+            },
+        );
 
         let buffer = encoded(&registry);
+        for line in [
+            "sync_round_trips_total{protocol=\"LevelWise\"} 7",
+            "sync_comparisons_total{protocol=\"LevelWise\"} 40",
+            "sync_entities_transferred_total{protocol=\"LevelWise\"} 3",
+        ] {
+            assert!(buffer.contains(line), "missing {line}:\n{buffer}");
+        }
         assert!(buffer.contains("sync_snapshot_blocked_total 1"), "{buffer}");
         assert!(
             buffer.contains("sync_verification_failures_total 1"),

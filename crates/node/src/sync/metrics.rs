@@ -208,6 +208,35 @@ pub trait SyncMetricsCollector: Send + Sync {
     /// - `reason`: Why this protocol was selected
     /// - `divergence`: Estimated divergence percentage (0.0-1.0)
     fn record_protocol_selected(&self, protocol: &str, reason: &str, divergence: f64);
+
+    // =========================================================================
+    // Session Cost
+    // =========================================================================
+
+    /// Record what one completed initiator session cost, from the totals the
+    /// protocol already keeps (`HashComparisonStats`, `LevelWiseStats`, the
+    /// snapshot's applied records, the delta fetch count).
+    ///
+    /// Production records cost here, once per session, rather than through
+    /// the per-event hooks above: the protocols run as free functions over a
+    /// transport with no collector in reach, and only their totals come back.
+    /// The default ignores it, as the simulator collector does.
+    fn record_session_cost(&self, protocol: &str, cost: SessionCost) {
+        let _ = (protocol, cost);
+    }
+}
+
+/// Totals from one completed sync session (see
+/// [`SyncMetricsCollector::record_session_cost`]). A protocol that does not
+/// track a figure leaves it at 0.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SessionCost {
+    /// Request/response exchanges with the peer.
+    pub round_trips: u64,
+    /// Tree nodes whose hashes were compared.
+    pub comparisons: u64,
+    /// Entities, records or deltas applied or pushed.
+    pub entities_transferred: u64,
 }
 
 /// No-op implementation for when metrics are disabled.
