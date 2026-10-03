@@ -18,8 +18,8 @@
   for; the admitting node refuses a quote already used in an admission or an
   evidence refresh in the namespace.
   Breaking: wire and signed-op layouts change
-  (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 19, `SIGNED_GROUP_OP_SCHEMA_VERSION`
-  16), so every peer of a namespace upgrades together, and the node image's
+  (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 23, the step after core#4263's 22;
+  `SIGNED_GROUP_OP_SCHEMA_VERSION` 16), so every peer of a namespace upgrades together, and the node image's
   fleet-join must be a build that answers a challenge (mero-tee).
 
 ### Added

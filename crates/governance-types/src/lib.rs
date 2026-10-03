@@ -2340,11 +2340,14 @@ pub struct SignedNamespaceOp {
 /// v21: an op concurrent with its signer's removal is void; nothing moves on the wire.
 /// An older node applies it, so the two disagree: a coordinated upgrade.
 ///
-/// v23: `RootOp::MemberJoinedViaTeeAttestation` gained the quote it admits on,
-/// which peers check against the credential the op carries, and
-/// `GroupOp::TeeAuthorityEvidence` gained the credential its quote was made for.
-/// Layout changes to existing variants, so an older peer must reject at the gate
-/// rather than mis-decode.
+/// v22 is claimed by core#4263 (a `SharedStorage` cell's writers rotate by a
+/// governance op), which lands its own entry here.
+///
+/// v23, the step after 22: `RootOp::MemberJoinedViaTeeAttestation` gained the
+/// quote it admits on, which peers check against the credential the op carries,
+/// and `GroupOp::TeeAuthorityEvidence` gained the credential its quote was made
+/// for. Layout changes to existing variants, so a v22 or older peer must reject
+/// at the gate rather than mis-decode. A coordinated upgrade.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 23;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
