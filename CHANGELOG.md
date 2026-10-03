@@ -394,6 +394,41 @@
 
 ### Fixed
 
+- **Sync safety counters count.** `sync_snapshot_blocked_total`,
+  `sync_verification_failures_total`, `sync_buffer_drops_total` and
+  `sync_protocol_selections_total` were registered but never incremented
+  outside tests, so they read 0 whatever happened; they are now recorded where
+  the event occurs. Failed syncs are recorded in `sync_duration_seconds`
+  under `outcome="failure"`, so timeouts show in its tail. Eight sync families
+  with no production writer (`sync_messages_sent`, `sync_bytes_sent`,
+  `sync_round_trips`, `sync_entities_transferred`, `sync_merges`,
+  `sync_comparisons`, `sync_phase_duration_seconds`, `sync_lww_fallback`) are
+  no longer exported. (breaking for dashboards that query them)
+
+- **`context_runtime_execution_count` is a counter.** It was a gauge that was
+  only incremented, so restarts read as drops and `rate()` did not apply. It
+  is now exposed as `context_runtime_execution_count_total`. (breaking for
+  dashboards that query the old name)
+
+- **The datastore's size is split by file kind.** `storage_datastore_file_bytes{kind}`
+  reports SST, WAL and other RocksDB file lengths. `storage_disk_usage_bytes`
+  counts allocated blocks, so on a small node it is mostly preallocated WAL
+  and does not move with the data.
+
+- **Execution latency percentiles are real numbers.** The
+  `execution_duration_seconds` histogram's lowest bucket was 1s, so every
+  execution landed in it and `histogram_quantile` reported a constant p95 of
+  950ms whatever the latency was. Buckets now run from 0.5ms to about 16s.
+
+- **A stuck root-hash divergence has its own counter.**
+  `sync_root_hash_divergence_detected_total_total` counts every same-DAG /
+  different-root heartbeat observation, transient ones included, so it climbs
+  into the thousands under write load with nothing wrong.
+  `sync_root_hash_divergence_escalated_total` counts only divergences that
+  persisted past the heartbeat window (the ones logged as
+  `DIVERGENCE DETECTED`), once per stuck hash pair; alert on that one. The
+  kv-store fuzzy load test now fails if any node logs `DIVERGENCE DETECTED`.
+
 - **An account that is not a member of a group cannot name a device in it.**
   An `AccountDeviceLabelled` op was checked only against a root statement or
   the device's own binding, and an account's bindings outlive its removal, so

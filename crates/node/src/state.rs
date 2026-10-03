@@ -672,8 +672,7 @@ impl NodeState {
                     );
                 }
 
-                // TODO (#4): Export drops to Prometheus metrics
-                // metrics::counter!("calimero_sync_buffer_drops", "context_id" => context_id.to_string()).increment(1);
+                crate::node_metrics::record_sync_buffer_drop();
             }
 
             Some(result)

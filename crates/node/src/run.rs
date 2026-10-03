@@ -526,14 +526,23 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     );
     sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
 
-    // #2319: divergence counter — the hash-heartbeat handler bumps this
-    // whenever it sees a peer with the same DAG heads but a different
-    // storage root hash. Exposed as `sync_root_hash_divergence_detected_total`.
-    let divergence_detected = prometheus_client::metrics::counter::Counter::default();
-    registry.sub_registry_with_prefix("sync").register(
+    // #2319: divergence counters, bumped by the hash-heartbeat handler when it
+    // sees a peer with the same DAG heads but a different storage root hash.
+    // prometheus-client appends `_total` to every counter, so the first is
+    // exposed as `sync_root_hash_divergence_detected_total_total`; its name is
+    // left as is so existing dashboards keep their series. The second is
+    // exposed as `sync_root_hash_divergence_escalated_total`.
+    let divergence_metrics = crate::manager::DivergenceMetrics::default();
+    let sync_registry = registry.sub_registry_with_prefix("sync");
+    sync_registry.register(
         "root_hash_divergence_detected_total",
-        "Times the hash-heartbeat observed a peer with the same DAG heads but a different storage root hash (#2319)",
-        divergence_detected.clone(),
+        "Every hash-heartbeat observation of a peer with the same DAG heads but a different storage root hash, transient ones included; rises with write load (#2319)",
+        divergence_metrics.detected.clone(),
+    );
+    sync_registry.register(
+        "root_hash_divergence_escalated",
+        "Same-DAG / different-root divergences that persisted unchanged past the heartbeat persistence window, counted once per stuck hash pair (#2319)",
+        divergence_metrics.escalated.clone(),
     );
 
     let node_manager = NodeManager::new(
@@ -545,7 +554,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         node_state.clone(),
         state_delta_tx,
         sync_session_tx,
-        divergence_detected,
+        divergence_metrics,
     );
 
     // Start NodeManager actor and get its address

@@ -187,8 +187,15 @@ pub trait SyncMetricsCollector: Send + Sync {
     /// # Arguments
     /// - `context_id`: The context that failed to sync
     /// - `protocol`: The protocol that was being used
+    /// - `duration`: Time spent before the attempt failed
     /// - `reason`: Human-readable failure reason
-    fn record_sync_failure(&self, context_id: &str, protocol: &str, reason: &str);
+    fn record_sync_failure(
+        &self,
+        context_id: &str,
+        protocol: &str,
+        duration: Duration,
+        reason: &str,
+    );
 
     // =========================================================================
     // Protocol Selection
@@ -255,7 +262,14 @@ impl SyncMetricsCollector for NoOpMetrics {
     }
 
     #[inline]
-    fn record_sync_failure(&self, _context_id: &str, _protocol: &str, _reason: &str) {}
+    fn record_sync_failure(
+        &self,
+        _context_id: &str,
+        _protocol: &str,
+        _duration: Duration,
+        _reason: &str,
+    ) {
+    }
 
     #[inline]
     fn record_protocol_selected(&self, _protocol: &str, _reason: &str, _divergence: f64) {}
@@ -312,7 +326,12 @@ mod tests {
 
         metrics.record_sync_start("ctx-123", "HashComparison", "timer");
         metrics.record_sync_complete("ctx-123", "HashComparison", Duration::from_secs(1), 50);
-        metrics.record_sync_failure("ctx-123", "HashComparison", "timeout");
+        metrics.record_sync_failure(
+            "ctx-123",
+            "HashComparison",
+            Duration::from_secs(30),
+            "timeout",
+        );
         metrics.record_protocol_selected("HashComparison", "divergence < 10%", 0.05);
     }
 }

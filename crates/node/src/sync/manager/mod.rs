@@ -39,7 +39,7 @@ use super::config::SyncConfig;
 // to `super::protocol_selector` (Phase 4). The run-loop + select! body
 // moved to `super::driver` (Phase 5). `SyncProtocol` from primitives is
 // still referenced here for protocol-selection types.
-use calimero_node_primitives::sync::{select_protocol, SyncProtocol};
+use calimero_node_primitives::sync::{calculate_divergence, select_protocol, SyncProtocol};
 
 /// Typed marker returned by [`SyncManager::recv`] when the responder
 /// indicates the context is not materialised locally on the receiving
@@ -1252,6 +1252,7 @@ impl SyncManager {
                 self.metrics().record_sync_failure(
                     &context_id.to_string(),
                     "unknown",
+                    start.elapsed(),
                     err.to_string().as_str(),
                 );
                 return Err(err);
@@ -1745,6 +1746,11 @@ impl SyncManager {
                 local_entities = local_hs.entity_count,
                 remote_entities = remote_hs.entity_count,
                 "Protocol selected"
+            );
+            self.metrics().record_protocol_selected(
+                &format!("{:?}", selection.protocol.kind()),
+                selection.reason,
+                calculate_divergence(&local_hs, &remote_hs),
             );
 
             let exec_result = self
