@@ -4,7 +4,7 @@ name: Build merod image (reusable)
 # e2e-rust-apps call is the one writer of the "merod-release-fast" rust-cache: two
 # callers saving the same key on the same push raced, and the loser's save failed.
 # The default variant only: e2e-rust-apps builds its mock-TEE image and mero-auth
-# in a job beside this one, so the groups on this image never wait for them.
+# in jobs beside this one, so the groups on this image never wait for them.
 
 on:
   workflow_call:
