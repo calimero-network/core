@@ -176,6 +176,18 @@ impl AtCutAuthorizer for VoidJudge<'_> {
             .device_epoch_superseded_at_cut(group, account, device, device_epoch, parents)
     }
 
+    // No replay predates this gate either.
+    fn device_withdrawn_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        device: &DeviceId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<u32>> {
+        self.0
+            .device_withdrawn_at_cut(group, account, device, parents)
+    }
+
     fn forget(&self) {
         self.0.forget();
     }
@@ -324,6 +336,22 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             device_epoch,
             parents,
         )
+    }
+
+    fn device_withdrawn_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        device: &DeviceId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<u32>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .device_withdrawn_at_cut(self.store, *group, account, device, parents)
     }
 
     fn effective_role_at_cut(

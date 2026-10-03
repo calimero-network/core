@@ -531,11 +531,11 @@ impl SyncManager {
     ///    and be admitted as its owner, which is a worse hole than the one this
     ///    check closes.
     ///
-    /// Returns the account and the device the certificate names.
+    /// Returns the account, the device and the device epoch the certificate names.
     fn verified_joiner_account(
         credential_bytes: &[u8],
         joiner_public_key: &PublicKey,
-    ) -> Result<(calimero_account::AccountId, calimero_account::DeviceId), String> {
+    ) -> Result<(calimero_account::AccountId, calimero_account::DeviceId, u32), String> {
         let credential: calimero_context_client::local_governance::JoinAccountCredential =
             borsh::from_slice(credential_bytes).map_err(|e| format!("undecodable: {e}"))?;
 
@@ -557,7 +557,11 @@ impl SyncManager {
             return Err("certificate names a different signing key than the request".to_owned());
         }
 
-        Ok((credential.statement.account, verified.device))
+        Ok((
+            credential.statement.account,
+            verified.device,
+            verified.device_epoch,
+        ))
     }
 
     /// Handle an incoming NamespaceJoinRequest on the responder side.
@@ -676,7 +680,7 @@ impl SyncManager {
         // presented a device this responder held no binding for had its deny row
         // go unread, and collected the backfill and the wrapped group key ahead
         // of the apply-time check that does reject it.
-        let (joiner_account, joiner_device) =
+        let (joiner_account, joiner_device, joiner_device_epoch) =
             match Self::verified_joiner_account(joiner_credential_bytes, &joiner_public_key) {
                 Ok(joiner) => joiner,
                 Err(reason) => {
@@ -709,6 +713,30 @@ impl SyncManager {
                 payload: MessagePayload::NamespaceJoinRejected {
                     reason: "the joining device was revoked or narrowed out of this namespace"
                         .to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // A certificate at an epoch the device has been re-keyed past names a key it
+        // retired: served, the old key would receive every later namespace key.
+        if AccountBindingRepository::new(&store).device_epoch_superseded(
+            &namespace,
+            joiner_account,
+            joiner_device,
+            joiner_device_epoch,
+        )? {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "rejecting namespace join: the joining key was re-keyed past"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "the joining device was re-keyed past this key".to_owned(),
                 },
                 next_nonce: nonce,
             };
@@ -3299,7 +3327,7 @@ mod joiner_credential_tests {
         let joiner = PublicKey::from([0x11; 32]);
         let (credential, genesis) = credential_for(&joiner);
 
-        let (account, _device) =
+        let (account, _device, _device_epoch) =
             SyncManager::verified_joiner_account(&borsh::to_vec(&credential).unwrap(), &joiner)
                 .expect("a well-formed credential for this key must resolve");
 

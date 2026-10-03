@@ -7680,6 +7680,164 @@ fn an_invited_join_signed_by_a_revoked_device_is_refused() {
         .unwrap());
 }
 
+/// A projection that answers only whether the cut withdraws the device, and if so the
+/// widest link epoch folded for it there.
+struct CutWithdrawal(Option<u32>);
+
+impl crate::authorizer::AtCutAuthorizer for CutWithdrawal {
+    fn is_admin_at_cut(&self, _: &ContextGroupId, _: &PublicKey, _: &[[u8; 32]]) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &PublicKey,
+        _: u32,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: u32,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &ContextId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
+    fn device_withdrawn_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &calimero_account::DeviceId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<u32>> {
+        Some(self.0)
+    }
+}
+
+/// The cut says whether a withdrawal precedes the op, the rows whether anyone entitled
+/// made it: a withdrawal any member can put in the cut refuses nothing on its own.
+#[test]
+fn a_device_is_withdrawn_only_where_the_cut_and_the_rows_agree() {
+    let store = test_store();
+    let ns = ContextGroupId::from([0xE4; 32]);
+    let laptop_pk = PublicKey::from([0xE5; 32]);
+    let account = account_for(&laptop_pk);
+    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    let phone = calimero_account::DeviceId::from([0xE6; 32]);
+    let tablet = calimero_account::DeviceId::from([0xE7; 32]);
+    let bindings = AccountBindingRepository::new(&store);
+    let withdrawn = |device: &calimero_account::DeviceId, at_cut: Option<u32>| {
+        PermissionChecker::new(&store, ns)
+            .with_apply_auth(&crate::test_fixtures::TEST_CUT, &CutWithdrawal(at_cut))
+            .device_withdrawn(&account, device)
+            .unwrap()
+    };
+
+    assert!(
+        !withdrawn(&laptop, Some(0)),
+        "no row: a withdrawal nobody was entitled to"
+    );
+    let _dropped = bindings.narrow(&ns, account, laptop, 1).unwrap();
+    assert!(
+        !withdrawn(&laptop, None),
+        "a withdrawal outside the op's cut"
+    );
+    assert!(withdrawn(&laptop, Some(1)));
+    assert!(
+        !withdrawn(&laptop, Some(2)),
+        "the cut links the device above the floor the rows hold"
+    );
+
+    let widened = real_join_account(&laptop_pk);
+    let _bound = bindings
+        .apply_link(&ns, &widened.genesis, &widened.chain, &widened.statement, 2)
+        .unwrap()
+        .expect("a link under a newer scope is admitted");
+    assert!(
+        withdrawn(&laptop, Some(1)),
+        "a widening outside the op's cut does not lift a narrowing inside it"
+    );
+
+    bindings.withdraw_for_account(&ns, account, phone).unwrap();
+    assert!(withdrawn(&phone, Some(0)), "the account withdrew it");
+    bindings.apply_revocation(&ns, tablet).unwrap();
+    assert!(
+        withdrawn(&tablet, Some(u32::MAX)),
+        "a revocation outranks any link"
+    );
+}
+
+/// A cut the projection cannot fold is undecided, never answered from the live rows.
+#[test]
+fn a_device_withdrawal_at_an_unfolded_cut_is_undecidable() {
+    let store = test_store();
+    let err = PermissionChecker::new(&store, ContextGroupId::from([0xE8; 32]))
+        .with_apply_auth(
+            &crate::test_fixtures::TEST_CUT,
+            &crate::test_fixtures::UnresolvableAuthorizer,
+        )
+        .device_withdrawn(
+            &AccountId::from([0xE9; 32]),
+            &calimero_account::DeviceId::from([0xEA; 32]),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<ApplyError>(),
+        Some(ApplyError::AuthorityUndecidable { .. })
+    ));
+}
+
 #[test]
 fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
     use rand::rand_core::UnwrapErr;
