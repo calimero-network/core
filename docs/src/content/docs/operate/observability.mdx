@@ -73,6 +73,11 @@ bounded.
 | `sync_successes` | Counter | `protocol` | Successful syncs. |
 | `sync_failures` | Counter | `protocol` | Failed syncs. |
 | `sync_protocol_selections` | Counter | `protocol` | Which protocol the adaptive selector chose. |
+| `sync_round_trips` | Counter | `protocol` | Request/response exchanges with the peer, added once per completed initiator session (HashComparison, LevelWise, DeltaSync). |
+| `sync_comparisons` | Counter | `protocol` | Tree-node hash comparisons per completed initiator session (HashComparison, LevelWise). |
+| `sync_entities_transferred` | Counter | `protocol` | Entities merged or pushed (HashComparison, LevelWise), snapshot records applied (Snapshot) or deltas received (DeltaSync), per completed initiator session. Near-zero in steady state. |
+| `sync_messages_sent` | Counter | — | Every sync stream message this node sends, any protocol and direction (counted at the transport, which does not know the protocol). |
+| `sync_bytes_sent` | Counter | — | Wire bytes of those messages, after encryption. |
 
 **Safety / invariant counters** (all should sit at zero in normal operation):
 
@@ -82,10 +87,10 @@ bounded.
 | `sync_verification_failures` | Counter | Post-snapshot state-hash mismatch — possible corruption or non-determinism. |
 | `sync_buffer_drops` | Counter | Deltas dropped from a bounded buffer (arriving faster than they apply). Any increment can mean catch-up sync is needed. |
 
-Per-message, per-merge and per-phase sync costs (messages, bytes, round trips,
-entities transferred, comparisons, phase durations) and LWW fallbacks are not
-exported: no production code path records them, and a series that is
-registered but never written reads a flat 0 that looks like health.
+Per-CRDT-type merges, per-phase durations and LWW fallbacks are not exported:
+no production code path records them, and a series that is registered but never
+written reads a flat 0 that looks like health. Session costs come from the
+initiator's totals, so a session that fails part-way records no cost.
 
 **Root-hash divergence** (registered in `crates/node/src/run.rs`, bumped by the
 hash-heartbeat handler when a peer reports the same DAG heads as this node but a
@@ -164,6 +169,7 @@ Sampled on the same 30s tick as the process gauges, off the async runtime.
 | --- | --- | --- | --- |
 | `storage_disk_usage_bytes` | Gauge | `store` | Bytes allocated on disk under each store directory, like `du -s`. `store` ∈ `datastore` (RocksDB), `blobstore` (blob files). The disk footprint, not the data: see below. |
 | `storage_datastore_file_bytes` | Gauge | `kind` | Length of the RocksDB directory's files by kind: `sst` (table files), `wal` (write-ahead logs), `other` (MANIFEST, OPTIONS, info `LOG`s). |
+| `storage_datastore_table_bytes` | Gauge | `kind` | RocksDB's own table accounting, summed over column families: `live_data` (estimated bytes still holding live data), `live_sst` (table files the current version uses), `total_sst` (every table file on disk), `memtable` (unflushed). `live_sst - live_data` is garbage waiting for compaction; `total_sst - live_sst` is replaced files an open iterator still pins. |
 | `storage_namespace_bytes` | Gauge | `namespace_id`, `column` | Approximate datastore bytes per namespace this node is a member of. `column` ∈ `state`, `private_state`, `delta` (summed over the namespace's contexts), `governance` (its op log). Same RocksDB estimate as `GET /admin-api/usage`. |
 | `storage_namespace_contexts` | Gauge | `namespace_id` | Contexts in each namespace, so bytes per context is one division. |
 
@@ -177,6 +183,8 @@ is overwritten or deleted:
   it moves in WAL-sized steps. `storage_datastore_file_bytes` shows the split.
 - SST bytes include overwritten versions and tombstones until compaction
   rewrites the files, so they shrink only after a compaction.
+  `storage_datastore_table_bytes{kind="live_data"}` is the figure that tracks
+  the data itself; the gap to `live_sst` is what compaction will give back.
 - `storage_namespace_bytes` is a RocksDB range estimate (compressed SST bytes
   plus uncompressed memtable bytes; a key in both counts twice), so it
   saw-tooths at flush and compaction rather than tracking the logical size.

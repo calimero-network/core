@@ -4189,6 +4189,10 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
     ) -> Option<InitProof> {
         SyncManager::build_init_pop(self, context_id, party_id).await
     }
+
+    fn metrics(&self) -> &dyn super::metrics::SyncMetricsCollector {
+        SyncManager::metrics(self)
+    }
 }
 
 // Driver-dispatch back into `SyncManager` for the cross-actor message

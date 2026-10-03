@@ -394,6 +394,18 @@
 
 ### Fixed
 
+- **Sync cost, live data and execution errors are measured.**
+  `sync_round_trips`, `sync_comparisons` and `sync_entities_transferred`
+  (by `protocol`) are recorded once per completed initiator session from the
+  totals HashComparison, LevelWise, Snapshot and DeltaSync already keep, and
+  `sync_messages_sent` / `sync_bytes_sent` count every sync message at the
+  transport. `storage_datastore_table_bytes{kind}` reports RocksDB's live-data
+  estimate beside its live and total table-file bytes, so garbage waiting for
+  compaction is visible. An execution the node could not run to completion
+  is now counted in `context_runtime_execution_count_total` and
+  `context_runtime_execution_duration_seconds` with `status="error"`; it used
+  to skip both.
+
 - **Heartbeats no longer advertise a root hash the node does not hold.** A
   heartbeat could pair a delta's new root with the old DAG heads (it read the
   two between the apply's two writes), and after a HashComparison responder

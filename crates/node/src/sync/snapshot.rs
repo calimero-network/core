@@ -500,6 +500,13 @@ impl SyncManager {
             .await;
 
         info!(%context_id, applied_records, "Snapshot sync completed successfully");
+        self.metrics().record_session_cost(
+            "Snapshot",
+            super::metrics::SessionCost {
+                entities_transferred: applied_records as u64,
+                ..Default::default()
+            },
+        );
 
         Ok(SnapshotSyncResult {
             boundary_root_hash: boundary.boundary_root_hash,

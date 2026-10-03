@@ -202,6 +202,25 @@ pub enum Column {
     BlobOwner,
 }
 
+/// Table-file accounting for a whole store, summed over every column family
+/// (see [`Database::table_stats`]). Byte counts, all approximate.
+///
+/// `live_sst - live_data_estimate` is roughly the garbage compaction has not
+/// rewritten yet (overwritten versions and deleted keys); `total_sst -
+/// live_sst` is files compaction already replaced that an open iterator or
+/// snapshot still pins.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TableStats {
+    /// The backend's estimate of the bytes that still hold live data.
+    pub live_data_estimate: u64,
+    /// Table files the current version of the store uses.
+    pub live_sst: u64,
+    /// Every table file still on disk, obsolete ones included.
+    pub total_sst: u64,
+    /// Bytes buffered in memtables, not yet flushed to a table file.
+    pub memtable: u64,
+}
+
 pub trait Database<'a>: Debug + Send + Sync + 'static {
     fn open(config: &StoreConfig) -> EyreResult<Self>
     where
@@ -361,6 +380,12 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
         let _ = (col, lo, hi);
         Ok(())
+    }
+
+    /// Table-file accounting for the whole store. `None` for backends with no
+    /// table files (the in-memory DB); RocksDB reads it from its properties.
+    fn table_stats(&self) -> EyreResult<Option<TableStats>> {
+        Ok(None)
     }
 
     /// Best-effort estimate of on-disk bytes stored in `col` for keys in

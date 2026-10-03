@@ -974,13 +974,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let start = Instant::now();
 
-                let (
-                    outcome,
-                    causal_delta,
-                    delta_signature,
-                    signing_governance_position,
-                    read_only_write_discarded,
-                ) = internal_execute(
+                let executed = internal_execute(
                         datastore,
                         &scope_projections,
                         &node_client,
@@ -1002,13 +996,17 @@ impl Handler<ExecuteRequest> for ContextManager {
                         tee_trigger.as_ref(),
                         search,
                     )
-                    .await?;
+                    .await;
 
                 let duration = start.elapsed().as_secs_f64();
-                let status = if outcome.returns.is_ok() {
-                    "success"
-                } else {
-                    "failure"
+                // `failure`: the method ran and returned an error. `error`: the
+                // node could not run it to completion (storage, module, signing,
+                // admission). Recorded before the `?` below, which used to skip
+                // both execution metrics on exactly the runs worth counting.
+                let status = match &executed {
+                    Ok((outcome, ..)) if outcome.returns.is_ok() => "success",
+                    Ok(_) => "failure",
+                    Err(_) => "error",
                 };
 
                 // Update execution count metrics
@@ -1034,6 +1032,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                         })
                         .observe(duration);
                 }
+
+                let (
+                    outcome,
+                    causal_delta,
+                    delta_signature,
+                    signing_governance_position,
+                    read_only_write_discarded,
+                ) = executed?;
 
                 info!(
                     %context_id,
