@@ -425,12 +425,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # The release cache release.yml's build job restores, per runner OS and arch.
+      # Saves nothing, like release.yml's build job: a release cache per OS was
+      # gigabytes of the repo's 10 GB, reused at best by the next night's build.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: release
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: false
 
       - name: Point bindgen at the image's LLVM (Windows)
         if: runner.os == 'Windows'
