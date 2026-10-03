@@ -123,6 +123,84 @@ def _():
     assert json.loads(runs[0]) == {"include": GROUPS}
 
 
+@case("every image runs in exactly one test job, and verify refuses one that does not")
+def _():
+    assert set(g.JOBS) == set(g.IMAGES), f"JOBS {sorted(g.JOBS)} vs IMAGES {sorted(g.IMAGES)}"
+    saved = dict(g.JOBS)
+    try:
+        del g.JOBS["merod:local-dht"]
+        try:
+            g.verify(MANIFEST, GROUPS)
+        except g.ManifestError:
+            return
+        raise AssertionError("verify accepted an image no test job runs")
+    finally:
+        g.JOBS.clear()
+        g.JOBS.update(saved)
+
+
+@case("the test jobs together run every group exactly once, from the CLI too")
+def _():
+    jobs = sorted(set(g.JOBS.values()))
+    split = [grp for job in jobs for grp in g.for_job(GROUPS, job)]
+    names = [grp["group"] for grp in split]
+    assert len(names) == len(set(names)), "a group is in two jobs"
+    assert sorted(names) == sorted(grp["group"] for grp in GROUPS), "a group is in no job"
+    assert sorted(placed(split)) == sorted(placed(GROUPS))
+    for job in jobs:
+        out = subprocess.run(
+            [sys.executable, str(SCRIPT), "--job", job], capture_output=True, text=True, check=True
+        ).stdout
+        assert json.loads(out) == {"include": g.for_job(GROUPS, job)}, job
+        assert all(g.JOBS[grp["image"]] == job for grp in g.for_job(GROUPS, job)), job
+
+
+@case("an unknown job, or one with no groups, is refused")
+def _():
+    for job, groups in (("nope", GROUPS), ("mock-tee", [grp for grp in GROUPS if grp["image"] != "merod:local-mock-tee"])):
+        try:
+            g.for_job(groups, job)
+        except g.ManifestError:
+            continue
+        raise AssertionError(f"for_job accepted {job!r}")
+    bad = subprocess.run([sys.executable, str(SCRIPT), "--job", "nope"], capture_output=True, text=True)
+    assert bad.returncode != 0 and not bad.stdout, "the CLI printed a matrix for an unknown job"
+
+
+@case("the e2e workflow plans every job and runs each one's groups in exactly one test job")
+def _():
+    import yaml
+
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "e2e-rust-apps.yml").read_text())
+    jobs = wf["jobs"]
+    plan_run = "\n".join(step.get("run", "") for step in jobs["plan"]["steps"])
+    outputs = jobs["plan"]["outputs"]
+    for job in sorted(set(g.JOBS.values())):
+        assert f"--job {job}" in plan_run, f"the plan step never runs --job {job}"
+        assert f"matrix-{job}=" in plan_run, f"the plan step never writes matrix-{job}"
+        assert f"matrix-{job}" in outputs, f"plan does not output matrix-{job}"
+        matrix = f"${{{{ fromJSON(needs.plan.outputs.matrix-{job}) }}}}"
+        runners = [
+            name for name, body in jobs.items()
+            if (body.get("strategy") or {}).get("matrix") == matrix
+        ]
+        assert len(runners) == 1, f"matrix-{job} is run by {runners}, not exactly one job"
+        assert "scripts/e2e-run-scenario-group.sh" in "\n".join(
+            step.get("run", "") for step in jobs[runners[0]]["steps"]
+        ), f"{runners[0]} does not run the groups"
+    # Anything that reads every group's logs must wait for every job that writes them.
+    runners = {
+        name for name, body in jobs.items()
+        if "needs.plan.outputs.matrix" in str((body.get("strategy") or {}).get("matrix", ""))
+    }
+    for name, body in jobs.items():
+        steps = body.get("steps") or []
+        if any((step.get("with") or {}).get("pattern") == "logs-*" for step in steps):
+            needs = body.get("needs")
+            needs = {needs} if isinstance(needs, str) else set(needs or [])
+            assert runners <= needs, f"{name} reads every group's logs but needs only {sorted(needs)}"
+
+
 @case("which scenarios share a group does not depend on manifest order")
 def _():
     shuffled = copy.deepcopy(MANIFEST)

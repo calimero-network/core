@@ -27,7 +27,13 @@ DEFAULT_SECONDS. They only steer the balance and the timeouts: a stale or
 missing figure never drops or adds a scenario.
 
     e2e-scenario-groups.py [--manifest FILE] [--durations FILE]   # matrix JSON
+    e2e-scenario-groups.py --job default                          # one test job's
     e2e-scenario-groups.py --summary                              # markdown table
+
+The workflow runs the groups in one test job per entry of JOBS, each waiting
+only for the image its groups boot, so `--job` prints that job's share of the
+plan. The plan is always made whole and then split, so a job's groups are the
+same whichever job asks, and the jobs together run every group exactly once.
 
 The matrix is checked before it is printed: every manifest entry is in exactly
 one group and each group holds one image, or this exits non-zero.
@@ -67,6 +73,15 @@ DEFAULT_IMAGE = "merod:local"
 IMAGES = {
     "merod:local": "local",
     "merod:local-dht": "dht",
+    "merod:local-mock-tee": "mock-tee",
+}
+# Image -> the e2e test job that runs its groups. A job waits only for the image
+# build it needs: the mock-TEE image is built in a job of its own, so the other
+# groups need not wait for it. Every image is in exactly one job, and the
+# workflow plans and runs every job named here (`--job <name>`).
+JOBS = {
+    "merod:local": "default",
+    "merod:local-dht": "default",
     "merod:local-mock-tee": "mock-tee",
 }
 REQUIRED_FIELDS = ("workflow", "file", "app")
@@ -204,6 +219,8 @@ def plan(scenarios: list[dict], durations: dict[str, int], count: int = GROUP_CO
 
 def verify(scenarios: list[dict], groups: list[dict]) -> None:
     """Every scenario in exactly one group, each group on one image, none empty."""
+    if set(JOBS) != set(IMAGES):
+        raise ManifestError(f"JOBS {sorted(JOBS)} must name exactly the images {sorted(IMAGES)}")
     placed = [s["workflow"] for g in groups for s in g["scenarios"]]
     expected = [s["workflow"] for s in scenarios]
     duplicated = sorted({n for n in placed if placed.count(n) > 1})
@@ -220,6 +237,17 @@ def verify(scenarios: list[dict], groups: list[dict]) -> None:
             raise ManifestError(f"{group['group']} mixes images")
     if len({g["group"] for g in groups}) != len(groups):
         raise ManifestError("two groups share a name")
+
+
+def for_job(groups: list[dict], job: str) -> list[dict]:
+    """The groups `job` runs. A job with none is an error: GitHub fails a matrix
+    job given an empty matrix, so the workflow would fail with no scenario named."""
+    if job not in JOBS.values():
+        raise ManifestError(f"unknown job {job!r} (known: {sorted(set(JOBS.values()))})")
+    mine = [grp for grp in groups if JOBS[grp["image"]] == job]
+    if not mine:
+        raise ManifestError(f"job {job!r} has no groups; drop its test job from the workflow")
+    return mine
 
 
 def summary(groups: list[dict]) -> str:
@@ -244,6 +272,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--manifest", default=DEFAULT_MANIFEST)
     ap.add_argument("--durations", default=DEFAULT_DURATIONS)
+    ap.add_argument("--job", help="print only the groups this test job runs (see JOBS)")
     ap.add_argument("--summary", action="store_true", help="print a markdown table instead")
     args = ap.parse_args()
 
@@ -251,6 +280,8 @@ def main() -> int:
         scenarios = load_manifest(ROOT / args.manifest)
         durations = load_durations(ROOT / args.durations)
         groups = plan(scenarios, durations)
+        if args.job is not None:
+            groups = for_job(groups, args.job)
     except (ManifestError, OSError, yaml.YAMLError, json.JSONDecodeError) as err:
         print(f"::error::{err}", file=sys.stderr)
         return 1
