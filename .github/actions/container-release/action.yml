@@ -87,21 +87,15 @@ runs:
         username: ${{ github.actor }}
         password: ${{ inputs.github-token }}
 
-    - name: Prepare Docker Cache parameters
+    # No buildx `type=gha` layer cache: the image is ubuntu + ca-certificates +
+    # a COPY of binaries built moments ago, so it builds in seconds, while every
+    # push exported new binary layers into the repo's 10 GB Actions cache and
+    # evicted the shared Rust caches. (The profiling image, which compiles
+    # jemalloc, keeps its cache.)
+    - name: Prepare image source
       shell: bash
       id: prepare
       run: |
-        MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
-
-        # Only master writes: a branch's layers serve nobody else and evict
-        # master's shared Rust caches from the 10 GB budget.
-        echo "cache_from=type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
-        if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-          echo "cache_to=type=gha,scope=${MASTER_SCOPE},mode=max" >> $GITHUB_OUTPUT
-        else
-          echo "cache_to=" >> $GITHUB_OUTPUT
-        fi
-
         if [ "${{ github.event_name }}" == "pull_request" ]; then
           echo "docker_source=${{ github.event.pull_request.html_url }}" >> $GITHUB_OUTPUT
         else
@@ -158,7 +152,5 @@ runs:
         tags: ${{ steps.metadata.outputs.tags }}
         labels: ${{ steps.metadata.outputs.labels }}
         annotations: ${{ steps.resolve-annotations.outputs.annotations }}
-        cache-from: ${{ steps.prepare.outputs.cache_from }}
-        cache-to: ${{ steps.prepare.outputs.cache_to }}
         provenance: mode=max
         sbom: generator=docker/buildkit-syft-scanner:stable-1@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
