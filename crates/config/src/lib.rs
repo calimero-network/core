@@ -411,8 +411,8 @@ pub struct ServerConfig {
     #[serde(default, skip_serializing_if = "SealedConfig::is_default")]
     pub sealed: SealedConfig,
 
-    /// `[server.cors]`: which browser origins may call this node. Left out of a
-    /// written config while unset.
+    /// `[server.cors]`: which host names and browser origins may reach this node.
+    /// Left out of a written config while unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<CorsConfig>,
 
@@ -763,6 +763,17 @@ mod tests {
             typo.is_err(),
             "a misspelled key must stop the load, not leave every origin allowed"
         );
+    }
+
+    /// An existing `[server.cors]` without `allow_private_network` keeps it on, like a
+    /// config with no section.
+    #[test]
+    fn server_cors_section_without_private_network_keeps_it_on() {
+        let parsed: super::ServerConfig =
+            toml::from_str("listen = []\n[cors]\nallowed_origins = [\"https://app.example\"]\n")
+                .expect("a [server.cors] without allow_private_network parses");
+        assert!(parsed.cors.is_some_and(|cors| cors.allow_private_network));
+        assert!(super::CorsConfig::default().allow_private_network);
     }
 
     /// Sealing stays opt-in: an existing config has no `[server.sealed]` and

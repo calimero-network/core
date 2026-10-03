@@ -97,9 +97,13 @@ CLI — `app`, `context`, `namespace`, `call`).
 1. Initialize a node's config and data directory, then run it:
 
    ```sh
-   merod --node node1 init --server-port 2428 --swarm-port 2528
+   merod --node node1 init --auth-mode proxy --server-port 2428 --swarm-port 2528
    merod --node node1 run
    ```
+
+   `--auth-mode proxy` skips authentication for a local node.
+   In proxy mode any page served from localhost can reach the admin API, so use it only on a development machine.
+   `init` defaults to `embedded`, which needs admin credentials.
 
    `merod --node node1 init --help` lists the full set (swarm/server host and
    port, boot nodes, mDNS, auth mode). Config and data live under

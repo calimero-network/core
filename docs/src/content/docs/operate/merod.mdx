@@ -46,7 +46,7 @@ ed25519 identity keypair, writes `config.toml`, opens the datastore, and
 | `--swarm-port <PORT>`               | u16                      | `2428`             | Swarm (peer-to-peer) port.                                              |
 | `--server-host <HOST>`              | IP list                  | `127.0.0.1,::1`    | Hosts to listen on for the RPC server.                                  |
 | `--server-port <PORT>`              | u16                      | `2528`             | RPC / admin / JSON-RPC / WS / SSE port.                                 |
-| `--auth-mode <MODE>`                | `proxy`, `embedded`      | `proxy`            | Authentication mode for server endpoints.                               |
+| `--auth-mode <MODE>`                | `proxy`, `embedded`      | `embedded`         | Authentication mode for server endpoints. `embedded` with persistent storage needs admin credentials (`--admin-user` with `--admin-password-file` or `--admin-password-stdin`, or `MERO_AUTH_ADMIN_USER` and `MERO_AUTH_ADMIN_PASSWORD`), or `--no-admin` to defer provisioning. Pass `proxy` only when a proxy in front of the node checks callers. |
 | `--auth-storage <KIND>`             | `persistent`, `memory`   | `persistent`       | Embedded-auth storage backend (only with `--auth-mode embedded`).       |
 | `--auth-storage-path <PATH>`        | path                     | `auth`             | Embedded-auth storage path (persistent storage only).                   |
 | `--mdns`                            | bool                     | `false`            | Enable mDNS local discovery (LAN / offline dev; off by default).         |
@@ -61,10 +61,14 @@ ed25519 identity keypair, writes `config.toml`, opens the datastore, and
 
 ```sh
 # Initialize with the default network and ports
-merod --node node1 init
+merod --node node1 init --admin-user admin --admin-password-file ./admin-password
 
 # Initialize with custom ports
-merod --node node1 init --server-port 2528 --swarm-port 2428
+merod --node node1 init --admin-user admin --admin-password-file ./admin-password --server-port 2528 --swarm-port 2428
+
+# Initialize without authentication, for a local node. Any page served from
+# localhost can then reach the admin API, so use it only on a development machine.
+merod --node node1 init --auth-mode proxy
 ```
 
 <Aside type="note">
@@ -450,6 +454,7 @@ runs as a foreground service (under your process supervisor).
 
    ```bash
    merod --home /var/lib/calimero --node node1 init \
+     --admin-user admin --admin-password-file ./admin-password \
      --server-port 2528 --swarm-port 2428
    ```
 

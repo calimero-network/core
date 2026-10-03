@@ -3,6 +3,8 @@ description: Test team metrics with derive(Mergeable) macro implementation
 
 force_pull_image: true
 
+auth_mode: proxy
+
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge

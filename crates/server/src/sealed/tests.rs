@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, ORIGIN};
 use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::Router;
@@ -41,6 +41,7 @@ async fn echo(headers: HeaderMap, uri: Uri, body: Bytes) -> impl IntoResponse {
             ("x-echo-auth", header(AUTHORIZATION)),
             ("x-echo-uri", uri.to_string()),
             ("x-echo-host", header(HOST)),
+            ("x-echo-origin", header(ORIGIN)),
         ],
         body,
     )
@@ -289,6 +290,33 @@ async fn a_sealed_request_reaches_the_router_and_its_response_comes_back_sealed(
         response_header(&head, "x-echo-host"),
         Some("tee-node.example"),
         "the host auth checks a node-bound token against is the outer hop's"
+    );
+}
+
+#[tokio::test]
+async fn a_sealed_request_carries_the_page_origin_of_the_outer_hop() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let (id, sealed) = client.seal(
+        &head("POST", "/echo", &[("origin", "http://localhost")]),
+        b"",
+    );
+    let response = app(Arc::clone(&transport))
+        .oneshot(
+            Request::post(SEALED_PATH)
+                .header(HOST, "tee-node.example")
+                .header(ORIGIN, "https://app.example")
+                .header(CONTENT_TYPE, SEALED_CONTENT_TYPE)
+                .body(Body::from(sealed))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let (head, _, _) = client.open_response(id, &body);
+    assert_eq!(
+        response_header(&head, "x-echo-origin"),
+        Some("https://app.example")
     );
 }
 

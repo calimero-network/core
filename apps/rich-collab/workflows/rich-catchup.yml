@@ -19,6 +19,8 @@ x-sync: &sync
 
 # Defined individually so every port is pinned: the count form lets --e2e-mode
 # allocate ports dynamically, and start_node would then reconnect on base_port.
+auth_mode: proxy
+
 nodes:
   image: ghcr.io/calimero-network/merod:edge
   rich-node-1:

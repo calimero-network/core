@@ -65,8 +65,8 @@ Two practical notes:
 Admin routes split into **protected** and **public** sets. The protected set is
 wrapped in an auth guard whose behavior depends on `[server] auth_mode`:
 
-- `proxy` (default) — the node expects an external auth proxy in front of it.
-- `embedded` — the bundled `mero-auth` service enforces auth in-process.
+- `proxy` - the node expects an external auth proxy in front of it.
+- `embedded` - the bundled `mero-auth` service enforces auth in-process.
 
 The public routes below carry no auth guard and are always reachable when the
 admin API is enabled.
@@ -78,30 +78,14 @@ admin API is enabled.
 
 ### CORS and browser / Tauri clients
 
-The server applies one CORS layer to every mounted route. With embedded auth it
-allows `Any` origin (or the `[server.cors] allowed_origins` list when set),
-`Any` request header, the methods `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`,
-and sets `allow_private_network(true)` so requests from a public-origin page to
-a loopback node pass the browser's private-network preflight.
+The server applies one CORS layer to every mounted route.
+It answers only origins the node accepts: loopback origins, the node's own origin, and those in `[server.cors] allowed_origins`.
+Other browser origins, and `Origin: null`, are refused with `403`, as are requests whose `Host` is not accepted (see [Hardening](/operate/security/#host-and-origin-guard)).
+The layer allows `Any` request header and the methods `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`.
+It sets `allow_private_network(true)` unless `[server.cors] allow_private_network = false`, and answers it only for origins the node accepts.
 
-In proxy auth mode the node checks no caller itself, so a browser request that
-carries an `Origin` is served only when that origin is:
-
-- the node's own origin (it matches the request's `Host` or `X-Forwarded-Host`);
-- a loopback page (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`, any
-  port), including the desktop webview's `tauri://localhost`;
-- listed in `[server.cors] allowed_origins`.
-
-Any other origin gets `403` before a handler runs, on every route including
-`/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it. Private-network
-access is advertised only to origins listed in `allowed_origins`. Requests
-without an `Origin` header (curl, meroctl, SDKs outside a browser) are
-unaffected.
-
-Because the response uses `Any` origin, `allow_credentials` is **intentionally
-not set** (the two are incompatible per the CORS spec, so enabling it would be a
-no-op for browsers). Cookie/credentialed auth therefore does not work against
-the default configuration; pass tokens via the `Authorization` header instead.
+The node never sets `Access-Control-Allow-Credentials`, so browsers do not send cookies cross-origin.
+Callers authenticate with bearer tokens in the `Authorization` header.
 
 Cross-origin clients (browser SPAs, Tauri webviews) can only read response
 headers that the server explicitly exposes. The layer exposes exactly three:

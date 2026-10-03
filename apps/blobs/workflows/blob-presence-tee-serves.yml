@@ -58,6 +58,8 @@ log_level: "info,calimero_node::handlers::blob_announce=debug"
 # Individually defined so exactly one node boots as `merod run --mock-tee`.
 # Explicit ports are required in this form — the dict path does not stride
 # `base_port` per node, so omitting them collides every node on one port.
+auth_mode: proxy
+
 nodes:
   blob-tee-owner:
     port: 2428

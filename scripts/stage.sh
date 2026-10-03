@@ -18,8 +18,8 @@ export CALIMERO_HOME=.
 merod="../../target/debug/merod"
 meroctl="../../target/debug/meroctl"
 
-${merod} --node n1 init --server-port 2550 --swarm-port 2450 --force
-${merod} --node n2 init --server-port 2551 --swarm-port 2451 --force
+${merod} --node n1 init --server-port 2550 --swarm-port 2450 --auth-mode proxy --force
+${merod} --node n2 init --server-port 2551 --swarm-port 2451 --auth-mode proxy --force
 
 TFREQ=6000
 TINTVL=5000

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Extension};
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -928,6 +928,16 @@ pub async fn mock_token_handler(
     ValidatedJson(mut request): ValidatedJson<MockTokenRequest>,
 ) -> impl IntoResponse {
     warn!("⚠️  MOCK TOKEN ENDPOINT ACCESSED - This should only be used for testing!");
+
+    // Test scripts send no Origin, and no browser page should hold a mock admin token.
+    if headers.contains_key(header::ORIGIN) {
+        warn!("Mock token endpoint refused a browser request");
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "Not available to browser pages",
+            None,
+        );
+    }
 
     // Check if mock endpoints are enabled in config
     if !state.0.config.development.enable_mock_auth {

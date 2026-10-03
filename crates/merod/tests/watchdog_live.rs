@@ -9,7 +9,8 @@
 //! ignores every stop including `SIGTERM` - which `the_node_stops_on_sigterm` is
 //! here to distinguish from a fault in the watchdogs themselves.
 
-use std::net::{TcpListener, UdpSocket};
+use std::io::{Read as _, Write as _};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -147,6 +148,8 @@ fn init_returning_port(home: &Path, node: &str) -> u16 {
             // A sandboxed runner has no netlink socket, and mDNS retries that
             // failure in a tight loop that floods the log and starves the node.
             "--no-mdns",
+            "--auth-mode",
+            "proxy",
             "--server-port",
             &server_port.to_string(),
             "--swarm-port",
@@ -183,6 +186,23 @@ fn run(home: &Path, node: &str, tag: &str) -> Node {
     let node_process = Node { child, log };
     wait_until_ready(&node_process);
     node_process
+}
+
+/// Sends one raw HTTP/1.1 request to the node and returns the whole response.
+///
+/// Raw HTTP rather than a client crate: a test dependency only these requests
+/// would justify is not worth the build time on a Windows runner.
+fn http(port: u16, request: &str) -> String {
+    let mut sock = TcpStream::connect(("127.0.0.1", port)).unwrap_or_else(|e| {
+        panic!("the node logged ready but nothing is listening on {port}: {e}")
+    });
+    sock.set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("read timeout");
+    sock.write_all(request.as_bytes())
+        .expect("send the request");
+    let mut response = String::new();
+    let _ = sock.read_to_string(&mut response);
+    response
 }
 
 fn wait_for_exit(node: &mut Node, what: &str) -> Duration {
@@ -258,8 +278,6 @@ fn the_node_stops_when_the_pipe_to_its_parent_closes() {
 #[test]
 #[ignore = "drives a real node; needs an environment with netlink"]
 fn the_node_serves_health_and_then_stops() {
-    use std::io::{Read as _, Write as _};
-
     let home = scratch("health");
     let port = init_returning_port(&home, "n1");
 
@@ -282,21 +300,10 @@ fn the_node_serves_health_and_then_stops() {
     let mut node = Node { child, log };
     wait_until_ready(&node);
 
-    // Raw HTTP rather than a client crate: one request, and a test dependency
-    // that only this line would justify is not worth the build time on a
-    // Windows runner.
-    let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap_or_else(|e| {
-        panic!("the node logged ready but nothing is listening on {port}: {e}")
-    });
-    sock.set_read_timeout(Some(Duration::from_secs(30)))
-        .expect("read timeout");
-    sock.write_all(
-        b"GET /admin-api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    )
-    .expect("send the health request");
-
-    let mut response = String::new();
-    let _ = sock.read_to_string(&mut response);
+    let response = http(
+        port,
+        "GET /admin-api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
 
     assert!(
         response.starts_with("HTTP/1.1 200"),
@@ -313,6 +320,44 @@ fn the_node_serves_health_and_then_stops() {
     drop(node.child.stdin.take().expect("child stdin"));
     let took = wait_for_exit(&mut node, "stdin closed");
     println!("node served health, then exited {took:?} after its stdin closed");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The browser guard sits in front of the server the node actually runs, not
+/// only in the unit tests that build the layer themselves.
+#[test]
+#[ignore = "drives a real node; needs an environment with netlink"]
+fn the_node_refuses_a_foreign_host_or_origin() {
+    let home = scratch("browser-guard");
+    let port = init_returning_port(&home, "n1");
+    let node = run(&home, "n1", "browser-guard");
+
+    let status = |host: &str, origin: Option<&str>| {
+        let origin = origin
+            .map(|o| format!("Origin: {o}\r\n"))
+            .unwrap_or_default();
+        let response = http(
+            port,
+            &format!(
+                "GET /admin-api/health HTTP/1.1\r\nHost: {host}\r\n{origin}Connection: close\r\n\r\n"
+            ),
+        );
+        response.split(' ').nth(1).unwrap_or_default().to_owned()
+    };
+    assert_eq!(
+        status("127.0.0.1", None),
+        "200",
+        "control: a CLI caller. Node log:\n{}",
+        node.tail()
+    );
+    assert_eq!(
+        status("127.0.0.1", Some("https://evil.example")),
+        "403",
+        "a foreign page"
+    );
+    assert_eq!(status("evil.example", None), "403", "a rebound name");
+
+    drop(node);
     let _ = std::fs::remove_dir_all(&home);
 }
 

@@ -37,6 +37,7 @@ use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
 use prometheus_client::registry::Registry;
 use tracing::{debug, info};
 
+use crate::browser_origins::{guard, BrowserOrigins};
 use crate::config::ServerConfig;
 
 /// HTTP request labels for the middleware. See module-level docs for
@@ -149,7 +150,11 @@ pub(crate) fn service(config: &ServerConfig, registry: Registry) -> Option<(&'st
     let state = Arc::new(ServiceState { registry });
     let handler = get(handle_request).layer(Extension(Arc::clone(&state)));
 
-    let router = Router::new().route("/", handler);
+    // Served without a token, so another site's page is refused in every auth mode.
+    let origins = Arc::new(BrowserOrigins::new(&config.listen, &config.cors, false));
+    let router = Router::new()
+        .route("/", handler)
+        .layer(axum::middleware::from_fn_with_state(origins, guard));
 
     Some((path, router))
 }
@@ -163,4 +168,48 @@ async fn handle_request(Extension(state): Extension<Arc<ServiceState>>) -> impl 
     // grep on a node under test surfaces both signals.
     debug!(bytes = buffer.len(), "metrics scrape served");
     buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::header;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::config::AuthMode;
+
+    #[tokio::test]
+    async fn metrics_refuse_a_foreign_page_on_an_embedded_auth_node() {
+        let mut config = ServerConfig::new(
+            vec!["/ip4/127.0.0.1/tcp/2528".parse().unwrap()],
+            libp2p::identity::Keypair::generate_ed25519(),
+            None,
+            None,
+            None,
+            None,
+        );
+        config.auth_mode = AuthMode::Embedded;
+        let (path, router) = service(&config, Registry::default()).expect("metrics enabled");
+        let app = Router::new().nest(path, router);
+        let scrape = |origin: Option<&'static str>| {
+            let app = app.clone();
+            async move {
+                let mut request = Request::builder()
+                    .uri(path)
+                    .header(header::HOST, "127.0.0.1:2528");
+                if let Some(origin) = origin {
+                    request = request.header(header::ORIGIN, origin);
+                }
+                app.oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        assert_eq!(scrape(None).await, StatusCode::OK, "a scraper");
+        assert_eq!(
+            scrape(Some("https://evil.example")).await,
+            StatusCode::FORBIDDEN
+        );
+    }
 }

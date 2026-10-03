@@ -124,9 +124,9 @@ delegated `account_proof` session carries; the wide `context:list` /
 two `for-application` listings are **not** scoped — they enumerate node-wide
 without ever naming a context whose group could be checked — and keep requiring
 the wide `context:list`. A node-owner session, and a node
-running without the auth guard at all (`AuthMode::Proxy`, the default), keep the
-node-wide view — narrowing there would empty the endpoint on every
-default-configured node without closing anything, since the proxy is what decides
+running without the auth guard at all (`AuthMode::Proxy`, also what a config
+without `auth_mode` gets), keep the node-wide view: narrowing there would empty
+the endpoint on every proxy-mode node without closing anything, since the proxy is what decides
 who gets through. `GET /admin-api/blobs` is **not** scoped: `BlobMeta` carries no
 owner and blobs are deduplicated by content hash with a `refs` count, so
 ownership is many-to-many and needs a model rather than an index (core #4019).
@@ -450,12 +450,18 @@ request re-stamps it.
 - Admin API requires authentication
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
-- A WebSocket upgrade from a browser (`Origin` present) is refused with `403` unless the
-  origin is listed in `[server.cors] allowed_origins`, or equals a `Host` / `X-Forwarded-Host`
-  that names this node (`BrowserOrigins`: loopback, the listen addresses, every address when
-  it listens on an unspecified one, and the hosts of `allowed_origins`). A browser's `Host`
-  is whatever name it resolved, so it proves nothing until the node recognises it. Clients
-  that send no `Origin` are not browsers and are unaffected.
+- Every request, including the WebSocket upgrade, passes the router-wide Host/Origin guard
+  (`browser_origins.rs`, `403` on refusal). `Host` must be loopback, a listen address (any IP
+  when listening on `0.0.0.0`/`::`) or in `[server.cors] allowed_hosts`. With embedded auth any
+  `Origin` is admitted except on `/metrics`, which needs no token and keeps the proxy rule; in proxy
+  mode an `Origin` must be loopback (any port or scheme), the node's own, or in
+  `allowed_origins`. `Origin: null` is refused in both modes. Requests without `Origin` face only the `Host` rule, so a client reaching
+  the node by any other DNS name (compose service, Service DNS, LAN name) gets `403`
+  until it is in `allowed_hosts`. In proxy mode another site's image, script or frame
+  (`Sec-Fetch-Site: cross-site`, not a top-level navigation) is refused too. CORS answers only those origins. `allow_private_network`
+  defaults to `true`, with or without a `[server.cors]` section, so an existing config
+  keeps its answer. IPs in `Host`, `Origin`, listen addresses and both lists compare as
+  parsed addresses, not text.
 - SSE streams are per-context
 - The `/sse/subscription` 200 is the client's readiness signal: once it lists a
   context, live events for it reach the stream. That holds only because

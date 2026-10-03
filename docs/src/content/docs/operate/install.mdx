@@ -77,7 +77,7 @@ daemon, then point `meroctl` at it.
     { label: 'Network', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'merod --node node1 init' },
+    { from: 0, to: 1, label: 'merod --node node1 init --auth-mode proxy' },
     { from: 1, to: 1, label: 'create home dir + write config.toml' },
     { from: 1, to: 1, label: 'generate node identity keypair', color: '#a5ff11' },
     { from: 1, to: 1, label: 'create data + blobs dirs, open datastore' },
@@ -98,8 +98,12 @@ daemon, then point `meroctl` at it.
    node's identity keypair, writes `config.toml`, and opens the datastore.
 
    ```bash
-   merod --node node1 init
+   merod --node node1 init --auth-mode proxy
    ```
+
+   `init` defaults to `--auth-mode embedded`, which needs admin credentials (`--admin-user` with `--admin-password-file` or `--admin-password-stdin`) or `--no-admin`.
+   `--auth-mode proxy` suits a local node with nothing in front of it.
+   In proxy mode any page served from localhost can reach the admin API, so use it only on a development machine.
 
    It prints a single confirmation line naming the node home it created:
 
@@ -114,7 +118,7 @@ daemon, then point `meroctl` at it.
 
    ```sh
    mkdir data
-   merod --home data/ --node node1 init --server-port 2528 --swarm-port 2428
+   merod --home data/ --node node1 init --auth-mode proxy --server-port 2528 --swarm-port 2428
    ```
 
    :::tip

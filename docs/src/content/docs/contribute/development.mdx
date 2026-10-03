@@ -58,17 +58,19 @@ two nodes that talk to each other:
 
 <Steps>
 
-1. Initialize and run the first node:
+1. Initialize and run the first node.
+   `--auth-mode proxy` skips authentication for a local pair; `init` defaults to `embedded`, which needs admin credentials.
+   In proxy mode any page served from localhost can reach the admin API, so use it only on a development machine.
 
    ```sh
-   merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns
+   merod --node node1 init --auth-mode proxy --server-port 2428 --swarm-port 2528 --mdns
    merod --node node1 run
    ```
 
 2. Initialize the second node so it can find the first:
 
    ```sh
-   merod --node node2 init --server-port 2429 --swarm-port 2529 --mdns
+   merod --node node2 init --auth-mode proxy --server-port 2429 --swarm-port 2529 --mdns
    merod --node node2 run
    ```
 
@@ -86,7 +88,7 @@ two nodes that talk to each other:
    # with node1 running
    curl -s localhost:2428/admin-api/network/status | jq -r .localPeerId
 
-   merod --node node2 init --server-port 2429 --swarm-port 2529 \
+   merod --node node2 init --auth-mode proxy --server-port 2429 --swarm-port 2529 \
      --boot-nodes /ip4/127.0.0.1/tcp/2528/p2p/<node1-peer-id>
    merod --node node2 run
    ```

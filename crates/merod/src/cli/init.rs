@@ -197,9 +197,10 @@ pub struct InitCommand {
     #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
     pub server_port: u16,
 
-    /// Authentication mode for server endpoints
-    #[clap(long, value_enum)]
-    pub auth_mode: Option<AuthModeArg>,
+    /// Authentication mode for server endpoints. `proxy` trusts a proxy in front
+    /// of the node to check every caller, so pass it only when there is one.
+    #[clap(long, value_enum, default_value_t = AuthModeArg::Embedded)]
+    pub auth_mode: AuthModeArg,
 
     /// Embedded auth storage implementation (only used when auth mode is embedded)
     #[clap(long, value_enum)]
@@ -298,7 +299,7 @@ pub struct InitCommand {
     /// replaces those two headers on every route it authenticates and strips
     /// them on every other one. The node cannot tell a header the proxy wrote
     /// from one a client did, so anywhere else it lets a caller name any
-    /// account. Ignored, with a warning, in embedded mode, where this process
+    /// account. Refused with embedded auth, the default, where this process
     /// authenticates the caller itself.
     #[clap(long, default_value_t = false)]
     pub proxy_identity: bool,
@@ -402,6 +403,18 @@ pub enum BootstrapNetwork {
 }
 
 impl InitCommand {
+    /// Embedded auth became the default, so a flag that only means something in
+    /// proxy mode is refused rather than silently ignored.
+    fn check_auth_flags(&self) -> EyreResult<()> {
+        if self.proxy_identity && matches!(self.auth_mode, AuthModeArg::Embedded) {
+            bail!(
+                "--proxy-identity needs --auth-mode proxy: with embedded auth, the default, \
+                 this node authenticates its callers itself"
+            );
+        }
+        Ok(())
+    }
+
     // TODO: Consider splitting this function up to reduce complexity.
     #[expect(
         clippy::cognitive_complexity,
@@ -409,6 +422,7 @@ impl InitCommand {
         reason = "TODO: Will be refactored"
     )]
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
+        self.check_auth_flags()?;
         let mdns = self.mdns && !self.no_mdns;
 
         let path = root_args.node_home()?;
@@ -439,13 +453,13 @@ impl InitCommand {
         // any of which can fail hard (unreadable file, empty password, or a
         // partial `MERO_AUTH_ADMIN_*` left in the environment for some
         // unrelated reason). Doing that unconditionally would let those break
-        // a plain `merod init` in a mode that never uses the credentials. The
+        // an init in a mode that never uses the credentials. The
         // resolve still happens before the destructive re-init below, so a
         // `--force` re-init never wipes an existing node home only to then
         // fail on missing, unreadable, or policy-violating credentials. Modes
         // that ignore credentials warn only on explicit flags (`provided()`),
         // never by reading the environment.
-        let auth_mode = self.auth_mode.map(Into::into).unwrap_or(AuthMode::Proxy);
+        let auth_mode = AuthMode::from(self.auth_mode);
         let auth_storage_choice = self.auth_storage.unwrap_or(AuthStorageArg::Persistent);
 
         let admin_to_mint = match (auth_mode, auth_storage_choice) {
@@ -468,11 +482,12 @@ impl InitCommand {
             (AuthMode::Embedded, AuthStorageArg::Persistent) => match self.admin.resolve()? {
                 Some(creds) => Some(creds),
                 None => bail!(
-                    "--auth-mode embedded requires admin credentials so the admin account \
-                     exists before the node ever listens. Provide --admin-user with \
-                     --admin-password-file or --admin-password-stdin (or set \
-                     MERO_AUTH_ADMIN_USER and MERO_AUTH_ADMIN_PASSWORD), or pass \
-                     --no-admin to explicitly defer provisioning."
+                    "embedded auth (the default --auth-mode) requires admin credentials so \
+                     the admin account exists before the node ever listens. Provide \
+                     --admin-user with --admin-password-file or --admin-password-stdin (or \
+                     set MERO_AUTH_ADMIN_USER and MERO_AUTH_ADMIN_PASSWORD), pass --no-admin \
+                     to explicitly defer provisioning, or pass --auth-mode proxy when a proxy \
+                     in front of the node checks every caller."
                 ),
             },
             (AuthMode::Embedded, AuthStorageArg::Memory) => {
@@ -665,13 +680,6 @@ impl InitCommand {
             }
             None
         };
-
-        if self.proxy_identity && matches!(auth_mode, AuthMode::Embedded) {
-            warn!(
-                "--proxy-identity does nothing with --auth-mode embedded: this node \
-                 authenticates its callers itself",
-            );
-        }
 
         let mut server_config = ServerConfig::with_auth(
             self.server_host
@@ -883,7 +891,7 @@ fn parse_account_root_pk(given: &str) -> EyreResult<calimero_primitives::identit
 mod tests {
     use clap::Parser;
 
-    use super::InitCommand;
+    use super::{AuthModeArg, InitCommand};
 
     /// The rename must not break a node image that still passes the old name.
     ///
@@ -907,6 +915,29 @@ mod tests {
             !off.proxy_identity,
             "reading the proxy's headers must be opt-in"
         );
+    }
+
+    #[test]
+    fn auth_mode_is_embedded_unless_proxy_is_asked_for() {
+        let default = InitCommand::try_parse_from(["merod"]).unwrap();
+        assert!(matches!(default.auth_mode, AuthModeArg::Embedded));
+
+        let proxy = InitCommand::try_parse_from(["merod", "--auth-mode", "proxy"]).unwrap();
+        assert!(matches!(proxy.auth_mode, AuthModeArg::Proxy));
+    }
+
+    #[test]
+    fn proxy_identity_is_refused_unless_proxy_auth_is_asked_for() {
+        let check = |args: &[&str]| {
+            InitCommand::try_parse_from(args)
+                .unwrap()
+                .check_auth_flags()
+        };
+        assert!(
+            check(&["merod", "--proxy-identity"]).is_err(),
+            "the embedded default"
+        );
+        assert!(check(&["merod", "--auth-mode", "proxy", "--proxy-identity"]).is_ok());
     }
 
     #[test]
@@ -986,8 +1017,14 @@ mod tests {
             home: home.clone(),
             node_name: Some(camino::Utf8PathBuf::from("tee")),
         };
-        let init = InitCommand::try_parse_from(["merod", "--kms-url", "https://kms.example/"])
-            .expect("--kms-url parses");
+        let init = InitCommand::try_parse_from([
+            "merod",
+            "--auth-mode",
+            "proxy",
+            "--kms-url",
+            "https://kms.example/",
+        ])
+        .expect("--kms-url parses");
 
         let err = init
             .run(root_args)
@@ -1079,9 +1116,16 @@ mod tests {
             node_name: Some(camino::Utf8PathBuf::from("provisioned")),
         };
 
-        let init =
-            InitCommand::try_parse_from(["merod", "--server-port", "8428", "--swarm-port", "8528"])
-                .expect("parse init");
+        let init = InitCommand::try_parse_from([
+            "merod",
+            "--auth-mode",
+            "proxy",
+            "--server-port",
+            "8428",
+            "--swarm-port",
+            "8528",
+        ])
+        .expect("parse init");
         init.run(root_args).await.expect("init");
 
         let store =
@@ -1120,6 +1164,8 @@ mod tests {
 
         let init = InitCommand::try_parse_from([
             "merod",
+            "--auth-mode",
+            "proxy",
             "--no-account-root",
             "--server-port",
             "8628",

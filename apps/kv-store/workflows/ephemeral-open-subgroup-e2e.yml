@@ -11,6 +11,8 @@ nuke_on_end: false
 
 # Pinned so the local script step can build the RPC URLs: node i+1 is served
 # on base_rpc_port + i.
+auth_mode: proxy
+
 nodes:
   count: 2
   prefix: ephemeral-open-node

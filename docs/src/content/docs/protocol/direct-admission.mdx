@@ -214,7 +214,7 @@ credential, so an address that can be wrong *and* still be talked to is a way to
 hand a redeemable credential to whatever answers.
 
 A node could not derive its own URL anyway. It terminates no TLS and
-`AuthMode::Proxy` is the default, so the address callers should use belongs to a
+`AuthMode::Proxy` is what a hosted node runs, so the address callers should use belongs to a
 reverse proxy — different host, port and scheme from anything `listen` describes.
 
 For the hosted tier this is answered outside the invitation. A keyholder with no
