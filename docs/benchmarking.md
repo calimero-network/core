@@ -41,7 +41,7 @@ Pair it with a Criterion sweep over the same shape in Tier 2, which shows the tr
 
 Criterion compiles benches with release optimisations; never read numbers from a debug build.
 
-`master` saves a baseline per commit, and a PR compares against it with `critcmp` (`.github/workflows/benchmarks.yml`): a PR labelled `run-benchmarks` runs every crate's benches, and a PR touching `crates/storage/`, `crates/prelude/` or `crates/store/` runs `storage-cost`, `calimero-storage` and `calimero-store` without the label.
+`master` saves a baseline per commit, and a PR compares against it with `critcmp` (`.github/workflows/benchmarks.yml`): a PR benches only while it carries the `run-benchmarks` label, and then benches every crate, again on each push. A storage change without the label is covered by the deterministic storage cost gate in `ci-checks.yml` instead.
 Neither ever fails the PR. On a fork PR the comparison runs but cannot comment (its token is read-only), so read the `compare` job's log.
 
 ## Tier 3 - macro

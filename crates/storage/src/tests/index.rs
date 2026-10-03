@@ -2691,11 +2691,23 @@ mod parent_loops {
                     id, parent, [0; 32],
                 ))
                 .unwrap();
+                // Listed under its parent with a stale hash, so a walk that
+                // stops once a hash stops moving has work at every step and
+                // goes round the loop instead of stopping at the first.
+                let _root = ChildTrie::<MainStorage>::new(parent).insert(ChildInfo::new(
+                    id,
+                    [1; 32],
+                    Metadata::default(),
+                ));
             }
             [
                 Index::<MainStorage>::recalculate_ancestor_hashes_for_now(x()).err(),
                 Index::<MainStorage>::get_ancestors_of(x()).err(),
-                Index::<MainStorage>::get_delta_ancestors_of(x()).err(),
+                Index::<MainStorage>::get_delta_ancestors_of(x(), Some(a())).err(),
+                Index::<MainStorage>::recalculate_ancestor_hashes_for_all(
+                    [x(), a()].into_iter().collect(),
+                )
+                .err(),
             ]
         });
         for walk in walks {
@@ -2704,6 +2716,30 @@ mod parent_loops {
                 "{walk:?}"
             );
         }
+    }
+
+    /// The batched walk a delta's flush takes is bounded like a single walk.
+    #[test]
+    fn a_batched_walk_up_an_over_long_chain_errors() {
+        let walk = returns(|| {
+            // Each entity's parent is the next; the top one's parent is never reached.
+            for i in 0..=MAX_PARENT_CHAIN + 1 {
+                Index::<MainStorage>::save_index(&EntityIndex::minimal_for_test_with_parent(
+                    numbered(i),
+                    numbered(i + 1),
+                    [0; 32],
+                ))
+                .unwrap();
+            }
+            Index::<MainStorage>::recalculate_ancestor_hashes_for_all(
+                [numbered(0), numbered(1)].into_iter().collect(),
+            )
+            .err()
+        });
+        assert!(
+            matches!(walk, Some(StorageError::ParentChainTooLong(_))),
+            "{walk:?}"
+        );
     }
 
     #[test]
