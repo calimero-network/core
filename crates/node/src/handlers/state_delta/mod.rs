@@ -33,7 +33,7 @@ mod verify;
 pub(crate) use buffering::{
     drain_absorbed, drain_all_absorbed, drain_all_governance_pending, recover_absorbed_on_startup,
 };
-use buffering::{drain_governance_pending, fence_and_maybe_absorb, FenceOutcome};
+use buffering::{drain_governance_pending, fence_and_maybe_absorb, park_first_copy, FenceOutcome};
 // Used only by the in-module test suite (the live drain/recover entry points
 // reach these internally within `buffering`).
 #[cfg(test)]
@@ -439,8 +439,8 @@ pub(crate) async fn apply_authorized_state_delta(
     // Parking rather than dropping matters because gossipsub does not re-deliver
     // a message it has already delivered: without a durable copy the only
     // recovery would be hash-heartbeat divergence triggering a snapshot sync.
-    // The original ciphertext is what gets stored — a replay is verified against
-    // the same bytes the sender signed.
+    // The envelope signature does not cover the payload, so the stored copy is
+    // unchecked until its replay re-derives the content address.
     if author_id != our_identity {
         if let BytecodeStatus::Missing(application_id) =
             application_bytecode_status(&node_clients.node, &node_clients.context, &context_id)?
@@ -467,10 +467,13 @@ pub(crate) async fn apply_authorized_state_delta(
             // Keyed by the awaited application rather than by `producing_bytecode_id`:
             // the application id resolves from local context metadata even when
             // nothing about the application has landed, and a delta may carry no
-            // `producing_bytecode_id` at all. `delta_id` keeps the key unique, so a
-            // re-delivery overwrites instead of duplicating.
-            calimero_governance_store::AbsorbRepository::new(node_clients.context.datastore())
-                .save(&context_id, *application_id.as_ref(), &record)?;
+            // `producing_bytecode_id` at all.
+            park_first_copy(
+                node_clients.context.datastore(),
+                &context_id,
+                *application_id.as_ref(),
+                &record,
+            )?;
             info!(
                 %context_id,
                 %author_id,
@@ -3237,6 +3240,39 @@ mod tests {
             );
         }
 
+        /// A replay of an absorbed delta's signed envelope with another payload
+        /// leaves the first copy parked: the payload is unchecked until replay.
+        #[test]
+        fn a_replayed_envelope_does_not_replace_an_absorbed_delta() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let honest = sample_buffered([5; 32], APP_V1);
+            let replay = BufferedDelta {
+                payload: vec![0xEE; 3],
+                ..honest.clone()
+            };
+
+            for bd in [&honest, &replay] {
+                let outcome = fence_and_maybe_absorb(
+                    &store,
+                    &ctx,
+                    APP_V1,
+                    bd.id,
+                    bd.author_id,
+                    bd.hlc,
+                    false,
+                    || bd.clone(),
+                )
+                .unwrap();
+                assert!(matches!(outcome, FenceOutcome::Handled));
+            }
+
+            let parked = AbsorbRepository::new(&store)
+                .load(&ctx, APP_V1, honest.id)
+                .unwrap()
+                .expect("the delta stays parked");
+            assert_eq!(parked.payload, honest.payload);
+        }
+
         // ---- PR-6b Task 6b.5: drain-on-advance (verbatim replay) ----
 
         use super::super::drain_absorbed_records;
@@ -3814,6 +3850,117 @@ mod tests {
             asked.dedup();
             assert_eq!(asked.len(), DEPTH, "every ancestor is fetched");
             assert_eq!(total, DEPTH, "no ancestor is requested twice");
+        }
+    }
+
+    /// A delta parked because its application is not installed keeps its first
+    /// copy when the signed envelope is replayed with another payload.
+    mod parked_delta_tests {
+        use std::time::Duration;
+
+        use calimero_governance_store::AbsorbRepository;
+        use calimero_network_primitives::client::NetworkClient;
+        use calimero_node_primitives::sync::delta_auth::delta_signature_payload;
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::ContextId;
+        use calimero_primitives::identity::PrivateKey;
+        use calimero_storage::logical_clock::HybridTimestamp;
+        use calimero_store::key::{
+            ApplicationMeta, ContextIdentity, ContextMeta as ContextMetaKey,
+        };
+        use calimero_store::types::{self, ContextMeta};
+        use calimero_utils_actix::LazyRecipient;
+        use libp2p::PeerId;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
+        use serial_test::serial;
+
+        use super::super::{handle_state_delta, StateDeltaContext, StateDeltaMessage};
+        use crate::test_node_harness::{boot_test_node, TestNode};
+
+        const CONTEXT: [u8; 32] = [0xC1; 32];
+        const APPLICATION: [u8; 32] = [0xA1; 32]; // named by the context, never installed
+        const DELTA: [u8; 32] = [0xD1; 32];
+
+        /// A context on an uninstalled application, with an identity this node owns.
+        fn host_context(node: &TestNode) {
+            let ours = PrivateKey::random(&mut UnwrapErr(SysRng));
+            let mut handle = node.store.handle();
+            let meta = ContextMeta::new(
+                ApplicationMeta::new(ApplicationId::from(APPLICATION)),
+                [0x01; 32],
+                Vec::new(),
+                None,
+            );
+            handle
+                .put(&ContextMetaKey::new(CONTEXT.into()), &meta)
+                .expect("context meta");
+            handle
+                .put(
+                    &ContextIdentity::new(CONTEXT.into(), ours.public_key()),
+                    &types::ContextIdentity {
+                        private_key: Some(*ours.as_bytes()),
+                    },
+                )
+                .expect("owned identity");
+        }
+
+        fn input(node: &TestNode, node_state: &crate::NodeState) -> StateDeltaContext {
+            StateDeltaContext {
+                node_clients: crate::NodeClients {
+                    context: node.context_client.clone(),
+                    node: node.node_client.clone(),
+                },
+                node_state: node_state.clone(),
+                network_client: NetworkClient::new(LazyRecipient::new()),
+                sync_timeout: Duration::from_secs(5),
+            }
+        }
+
+        /// `author`'s signed envelope for [`DELTA`], carrying `artifact`.
+        fn message(author: &PrivateKey, artifact: &[u8]) -> StateDeltaMessage {
+            let context_id = ContextId::from(CONTEXT);
+            let hlc = HybridTimestamp::zero();
+            let payload =
+                delta_signature_payload(context_id, DELTA, author.public_key(), None, hlc)
+                    .expect("signature payload");
+            StateDeltaMessage {
+                source: PeerId::random(),
+                context_id,
+                author_id: author.public_key(),
+                delta_id: DELTA,
+                parent_ids: Vec::new(),
+                hlc,
+                artifact: artifact.to_vec(),
+                nonce: [0; 12],
+                governance_position: None,
+                key_id: [0; 32],
+                delta_signature: Some(author.sign(&payload).expect("sign").to_bytes()),
+                delegation: None,
+                tee_trigger: None,
+                producing_bytecode_id: None,
+            }
+        }
+
+        #[tokio::test]
+        #[serial(boot_test_node)]
+        async fn a_replayed_envelope_does_not_replace_a_parked_delta() {
+            let node = boot_test_node().await;
+            host_context(&node);
+            let author = PrivateKey::random(&mut UnwrapErr(SysRng));
+            let node_state = crate::NodeState::new();
+
+            for artifact in [&b"honest"[..], &b"junk"[..]] {
+                handle_state_delta(input(&node, &node_state), message(&author, artifact))
+                    .await
+                    .expect("the delta is parked");
+            }
+
+            let parked = AbsorbRepository::new(&node.store)
+                .load(&CONTEXT.into(), APPLICATION, DELTA)
+                .expect("read the absorb buffer")
+                .expect("the delta is parked");
+            assert_eq!(parked.payload, b"honest");
         }
     }
 }
