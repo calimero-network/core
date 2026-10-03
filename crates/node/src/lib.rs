@@ -61,6 +61,8 @@ mod delta_store_batch_test;
 #[cfg(test)]
 mod delta_store_lock_inversion_test;
 #[cfg(test)]
+mod delta_store_sweep_lock_test;
+#[cfg(test)]
 mod ephemeral_dispatch_e2e;
 #[cfg(test)]
 mod ephemeral_node_client_e2e;
@@ -70,6 +72,8 @@ mod local_governance_node_e2e;
 mod migration_events_e2e;
 #[cfg(test)]
 mod parent_plan_applied_flag_test;
+#[cfg(test)]
+mod registered_bytecode_e2e;
 // Also on the ungated harness: no mock attestation, runs in the default
 // `cargo test`.
 #[cfg(test)]

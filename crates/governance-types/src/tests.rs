@@ -3706,3 +3706,131 @@ fn a_tee_admission_quote_is_bounded() {
         .validate_after_unsealing()
         .is_err());
 }
+
+/// Wrapper tags stacked by the nesting tests: about what one 64 KiB gossip
+/// message holds.
+const NESTED_WRAPPERS: usize = 60_000;
+
+/// A stack far below a node thread's. A decode that took a frame per wrapper
+/// would overflow it and abort the test binary.
+const SMALL_STACK: usize = 256 * 1024;
+
+/// Decodes `bytes` as `T` on a thread with [`SMALL_STACK`].
+fn decode_on_small_stack<T: BorshDeserialize + Send + 'static>(
+    bytes: Vec<u8>,
+) -> Result<T, String> {
+    std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .spawn(move || borsh::from_slice::<T>(&bytes).map_err(|err| err.to_string()))
+        .expect("spawn the decode thread")
+        .join()
+        .expect("the decode thread finished")
+}
+
+fn assert_nesting_refused<T: BorshDeserialize + Send + 'static>(what: &str, bytes: Vec<u8>) {
+    let Err(err) = decode_on_small_stack::<T>(bytes) else {
+        panic!("{what}: a chain of wrappers decoded");
+    };
+    assert!(
+        err.contains("may not carry another wrapper"),
+        "{what}: refused for another reason: {err}"
+    );
+}
+
+#[test]
+fn a_chain_of_group_op_wrappers_is_refused_without_exhausting_the_stack() {
+    for (what, pattern) in [
+        ("OnBehalf", vec![40u8]),
+        ("RootGuarded", vec![42u8]),
+        ("alternating", vec![40u8, 42]),
+    ] {
+        let bytes = pattern
+            .iter()
+            .copied()
+            .cycle()
+            .take(NESTED_WRAPPERS)
+            .collect();
+        assert_nesting_refused::<GroupOp>(what, bytes);
+    }
+}
+
+#[test]
+fn a_chain_of_root_op_wrappers_is_refused_without_exhausting_the_stack() {
+    for (what, pattern) in [
+        ("OnBehalf", vec![11u8]),
+        ("RootGuarded", vec![12u8]),
+        ("alternating", vec![11u8, 12]),
+    ] {
+        // `NamespaceOp::Root` is tag 0.
+        let bytes = std::iter::once(0u8)
+            .chain(pattern.iter().copied().cycle().take(NESTED_WRAPPERS))
+            .collect();
+        assert_nesting_refused::<NamespaceOp>(what, bytes);
+    }
+}
+
+/// The payload a peer gossips on `ns/<id>`, decoded the way the node decodes
+/// it, before any signature or membership check.
+#[test]
+fn a_gossiped_chain_of_wrappers_is_refused_without_exhausting_the_stack() {
+    let signer = PrivateKey::from([0x31; 32]).public_key();
+    let mut bytes = Vec::new();
+    bytes.push(0u8); // NamespaceTopicMsg::Op
+    bytes.extend(borsh::to_vec(&SIGNED_NAMESPACE_OP_SCHEMA_VERSION).expect("version"));
+    bytes.extend(borsh::to_vec(&NamespaceId::from([0x11; 32])).expect("namespace"));
+    bytes.extend(borsh::to_vec(&Vec::<[u8; 32]>::new()).expect("parents"));
+    bytes.extend(borsh::to_vec(&signer).expect("signer"));
+    bytes.extend(borsh::to_vec(&1u64).expect("nonce"));
+    bytes.push(0u8); // NamespaceOp::Root
+    bytes.extend(std::iter::repeat_n(11u8, NESTED_WRAPPERS)); // RootOp::OnBehalf
+    assert!(bytes.len() <= 64 * 1024, "fits one gossip message");
+
+    assert_nesting_refused::<crate::wire::NamespaceTopicMsg>("NamespaceTopicMsg", bytes);
+}
+
+/// A wrapper an encoder did nest, one level deep, is refused on decode, so the
+/// tags the decoder refuses are the wrappers' real ordinals.
+#[test]
+fn a_wrapper_carrying_a_wrapper_does_not_decode() {
+    let inner = GroupOp::GroupDelete;
+    let proof = owner_proof(
+        7,
+        [0x22; 32],
+        OwnerOpKind::GroupDelete,
+        inner.owner_op_digest().expect("digest"),
+        0,
+    );
+    let single = GroupOp::RootGuarded {
+        op: Box::new(inner),
+        proof: Box::new(proof.clone()),
+    };
+    let bytes = borsh::to_vec(&single).expect("encode");
+    let decoded: GroupOp = borsh::from_slice(&bytes).expect("one wrapper decodes");
+    assert_eq!(borsh::to_vec(&decoded).expect("re-encode"), bytes);
+
+    let nested = GroupOp::RootGuarded {
+        op: Box::new(single),
+        proof: Box::new(proof.clone()),
+    };
+    let err = borsh::from_slice::<GroupOp>(&borsh::to_vec(&nested).expect("encode"))
+        .expect_err("a wrapper in a wrapper");
+    assert!(err.to_string().contains("may not carry another wrapper"));
+
+    let root_single = RootOp::RootGuarded {
+        op: Box::new(RootOp::AdminChanged {
+            new_admin: AccountId::from([0x44; 32]),
+        }),
+        proof: Box::new(proof.clone()),
+    };
+    let bytes = borsh::to_vec(&root_single).expect("encode");
+    let decoded: RootOp = borsh::from_slice(&bytes).expect("one wrapper decodes");
+    assert_eq!(borsh::to_vec(&decoded).expect("re-encode"), bytes);
+
+    let root_nested = RootOp::RootGuarded {
+        op: Box::new(root_single),
+        proof: Box::new(proof),
+    };
+    let err = borsh::from_slice::<RootOp>(&borsh::to_vec(&root_nested).expect("encode"))
+        .expect_err("a wrapper in a wrapper");
+    assert!(err.to_string().contains("may not carry another wrapper"));
+}

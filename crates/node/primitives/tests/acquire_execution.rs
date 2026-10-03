@@ -1,7 +1,7 @@
 //! What `acquire_bytecode` leaves behind, one arm per outcome. The node has
 //! exactly one source; this is the function that walks it and must never error.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use calimero_app_downloader::registry::{RegistryConfig, RegistryMode};
 use calimero_app_downloader::{AppRequest, Outcome};
@@ -19,9 +19,16 @@ use url::Url;
 
 mod common;
 
-/// Raw wasm rather than a bundle: a raw install adopts the named id instead of
-/// re-deriving one, which keeps these tests about acquisition.
-const WASM: &[u8] = b"raw wasm, not a bundle";
+/// The one signed bundle these tests acquire, and the id it derives: a source
+/// installs nothing else.
+fn bundle() -> &'static (Vec<u8>, ApplicationId) {
+    static BUNDLE: OnceLock<(Vec<u8>, ApplicationId)> = OnceLock::new();
+    BUNDLE.get_or_init(|| common::minimal_signed_bundle_bytes("com.example.app", "1.0.0"))
+}
+
+fn artifact() -> &'static [u8] {
+    &bundle().0
+}
 
 /// Any context id; the peer source only needs one to authorize against.
 fn context() -> ContextId {
@@ -35,7 +42,7 @@ fn req<'a>(
 ) -> AppRequest<'a> {
     AppRequest {
         bytecode_id: Some(bytecode_id),
-        application_id: Some(ApplicationId::from([0x22; 32])),
+        application_id: Some(bundle().1),
         package: package.unwrap_or_default(),
         version: package.map_or("", |_| "1.0.0"),
         context_id,
@@ -81,7 +88,7 @@ async fn a_blob_held_without_a_row_is_still_installed() {
     let (node_client, _data, _blobs) = common::create_test_node_client(None).await;
     let node_client = dht(&node_client);
     let (stored, _size) = node_client
-        .add_blob(WASM, Some(WASM.len() as u64), None)
+        .add_blob(artifact(), Some(artifact().len() as u64), None)
         .await
         .expect("store");
 
@@ -106,7 +113,7 @@ async fn an_installed_application_is_not_acquired_again() {
     let (node_client, _data, _blobs) = common::create_test_node_client(None).await;
     let node_client = dht(&node_client);
     let (stored, _size) = node_client
-        .add_blob(WASM, Some(WASM.len() as u64), None)
+        .add_blob(artifact(), Some(artifact().len() as u64), None)
         .await
         .expect("store");
 
@@ -165,9 +172,10 @@ impl<'a> Database<'a> for BlobLookupFails {
 // would serve them, so reaching it at all is the failure this pins.
 #[actix::test]
 async fn a_failed_blobstore_lookup_stops_the_walk() {
-    let expected = common::blob_id_of(WASM).await;
+    let expected = common::blob_id_of(artifact()).await;
     let datastore = Store::new(Arc::new(BlobLookupFails(Arc::new(InMemoryDB::owned()))));
-    let (network, _peer) = common::fake_peer_network(common::PeerBehavior::Serves(WASM.to_vec()));
+    let (network, _peer) =
+        common::fake_peer_network(common::PeerBehavior::Serves(artifact().to_vec()));
     let (node_client, _data, _blobs) =
         common::create_test_node_client_with(Some(datastore), network).await;
 
@@ -183,8 +191,8 @@ async fn a_failed_blobstore_lookup_stops_the_walk() {
 #[tokio::test]
 async fn the_registry_source_installs_the_bytecode() {
     let context = context();
-    let expected = common::blob_id_of(WASM).await;
-    let (url, server) = common::serve_once(WASM.to_vec()).await;
+    let expected = common::blob_id_of(artifact()).await;
+    let (url, server) = common::serve_once(artifact().to_vec()).await;
     let (node_client, _data, _blobs) = common::create_test_node_client(None).await;
     let node_client = http(&node_client, &base_of(&url));
 
@@ -203,9 +211,10 @@ async fn the_registry_source_installs_the_bytecode() {
 #[actix::test]
 async fn an_unpublished_registry_version_leaves_the_bytecode_unavailable() {
     let context = context();
-    let expected = common::blob_id_of(WASM).await;
+    let expected = common::blob_id_of(artifact()).await;
     let (url, server) = common::serve_status_once("404 Not Found").await;
-    let (network, _peer) = common::fake_peer_network(common::PeerBehavior::Serves(WASM.to_vec()));
+    let (network, _peer) =
+        common::fake_peer_network(common::PeerBehavior::Serves(artifact().to_vec()));
 
     let (node_client, _data, _blobs) = common::create_test_node_client_with(None, network).await;
     let node_client = http(&node_client, &base_of(&url));
@@ -254,11 +263,12 @@ async fn no_context_ends_the_walk_before_the_peer_source() {
 }
 
 // Downloading the bytes without binding the row leaves the joiner unable to
-// execute. Raw wasm binds under the id governance named, never a re-derived one.
+// execute, so the bundle is bound under the id governance named.
 #[actix::test]
 async fn the_peer_source_leaves_the_application_installed() {
-    let expected = common::blob_id_of(WASM).await;
-    let (network, _peer) = common::fake_peer_network(common::PeerBehavior::Serves(WASM.to_vec()));
+    let expected = common::blob_id_of(artifact()).await;
+    let (network, _peer) =
+        common::fake_peer_network(common::PeerBehavior::Serves(artifact().to_vec()));
     let (node_client, _data, _blobs) = common::create_test_node_client_with(None, network).await;
     let node_client = dht(&node_client);
 
@@ -285,9 +295,9 @@ async fn the_peer_source_leaves_the_application_installed() {
 // drops what was announced, so a context member holding it must still be reached.
 #[actix::test]
 async fn a_context_member_that_never_announced_still_delivers_the_bytecode() {
-    let expected = common::blob_id_of(WASM).await;
+    let expected = common::blob_id_of(artifact()).await;
     let (network, _peer) =
-        common::fake_peer_network(common::PeerBehavior::ServesUnannounced(WASM.to_vec()));
+        common::fake_peer_network(common::PeerBehavior::ServesUnannounced(artifact().to_vec()));
     let (node_client, _data, _blobs) = common::create_test_node_client_with(None, network).await;
     let node_client = dht(&node_client);
 

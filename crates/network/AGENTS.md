@@ -143,6 +143,7 @@ src/
 │   │   ├── dial.rs           # Dial peer
 │   │   ├── listen.rs         # Listen on address
 │   │   ├── bootstrap.rs      # Bootstrap DHT
+│   │   ├── close_all_connections.rs # Close every connection at shutdown (see its module docs)
 │   │   ├── peer_count.rs     # Get connected peer count
 │   │   ├── mesh_peer_count.rs # Get mesh peer count for topic
 │   │   ├── mesh_peers.rs     # Get mesh peers for topic
@@ -223,6 +224,7 @@ impl NetworkClient {
     pub async fn dial(&self, peer_addr: Multiaddr) -> eyre::Result<()>;
     pub async fn listen_on(&self, addr: Multiaddr) -> eyre::Result<()>;
     pub async fn bootstrap(&self) -> eyre::Result<()>;
+    pub async fn close_all_connections(&self); // shutdown only
     
     // Peer info
     pub async fn peer_count(&self) -> usize;

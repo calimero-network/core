@@ -1655,8 +1655,11 @@ fn test_e2e_sync_flow_with_isolated_storage() {
     // 3. Capture the delta
     // 4. Then finalize
 
-    // Actually, let's use Interface directly to save and capture the delta
-    let data = borsh::to_vec(&*node1_state).unwrap();
+    // Actually, let's use Interface directly to save and capture the delta.
+    // The root id holds the `Collection` a `Root<T>` keeps there, not `T`:
+    // `Root::sync` refuses a root it could not read back.
+    let data = Interface::<NodeStorage>::find_by_id_raw(crate::address::Id::root())
+        .expect("Root::new_internal stored the root collection");
     let metadata = crate::entities::Metadata::default();
     drop(node1_state); // Drop to release borrow
 

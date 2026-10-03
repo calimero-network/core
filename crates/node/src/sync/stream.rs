@@ -49,6 +49,7 @@ pub async fn send(
         None => encoded,
     };
 
+    crate::node_metrics::record_sync_message_sent(message.len());
     stream.send(Message::new(message)).await?;
 
     Ok(())
@@ -154,6 +155,7 @@ impl SyncTransport for StreamTransport<'_> {
     async fn send(&mut self, message: &StreamMessage<'_>) -> eyre::Result<()> {
         let encoded = borsh::to_vec(message)?;
         let encrypted = self.encryption.encrypt(encoded)?;
+        crate::node_metrics::record_sync_message_sent(encrypted.len());
         self.stream.send(Message::new(encrypted)).await?;
         Ok(())
     }

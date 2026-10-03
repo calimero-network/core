@@ -18,6 +18,10 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
   # Only fires on profiling-image paths; release.yml publishes pr-<N>-profiling
   # for the same set first. Same-repo PRs only; crates/**/apps/** excluded for cost.
   pull_request:
@@ -55,8 +59,12 @@ on:
         default: true
         type: boolean
 
+# Every master run (workflow_run, push, schedule, dispatch) gets its own group,
+# so none is cancelled or dropped as pending when the next merge queues one: each
+# collects its own soak data. PR runs stay serialized per PR ref. Under
+# workflow_run and schedule, github.ref is the default branch.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.run_id || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -90,10 +98,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          shared-key: fuzzy-load-test
-          # Scheduled runs always save cache to keep it fresh
-          save-if: "true"
+          # e2e's Build Apps owns this cache; a saver on every branch only crowded it out.
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
@@ -213,6 +220,8 @@ jobs:
         id: image
         env:
           GH_TOKEN: ${{ github.token }}
+          # Pins workflow_run runs to the triggering commit's image; empty otherwise.
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           chmod +x scripts/determine-image-tag.sh
           if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
@@ -252,7 +261,7 @@ jobs:
           VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
-          COMMIT_HASH="${{ github.sha }}"
+          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "kv-store" \
@@ -271,7 +280,7 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           TEST_CASE="kv-store"
-          COMMIT_HASH="${{ github.sha }}"
+          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
@@ -441,6 +450,8 @@ jobs:
         id: image
         env:
           GH_TOKEN: ${{ github.token }}
+          # Pins workflow_run runs to the triggering commit's image; empty otherwise.
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           chmod +x scripts/determine-image-tag.sh
           if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
@@ -480,7 +491,7 @@ jobs:
           VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
-          COMMIT_HASH="${{ github.sha }}"
+          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "kv-store-with-handlers" \
@@ -499,7 +510,7 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           TEST_CASE="kv-store-with-handlers"
-          COMMIT_HASH="${{ github.sha }}"
+          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
@@ -667,6 +678,8 @@ jobs:
         id: image
         env:
           GH_TOKEN: ${{ github.token }}
+          # Pins workflow_run runs to the triggering commit's image; empty otherwise.
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           chmod +x scripts/determine-image-tag.sh
           if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
@@ -706,7 +719,7 @@ jobs:
           VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
-          COMMIT_HASH="${{ github.sha }}"
+          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "scaffolding-e2e" \
@@ -725,7 +738,7 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           TEST_CASE="scaffolding-e2e"
-          COMMIT_HASH="${{ github.sha }}"
+          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
@@ -892,6 +905,8 @@ jobs:
         id: image
         env:
           GH_TOKEN: ${{ github.token }}
+          # Pins workflow_run runs to the triggering commit's image; empty otherwise.
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           chmod +x scripts/determine-image-tag.sh
           if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
@@ -931,7 +946,7 @@ jobs:
           VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
         run: |
           chmod +x scripts/setup-vmagent.sh
-          COMMIT_HASH="${{ github.sha }}"
+          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "group-governance" \
@@ -950,7 +965,7 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           TEST_CASE="group-governance"
-          COMMIT_HASH="${{ github.sha }}"
+          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"

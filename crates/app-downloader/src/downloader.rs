@@ -9,7 +9,7 @@ use eyre::bail;
 use tracing::{info, warn};
 
 use crate::port::ApplicationStore;
-use crate::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
+use crate::registry::PENDING_BLOB_SHARE_SOURCE;
 use crate::source::{AppRequest, AppSource};
 
 /// What a download left behind.
@@ -67,7 +67,7 @@ impl<A: ApplicationStore + Debug + Send + Sync + 'static> ApplicationDownloader<
             // These bytes were already here, so nothing releases them: this
             // download never took a reference on the blob to give back.
             let source = self.recorded_source(application_id)?;
-            self.bind(req, application_id, bytecode_id, &bytes, &source)
+            self.bind(application_id, bytecode_id, &bytes, &source)
                 .await?;
             return Ok(Outcome::Installed);
         }
@@ -86,10 +86,7 @@ impl<A: ApplicationStore + Debug + Send + Sync + 'static> ApplicationDownloader<
         // Nothing else reclaims a rejected artifact, so a failed install must
         // give back the blob this download stored.
         let source = self.recorded_source(application_id)?;
-        if let Err(err) = self
-            .bind(req, application_id, stored, &bytes, &source)
-            .await
-        {
+        if let Err(err) = self.bind(application_id, stored, &bytes, &source).await {
             self.release(stored).await;
             return Err(err);
         }
@@ -113,21 +110,13 @@ impl<A: ApplicationStore + Debug + Send + Sync + 'static> ApplicationDownloader<
 
     async fn bind(
         &self,
-        req: &AppRequest<'_>,
         application_id: ApplicationId,
         stored: BlobId,
         bytes: &[u8],
         source: &ApplicationSource,
     ) -> eyre::Result<()> {
         self.store
-            .bind_application(
-                &application_id,
-                stored,
-                bytes.len() as u64,
-                source,
-                stored_coords(req.package, req.version),
-                bytes,
-            )
+            .bind_application(&application_id, stored, bytes.len() as u64, source, bytes)
             .await
     }
 

@@ -57,8 +57,8 @@ use crate::migration_status::{build_signed_heartbeat, MigrationFacts};
 use crate::test_node_harness::{boot_test_node, TestNode};
 
 /// The bytecode ids the fixture runs on. A blob id is derived from the bytes it
-/// stores rather than chosen, so the fixture seeds REAL blob bytes (a minimal wasm
-/// module with an embedded
+/// stores rather than chosen, so the fixture seeds REAL blob bytes (a signed bundle
+/// of a minimal wasm module with an embedded
 /// `calimero_abi_v1` section) and uses the returned ids — the cascade
 /// dispatch resolves the migration decision from these very blobs.
 pub(crate) struct AppBlobs {
@@ -109,11 +109,15 @@ pub(crate) async fn seed_app_blobs(node: &TestNode) -> AppBlobs {
     m_other.state_version = Some(1);
     m_other.state_root = Some("Other".to_owned());
 
+    // Bundles at the versions the fixture's rows record: raw wasm never runs.
+    let bundle_with = |version: &str, manifest: &Manifest| {
+        build_bundle_blob("cascade-test-pkg", version, &wasm_with(manifest))
+    };
     AppBlobs {
-        v1: add(node, wasm_with(&m_v1)).await,
-        v2: add(node, wasm_with(&m_v2)).await,
-        v2_migrating: add(node, wasm_with(&m_mig)).await,
-        other: add(node, wasm_with(&m_other)).await,
+        v1: add(node, bundle_with("0.1.0", &m_v1)).await,
+        v2: add(node, bundle_with("0.2.0", &m_v2)).await,
+        v2_migrating: add(node, bundle_with("0.2.0", &m_mig)).await,
+        other: add(node, bundle_with("0.1.0-other", &m_other)).await,
     }
 }
 
@@ -206,6 +210,21 @@ pub(crate) fn install_application(
     handle
         .put(&ApplicationMetaKey::new(app_id), &meta)
         .expect("put ApplicationMeta");
+}
+
+/// Record the ladder rung a `TargetApplicationSet` for `bytecode_id` writes.
+fn record_rung(store: &Store, gid: &ContextGroupId, bytecode_id: [u8; 32], app: ApplicationId) {
+    UpgradeLadderRepository::new(store)
+        .append(
+            gid,
+            key::LadderRung {
+                bytecode_id,
+                application_id: app,
+                package: String::new(),
+                version: String::new(),
+            },
+        )
+        .expect("record the rung");
 }
 
 /// Register a `ContextMeta` row under `app_id` with a non-zero
@@ -1411,6 +1430,8 @@ async fn crash_recovery_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     // names the new application AND its bytecode_id advanced - but the context is
     // still on v1 and the record was never overwritten.
     provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
+    // The group was created on v1, which its ladder recorded before the upgrade.
+    record_rung(&node.store, &gid, blobs.v1, app_id_v1());
     register_context_for(&node.store, &gid, ctx, app_id_v1());
     provision_local_context_identity(&node.store, ctx, &admin_sk);
 
@@ -1512,6 +1533,8 @@ async fn retry_refuses_a_code_only_swap_of_a_migrating_upgrade() {
     install_application(&node.store, app_id_v2(), blobs.v2_migrating, "0.2.0", 2);
 
     provision_group(&node.store, &gid, admin_pk, blobs.v2_migrating, app_id_v2());
+    // The group was created on v1, which its ladder recorded before the upgrade.
+    record_rung(&node.store, &gid, blobs.v1, app_id_v1());
     register_context_for(&node.store, &gid, ctx, app_id_v1());
     provision_local_context_identity(&node.store, ctx, &admin_sk);
     // Retry resolves the signer from the node's own namespace identity, so the

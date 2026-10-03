@@ -122,11 +122,13 @@ impl SyncManager {
         let routes = super::namespace_join::group_admitter_routes(
             &params.admitter_addrs,
             MAX_ADMITTER_MACHINES,
+            &self.local_peer_id().await,
         );
         if routes.is_empty() {
             eyre::bail!(
                 "no dialable admitter address for namespace {} (need multiaddrs ending in \
-                 /p2p/<peer id>); waiting for a member to answer the prompt",
+                 /p2p/<peer id> naming a peer other than this node); waiting for a member to \
+                 answer the prompt",
                 hex::encode(params.namespace_id)
             );
         }
@@ -233,8 +235,7 @@ impl SyncManager {
         pop: Option<calimero_node_primitives::sync::InitProof>,
     ) -> Result<MessagePayload<'static>, String> {
         let mut stream = self
-            .sync_network
-            .open_stream(peer)
+            .open_stream_bounded(peer)
             .await
             .map_err(|e| format!("could not open a stream: {e}"))?;
 
@@ -314,20 +315,25 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         let public_key = claim.public_key;
-        let (admitted, reason) = match verify_and_admit(
+        // Who the requester is, if its credential is for the key it proved
+        // possession of. Read before the claim is consumed below.
+        let requester_account =
+            calimero_op_adapter::join_credential_certifies(&public_key, &claim.account)
+                .then_some(claim.account.statement.account);
+        let result = verify_and_admit(
             &self.context_client,
             &self.node_state.tee_challenges,
             peer_id,
             namespace_id,
             claim,
         )
-        .await
-        {
-            Ok(verdict) => (verdict.admitted(), verdict.reason()),
-            // A policy refusal or a fault. Its text is what the requester needs
-            // — "RTMR3 not in policy allowlist" is an instruction to its owner.
-            Err(err) => (false, format!("{err:#}")),
-        };
+        .await;
+        let (admitted, reason) = direct_admission_answer(result, || {
+            requester_account.is_some_and(|account| {
+                let store = self.context_client.datastore_handle().into_inner();
+                is_tee_member_at_root(&store, namespace_id, &account)
+            })
+        });
 
         if admitted {
             info!(%peer_id, %public_key, namespace_id = %hex::encode(namespace_id), "admitted a TEE that asked directly");
@@ -468,6 +474,52 @@ impl SyncManager {
     }
 }
 
+/// What to tell a TEE that asked directly to be admitted.
+///
+/// `fleet-join` asks its admitters directly while a member that heard its
+/// prompt may be offering it a challenge, so the two race. When the prompt's
+/// answer wins, this node has already admitted the requester, and the direct
+/// request is then judged for a member: its fresh quote may trigger an evidence
+/// refresh, which can be refused for a fault in publishing it. The requester
+/// would read that as "not admitted" and wait out its whole admission window
+/// for a membership it already has.
+///
+/// So a refusal is checked against what it is about: if the requester is in
+/// fact a TEE member of the namespace, it is told so. Only a refusal is
+/// re-checked, and only by `already_in`, which the caller confines to a
+/// requester whose credential certifies the key it proved possession of — an
+/// ordinary verdict (not a voucher, invalid attestation, spent challenge,
+/// foreign credential) is reported as it is.
+fn direct_admission_answer(
+    result: eyre::Result<crate::handlers::tee_attestation_admission::TeeAdmissionVerdict>,
+    already_in: impl FnOnce() -> bool,
+) -> (bool, String) {
+    match result {
+        Ok(verdict) => (verdict.admitted(), verdict.reason()),
+        Err(_) if already_in() => (true, String::new()),
+        // A policy refusal or a fault. Its text is what the requester needs —
+        // "RTMR3 not in policy allowlist" is an instruction to its owner.
+        Err(err) => (false, format!("{err:#}")),
+    }
+}
+
+/// Whether `account` holds a TEE role at the root of `namespace_id`.
+///
+/// A store read that fails answers `false`: the refusal it would override is
+/// then reported unchanged, which is what happened before this check existed.
+fn is_tee_member_at_root(
+    store: &calimero_store::Store,
+    namespace_id: [u8; 32],
+    account: &calimero_account::AccountId,
+) -> bool {
+    calimero_governance_store::MembershipRepository::new(store)
+        .role_of(
+            &calimero_context_config::types::ContextGroupId::from(namespace_id),
+            account,
+        )
+        .is_ok_and(|role| role.is_some_and(|role| role.is_tee()))
+}
+
 /// The request form to send: the one naming this node's release when it knows
 /// it.
 fn tee_admission_request(
@@ -497,7 +549,10 @@ fn tee_admission_request(
 
 #[cfg(test)]
 mod tests {
+    use calimero_context_client::group::TeeAdmissionOutcome;
+
     use super::*;
+    use crate::handlers::tee_attestation_admission::TeeAdmissionVerdict;
 
     fn params(release_version: Option<&str>) -> TeeAdmissionParams {
         TeeAdmissionParams {
@@ -528,5 +583,137 @@ mod tests {
     fn a_build_without_mock_attestation_refuses_to_make_a_mock_quote() {
         let err = generate_quote([0; 64], true).expect_err("no mock in this build");
         assert!(err.to_string().contains("not compiled"), "{err}");
+    }
+
+    /// The fleet-join race: a member answering the node's prompt admitted it
+    /// first, so its direct request is refused (here, by the evidence refresh
+    /// it triggered). The node IS in, and is told so rather than left to wait
+    /// out its admission window.
+    #[test]
+    fn a_refusal_for_a_node_already_admitted_answers_admitted() {
+        let (admitted, reason) = direct_admission_answer(
+            Err(eyre::eyre!("could not publish the refreshed evidence")),
+            || true,
+        );
+        assert!(admitted);
+        assert!(reason.is_empty(), "{reason}");
+    }
+
+    /// The same refusal for a node that is NOT a member stays a refusal, with
+    /// its reason.
+    #[test]
+    fn a_refusal_for_a_node_not_admitted_stays_a_refusal() {
+        let (admitted, reason) = direct_admission_answer(
+            Err(eyre::eyre!("TEE attestation quote already used")),
+            || false,
+        );
+        assert!(!admitted);
+        assert!(reason.contains("already used"), "{reason}");
+    }
+
+    /// An ordinary verdict is reported as it is, without consulting membership.
+    #[test]
+    fn an_ordinary_verdict_is_not_overridden() {
+        let (admitted, reason) = direct_admission_answer(
+            Ok(TeeAdmissionVerdict::Decided(
+                TeeAdmissionOutcome::NotAVoucher,
+            )),
+            || panic!("a verdict is not re-checked"),
+        );
+        assert!(!admitted);
+        assert!(reason.contains("may not"), "{reason}");
+
+        let (admitted, _) =
+            direct_admission_answer(Ok(TeeAdmissionVerdict::AttestationInvalid), || {
+                panic!("a verdict is not re-checked")
+            });
+        assert!(!admitted);
+    }
+}
+
+#[cfg(test)]
+mod initiator_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_node_primitives::client::TeeAdmissionParams;
+    use calimero_primitives::identity::PublicKey;
+    use libp2p::PeerId;
+
+    use crate::sync::manager::namespace_sync::group_key_recovery_anchor_tests::manager;
+    use crate::sync::network::mock::MockSyncNetwork;
+
+    fn params() -> TeeAdmissionParams {
+        TeeAdmissionParams {
+            namespace_id: [0x7E; 32],
+            admitter_addrs: Vec::new(),
+            public_key: PublicKey::from([0x11; 32]),
+            account: calimero_governance_store::test_fixtures::real_join_account(&PublicKey::from(
+                [0x11; 32],
+            )),
+            release_version: None,
+            mock_tee: false,
+        }
+    }
+
+    /// An admitter whose stream open is never answered costs the open budget,
+    /// not forever. libp2p leaves the open pending when the dial it waits on
+    /// fails without a connection — a dial to this node's own peer id does —
+    /// and fleet-join, and the sync loop running the request, waited with it.
+    #[tokio::test(start_paused = true)]
+    async fn a_stream_open_that_never_answers_gives_up_at_the_open_budget() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let _ = mock.push_open_stream_hang(Duration::from_secs(24 * 60 * 60), "never");
+        let (sync_manager, _store, _tmp) = manager(Arc::clone(&mock)).await;
+        let budget = sync_manager.sync_config.open_stream_timeout;
+
+        let started = tokio::time::Instant::now();
+        let refused = sync_manager
+            .ask_one_for_tee_admission(PeerId::random(), &params(), None)
+            .await
+            .expect_err("a peer that never answers does not admit us");
+
+        assert!(
+            started.elapsed() <= budget + Duration::from_secs(1),
+            "gave up after {:?}, not at the {budget:?} open budget",
+            started.elapsed()
+        );
+        assert!(refused.contains("timed out"), "{refused}");
+    }
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::MembershipRepository;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use super::is_tee_member_at_root;
+
+    /// Only a TEE row at the namespace root makes a refused requester "in": a
+    /// plain member, or nobody at all, is not overridden.
+    #[test]
+    fn only_a_tee_row_at_the_root_counts_as_admitted() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0x4E; 32];
+        let gid = ContextGroupId::from(ns);
+        let tee = calimero_account::AccountId::from([0x01; 32]);
+        let member = calimero_account::AccountId::from([0x02; 32]);
+        let stranger = calimero_account::AccountId::from([0x03; 32]);
+        let membership = MembershipRepository::new(&store);
+        membership
+            .add_member(&gid, &tee, GroupMemberRole::RelayTee)
+            .expect("seat the TEE");
+        membership
+            .add_member(&gid, &member, GroupMemberRole::Member)
+            .expect("seat the member");
+
+        assert!(is_tee_member_at_root(&store, ns, &tee));
+        assert!(!is_tee_member_at_root(&store, ns, &member));
+        assert!(!is_tee_member_at_root(&store, ns, &stranger));
     }
 }

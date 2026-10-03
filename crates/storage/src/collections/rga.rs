@@ -509,7 +509,7 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     fn readable_chars(&self) -> Result<impl Iterator<Item = (CharKey, RgaChar)> + '_, StoreError> {
         Ok(self
             .chars
-            .entries_with_ids()?
+            .raw_entries_with_ids()?
             .filter_map(|(id, key, char)| {
                 (key.id() != CharId::root() && self.chars.entry_id(&key) == id)
                     .then_some((key, char))

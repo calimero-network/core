@@ -33,6 +33,7 @@ mod metrics;
 mod origin_guard;
 mod proof_auth;
 mod proxy_identity;
+mod proxy_permissions;
 pub mod sealed;
 mod service_mounts;
 pub mod sse;
@@ -425,8 +426,8 @@ fn build_cors_layer(
 
     if origin_guard.enforced() {
         let guard = origin_guard.clone();
-        let layer = layer.allow_origin(AllowOrigin::predicate(move |origin, parts| {
-            guard.admits(origin, &parts.headers)
+        let layer = layer.allow_origin(AllowOrigin::predicate(move |_origin, parts| {
+            guard.admits(&parts.headers, parts.uri.authority())
         }));
         if !cors.allow_private_network {
             return layer;

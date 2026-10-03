@@ -155,6 +155,74 @@ pub fn build(
     }))
 }
 
+/// The credential this node presents for `signing_pk`, without minting anything.
+///
+/// The read-only sibling of [`build`], for a caller that only reports who the
+/// node is — today the namespace ownership proof, which attaches it so a
+/// relying party holding no governance state can check that the account root
+/// certifies the key that signed the proof. Resolved in [`build`]'s order: an
+/// imported certificate first, then a certificate the node's own root signs over
+/// its existing device row.
+///
+/// `Ok(None)` where [`build`] would have to mint or enrol first: no device row,
+/// no root and no import, or a device paired into an account whose root is not
+/// held here. Nothing is written in any case.
+///
+/// # Errors
+/// The store reads, an imported certificate that does not decode or does not
+/// describe this node, a revoked device on a root-free node, or a signing failure.
+pub fn presented(
+    datastore: &Store,
+    signing_pk: &PublicKey,
+) -> EyreResult<Option<Box<JoinAccountCredential>>> {
+    let devices = NodeDeviceRepository::new(datastore);
+    refuse_a_spent_rootless_device(&devices)?;
+    let Some(enrolled) = devices
+        .get()
+        .wrap_err("presented credential: could not read this node's device row")?
+    else {
+        return Ok(None);
+    };
+
+    if let Some(stored) = devices
+        .imported_certificate()
+        .wrap_err("presented credential: could not read the imported certificate")?
+    {
+        let proof: JoinAccountCredential = borsh::from_slice(&stored).wrap_err(
+            "presented credential: the stored certificate could not be decoded; re-import it \
+             with `merod account import-cert`",
+        )?;
+        certificate_matches_this_node(&proof, &enrolled, signing_pk)?;
+        return Ok(Some(Box::new(proof)));
+    }
+
+    let Some(root) = devices
+        .account_root()
+        .wrap_err("presented credential: could not read this node's account root")?
+    else {
+        return Ok(None);
+    };
+    if enrolled.account != root.account() {
+        return Ok(None);
+    }
+    let cert = DeviceCert::sign(
+        root.signing_key(),
+        enrolled.account,
+        enrolled.device(),
+        signing_pk,
+        &enrolled.kem_public_key(),
+        0,
+        0,
+    )
+    .map_err(|err| eyre::eyre!("presented credential: failed to sign the device cert: {err}"))?;
+    Ok(Some(Box::new(JoinAccountCredential {
+        genesis: enrolled.genesis,
+        // Empty chain and epoch 0, for the reasons `build` gives.
+        chain: vec![],
+        statement: cert,
+    })))
+}
+
 /// The account a namespace root this node creates now would name as its founder.
 ///
 /// The same account [`build`] certifies, resolved the same way and in the same
@@ -548,5 +616,75 @@ mod tests {
             ),
             "{err:#}"
         );
+    }
+
+    /// `presented` reads; it never mints. A node with no device row has nothing
+    /// to present, and asking must not create one.
+    #[test]
+    fn presenting_a_credential_mints_nothing() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let repo = NodeDeviceRepository::new(&store);
+        let _root = repo.provision_account_root().expect("this node's root");
+        let signing_pk = PrivateKey::from([0x77; 32]).public_key();
+
+        assert!(super::presented(&store, &signing_pk)
+            .expect("read")
+            .is_none());
+        assert!(
+            repo.get().expect("read").is_none(),
+            "asking for the credential must not enrol a device"
+        );
+    }
+
+    /// What a rooted node presents is the credential `build` gives it: certified
+    /// by its root, over the key it signs with, for the account it founds as.
+    #[test]
+    fn a_rooted_node_presents_what_build_gives_it() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let repo = NodeDeviceRepository::new(&store);
+        let root = repo.provision_account_root().expect("this node's root");
+        let ns = ContextGroupId::from([0xAA; 32]);
+        let signing_pk = PrivateKey::from([0x77; 32]).public_key();
+        let built = build(&store, &ns, &signing_pk).expect("join credential");
+
+        let presented = super::presented(&store, &signing_pk)
+            .expect("read")
+            .expect("an enrolled, rooted node presents one");
+
+        assert_eq!(*presented, *built);
+        assert_eq!(presented.statement.sign_pk, signing_pk);
+        assert_eq!(presented.statement.account, root.account());
+        assert_eq!(
+            super::founding_account(&store).expect("founder"),
+            root.account(),
+            "the account it presents is the one it founds namespaces as"
+        );
+        let _ = presented
+            .verify(root.account())
+            .expect("the root certifies the presented device");
+    }
+
+    #[test]
+    fn a_root_free_node_presents_its_imported_certificate_too() {
+        let root_sk = PrivateKey::from([3u8; 32]);
+        let (store, _ns) = root_free_node(&root_sk);
+        let signing_pk = PrivateKey::from([4u8; 32]).public_key();
+
+        assert!(super::presented(&store, &signing_pk)
+            .expect("read")
+            .is_none());
+
+        NodeDeviceRepository::new(&store)
+            .store_imported_certificate(&certify(&root_sk, &store, None, &signing_pk))
+            .expect("import");
+        let presented = super::presented(&store, &signing_pk)
+            .expect("read")
+            .expect("the import");
+        assert_eq!(presented.statement.sign_pk, signing_pk);
+
+        // And never one over a key this node does not sign with.
+        let theirs = PrivateKey::from([5u8; 32]).public_key();
+        let err = super::presented(&store, &theirs).expect_err("another key's certificate");
+        assert!(err.to_string().contains("signing key"), "{err}");
     }
 }

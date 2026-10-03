@@ -17,9 +17,13 @@ trap 'rm -rf "$ROOT"' EXIT
 cat >"$ROOT/ci.yml" <<'EOF'
 jobs:
   rust:
-    needs: [rust-a, rust-b]
+    needs: [scope, rust-a, rust-b]
     steps:
       - run: echo aggregate-only
+  scope:
+    steps:
+      - name: Decide
+        run: echo ci-only-scope
   rust-a:
     steps:
       - name: First
@@ -65,6 +69,7 @@ check "default runs every job the aggregate needs" "jobs rust-a, rust-b" --list
 check "steps are listed in job order" "2. rust-b: Second" --list
 check_absent "a job the aggregate does not need is left out" "Elsewhere" --list
 check_absent "the aggregate's own step is left out" "aggregate-only" --list
+check_absent "a CI-only need of the aggregate is left out" "ci-only-scope" --list
 check "--job overrides the default" "1. other: Elsewhere" --list --job other
 check "a tool CI installs is reported when missing" "definitely-not-installed-tool" --only Second
 check_absent "a tool is not reported for a job with no selected step" \

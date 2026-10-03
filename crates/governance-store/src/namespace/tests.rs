@@ -7,8 +7,22 @@
 //! `calimero_governance_store::test_fixtures` module. Namespace-only inline helpers
 //! (`raw_namespace_dag_heads`) came along with the move.
 
-use calimero_governance_types::NamespaceId;
+use std::sync::mpsc;
+use std::time::Duration;
 
+use calimero_app_downloader::registry::RegistryCoords;
+use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+use calimero_governance_types::NamespaceId;
+use calimero_node_primitives::client::application::lock_application_rows;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
+use calimero_store::key::{ApplicationMeta, BlobMeta};
+use calimero_store::types;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+
+use super::NamespaceGovernance;
+use crate::ops::group::context::seed_target_application_row;
 use crate::{
     CapabilitiesRepository, GroupDeletedRejection, GroupKeyring, MembershipRepository,
     MetaRepository, NamespaceRepository,
@@ -26,6 +40,8 @@ use super::super::test_fixtures::{
     test_meta, test_store,
 };
 use super::super::*;
+
+const STUB_WAIT: Duration = Duration::from_millis(500); // long enough for an unlocked writer to finish
 
 /// **The behaviour change.** A `KeyDelivery` offered to the publish boundary
 /// comes back SEALED, so the delivery metadata — which account, at which causal
@@ -4719,6 +4735,7 @@ fn build_rotation_op(
     old_key_id: [u8; 32],
     new_group_key: &[u8; 32],
     tamper_new_key_id: bool,
+    nonce: u64,
 ) -> calimero_context_client::local_governance::SignedNamespaceOp {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 
@@ -4746,7 +4763,7 @@ fn build_rotation_op(
         signer_sk,
         ns_gid.to_bytes().into(),
         vec![],
-        1,
+        nonce,
         NamespaceOp::Group {
             group_id: ns_gid.to_bytes().into(),
             key_id: old_key_id.into(),
@@ -4774,6 +4791,7 @@ fn rotation_apply_stores_key_for_authorized_admin() {
         old_key_id,
         &new_group_key,
         false,
+        1,
     );
     NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
         .apply_signed_op(&op)
@@ -4817,6 +4835,7 @@ fn rotation_apply_rejects_new_key_id_mismatch() {
         old_key_id,
         &new_group_key,
         true,
+        1,
     );
     NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
         .apply_signed_op(&op)
@@ -4850,6 +4869,7 @@ fn rotation_apply_ignored_when_signer_not_admin() {
         old_key_id,
         &new_group_key,
         false,
+        1,
     );
     // Inner MemberRemoved by a non-admin fails authorization, so apply surfaces
     // an error — but crucially the key must NOT have been stored either way.
@@ -4861,6 +4881,164 @@ fn rotation_apply_ignored_when_signer_not_admin() {
             .unwrap()
             .is_none(),
         "a rotation from a non-admin signer must never poison the keyring"
+    );
+}
+
+/// A removal whose rotation reaches a new member before the key it is sealed
+/// under: the member buffers it, and `local` has not been delivered `old_key`.
+#[cfg(test)]
+fn buffered_rotation_before_its_key() -> (Store, ContextGroupId, PrivateKey, [u8; 32], [u8; 32]) {
+    use super::NamespaceGovernance;
+
+    let (store, ns_gid, admin_sk, _local_sk, removed_pk, old_key_id) = rotation_test_setup();
+    let old_key = [0x97u8; 32];
+    let new_group_key = [0x42u8; 32];
+    let op = build_rotation_op(
+        &store,
+        ns_gid,
+        &admin_sk,
+        &crate::test_fixtures::account_for(&removed_pk),
+        &old_key,
+        old_key_id,
+        &new_group_key,
+        false,
+        1,
+    );
+    GroupKeyring::new(&store, ns_gid)
+        .delete_key_by_id(&old_key_id)
+        .unwrap();
+    NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
+        .apply_signed_op(&op)
+        .expect("an op sealed under a key not yet held is buffered, not refused");
+    assert!(GroupKeyring::new(&store, ns_gid)
+        .load_key_by_id(&GroupKeyring::key_id_for(&new_group_key))
+        .unwrap()
+        .is_none());
+    (store, ns_gid, admin_sk, old_key, new_group_key)
+}
+
+#[test]
+fn a_rotation_buffered_before_its_key_is_current_after_the_delivery_replays_it() {
+    let (store, ns_gid, admin_sk, old_key, new_group_key) = buffered_rotation_before_its_key();
+    let local_pk = NamespaceRepository::new(&store)
+        .identity_record(&ns_gid)
+        .unwrap()
+        .unwrap()
+        .public_key;
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &local_pk, &ns_gid.to_bytes(), &old_key).unwrap();
+
+    apply_received_group_key(
+        &store,
+        ns_gid.to_bytes().into(),
+        ns_gid.to_bytes(),
+        &borsh::to_vec(&envelope).unwrap(),
+        admin_sk.public_key(),
+        &[GroupKeyring::key_id_for(&old_key)],
+    )
+    .unwrap();
+
+    assert_eq!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_current_key_record()
+            .unwrap()
+            .map(|current| current.group_key),
+        Some(new_group_key),
+        "the member must seal its next op under the rotated key, not the one the removed member holds"
+    );
+}
+
+#[test]
+fn chained_rotations_buffered_before_their_keys_all_apply_once_the_first_key_arrives() {
+    use super::NamespaceGovernance;
+
+    let (store, ns_gid, admin_sk, local_sk, removed_pk, old_key_id) = rotation_test_setup();
+    let later_pk =
+        PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
+    let later_removed = enrol_member(&store, &ns_gid, &later_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &later_removed, GroupMemberRole::Member)
+        .unwrap();
+    let old_key = [0x97u8; 32];
+    let middle_key = [0x42u8; 32];
+    let last_key = [0x43u8; 32];
+    let first = build_rotation_op(
+        &store,
+        ns_gid,
+        &admin_sk,
+        &crate::test_fixtures::account_for(&removed_pk),
+        &old_key,
+        old_key_id,
+        &middle_key,
+        false,
+        1,
+    );
+    // Sealed under the key the first rotation introduces.
+    let second = build_rotation_op(
+        &store,
+        ns_gid,
+        &admin_sk,
+        &later_removed,
+        &middle_key,
+        GroupKeyring::key_id_for(&middle_key),
+        &last_key,
+        false,
+        2,
+    );
+    GroupKeyring::new(&store, ns_gid)
+        .delete_key_by_id(&old_key_id)
+        .unwrap();
+    let gov = NamespaceGovernance::new(&store, ns_gid.to_bytes().into());
+    gov.apply_signed_op(&first).unwrap();
+    gov.apply_signed_op(&second).unwrap();
+
+    let envelope = GroupKeyring::wrap_for_member(
+        &admin_sk,
+        &local_sk.public_key(),
+        &ns_gid.to_bytes(),
+        &old_key,
+    )
+    .unwrap();
+    apply_received_group_key(
+        &store,
+        ns_gid.to_bytes().into(),
+        ns_gid.to_bytes(),
+        &borsh::to_vec(&envelope).unwrap(),
+        admin_sk.public_key(),
+        &[old_key_id],
+    )
+    .unwrap();
+
+    assert_eq!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_current_key_record()
+            .unwrap()
+            .map(|current| current.group_key),
+        Some(last_key),
+        "the second rotation opens only under the first one's key, and must apply in the same replay"
+    );
+}
+
+#[test]
+fn a_rotation_buffered_before_its_key_is_current_after_the_startup_redrive() {
+    let (store, ns_gid, _admin_sk, old_key, new_group_key) = buffered_rotation_before_its_key();
+    // A pulled key is stored at epoch 0, as `adopt_pulled_group_key` stores it.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&old_key)
+        .unwrap();
+
+    let applied =
+        redrive_buffered_ops_for_group(&store, ns_gid.to_bytes().into(), ns_gid.to_bytes())
+            .unwrap();
+
+    assert_eq!(applied, 1);
+    assert_eq!(
+        GroupKeyring::new(&store, ns_gid)
+            .load_current_key_record()
+            .unwrap()
+            .map(|current| current.group_key),
+        Some(new_group_key),
+        "the re-drive must apply the rotation the buffered op carried"
     );
 }
 
@@ -8994,6 +9172,18 @@ fn apply_open_join_with(
     joiner_sk: &PrivateKey,
     account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 ) -> eyre::Result<crate::namespace::governance::ApplyNamespaceOpResult> {
+    let join = sign_open_join(store, namespace_id, subgroup_id, joiner_sk, account);
+    super::NamespaceGovernance::new(store, namespace_id.into()).apply_signed_op(&join)
+}
+
+/// An open self-join into `subgroup_id` carrying `account`, on the current head.
+fn sign_open_join(
+    store: &Store,
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    joiner_sk: &PrivateKey,
+    account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+) -> calimero_context_client::local_governance::SignedNamespaceOp {
     use super::NamespaceGovernance;
     use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 
@@ -9014,15 +9204,14 @@ fn apply_open_join_with(
             account,
         },
     );
-    let join = SignedNamespaceOp::sign(
+    SignedNamespaceOp::sign(
         joiner_sk,
         namespace_id.into(),
         head.parent_hashes.clone(),
         head.next_nonce,
         op,
     )
-    .expect("joiner signs MemberJoinedOpen");
-    gov.apply_signed_op(&join)
+    .expect("joiner signs MemberJoinedOpen")
 }
 
 /// Seed a namespace with an Open subgroup that `joiner` reaches by INHERITANCE.
@@ -9094,6 +9283,73 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
         "a bound joiner must resolve to its account, or it gets no scope keys \
          and cannot be selected as an executing identity"
     );
+}
+
+#[test]
+fn a_member_removed_from_an_open_group_cannot_join_its_child() {
+    use super::super::test_fixtures::{kicked_from_open, InheritsAtCut, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let f = kicked_from_open(&store);
+    let ns = f.ns.to_bytes();
+    let join = |sk: &PrivateKey| {
+        let op = sign_open_join(
+            &store,
+            ns,
+            f.child.to_bytes(),
+            sk,
+            crate::test_fixtures::real_join_account(&sk.public_key()),
+        );
+        // The fold holds no deny-list or re-entry rows, so it reads the removed
+        // member as an inheritor; the refusal has to come from the live rows.
+        NamespaceGovernance::new(&store, ns.into())
+            .with_apply_auth(&TEST_CUT, &InheritsAtCut)
+            .apply_signed_op(&op)
+    };
+
+    let err = join(&f.kicked.0).expect_err("a removal from an ancestor ends inheritance");
+    assert!(
+        err.chain().any(|c| matches!(
+            c.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::MemberJoinedOpenRejected(
+                crate::MemberJoinedOpenRejection::ReentryBlocked { .. }
+            ))
+        )),
+        "{err:?}"
+    );
+    join(&f.honest.0).expect("an honest inheritor still joins");
+}
+
+#[test]
+fn a_member_removed_from_an_open_group_is_served_no_key_for_its_child() {
+    let store = test_store();
+    let f = super::super::test_fixtures::kicked_from_open(&store);
+    GroupKeyring::new(&store, f.child)
+        .store_key(&[0x7Cu8; 32])
+        .unwrap();
+
+    let served = |sk: &PrivateKey| {
+        let identity = sk.public_key();
+        let (bytes, _) = build_group_key_delivery(
+            &store,
+            f.ns.to_bytes().into(),
+            f.child.to_bytes(),
+            crate::KeyRequester {
+                identity,
+                device: Some(crate::test_fixtures::device_secret_for(&identity).device),
+            },
+            None,
+        )
+        .unwrap();
+        !bytes.is_empty()
+    };
+
+    assert!(
+        !served(&f.kicked.0),
+        "a removal from an ancestor ends the right to the child's key"
+    );
+    assert!(served(&f.honest.0), "an honest inheritor is still served");
 }
 
 #[test]
@@ -9255,6 +9511,80 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
     );
     assert_eq!(live[0].device, calimero_account::DeviceId::from(device));
     assert_eq!(live[0].account, account_id);
+}
+
+/// An open-subgroup joiner whose device was re-keyed: it joined under `old_sk` at
+/// epoch 0, then again under `new_sk` at epoch 1, which retires `old_sk`.
+struct RekeyedJoiner {
+    store: Store,
+    namespace_id: [u8; 32],
+    subgroup_id: [u8; 32],
+    root_sk: PrivateKey,
+    genesis: calimero_account::AccountGenesis,
+    device: [u8; 32],
+    old_sk: PrivateKey,
+    new_sk: PrivateKey,
+}
+
+fn rekeyed_joiner(namespace_id: [u8; 32], subgroup_id: [u8; 32]) -> RekeyedJoiner {
+    let store = test_store();
+    let (root_sk, genesis) = crate::test_fixtures::test_account_root();
+    let device = [0x7D; 32];
+    let old_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let new_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let first =
+        crate::test_fixtures::join_account_for(&root_sk, genesis, &old_sk.public_key(), device, 0);
+    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &first.statement.account);
+    apply_open_join_with(&store, namespace_id, subgroup_id, &old_sk, first)
+        .expect("the first join applies");
+    let rekeyed =
+        crate::test_fixtures::join_account_for(&root_sk, genesis, &new_sk.public_key(), device, 1);
+    apply_open_join_with(&store, namespace_id, subgroup_id, &new_sk, rekeyed)
+        .expect("a join under the device's next key applies");
+    RekeyedJoiner {
+        store,
+        namespace_id,
+        subgroup_id,
+        root_sk,
+        genesis,
+        device,
+        old_sk,
+        new_sk,
+    }
+}
+
+#[test]
+fn a_join_signed_with_a_rotated_out_device_key_is_refused() {
+    let j = rekeyed_joiner([0xC6; 32], [0xD6; 32]);
+    let stale = crate::test_fixtures::join_account_for(
+        &j.root_sk,
+        j.genesis,
+        &j.old_sk.public_key(),
+        j.device,
+        0,
+    );
+
+    let err = apply_open_join_with(&j.store, j.namespace_id, j.subgroup_id, &j.old_sk, stale)
+        .expect_err("a key the device was re-keyed past must not join for its account");
+    assert!(
+        format!("{err:#}").contains("re-keyed past"),
+        "expected the superseded-key refusal, got: {err:#}"
+    );
+}
+
+#[test]
+fn a_join_signed_with_the_current_device_key_is_accepted() {
+    let j = rekeyed_joiner([0xC7; 32], [0xD7; 32]);
+    let current = crate::test_fixtures::join_account_for(
+        &j.root_sk,
+        j.genesis,
+        &j.new_sk.public_key(),
+        j.device,
+        1,
+    );
+
+    apply_open_join_with(&j.store, j.namespace_id, j.subgroup_id, &j.new_sk, current)
+        .expect("the device's current key still joins");
 }
 
 /// A TEE fleet replica is bound in the same apply as its admission.
@@ -10208,6 +10538,127 @@ fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
         "a published application's coordinates must reach the joiner's row"
     );
     assert_eq!(registered.source.as_ref(), SOURCE);
+}
+
+/// Runs `stub_writer` on its own thread while an install holds the row lock,
+/// writes the installer's row, and checks the stub writer waited and kept off it.
+fn assert_stub_waits_for_install(
+    store: &Store,
+    application_id: ApplicationId,
+    stub_writer: impl FnOnce() + Send + 'static,
+) {
+    let row = || {
+        store
+            .handle()
+            .get(&ApplicationMeta::new(application_id))
+            .unwrap()
+    };
+    let install = lock_application_rows();
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        stub_writer();
+        done_tx.send(()).unwrap();
+    });
+    assert!(
+        done_rx.recv_timeout(STUB_WAIT).is_err() && row().is_none(),
+        "the stub writer must not run inside an install's check-then-write"
+    );
+
+    let installed = types::ApplicationMeta::new(
+        BlobMeta::new(BlobId::from([0xDB; 32])),
+        42,
+        "https://reg.example/app-1.0.0.mpk".into(),
+        Box::default(),
+        BlobMeta::new(BlobId::from([0; 32])),
+        types::PackageInfo {
+            package: "com.acme.app".into(),
+            version: "1.0.0".into(),
+            signer_id: "did:key:installer".into(),
+            state_version: 0,
+        },
+    );
+    store
+        .handle()
+        .put(&ApplicationMeta::new(application_id), &installed)
+        .unwrap();
+    drop(install);
+    writer.join().unwrap();
+
+    let row = row().expect("the installed row");
+    assert_eq!(
+        (row.size, row.signer_id.as_ref()),
+        (42, "did:key:installer"),
+        "a stub must never replace the installed row"
+    );
+}
+
+/// The stub an inbound `ContextRegistered` writes waits for an install of the
+/// same application, then leaves the installed row alone.
+#[test]
+fn a_registered_context_stub_waits_for_an_install_of_the_same_application() {
+    let store = test_store();
+    let signer_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let ns_gid = ContextGroupId::from([0xD7; 32]);
+    let signer_account = enrol_member(&store, &ns_gid, &signer_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(signer_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &signer_account, GroupMemberRole::Admin)
+        .unwrap();
+    let group_key = [0xD7; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    let application_id = ApplicationId::from([0xD8; 32]);
+    let inner = GroupOp::ContextRegistered {
+        context_id: ContextId::from([0xD9; 32]),
+        application_id,
+        blob_id: BlobId::from([0xDA; 32]),
+        source: String::new(),
+        service_name: None,
+        package: String::new(),
+        version: String::new(),
+    };
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        ns_gid.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: ns_gid.to_bytes().into(),
+            key_id: key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let receiver = store.clone();
+    assert_stub_waits_for_install(&store, application_id, move || {
+        NamespaceGovernance::new(&receiver, ns_gid.to_bytes().into())
+            .apply_signed_op(&op)
+            .expect("apply ContextRegistered");
+    });
+}
+
+/// The row an upgrade op seeds for the lazy migrate waits for an install of the
+/// same application, then leaves the installed row alone.
+#[test]
+fn an_upgrade_target_stub_waits_for_an_install_of_the_same_application() {
+    let store = test_store();
+    let application_id = ApplicationId::from([0xDC; 32]);
+    let receiver = store.clone();
+    assert_stub_waits_for_install(&store, application_id, move || {
+        seed_target_application_row(
+            &receiver,
+            &application_id,
+            &[0xDD; 32],
+            RegistryCoords::new("com.acme.app", "1.1.0"),
+        )
+        .expect("seed the target row");
+    });
 }
 
 /// A key provisioned at init must be REUSED at first join, not replaced.
@@ -13508,5 +13959,212 @@ fn group_created_for_existing_foreign_group_is_rejected() {
          a_admin_now_admin_of_b_group={is_admin}",
         res.is_ok(),
         parent == Some(root_b),
+    );
+}
+
+/// Re-feeding a `KeyDelivery` this node already applied must not re-rank its key.
+///
+/// The sealed-root retry has no applied marker: every pass re-feeds every sealed
+/// root op in the log, and a `KeyDelivery` replayed that way used to store its
+/// key again, stamped with the namespace head as it stands at REPLAY time. The
+/// epoch of a key delivered long ago then climbed past that of a key a later
+/// rotation installed, and the stale key became the group's current key again —
+/// the key a removed member still holds. Seen on a relay as the same key
+/// "received via direct delivery" over and over, its epoch rising each time.
+///
+/// It also kept the retry chain busy: each re-stored key re-drove its group,
+/// which re-fed every sealed root op again one level down.
+#[test]
+fn a_replayed_key_delivery_does_not_outrank_a_later_rotation() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    let store = test_store();
+    let ns_gid = ContextGroupId::from([0xE8u8; 32]);
+    let sub_gid = ContextGroupId::from([0xE9u8; 32]);
+    let namespace_id = ns_gid.to_bytes();
+
+    let admin_sk = PrivateKey::from([0x41u8; 32]);
+    let admin_pk = admin_sk.public_key();
+    let admin_account = enrol_member(&store, &ns_gid, &admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_account, GroupMemberRole::Admin)
+        .unwrap();
+
+    let our_sk = PrivateKey::from([0x42u8; 32]);
+    let our_pk = our_sk.public_key();
+    let our_account = enrol_member(&store, &ns_gid, &our_pk);
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_pk, our_sk.as_bytes())
+        .unwrap();
+
+    nest_for_test(&store, &ns_gid, &sub_gid);
+    MetaRepository::new(&store)
+        .save(&sub_gid, &sample_meta_with_admin(admin_account))
+        .unwrap();
+
+    let namespace_key = [0x5Au8; 32];
+    let delivered_key = [0x77u8; 32];
+    let rotated_key = [0x78u8; 32];
+
+    let envelope =
+        GroupKeyring::wrap_for_member(&admin_sk, &our_pk, &sub_gid.to_bytes(), &delivered_key)
+            .unwrap();
+    let sealed = NamespaceOp::RootSealed {
+        key_id: GroupKeyring::key_id_for(&namespace_key).into(),
+        encrypted: GroupKeyring::encrypt_root_op(
+            &namespace_key,
+            &RootOp::KeyDelivery {
+                group_id: sub_gid.to_bytes().into(),
+                envelope,
+            },
+        )
+        .unwrap(),
+    };
+    let delivery = SignedNamespaceOp::sign(&admin_sk, namespace_id.into(), vec![], 1, sealed)
+        .expect("the admin signs the delivery");
+    crate::NamespaceOpLogService::new(&store, namespace_id.into())
+        .store_signed_operation(&delivery)
+        .expect("land the delivery in the log, unopened");
+
+    // The namespace key arrives and the parked delivery lands: the first, real
+    // application of the op.
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&namespace_key)
+        .unwrap();
+    super::governance::retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id)
+        .expect("the first retry pass runs");
+    let keyring = GroupKeyring::new(&store, sub_gid);
+    let delivered_id = GroupKeyring::key_id_for(&delivered_key);
+    let delivered_epoch = keyring
+        .key_epoch(&delivered_id)
+        .unwrap()
+        .expect("precondition: the delivery stored its key");
+
+    // Later, a removal rotates the subgroup key, and the namespace DAG moves on.
+    let rotation_epoch = delivered_epoch + 10;
+    let _ = keyring
+        .store_key_with_epoch(&rotated_key, rotation_epoch)
+        .unwrap();
+    store
+        .handle()
+        .put(
+            &calimero_store::key::NamespaceGovHead::new(namespace_id),
+            &calimero_store::key::NamespaceGovHeadValue {
+                sequence: rotation_epoch + 10,
+                dag_heads: vec![[0xAB; 32]],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        keyring.load_current_key().unwrap().map(|(_, key)| key),
+        Some(rotated_key),
+        "precondition: the rotated key is current"
+    );
+
+    // Any later key arrival runs the pass again, and it re-feeds the delivery.
+    super::governance::retry_encrypted_ops_for_group(&store, namespace_id.into(), namespace_id)
+        .expect("a later retry pass runs");
+
+    assert_eq!(
+        keyring.key_epoch(&delivered_id).unwrap(),
+        Some(delivered_epoch),
+        "a re-fed delivery of a key already held must leave its epoch where it was"
+    );
+    assert_eq!(
+        keyring.load_current_key().unwrap().map(|(_, key)| key),
+        Some(rotated_key),
+        "and must not make the pre-rotation key current again"
+    );
+}
+
+/// Re-feeding a `GroupCreated` this node already folded must change nothing.
+///
+/// The sealed-root retry re-feeds every sealed root op in the log on every
+/// pass. A `GroupCreated` is not a no-op the second time: its fold seats the
+/// creator as the group's admin, so a creator removed since had its row put
+/// back by the next key arrival. And once the group had been moved, the replay
+/// was refused on every pass ("already exists under <new parent>") — the
+/// warning a relay logged several times a second, for an op it had applied
+/// long before.
+#[test]
+fn a_replayed_group_created_does_not_undo_later_governance() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+
+    let store = test_store();
+    let ns_id = [0xB0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+
+    // The creator is a remote admin; this node is another member. Its own ops
+    // are skipped by the retry pass, so the creator must not be this node.
+    let creator_sk = PrivateKey::from([0x51u8; 32]);
+    let creator = enrol_member(&store, &ns_gid, &creator_sk.public_key());
+    let our_sk = PrivateKey::from([0x52u8; 32]);
+    let our_account = enrol_member(&store, &ns_gid, &our_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(creator))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &creator, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &our_account, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &our_sk.public_key(), our_sk.as_bytes())
+        .unwrap();
+
+    let moved = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &creator, ns_id, true, 0xC1,
+    ));
+    let kept = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &creator, ns_id, true, 0xC2,
+    ));
+    for (nonce, tag) in [(1, 0xC1), (2, 0xC2)] {
+        let op = SignedNamespaceOp::sign(
+            &creator_sk,
+            ns_id.into(),
+            vec![],
+            nonce,
+            seal_for_test(
+                &store,
+                ns_gid,
+                crate::test_fixtures::group_created(creator, ns_id, true, tag),
+            ),
+        )
+        .expect("sign GroupCreated");
+        let _ = NamespaceGovernance::new(&store, ns_id.into())
+            .apply_signed_op(&op)
+            .expect("the creator's subgroup folds on arrival");
+    }
+
+    // Later governance: one group is moved under the other, and the creator is
+    // removed from the one that stayed.
+    let _ = NamespaceRepository::new(&store)
+        .reparent(&moved, &kept)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&kept, &creator)
+        .unwrap();
+
+    // A key arrival runs the pass, which re-feeds both creates.
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id.into(), ns_id)
+        .expect("the retry pass runs");
+
+    assert_eq!(
+        NamespaceRepository::new(&store).parent(&moved).unwrap(),
+        Some(kept),
+        "a re-fed create must not move a group back"
+    );
+    assert!(
+        !MembershipRepository::new(&store)
+            .is_member(&kept, &creator)
+            .unwrap(),
+        "a re-fed create must not re-seat a creator who was removed since"
     );
 }

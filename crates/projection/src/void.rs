@@ -1,4 +1,5 @@
-//! Ops that carry no authority because their signer was removed concurrently.
+//! Ops that carry no authority because their signer was removed, demoted or
+//! stripped of the capability they relied on, concurrently.
 //! The void set depends only on the set of ops, never on their arrival order.
 
 use std::cell::{Cell, RefCell};
@@ -8,6 +9,7 @@ use std::rc::Rc;
 use calimero_account::{AccountId, DeviceId};
 use calimero_authz::AclView;
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_op::{Authorship, Op, OpPayload};
 use calimero_primitives::context::GroupMemberRole;
 
@@ -29,12 +31,42 @@ pub struct AuthorityBase {
     pub default_cap_base: u32,
 }
 
+/// Where an op acts, and the capability bits that admit a non-admin to it, for an
+/// op whose payload says neither (one the projection models nothing about).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Acting {
+    /// The group the op acts in.
+    pub group: ContextGroupId,
+    /// The bits a member who is no admin needs for the op; `0` when none admits one.
+    pub capability: u32,
+}
+
+impl From<ContextGroupId> for Acting {
+    /// An op in `group` that no capability admits.
+    fn from(group: ContextGroupId) -> Self {
+        Self {
+            group,
+            capability: 0,
+        }
+    }
+}
+
 type IdSet = Rc<HashSet<[u8; 32]>>;
 
 #[derive(Clone, Copy)]
 enum Target {
     Account(AccountId),
     Device(DeviceId),
+}
+
+/// A capability set that may take bits away from another member.
+#[derive(Clone, Copy)]
+struct CapabilityRevoke<'a> {
+    op: &'a Op,
+    group: ContextGroupId,
+    member: AccountId,
+    /// The bits the member holds after it.
+    kept: u32,
 }
 
 /// A removal, demotion or device revocation, and what it takes away.
@@ -54,12 +86,13 @@ impl ScopeState {
     }
 
     /// [`Self::void_ops`] over `log` plus `candidate`, an op about to join it.
-    /// `group` names where it acts when its payload does not; its cut must be whole.
+    /// [`Acting`] names where it acts, and what admits it, when its payload does not;
+    /// its cut must be whole.
     #[must_use]
     pub fn void_ops_with(
         log: &[Op],
         base: AuthorityBase,
-        candidate: Option<(&Op, Option<ContextGroupId>)>,
+        candidate: Option<(&Op, Option<Acting>)>,
     ) -> BTreeSet<[u8; 32]> {
         Self::void_ops_judging(log, base, candidate, &[])
     }
@@ -70,7 +103,7 @@ impl ScopeState {
     pub fn void_ops_judging(
         log: &[Op],
         base: AuthorityBase,
-        candidate: Option<(&Op, Option<ContextGroupId>)>,
+        candidate: Option<(&Op, Option<Acting>)>,
         held: &[([u8; 32], ContextGroupId)],
     ) -> BTreeSet<[u8; 32]> {
         Self::void_ops_bounded(log, base, candidate, held, MAX_FOLD_WORK)
@@ -80,15 +113,18 @@ impl ScopeState {
     pub(crate) fn void_ops_bounded(
         log: &[Op],
         base: AuthorityBase,
-        candidate: Option<(&Op, Option<ContextGroupId>)>,
+        candidate: Option<(&Op, Option<Acting>)>,
         held: &[([u8; 32], ContextGroupId)],
         budget: usize,
     ) -> BTreeSet<[u8; 32]> {
         let mut ops: Vec<&Op> = log.iter().collect();
-        let mut explicit: HashMap<[u8; 32], ContextGroupId> = held.iter().copied().collect();
-        if let Some((op, group)) = candidate {
-            if let Some(group) = group {
-                let _ = explicit.insert(op.id(), group);
+        let mut explicit: HashMap<[u8; 32], Acting> = held
+            .iter()
+            .map(|(id, group)| (*id, Acting::from(*group)))
+            .collect();
+        if let Some((op, acting)) = candidate {
+            if let Some(acting) = acting {
+                let _ = explicit.insert(op.id(), acting);
             }
             if !log.iter().any(|held| held.id() == op.id()) {
                 ops.push(op);
@@ -96,7 +132,7 @@ impl ScopeState {
         }
         // Most logs hold no removal that could matter; say so before building anything.
         let resolved = resolve_unattributed(&ops);
-        if !holds_removal(&ops, &resolved) {
+        if !holds_removal(&ops, &resolved, base) {
             return BTreeSet::new();
         }
         Analysis::new(&ops, base, explicit, resolved, budget).run()
@@ -143,8 +179,9 @@ fn removes_account(op: &Op) -> Option<AccountId> {
 }
 
 /// Does `ops` hold an op that takes authority away from someone else: a member
-/// removal, a device revocation, or a role change for an account granted `Admin`?
-fn holds_removal(ops: &[&Op], resolved: &Resolved) -> bool {
+/// removal, a device revocation, a role change for an account granted `Admin`, or a
+/// capability set leaving out a bit the member could have held?
+fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool {
     let author = |op: &Op| {
         resolved
             .get(&op.id())
@@ -157,11 +194,38 @@ fn holds_removal(ops: &[&Op], resolved: &Resolved) -> bool {
     };
     let mut admin_grants: HashSet<(ContextGroupId, AccountId)> = HashSet::new();
     let mut role_changes: Vec<(ContextGroupId, AccountId)> = Vec::new();
+    // Every bit each member was ever granted, and every default each group set.
+    let mut granted: HashMap<(ContextGroupId, AccountId), u32> = HashMap::new();
+    let mut defaults: HashMap<ContextGroupId, u32> = HashMap::new();
+    let mut capability_sets: Vec<(ContextGroupId, AccountId, u32)> = Vec::new();
     for op in ops {
+        match &op.payload {
+            OpPayload::MemberCapabilitySet {
+                group,
+                member,
+                capabilities,
+            } => {
+                *granted.entry((*group, *member)).or_default() |= capabilities.bits();
+            }
+            OpPayload::DefaultCapabilitiesSet {
+                group,
+                capabilities,
+            } => {
+                *defaults.entry(*group).or_default() |= capabilities.bits();
+            }
+            _ => {}
+        }
         if author(op) == Authorship::UNATTRIBUTED_ACCOUNT {
             continue;
         }
         match &op.payload {
+            OpPayload::MemberCapabilitySet {
+                group,
+                member,
+                capabilities,
+            } if author(op) != *member => {
+                capability_sets.push((*group, *member, capabilities.bits()));
+            }
             OpPayload::MemberRemoved { member, .. } if author(op) != *member => return true,
             OpPayload::DeviceRevoked { device: target, .. } if device(op) != *target => {
                 return true
@@ -191,6 +255,30 @@ fn holds_removal(ops: &[&Op], resolved: &Resolved) -> bool {
     role_changes
         .iter()
         .any(|change| admin_grants.contains(change))
+        || capability_sets.iter().any(|(group, member, kept)| {
+            let held = granted.get(&(*group, *member)).copied().unwrap_or(0)
+                | defaults.get(group).copied().unwrap_or(0)
+                | base.default_cap_base;
+            held & !kept != 0
+        })
+}
+
+/// The capability bits that admit a member who is no admin to `op`, as its payload
+/// names them; `0` when none does. Mirrors the apply's `require_*` gates.
+fn capability_by_payload(op: &Op, author: AccountId) -> u32 {
+    match &op.payload {
+        // Making an admin takes an admin; leaving takes nothing.
+        OpPayload::MemberAdded { role, .. } if !matches!(role, GroupMemberRole::Admin) => {
+            MemberCapabilities::MANAGE_MEMBERS.bits()
+        }
+        OpPayload::MemberRemoved { member, .. } if *member != author => {
+            MemberCapabilities::MANAGE_MEMBERS.bits()
+        }
+        OpPayload::SubgroupCreated { .. } => MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
+        OpPayload::SubgroupDeleted { .. } => MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
+        OpPayload::SubgroupVisibilitySet { .. } => MemberCapabilities::CAN_MANAGE_VISIBILITY.bits(),
+        _ => 0,
+    }
 }
 
 /// The account and device of each op built without an author, by op id.
@@ -242,13 +330,22 @@ struct Analysis<'a> {
     /// Whether each device revocation was entitled, while no void op is behind it.
     entitled: RefCell<HashMap<[u8; 32], bool>>,
     by_id: HashMap<[u8; 32], &'a Op>,
-    /// The candidate's group, when its payload names none.
-    explicit: HashMap<[u8; 32], ContextGroupId>,
+    /// Where the candidate and the held ops act, and what admits them, when their
+    /// payloads say neither.
+    explicit: HashMap<[u8; 32], Acting>,
     /// Removals that need no judgement: a member removal or a device revocation.
     removals: Vec<Removal<'a>>,
     /// Role changes to a non-admin role for an account that was granted `Admin`;
     /// a demotion only when the account was an admin at the change's cut.
     demotion_candidates: Vec<(&'a Op, ContextGroupId, AccountId)>,
+    /// Capability sets for another member; a revocation of the bits the member held
+    /// at the set's cut and no longer holds, when an admin made it.
+    capability_revokes: Vec<CapabilityRevoke<'a>>,
+    /// The bits each capability set took away, while no void op is behind it.
+    revoked: RefCell<HashMap<[u8; 32], u32>>,
+    /// Whether each op's author was an admin where it acts, at its cut, while no
+    /// void op is behind it.
+    admin_at_cut: RefCell<HashMap<[u8; 32], bool>>,
     /// Voidable ops by author and by device.
     by_account: HashMap<AccountId, Vec<&'a Op>>,
     by_device: HashMap<DeviceId, Vec<&'a Op>>,
@@ -264,7 +361,7 @@ impl<'a> Analysis<'a> {
     fn new(
         ops: &[&'a Op],
         base: AuthorityBase,
-        explicit: HashMap<[u8; 32], ContextGroupId>,
+        explicit: HashMap<[u8; 32], Acting>,
         resolved: Resolved,
         budget: usize,
     ) -> Self {
@@ -306,11 +403,24 @@ impl<'a> Analysis<'a> {
         let attributed = |op: &Op| author(op) != Authorship::UNATTRIBUTED_ACCOUNT;
         let mut removals = Vec::new();
         let mut demotion_candidates = Vec::new();
+        let mut capability_revokes = Vec::new();
         for &op in ops {
             if !attributed(op) {
                 continue;
             }
             match &op.payload {
+                OpPayload::MemberCapabilitySet {
+                    group,
+                    member,
+                    capabilities,
+                } if author(op) != *member => {
+                    capability_revokes.push(CapabilityRevoke {
+                        op,
+                        group: *group,
+                        member: *member,
+                        kept: capabilities.bits(),
+                    });
+                }
                 OpPayload::MemberRemoved { group, member } if author(op) != *member => {
                     removals.push(Removal {
                         op,
@@ -348,6 +458,9 @@ impl<'a> Analysis<'a> {
             explicit,
             removals,
             demotion_candidates,
+            capability_revokes,
+            revoked: RefCell::default(),
+            admin_at_cut: RefCell::default(),
             by_account: HashMap::new(),
             by_device: HashMap::new(),
             depth: HashMap::new(),
@@ -357,7 +470,10 @@ impl<'a> Analysis<'a> {
             descendants: RefCell::default(),
             work: Cell::new(0),
         };
-        if analysis.removals.is_empty() && analysis.demotion_candidates.is_empty() {
+        if analysis.removals.is_empty()
+            && analysis.demotion_candidates.is_empty()
+            && analysis.capability_revokes.is_empty()
+        {
             return analysis;
         }
         for &op in ops {
@@ -388,6 +504,20 @@ impl<'a> Analysis<'a> {
             (analysis.depth.get(&id).copied().unwrap_or(0), id)
         });
         analysis.demotion_candidates = demotions;
+        let mut revokes = std::mem::take(&mut analysis.capability_revokes);
+        revokes.sort_unstable_by_key(|revoke| {
+            let id = revoke.op.id();
+            (analysis.depth.get(&id).copied().unwrap_or(0), id)
+        });
+        analysis.capability_revokes = revokes;
+        // Causal order too, so a spent budget leaves the same victims unjudged.
+        let depth = &analysis.depth;
+        for victims in analysis.by_account.values_mut() {
+            victims.sort_unstable_by_key(|op| {
+                let id = op.id();
+                (depth.get(&id).copied().unwrap_or(0), id)
+            });
+        }
         analysis
     }
 
@@ -407,7 +537,16 @@ impl<'a> Analysis<'a> {
 
     /// The group `op` acts in, if its authority can be voided.
     fn voidable_group(&self, op: &Op) -> Option<ContextGroupId> {
-        payload_group(op).or_else(|| self.explicit.get(&op.id()).copied())
+        payload_group(op).or_else(|| self.explicit.get(&op.id()).map(|acting| acting.group))
+    }
+
+    /// The capability bits that admit a member who is no admin to `op`.
+    fn capability_needed(&self, op: &Op) -> u32 {
+        capability_by_payload(op, self.author_of(op))
+            | self
+                .explicit
+                .get(&op.id())
+                .map_or(0, |acting| acting.capability)
     }
 
     /// Longest path from a root, through the ops the log holds.
@@ -603,8 +742,100 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        for revoke in &self.capability_revokes {
+            if void.contains(&revoke.op.id()) {
+                continue;
+            }
+            let removed = self.revoked_bits(revoke, void);
+            if removed == 0 {
+                continue;
+            }
+            let Some(victims) = self.by_account.get(&revoke.member) else {
+                continue;
+            };
+            let before = self.ancestors_of(revoke.op.id());
+            let after = self.descendants_of(revoke.op.id());
+            for &op in victims {
+                let id = op.id();
+                if before.contains(&id) || after.contains(&id) || owner == Some(revoke.member) {
+                    continue;
+                }
+                // A capability is held in its own group: it is never inherited.
+                if self.voidable_group(op) != Some(revoke.group)
+                    || self.capability_needed(op) & removed == 0
+                {
+                    continue;
+                }
+                // An admin at the op's cut needed no capability for it.
+                if !self.was_admin(op, revoke.group, void) {
+                    let _ = next.insert(id);
+                }
+            }
+        }
+
         next.extend(self.cascade(void));
         next
+    }
+
+    /// The bits `revoke` took from its member: those the member held at its cut and
+    /// does not keep. `0` unless an admin made it. Past the budget, every bit it
+    /// does not keep: the revocation it might be is the one that matters.
+    fn revoked_bits(&self, revoke: &CapabilityRevoke<'_>, void: &BTreeSet<[u8; 32]>) -> u32 {
+        let id = revoke.op.id();
+        let before = self.ancestors_of(id);
+        let cacheable = !void.iter().any(|voided| before.contains(voided));
+        if cacheable {
+            if let Some(known) = self.revoked.borrow().get(&id) {
+                return *known;
+            }
+        }
+        if self.over_budget() {
+            return !revoke.kept;
+        }
+        let view = self.fold(
+            before
+                .iter()
+                .filter(|held| !void.contains(*held))
+                .filter_map(|held| self.by_id.get(held).copied()),
+        );
+        let author = self.author_of(revoke.op);
+        let removed = if view.is_authorized_admin(revoke.group, &author, self.base.root) {
+            view.capability(&revoke.group, &revoke.member, self.base.default_cap_base)
+                & !revoke.kept
+        } else {
+            0
+        };
+        if cacheable {
+            let _ = self.revoked.borrow_mut().insert(id, removed);
+        }
+        removed
+    }
+
+    /// Was the author of `op` an admin of `group` at its cut? Past the budget, no:
+    /// the op is then judged as one a capability admitted.
+    fn was_admin(&self, op: &Op, group: ContextGroupId, void: &BTreeSet<[u8; 32]>) -> bool {
+        let id = op.id();
+        let before = self.ancestors_of(id);
+        let cacheable = !void.iter().any(|voided| before.contains(voided));
+        if cacheable {
+            if let Some(known) = self.admin_at_cut.borrow().get(&id) {
+                return *known;
+            }
+        }
+        if self.over_budget() {
+            return false;
+        }
+        let view = self.fold(
+            before
+                .iter()
+                .filter(|held| !void.contains(*held))
+                .filter_map(|held| self.by_id.get(held).copied()),
+        );
+        let admin = view.is_authorized_admin(group, &self.author_of(op), self.base.root);
+        if cacheable {
+            let _ = self.admin_at_cut.borrow_mut().insert(id, admin);
+        }
+        admin
     }
 
     /// The removals that are not void: member removals and revocations, and the

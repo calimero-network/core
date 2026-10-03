@@ -9,7 +9,7 @@ use std::thread;
 
 use async_trait::async_trait;
 use calimero_app_downloader::port::{ApplicationStore, InstalledApplication};
-use calimero_app_downloader::registry::{RegistryConfig, RegistryCoords, RegistryMode};
+use calimero_app_downloader::registry::{RegistryConfig, RegistryMode};
 use calimero_app_downloader::source::dht::PeerBlobs;
 use calimero_app_downloader::{app_source, AppRequest, ApplicationDownloader, Outcome};
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
@@ -106,7 +106,6 @@ impl ApplicationStore for RecordingStore {
         _bytecode_id: BlobId,
         _size: u64,
         _source: &ApplicationSource,
-        _coords: Option<RegistryCoords<'_>>,
         _bytes: &[u8],
     ) -> eyre::Result<()> {
         let _previous = self.installed.fetch_add(1, Ordering::SeqCst);

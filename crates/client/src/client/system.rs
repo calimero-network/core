@@ -1,5 +1,7 @@
 //! System-level operations for the Calimero client.
 
+use std::time::Duration;
+
 use calimero_server_primitives::admin::{
     FleetJoinRequest, FleetJoinResponse, GenerateContextIdentityResponse, GetPeersCountResponse,
     NetworkStatusResponse,
@@ -8,6 +10,14 @@ use eyre::Result;
 
 use super::Client;
 use crate::traits::{ClientAuthenticator, ClientStorage};
+
+/// How long a fleet-join may take.
+///
+/// Longer than the default request timeout because the node answers only after
+/// its own bounded waits: a direct admission request (up to ~35 s), then up to
+/// 30 s for admission, then joining the group's contexts and publishing
+/// auto-follow.
+pub const FLEET_JOIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 
 impl<A, S> Client<A, S>
 where
@@ -59,12 +69,13 @@ where
     ) -> Result<FleetJoinResponse> {
         let response = self
             .connection
-            .post(
+            .post_with_timeout(
                 "admin-api/tee/fleet-join",
                 FleetJoinRequest {
                     group_id,
                     admitter_addrs,
                 },
+                FLEET_JOIN_REQUEST_TIMEOUT,
             )
             .await?;
         Ok(response)

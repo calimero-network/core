@@ -12,6 +12,15 @@ on:
       - ".github/workflows/**"
       - ".github/actions/**"
       - ".github/codeql/**"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
+      - "tools/calimero-abi/README.md"
+      - "tools/cargo-mero/README.md"
+      - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
+      - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
+      - "tools/mero-sign/README.md"
 
 concurrency:
   group: codeql-${{ github.repository }}

@@ -32,12 +32,12 @@ use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::{
     NamespaceJoinParams, OpenSubgroupJoinParams, RelaySealedJoinParams, TeeAdmissionParams,
-    TeeAdmissionReply,
+    TeeAdmissionReply, TEE_ADMISSION_DEADLINE,
 };
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::ContextId;
 use eyre::Result;
-use futures_util::stream::StreamExt;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use libp2p::PeerId;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, MissedTickBehavior};
@@ -141,6 +141,40 @@ pub(super) struct SyncDriver {
     // Config derived from `SyncConfig`.
     frequency: Duration,
     interval: Duration,
+
+    /// How long one direct TEE admission may run before it is answered with a
+    /// refusal. [`TEE_ADMISSION_DEADLINE`] outside tests.
+    tee_admission_deadline: Duration,
+}
+
+/// How many direct TEE admissions may be in flight at once.
+///
+/// One per `fleet-join` call, and a node joins a handful of namespaces, so
+/// this is headroom rather than a working limit. It exists so a caller
+/// re-invoking `fleet-join` in a loop cannot pile up admissions that each hold
+/// streams open; past it the request is refused at once.
+const MAX_TEE_ADMISSIONS_IN_FLIGHT: usize = 4;
+
+/// Run one direct TEE admission to its deadline and answer the caller.
+///
+/// A timeout is answered as a refusal rather than by dropping the reply, so
+/// `fleet-join` reads why and falls back to the broadcast.
+async fn answer_tee_admission<D: SyncDriverDispatch>(
+    dispatch: &D,
+    params: TeeAdmissionParams,
+    reply_tx: TeeAdmissionReply,
+    deadline: Duration,
+) {
+    let namespace_id = params.namespace_id;
+    let result = time::timeout(deadline, dispatch.initiate_tee_admission(params))
+        .await
+        .unwrap_or_else(|_elapsed| {
+            Err(eyre::eyre!(
+                "direct TEE admission to namespace {} gave up after {deadline:?}",
+                hex::encode(namespace_id)
+            ))
+        });
+    let _ignored = reply_tx.send(result);
 }
 
 impl SyncDriver {
@@ -175,7 +209,15 @@ impl SyncDriver {
             session_result_rx,
             frequency,
             interval,
+            tee_admission_deadline: TEE_ADMISSION_DEADLINE,
         }
+    }
+
+    /// Shorten the admission deadline so a test need not wait out the real one.
+    #[cfg(test)]
+    fn with_tee_admission_deadline(mut self, deadline: Duration) -> Self {
+        self.tee_admission_deadline = deadline;
+        self
     }
 
     /// Run the sync-manager actor loop.
@@ -195,6 +237,13 @@ impl SyncDriver {
         // Namespaces whose governance pull delivered nothing, with the number
         // of interval retries still owed to each.
         let mut pending_ns_sync: HashMap<[u8; 32], u8> = HashMap::new();
+
+        // Direct TEE admissions in flight. Polled by their own arm below rather
+        // than awaited in the arm that receives them: an admission dials and
+        // waits on peers that may never answer, and while it was awaited inline
+        // this loop ran nothing else — no periodic sync, no namespace pull, no
+        // outbound join. Each one carries its own deadline.
+        let mut tee_admissions = FuturesUnordered::new();
 
         loop {
             tokio::select! {
@@ -324,8 +373,22 @@ impl SyncDriver {
                         admitters = params.admitter_addrs.len(),
                         "Processing direct TEE admission request (initiator side)"
                     );
-                    let result = dispatch.initiate_tee_admission(params).await;
-                    let _ignored = reply_tx.send(result);
+                    if tee_admissions.len() >= MAX_TEE_ADMISSIONS_IN_FLIGHT {
+                        let _ignored = reply_tx.send(Err(eyre::eyre!(
+                            "{MAX_TEE_ADMISSIONS_IN_FLIGHT} direct TEE admissions are already in \
+                             flight; try again once one has finished"
+                        )));
+                        continue;
+                    }
+                    tee_admissions.push(answer_tee_admission(
+                        dispatch,
+                        params,
+                        reply_tx,
+                        self.tee_admission_deadline,
+                    ));
+                    continue;
+                }
+                Some(()) = tee_admissions.next(), if !tee_admissions.is_empty() => {
                     continue;
                 }
                 Some((ctx, peer)) = self.ctx_sync_rx.recv() => {
@@ -731,5 +794,178 @@ mod tests {
     fn a_spent_budget_stops_re_arming() {
         assert_eq!(retries_left_after_failure(1), None);
         assert_eq!(retries_left_after_failure(0), None);
+    }
+}
+
+#[cfg(test)]
+mod tee_admission_tests {
+    //! The loop keeps serving while a direct TEE admission is in flight.
+    //!
+    //! The admission used to be awaited inside its own `select!` arm, so the
+    //! loop did nothing else until it returned — and on a founding relay handed
+    //! its own addresses as admitters it never returned. Periodic sync,
+    //! namespace pulls and outbound joins all stopped with it.
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use calimero_node_primitives::client::{
+        NamespaceJoinParams, OpenSubgroupJoinParams, RelaySealedJoinParams, TeeAdmissionParams,
+    };
+    use calimero_node_primitives::join_bundle::JoinBundle;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use dashmap::DashMap;
+    use eyre::Result;
+    use libp2p::PeerId;
+    use tokio::sync::{mpsc, oneshot};
+
+    use super::{SyncDriver, SyncDriverDispatch};
+    use crate::sync::session::SessionTracker;
+    use crate::sync::{SyncConfig, SyncManager};
+    use crate::NodeState;
+
+    /// Admissions never finish; namespace pulls report that they ran.
+    struct StuckAdmission {
+        pulls: mpsc::UnboundedSender<[u8; 32]>,
+    }
+
+    #[async_trait(?Send)]
+    impl SyncDriverDispatch for StuckAdmission {
+        async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) -> usize {
+            let _ignored = self.pulls.send(namespace_id);
+            1
+        }
+
+        async fn initiate_namespace_join(&self, _: NamespaceJoinParams) -> Result<JoinBundle> {
+            eyre::bail!("not exercised")
+        }
+
+        async fn initiate_open_subgroup_join(&self, _: OpenSubgroupJoinParams) -> Result<Vec<u8>> {
+            eyre::bail!("not exercised")
+        }
+
+        async fn initiate_relay_sealed_join(&self, _: RelaySealedJoinParams) -> Result<()> {
+            eyre::bail!("not exercised")
+        }
+
+        async fn initiate_tee_admission(&self, _: TeeAdmissionParams) -> Result<PeerId> {
+            std::future::pending().await
+        }
+    }
+
+    fn admission_request() -> TeeAdmissionParams {
+        let public_key = PublicKey::from([0x11; 32]);
+        TeeAdmissionParams {
+            namespace_id: [0x7E; 32],
+            admitter_addrs: Vec::new(),
+            public_key,
+            account: calimero_governance_store::test_fixtures::real_join_account(&public_key),
+            release_version: None,
+            mock_tee: false,
+        }
+    }
+
+    #[actix::test]
+    async fn the_loop_keeps_serving_while_an_admission_is_stuck() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (context_client, _tmp, _keep_alive) =
+            crate::test_support::context_client_over_with_manager(
+                store.clone(),
+                LazyRecipient::new(),
+            )
+            .await;
+
+        // The session actor only needs to exist: with no contexts in the store
+        // the loop never dispatches a session to it.
+        let (_ctx_tx, ctx_sync_rx) = mpsc::channel(1);
+        let (_ns_tx, ns_sync_rx_unused) = mpsc::channel(1);
+        let (_join_tx, ns_join_rx_unused) = mpsc::channel(1);
+        let (_osj_tx, osj_rx_unused) = mpsc::channel(1);
+        let (_rsj_tx, rsj_rx_unused) = mpsc::channel(1);
+        let sync_manager = SyncManager::new(
+            SyncConfig::default(),
+            context_client.node_client().clone(),
+            context_client.clone(),
+            calimero_network_primitives::client::NetworkClient::new(LazyRecipient::new()),
+            NodeState::new(),
+            ctx_sync_rx,
+            ns_sync_rx_unused,
+            ns_join_rx_unused,
+            osj_rx_unused,
+            rsj_rx_unused,
+        );
+        let (session_result_tx, session_result_rx) = mpsc::unbounded_channel();
+        let session_tx = crate::sync_session_bridge::start_sync_session_actor(
+            &actix::Arbiter::current(),
+            1,
+            1,
+            sync_manager,
+            Duration::from_secs(30),
+            Some(session_result_tx),
+            &mut prometheus_client::registry::Registry::default(),
+        );
+
+        let (_ctx_sync_tx, ctx_sync_rx) = mpsc::channel(1);
+        let (ns_sync_tx, ns_sync_rx) = mpsc::channel(1);
+        let (_ns_join_tx, ns_join_rx) = mpsc::channel(1);
+        let (_osj_tx, open_subgroup_join_rx) = mpsc::channel(1);
+        let (_rsj_tx, relay_sealed_join_rx) = mpsc::channel(1);
+        let (tee_tx, tee_rx) = mpsc::channel(1);
+        let driver = SyncDriver::new(
+            SessionTracker::new(
+                Duration::from_secs(30),
+                Duration::from_secs(5),
+                Arc::new(DashMap::new()),
+                None,
+            ),
+            context_client,
+            ctx_sync_rx,
+            ns_sync_rx,
+            ns_join_rx,
+            open_subgroup_join_rx,
+            relay_sealed_join_rx,
+            Some(tee_rx),
+            session_tx,
+            session_result_rx,
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+        )
+        .with_tee_admission_deadline(Duration::from_millis(200));
+
+        let (pulls_tx, mut pulls) = mpsc::unbounded_channel();
+        let dispatch = StuckAdmission { pulls: pulls_tx };
+
+        let scenario = async {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            tee_tx
+                .send((admission_request(), reply_tx))
+                .await
+                .expect("the driver takes the admission request");
+            ns_sync_tx
+                .send([0x5A; 32])
+                .await
+                .expect("the driver takes the pull request");
+
+            let pulled = tokio::time::timeout(Duration::from_secs(5), pulls.recv())
+                .await
+                .expect("the namespace pull ran while the admission was still in flight");
+            assert_eq!(pulled, Some([0x5A; 32]));
+
+            let answer = tokio::time::timeout(Duration::from_secs(5), reply_rx)
+                .await
+                .expect("a stuck admission is answered at its deadline")
+                .expect("the driver answers instead of dropping the reply");
+            let refusal = answer.expect_err("a stuck admission admits nobody");
+            assert!(format!("{refusal:#}").contains("gave up"), "{refusal:#}");
+        };
+
+        tokio::select! {
+            () = driver.run(&dispatch) => unreachable!("the driver loop does not return"),
+            () = scenario => {}
+        }
     }
 }

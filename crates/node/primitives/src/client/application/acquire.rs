@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use calimero_app_downloader::port::{ApplicationStore, InstalledApplication};
-use calimero_app_downloader::registry::RegistryCoords;
 use calimero_app_downloader::source::dht::PeerBlobs;
 use calimero_app_downloader::{app_source, AppRequest, ApplicationDownloader, Outcome};
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
@@ -91,43 +90,38 @@ impl ApplicationStore for NodeClient {
         Ok(())
     }
 
-    /// A bundle id is re-derived and must equal `application_id`; a raw-wasm
-    /// id folds in per-node values, so it's adopted rather than re-derived.
+    /// Only a signed bundle binds, under the id it re-derives: raw wasm derives
+    /// none, so a group could otherwise bind it under any id it names.
     async fn bind_application(
         &self,
         application_id: &ApplicationId,
         bytecode_id: BlobId,
         size: u64,
         source: &ApplicationSource,
-        coords: Option<RegistryCoords<'_>>,
         bytes: &[u8],
     ) -> eyre::Result<()> {
-        if Self::is_bundle_blob(bytes) {
-            let bundle_data: Arc<[u8]> = Arc::from(bytes);
-            // Derive before installing: `install_bundle` writes the row and a
-            // blob per service, and nothing reclaims either on a mismatch.
-            let derived = derive_bundle_id(Arc::clone(&bundle_data)).await?;
-            if derived != *application_id {
-                bail!(
-                    "application mismatch: registry artifact is {derived}, not the \
-                     {application_id} this group targets"
-                );
-            }
-            // No package check: the derived id above already pins
-            // (package, signer) to what governance named.
-            let _ignored = self
-                .install_bundle(
-                    bundle_data,
-                    &bytecode_id,
-                    size,
-                    source,
-                    None,
-                    InstallOrigin::Remote,
-                )
-                .await?;
-            Ok(())
-        } else {
-            self.write_application_row(application_id, &bytecode_id, size, source, coords)
+        let bundle_data: Arc<[u8]> = Arc::from(bytes);
+        // Derive before installing: `install_bundle` writes the row and a
+        // blob per service, and nothing reclaims either on a mismatch.
+        let derived = derive_bundle_id(Arc::clone(&bundle_data)).await?;
+        if derived != *application_id {
+            bail!(
+                "application mismatch: registry artifact is {derived}, not the \
+                 {application_id} this group targets"
+            );
         }
+        // No package check: the derived id above already pins
+        // (package, signer) to what governance named.
+        let _ignored = self
+            .install_bundle(
+                bundle_data,
+                &bytecode_id,
+                size,
+                source,
+                None,
+                InstallOrigin::Remote,
+            )
+            .await?;
+        Ok(())
     }
 }

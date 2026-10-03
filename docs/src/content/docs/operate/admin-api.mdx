@@ -84,19 +84,33 @@ allows `Any` origin (or the `[server.cors] allowed_origins` list when set),
 and sets `allow_private_network(true)` so requests from a public-origin page to
 a loopback node pass the browser's private-network preflight.
 
-In proxy auth mode the node checks no caller itself, so a browser request that
-carries an `Origin` is served only when that origin is:
+In proxy auth mode the node checks no caller itself, so it judges every browser
+request: one that carries an `Origin`, or the `Sec-Fetch-Site` header a browser
+sends even on a same-origin `GET`. (`Sec-Fetch-Mode` alone does not count: Node's
+built-in `fetch` sends it on every request.) Such a request is served when:
 
-- the node's own origin (it matches the request's `Host` or `X-Forwarded-Host`);
-- a loopback page (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`, any
-  port), including the desktop webview's `tauri://localhost`;
-- listed in `[server.cors] allowed_origins`.
+- its origin is listed in `[server.cors] allowed_origins`; or
+- its origin is a loopback page (`localhost`, `*.localhost`, `127.0.0.0/8`,
+  `[::1]`, any port), including the desktop webview's `tauri://localhost`,
+  whatever host it calls; or
+- **every** host it names (`Host`, and `X-Forwarded-Host` if present) is one of
+  the node's own, and the origin is the node's own origin (it matches one of
+  those hosts) or absent.
 
-Any other origin gets `403` before a handler runs, on every route including
-`/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it. Private-network
-access is advertised only to origins listed in `allowed_origins`. Requests
-without an `Origin` header (curl, meroctl, SDKs outside a browser) are
-unaffected.
+A host is the node's own when it is a loopback name, an IP address, or the host
+of an `allowed_origins` entry. A browser's `Host` is whatever name it resolved,
+so on its own it proves nothing: under DNS rebinding a page on
+`attacker.example` re-points its name at the node and sends that name as both
+`Origin` and `Host`. **A node served to browsers under a host name of its own,
+for example behind a proxy at `https://node.example.com`, must list that origin
+in `allowed_origins`**, or its own pages are refused.
+
+Any other browser request gets `403` before a handler runs, on every route
+including `/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it.
+Private-network access is advertised only to origins listed in
+`allowed_origins`. Requests with neither an `Origin` nor `Sec-Fetch-Site` (curl,
+meroctl, SDKs outside a browser, Node's `fetch`) are unaffected, whatever host
+they name.
 
 Because the response uses `Any` origin, `allow_credentials` is **intentionally
 not set** (the two are incompatible per the CORS spec, so enabling it would be a
@@ -190,7 +204,9 @@ ignored entirely.
 The upgrade needs `context:subscribe`. Each `execute` message is then checked
 against the same token for `context:execute` on its context (and method, for a
 method-scoped grant), so a subscribe-only token can subscribe but its `execute`
-messages are refused.
+messages are refused. `/jsonrpc` calls are held to the same check. In proxy auth
+mode the node takes the token's permissions from the `X-Auth-Permissions` header
+the proxy forwards; see [Where a scope is checked](/operate/auth/#where-a-scope-is-checked).
 
 ## Server-Sent Events
 
@@ -316,7 +332,7 @@ the path parameter — these are reproduced exactly as routed below.
 | GET | `/admin-api/groups/:namespace_id/migration-status` | Get migration status (by namespace). |
 | POST | `/admin-api/groups/:namespace_id/migration/abort` | Abort a migration (by namespace). |
 | POST | `/admin-api/groups/:group_id/issue-ownership-proof` | Issue a group ownership proof. |
-| POST | `/admin-api/groups/:group_id/issue-namespace-ownership-proof` | Issue a namespace ownership proof. |
+| POST | `/admin-api/groups/:group_id/issue-namespace-ownership-proof` | Issue a namespace ownership proof. Beside the signed proof the answer carries `founding` (`{ founderAccountId, salt }`) and `credential` (hex borsh `AccountProof<DeviceCert>` over the signing key), unsigned and self-verifying, so a verifier without governance state can confirm the signer is a node of the account that founded the namespace. Each is absent when the node cannot produce it. |
 | POST | `/admin-api/groups/:group_id/sync` | Sync a group. |
 | POST | `/admin-api/groups/:group_id/join-via-inheritance` | Join a subgroup via inheritance. |
 | GET | `/admin-api/groups/:group_id/members/:identity/capabilities` | Get a member's capabilities. |

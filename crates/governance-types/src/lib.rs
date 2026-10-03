@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 use std::io;
 
+use borsh::de::EnumExt;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
@@ -305,6 +306,48 @@ impl BorshDeserialize for ContextCapabilityBits {
             )
         })
     }
+}
+
+/// Borsh tags of the [`GroupOp`] wrappers, whose first field is another `GroupOp`.
+const GROUP_OP_ON_BEHALF_TAG: u8 = 40;
+const GROUP_OP_ROOT_GUARDED_TAG: u8 = 42;
+/// Borsh tags of the [`RootOp`] wrappers, whose first field is another `RootOp`.
+const ROOT_OP_ON_BEHALF_TAG: u8 = 11;
+const ROOT_OP_ROOT_GUARDED_TAG: u8 = 12;
+
+/// The error a wrapper carrying another wrapper decodes to.
+fn nested_wrapper(kind: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{kind}: a wrapper op may not carry another wrapper"),
+    )
+}
+
+/// Decodes the op a [`GroupOp::OnBehalf`] or [`GroupOp::RootGuarded`] carries,
+/// refusing a wrapper by its tag before decoding anything else.
+///
+/// The derived decoder would recurse once per nested wrapper before reading
+/// any other field, so a payload of repeated wrapper tags drives one stack
+/// frame per byte. A 64 KiB gossip message is enough to overflow the stack and
+/// abort the node, before the op's signature is checked. Apply refuses a
+/// wrapper inside a wrapper anyway (it is neither delegable nor a guarded
+/// kind), so this costs no valid op and bounds the nesting at one wrapper on
+/// every decode path: gossip, backfill, decryption and storage reads.
+fn unwrapped_group_op<R: io::Read>(reader: &mut R) -> io::Result<Box<GroupOp>> {
+    let tag = u8::deserialize_reader(reader)?;
+    if matches!(tag, GROUP_OP_ON_BEHALF_TAG | GROUP_OP_ROOT_GUARDED_TAG) {
+        return Err(nested_wrapper("GroupOp"));
+    }
+    GroupOp::deserialize_variant(reader, tag).map(Box::new)
+}
+
+/// [`unwrapped_group_op`] for [`RootOp::OnBehalf`] and [`RootOp::RootGuarded`].
+fn unwrapped_root_op<R: io::Read>(reader: &mut R) -> io::Result<Box<RootOp>> {
+    let tag = u8::deserialize_reader(reader)?;
+    if matches!(tag, ROOT_OP_ON_BEHALF_TAG | ROOT_OP_ROOT_GUARDED_TAG) {
+        return Err(nested_wrapper("RootOp"));
+    }
+    RootOp::deserialize_variant(reader, tag).map(Box::new)
 }
 
 /// Group mutation for local governance (signed, gossip-replicated).
@@ -875,8 +918,10 @@ pub enum GroupOp {
     /// the AUTHOR as the acting principal — so the author's own authority
     /// decides, never the relay's.
     ///
-    /// Appended at the end; nested wrappers are refused on apply.
+    /// Appended at the end. A nested wrapper is refused on decode (so a chain
+    /// of them cannot exhaust the stack) and again on apply.
     OnBehalf {
+        #[borsh(deserialize_with = "unwrapped_group_op")]
         op: Box<GroupOp>,
         delegation: Box<calimero_account::GovernanceDelegation>,
     },
@@ -930,6 +975,7 @@ pub enum GroupOp {
     /// Appended at the END so every earlier ordinal holds. Not delegable, and
     /// never nested: the inner op must itself be a bare guarded kind.
     RootGuarded {
+        #[borsh(deserialize_with = "unwrapped_group_op")]
         op: Box<GroupOp>,
         /// Boxed for the same reason as `OnBehalf::delegation`.
         proof: Box<SignedOwnerOp>,
@@ -1759,8 +1805,10 @@ pub enum RootOp {
     /// AUTHOR as the acting principal — so the author's own authority decides,
     /// never the relay's.
     ///
-    /// Appended at the end; nested wrappers are refused on apply.
+    /// Appended at the end. A nested wrapper is refused on decode (so a chain
+    /// of them cannot exhaust the stack) and again on apply.
     OnBehalf {
+        #[borsh(deserialize_with = "unwrapped_root_op")]
         op: Box<RootOp>,
         delegation: Box<calimero_account::GovernanceDelegation>,
     },
@@ -1772,6 +1820,7 @@ pub enum RootOp {
     ///
     /// Appended at the END so every earlier ordinal holds.
     RootGuarded {
+        #[borsh(deserialize_with = "unwrapped_root_op")]
         op: Box<RootOp>,
         proof: Box<SignedOwnerOp>,
     },
@@ -2409,6 +2458,55 @@ pub fn namespace_op_content_hash(
 ) -> Result<[u8; 32], GovernanceError> {
     let bytes = namespace_signable_bytes(signable)?;
     Ok(Sha256::digest(&bytes).into())
+}
+
+/// Reorder a batch so each op follows every op of the batch it names as a parent.
+///
+/// Ops with no unmet in-batch parent keep their arrival order. Anything left
+/// over (a cycle, which content hashes cannot form) follows in arrival order.
+pub fn order_parents_first<T>(items: Vec<T>, op_of: impl Fn(&T) -> &SignedNamespaceOp) -> Vec<T> {
+    use std::collections::{BTreeSet, HashMap};
+
+    let position: HashMap<[u8; 32], usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(at, item)| Some((op_of(item).content_hash().ok()?, at)))
+        .collect();
+
+    let mut unmet = vec![0usize; items.len()];
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (at, item) in items.iter().enumerate() {
+        for parent in &op_of(item).parent_op_hashes {
+            if let Some(&parent_at) = position.get(parent) {
+                if parent_at != at {
+                    unmet[at] += 1;
+                    children.entry(parent_at).or_default().push(at);
+                }
+            }
+        }
+    }
+
+    let mut ready: BTreeSet<usize> = (0..items.len()).filter(|&at| unmet[at] == 0).collect();
+    let mut order = Vec::with_capacity(items.len());
+    while let Some(at) = ready.pop_first() {
+        order.push(at);
+        for &child in children.get(&at).map(Vec::as_slice).unwrap_or_default() {
+            unmet[child] -= 1;
+            if unmet[child] == 0 {
+                let _ = ready.insert(child);
+            }
+        }
+    }
+    if order.len() < items.len() {
+        let placed: BTreeSet<usize> = order.iter().copied().collect();
+        order.extend((0..items.len()).filter(|at| !placed.contains(at)));
+    }
+
+    let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|at| slots.get_mut(at).and_then(Option::take))
+        .collect()
 }
 
 impl SignedNamespaceOp {

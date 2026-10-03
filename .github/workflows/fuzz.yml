@@ -1,0 +1,126 @@
+name: Fuzz
+
+on:
+  pull_request:
+    paths:
+      - "crates/bundle/**"
+      - "crates/governance-types/**"
+      - "crates/network/**"
+      - "crates/node/primitives/**"
+      - "crates/storage/**"
+      - "tools/mero-sign/**"
+      - "fuzz/**"
+      - "scripts/fuzz.sh"
+      - "scripts/fuzz-ci.sh"
+      - ".github/workflows/fuzz.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "tools/mero-sign/README.md"
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changed:
+    name: Changed targets
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      targets: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            shared: &shared
+              - "fuzz/Cargo.toml"
+              - "scripts/fuzz.sh"
+              - "scripts/fuzz-ci.sh"
+              - ".github/workflows/fuzz.yml"
+            bundle_open:
+              - *shared
+              - "crates/bundle/**"
+              - "crates/node/primitives/src/client/application/bundle*/**"
+              - "crates/node/primitives/src/client/application/bundle.rs"
+              - "tools/mero-sign/**"
+              - "fuzz/fuzz_targets/bundle_open.rs"
+              - "fuzz/seeds/bundle_open/**"
+            crdt_sync:
+              - *shared
+              - "crates/storage/**"
+              - "fuzz/fuzz_targets/crdt_sync.rs"
+              - "fuzz/seeds/crdt_sync/**"
+            wire_decode:
+              - *shared
+              - "crates/node/primitives/src/sync/**"
+              - "crates/network/primitives/**"
+              - "fuzz/fuzz_targets/wire_decode.rs"
+            provider_record:
+              - *shared
+              - "crates/network/src/blob_provider_record.rs"
+              - "fuzz/fuzz_targets/provider_record.rs"
+            signed_ops:
+              - *shared
+              - "crates/governance-types/**"
+              - "fuzz/fuzz_targets/signed_ops.rs"
+              - "fuzz/seeds/signed_ops/**"
+
+  smoke:
+    name: Smoke (${{ matrix.target }})
+    needs: changed
+    if: needs.changed.outputs.targets != '[]' && needs.changed.outputs.targets != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.changed.outputs.targets) }}
+        exclude:
+          - target: shared
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: nightly
+      - name: Fuzz for a minute
+        env:
+          TARGET: ${{ matrix.target }}
+        run: scripts/fuzz-ci.sh "$TARGET" 60
+
+  nightly:
+    name: Nightly (${{ matrix.target }})
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [bundle_open, crdt_sync, wire_decode, provider_record, signed_ops]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: nightly
+      - name: Restore the corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz for 30 minutes
+        env:
+          TARGET: ${{ matrix.target }}
+        run: scripts/fuzz-ci.sh "$TARGET" 1800

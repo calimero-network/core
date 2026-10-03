@@ -637,7 +637,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 // resolves to no blob) and failed fetches: the
                                 // row's bytecode is the only available truth.
                                 act.evict_application_caches(target_app);
-                                act.get_module(target_app, service_name)
+                                act.get_row_module_for_context(cid, target_app, service_name)
                                     .map_ok(|(_blob, module), _act, _ctx| module)
                                     .boxed_local()
                             };
@@ -817,7 +817,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .map_ok(move |module, _act, _ctx| (blob, module))
                     .boxed_local(),
                 None => act
-                    .get_module(context.application_id, context.service_name.clone())
+                    .get_row_module_for_context(
+                        context.id,
+                        context.application_id,
+                        context.service_name.clone(),
+                    )
                     .boxed_local(),
             };
             module_fut.map_ok(move |(blob, module), _act, _ctx| (guard, context, module, blob))
@@ -842,14 +846,6 @@ impl Handler<ExecuteRequest> for ContextManager {
             let scope_projections = std::sync::Arc::clone(&act.scope_projections);
             let search = act.search.clone();
 
-            // For an xcall, deny any method the target app didn't mark
-            // `#[app::xcall]`, and any caller the entry point's policy doesn't
-            // admit. No declared set ⇒ not gated. Keyed by the executing blob,
-            // like the read-only lookup above. Applies to every xcall-dispatched
-            // run, including internal methods like `__calimero_sync_next` — a
-            // guest must not reach those via xcall (they are never
-            // `#[app::xcall]`); the sync path itself carries no origin, so
-            // legitimate state ops are unaffected.
             // The calling context's application id, resolved once (xcall path
             // only), so a `from_same_app` entry point can compare it to ours. A
             // caller that can't be resolved is treated as a mismatch — fail
@@ -867,20 +863,15 @@ impl Handler<ExecuteRequest> for ContextManager {
                 .modules
                 .get(&(executing_blob, context.service_name.clone()));
 
-            // A module that declares no xcall entry points stays ungated
-            // (back-compat). Otherwise the method must be a declared entry point
-            // AND the caller must satisfy its policy.
+            // Keyed by the blob just loaded, so the policy is the running module's;
+            // internal `__calimero_*` methods are never `#[app::xcall]`, so never reachable.
             let xcall_denied = xcall_origin.is_some()
-                && abi.is_none_or(|abi| {
-                    abi.xcall.as_ref().is_some_and(|policies| {
-                        xcall_caller_denied(
-                            policies,
-                            method.as_str(),
-                            xcall_source_app,
-                            context.application_id,
-                        )
-                    })
-                });
+                && xcall_caller_denied(
+                    abi.map(|abi| abi.xcall.as_ref()),
+                    method.as_str(),
+                    xcall_source_app,
+                    context.application_id,
+                );
 
             // A peer's delta names the handlers its events run, so an event (or
             // a TEE trigger it fired) runs only a method the ABI declares one.
@@ -983,13 +974,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let start = Instant::now();
 
-                let (
-                    outcome,
-                    causal_delta,
-                    delta_signature,
-                    signing_governance_position,
-                    read_only_write_discarded,
-                ) = internal_execute(
+                let executed = internal_execute(
                         datastore,
                         &scope_projections,
                         &node_client,
@@ -1011,13 +996,17 @@ impl Handler<ExecuteRequest> for ContextManager {
                         tee_trigger.as_ref(),
                         search,
                     )
-                    .await?;
+                    .await;
 
                 let duration = start.elapsed().as_secs_f64();
-                let status = if outcome.returns.is_ok() {
-                    "success"
-                } else {
-                    "failure"
+                // `failure`: the method ran and returned an error. `error`: the
+                // node could not run it to completion (storage, module, signing,
+                // admission). Recorded before the `?` below, which used to skip
+                // both execution metrics on exactly the runs worth counting.
+                let status = match &executed {
+                    Ok((outcome, ..)) if outcome.returns.is_ok() => "success",
+                    Ok(_) => "failure",
+                    Err(_) => "error",
                 };
 
                 // Update execution count metrics
@@ -1043,6 +1032,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                         })
                         .observe(duration);
                 }
+
+                let (
+                    outcome,
+                    causal_delta,
+                    delta_signature,
+                    signing_governance_position,
+                    read_only_write_discarded,
+                ) = executed?;
 
                 info!(
                     %context_id,
@@ -1625,11 +1622,6 @@ impl Handler<ExecuteRequest> for ContextManager {
 }
 
 impl ContextManager {
-    /// Load the module for `application_id` via its row: resolve the row's
-    /// top-level bytecode blob (the bundle blob for bundles, the raw wasm
-    /// blob otherwise) and delegate to [`Self::get_module_for_blob`]. The
-    /// row is a download-cache pointer ("latest fetched") — contexts bound
-    /// to a specific version load through their blob directly.
     /// Max ladder hops one access replays — bounds a pathological
     /// marker-write failure loop; ladders are realistically 1-3 rungs and a
     /// longer one resumes on the next access from the last committed rung.
@@ -1879,8 +1871,11 @@ impl ContextManager {
         .boxed_local()
     }
 
-    pub fn get_module(
+    /// Load the module of `application_id`'s row for `context_id`, refused before
+    /// compiling when the context's group never named its blob: every group shares the row.
+    pub(crate) fn get_row_module_for_context(
         &self,
+        context_id: ContextId,
         application_id: ApplicationId,
         service_name: Option<String>,
     ) -> impl ActorFuture<
@@ -1898,12 +1893,26 @@ impl ContextManager {
                     };
                     let _ = act.applications.insert_new(application_id, app);
                 }
-                let app = act
+                let blob = act
                     .applications
                     .get(&application_id)
-                    .expect("application just inserted or already cached");
-
-                Ok(app.blob.bytecode)
+                    .expect("application just inserted or already cached")
+                    .blob
+                    .bytecode;
+                if !crate::activation::context_group_registers_bytecode(
+                    &act.datastore,
+                    &context_id,
+                    *blob.digest(),
+                ) {
+                    warn!(
+                        %context_id,
+                        %application_id,
+                        %blob,
+                        "refusing an application release the context's group never named"
+                    );
+                    bail!(ExecuteError::ApplicationNotInstalled { application_id });
+                }
+                Ok(blob)
             })
             .and_then(move |blob, act, _ctx| {
                 act.get_module_for_blob(blob, service_name)
@@ -1975,8 +1984,8 @@ pub(crate) struct CompiledModule {
     module: calimero_runtime::Module,
     /// `#[app::view]` methods; `None` without an ABI (every call takes the write lock).
     read_only: Option<Arc<HashSet<String>>>,
-    /// `#[app::xcall]` entry points and their callers; `None` leaves xcalls ungated.
-    xcall: Option<Arc<crate::XCallPolicyMap>>,
+    /// `#[app::xcall]` entry points and their callers; empty denies every xcall.
+    xcall: Arc<crate::XCallPolicyMap>,
     /// `#[app::handler]` methods; empty without an ABI, so no event runs anything.
     handlers: Arc<HashSet<String>>,
 }
@@ -2044,8 +2053,7 @@ fn compile_module(
         };
         // Extract the read-only and xcall method sets from the ABI before the
         // bytes move into the compile task. A missing manifest is fine:
-        // read-only defaults to the write lock, and an absent xcall set just
-        // leaves the method ungated.
+        // read-only defaults to the write lock, and no xcall reaches the module.
         let read_only_set = extract_read_only_set(&bytecode);
         let xcall_policies = extract_xcall_policies(&bytecode);
         let handlers = extract_handler_set(&bytecode);
@@ -3141,7 +3149,7 @@ async fn internal_execute(
 /// Whether a run's artifact carries an entry this node will sign: see
 /// [`signing::signs_entries`]. An artifact that is not `StorageDelta::Actions`
 /// carries none, matching how the commit below reads it.
-fn artifact_signs_entries(artifact: &[u8]) -> bool {
+pub(crate) fn artifact_signs_entries(artifact: &[u8]) -> bool {
     matches!(
         borsh::from_slice::<StorageDelta>(artifact),
         Ok(StorageDelta::Actions(actions)) if signing::signs_entries(&actions)
@@ -3397,20 +3405,20 @@ fn extract_handler_set(bytecode: &[u8]) -> Arc<HashSet<String>> {
 }
 
 /// Decides whether an xcall to `method` is denied, given the target module's
-/// declared entry points (`policies`), the caller's application id
-/// (`source_app`, `None` if it couldn't be resolved), and the target's
-/// application id (`target_app`).
+/// declared entry points (`policies`, `None` if unknown),
+/// the caller's application id (`source_app`, `None` if it couldn't be
+/// resolved), and the target's application id (`target_app`).
 ///
-/// Denied when the method is not a declared `#[app::xcall]` entry point, or its
-/// policy excludes the caller. A `SameApp` entry point with an unresolved
-/// caller is denied — fail closed.
+/// Denied when the entry points are unknown, the method is not a declared
+/// `#[app::xcall]` entry point, or its policy excludes the caller. A `SameApp`
+/// entry point with an unresolved caller is denied (fail closed).
 fn xcall_caller_denied(
-    policies: &crate::XCallPolicyMap,
+    policies: Option<&crate::XCallPolicyMap>,
     method: &str,
     source_app: Option<ApplicationId>,
     target_app: ApplicationId,
 ) -> bool {
-    match policies.get(method) {
+    match policies.and_then(|policies| policies.get(method)) {
         None => true,
         Some(XCallCallers::AnyInNamespace) => false,
         Some(XCallCallers::SameApp) => source_app != Some(target_app),
@@ -3418,22 +3426,20 @@ fn xcall_caller_denied(
 }
 
 /// The `#[app::xcall]` entry points declared in a module's embedded ABI mapped
-/// to their caller policy, or `None` if the manifest is absent/unparseable or
-/// declares none (the method is then left ungated). A returned map is always
-/// non-empty.
-fn extract_xcall_policies(bytecode: &[u8]) -> Option<Arc<crate::XCallPolicyMap>> {
-    let manifest = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)?;
-    let map: crate::XCallPolicyMap = manifest
-        .methods
-        .into_iter()
-        .filter(|m| m.xcall_callable)
-        .map(|m| (m.name, m.xcall_callers))
-        .collect();
-    if map.is_empty() {
-        None
-    } else {
-        Some(Arc::new(map))
-    }
+/// to their caller policy; empty if the manifest is absent/unparseable or
+/// declares none, so every xcall into the module is denied.
+fn extract_xcall_policies(bytecode: &[u8]) -> Arc<crate::XCallPolicyMap> {
+    let map = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)
+        .map(|manifest| {
+            manifest
+                .methods
+                .into_iter()
+                .filter(|m| m.xcall_callable)
+                .map(|m| (m.name, m.xcall_callers))
+                .collect()
+        })
+        .unwrap_or_default();
+    Arc::new(map)
 }
 
 /// Whether `source` and `target` share the SAME directly-owning group, and are
@@ -3462,6 +3468,8 @@ fn xcall_same_owning_group(
 mod search_tests;
 #[cfg(test)]
 mod state_write_gate_tests;
+#[cfg(test)]
+mod xcall_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3565,40 +3573,40 @@ mod tests {
         policies.insert("open".to_owned(), XCallCallers::AnyInNamespace);
         policies.insert("restricted".to_owned(), XCallCallers::SameApp);
 
+        let policies = Some(&policies);
+
         // A method not declared as an entry point is always denied.
-        assert!(xcall_caller_denied(
-            &policies,
-            "unknown",
-            Some(app_a),
-            app_a
-        ));
+        assert!(xcall_caller_denied(policies, "unknown", Some(app_a), app_a));
+
+        // Entry points that are not known deny every method.
+        assert!(xcall_caller_denied(None, "open", Some(app_a), app_a));
 
         // AnyInNamespace admits any caller (including an unresolved one).
-        assert!(!xcall_caller_denied(&policies, "open", Some(app_b), app_a));
-        assert!(!xcall_caller_denied(&policies, "open", None, app_a));
+        assert!(!xcall_caller_denied(policies, "open", Some(app_b), app_a));
+        assert!(!xcall_caller_denied(policies, "open", None, app_a));
 
         // SameApp admits only a caller running the same application id.
         assert!(!xcall_caller_denied(
-            &policies,
+            policies,
             "restricted",
             Some(app_a),
             app_a
         ));
         assert!(xcall_caller_denied(
-            &policies,
+            policies,
             "restricted",
             Some(app_b),
             app_a
         ));
         // An unresolved caller is denied for SameApp — fail closed.
-        assert!(xcall_caller_denied(&policies, "restricted", None, app_a));
+        assert!(xcall_caller_denied(policies, "restricted", None, app_a));
     }
 
     #[test]
-    fn extract_xcall_policies_none_on_non_wasm() {
-        // No embedded ABI manifest ⇒ None (method left ungated).
-        assert!(extract_xcall_policies(b"not a wasm module").is_none());
-        assert!(extract_xcall_policies(&[]).is_none());
+    fn extract_xcall_policies_empty_on_non_wasm() {
+        // No embedded ABI manifest ⇒ no entry points (every xcall denied).
+        assert!(extract_xcall_policies(b"not a wasm module").is_empty());
+        assert!(extract_xcall_policies(&[]).is_empty());
     }
 
     #[test]

@@ -698,11 +698,8 @@ pub enum MemberJoinedOpenRejection {
     #[error("signer {0} is a direct member; use MemberJoined or add_group_members instead")]
     AlreadyDirectMember(String),
 
-    /// Signer previously exited this group, so they no longer flow back in by
-    /// inheritance. Inheritance is passive and carries no fresh authorization,
-    /// so any prior exit blocks it — a voluntary leaver included, not just a
-    /// removed member. Re-entry has to be an explicit act: a fresh invitation,
-    /// or an admin re-adding them.
+    /// Signer exited this group, or one its inheritance passes through. Inheritance
+    /// carries no fresh authorization, so re-entry needs a fresh invitation or an admin re-add.
     #[error("signer {member} exited group {gid} and cannot re-enter by inheritance; they must be re-invited or re-added")]
     ReentryBlocked { member: String, gid: String },
 

@@ -187,8 +187,15 @@ pub trait SyncMetricsCollector: Send + Sync {
     /// # Arguments
     /// - `context_id`: The context that failed to sync
     /// - `protocol`: The protocol that was being used
+    /// - `duration`: Time spent before the attempt failed
     /// - `reason`: Human-readable failure reason
-    fn record_sync_failure(&self, context_id: &str, protocol: &str, reason: &str);
+    fn record_sync_failure(
+        &self,
+        context_id: &str,
+        protocol: &str,
+        duration: Duration,
+        reason: &str,
+    );
 
     // =========================================================================
     // Protocol Selection
@@ -201,6 +208,35 @@ pub trait SyncMetricsCollector: Send + Sync {
     /// - `reason`: Why this protocol was selected
     /// - `divergence`: Estimated divergence percentage (0.0-1.0)
     fn record_protocol_selected(&self, protocol: &str, reason: &str, divergence: f64);
+
+    // =========================================================================
+    // Session Cost
+    // =========================================================================
+
+    /// Record what one completed initiator session cost, from the totals the
+    /// protocol already keeps (`HashComparisonStats`, `LevelWiseStats`, the
+    /// snapshot's applied records, the delta fetch count).
+    ///
+    /// Production records cost here, once per session, rather than through
+    /// the per-event hooks above: the protocols run as free functions over a
+    /// transport with no collector in reach, and only their totals come back.
+    /// The default ignores it, as the simulator collector does.
+    fn record_session_cost(&self, protocol: &str, cost: SessionCost) {
+        let _ = (protocol, cost);
+    }
+}
+
+/// Totals from one completed sync session (see
+/// [`SyncMetricsCollector::record_session_cost`]). A protocol that does not
+/// track a figure leaves it at 0.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SessionCost {
+    /// Request/response exchanges with the peer.
+    pub round_trips: u64,
+    /// Tree nodes whose hashes were compared.
+    pub comparisons: u64,
+    /// Entities, records or deltas applied or pushed.
+    pub entities_transferred: u64,
 }
 
 /// No-op implementation for when metrics are disabled.
@@ -255,7 +291,14 @@ impl SyncMetricsCollector for NoOpMetrics {
     }
 
     #[inline]
-    fn record_sync_failure(&self, _context_id: &str, _protocol: &str, _reason: &str) {}
+    fn record_sync_failure(
+        &self,
+        _context_id: &str,
+        _protocol: &str,
+        _duration: Duration,
+        _reason: &str,
+    ) {
+    }
 
     #[inline]
     fn record_protocol_selected(&self, _protocol: &str, _reason: &str, _divergence: f64) {}
@@ -312,7 +355,12 @@ mod tests {
 
         metrics.record_sync_start("ctx-123", "HashComparison", "timer");
         metrics.record_sync_complete("ctx-123", "HashComparison", Duration::from_secs(1), 50);
-        metrics.record_sync_failure("ctx-123", "HashComparison", "timeout");
+        metrics.record_sync_failure(
+            "ctx-123",
+            "HashComparison",
+            Duration::from_secs(30),
+            "timeout",
+        );
         metrics.record_protocol_selected("HashComparison", "divergence < 10%", 0.05);
     }
 }
