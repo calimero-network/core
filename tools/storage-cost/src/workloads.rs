@@ -545,6 +545,47 @@ fn build_fugue_text(n: usize) -> Root<FugueText<MainStorage>> {
     text
 }
 
+/// Apply, as a peer's delta through `Root::sync` (what a node's
+/// `__calimero_sync_next` runs), one commit that updated `n` existing entries
+/// of a map. Per entry, the cost must not grow with how many the delta carries:
+/// the walks from the entries share the map and the root, and a batch refreshes
+/// each of those once rather than once per entry.
+fn unordered_map_sync_update(n: usize) {
+    clear_pending_delta();
+    let (create, update) = with_runtime_env(uncounted_env(REMOTE_MAP_DEVICE), || {
+        let mut map = Root::new(|| {
+            UnorderedMap::<String, String, MainStorage>::new_with_field_name(SYNC_MAP_FIELD)
+        });
+        for i in 0..n {
+            let _previous = map
+                .insert(format!("key{i}"), "value".to_owned())
+                .expect("insert should succeed");
+        }
+        map.commit();
+        let create = take_last_artifact().expect("commit should emit a delta");
+        let mut map = Root::<UnorderedMap<String, String, MainStorage>>::fetch()
+            .expect("the map root was just committed");
+        for i in 0..n {
+            let _previous = map
+                .insert(format!("key{i}"), "changed".to_owned())
+                .expect("update should succeed");
+        }
+        map.commit();
+        let update = take_last_artifact().expect("commit should emit a delta");
+        (create, update)
+    });
+    Root::<UnorderedMap<String, String, MainStorage>>::sync(&create, &ApplyContext::empty())
+        .expect("the creating delta should apply");
+    reset_counters();
+    Root::<UnorderedMap<String, String, MainStorage>>::sync(&update, &ApplyContext::empty())
+        .expect("the updating delta should apply");
+}
+
+/// Shared by both replicas, so the receiver's map is the sender's.
+const SYNC_MAP_FIELD: &str = "synced_map";
+
+const REMOTE_MAP_DEVICE: [u8; 32] = [4; 32];
+
 /// `n` set-then-commit transactions against the SAME `LwwRegister`, so `n` is
 /// a history length, not a collection size: a register's write cost must not
 /// grow with how often it has already been overwritten.
@@ -812,7 +853,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 30] = [
+    const REGISTRY: [Entry; 31] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -849,6 +890,12 @@ pub fn all() -> Vec<Workload> {
         // count does not depend on the ids and needs no seed.
         ("rga_get_nth", KnownLinearInN, 0, rga_get_nth),
         ("lww_register_set", FlatPerEntry, 0, lww_register_set),
+        (
+            "unordered_map_sync_update",
+            FlatPerEntry,
+            0,
+            unordered_map_sync_update,
+        ),
         ("nested_map_insert", FlatPerEntry, 0, nested_map_insert),
         ("nested_map_get", ConstantPerCall, 0, nested_map_get),
         (

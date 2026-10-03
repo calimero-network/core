@@ -223,19 +223,15 @@ runs:
         echo "to build: default=$DEFAULT mock-tee=$MOCK mero-auth=$AUTH"
 
     # A caller that only restores (Relay) sets up no Rust; a miss there still has
-    # to build, so the toolchain and libclang come here, only when needed. Cheap
+    # to build, so the toolchain and the libclang check come here, only when needed. Cheap
     # no-ops for a caller that already ran setup-rust-ci.
     - name: Install the pinned Rust toolchain (to build)
       if: steps.todo.outputs.build == 'true'
       uses: ./.github/actions/rust-toolchain
 
-    - name: Install libclang (to build)
+    - name: Check libclang (to build)
       if: steps.todo.outputs.build == 'true' && runner.os == 'Linux'
-      shell: bash
-      run: |
-        dpkg -s libclang-dev >/dev/null 2>&1 && exit 0
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends libclang-dev
+      uses: ./.github/actions/check-libclang
 
     # Both variants in one job: the second build recompiles only the crates the
     # feature reaches. The fast e2e profile (no LTO, many codegen units) is the

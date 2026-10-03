@@ -24,10 +24,6 @@ inputs:
     description: "Condition for saving cache (e.g., github.ref == 'refs/heads/master')"
     required: false
     default: "${{ github.ref == 'refs/heads/master' }}"
-  libclang:
-    description: "Install libclang-dev on Linux (librocksdb-sys's bindgen needs it)"
-    required: false
-    default: "true"
 
 outputs:
   channel:
@@ -37,14 +33,12 @@ outputs:
 runs:
   using: "composite"
   steps:
-    # librocksdb-sys's bindgen dlopen's libclang at build-script time; ubuntu
-    # runners don't ship libclang-dev by default. macOS uses Homebrew's llvm instead (.cargo/config.toml).
-    - name: Install libclang (Linux)
-      if: runner.os == 'Linux' && inputs.libclang == 'true'
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends libclang-dev
+    # librocksdb-sys's bindgen dlopen's libclang at build-script time; the
+    # ubuntu images already ship one, so this only checks it is there.
+    # macOS finds its own; Windows callers point LIBCLANG_PATH at the image's LLVM.
+    - name: Check libclang (Linux)
+      if: runner.os == 'Linux'
+      uses: ./.github/actions/check-libclang
 
     - name: Install the pinned Rust toolchain
       id: toolchain
@@ -67,17 +61,54 @@ runs:
           rustup target add "$target"
         done
 
-    # No environment hash: it covered every installed toolchain (so the runner's
-    # own `stable` rolled every key on each Rust release) and every CARGO_*/RUST*
-    # variable (so jobs that build the same thing could not share a cache).
-    # Cargo's fingerprints already rebuild anything a different profile or flag
-    # needs; the pinned channel in `key` is what must start a fresh cache.
+    # rust-cache's environment hash covers every installed toolchain, so the
+    # runner's own preinstalled `stable` would roll every key on each Rust
+    # release (2026-10-01 orphaned every cache that way). Only the pinned one may
+    # be left when the key is computed; nothing after this needs another.
+    - name: Remove every toolchain but the pinned one
+      shell: bash
+      env:
+        PINNED: ${{ steps.toolchain.outputs.channel }}
+      run: |
+        set -euo pipefail
+        pinned="$PINNED-$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
+        for name in $(rustup toolchain list | tr -d '\r' | awk '{print $1}'); do
+          [ "$name" = "$pinned" ] || rustup toolchain uninstall "$name"
+        done
+        left=$(rustup toolchain list | tr -d '\r' | awk '{print $1}' | tr '\n' ' ')
+        if [ "$left" != "$pinned " ]; then
+          echo "::error::rust-cache would hash these toolchains, not only $pinned: $left"
+          exit 1
+        fi
+
+    # Key: v2-rust-<group>-<channel>-<os>-<arch>-<env hash>-<deps hash>. The
+    # restore key is all but the deps hash (Cargo.lock, the workspace manifests,
+    # rust-toolchain.toml, .cargo/config.toml), so a dependency change saves a
+    # fresh entry on master while every job still falls back to the group's
+    # latest one. `key` is ignored once `shared-key` is set, hence the channel
+    # in the group.
+    #
+    # The env hash covers every non-empty CARGO*/CC*/CFLAGS*/CXX*/CMAKE*/RUST*
+    # variable, so one that differs between the jobs of a group would split its
+    # restore key. The ones below change nothing in what the cache holds and are
+    # pinned (cargo rejects an empty CARGO_TERM_COLOR or CARGO_TARGET_DIR) or
+    # blanked (rust-cache skips an empty one) for this step alone:
+    # scripts/check-rust-cache-groups.py fails on any other difference.
     - name: Setup Rust cache
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      env:
+        # The directory rust-cache saves, whether or not a job spells it out.
+        CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        CARGO_TERM_COLOR: always
+        # rust-cache sets 0 for the rest of the job anyway.
+        CARGO_INCREMENTAL: "0"
+        # Debuginfo of dev builds only: ci-checks.yml trims it, the other
+        # wasm-apps jobs do not, and cargo's fingerprints keep the two apart.
+        CARGO_PROFILE_DEV_DEBUG: ""
+        RUST_BACKTRACE: ""
+        RUST_LOG: ""
       with:
-        prefix-key: v1-rust
-        shared-key: ${{ inputs.shared-key }}
-        key: ${{ steps.toolchain.outputs.channel }}
-        add-rust-environment-hash-key: "false"
+        prefix-key: v2-rust
+        shared-key: ${{ inputs.shared-key }}-${{ steps.toolchain.outputs.channel }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
         save-if: ${{ inputs.save-if }}

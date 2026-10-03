@@ -260,14 +260,7 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: release
-          libclang: false
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.target != 'aarch64-unknown-linux-gnu' }}
-
-      - name: Install libclang (Linux)
-        if: ${{ needs.prepare.outputs.build == 'true' && (runner.os == 'Linux') }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libclang-dev
 
       # `rocksdb` uses `bindgen-runtime`, so librocksdb-sys needs libclang everywhere;
       # the Windows image ships LLVM but nothing points bindgen at it.
@@ -578,7 +571,10 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
+          # PRs build the image to prove the Dockerfile still packages the binaries,
+          # but push nothing: no PR job pulls a standard `pr-<N>` image (fuzzy-load-test
+          # pulls `pr-<N>-profiling`, which the profiling job below still pushes).
+          push: ${{ github.event_name == 'push' }}
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
@@ -611,7 +607,8 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          push: ${{ needs.prepare.outputs.docker_push }}
+          # Built on PRs, pushed only from master; see release-merod-container.
+          push: ${{ github.event_name == 'push' }}
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth

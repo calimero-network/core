@@ -3861,6 +3861,16 @@ impl DeltaStore {
         dag.has_delta(id)
     }
 
+    /// Ids of every delta this store holds in memory, with or without a row:
+    /// the DAG's, applied or pending, and the orphaned members waiting on
+    /// their anchor. DAG compaction keeps their side rows, which are served
+    /// once a pending delta applies.
+    pub(crate) async fn held_delta_ids(&self) -> Vec<[u8; 32]> {
+        let mut ids: Vec<[u8; 32]> = self.dag.read().await.delta_ids().copied().collect();
+        ids.extend(self.anchor_pending.read().await.seen.iter().copied());
+        ids
+    }
+
     /// Get a specific delta (for sending to peers)
     pub async fn get_delta(&self, id: &[u8; 32]) -> Option<CausalDelta<Vec<Action>>> {
         let dag = self.dag.read().await;
@@ -4147,6 +4157,7 @@ impl DeltaStore {
                 %context_id,
                 in_memory,
                 rows = on_disk.pruned,
+                side_rows = on_disk.side_rows,
                 remaining,
                 "Compacted DAG history"
             );

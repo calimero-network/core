@@ -30,14 +30,18 @@
 //! concurrently only reads rows (one deleted under it is skipped, exactly as
 //! if it had been pruned before the load).
 //!
+//! A pruned row takes the rows kept beside it (its events hash and TEE
+//! trigger, [`side_rows`]) in the same transaction. Those an earlier
+//! compaction left behind are swept after the prunes ([`orphans`]).
+//!
 //! Deleting rows frees no disk space by itself, so after the deletes each
 //! context the sweep reclaimed enough from has its slice of the delta column
-//! compacted, with no lock held, by the tombstone GC's bar
-//! ([`crate::gc::worth_compacting`]).
+//! compacted, and the side tables theirs, with no lock held, by the tombstone
+//! GC's bar ([`crate::gc::worth_compacting`]).
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use actix::{Actor, AsyncContext, Context, Supervised};
 use calimero_context_client::client::ContextClient;
@@ -52,8 +56,11 @@ use tracing::{debug, info, warn};
 use crate::delta_store::DeltaStore;
 
 pub(crate) mod disk;
+pub(crate) mod orphans;
+pub(crate) mod side_rows;
 
 use disk::DiskPrune;
+use orphans::{OrphanSweep, Swept};
 
 /// Periodic DAG-history compactor.
 #[derive(Clone)]
@@ -72,6 +79,8 @@ pub struct DagCompactor {
     /// (many contexts / slow deletes vs. the interval) is skipped rather
     /// than double-counting metrics and racing DB deletes.
     sweep_in_progress: Arc<AtomicBool>,
+    /// Where the orphaned-side-row sweep stands, from one sweep to the next.
+    orphans: Arc<Mutex<OrphanSweep>>,
 }
 
 impl DagCompactor {
@@ -87,6 +96,7 @@ impl DagCompactor {
             context_client,
             config,
             sweep_in_progress: Arc::new(AtomicBool::new(false)),
+            orphans: Arc::default(),
         }
     }
 
@@ -108,6 +118,7 @@ impl DagCompactor {
         let context_client = self.context_client.clone();
         let config = self.config;
         let in_progress = self.sweep_in_progress.clone();
+        let orphans = self.orphans.clone();
         actix::spawn(async move {
             // Clear the in-progress flag on the way out via RAII, so a panic
             // inside `compact_all` (e.g. a bug in DAG pruning) still releases the
@@ -115,17 +126,19 @@ impl DagCompactor {
             // leaving `sweep_in_progress` stuck `true` and silently disabling all
             // future compaction sweeps for the process lifetime.
             let _guard = SweepGuard(in_progress);
-            DagCompactor::compact_all(delta_stores, context_client, config).await;
+            DagCompactor::compact_all(delta_stores, context_client, config, orphans).await;
         });
     }
 
     /// Compact every context once: the live ones, then the cold ones, then
-    /// the delta-column slices the deletes are worth compacting. Returns the
-    /// total rows pruned.
+    /// sweep orphaned side rows, then compact the delta-column slices and the
+    /// side tables the deletes are worth compacting. Returns the total delta
+    /// rows pruned.
     async fn compact_all(
         delta_stores: Arc<DashMap<ContextId, DeltaStore>>,
         context_client: ContextClient,
         config: DagCompactionConfig,
+        orphans: Arc<Mutex<OrphanSweep>>,
     ) -> usize {
         let min = config.min_deltas_before_compact;
         let retain = config.retain_recent_count;
@@ -141,7 +154,7 @@ impl DagCompactor {
             .collect();
 
         let contexts_live = live.len();
-        let mut reclaimed: BTreeMap<ContextId, u64> = BTreeMap::new();
+        let mut reclaimed: BTreeMap<ContextId, DiskPrune> = BTreeMap::new();
         let mut total_pruned = 0;
 
         for (context_id, delta_store) in live {
@@ -195,7 +208,12 @@ impl DagCompactor {
             match pruned {
                 Ok(Ok(pruned)) => {
                     if pruned.pruned > 0 {
-                        info!(%context_id, rows = pruned.pruned, "Compacted cold context DAG history");
+                        info!(
+                            %context_id,
+                            rows = pruned.pruned,
+                            side_rows = pruned.side_rows,
+                            "Compacted cold context DAG history"
+                        );
                     }
                     record(&mut reclaimed, &mut total_pruned, context_id, pruned);
                 }
@@ -206,16 +224,35 @@ impl DagCompactor {
             }
         }
 
+        let swept = sweep_orphans(&store, &delta_stores, &orphans).await;
+        if swept.rows > 0 {
+            info!(
+                rows = swept.rows,
+                bytes = swept.bytes,
+                "Swept orphaned delta side rows"
+            );
+        }
+        let side_reclaimed = reclaimed
+            .values()
+            .map(|prune| prune.side_bytes)
+            .sum::<u64>()
+            + swept.bytes;
+
         let compacted = tokio::task::spawn_blocking(move || {
             let mut compacted = 0;
-            for (context_id, bytes) in reclaimed {
-                match disk::compact_pruned_slice(&store, context_id, bytes) {
+            for (context_id, prune) in reclaimed {
+                match disk::compact_pruned_slice(&store, context_id, prune.delta_bytes()) {
                     Ok(true) => compacted += 1,
                     Ok(false) => {}
                     Err(e) => {
                         warn!(?e, %context_id, "DAG compaction failed to compact a delta slice")
                     }
                 }
+            }
+            match disk::compact_side_tables(&store, side_reclaimed) {
+                Ok(true) => compacted += 1,
+                Ok(false) => {}
+                Err(e) => warn!(?e, "DAG compaction failed to compact the delta side tables"),
             }
             compacted
         })
@@ -225,10 +262,14 @@ impl DagCompactor {
             0
         });
 
-        if total_pruned > 0 {
+        if total_pruned > 0 || swept.rows > 0 {
             info!(
                 contexts_live,
-                contexts_cold, total_pruned, compacted, "DAG compaction sweep completed"
+                contexts_cold,
+                total_pruned,
+                orphans_swept = swept.rows,
+                compacted,
+                "DAG compaction sweep completed"
             );
         }
 
@@ -238,7 +279,7 @@ impl DagCompactor {
 
 /// Count one context's prune into the sweep's totals and metrics.
 fn record(
-    reclaimed: &mut BTreeMap<ContextId, u64>,
+    reclaimed: &mut BTreeMap<ContextId, DiskPrune>,
     total_pruned: &mut usize,
     context_id: ContextId,
     pruned: DiskPrune,
@@ -248,7 +289,81 @@ fn record(
     }
     crate::node_metrics::observe_compaction_pruned(pruned.pruned);
     *total_pruned += pruned.pruned;
-    let _previous = reclaimed.insert(context_id, pruned.bytes);
+    let _previous = reclaimed.insert(context_id, pruned);
+}
+
+/// One step of the orphaned-side-row sweep ([`orphans`]): read the side rows
+/// to judge, then what every live DAG holds, then judge them against those
+/// and every delta row and absorb record. Blocking steps run off the runtime,
+/// and a failure or panic leaves the sweep to start over on the next one.
+async fn sweep_orphans(
+    store: &Store,
+    delta_stores: &DashMap<ContextId, DeltaStore>,
+    orphans: &Mutex<OrphanSweep>,
+) -> Swept {
+    // The sweep never overlaps itself (`sweep_in_progress`), so the state is
+    // taken for the duration and put back after; a sweep that fails or
+    // panics leaves the default, which only restarts the walk.
+    let state = std::mem::take(&mut *orphans.lock().unwrap_or_else(PoisonError::into_inner));
+
+    let read = {
+        let store = store.clone();
+        tokio::task::spawn_blocking(move || {
+            let windows = state.read_windows(&store);
+            (state, windows)
+        })
+        .await
+    };
+    let (mut state, windows) = match read {
+        Ok((state, Ok(windows))) => (state, windows),
+        Ok((_, Err(e))) => {
+            warn!(?e, "DAG compaction could not read the delta side tables");
+            return Swept::default();
+        }
+        Err(e) => {
+            warn!(?e, "DAG compaction side-table read panicked");
+            return Swept::default();
+        }
+    };
+
+    // After the windows: a side row on them was recorded before any of these
+    // were read.
+    let live: Vec<(ContextId, DeltaStore)> = delta_stores
+        .iter()
+        .map(|entry| (*entry.key(), entry.value().clone()))
+        .collect();
+    let mut held = Vec::new();
+    for (context_id, delta_store) in live {
+        held.extend(
+            delta_store
+                .held_delta_ids()
+                .await
+                .into_iter()
+                .map(|delta_id| (context_id, delta_id)),
+        );
+    }
+
+    let settled = {
+        let store = store.clone();
+        tokio::task::spawn_blocking(move || {
+            let swept = state.settle(&store, windows, &held);
+            (state, swept)
+        })
+        .await
+    };
+    match settled {
+        Ok((state, swept)) => {
+            *orphans.lock().unwrap_or_else(PoisonError::into_inner) = state;
+            swept.unwrap_or_else(|e| {
+                warn!(?e, "DAG compaction failed to sweep orphaned side rows");
+                Swept::default()
+            })
+        }
+        Err(e) => {
+            warn!(?e, "DAG compaction orphaned-side-row sweep panicked");
+            Swept::default()
+        }
+    }
 }
 
 /// Contexts in the store with no live `DeltaStore` that hold more than

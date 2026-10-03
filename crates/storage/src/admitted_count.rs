@@ -166,6 +166,13 @@ pub(crate) fn before_change<S: StorageAdaptor>(parent: Id) -> Option<Pending> {
     (ChildTrie::<S>::new(parent).root() == tally.root).then_some(Pending { parent, tally })
 }
 
+/// [`before_change`] for a caller that read the trie's root, as it stood before
+/// the change, on its way to making it, so the root row is not read again.
+pub(crate) fn before_change_at<S: StorageAdaptor>(parent: Id, root: [u8; 32]) -> Option<Pending> {
+    let tally = read::<S>(parent)?;
+    (root == tally.root).then_some(Pending { parent, tally })
+}
+
 /// A current row, waiting for the change it was read before.
 pub(crate) struct Pending {
     parent: Id,
