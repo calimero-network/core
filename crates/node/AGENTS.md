@@ -334,7 +334,9 @@ cargo test -p calimero-node --test network_simulation
   other as a blob. Raw wasm is refused on every remote path
   (`derive_bundle_id`), and never runs: `application_bytes_from_blob`
   refuses it, since a group target, marker or stub can name any held blob.
-  Writes re-check under `row_writes`
+  Writes re-check under `lock_application_rows`, the process-wide lock every
+  stub writer (governance `ContextRegistered` and upgrade-target seeds, the
+  join bootstrap) also takes
 - A joiner that holds no key to seal its own join does NOT publish it in
   the clear. `sync/manager/relay_sealed_join.rs` carries both halves of
   the exchange that replaced that fallback (#3904): the joiner sends

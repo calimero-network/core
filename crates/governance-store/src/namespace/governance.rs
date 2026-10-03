@@ -13,6 +13,7 @@ use calimero_context_client::local_governance::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
+use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_op::Op;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::GroupMemberRole;
@@ -2941,6 +2942,8 @@ impl<'a> NamespaceGovernance<'a> {
             // and skip the bootstrap path in join_context.
             if *application_id != ZERO_APPLICATION_ID {
                 let bytecode_id = calimero_store::key::ApplicationMeta::new(*application_id);
+                // An install between the check and the put would be overwritten by the stub.
+                let _rows = lock_application_rows();
                 let handle = self.store.handle();
                 if !handle.has(&bytecode_id)? {
                     drop(handle);

@@ -3,7 +3,8 @@
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use actix::{Actor, Addr, Context as ActorContext, Handler};
 use calimero_app_downloader::registry::{RegistryConfig, RegistryMode, PENDING_BLOB_SHARE_SOURCE};
@@ -12,6 +13,7 @@ use calimero_context_client::messages::ContextMessage;
 use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
+use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::test_fixtures::{bundle, node_client, node_client_over};
 use calimero_primitives::application::ApplicationId;
@@ -28,6 +30,9 @@ const PEER: &str = "12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh";
 
 /// The wasm the admin built; the joiner only ever learns its blob's id.
 const WASM: &[u8] = b"join test wasm bytecode";
+
+/// How long an install holds the row lock: long enough for an unlocked stub write.
+const STUB_WAIT: Duration = Duration::from_millis(500);
 
 /// A peer that advertises the blob and serves it, so the resolver's final leg
 /// completes in-process, and that counts how often it was asked at all.
@@ -112,6 +117,7 @@ async fn published_bundle() -> (Vec<u8>, ApplicationId) {
 
 struct Joiner {
     client: ContextClient,
+    store: Store,
     node: NodeClient,
     queries: Arc<AtomicUsize>,
     _peer: Addr<BlobPeer>,
@@ -165,7 +171,8 @@ impl Joiner {
         let node = node.with_registry(registry);
 
         Self {
-            client: ContextClient::new(store, node.clone(), context_manager),
+            client: ContextClient::new(store.clone(), node.clone(), context_manager),
+            store,
             node,
             queries,
             _peer: peer,
@@ -339,6 +346,58 @@ async fn bootstrap_writes_a_stub_when_no_row_exists() {
         "absent coordinates must stay absent, never a placeholder"
     );
     assert_eq!(joiner.queries.load(Ordering::SeqCst), 0);
+}
+
+/// An install holding the row lock writes the full row; the bootstrap's stub
+/// must wait for it, then leave that row alone.
+#[actix::test]
+async fn bootstrap_stub_waits_for_an_install_of_the_same_application() {
+    let joiner = Joiner::dht(WASM).await;
+    let named_id = ApplicationId::from([0x5E; 32]);
+    let row_key = key::ApplicationMeta::new(named_id);
+
+    let (held_tx, held_rx) = mpsc::channel();
+    let store = joiner.store.clone();
+    let installer = std::thread::spawn(move || {
+        let _install = lock_application_rows();
+        held_tx.send(()).expect("signal the lock is held");
+        std::thread::sleep(STUB_WAIT);
+        let mut handle = store.handle();
+        let stub_ran_inside = handle.has(&row_key).expect("row lookup");
+        handle
+            .put(
+                &row_key,
+                &types::ApplicationMeta::new(
+                    key::BlobMeta::new(BlobId::from([0xDB; 32])),
+                    42,
+                    "https://reg.example/app-1.0.0.mpk".into(),
+                    Box::default(),
+                    key::BlobMeta::new(BlobId::from([0_u8; 32])),
+                    types::PackageInfo {
+                        package: "com.acme.app".into(),
+                        version: "1.0.0".into(),
+                        signer_id: "did:key:installer".into(),
+                        state_version: 0,
+                    },
+                ),
+            )
+            .expect("install the row");
+        stub_ran_inside
+    });
+    held_rx.recv().expect("the installer holds the lock");
+
+    joiner.bootstrap(named_id).await.expect("bootstrap");
+
+    assert!(
+        !installer.join().expect("installer thread"),
+        "the bootstrap stub must not run inside an install's check-then-write"
+    );
+    let row = joiner.row(named_id).expect("the installed row");
+    assert_eq!(
+        (row.size, &*row.signer_id),
+        (42, "did:key:installer"),
+        "a stub must never replace the installed row"
+    );
 }
 
 /// A stand-in registry that refuses every request and counts what it saw.

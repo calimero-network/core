@@ -7,8 +7,22 @@
 //! `calimero_governance_store::test_fixtures` module. Namespace-only inline helpers
 //! (`raw_namespace_dag_heads`) came along with the move.
 
-use calimero_governance_types::NamespaceId;
+use std::sync::mpsc;
+use std::time::Duration;
 
+use calimero_app_downloader::registry::RegistryCoords;
+use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+use calimero_governance_types::NamespaceId;
+use calimero_node_primitives::client::application::lock_application_rows;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
+use calimero_store::key::{ApplicationMeta, BlobMeta};
+use calimero_store::types;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+
+use super::NamespaceGovernance;
+use crate::ops::group::context::seed_target_application_row;
 use crate::{
     CapabilitiesRepository, GroupDeletedRejection, GroupKeyring, MembershipRepository,
     MetaRepository, NamespaceRepository,
@@ -26,6 +40,8 @@ use super::super::test_fixtures::{
     test_meta, test_store,
 };
 use super::super::*;
+
+const STUB_WAIT: Duration = Duration::from_millis(500); // long enough for an unlocked writer to finish
 
 /// **The behaviour change.** A `KeyDelivery` offered to the publish boundary
 /// comes back SEALED, so the delivery metadata — which account, at which causal
@@ -10151,6 +10167,127 @@ fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
         "a published application's coordinates must reach the joiner's row"
     );
     assert_eq!(registered.source.as_ref(), SOURCE);
+}
+
+/// Runs `stub_writer` on its own thread while an install holds the row lock,
+/// writes the installer's row, and checks the stub writer waited and kept off it.
+fn assert_stub_waits_for_install(
+    store: &Store,
+    application_id: ApplicationId,
+    stub_writer: impl FnOnce() + Send + 'static,
+) {
+    let row = || {
+        store
+            .handle()
+            .get(&ApplicationMeta::new(application_id))
+            .unwrap()
+    };
+    let install = lock_application_rows();
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        stub_writer();
+        done_tx.send(()).unwrap();
+    });
+    assert!(
+        done_rx.recv_timeout(STUB_WAIT).is_err() && row().is_none(),
+        "the stub writer must not run inside an install's check-then-write"
+    );
+
+    let installed = types::ApplicationMeta::new(
+        BlobMeta::new(BlobId::from([0xDB; 32])),
+        42,
+        "https://reg.example/app-1.0.0.mpk".into(),
+        Box::default(),
+        BlobMeta::new(BlobId::from([0; 32])),
+        types::PackageInfo {
+            package: "com.acme.app".into(),
+            version: "1.0.0".into(),
+            signer_id: "did:key:installer".into(),
+            state_version: 0,
+        },
+    );
+    store
+        .handle()
+        .put(&ApplicationMeta::new(application_id), &installed)
+        .unwrap();
+    drop(install);
+    writer.join().unwrap();
+
+    let row = row().expect("the installed row");
+    assert_eq!(
+        (row.size, row.signer_id.as_ref()),
+        (42, "did:key:installer"),
+        "a stub must never replace the installed row"
+    );
+}
+
+/// The stub an inbound `ContextRegistered` writes waits for an install of the
+/// same application, then leaves the installed row alone.
+#[test]
+fn a_registered_context_stub_waits_for_an_install_of_the_same_application() {
+    let store = test_store();
+    let signer_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let ns_gid = ContextGroupId::from([0xD7; 32]);
+    let signer_account = enrol_member(&store, &ns_gid, &signer_sk.public_key());
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(signer_account))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &signer_account, GroupMemberRole::Admin)
+        .unwrap();
+    let group_key = [0xD7; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    let application_id = ApplicationId::from([0xD8; 32]);
+    let inner = GroupOp::ContextRegistered {
+        context_id: ContextId::from([0xD9; 32]),
+        application_id,
+        blob_id: BlobId::from([0xDA; 32]),
+        source: String::new(),
+        service_name: None,
+        package: String::new(),
+        version: String::new(),
+    };
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        ns_gid.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: ns_gid.to_bytes().into(),
+            key_id: key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let receiver = store.clone();
+    assert_stub_waits_for_install(&store, application_id, move || {
+        NamespaceGovernance::new(&receiver, ns_gid.to_bytes().into())
+            .apply_signed_op(&op)
+            .expect("apply ContextRegistered");
+    });
+}
+
+/// The row an upgrade op seeds for the lazy migrate waits for an install of the
+/// same application, then leaves the installed row alone.
+#[test]
+fn an_upgrade_target_stub_waits_for_an_install_of_the_same_application() {
+    let store = test_store();
+    let application_id = ApplicationId::from([0xDC; 32]);
+    let receiver = store.clone();
+    assert_stub_waits_for_install(&store, application_id, move || {
+        seed_target_application_row(
+            &receiver,
+            &application_id,
+            &[0xDD; 32],
+            RegistryCoords::new("com.acme.app", "1.1.0"),
+        )
+        .expect("seed the target row");
+    });
 }
 
 /// A key provisioned at init must be REUSED at first join, not replaced.
