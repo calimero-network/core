@@ -393,3 +393,102 @@ mod client_key_binding_tests {
         assert!(binding_refusal(&t.state, Some(&s), &ContextId::from([3; 32])).is_some());
     }
 }
+
+#[cfg(test)]
+mod proxy_tenant_tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{header, Request as HttpRequest};
+    use axum::routing::{post, Router};
+    use axum::Extension;
+    use calimero_account::AccountId;
+    use calimero_primitives::context::ContextId;
+    use calimero_server_primitives::jsonrpc::{
+        ExecutionRequest, Request as PrimitiveRequest, RequestId, RequestPayload,
+        SetEphemeralRequest, Version,
+    };
+    use calimero_utils_actix::LazyRecipient;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    use super::handle_request;
+    use super::test_support::state_with;
+
+    /// `/jsonrpc` as a proxy-mode node mounts it with `proxy_identity` on: no
+    /// embedded guard, identity taken from the proxy's headers.
+    async fn call_behind_proxy(account: Option<AccountId>, payload: RequestPayload) -> Value {
+        let t = state_with(false, LazyRecipient::new()).await;
+        let router = Router::new().route(
+            "/",
+            post(handle_request).layer(Extension(Arc::clone(&t.state))),
+        );
+        let app = crate::service_mounts::with_optional_auth(router, None, None, true);
+
+        let body = PrimitiveRequest::new(Version::TwoPointZero, RequestId::Number(1), payload);
+        let mut request = HttpRequest::post("/").header(header::CONTENT_TYPE, "application/json");
+        if let Some(account) = account {
+            request = request.header("x-auth-account", account.to_string());
+        }
+        let response = app
+            .oneshot(
+                request
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn execute() -> RequestPayload {
+        RequestPayload::Execute(ExecutionRequest::new(
+            ContextId::from([0x51; 32]),
+            "set".to_owned(),
+            json!({}),
+        ))
+    }
+
+    fn set_ephemeral() -> RequestPayload {
+        RequestPayload::SetEphemeral(SetEphemeralRequest::new(
+            ContextId::from([0x52; 32]),
+            vec![1, 2, 3],
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_proxy_tenant_cannot_execute_as_the_node() {
+        let resp = call_behind_proxy(Some(AccountId::from([0x53; 32])), execute()).await;
+
+        assert!(
+            resp.to_string().contains("submit a warranted intent"),
+            "refused as an account session, before the node's identity is resolved: {resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proxy_tenant_cannot_publish_presence_as_the_node() {
+        let resp = call_behind_proxy(Some(AccountId::from([0x54; 32])), set_ephemeral()).await;
+
+        assert_eq!(
+            resp["error"]["type"],
+            json!("Unauthorized"),
+            "refused before the node's identity is resolved: {resp}"
+        );
+    }
+
+    /// A request the proxy names no account for is still the operator's.
+    #[tokio::test]
+    async fn a_proxy_request_without_an_account_keeps_the_node_owners_reach() {
+        let resp = call_behind_proxy(None, set_ephemeral()).await;
+
+        assert_eq!(
+            resp["error"]["type"],
+            json!("NoOwnedIdentity"),
+            "reaches identity resolution: {resp}"
+        );
+    }
+}
