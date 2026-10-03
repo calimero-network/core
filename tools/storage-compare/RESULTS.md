@@ -537,3 +537,38 @@ directly would hold.
 - **The entry's empty trie root, read twice (`full_hash_from_trie`).**
 - **The map's row read for the action's ancestors.** It is another function's read, and
   saving it would mean threading the parent's parent out of the link.
+
+### `fugue_text_insert_per_char` replaced by `fugue_text_append`
+
+With the fixed per-call reads gone, the flat-curve gate failed on
+`fugue_text_insert_per_char`: reads/entry went from 10.4 at n=10 to 27.6 at n=10,000,
+2.65x against a budget of 2x. On master the same workload measured 1.89x, but only
+because about 4 more fixed reads per call raised its n=10 baseline. Between n=1,000 and
+n=10,000 it already grew 13.5 → 31.6.
+
+That growth is FugueText's documented design, not a regression. An insert by position
+recomputes the order from the stored blocks, one row per `MAX_RUN_LEN` (256) characters,
+because node-local derived state would make gas differ between replicas (see "FugueText
+constraints" in `crates/storage/AGENTS.md`). A host-call trace of one append reads 4
+blocks at n=1,000 and 40 at n=10,000. With the block scan taken out, the remaining
+per-call cost is flat at 7.0–7.6 reads. A build typed a character at a time therefore
+costs about `C + n/512` reads per entry, which no flat per-entry budget can hold, and
+the lower `C` is, the further the ratio exceeds it.
+
+So the workload now measures what the build was standing in for: one append onto an
+`n`-character document, classed `KnownLinearInN` like `fugue_text_char_at`. The gate
+still fails if a keystroke's cost stops being linear in either direction. `MAX_GROWTH`
+is unchanged, and `fugue_text_insert` (one paste) stays `FlatPerEntry`.
+
+## Per-call time after the follow-ups
+
+`storage-compare`, in-memory store, median µs per call. Each cell is the median of 5
+rounds interleaved across the three builds, at load 1.5–2.6. These were taken on a
+different host from the tables above, so compare within this table only. Delta bytes
+were identical in every build.
+
+| call | before #4398 (`3acdaf5`) | master with #4398 + #4401 (`e3bb965`) | + write path re-reads |
+|---|---:|---:|---:|
+| kv set | 82.0 | 42.8 (−48%) | 33.0 (−60%) |
+| kv update | 63.2 | 36.5 (−42%) | 31.3 (−50%) |
+| chat send | 89.7 | 49.3 (−45%) | 36.8 (−59%) |
