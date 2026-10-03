@@ -1917,6 +1917,27 @@ impl<'a> NamespaceGovernance<'a> {
         // changing which key the group uses still requires an admin-signed
         // rotation at the op's cut. Trying to do that authorization work with an
         // ordering mechanism is what refused the legitimate re-add.
+        //
+        // A replay (`depth > 0`) of a key already held is a no-op. The sealed-root
+        // retry has no applied marker, so it re-feeds deliveries applied long
+        // ago, and the epoch below is the head at the time of the call, not the
+        // op's sequence. Re-stamping there raised a stale key above a later
+        // rotation, making the key a removed member holds current again, and the
+        // re-drive below re-entered the walk that fed it. Whatever first stored
+        // the key already ranked it and re-drove its group.
+        if depth > 0
+            && GroupKeyring::new(self.store, gid)
+                .load_key_by_id(&GroupKeyring::key_id_for(&group_key))
+                .map_err(|e| eyre::eyre!("load delivered key: {e}"))?
+                .is_some()
+        {
+            tracing::debug!(
+                group_id = %hex::encode(group_id),
+                "replayed delivery of a key already held; leaving its rank as it is"
+            );
+            return Ok(None);
+        }
+
         // The op's sequence, read the same way `apply_signed_op` reads it for a
         // rotation. Monotone in the DAG, so it exceeds the epoch of any key this
         // node already holds for the group and the delivered key becomes current
@@ -2125,6 +2146,13 @@ impl<'a> NamespaceGovernance<'a> {
                 );
                 continue;
             }
+            // This walk has no applied marker, so it re-feeds creates this node
+            // folded long ago, and a create is not replay-safe: its fold seats the
+            // creator as admin again, and a moved group refuses it on every pass.
+            // Its side effect also re-drives the group, which re-enters this walk.
+            if self.group_created_already_folded(&root)? {
+                continue;
+            }
             // A replayed root op is judged as one applied on arrival is.
             if self.root_op_is_void(&gate_op, &root, gate_op.content_hash()?)? {
                 continue;
@@ -2179,6 +2207,28 @@ impl<'a> NamespaceGovernance<'a> {
             applied,
             divergence,
         })
+    }
+
+    /// Whether `root` is a `GroupCreated` (bare or delegated) for a group this
+    /// node has already folded.
+    ///
+    /// Folded means the parent edge and the birth visibility are both on disk:
+    /// the create writes the visibility last, so a fold cut short by a crash
+    /// still reads as unfolded and the next pass finishes it. The id is derived
+    /// from the create, so an existing group with that id is this op's group,
+    /// wherever it has been moved since.
+    fn group_created_already_folded(&self, root: &RootOp) -> EyreResult<bool> {
+        let group_id = match root {
+            RootOp::OnBehalf { op, .. } | RootOp::RootGuarded { op, .. } => {
+                return self.group_created_already_folded(op);
+            }
+            RootOp::GroupCreated { group_id, .. } => ContextGroupId::from(group_id.to_bytes()),
+            _ => return Ok(false),
+        };
+        Ok(NamespaceRepository::new(self.store)
+            .parent(&group_id)?
+            .is_some()
+            && CapabilitiesRepository::new(self.store).has_subgroup_visibility(&group_id)?)
     }
 
     pub(crate) fn retry_encrypted_ops_for_group(
