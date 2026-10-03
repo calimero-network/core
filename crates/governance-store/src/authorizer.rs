@@ -171,9 +171,12 @@ pub trait AtCutAuthorizer: Send + Sync {
     /// arrives and ops parked unreadable can now be read.
     fn forget(&self) {}
 
-    /// Is `op`, about to be applied in `group`, void: is its signer's removal concurrent
-    /// with it? `None` without a log or a whole cut; the op is then applied as before.
-    fn op_is_void(&self, _group: &ContextGroupId, _op: &Op) -> Option<bool> {
+    /// Is `op`, about to be applied in `group`, void: is its signer's removal, or the
+    /// revocation of a capability it relies on, concurrent with it? `capability` is
+    /// the bits that admit a member who is no admin to the op, for a kind its payload
+    /// does not show. `None` without a log or a whole cut; the op is then applied as
+    /// before.
+    fn op_is_void(&self, _group: &ContextGroupId, _capability: u32, _op: &Op) -> Option<bool> {
         None
     }
 
