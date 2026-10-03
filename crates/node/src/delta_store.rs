@@ -34,6 +34,7 @@ use indexmap::IndexMap;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::dag_compactor::disk::{self, DiskPrune};
 use crate::sync::rotation_log_reader;
 
 /// Shared, swappable parent-topology map keyed by delta id.
@@ -3860,6 +3861,16 @@ impl DeltaStore {
         dag.has_delta(id)
     }
 
+    /// Ids of every delta this store holds in memory, with or without a row:
+    /// the DAG's, applied or pending, and the orphaned members waiting on
+    /// their anchor. DAG compaction keeps their side rows, which are served
+    /// once a pending delta applies.
+    pub(crate) async fn held_delta_ids(&self) -> Vec<[u8; 32]> {
+        let mut ids: Vec<[u8; 32]> = self.dag.read().await.delta_ids().copied().collect();
+        ids.extend(self.anchor_pending.read().await.seen.iter().copied());
+        ids
+    }
+
     /// Get a specific delta (for sending to peers)
     pub async fn get_delta(&self, id: &[u8; 32]) -> Option<CausalDelta<Vec<Action>>> {
         let dag = self.dag.read().await;
@@ -4055,108 +4066,114 @@ impl DeltaStore {
         added_count
     }
 
-    /// Compact this context's DAG history, bounding on-disk delta growth
-    /// (issue #2026).
+    /// Compact this context's DAG history, bounding both the in-memory DAG and
+    /// the context's rows in the delta column (issue #2026).
     ///
-    /// When the in-memory DAG holds more than `min_deltas_before_compact`
-    /// deltas, history older than the most-recent `retain_recent_count` is
-    /// dropped from both the in-memory DAG and the durable delta column. The
-    /// retained window keeps cheap incremental delta catch-up working for
-    /// peers with small gaps; a peer that needs older history will request a
-    /// pruned delta, get "not found", and fall back to HashComparison — which
-    /// reconciles current state without the delta log, so the pruned history
-    /// is never required for convergence.
+    /// The two are pruned on their own counts, because neither tells the
+    /// other's: after a restart a compacted context's DAG cannot be rebuilt
+    /// from its rows (the oldest retained row's parent is gone, so
+    /// `load_persisted_deltas` restores none of the chain above it), and the
+    /// DAG holds pending deltas that have no row.
     ///
-    /// The whole operation runs under the DAG write lock so it serialises
-    /// against `get_delta`/`has_delta` (the responder send path) and the apply
-    /// path: a peer either sees a delta or sees it gone, never a torn view.
-    /// Pruning is skipped while pending deltas exist — a mid-sync DAG whose
-    /// heads are about to advance is not a good moment to draw the retain
-    /// window.
+    /// - **In memory**: when the DAG holds more than
+    ///   `min_deltas_before_compact` deltas, history outside the most-recent
+    ///   `retain_recent_count` is dropped (`DagStore::prune_to_recent`).
+    ///   Pending deltas do not hold this back: they are never pruned, and
+    ///   neither are the parents they already hold, so a delta stuck pending
+    ///   no longer blocks its context's compaction until it ages out.
+    /// - **On disk**: when the context holds more than
+    ///   `min_deltas_before_compact` rows, the rows outside the window drawn
+    ///   back from its persisted heads are deleted, except any the DAG still
+    ///   holds ([`disk::prune_context_rows`]).
     ///
-    /// The in-memory prune happens first, then the DB delete. Order is not
-    /// correctness-critical: a crash between them leaves extra delta rows that
-    /// the next sweep re-prunes (and that `load_persisted_deltas` would simply
-    /// reload), never lost state — context state lives in the storage tree,
-    /// not the delta log.
+    /// Heads are never pruned, in either. The whole operation runs under the
+    /// DAG write lock, so it serialises against `get_delta`/`has_delta` (the
+    /// responder send path) and the apply path: a peer either sees a delta or
+    /// sees it gone. The disk half also holds the context's execution lock,
+    /// taken in the order every inbound apply takes it (`dag` write, then the
+    /// context), because that lock is what a local execute and an inbound
+    /// apply hold while they commit an applied row with the heads: without it
+    /// a head committed mid-scan could be judged against the old ones and
+    /// deleted. When the lock cannot be had (an unknown context) no row is
+    /// deleted.
     ///
-    /// Returns the number of deltas pruned (0 when not eligible or skipped).
-    pub async fn compact(
+    /// The in-memory prune happens first, then the DB delete. A crash between
+    /// them leaves extra rows that the next sweep re-prunes (and that
+    /// `load_persisted_deltas` would simply reload), never lost state —
+    /// context state lives in the storage tree, not the delta log.
+    pub(crate) async fn compact(
         &self,
         min_deltas_before_compact: usize,
         retain_recent_count: usize,
-    ) -> usize {
+    ) -> Compaction {
+        let context_id = self.applier.context_id;
         let mut dag = self.dag.write().await;
 
-        // `delta_count()` is the in-memory DAG size (applied + pending). It is
-        // NOT the number of DB rows: after a restart `load_persisted_deltas`
-        // is bounded by the in-memory caps (`MAX_TOPOLOGY_ENTRIES`), so a
-        // context with far more rows on disk can report a smaller count here
-        // and under-prune the DB. Bounding cold/large contexts' on-disk rows
-        // is the separate "cold-context compaction" follow-up; this sweep only
-        // bounds the live working set.
-        let total = dag.delta_count();
-        if total <= min_deltas_before_compact {
-            return 0;
-        }
+        let in_memory = if dag.delta_count() > min_deltas_before_compact {
+            dag.prune_to_recent(retain_recent_count).len()
+        } else {
+            0
+        };
+        let keep: HashSet<[u8; 32]> = dag.delta_ids().copied().collect();
 
-        // Don't compact mid-catch-up: pending deltas mean heads are still
-        // advancing, so the retain window would be drawn against a moving
-        // target. `prune_to_recent` already refuses to drop pending deltas,
-        // but skipping wholesale here also avoids needless churn. A delta
-        // stuck pending blocks its context's compaction until it resolves or
-        // the existing stale-pending eviction (PENDING_DELTA_MAX_AGE) clears
-        // it — so this never wedges a context permanently.
-        let pending = dag.pending_stats().count;
-        if pending > 0 {
-            debug!(
-                context_id = %self.applier.context_id,
-                total,
-                pending,
-                "Skipping DAG compaction: pending deltas present (mid-sync)"
-            );
-            return 0;
-        }
+        let Some(lock) = self.applier.context_client.acquire_lock(&context_id).await else {
+            debug!(%context_id, "DAG compaction left the rows alone: no context lock");
+            return Compaction {
+                in_memory,
+                on_disk: DiskPrune::default(),
+            };
+        };
+        let store = self.applier.context_client.datastore().clone();
+        let on_disk = tokio::task::spawn_blocking(move || {
+            let _lock = lock;
+            disk::prune_context_rows(
+                &store,
+                context_id,
+                min_deltas_before_compact,
+                retain_recent_count,
+                &keep,
+            )
+        })
+        .await;
+        let remaining = dag.delta_count();
+        drop(dag);
 
-        let pruned_ids = dag.prune_to_recent(retain_recent_count);
-        if pruned_ids.is_empty() {
-            return 0;
-        }
-
-        // Mirror the prune to durable storage. Done while the write lock is
-        // still held so the in-memory and on-disk views can't diverge under a
-        // concurrent responder read.
-        let delta_keys: Vec<calimero_store::key::ContextDagDelta> = pruned_ids
-            .iter()
-            .map(|id| calimero_store::key::ContextDagDelta::new(self.applier.context_id, *id))
-            .collect();
-
-        match self.applier.context_client.prune_delta_records(&delta_keys) {
-            Ok(()) => {
-                let remaining = dag.delta_count();
-                tracing::info!(
-                    context_id = %self.applier.context_id,
-                    pruned = pruned_ids.len(),
-                    remaining,
-                    "Compacted DAG history"
-                );
+        let on_disk = match on_disk {
+            Ok(Ok(on_disk)) => on_disk,
+            Ok(Err(e)) => {
+                // In-memory is already pruned; the rows are still there.
+                // That's the safe direction — the next sweep retries.
+                warn!(?e, %context_id, "DAG compaction failed to prune rows; next sweep retries");
+                DiskPrune::default()
             }
             Err(e) => {
-                // In-memory is already pruned; the DB still carries the rows.
-                // That's the safe direction — the next sweep re-deletes them,
-                // and a restart reloads them into the DAG (no lost state). Log
-                // and report the in-memory prune count regardless.
-                tracing::warn!(
-                    ?e,
-                    context_id = %self.applier.context_id,
-                    pruned = pruned_ids.len(),
-                    "DAG compaction pruned in-memory but failed to delete rows; next sweep retries"
-                );
+                warn!(?e, %context_id, "DAG compaction row prune panicked; next sweep retries");
+                DiskPrune::default()
             }
+        };
+
+        if in_memory > 0 || on_disk.pruned > 0 {
+            info!(
+                %context_id,
+                in_memory,
+                rows = on_disk.pruned,
+                side_rows = on_disk.side_rows,
+                remaining,
+                "Compacted DAG history"
+            );
         }
 
-        pruned_ids.len()
+        Compaction { in_memory, on_disk }
     }
+}
+
+/// What [`DeltaStore::compact`] pruned.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Compaction {
+    /// Deltas dropped from the in-memory DAG.
+    pub(crate) in_memory: usize,
+    /// Rows deleted from the delta column.
+    pub(crate) on_disk: DiskPrune,
 }
 
 #[cfg(test)]

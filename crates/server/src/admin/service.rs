@@ -51,14 +51,29 @@ pub struct AdminConfig {
     ///
     /// # What this opens, and what it does not
     ///
-    /// It opens exactly two routes — `GET`/`POST
-    /// /admin-api/contexts/:context_id/intents` — and nothing else. Both are
-    /// self-authenticating: the `POST` carries a warrant signed by the author's
-    /// device key that commits to this context, this method and these arguments,
-    /// has not expired, and whose nonce this node has not spent; and it is
-    /// refused unless this node holds `CAN_AUTHOR_ON_BEHALF` on the group owning
-    /// the context. A node token proves none of that and none of that needs a
+    /// It opens the delegated-execution surface ([`delegated_execution_routes`])
+    /// and nothing else:
+    ///
+    /// - `GET`/`POST /admin-api/contexts/:context_id/intents` — run a call a
+    ///   member signed a warrant for, and learn which executor to name in one;
+    /// - `POST /admin-api/contexts/:context_id/presence-intents` — publish a
+    ///   member's signed presence statement;
+    /// - `GET`/`POST /admin-api/groups/:group_id/context-intents` — create a
+    ///   context for a member;
+    /// - `GET`/`POST /admin-api/groups/:group_id/governance-intents` — publish a
+    ///   governance op a member signed.
+    ///
+    /// Each is self-authenticating: the request carries a warrant (or, for
+    /// presence, a statement) signed by the member's device key that commits to
+    /// exactly what it asks for, has not expired, and whose nonce this node has
+    /// not spent; and it is refused unless this node may act for members in
+    /// that group. A node token proves none of that and none of that needs a
     /// node token.
+    ///
+    /// Off, the same routes are mounted behind this node's own auth instead,
+    /// where they answer a token holding the intent permission
+    /// (`context:intent`): an operator can hand a client such a token rather
+    /// than open the routes to anyone.
     ///
     /// # Why it is off by default and why it exists at all
     ///
@@ -514,6 +529,9 @@ pub(crate) fn setup(
         } else {
             delegated_execution_routes()
         })
+        .layer(axum::middleware::from_fn(
+            crate::admin::client_key_scope::refuse_out_of_scope,
+        ))
         .layer(Extension(Arc::clone(&shared_state)))
         .layer(session_layer.clone());
 
@@ -549,8 +567,8 @@ pub(crate) fn setup(
 /// split is a surface that looks available and is not.
 ///
 /// Which router this is merged into is [`AdminConfig::delegated_access`]; see there
-/// for why an unauthenticated posture is a coherent choice for these two routes
-/// and only these two.
+/// for why an unauthenticated posture is a coherent choice for these routes and
+/// only these.
 fn delegated_execution_routes() -> Router {
     Router::new()
         .route(
@@ -864,6 +882,38 @@ impl IntoResponse for ApiError {
             .body(Body::from(body))
             .unwrap()
     }
+}
+
+/// A context method that ran and returned an error, answered the way JSON-RPC
+/// `execute` answers it.
+///
+/// The body is the admin API's error shape, `{ "error": <message> }`, with
+/// JSON-RPC's error object beside it: `type` (`FunctionCallError`) and `data`
+/// (the method's message) are exactly what `/jsonrpc` returns under `error` for
+/// the same call. A client that already branches on the JSON-RPC error class
+/// reads it from the same two fields, and one that only reads `error` still gets
+/// the message.
+///
+/// `400` for the method's own error, as the delegated creation route answers an
+/// `init` that returned one (`ContextError::InitFailed`): the app refused this
+/// call, and the node is healthy. Anything else the mapping produces (output
+/// that is not JSON) is the node's or the app's fault, so `500`.
+pub(crate) fn method_error_response(
+    err: &calimero_server_primitives::jsonrpc::ExecutionError,
+) -> Response<Body> {
+    use calimero_server_primitives::jsonrpc::ExecutionError;
+
+    let status_code = match err {
+        ExecutionError::FunctionCallError(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let mut body = serde_json::to_value(err).unwrap_or_else(|_| json!({}));
+    if let Some(object) = body.as_object_mut() {
+        let _previous = object.insert("error".to_owned(), json!(err.to_string()));
+    } else {
+        body = json!({ "error": err.to_string() });
+    }
+    (status_code, axum::Json(body)).into_response()
 }
 
 /// The status a device-pairing refusal answers with, or `None` if `err` is not

@@ -150,7 +150,13 @@ impl SyncMetricsCollector for SimMetricsCollector {
         // Simulation uses convergence metrics instead
     }
 
-    fn record_sync_failure(&self, _context_id: &str, _protocol: &str, _reason: &str) {
+    fn record_sync_failure(
+        &self,
+        _context_id: &str,
+        _protocol: &str,
+        _duration: Duration,
+        _reason: &str,
+    ) {
         // Simulation tracks failures through convergence metrics
     }
 

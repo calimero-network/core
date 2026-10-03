@@ -117,15 +117,23 @@ pub(crate) struct ConnectionStateInner {
     /// Distinguishes the "legitimate NodeOwner" path from "no auth at all"
     /// when `caller` is `None`.
     pub(crate) node_owner: bool,
+    pub(crate) scope: Option<crate::auth::ClientKeyScope>,
     /// What this connection's subscriptions depend on, and whether that has
     /// been checked since it last could have changed. See
     /// [`crate::subscription_grants`] for why authority is vouched for rather
     /// than re-derived on every event.
     pub(crate) grants: crate::subscription_grants::Grants,
+    /// What the upgrade's token may do, so `execute` can be checked per message.
+    pub(crate) granted: Option<crate::auth::GrantedPermissions>,
 }
 
 impl ConnectionStateInner {
-    fn new(caller: Option<crate::caller_account::EventCaller>, node_owner: bool) -> Self {
+    fn new(
+        caller: Option<crate::caller_account::EventCaller>,
+        node_owner: bool,
+        granted: Option<crate::auth::GrantedPermissions>,
+        scope: Option<crate::auth::ClientKeyScope>,
+    ) -> Self {
         Self {
             subscriptions: HashSet::default(),
             group_subscriptions: HashSet::default(),
@@ -133,6 +141,8 @@ impl ConnectionStateInner {
             last_pong: AtomicU64::new(unix_timestamp()),
             caller,
             node_owner,
+            granted,
+            scope,
             grants: crate::subscription_grants::Grants::default(),
         }
     }
@@ -330,6 +340,10 @@ pub(crate) fn service(
     Some((path, get(ws_handler).layer(Extension(state))))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "axum extractors: one per auth extension the guard may inject"
+)]
 async fn ws_handler(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -338,6 +352,8 @@ async fn ws_handler(
     auth_node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     auth_account: Option<Extension<AuthenticatedAccount>>,
     auth_device: Option<Extension<AuthenticatedDevice>>,
+    granted: Option<Extension<crate::auth::GrantedPermissions>>,
+    client_scope: Option<Extension<ClientKeyScope>>,
 ) -> impl IntoResponse {
     // Validate WebSocket upgrade request
     let ws = match ws {
@@ -382,6 +398,7 @@ async fn ws_handler(
     //                               warn loudly (misconfiguration signal)
     //                             - auth_enabled=false → intentional no-auth deployment;
     //                               proceed silently at debug level
+    let scope = client_scope.map(|ext| ext.0);
     let (caller, node_owner) = match (auth_key, auth_node_owner, auth_account) {
         (Some(ext), _, _) => (Some(EventCaller::Key(ext.0 .0)), false),
         (None, Some(_), _) => (None, true),
@@ -418,7 +435,16 @@ async fn ws_handler(
     // memory during JSON parsing (the connection is closed instead).
     ws.max_message_size(WS_MAX_MESSAGE_BYTES)
         .max_frame_size(WS_MAX_MESSAGE_BYTES)
-        .on_upgrade(move |socket| handle_socket(socket, state, caller, node_owner))
+        .on_upgrade(move |socket| {
+            handle_socket(
+                socket,
+                state,
+                caller,
+                node_owner,
+                granted.map(|ext| ext.0),
+                scope,
+            )
+        })
         .into_response()
 }
 
@@ -427,6 +453,8 @@ async fn handle_socket(
     state: Arc<ServiceState>,
     caller: Option<crate::caller_account::EventCaller>,
     node_owner: bool,
+    granted: Option<crate::auth::GrantedPermissions>,
+    scope: Option<ClientKeyScope>,
 ) {
     let (commands_sender, commands_receiver) = mpsc::channel(WS_COMMAND_CHANNEL_BUFFER_SIZE);
 
@@ -440,7 +468,9 @@ async fn handle_socket(
     let connection_id = Uuid::new_v4();
     let connection_state = ConnectionState {
         commands: commands_sender.clone(),
-        inner: Arc::new(RwLock::new(ConnectionStateInner::new(caller, node_owner))),
+        inner: Arc::new(RwLock::new(ConnectionStateInner::new(
+            caller, node_owner, granted, scope,
+        ))),
     };
 
     {
@@ -687,8 +717,8 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
 /// ANCESTORS, so an inherited member of a descendant is caught by a removal
 /// that names only the parent.
 ///
-/// Node-owner and no-auth connections are unaffected — the gates admit them
-/// unconditionally, so they never appear in a revocation.
+/// Node-owner and identity-less no-auth connections are unaffected; the gates
+/// admit them, so they never appear in a revocation.
 async fn prune_stale_grants(state: &ServiceState, group_id: &Hash) {
     // Snapshot under the read lock, re-authorize without it. The membership
     // lookups touch the store, and holding either lock across them would stall
@@ -1046,8 +1076,20 @@ async fn handle_text_message(
                     // caller and node_owner are set once at upgrade time and
                     // never mutated; copying them before dropping the lock is safe.
                     let (caller, node_owner) = (inner.caller, inner.node_owner);
+                    let granted = inner.granted.clone();
+                    let scope = inner.scope.clone();
                     drop(inner);
-                    execute::handle(&state, caller, node_owner, request).await
+                    if scope
+                        .as_ref()
+                        .is_some_and(|s| !s.permits_context(&state.ctx_client, &request.context_id))
+                    {
+                        warn!(context_id=%request.context_id, "refusing WS execute: context outside the client key's bindings");
+                        ResponseBody::Error(ResponseBodyError::HandlerError(
+                            ClientKeyScope::refusal(),
+                        ))
+                    } else {
+                        execute::handle(&state, caller, node_owner, granted.as_ref(), request).await
+                    }
                 }
             },
             Err(err) => {
@@ -1154,6 +1196,7 @@ pub(crate) use mount_method;
 
 use crate::auth::{
     AuthenticatedAccount, AuthenticatedDevice, AuthenticatedKey, AuthenticatedNodeOwner,
+    ClientKeyScope,
 };
 use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
@@ -1298,6 +1341,26 @@ mod tests {
         event_sender: broadcast::Sender<NodeEvent>,
         config: WsConfig,
     ) -> TestServer {
+        spawn_test_ws_layered(
+            auth_enabled,
+            |app| match caller {
+                Some(caller) => app.layer(Extension(crate::auth::AuthenticatedKey(caller))),
+                None => app,
+            },
+            node_manager,
+            event_sender,
+            config,
+        )
+        .await
+    }
+
+    async fn spawn_test_ws_layered(
+        auth_enabled: bool,
+        auth: impl FnOnce(Router) -> Router,
+        node_manager: LazyRecipient<calimero_node_primitives::messages::NodeMessage>,
+        event_sender: broadcast::Sender<NodeEvent>,
+        config: WsConfig,
+    ) -> TestServer {
         let (node_client, ctx_client, blob_dir) =
             test_clients(node_manager, event_sender.clone()).await;
 
@@ -1311,11 +1374,8 @@ mod tests {
             browser_origins: BrowserOrigins::new(&[], None),
         });
 
-        let mut app = Router::new().route("/ws", get(ws_handler));
-        if let Some(caller) = caller {
-            app = app.layer(Extension(crate::auth::AuthenticatedKey(caller)));
-        }
-        let app = app.layer(Extension(Arc::clone(&state)));
+        let app =
+            auth(Router::new().route("/ws", get(ws_handler))).layer(Extension(Arc::clone(&state)));
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2482,6 +2542,165 @@ mod tests {
         );
     }
 
+    fn bound_namespace() -> calimero_context_config::types::ContextGroupId {
+        calimero_context_config::types::ContextGroupId::from([0xC0u8; 32])
+    }
+
+    fn bound_owning_group() -> calimero_context_config::types::ContextGroupId {
+        calimero_context_config::types::ContextGroupId::from([0xC1u8; 32])
+    }
+
+    fn bound_sibling_group() -> calimero_context_config::types::ContextGroupId {
+        calimero_context_config::types::ContextGroupId::from([0xC2u8; 32])
+    }
+
+    fn bound_ctx() -> ContextId {
+        ContextId::from([0xC3u8; 32])
+    }
+
+    fn other_ctx() -> ContextId {
+        ContextId::from([0xC4u8; 32])
+    }
+
+    async fn spawn_test_ws_bound_client_key() -> TestServer {
+        let scope = crate::auth::ClientKeyScope(
+            mero_auth::auth::bindings::ClientKeyBindings::from_permissions(&[
+                format!("context[{},identity]", bound_ctx()),
+                "context:execute".to_owned(),
+            ]),
+        );
+        let (event_sender, _) = broadcast::channel(256);
+        let server = spawn_test_ws_layered(
+            true,
+            |app| {
+                app.layer(Extension(scope))
+                    .layer(Extension(crate::auth::AuthenticatedNodeOwner))
+            },
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+
+        let store = server.state.ctx_client.datastore();
+        let namespaces = calimero_governance_store::NamespaceRepository::new(store);
+        namespaces
+            .nest(&bound_namespace(), &bound_owning_group())
+            .unwrap();
+        namespaces
+            .nest(&bound_namespace(), &bound_sibling_group())
+            .unwrap();
+        calimero_governance_store::ContextTreeService::new(store, bound_owning_group())
+            .register_context(&bound_ctx())
+            .unwrap();
+        server
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_subscribes_only_to_its_context() {
+        let server = spawn_test_ws_bound_client_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let req = WsRequest {
+            id: Some(1),
+            payload: RequestPayload::Subscribe(SubscribeRequest {
+                context_ids: vec![bound_ctx(), other_ctx()],
+                group_ids: vec![],
+            }),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(
+            resp["result"]["contextIds"],
+            serde_json::to_value(vec![bound_ctx()]).unwrap(),
+            "only the bound context may be subscribed: {resp}"
+        );
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_subscribes_only_to_groups_above_its_context() {
+        let server = spawn_test_ws_bound_client_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        let allowed = [bound_owning_group(), bound_namespace()].map(|g| Hash::from(g.to_bytes()));
+        let refused = Hash::from(bound_sibling_group().to_bytes());
+        let req = WsRequest {
+            id: Some(1),
+            payload: RequestPayload::Subscribe(SubscribeRequest {
+                context_ids: vec![],
+                group_ids: vec![allowed[0], allowed[1], refused],
+            }),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        let mut granted: Vec<String> = resp["result"]["groupIds"]
+            .as_array()
+            .expect("groupIds")
+            .iter()
+            .map(|v| v.as_str().expect("hex id").to_owned())
+            .collect();
+        granted.sort();
+        let mut expected: Vec<String> = allowed.iter().map(|g| hex::encode(g.as_bytes())).collect();
+        expected.sort();
+        assert_eq!(
+            granted, expected,
+            "the sibling group must be refused: {resp}"
+        );
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_cannot_execute_on_another_context() {
+        let server = spawn_test_ws_bound_client_key().await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        for (id, ctx) in [(1u64, other_ctx()), (2, bound_ctx())] {
+            let req = WsRequest {
+                id: Some(id),
+                payload: RequestPayload::Execute(ExecutionRequest::new(
+                    ctx,
+                    "some_method".to_owned(),
+                    json!({}),
+                )),
+            };
+            write
+                .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+                .await
+                .unwrap();
+        }
+
+        let mut refused = std::collections::HashMap::new();
+        for _ in 0..2 {
+            let resp = next_json(&mut read, Duration::from_secs(5))
+                .await
+                .expect("execute response");
+            let _ = refused.insert(
+                resp["id"].as_u64().expect("id"),
+                resp.to_string()
+                    .contains("not permitted to act on this context"),
+            );
+        }
+        assert_eq!(
+            refused.get(&1),
+            Some(&true),
+            "another context must be refused"
+        );
+        assert_eq!(
+            refused.get(&2),
+            Some(&false),
+            "the bound context reaches execution (and fails there: it holds no app)"
+        );
+    }
+
     #[tokio::test]
     async fn execute_for_unknown_context_returns_error() {
         let server = spawn_test_ws().await;
@@ -2778,6 +2997,291 @@ mod tests {
             saw_delta,
             "a delta emitted while the snapshot was being read must still reach the \
              subscriber — the subscription has to be live BEFORE the snapshot is read",
+        );
+    }
+
+    /// A token carrying `permissions`, presented on `/ws` through the real auth
+    /// guard over an in-memory auth service, as a browser client would.
+    async fn spawn_test_ws_behind_guard(permissions: &[&str]) -> TestServer {
+        use mero_auth::auth::token::TokenManager;
+        use mero_auth::config::JwtConfig;
+        use mero_auth::secrets::SecretManager;
+        use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
+        use mero_auth::AuthService;
+
+        let permissions: Vec<String> = permissions.iter().map(|p| (*p).to_owned()).collect();
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+        secrets.initialize().await.unwrap();
+        let token_manager = TokenManager::new(
+            JwtConfig {
+                issuer: "test".to_owned(),
+                access_token_expiry: 3600,
+                refresh_token_expiry: 86400,
+                client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+                client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(
+                ),
+                node_host: None,
+            },
+            Arc::clone(&storage),
+            secrets,
+        );
+        let key = Key::new_root_key_with_permissions(
+            "owner".to_owned(),
+            "user_password".to_owned(),
+            permissions.clone(),
+            None,
+        );
+        KeyManager::new(Arc::clone(&storage))
+            .set_key("k-1", &key)
+            .await
+            .unwrap();
+        let (token, _) = token_manager
+            .generate_token_pair("k-1".to_owned(), permissions, None, None)
+            .await
+            .unwrap();
+
+        let (event_sender, _) = broadcast::channel(256);
+        let (node_client, ctx_client, blob_dir) =
+            test_clients(LazyRecipient::new(), event_sender.clone()).await;
+        let state = Arc::new(ServiceState {
+            node_client,
+            ctx_client,
+            connections: RwLock::default(),
+            config: WsConfig::new(true),
+            auth_enabled: true,
+            events_fanout: std::sync::Once::new(),
+            browser_origins: BrowserOrigins::new(&[], None),
+        });
+        let app = Router::new()
+            .route("/ws", get(ws_handler).layer(Extension(Arc::clone(&state))))
+            .layer(crate::auth::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager)),
+                None,
+            ));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        TestServer {
+            url: format!("ws://{addr}/ws?token={token}"),
+            addr,
+            state,
+            event_sender,
+            _server: server,
+            _blob_dir: blob_dir,
+        }
+    }
+
+    /// Send one `execute` for a context the node does not hold and return the
+    /// reply: a handler error if the caller may execute, a refusal if not.
+    async fn ws_execute_reply(url: &str) -> Value {
+        let (mut write, mut read) = connect_async(url).await.unwrap().0.split();
+        let req = WsRequest {
+            id: Some(9),
+            payload: RequestPayload::Execute(ExecutionRequest::new(
+                ContextId::from([3u8; 32]),
+                "some_method".to_owned(),
+                json!({}),
+            )),
+        };
+        write
+            .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+            .await
+            .unwrap();
+        next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("execute response")
+    }
+
+    #[tokio::test]
+    async fn ws_execute_is_refused_without_the_execute_permission() {
+        let server = spawn_test_ws_behind_guard(&["context:subscribe"]).await;
+
+        let resp = ws_execute_reply(&server.url).await;
+
+        assert_eq!(resp["id"], json!(9));
+        assert!(resp.get("error").is_some(), "{resp}");
+        assert!(
+            resp.to_string().contains("context:execute"),
+            "a subscribe-only token must be refused for lack of context:execute: {resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_subscribe_still_works_without_the_execute_permission() {
+        let server = spawn_test_ws_behind_guard(&["context:subscribe"]).await;
+        let (mut write, mut read) = connect_async(&server.url).await.unwrap().0.split();
+
+        write
+            .send(subscribe_msg(1, ContextId::from([3u8; 32])))
+            .await
+            .unwrap();
+
+        let resp = next_json(&mut read, Duration::from_secs(5))
+            .await
+            .expect("subscribe response");
+        assert_eq!(resp["id"], json!(1));
+        assert!(
+            resp.get("result").is_some(),
+            "subscribe must not need the execute permission: {resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_execute_is_served_with_the_execute_permission() {
+        for permissions in [
+            &["context:subscribe", "context:execute"][..],
+            &["context:subscribe", "admin"][..],
+        ] {
+            let server = spawn_test_ws_behind_guard(permissions).await;
+
+            let resp = ws_execute_reply(&server.url).await;
+
+            assert!(
+                resp.get("error").is_some() && !resp.to_string().contains("context:execute"),
+                "{permissions:?} must reach the handler (context not held): {resp}"
+            );
+        }
+    }
+
+    /// A proxy-mode node (no embedded guard) behind a proxy that forwards the
+    /// token's permissions as mero-auth's `/auth/validate` names them.
+    async fn spawn_test_ws_behind_proxy() -> TestServer {
+        let (event_sender, _) = broadcast::channel(256);
+        let (node_client, ctx_client, blob_dir) =
+            test_clients(LazyRecipient::new(), event_sender.clone()).await;
+        let state = Arc::new(ServiceState {
+            node_client,
+            ctx_client,
+            connections: RwLock::default(),
+            config: WsConfig::new(true),
+            auth_enabled: false,
+            events_fanout: std::sync::Once::new(),
+            browser_origins: BrowserOrigins::new(&[], None),
+        });
+        let app = Router::new()
+            .route("/ws", get(ws_handler).layer(Extension(Arc::clone(&state))))
+            .layer(axum::middleware::from_fn(crate::proxy_permissions::inject));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        TestServer {
+            url: format!("ws://{addr}/ws"),
+            addr,
+            state,
+            event_sender,
+            _server: server,
+            _blob_dir: blob_dir,
+        }
+    }
+
+    /// Production TEE nodes run proxy mode, where the node sees no token. A
+    /// subscribe-only token's `execute` ran there as if it could do anything;
+    /// the permissions the proxy forwards now hold it to what it was minted for.
+    #[tokio::test]
+    async fn ws_execute_behind_a_proxy_is_held_to_the_forwarded_permissions() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let server = spawn_test_ws_behind_proxy().await;
+        for (permissions, refused) in [
+            ("context:subscribe", true),
+            ("context:subscribe,context:execute[,,get]", true),
+            ("context:subscribe,context:execute", false),
+        ] {
+            let mut request = server.url.as_str().into_client_request().unwrap();
+            let _previous = request
+                .headers_mut()
+                .insert("x-auth-permissions", permissions.parse().unwrap());
+            let (mut write, mut read) = connect_async(request).await.unwrap().0.split();
+            let req = WsRequest {
+                id: Some(9),
+                payload: RequestPayload::Execute(ExecutionRequest::new(
+                    ContextId::from([3u8; 32]),
+                    "some_method".to_owned(),
+                    json!({}),
+                )),
+            };
+            write
+                .send(Message::Text(serde_json::to_string(&req).unwrap().into()))
+                .await
+                .unwrap();
+            let resp = next_json(&mut read, Duration::from_secs(5))
+                .await
+                .expect("execute response");
+
+            assert_eq!(
+                resp.to_string().contains("does not grant context:execute"),
+                refused,
+                "{permissions}: {resp}"
+            );
+        }
+    }
+
+    /// Proxy mode runs no embedded guard, but a proxy-identity tenant is one
+    /// caller among many: its subscribe is held to its own membership.
+    #[actix::test]
+    async fn ws_subscribe_behind_a_proxy_is_held_to_the_tenants_membership() {
+        use calimero_account::AccountId;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::MembershipRepository;
+        use calimero_primitives::context::GroupMemberRole;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let (event_sender, _) = broadcast::channel(256);
+        let server = spawn_test_ws_layered(
+            false,
+            |app| app.layer(axum::middleware::from_fn(crate::proxy_identity::inject)),
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+        let store = server.state.ctx_client.datastore();
+        let group = ContextGroupId::from([0xC0; 32]);
+        let ctx = ContextId::from([0xC1; 32]);
+        let member = AccountId::from([0xC2; 32]);
+        MembershipRepository::new(store)
+            .add_member(&group, &member, GroupMemberRole::Member)
+            .unwrap();
+        calimero_governance_store::register_context_in_group(store, &group, &ctx).unwrap();
+
+        for (tenant, expected) in [
+            (member, json!([ctx])),
+            (AccountId::from([0xC3; 32]), json!([])),
+        ] {
+            let mut request = server.url.as_str().into_client_request().unwrap();
+            let _previous = request
+                .headers_mut()
+                .insert("x-auth-account", tenant.to_string().parse().unwrap());
+            let (mut write, mut read) = connect_async(request).await.unwrap().0.split();
+            write.send(subscribe_msg(1, ctx)).await.unwrap();
+            let resp = next_json(&mut read, Duration::from_secs(5))
+                .await
+                .expect("subscribe response");
+            assert_eq!(
+                resp["result"]["contextIds"], expected,
+                "tenant {tenant}: {resp}"
+            );
+        }
+    }
+
+    /// A proxy that names no permissions leaves proxy mode answering as it
+    /// always has.
+    #[tokio::test]
+    async fn ws_execute_behind_a_proxy_naming_none_is_unchecked() {
+        let server = spawn_test_ws_behind_proxy().await;
+
+        let resp = ws_execute_reply(&server.url).await;
+
+        assert!(
+            resp.get("error").is_some() && !resp.to_string().contains("context:execute"),
+            "reaches the handler (context not held): {resp}"
         );
     }
 }

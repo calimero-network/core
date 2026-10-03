@@ -222,6 +222,30 @@ An operation is authorized against the membership and access-control state that 
 
 The same mechanism covers data writes: an entity's **writer set** (the access-control plane) is resolved at the cut, and a write is accepted only if its author was an authorized writer at that point.
 
+### A removal voids the signer's concurrent governance ops
+
+Resolving authority at the cut alone would let a removed admin keep acting: an op it signs against a cut from before its removal is authorized at that cut, on every node, however late it arrives. So a **governance** op is also void when the log holds a removal of its signer that is neither its ancestor nor its descendant. The removal can be a member removal, a demotion from admin, the revocation of the device that signed the op, or the revocation of a capability the op relied on. Once a node knows of the removal, no op of that signer concurrent with it carries authority, and every node computes the same answer from the same log in any arrival order.
+
+- A device revocation counts as a removal only if its author was an admin of the root group at its own cut. The apply logs a revocation it refused, so one from anyone else removes nothing. A self-service revocation rests on a root-signed proof that the log does not carry, and a subgroup admin's ejection is scoped to that subgroup, so neither voids the device's concurrent ops.
+- A role change counts as a demotion only if its author was an admin too.
+- A capability set counts as a revocation of the bits the member held at its cut and does not keep, only if its author was an admin of the group at that cut. It voids only the member's concurrent ops in that group that needed one of those bits: an op a non-admin needs the bit for (adding or removing members for `MANAGE_MEMBERS`, metadata for `CAN_MANAGE_METADATA`, an application target, migration or upgrade for `MANAGE_APPLICATION`, a context registration for `CAN_CREATE_CONTEXT`, a subgroup's creation, deletion or visibility for its own bit), made when the member was not an admin at the op's cut. An op that needed no removed bit stands, as does any op of a member who was an admin at its cut. A grant voids nothing. Capabilities are not inherited, so the revocation reaches only the group it names.
+- Ops before the removal stand. Ops after it are refused by the cut check, as before.
+- A void op is still logged and still part of the causal graph, so descendants keep their parents. It is not applied, its nonce is spent, and a key rotation riding on it is not taken. A node keeps only so many bytes of such ops per signer and per namespace; past that it keeps an op's place in the log and not its contents, so the DAG still moves on. A void op keeps what the rule reads of it (only the bulk of a policy is dropped), so every node still reads the same void set. For an op the node cannot read the cost is real: the contents cannot be replayed when the key arrives, and authority questions about that group stay undecided on that node.
+- Ops by other members stay valid, including ones concurrent with the removal.
+- The void cascades. An admin a void op added, a capability it granted and a rotation it made are recomputed without it, so what that admin then did is void too.
+- Two admins who remove each other concurrently are both removed. A cycle of three or more such removals voids every one of them, and nobody is removed. The namespace owner's ops are never void, and the owner cannot be removed. The exemption covers any op of the removed admin that removes or demotes the account that removed it, whichever group the op acts in.
+- A removal that is itself void voids nothing.
+- Judging whether a signer still held its authority without a void grant costs a fold of its history. The work is bounded, and past the bound the remaining candidates are void, the same on every node.
+- When a removal arrives after a node already applied a concurrent op of the same signer, the node rebuilds the affected group's members, roles, capabilities and current group key from the log without the void ops. A removal that itself becomes void later puts back what it had voided. Other effects such an op had (for example group metadata or an app target) are not undone, only withheld from a node that hears of the removal first.
+- A default capability or visibility change made by a void op is left out of every view, but ops that relied on it are not revisited.
+- A node judges with the ops it can read. A removal sealed under a key the node lacks is not seen until the key arrives, and the ops parked behind it are judged again then.
+
+Two consequences are worth telling users. An admin removed while offline loses the governance edits it made offline, and a client should say so before an admin works offline. And data sealed under a group key that a removed admin rotated to stays readable by that admin: the key is kept so that what peers sealed under it before they heard of the removal still opens, it is never the current key again, and it cannot be recalled.
+
+What the rule does not reach: a change of the namespace admin or owner that a void op made before the node heard of the removal is not undone (and the owner the rule exempts moves with it), a TEE removal a node applied has already purged it, an invitation signed by an admin before its removal still admits the joiner, because the inviter is not part of the logged join; and an op sent on an admin's behalf through a relay is attributed to the relay. Both need the inviter or the warrant's author in the logged op.
+
+This rule is part of `SignedNamespaceOp` version 21: a node on an older version applies such an op, so nodes of one namespace must be upgraded together.
+
 ## The algorithm: authorization at the cut
 
 Below is the whole security model in two folds — the governance plane and the data plane — written to match the code, so it is reimplementation-grade. Both resolve authority at the **cut the op references**, never at the receiver's present.
@@ -316,7 +340,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 7)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 21)
 ```
 
 ### Replay protection

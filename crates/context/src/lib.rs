@@ -31,7 +31,7 @@ mod account_migration;
 mod account_namespace;
 pub mod activation;
 pub(crate) mod apply_authorizer;
-pub use apply_authorizer::ProjectionAuthorizer;
+pub use apply_authorizer::{ProjectionAuthorizer, VoidJudge};
 pub mod auto_follow;
 mod cache;
 pub mod config;
@@ -808,6 +808,7 @@ impl Actor for ContextManager {
     fn started(&mut self, ctx: &mut Self::Context) {
         self.recover_in_progress_upgrades(ctx);
         self.start_namespace_heartbeat(ctx);
+        self.start_namespace_pending_sweep(ctx);
         // Periodically report in-memory context-cache effectiveness.
         // Runs on the actor thread, so it reads cache state without locking.
         // The returned SpawnHandle is intentionally dropped: this interval

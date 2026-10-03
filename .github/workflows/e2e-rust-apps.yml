@@ -1,6 +1,7 @@
 name: E2E - Rust Apps
 
-# Runs the merobox scenario matrix below against a locally-built merod image.
+# Runs the merobox scenarios in .github/e2e-scenarios.yml against a locally-built
+# merod image, packed into groups that each share one runner (see `plan`).
 # Self-contained: doesn't depend on release.yml.
 
 permissions:
@@ -42,9 +43,27 @@ on:
       - ".github/workflows/e2e-rust-apps-release.yml"
       - "scripts/lint-e2e-bundle-coverage.py"
       - "scripts/e2e-fixture-registry.sh"
+      - ".github/e2e-scenarios.yml"
+      - "scripts/e2e-scenario-groups.py"
+      - "scripts/e2e-scenario-durations.json"
+      - "scripts/e2e-run-scenario-group.sh"
+      - "scripts/e2e-scenario-log-gates.sh"
+      - "scripts/tests/e2e-scenario-groups-test.py"
+      - "scripts/tests/e2e-run-scenario-group.test.sh"
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
+      - ".github/actions/setup-cargo-mero/**"
+      - ".github/actions/wasm-apps/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      - "scripts/build-all-apps.sh"
+      - "scripts/check-embedded-abi.sh"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
 
   pull_request:
     branches: [master]
@@ -81,9 +100,27 @@ on:
       - ".github/workflows/e2e-rust-apps-release.yml"
       - "scripts/lint-e2e-bundle-coverage.py"
       - "scripts/e2e-fixture-registry.sh"
+      - ".github/e2e-scenarios.yml"
+      - "scripts/e2e-scenario-groups.py"
+      - "scripts/e2e-scenario-durations.json"
+      - "scripts/e2e-run-scenario-group.sh"
+      - "scripts/e2e-scenario-log-gates.sh"
+      - "scripts/tests/e2e-scenario-groups-test.py"
+      - "scripts/tests/e2e-run-scenario-group.test.sh"
       - ".github/workflows/build-merod-image.yml"
       - ".github/actions/setup-merobox/**"
       - ".github/actions/build-local-merod/**"
+      - ".github/actions/merod-binaries/**"
+      - ".github/actions/setup-cargo-mero/**"
+      - ".github/actions/wasm-apps/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      - "scripts/build-all-apps.sh"
+      - "scripts/check-embedded-abi.sh"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
 
   workflow_dispatch:
 
@@ -102,10 +139,93 @@ jobs:
   build-image:
     name: Build Image
     uses: ./.github/workflows/build-merod-image.yml
-    with:
-      # blob-presence-tee-serves boots merod run --mock-tee, which needs the mock-attestation
-      # feature; a separate image keeps the rest of the matrix on a release-like feature set.
-      with-mock-tee-image: true
+
+  # ── The mock-TEE image and mero-auth, each beside the default image ──
+  # Only the mock-TEE groups need the one and only Relay the other, so each builds
+  # in its own job, in parallel with Build Image instead of after it: every other
+  # group starts without them, and neither waits for the other to compile.
+  # Both names keep "Build merod image": merod-binaries' wait-for-producer (sdk-e2e
+  # waits here for mock-tee) watches every job of that name in this workflow.
+  build-mock-tee-image:
+    name: Build merod image (mock-tee)
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Reads Build Image's warm cache; that job is its one saver.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: merod-release-fast
+          save-if: false
+
+      # sdk-e2e restores this binary from the cache.
+      - name: Build the mock-tee merod binary
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          variants: mock-tee
+
+      # blob-presence-tee-serves and the other mock-TEE scenarios boot `merod run
+      # --mock-tee`, which needs the mock-attestation feature. It stays out of the
+      # shared image so that one matches the production feature set.
+      - name: Build mock-attestation Docker image
+        run: |
+          mkdir -p bin/amd64
+          cp merod-bin/mock-tee/merod bin/amd64/
+          # meroctl is not needed for e2e tests but the Dockerfile expects it
+          touch bin/amd64/meroctl
+          docker build \
+            -f .github/workflows/deps/prebuilt.Dockerfile \
+            -t merod:local-mock-tee \
+            --build-arg TARGETARCH=amd64 \
+            .
+          docker images merod:local-mock-tee
+
+      - name: Save mock-attestation Docker image
+        run: docker save merod:local-mock-tee | zstd -T0 -3 -o /tmp/merod-local-mock-tee.tar.zst
+
+      - name: Upload mock-attestation Docker image
+        uses: actions/upload-artifact@v7
+        with:
+          name: merod-image-mock-tee
+          path: /tmp/merod-local-mock-tee.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+  # Relay's standalone mero-auth, built from this tree. It makes no image and no
+  # artifact: Relay restores it from the merod-bin cache (merod-binaries'
+  # mero-auth variant), which this job is the one saver of for this tree.
+  build-mero-auth:
+    name: Build merod image (mero-auth)
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Reads Build Image's warm cache; that job is its one saver.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: merod-release-fast
+          save-if: false
+
+      - name: Build the mero-auth binary
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          variants: mero-auth
 
   # ── Scenario convergence lint ──
   # Ratcheted against scripts/e2e-convergence-baseline.txt: only a NEW finding fails.
@@ -122,6 +242,12 @@ jobs:
         run: python3 scripts/lint-e2e-bundle-shape.py
       - name: Lint e2e workflows for unbuilt scenario bundles
         run: python3 scripts/lint-e2e-bundle-coverage.py
+      # The grouping must place every scenario exactly once, deterministically; the
+      # group runner must run every scenario even after one fails, and fail if any did.
+      - name: Test the scenario grouping
+        run: python3 scripts/tests/e2e-scenario-groups-test.py
+      - name: Test the scenario group runner
+        run: bash scripts/tests/e2e-run-scenario-group.test.sh
       # A log assertion couples a scenario to a string a program prints, and a
       # rename breaks that coupling SILENTLY: an `absent` assertion then passes
       # vacuously forever, and a `present` one fails far from the rename, in a
@@ -180,8 +306,6 @@ jobs:
         if: always()
         run: merobox stop --no-docker --all || true
 
-  # Same declarative workflow as auth-seam, on Windows.
-  # merod is built here, not extracted from the Docker image, since there is no Docker on this runner.
   # The TEE relay topology: merod in PROXY auth mode with delegated access,
   # behind Traefik and a standalone mero-auth serving device-key login, as
   # mero-tee runs a fleet relay. Every other scenario reaches a node on its own
@@ -190,7 +314,7 @@ jobs:
   # ingress needs a mero-auth built from this branch and a traefik beside it.
   relay-device-login:
     name: Relay device login (proxy mode behind Traefik + mero-auth)
-    needs: [build-image, build-apps]
+    needs: [build-image, build-mero-auth, build-apps]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -216,19 +340,16 @@ jobs:
           docker rm "$id"
           chmod +x ./merod
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      # Not a published image: what is under test is the `/auth/validate` of THIS
+      # branch naming the session's account. build-mero-auth built it from
+      # this tree (merod-binaries' mero-auth variant), so this restores it rather
+      # than compiling it again; a miss builds it here.
+      - name: Get mero-auth
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          shared-key: relay-device-login
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      # Built here, not taken from a published image: what is under test is the
-      # `/auth/validate` of THIS branch naming the session's account.
-      - name: Build mero-auth
-        run: cargo build -p mero-auth
+          variants: mero-auth
 
       - name: Install traefik
         run: |
@@ -248,7 +369,7 @@ jobs:
       - name: Run relay-device-login
         run: |
           # Nodes fetch bundles from a fixture registry rather than each other,
-          # as the Windows binary-mode lane does.
+          # as the Windows binary-mode lane in platforms.yml does.
           FIXTURE_REGISTRY_STAGE_ONLY=1 ./scripts/e2e-fixture-registry.sh dist
           python3 -m http.server 8080 --bind 127.0.0.1 \
             --directory fixture-registry >/dev/null 2>&1 &
@@ -262,7 +383,7 @@ jobs:
           export CALIMERO_REGISTRY_URL=http://127.0.0.1:8080/
 
           export MEROD_BIN="$GITHUB_WORKSPACE/merod"
-          export MERO_AUTH_BIN="$GITHUB_WORKSPACE/target/debug/mero-auth"
+          export MERO_AUTH_BIN="$GITHUB_WORKSPACE/merod-bin/mero-auth/mero-auth"
           export TRAEFIK_BIN="$RUNNER_TEMP/traefik"
           cd apps/scaffolding-e2e
           # --e2e-mode, as the matrix runs: mDNS on, bootstrap list cleared, so
@@ -283,342 +404,46 @@ jobs:
         if: always()
         run: merobox stop --no-docker --all || true
 
-  windows-auth-seam:
-    name: Windows e2e (auth seam, binary mode)
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: windows-e2e
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      # librocksdb-sys needs bindgen-runtime; aws-lc-sys needs NASM for its x86_64 primitives.
-      # Same pair the release build and windows-node-smoke need.
-      - name: Point bindgen at the image's LLVM
-        shell: bash
-        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
-
-      - name: Install NASM
-        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-
-      - name: Build merod
-        run: cargo build -p merod
-
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-
-      - name: Install merobox
-        uses: ./.github/actions/setup-merobox
-
-      - name: Run auth-seam e2e (merobox, embedded auth)
-        shell: bash
-        env:
-          # Same as the Linux job above: minted at merod init, and the script step inherits
-          # them to log in with. CI-only values for an ephemeral localhost node.
-          MERO_AUTH_ADMIN_USER: dev
-          MERO_AUTH_ADMIN_PASSWORD: dev-password
-          MERO_E2E_USER: dev
-          MERO_E2E_PASS: dev-password
-        run: |
-          merobox bootstrap run workflows/auth-seam.yml \
-            --no-docker --binary-path target/debug/merod.exe --auth-mode embedded
-
-      - name: Logs on failure
-        if: failure()
-        shell: bash
-        run: cat data/auth-seam-1/logs/*.log || true
-
-      - name: Stop nodes
-        if: always()
-        shell: bash
-        run: merobox stop --no-docker --all || true
-
-  # Proves Windows nodes discover and converge (windows-auth-seam only proves one node serves HTTP).
-  # Uses the .mpk from build-apps: wasm is architecture-independent, sidestepping wasm-opt on windows-msvc.
-  windows-node-workflow:
-    name: Windows e2e (3-node sync, binary mode)
-    needs: [build-apps]
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: windows-e2e
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      - name: Point bindgen at the image's LLVM
-        shell: bash
-        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
-
-      - name: Install NASM
-        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-
-      - name: Build merod
-        run: cargo build -p merod
-
-      - name: Download the app bundles
-        uses: actions/download-artifact@v8
-        with:
-          name: e2e-app-bundles
-          path: dist/
-
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-
-      - name: Install merobox
-        uses: ./.github/actions/setup-merobox
-
-      # cd into the app dir since the scenario's path resolves against CWD, not the YAML's own location.
-      # Server and workflow share a step: a background process isn't guaranteed to outlive an earlier step.
-      - name: Run the 3-node workflow (merobox, binary mode)
-        shell: bash
-        run: |
-          ls -la dist/
-          FIXTURE_REGISTRY_STAGE_ONLY=1 ./scripts/e2e-fixture-registry.sh dist
-
-          python -m http.server 8080 --bind 127.0.0.1 \
-            --directory fixture-registry >/dev/null 2>&1 &
-          server=$!
-          trap 'kill "$server" 2>/dev/null || true' EXIT
-
-          # Fail here, loudly, rather than let every node fall back to a
-          # bytecode-not-found error that reads like a sync bug.
-          for _ in $(seq 1 30); do
-            curl -sfo /dev/null http://127.0.0.1:8080/ && break
-            sleep 1
-          done
-          curl -sfo /dev/null http://127.0.0.1:8080/ \
-            || { echo "fixture registry never came up" >&2; exit 1; }
-
-          export CALIMERO_REGISTRY_MODE=http
-          export CALIMERO_REGISTRY_URL=http://127.0.0.1:8080/
-
-          MEROD="$GITHUB_WORKSPACE/target/debug/merod.exe"
-          cd apps/kv-store
-          merobox bootstrap run workflows/workflow-example.yml \
-            --no-docker --binary-path "$MEROD"
-
-      - name: Logs on failure
-        if: failure()
-        shell: bash
-        run: |
-          for d in apps/kv-store/data/*/logs; do
-            echo "=== $d ==="
-            cat "$d"/*.log || true
-          done
-
-      - name: Stop nodes
-        if: always()
-        shell: bash
-        run: merobox stop --no-docker --all || true
+  # The Windows lanes (auth seam and 3-node sync, binary mode) live in platforms.yml:
+  # nightly, and on a PR whose change can reach Windows-only code.
 
   # ── Build WASM apps (runs in parallel with image build) ──
+  # big-machine, as ci-checks' Rust apps: a miss builds every app, and this job
+  # gates every scenario group. Same HOME, checkout and target dirs as there, so
+  # the two still share one wasm-apps cache key.
   build-apps:
     name: Build Apps
-    runs-on: ubuntu-latest
+    runs-on: big-machine
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
+      # The same set, script and inputs as ci-checks.yml's Rust apps job, so either
+      # job's master build serves both. A hit skips Rust and cargo-mero entirely.
+      - name: Restore the apps, or set up to build them
+        id: apps
+        uses: ./.github/actions/wasm-apps
         with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-          shared-key: e2e-wasm-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          root: apps
+          script: scripts/build-all-apps.sh
+          workflows: .github/workflows/ci-checks.yml .github/workflows/e2e-rust-apps.yml
+          # This job is the wasm-apps rust-cache group's one saver.
+          rust-cache-save: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Setup cargo mero
-        uses: ./.github/actions/setup-cargo-mero
+      # Bundles every app the scenarios install (lint-e2e-bundle-coverage.py reads
+      # the list from the script), then checks every wasm embeds its ABI (core#3287).
+      - name: Build every app
+        if: steps.apps.outputs.hit != 'true'
+        run: ./scripts/build-all-apps.sh
 
-      - name: Build scaffolding-e2e app
-        run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
-
-      - name: Build scaffolding-e2e bundle
-        run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
-
-      # apps/scaffolding-e2e-multi declares services backed by scaffolding-e2e's
-      # wasm and builds none of its own, so it only needs a bundle step.
-      - name: Build scaffolding-e2e-multi bundle
-        run: (cd apps/scaffolding-e2e-multi && cargo mero bundle --dev --no-icon)
-
-      - name: Build xcall-example app
-        run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
-
-      - name: Build xcall-example bundle
-        run: (cd apps/xcall-example && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-with-shared-storage app
-        run: cargo mero build --manifest-path apps/kv-store-with-shared-storage/Cargo.toml
-
-      - name: Build kv-store-with-shared-storage bundle
-        run: (cd apps/kv-store-with-shared-storage && cargo mero bundle --dev --no-icon)
-
-      - name: Build tee-dice app
-        run: cargo mero build --manifest-path apps/tee-dice/Cargo.toml
-
-      - name: Build tee-dice bundle
-        run: (cd apps/tee-dice && cargo mero bundle --dev --no-icon)
-
-      - name: Build tee-cards app
-        run: cargo mero build --manifest-path apps/tee-cards/Cargo.toml
-
-      - name: Build tee-cards bundle
-        run: (cd apps/tee-cards && cargo mero bundle --dev --no-icon)
-
-      - name: Build name-registry app
-        run: cargo mero build --manifest-path apps/name-registry/Cargo.toml
-
-      - name: Build name-registry bundle
-        run: (cd apps/name-registry && cargo mero bundle --dev --no-icon)
-
-      - name: Build name-registry-admin app
-        run: cargo mero build --manifest-path apps/name-registry-admin/Cargo.toml
-
-      - name: Build name-registry-admin bundle
-        run: (cd apps/name-registry-admin && cargo mero bundle --dev --no-icon)
-
-      - name: Build authored-sorted-kv-store app
-        run: cargo mero build --manifest-path apps/authored-sorted-kv-store/Cargo.toml
-
-      - name: Build authored-sorted-kv-store bundle
-        run: (cd apps/authored-sorted-kv-store && cargo mero bundle --dev --no-icon)
-
-      - name: Build indexed-issue-tracker app
-        run: cargo mero build --manifest-path apps/indexed-issue-tracker/Cargo.toml
-
-      - name: Build indexed-issue-tracker bundle
-        run: (cd apps/indexed-issue-tracker && cargo mero bundle --dev --no-icon)
-
-      - name: Build indexed-forum app
-        run: cargo mero build --manifest-path apps/indexed-forum/Cargo.toml
-
-      - name: Build indexed-forum bundle
-        run: (cd apps/indexed-forum && cargo mero bundle --dev --no-icon)
-
-      - name: Build search-chat app
-        run: cargo mero build --manifest-path apps/search-chat/Cargo.toml
-
-      - name: Build search-chat bundle
-        run: (cd apps/search-chat && cargo mero bundle --dev --no-icon)
-
-      - name: Build permissions-showcase app
-        run: cargo mero build --manifest-path apps/permissions-showcase/Cargo.toml
-
-      - name: Build permissions-showcase bundle
-        run: (cd apps/permissions-showcase && cargo mero bundle --dev --no-icon)
-
-      - name: Build components-demo app
-        run: cargo mero build --manifest-path apps/components-demo/Cargo.toml
-
-      - name: Build components-demo bundle
-        run: (cd apps/components-demo && cargo mero bundle --dev --no-icon)
-
-      - name: Build blobs app
-        run: cargo mero build --manifest-path apps/blobs/Cargo.toml
-
-      - name: Build blobs bundle
-        run: (cd apps/blobs && cargo mero bundle --dev --no-icon)
-
-      - name: Build abi_conformance app
-        run: cargo mero build --manifest-path apps/abi_conformance/Cargo.toml
-
-      - name: Build abi_conformance bundle
-        run: (cd apps/abi_conformance && cargo mero bundle --dev --no-icon)
-
-      - name: Build collaborative-editor app
-        run: cargo mero build --manifest-path apps/collaborative-editor/Cargo.toml
-
-      - name: Build collaborative-editor bundle
-        run: (cd apps/collaborative-editor && cargo mero bundle --dev --no-icon)
-
-      - name: Build fugue-collab app
-        run: cargo mero build --manifest-path apps/fugue-collab/Cargo.toml
-
-      - name: Build fugue-collab bundle
-        run: (cd apps/fugue-collab && cargo mero bundle --dev --no-icon)
-
-      - name: Build rich-collab app
-        run: cargo mero build --manifest-path apps/rich-collab/Cargo.toml
-
-      - name: Build rich-collab bundle
-        run: (cd apps/rich-collab && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-init app
-        run: cargo mero build --manifest-path apps/kv-store-init/Cargo.toml
-
-      - name: Build kv-store-init bundle
-        run: (cd apps/kv-store-init && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-with-handlers app
-        run: cargo mero build --manifest-path apps/kv-store-with-handlers/Cargo.toml
-
-      - name: Build kv-store-with-handlers bundle
-        run: (cd apps/kv-store-with-handlers && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store-with-user-and-frozen-storage app
-        run: cargo mero build --manifest-path apps/kv-store-with-user-and-frozen-storage/Cargo.toml
-
-      - name: Build kv-store-with-user-and-frozen-storage bundle
-        run: (cd apps/kv-store-with-user-and-frozen-storage && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store app
-        run: cargo mero build --manifest-path apps/kv-store/Cargo.toml
-
-      - name: Build nested-crdt-test app
-        run: cargo mero build --manifest-path apps/nested-crdt-test/Cargo.toml
-
-      - name: Build nested-crdt-test bundle
-        run: (cd apps/nested-crdt-test && cargo mero bundle --dev --no-icon)
-
-      - name: Build private_data app
-        run: cargo mero build --manifest-path apps/private_data/Cargo.toml
-
-      - name: Build private_data bundle
-        run: (cd apps/private_data && cargo mero bundle --dev --no-icon)
-
-      - name: Build team-metrics-custom app
-        run: cargo mero build --manifest-path apps/team-metrics-custom/Cargo.toml
-
-      - name: Build team-metrics-custom bundle
-        run: (cd apps/team-metrics-custom && cargo mero bundle --dev --no-icon)
-
-      - name: Build team-metrics-macro app
-        run: cargo mero build --manifest-path apps/team-metrics-macro/Cargo.toml
-
-      - name: Build team-metrics-macro bundle
-        run: (cd apps/team-metrics-macro && cargo mero bundle --dev --no-icon)
-
-      - name: Build kv-store bundle
-        run: (cd apps/kv-store && cargo mero bundle --dev --no-icon)
-
-      - name: Verify every built app wasm embeds the ABI (core#3287)
-        run: ./scripts/check-embedded-abi.sh
+      - name: Share the built apps
+        if: steps.apps.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.apps.outputs.paths }}
+          key: ${{ steps.apps.outputs.key }}
 
       - name: Upload app artifacts
         uses: actions/upload-artifact@v7
@@ -687,587 +512,76 @@ jobs:
           path: dist/*.mpk
           retention-days: 1
 
-  # ── Test phase: run each workflow in parallel ──
-  test:
-    name: Test (${{ matrix.workflow }})
-    needs: [build-image, build-apps]
-    runs-on: ubuntu-24.04-8cpu
-    strategy:
-      fail-fast: false
-      matrix:
-        # `image: merod:local-dht` marks peer-route scenarios; `registry_fetch: "false"` marks ones
-        # that fetch no bytecode, since a node needs it only to run a context, not to join a group.
-        include:
-          - workflow: scaffolding-e2e
-            file: workflows/e2e.yml
-            app: scaffolding-e2e
-          - workflow: frozen-rga-convergence
-            file: workflows/frozen-rga-convergence.yml
-            app: scaffolding-e2e
-          # The only scenario where a delta's author is not its signer - the sole
-          # real-node coverage of the delegated envelope and warrant nonce ledger.
-          - workflow: delegated-authorship
-            file: workflows/delegated-authorship.yml
-            app: scaffolding-e2e
-          # Password-free session coverage: a device holding only a key logs in and reads (delegated-
-          # authorship above covers the write, but via username/password). Turns on account_proof.
-          - workflow: delegated-session
-            file: workflows/delegated-session.yml
-            app: scaffolding-e2e
-          # The other half of the architecture: no session and no token at all,
-          # just a signature on each request. Verified by unit tests and by a
-          # byte fixture three implementations agree on, but until this nothing
-          # had ever presented one to a running node.
-          - workflow: delegated-proof
-            file: workflows/delegated-proof.yml
-            app: scaffolding-e2e
-          # The posture a hosted relay actually runs: delegated execution served
-          # with NO node credential. Nothing covered it - `--public-intents`
-          # appeared in no scenario, so the flag deciding whether a relay is
-          # reachable by the clients it exists for had only production as
-          # evidence. Two nodes identical but for the flag, so a 200 has a 401
-          # beside it and the flag is provably what opened the route.
-          - workflow: public-intents
-            file: workflows/public-intents.yml
-            app: scaffolding-e2e
-          # A node holding no account root joins and writes under a certificate signed elsewhere - the
-          # cold-storage posture the account/device split exists for. Needs merobox >= 0.6.67.
-          - workflow: offline-account-root
-            file: workflows/offline-account-root.yml
-            app: scaffolding-e2e
-          # After two nodes concurrently add distinct SortedSet elements, membership converges but
-          # ORDERED reads (iter) may not; the ordered-read assertion is the discriminator.
-          - workflow: sorted-set-concurrent-convergence
-            file: workflows/sorted-set-concurrent-convergence.yml
-            app: scaffolding-e2e
-          - workflow: groups
-            file: workflows/groups.yml
-            app: scaffolding-e2e
-          - workflow: group-join-then-list-from-joiner
-            file: workflows/group-join-then-list-from-joiner.yml
-            app: scaffolding-e2e
-          - workflow: group-join-mesh-not-ready
-            file: workflows/group-join-mesh-not-ready.yml
-            app: scaffolding-e2e
-          # Asserts a peer discovered over mDNS reaches the KAD routing table; without it the fleet
-          # gossips fine but every DHT query returns closest_peers: [].
-          - workflow: kad-routing-from-identify
-            file: workflows/kad-routing-from-identify.yml
-            app: scaffolding-e2e
-          - workflow: group-3node
-            file: workflows/group-3node.yml
-            app: scaffolding-e2e
-          - workflow: group-context-isolation
-            file: workflows/group-context-isolation.yml
-            app: scaffolding-e2e
-          - workflow: group-late-joiner
-            file: workflows/group-late-joiner.yml
-            app: scaffolding-e2e
-            image: merod:local-dht
-          - workflow: group-governance-late-joiner
-            file: workflows/group-governance-late-joiner.yml
-            app: scaffolding-e2e
-          - workflow: group-governance-peer-down
-            file: workflows/group-governance-peer-down.yml
-            app: scaffolding-e2e
-          - workflow: group-subgroup
-            file: workflows/group-subgroup.yml
-            app: scaffolding-e2e
-          - workflow: group-subgroup-cold-sync
-            file: workflows/group-subgroup-cold-sync.yml
-            app: scaffolding-e2e
-          - workflow: group-subgroup-queued-deltas
-            file: workflows/group-subgroup-queued-deltas.yml
-            app: scaffolding-e2e
-          - workflow: group-membership
-            file: workflows/group-membership.yml
-            app: scaffolding-e2e
-          - workflow: account-device-revoke-lockout
-            file: workflows/account-device-revoke-lockout.yml
-            app: scaffolding-e2e
-          - workflow: account-device-reset-offline
-            file: workflows/account-device-reset-offline.yml
-            app: scaffolding-e2e
-          - workflow: account-facts-cross-namespace
-            file: workflows/account-facts-cross-namespace.yml
-            app: scaffolding-e2e
-            image: merod:local-dht
-          # Account-level pairing: only real nodes can say whether the link
-          # lands where the application scope aimed it.
-          - workflow: account-pairing-application-scope
-            file: workflows/account-pairing-application-scope.yml
-            app: scaffolding-e2e
-          - workflow: account-device-scope-replace
-            file: workflows/account-device-scope-replace.yml
-            app: scaffolding-e2e
-          - workflow: account-pairing-missed-publish
-            file: workflows/account-pairing-missed-publish.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: account-paired-device-founds-namespace
-            file: workflows/account-paired-device-founds-namespace.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: account-revoked-device-repairs
-            file: workflows/account-revoked-device-repairs.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: account-namespace-left-unfollows
-            file: workflows/account-namespace-left-unfollows.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: account-registry-replicates
-            file: workflows/account-registry-replicates.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: account-namespace-devices-follow
-            file: workflows/account-namespace-devices-follow.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: account-namespace-learned-after-pairing
-            file: workflows/account-namespace-learned-after-pairing.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: account-root-backup-restore
-            file: workflows/account-root-backup-restore.yml
-            app: scaffolding-e2e
-          - workflow: account-revoke-lost-device
-            file: workflows/account-revoke-lost-device.yml
-            app: scaffolding-e2e
-          - workflow: account-sibling-projected-by-founder
-            file: workflows/account-sibling-projected-by-founder.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: account-lost-holder-revoked-everywhere
-            file: workflows/account-lost-holder-revoked-everywhere.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: group-leave-context
-            file: workflows/group-leave-context.yml
-            app: scaffolding-e2e
-          # Governance only - no node ever joins a context, so nothing
-          # needs bytecode and the registry is never asked.
-          - workflow: group-leave-member
-            file: workflows/group-leave-member.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          # Governance only - no node ever joins a context, so nothing
-          # needs bytecode and the registry is never asked.
-          - workflow: group-leave-namespace
-            file: workflows/group-leave-namespace.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: group-kick-and-rejoin-keyshare
-            file: workflows/group-kick-and-rejoin-keyshare.yml
-            app: scaffolding-e2e
-          - workflow: group-kick-and-readd-deny-list
-            file: workflows/group-kick-and-readd-deny-list.yml
-            app: scaffolding-e2e
-          - workflow: group-leave-then-rejoin-via-inheritance
-            file: workflows/group-leave-then-rejoin-via-inheritance.yml
-            app: scaffolding-e2e
-          - workflow: group-private-add-then-write
-            file: workflows/group-private-add-then-write.yml
-            app: scaffolding-e2e
-          - workflow: group-remove-from-root-revokes-inherited
-            file: workflows/group-remove-from-root-revokes-inherited.yml
-            app: scaffolding-e2e
-          - workflow: group-capabilities
-            file: workflows/group-capabilities.yml
-            app: scaffolding-e2e
-          - workflow: group-member-channel-lifecycle
-            file: workflows/group-member-channel-lifecycle.yml
-            app: scaffolding-e2e
-            image: merod:local-dht
-          - workflow: group-metadata
-            file: workflows/group-metadata.yml
-            app: scaffolding-e2e
-          - workflow: hashcomparison-shared-user-reconcile
-            file: workflows/hashcomparison-shared-user-reconcile.yml
-            app: scaffolding-e2e
-          - workflow: shared-storage-concurrent-rotation-converge
-            file: workflows/shared-storage-concurrent-rotation-converge.yml
-            app: scaffolding-e2e
-          - workflow: shared-storage-account-writers-two-devices
-            file: workflows/shared-storage-account-writers-two-devices.yml
-            app: scaffolding-e2e
-          - workflow: shared-storage-account-writers-concurrent
-            file: workflows/shared-storage-account-writers-concurrent.yml
-            app: scaffolding-e2e
-          - workflow: group-subgroup-visibility-inheritance
-            file: workflows/group-subgroup-visibility-inheritance.yml
-            app: scaffolding-e2e
-          - workflow: group-open-self-join-key-delivery
-            file: workflows/group-open-self-join-key-delivery.yml
-            app: scaffolding-e2e
-          # Whether a namespace owner writing into an Open subgroup another member created is reachable
-          # on live nodes - the unit-level projection denies it, but join-path enrolment is implicit now.
-          - workflow: namespace-owner-writes-in-a-foreign-open-subgroup
-            file: workflows/namespace-owner-writes-in-a-foreign-open-subgroup.yml
-            app: scaffolding-e2e
-            image: merod:local-dht
-          - workflow: group-join-via-inheritance
-            file: workflows/group-join-via-inheritance.yml
-            app: scaffolding-e2e
-          - workflow: dm-subgroup-privacy
-            file: workflows/dm-subgroup-privacy.yml
-            app: scaffolding-e2e
-          # Governance only - node-2 joins the namespace and nothing joins a
-          # context, so no bytecode is fetched.
-          - workflow: group-join-never-published-in-the-clear
-            file: workflows/group-join-never-published-in-the-clear.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          # Governance only - no node ever joins a context, so nothing
-          # needs bytecode and the registry is never asked.
-          - workflow: group-list-subgroups-restricted-hidden
-            file: workflows/group-list-subgroups-restricted-hidden.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: member-removed-multi-context-convergence
-            file: workflows/member-removed-multi-context-convergence.yml
-            app: scaffolding-e2e
-          - workflow: member-removed-late-joiner-catchup
-            file: workflows/member-removed-late-joiner-catchup.yml
-            app: scaffolding-e2e
-          # member-removed-partition-window-reconcile.yml is intentionally not registered here: Docker-
-          # bridge partitions can't make the divergence deterministic. Covered by unit tests instead.
-          - workflow: group-default-capabilities-propagation
-            file: workflows/group-default-capabilities-propagation.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: group-reparent
-            file: workflows/group-reparent.yml
-            app: scaffolding-e2e
-          - workflow: group-reparent-and-cascade-delete
-            file: workflows/group-reparent-and-cascade-delete.yml
-            app: scaffolding-e2e
-            image: merod:local-dht
-          - workflow: group-multi-service
-            file: workflows/group-multi-service.yml
-            app: scaffolding-e2e
-          - workflow: handler-test
-            file: workflows/handler-test.yml
-            app: scaffolding-e2e
-          - workflow: xcall-example
-            file: workflows/xcall.yml
-            app: xcall-example
-            image: merod:local-dht
-          - workflow: shared-storage
-            file: workflows/test_shared_storage.yml
-            app: kv-store-with-shared-storage
-          # The only tier that proves authored state crosses a wire: every
-          # entry is `StorageType::User`, signed per action and verified
-          # against its owner at apply, and `converge_app` models that without
-          # a network. Also the only place the owner gate is refused from a
-          # DIFFERENT node — the local check inside `edit` binds just the node
-          # running it.
-          - workflow: authored-sorted-kv-store
-            file: workflows/authored-sorted-kv-store.yml
-            app: authored-sorted-kv-store
-          # The indexes are node-local and never synced, so only a second node
-          # shows that a query agrees with entries that arrived by sync: one
-          # node that never wrote builds its index from scratch, and the other
-          # rebuilds after a peer's change moved the collection under it.
-          - workflow: indexed-issue-tracker
-            file: workflows/indexed-issue-tracker.yml
-            app: indexed-issue-tracker
-          # Three collections, three node-local orders: a three-part compound
-          # index built from synced entries, a peer's post, pin and vote
-          # showing up in counts on the other node, and an authored comment
-          # that the other node's account cannot edit.
-          - workflow: indexed-forum
-            file: workflows/indexed-forum.yml
-            app: indexed-forum
-          # Each node's full-text index is built from the state it holds and
-          # never synced, so only a second node shows that it follows state:
-          # a peer's post found, a peer's delete gone, and a second context
-          # that never sees the first one's hits.
-          - workflow: search-chat
-            file: workflows/search-chat.yml
-            app: search-chat
-          # One field per write policy, each checked on the node that did not
-          # write: frozen values, write-once messages, moderated immutable
-          # announcements and moderator appointment, an authored page whose
-          # nested revisions are its author's, and content-addressed evidence.
-          - workflow: permissions-showcase
-            file: workflows/permissions-showcase.yml
-            app: permissions-showcase
-          - workflow: components-demo
-            file: workflows/components-demo.yml
-            app: components-demo
-          - workflow: blobs-lifecycle
-            file: workflows/blobs.yml
-            app: blobs
-          - workflow: blobs-api-example
-            file: workflows/blobs-example.yml
-            app: blobs
-          # Uploading with a context_id must publish a provider record; blobs.yml alone wouldn't catch a
-          # regression since its only second-node step reads CRDT metadata, not the blob.
-          - workflow: blob-announce-membership
-            file: workflows/blob-announce-namespace-membership.yml
-            app: blobs
-            image: merod:local-dht
-          # Needs the kad server-mode fix in crates/network/src/behaviour.rs: promotion to Server needs a
-          # CONFIRMED external address that AutoNAT can't obtain on a docker bridge.
-          - workflow: blob-cross-node-transfer
-            file: workflows/blob-cross-node-transfer.yml
-            app: blobs
-          - workflow: blob-cross-node-sizes
-            file: workflows/blob-cross-node-sizes.yml
-            app: blobs
-          # Blob custody is discovered by asking the context's peers, not a Kademlia provider record, so
-          # any surviving holder can serve. Docker-only: stop_node is a no-op under --no-docker.
-          - workflow: blob-presence-multi-holder
-            file: workflows/blob-presence-multi-holder.yml
-            app: blobs
-          # A mock-TEE replica is admitted read-only, the owner uploads and stops, and a third node
-          # fetches it - proving the TEE prefetched the blob bytes, not just referencing state.
-          - workflow: blob-presence-tee-serves
-            file: workflows/blob-presence-tee-serves.yml
-            app: blobs
-            image: merod:local-mock-tee
-          # A mock-TEE replica resolves a member's dice roll into TeeOnly state, but only once the
-          # namespace's TEE authoring policy names its MRTD: TEE authorship end to end.
-          - workflow: tee-dice-roll
-            file: workflows/tee-dice-roll.yml
-            app: tee-dice
-            image: merod:local-mock-tee
-          # The namespace TEE admission policy's `mode` decides who relays: a mock TEE admitted under
-          # `mode: relay` is a RelayTee and runs a member's /intents (200); under the default it is a
-          # ReadOnlyTee and is refused by role (403). Needs merobox >= 0.6.80.
-          - workflow: tee-admission-mode-relay
-            file: workflows/tee-admission-mode-relay.yml
-            app: scaffolding-e2e
-            image: merod:local-mock-tee
-          # Two mock-TEE authorities deal cards; one is stopped and the other takes every trigger
-          # it was elected for. Also proves the TEE scheduler fires a timer method on its own.
-          - workflow: tee-cards-failover
-            file: workflows/tee-cards-failover.yml
-            app: tee-cards
-            image: merod:local-mock-tee
-          # The deck is sealed while one mock-TEE is the only TEE; a second admitted afterwards deals
-          # from it once the first is stopped, because both hold the namespace TEE key.
-          - workflow: tee-cards-late-tee
-            file: workflows/tee-cards-late-tee.yml
-            app: tee-cards
-            image: merod:local-mock-tee
-          # Removing a mock-TEE that holds the namespace TEE key makes the remaining one rotate it,
-          # and the deck is still dealt from under the new key.
-          - workflow: tee-cards-rotate
-            file: workflows/tee-cards-rotate.yml
-            app: tee-cards
-            image: merod:local-mock-tee
-          # Two members claim one username; a mock-TEE registrar grants it to one, every node names
-          # that owner and the other sees `lost`; after a release the other claims it at epoch 1.
-          - workflow: name-registry-contested
-            file: workflows/name-registry-contested.yml
-            app: name-registry
-            image: merod:local-mock-tee
-          # The same contest with an admin as the authority: two members claim one username, the
-          # context's creator resolves it, and after a release the other gets it at epoch 1. A member
-          # cannot resolve, and once the role moves through set_admins the old admin cannot either.
-          - workflow: name-registry-admin
-            file: workflows/name-registry-admin.yml
-            app: name-registry-admin
-          - workflow: kv-store-joiner-cold
-            file: workflows/kv-store-joiner-cold.yml
-            app: scaffolding-e2e
-            image: merod:local-dht
-          - workflow: root-bootstrap-converge
-            file: workflows/root-bootstrap-converge.yml
-            app: scaffolding-e2e
-          - workflow: mesh-soak-8node
-            file: workflows/mesh-soak-8node.yml
-            app: scaffolding-e2e
-          # The only scenarios that discover peers via bootstrap rather than mDNS; a bootstrap/kad
-          # regression would leave every mDNS entry green and only these two red.
-          - workflow: discovery-bootstrap-only-2node
-            file: workflows/discovery-bootstrap-only-2node.yml
-            app: scaffolding-e2e
-          - workflow: discovery-bootstrap-only-4node
-            file: workflows/discovery-bootstrap-only-4node.yml
-            app: scaffolding-e2e
-          # The only scenario exercising rendezvous register/discover without also testing relay
-          # reservations and hole-punching, unlike the NAT sync-resilience scenarios below.
-          - workflow: discovery-rendezvous-3node
-            file: workflows/discovery-rendezvous-3node.yml
-            app: scaffolding-e2e
-          - workflow: auto-follow-on-context-registered
-            file: workflows/auto-follow/auto-follow-on-context-registered.yml
-            app: scaffolding-e2e
-          - workflow: auto-follow-backfill-on-join
-            file: workflows/auto-follow/auto-follow-backfill-on-join.yml
-            app: scaffolding-e2e
-          - workflow: auto-follow-flag-flipped-late
-            file: workflows/auto-follow/auto-follow-flag-flipped-late.yml
-            app: scaffolding-e2e
-          # node-2 opts out of auto-follow and never materialises a context, so
-          # by design nothing acquires from the registry in this scenario.
-          - workflow: auto-follow-no-rejection-spam
-            file: workflows/auto-follow/no-unknown-context-rejection-spam.yml
-            app: scaffolding-e2e
-            registry_fetch: "false"
-          - workflow: auto-follow-asymmetric-context-membership
-            file: workflows/auto-follow/asymmetric-context-membership.yml
-            app: scaffolding-e2e
-          # Uses topology: { type: nat } (merobox 0.6.19+) so peers sit behind a NAT gateway, forcing
-          # relay/DCUtR hole-punching; -symmetric variants force DCUtR to fail, keeping traffic on relay.
-          - workflow: sync-resilience-network-partition
-            file: workflows/sync-resilience-network-partition.yml
-            app: scaffolding-e2e
-          - workflow: sync-resilience-network-partition-symmetric
-            file: workflows/sync-resilience-network-partition-symmetric.yml
-            app: scaffolding-e2e
-          - workflow: sync-resilience-peer-restart
-            file: workflows/sync-resilience-peer-restart.yml
-            app: scaffolding-e2e
-          - workflow: sync-resilience-peer-restart-symmetric
-            file: workflows/sync-resilience-peer-restart-symmetric.yml
-            app: scaffolding-e2e
-          - workflow: sync-resilience-peer-restart-autoresync
-            file: workflows/sync-resilience-peer-restart-autoresync.yml
-            app: scaffolding-e2e
-          - workflow: sync-resilience-peer-pause
-            file: workflows/sync-resilience-peer-pause.yml
-            app: scaffolding-e2e
-          - workflow: sync-resilience-peer-pause-symmetric
-            file: workflows/sync-resilience-peer-pause-symmetric.yml
-            app: scaffolding-e2e
-          # sync-resilience-lossy-link.yml needs a custom merod image with iproute2 (tc) installed; the
-          # stock image lacks it, so inject_network_fault would short-circuit.
-          - workflow: abi-conformance
-            file: workflows/abi-conformance.yml
-            app: abi_conformance
-          - workflow: collaborative-editor
-            file: workflows/collaborative-editor.yml
-            app: collaborative-editor
-          - workflow: collaborative-editor-concurrent
-            file: workflows/collaborative-editor-concurrent.yml
-            app: collaborative-editor
-          # registry_fetch "false": a node cut off from its peers cannot fetch bytecode
-          - workflow: fugue-collab-figure2
-            file: workflows/fugue-collab-figure2.yml
-            app: fugue-collab
-            registry_fetch: "false"
-          - workflow: fugue-collab-partition-heal
-            file: workflows/fugue-collab-partition-heal.yml
-            app: fugue-collab
-            registry_fetch: "false"
-          - workflow: fugue-collab-restart-mid-edit
-            file: workflows/fugue-collab-restart-mid-edit.yml
-            app: fugue-collab
-            registry_fetch: "false"
-          - workflow: fugue-collab-late-joiner
-            file: workflows/fugue-collab-late-joiner.yml
-            app: fugue-collab
-            registry_fetch: "false"
-          - workflow: fugue-collab-large-paste
-            file: workflows/fugue-collab-large-paste.yml
-            app: fugue-collab
-            registry_fetch: "false"
-          - workflow: fugue-collab-anchors
-            file: workflows/fugue-collab-anchors.yml
-            app: fugue-collab
-            registry_fetch: "false"
-          - workflow: fugue-collab-apply-delta
-            file: workflows/fugue-collab-apply-delta.yml
-            app: fugue-collab
-            registry_fetch: "false"
-          - workflow: fugue-collab-undo
-            file: workflows/fugue-collab-undo.yml
-            app: fugue-collab
-            registry_fetch: "false"
-          - workflow: rich-marks
-            file: workflows/rich-marks.yml
-            app: rich-collab
-            registry_fetch: "false"
-          - workflow: rich-blocks
-            file: workflows/rich-blocks.yml
-            app: rich-collab
-            registry_fetch: "false"
-          - workflow: rich-catchup
-            file: workflows/rich-catchup.yml
-            app: rich-collab
-            registry_fetch: "false"
-          - workflow: kv-store-init
-            file: workflows/kv-store-init.yml
-            app: kv-store-init
-          - workflow: kv-store-with-handlers
-            file: workflows/kv-store-with-handlers.yml
-            app: kv-store-with-handlers
-          - workflow: frozen-storage
-            file: workflows/test_frozen_storage.yml
-            app: kv-store-with-user-and-frozen-storage
-          - workflow: user-storage
-            file: workflows/test_user_storage.yml
-            app: kv-store-with-user-and-frozen-storage
-          - workflow: bundle-invitation
-            file: workflows/bundle-invitation-test.yml
-            app: kv-store
-          # Single node, and it installs the app itself - nothing to acquire.
-          - workflow: kv-store-simple
-            file: workflows/simple-store.yml
-            app: kv-store
-            registry_fetch: "false"
-          - workflow: kv-store-workflow-example
-            file: workflows/workflow-example.yml
-            app: kv-store
-          # Asserts presence invariants: gossip delivery, replay-on-subscribe, TTL eviction, and that a
-          # presence write never touches the DAG. kv-store here is only a namespace/context scaffold.
-          - workflow: ephemeral-presence-e2e
-            file: workflows/ephemeral-presence-e2e.yml
-            app: kv-store
-          - workflow: ephemeral-open-subgroup-e2e
-            file: workflows/ephemeral-open-subgroup-e2e.yml
-            app: kv-store
-          - workflow: nested-crdt
-            file: workflows/nested-crdt-test.yml
-            app: nested-crdt-test
-          # Installs the bundle on every node itself - nothing to acquire.
-          - workflow: nested-crdt-offline-catchup
-            file: workflows/nested-crdt-offline-catchup.yml
-            app: nested-crdt-test
-            registry_fetch: "false"
-          - workflow: private-data-example
-            file: workflows/example.yml
-            app: private_data
-          - workflow: private-data
-            file: workflows/private-data.yml
-            app: private_data
-          - workflow: group-governance-cold-context-push-converge
-            file: workflows/group-governance-cold-context-push-converge.yml
-            app: scaffolding-e2e
-          - workflow: simple-sync
-            file: workflows/simple-sync.yml
-            app: scaffolding-e2e
-          - workflow: team-metrics-custom
-            file: workflows/team-metrics-custom.yml
-            app: team-metrics-custom
-          - workflow: team-metrics-macro
-            file: workflows/team-metrics-macro.yml
-            app: team-metrics-macro
-          - workflow: xcall-example-scenario
-            file: workflows/xcall-example.yml
-            app: xcall-example
-            image: merod:local-dht
+  # ── Test phase: the scenarios, in groups ──
+  # One runner per group, not per scenario: a runner's setup (image load, bundles,
+  # fixture registry, merobox) was half of every one-scenario job, and each job
+  # queued for an 8-cpu runner of its own. The scenarios are listed in
+  # .github/e2e-scenarios.yml; scripts/e2e-scenario-groups.py packs them into
+  # GROUP_COUNT groups balanced by measured duration, one image per group. The
+  # groups run in two jobs, each waiting only for the image its groups boot
+  # (the script's JOBS): `test` on merod:local / merod:local-dht, `test-mock-tee`
+  # on merod:local-mock-tee. The plan is made whole and then split.
+  plan:
+    name: Plan scenario groups
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix-default: ${{ steps.plan.outputs.matrix-default }}
+      matrix-mock-tee: ${{ steps.plan.outputs.matrix-mock-tee }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      # The script refuses to print a matrix that drops or repeats a scenario.
+      - name: Group the scenarios
+        id: plan
+        run: |
+          python3 scripts/e2e-scenario-groups.py --manifest .github/e2e-scenarios.yml --summary \
+            >> "$GITHUB_STEP_SUMMARY"
+          default=$(python3 scripts/e2e-scenario-groups.py --manifest .github/e2e-scenarios.yml --job default)
+          mock_tee=$(python3 scripts/e2e-scenario-groups.py --manifest .github/e2e-scenarios.yml --job mock-tee)
+          {
+            echo "matrix-default=${default}"
+            echo "matrix-mock-tee=${mock_tee}"
+          } >> "$GITHUB_OUTPUT"
+
+  # The groups on merod:local and merod:local-dht. `test-mock-tee` runs the same
+  # steps (a YAML alias) on the mock-TEE groups; each job downloads only the image
+  # its groups boot, which is all its `needs` waits for.
+  test:
+    name: Test (${{ matrix.group }})
+    needs: [plan, build-image, build-apps]
+    runs-on: ubuntu-24.04-8cpu
+    # The sum of the group's per-scenario timeouts plus setup, so a hung scenario
+    # is killed by its own timeout and the rest of the group still runs.
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix-default) }}
+    steps: &test-steps
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - name: Download Docker image
+        if: matrix.image != 'merod:local-mock-tee'
         uses: actions/download-artifact@v8
         with:
           name: merod-image
           path: /tmp
 
       - name: Load Docker image
+        if: matrix.image != 'merod:local-mock-tee'
         run: zstd -d /tmp/merod-local.tar.zst --stdout | docker load
 
-      # Only the mock-TEE scenario needs it, and it is a second full image —
-      # not worth pulling into every shard.
+      # Only the mock-TEE groups need it, and it is a second full image —
+      # not worth pulling into every group.
       - name: Download mock-attestation Docker image
         if: matrix.image == 'merod:local-mock-tee'
         uses: actions/download-artifact@v8
@@ -1293,13 +607,17 @@ jobs:
 
       # Nodes fetch bundles from here rather than from each other. The URL is
       # discovered on this runner, so it is stamped in rather than prebuilt.
+      # One registry serves the whole group; the run step checks each scenario
+      # against the requests it logged while that scenario ran.
       - name: Serve app bundles from a fixture registry
         if: matrix.image != 'merod:local-dht'
+        env:
+          IMAGE: ${{ matrix.image }}
         run: |
           url=$(./scripts/e2e-fixture-registry.sh)
-          # Stamp the image this lane actually boots, not always the shared one, or a lane on its own
-          # image (merod:local-mock-tee) runs unstamped and trips the fetch gate below.
-          ./scripts/set-registry-mode.sh "${{ matrix.image || 'merod:local' }}" http "$url"
+          # Stamp the image this group actually boots, not always the shared one, or a group on its own
+          # image (merod:local-mock-tee) runs unstamped and trips the fetch gate.
+          ./scripts/set-registry-mode.sh "$IMAGE" http "$url"
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -1307,7 +625,7 @@ jobs:
       # Only the ephemeral-* scenarios need this: their assertions use the global WebSocket, which
       # landed in Node 22. Pinned so a runner image change can't silently break the scripts.
       - name: Setup Node
-        if: startsWith(matrix.workflow, 'ephemeral-')
+        if: matrix.setup_node
         uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -1315,212 +633,55 @@ jobs:
       # Only the size sweep needs these 416 MiB /dev/urandom fixtures. Content must be random: blobs
       # are content-addressed, so predictable content would already sit on the fetching node.
       - name: Generate blob fixtures
-        if: matrix.workflow == 'blob-cross-node-sizes'
+        if: matrix.blob_fixtures
         run: |
           cd apps/blobs
           chmod +x scripts/gen-blob-fixtures.sh
           ./scripts/gen-blob-fixtures.sh
 
-      - name: Run ${{ matrix.workflow }}
+      # Every scenario runs even after one fails, each in its own log group with a line in the
+      # step summary; the node-log gates (projection divergence, op-store completeness, torn blob
+      # reads, and the two observe-only reports) run per scenario inside the script.
+      - name: Run ${{ matrix.scenario_count }} scenarios
         env:
+          GROUP: ${{ matrix.group }}
+          SCENARIOS_JSON: ${{ toJSON(matrix.scenarios) }}
           # Admin credentials for embedded-auth scenarios, matching the dev/dev-password login steps in
           # the workflow YAMLs. CI-only values; nothing lands in shipped config.
           MERO_AUTH_ADMIN_USER: dev
           MERO_AUTH_ADMIN_PASSWORD: dev-password
-        run: |
-          # Single attempt, fail loud: a retry loop here used to mask cold-start governance flakes. With
-          # the three-phase contract in place, a flake now is a real bug worth surfacing.
-          mkdir -p docker-logs
-          cd apps/${{ matrix.app }}
-
-          # merobox >=0.6.34 persists per-container logs to data/container-logs/<name>.log
-          # natively on every bootstrap run, regardless of stop_all_nodes.
-          LOGDIR="$GITHUB_WORKSPACE/docker-logs"
-          # Points merobox's restart_container pre-restart snapshot at the absolute LOGDIR; otherwise it
-          # writes to a CWD-relative docker-logs/ (we cd'd into the app dir) the uploader never sees.
-          export MEROBOX_PRE_RESTART_LOG_DIR="$LOGDIR"
-
-          if merobox bootstrap run \
-              "${{ matrix.file }}" \
-              --image "${{ matrix.image || 'merod:local' }}" \
-              --e2e-mode; then
-              success=true
-          else
-              success=false
-          fi
-
-          # A green http scenario proves nothing on its own: the node logs an
-          # acquisition either way, so ask the fixture whether it served one.
-          if [ "${{ matrix.image }}" != merod:local-dht ] \
-              && [ "${{ matrix.registry_fetch }}" != "false" ] \
-              && ! docker logs fixture-registry 2>&1 | grep -q 'GET /artifacts/'; then
-              echo "::error::${{ matrix.workflow }} fetched nothing from fixture-registry; it did not use the http registry"
-              success=false
-          fi
-
-          # Collect logs before nuke clears node state, staying robust if nuke's scope changes. Prefixed
-          # with the workflow name so filenames stay self-describing when merged with other artifacts.
-          for f in data/container-logs/*.log; do
-              [ -e "$f" ] || continue
-              cp -f "$f" "$LOGDIR/${{ matrix.workflow }}-$(basename "$f")"
-          done
-
-          merobox stop --all || true
-          merobox nuke --force || true
-
-          if [ "$success" = false ]; then
-              echo "::error::${{ matrix.workflow }} workflow failed"
-              exit 1
-          fi
-
-      - name: Assert no unified-op projection divergence (cutover gate)
-        if: always()
-        run: |
-          # unified_projection_divergence marks the unified-op projection disagreeing with the live
-          # decision. HARD gate; silence per-scenario isn't proof, so projection-coverage checks the total.
-          strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
-          compares=$(grep -rh "unified_projection_compare" docker-logs/ 2>/dev/null | strip || true)
-          echo "membership comparisons:"
-          if [ -n "${compares}" ]; then
-              echo "${compares}" | grep -oE 'result="[a-z_]+"' | sort | uniq -c
-              # By op kind too: a gate that only ever concludes on one plane is thinner than
-              # its total suggests.
-              echo "${compares}" | grep -oE 'op_kind="[a-z]+"' | sort | uniq -c
-          else
-              echo "  (none — this scenario folded no membership op)"
-          fi
-          concluded=$(echo "${compares}" | grep -cE 'result="(agree|diverged)"' || true)
-          refused=$(echo "${compares}" | grep -cE 'result="skipped_[a-z_]+"' || true)
-
-          if grep -rl "unified_projection_divergence" docker-logs/ 2>/dev/null | grep -q .; then
-              echo "::error::unified-op projection diverged from the live decision in ${{ matrix.workflow }} — cutover gate not met"
-              echo "planes seen:"
-              grep -rh "unified_projection_divergence" docker-logs/ \
-                | strip | grep -o 'plane="[^"]*"' | sort | uniq -c
-              echo "sample:"
-              grep -rn "unified_projection_divergence" docker-logs/ | strip | head -30
-              exit 1
-          fi
-
-          # Observe-only per scenario: a single unresolved membership op is thin coverage, not a broken
-          # gate. The systemic failure - the gate concluding nothing anywhere - is asserted suite-wide below.
-          if [ "${refused}" -gt 0 ] && [ "${concluded}" -eq 0 ]; then
-              echo "::notice::every membership comparison in ${{ matrix.workflow }} was refused (${refused}) — thin coverage here; the suite-wide assertion is what gates this"
-          fi
-          echo "no unified_projection_divergence markers across ${concluded} concluded comparison(s) (${refused} refused) — projection agrees with the live decision"
-
-      - name: Assert unified op-store completeness (C3 Stage 4, HARD gate)
-        if: always()
-        run: |
-          # op_store_incomplete marks the unified op-store missing a governance op the gov-DAG has. HARD
-          # gate: the read now flips onto the op-store, so any marker is a correctness bug.
-          if grep -rl "op_store_incomplete" docker-logs/ 2>/dev/null | grep -q .; then
-              count=$(grep -rho "op_store_incomplete" docker-logs/ | wc -l | tr -d ' ')
-              echo "::error::op-store incomplete in ${{ matrix.workflow }} — $count marker(s); a governance apply path is not writing the op-store (read-flip is unsafe)"
-              echo "sample (missing_count per namespace):"
-              # ANSI escapes sit between the field name and '=' in node logs, so they're stripped first;
-              # the match tolerates any field ordering and the field being absent.
-              grep -rho 'op_store_incomplete.*' docker-logs/ \
-                | sed -E 's/\x1b\[[0-9;]*m//g' \
-                | grep -oE 'missing_count=[0-9]+' | sort | uniq -c | head -10
-              grep -rn "op_store_incomplete" docker-logs/ | head -10
-              exit 1
-          elif grep -rl "op_store_gate_unavailable" docker-logs/ 2>/dev/null | grep -q .; then
-              # No gap markers, but the gate couldn't load the op-store somewhere — do
-              # NOT claim a clean mirror, that would be a false "verified" line.
-              gc=$(grep -rho "op_store_gate_unavailable" docker-logs/ | wc -l | tr -d ' ')
-              echo "::notice::op-store completeness UNVERIFIED in ${{ matrix.workflow }} — no gaps seen but $gc gate-load failure(s); mirror NOT confirmed"
-              grep -rn "op_store_gate_unavailable" docker-logs/ | head -5
-          else
-              echo "no op_store_incomplete or op_store_gate_unavailable markers — op-store mirrors the gov-DAG for every exercised namespace"
-          fi
-
-      - name: Assert no blob chunk was served mid-write (HARD gate)
-        if: always()
-        run: |
-          # "blob chunk hash mismatch; refusing to serve" means a torn read, since no scenario tampers
-          # with blob bytes. Fixed via temp-file + rename (atomic); a marker means that regressed.
-          if grep -rl "blob chunk hash mismatch" docker-logs/ 2>/dev/null | grep -q .; then
-              count=$(grep -rho "blob chunk hash mismatch" docker-logs/ | wc -l | tr -d ' ')
-              echo "::error::blob chunk served mid-write in ${{ matrix.workflow }} — $count occurrence(s); a chunk failed its content-hash check on the serve path"
-              echo "sample:"
-              grep -rn "blob chunk hash mismatch" docker-logs/ | head -10
-              exit 1
-          fi
-          echo "no blob chunk hash mismatches — every chunk served passed its content-hash check"
-
-      - name: Report which ground authorized each group-key recovery (observe-only)
-        if: always()
-        run: |
-          # key_server_accepted allows exactly two grounds: a trusted anchor, or a certificate proving a
-          # device of this node's own account. Informational only; key-recovery-coverage below is the floor.
-          if grep -rl "key_recovery_authorized_by" docker-logs/ 2>/dev/null | grep -q .; then
-              echo "group-key recoveries by authorizing ground:"
-              grep -rho 'key_recovery_authorized_by.*' docker-logs/ \
-                | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
-                | grep -oE 'key_recovery_authorized_by="?[a-z_]+"?' | sort | uniq -c | sort -rn
-          else
-              # Not a failure: most scenarios never need a direct pull; delivery reaches
-              # them first.
-              echo "no key_recovery_authorized_by markers - this scenario recovered no group key by direct pull"
-          fi
-
-      - name: Report scope_root governance-divergence pulls (P6.S2, observe-only)
-        if: always()
-        run: |
-          # gov_divergence_pull_triggered fires when entities agree but scope_root differs, triggering a
-          # pull from the diverging peer. Informational: also watches for a storm (one context dominating).
-          if grep -rl "gov_divergence_pull_triggered" docker-logs/ 2>/dev/null | grep -q .; then
-              count=$(grep -rho "gov_divergence_pull_triggered" docker-logs/ | wc -l | tr -d ' ')
-              echo "::notice::scope_root governance pulls in ${{ matrix.workflow }} — $count trigger(s)"
-              echo "per-context trigger counts (watch for a single context dominating = storm):"
-              # tracing writes these logs with ANSI styling, so the '=' isn't adjacent to the field name -
-              # hence the sed. The value is bs58 (ContextId's Display), not hex.
-              per_context=$(grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ \
-                | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
-                | grep -oE 'context_id=[A-Za-z0-9]+' | sort | uniq -c | sort -rn | head -10)
-              if [ -n "$per_context" ]; then
-                  echo "$per_context"
-              else
-                  # Never silently print nothing again: an empty breakdown beside a
-                  # non-zero count means the field moved or stopped being emitted.
-                  echo "::warning::$count trigger(s) but no context_id parsed from them — the marker's fields changed shape, so this breakdown is blind"
-                  grep -rho 'gov_divergence_pull_triggered.*' docker-logs/ | head -2
-              fi
-              # ops_pulled == 0 throughout means the peer had nothing to give; a non-zero value repeating
-              # while the scenario still fails means the fold doesn't converge on ops that do arrive.
-              echo "pull outcomes (ops_pulled), which splits 'nothing to give' from 'ops do not take':"
-              outcomes=$(grep -rho 'gov_divergence_pull_complete.*' docker-logs/ \
-                | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
-                | grep -oE 'ops_pulled=[0-9]+' | sort | uniq -c | sort -rn | head -5)
-              if [ -n "$outcomes" ]; then
-                  echo "$outcomes"
-              else
-                  echo "::warning::triggers present but no gov_divergence_pull_complete found — the pull did not return, or the marker moved"
-              fi
-          else
-              echo "no gov_divergence_pull_triggered markers — no scope_root governance divergence pulled this run"
-          fi
+        run: ./scripts/e2e-run-scenario-group.sh
 
       - name: List docker-logs/ before upload (debug)
         if: always()
-        run: ls -la docker-logs/ 2>&1 || echo "docker-logs/ missing"
+        run: ls -laR docker-logs/ 2>&1 || echo "docker-logs/ missing"
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: logs-${{ matrix.workflow }}-${{ github.sha }}
-          # docker-logs/ (trailing slash) uploads the entire directory: merobox's per-container logs plus
-          # its pre-restart snapshots. A two-pattern glob would silently miss files.
+          name: logs-${{ matrix.group }}-${{ github.sha }}
+          # docker-logs/<scenario>/ per scenario: merobox's per-container logs, prefixed with the
+          # scenario, plus its pre-restart snapshots. The trailing slash uploads the whole tree; a
+          # two-pattern glob would silently miss files.
           path: docker-logs/
           retention-days: 7
           if-no-files-found: ignore
 
+  test-mock-tee:
+    name: Test (${{ matrix.group }})
+    needs: [plan, build-mock-tee-image, build-apps]
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix-mock-tee) }}
+    steps: *test-steps
+
   # ── Report phase: notify on PR failure ──
   projection-coverage:
     name: Assert the projection gate compared something
-    needs: test
+    needs: [test, test-mock-tee]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1539,16 +700,16 @@ jobs:
 
       - name: Assert the suite concluded comparisons
         run: |
-          # Missing logs is benign only if the matrix never ran. A download failure, or a matrix that ran
+          # Missing logs is benign only if neither matrix ran. A download failure, or a matrix that ran
           # and left nothing, is the fail-open case this job exists to prevent.
           if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
-              case "${{ needs.test.result }}" in
-                skipped|cancelled)
-                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}) — nothing to inspect"
+              case "${{ needs.test.result }}/${{ needs.test-mock-tee.result }}" in
+                skipped/skipped|skipped/cancelled|cancelled/skipped|cancelled/cancelled)
+                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}/${{ needs.test-mock-tee.result }}) — nothing to inspect"
                   exit 0
                   ;;
               esac
-              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, artifact download=${{ steps.logs.outcome }}) — the coverage floor could not be checked"
+              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, test-mock-tee=${{ needs.test-mock-tee.result }}, artifact download=${{ steps.logs.outcome }}) — the coverage floor could not be checked"
               exit 1
           fi
           strip() { sed -E 's/\x1b\[[0-9;]*m//g'; }
@@ -1573,7 +734,7 @@ jobs:
 
   key-recovery-coverage:
     name: Assert both key-serve grounds were exercised
-    needs: test
+    needs: [test, test-mock-tee]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1592,16 +753,16 @@ jobs:
 
       - name: Assert each ground was exercised somewhere
         run: |
-          # Missing logs is benign only if the matrix never ran. A download failure, or a matrix that ran
+          # Missing logs is benign only if neither matrix ran. A download failure, or a matrix that ran
           # and left nothing, is the fail-open case this job exists to prevent.
           if [ ! -d all-logs ] || [ -z "$(find all-logs -type f -print -quit)" ]; then
-              case "${{ needs.test.result }}" in
-                skipped|cancelled)
-                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}) — nothing to inspect"
+              case "${{ needs.test.result }}/${{ needs.test-mock-tee.result }}" in
+                skipped/skipped|skipped/cancelled|cancelled/skipped|cancelled/cancelled)
+                  echo "::notice::the scenario matrix did not run (${{ needs.test.result }}/${{ needs.test-mock-tee.result }}) — nothing to inspect"
                   exit 0
                   ;;
               esac
-              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, artifact download=${{ steps.logs.outcome }}) — the key-serve coverage floor could not be checked"
+              echo "::error::no scenario logs to inspect though the matrix ran (test=${{ needs.test.result }}, test-mock-tee=${{ needs.test-mock-tee.result }}, artifact download=${{ steps.logs.outcome }}) — the key-serve coverage floor could not be checked"
               exit 1
           fi
           # ANSI escapes sit between a field name and its `=` in node logs, so the
@@ -1617,7 +778,7 @@ jobs:
               echo "  (none)"
           fi
           # Printed whether or not the floor holds, since the count alone doesn't say which scenario
-          # supplied a ground. Filenames (from the merged artifacts) are the attribution.
+          # supplied a ground. Paths (all-logs/<scenario>/...) are the attribution.
           echo "which scenarios supplied them:"
           supplied=0
           for f in $(grep -rl 'key_recovery_authorized_by' all-logs/ 2>/dev/null || true); do
@@ -1627,7 +788,7 @@ jobs:
                 | sed -E $'s/\x1B\\[[0-9;]*[mK]//g' \
                 | grep -oE 'key_recovery_authorized_by="?[a-z_]+"?' \
                 | sed -E 's/.*=//; s/"//g' | sort -u | paste -sd, - || true)
-              echo "  $(basename "${f}"): ${n} (${g})"
+              echo "  ${f#all-logs/}: ${n} (${g})"
           done
           if [ "${supplied}" -eq 0 ]; then
               echo "  (no log file mentions the marker at all)"
@@ -1661,16 +822,16 @@ jobs:
 
   comment:
     name: Report Failed Workflow
-    needs: [test, auth-seam, relay-device-login, projection-coverage, key-recovery-coverage]
+    needs: [plan, test, test-mock-tee, auth-seam, relay-device-login, projection-coverage, key-recovery-coverage]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.relay-device-login.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
+          if [ "${{ needs.plan.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.test-mock-tee.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.relay-device-login.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.relay-device-login.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
+            if [ "${{ needs.plan.result }}" == "cancelled" ] || [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.test-mock-tee.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.relay-device-login.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT
@@ -1684,8 +845,8 @@ jobs:
         run: |
           message="## E2E Rust Apps Failed
 
-          One or more jobs in this workflow (the merobox scenario matrix,
-          auth-seam, relay-device-login, projection-coverage,
+          One or more jobs in this workflow (the merobox scenario groups
+          and their plan, auth-seam, relay-device-login, projection-coverage,
           key-recovery-coverage) failed.
 
           Please check the workflow logs for more details."

@@ -225,10 +225,9 @@ steps:
     type: call
     node: xcall-authz-1
     context_id: "{{c1}}"
-    method: ping_to
+    method: ping_secret
     args:
       target_context: "{{c2}}"
-      method: secret
 
   - name: Wait for xcall dispatch + log flush
     type: wait

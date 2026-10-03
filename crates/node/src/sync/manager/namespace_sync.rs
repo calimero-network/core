@@ -8,7 +8,8 @@
 use calimero_account::{AccountProof, DeviceCert};
 use calimero_crypto::Nonce;
 use calimero_governance_store::{
-    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    AccountBindingRepository, CapabilitiesRepository, GroupKeyring, MembershipRepository,
+    MetaRepository, NamespaceRepository,
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
@@ -266,22 +267,9 @@ impl SyncManager {
         let ops_count = response.len();
         let mut applied = 0usize;
         let mut newly_applied = 0usize;
-        for (_delta_id, op_bytes) in response {
-            let op = match borsh::from_slice::<
-                calimero_context_client::local_governance::SignedNamespaceOp,
-            >(&op_bytes)
-            {
-                Ok(o) => o,
-                Err(err) => {
-                    debug!(
-                        %context_id,
-                        %their_identity,
-                        %err,
-                        "failed to decode catch-up op"
-                    );
-                    continue;
-                }
-            };
+        for (_delta_id, op) in
+            crate::sync::namespace_backfill::decode_backfill(namespace_id, response)
+        {
             match self.context_client.apply_signed_namespace_op(op).await {
                 Ok(NamespaceApplyOutcome::Applied { .. }) => {
                     applied += 1;
@@ -542,10 +530,12 @@ impl SyncManager {
     ///    credential is a bearer token: anyone who observed one could replay it
     ///    and be admitted as its owner, which is a worse hole than the one this
     ///    check closes.
+    ///
+    /// Returns the account and the device the certificate names.
     fn verified_joiner_account(
         credential_bytes: &[u8],
         joiner_public_key: &PublicKey,
-    ) -> Result<calimero_account::AccountId, String> {
+    ) -> Result<(calimero_account::AccountId, calimero_account::DeviceId), String> {
         let credential: calimero_context_client::local_governance::JoinAccountCredential =
             borsh::from_slice(credential_bytes).map_err(|e| format!("undecodable: {e}"))?;
 
@@ -567,7 +557,7 @@ impl SyncManager {
             return Err("certificate names a different signing key than the request".to_owned());
         }
 
-        Ok(credential.statement.account)
+        Ok((credential.statement.account, verified.device))
     }
 
     /// Handle an incoming NamespaceJoinRequest on the responder side.
@@ -686,9 +676,9 @@ impl SyncManager {
         // presented a device this responder held no binding for had its deny row
         // go unread, and collected the backfill and the wrapped group key ahead
         // of the apply-time check that does reject it.
-        let joiner_account =
+        let (joiner_account, joiner_device) =
             match Self::verified_joiner_account(joiner_credential_bytes, &joiner_public_key) {
-                Ok(account) => account,
+                Ok(joiner) => joiner,
                 Err(reason) => {
                     let msg = StreamMessage::Message {
                         sequence_id: 0,
@@ -701,6 +691,30 @@ impl SyncManager {
                     return Ok(());
                 }
             };
+
+        // A device the namespace revoked, or narrowed out and has not linked again,
+        // is served nothing, whether or not its account is a member.
+        if AccountBindingRepository::new(&store).device_is_withdrawn(
+            &namespace,
+            joiner_account,
+            joiner_device,
+        )? {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "rejecting namespace join: the joining device was revoked or narrowed out of this namespace"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "the joining device was revoked or narrowed out of this namespace"
+                        .to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
 
         let already_member = MembershipRepository::new(&store)
             .has_direct_member(&group_id, &joiner_account)
@@ -1314,7 +1328,10 @@ impl SyncManager {
     /// could hold an entry per address (up to `MAX_ADMITTER_ADDRS`), each of
     /// which the connect loop would try ahead of discovery at a full
     /// stream-open timeout apiece.
-    fn admitter_routes(invitation_bytes: &[u8]) -> Vec<(PeerId, Vec<libp2p::Multiaddr>)> {
+    fn admitter_routes(
+        invitation_bytes: &[u8],
+        local_peer: &PeerId,
+    ) -> Vec<(PeerId, Vec<libp2p::Multiaddr>)> {
         let Ok(invitation) = borsh::from_slice::<
             calimero_context_config::types::SignedGroupOpenInvitation,
         >(invitation_bytes) else {
@@ -1324,6 +1341,7 @@ impl SyncManager {
         super::namespace_join::group_admitter_routes(
             &invitation.admitter_addrs,
             MAX_ADMITTER_MACHINES_DIALED,
+            local_peer,
         )
     }
 
@@ -1416,7 +1434,8 @@ impl SyncManager {
         // Only an admitter can complete this join, so trying one first is not a
         // preference so much as the difference between a round trip that can
         // succeed and one that can only be refused.
-        let admitter_routes = Self::admitter_routes(&params.invitation_bytes);
+        let admitter_routes =
+            Self::admitter_routes(&params.invitation_bytes, &self.local_peer_id().await);
         let admitter_peers: Vec<libp2p::PeerId> =
             admitter_routes.iter().map(|(peer, _)| *peer).collect();
 
@@ -1700,7 +1719,7 @@ impl SyncManager {
             }
         };
 
-        let Ok(mut stream) = self.sync_network.open_stream(peer).await else {
+        let Ok(mut stream) = self.open_stream_bounded(peer).await else {
             debug!("failed to open stream for namespace sync");
             return 0;
         };
@@ -1764,78 +1783,62 @@ impl SyncManager {
                 let mut pending_divergences: Vec<
                     calimero_context_client::messages::DivergenceReport,
                 > = Vec::new();
-                for (delta_id, op_bytes) in deltas {
-                    match borsh::from_slice::<
-                        calimero_context_client::local_governance::SignedNamespaceOp,
-                    >(&op_bytes)
+                for (delta_id, op) in
+                    crate::sync::namespace_backfill::decode_backfill(namespace_id, deltas)
+                {
+                    match self
+                        .context_client
+                        .apply_signed_namespace_op(op.clone())
+                        .await
                     {
-                        Ok(op) => {
-                            match self
-                                .context_client
-                                .apply_signed_namespace_op(op.clone())
-                                .await
-                            {
-                                Err(err) => {
-                                    // Capture enough context to diagnose codec/schema
-                                    // mismatches (observed as "Unexpected length of
-                                    // input" from the inner GroupOp decode when a
-                                    // variant's binary layout has drifted). The
-                                    // op-type tag + byte-length give us a fingerprint
-                                    // without logging potentially sensitive payload.
-                                    let op_kind = match &op.op {
-                                        calimero_context_client::local_governance::NamespaceOp::Root(r) => {
-                                            format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
-                                        }
-                                        calimero_context_client::local_governance::NamespaceOp::RootSealed { .. } => {
-                                            "RootSealed".to_owned()
-                                        }
-                                        calimero_context_client::local_governance::NamespaceOp::RootSealedForGroup { .. } => {
-                                            "RootSealedForGroup".to_owned()
-                                        }
-                                        calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
-                                            "Group".to_owned()
-                                        }
-                                        // `NamespaceOp` is `#[non_exhaustive]`.
-                                        _ => "Unknown".to_owned(),
-                                    };
-                                    warn!(
-                                        namespace_id = %hex::encode(namespace_id),
-                                        delta_id = %hex::encode(delta_id),
-                                        op_kind = %op_kind,
-                                        signer = %op.signer,
-                                        nonce = op.nonce,
-                                        op_bytes_len = op_bytes.len(),
-                                        ?err,
-                                        "failed to apply namespace governance op from backfill"
-                                    );
-                                }
-                                Ok(NamespaceApplyOutcome::Applied { divergence }) => {
-                                    newly_applied = true;
-                                    if let Some(report) = divergence {
-                                        pending_divergences.push(report);
-                                    }
-                                    // Group-key delivery is no longer pushed
-                                    // from the apply path (the one-shot
-                                    // receiver-side push was the #2613
-                                    // defect). The joiner pulls any key it
-                                    // lacks at the end of this sync round
-                                    // (see `recover_missing_group_keys`);
-                                    // admin-initiated pushes still come from
-                                    // `add_group_members`/`admit_tee_node`.
-                                }
-                                Ok(_) => {}
-                            }
-                        }
                         Err(err) => {
+                            // Capture enough context to diagnose codec/schema
+                            // mismatches (observed as "Unexpected length of
+                            // input" from the inner GroupOp decode when a
+                            // variant's binary layout has drifted). The
+                            // op-type tag gives us a fingerprint without
+                            // logging potentially sensitive payload.
+                            let op_kind = match &op.op {
+                                calimero_context_client::local_governance::NamespaceOp::Root(r) => {
+                                    format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
+                                }
+                                calimero_context_client::local_governance::NamespaceOp::RootSealed { .. } => {
+                                    "RootSealed".to_owned()
+                                }
+                                calimero_context_client::local_governance::NamespaceOp::RootSealedForGroup { .. } => {
+                                    "RootSealedForGroup".to_owned()
+                                }
+                                calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
+                                    "Group".to_owned()
+                                }
+                                // `NamespaceOp` is `#[non_exhaustive]`.
+                                _ => "Unknown".to_owned(),
+                            };
                             warn!(
                                 namespace_id = %hex::encode(namespace_id),
                                 delta_id = %hex::encode(delta_id),
-                                op_bytes_len = op_bytes.len(),
-                                op_bytes_prefix = %hex::encode(&op_bytes[..op_bytes.len().min(64)]),
-                                %err,
-                                "failed to decode namespace governance op from backfill"
+                                op_kind = %op_kind,
+                                signer = %op.signer,
+                                nonce = op.nonce,
+                                ?err,
+                                "failed to apply namespace governance op from backfill"
                             );
                         }
+                        Ok(NamespaceApplyOutcome::Applied { divergence }) => {
+                            newly_applied = true;
+                            if let Some(report) = divergence {
+                                pending_divergences.push(report);
+                            }
+                            // Group-key delivery is no longer pushed
+                            // from the apply path (the one-shot
+                            // receiver-side push was the #2613
+                            // defect). The joiner pulls any key it
+                            // lacks at the end of this sync round
+                            // (see `recover_missing_group_keys`);
+                            // admin-initiated pushes still come from
+                            // `add_group_members`/`admit_tee_node`.
+                        }
+                        Ok(_) => {}
                     }
                 }
                 // FSM notify after the batch — gated on at least one
@@ -2143,14 +2146,17 @@ impl SyncManager {
                 // hash check cannot bound the content and the responder gate
                 // above is all that stands between this node and a chosen key.
                 let expected_key_ids = key_id.as_slice();
-                let outcome = calimero_governance_store::apply_received_group_key(
+                let judge = calimero_context::VoidJudge::new(&store);
+                let outcome = calimero_governance_store::apply_received_group_key_with(
                     &store,
                     namespace_id.into(),
                     group_id,
                     &envelope_bytes,
                     responder_identity,
                     expected_key_ids,
+                    &judge,
                 );
+                drop(judge);
                 drop(store);
                 match outcome {
                     Ok(divergence) => {
@@ -2207,12 +2213,12 @@ impl SyncManager {
                                 &store,
                                 namespace_id,
                             );
-                        drop(store);
                         if let Some(ops) = refreshed {
                             self.node_state
                                 .write_scope_projections()
-                                .apply_backfill(namespace_id, ops);
+                                .apply_backfill_with_base(&store, namespace_id, ops);
                         }
+                        drop(store);
 
                         self.drain_governance_pending_after_sync().await;
                     }
@@ -2273,7 +2279,7 @@ impl SyncManager {
     ) -> Option<(Vec<u8>, PublicKey, Vec<u8>)> {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
-        let mut stream = match self.sync_network.open_stream(peer).await {
+        let mut stream = match self.open_stream_bounded(peer).await {
             Ok(s) => s,
             Err(err) => {
                 debug!(%err, "failed to open stream for group-key request");
@@ -3293,7 +3299,7 @@ mod joiner_credential_tests {
         let joiner = PublicKey::from([0x11; 32]);
         let (credential, genesis) = credential_for(&joiner);
 
-        let account =
+        let (account, _device) =
             SyncManager::verified_joiner_account(&borsh::to_vec(&credential).unwrap(), &joiner)
                 .expect("a well-formed credential for this key must resolve");
 
@@ -3719,7 +3725,7 @@ mod admitter_derivation_tests {
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
 
-    use super::{SyncManager, MAX_ADMITTER_MACHINES_DIALED};
+    use super::{PeerId, SyncManager, MAX_ADMITTER_MACHINES_DIALED};
 
     /// An invitation carrying `count` addresses, each naming a different peer.
     fn invitation_naming_distinct_machines(count: usize) -> Vec<u8> {
@@ -3755,7 +3761,10 @@ mod admitter_derivation_tests {
     #[test]
     fn more_machines_than_the_cap_are_dropped_not_carried() {
         let over = MAX_ADMITTER_MACHINES_DIALED + 4;
-        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(over));
+        let routes = SyncManager::admitter_routes(
+            &invitation_naming_distinct_machines(over),
+            &PeerId::random(),
+        );
 
         assert_eq!(
             routes.len(),
@@ -3768,7 +3777,10 @@ mod admitter_derivation_tests {
 
     #[test]
     fn fewer_machines_than_the_cap_are_all_kept() {
-        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(3));
+        let routes = SyncManager::admitter_routes(
+            &invitation_naming_distinct_machines(3),
+            &PeerId::random(),
+        );
         assert_eq!(routes.len(), 3, "the cap must not drop what fits under it");
     }
 
@@ -3777,14 +3789,14 @@ mod admitter_derivation_tests {
     #[test]
     fn an_invitation_that_does_not_decode_yields_no_machines() {
         assert!(
-            SyncManager::admitter_routes(b"not an invitation").is_empty(),
+            SyncManager::admitter_routes(b"not an invitation", &PeerId::random()).is_empty(),
             "a hint set that cannot be read is empty, not an error"
         );
     }
 }
 
 #[cfg(test)]
-mod group_key_recovery_anchor_tests {
+pub(super) mod group_key_recovery_anchor_tests {
     //! Who `recover_missing_group_keys` believes, driven end to end against a
     //! scripted [`MockSyncNetwork`] with a real store behind the manager.
     //!
@@ -3836,7 +3848,9 @@ mod group_key_recovery_anchor_tests {
 
     /// A `SyncManager` over an in-memory store whose network is `mock`, with no
     /// actor behind it: the key-recovery path needs only the store and streams.
-    async fn manager(mock: Arc<MockSyncNetwork>) -> (SyncManager, Store, TempDir) {
+    pub(in crate::sync::manager) async fn manager(
+        mock: Arc<MockSyncNetwork>,
+    ) -> (SyncManager, Store, TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let blob_store_config =
@@ -4134,5 +4148,226 @@ mod group_key_recovery_anchor_tests {
             "a plain member is not an anchor, however validly it signs"
         );
         mock.assert_all_consumed();
+    }
+}
+
+#[cfg(test)]
+mod namespace_join_device_tests {
+    //! Who the namespace join responder serves, by the standing of the joining device.
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_account::DeviceId;
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_governance_store::{
+        AccountBindingRepository, GroupKeyring, MembershipRepository, MetaRepository,
+        NamespaceRepository,
+    };
+    use calimero_network_primitives::stream::Stream;
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::Store;
+    use libp2p::PeerId;
+
+    use super::group_key_recovery_anchor_tests::manager;
+    use super::{InitPayload, InitProof, MessagePayload, StreamMessage};
+    use crate::sync::network::mock::MockSyncNetwork;
+    use crate::sync::SyncManager;
+
+    const NAMESPACE: [u8; 32] = [0x6E; 32];
+
+    /// A namespace keyed and administered by `admin_sk`, as its founder holds it.
+    fn found(store: &Store, admin_sk: &PrivateKey) -> calimero_account::AccountId {
+        let ns = ContextGroupId::from(NAMESPACE);
+        let admin = calimero_context::test_support::enrol(store, &ns, &admin_sk.public_key());
+        MetaRepository::new(store)
+            .save(
+                &ns,
+                &calimero_store::key::GroupMetaValue {
+                    target: calimero_store::key::GroupTarget {
+                        application_id: [0xCC; 32].into(),
+                        bytecode_id: [0xBB; 32],
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
+                    created_at: 1_700_000_000,
+                    admin_identity: admin,
+                    owner_identity: admin,
+                    migration: None,
+                    auto_join: true,
+                },
+            )
+            .expect("save the namespace meta");
+        MembershipRepository::new(store)
+            .add_member(&ns, &admin, GroupMemberRole::Admin)
+            .expect("seat the admin");
+        NamespaceRepository::new(store)
+            .store_identity(&ns, &admin_sk.public_key(), admin_sk.as_bytes())
+            .expect("store the admin's namespace identity");
+        let _ = GroupKeyring::new(store, ns)
+            .store_key(&[0x63; 32])
+            .expect("mint the namespace key");
+        admin
+    }
+
+    fn invitation(
+        admin_sk: &PrivateKey,
+        admitter: calimero_account::AccountId,
+        nonce: u8,
+    ) -> Vec<u8> {
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
+            group_id: ContextGroupId::from(NAMESPACE),
+            expiration_timestamp: 0,
+            invitation_nonce: [nonce; 32],
+            invited_role: 1,
+            admitters: vec![admitter],
+        };
+        let signature = admin_sk
+            .sign(&<sha2::Sha256 as sha2::Digest>::digest(
+                borsh::to_vec(&invitation).expect("borsh the invitation"),
+            ))
+            .expect("sign the invitation");
+        borsh::to_vec(&SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation,
+            inviter_signature: hex::encode(signature.to_bytes()),
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: Vec::new(),
+        })
+        .expect("borsh the signed invitation")
+    }
+
+    /// Dial the responder as `joiner_sk` with a proven key, and return the key
+    /// envelope it answers with, or the reason it rejects the join.
+    async fn join(
+        sm: &SyncManager,
+        joiner_sk: &PrivateKey,
+        invitation_bytes: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
+        let peer = PeerId::random();
+        let party_id = joiner_sk.public_key();
+        let pop = InitProof {
+            signature: joiner_sk
+                .sign(&InitProof::message(
+                    &ContextId::from(NAMESPACE),
+                    &party_id,
+                    &peer.to_bytes(),
+                ))
+                .expect("sign the proof")
+                .to_bytes(),
+        };
+        let init = StreamMessage::Init {
+            context_id: ContextId::from([0u8; 32]),
+            party_id,
+            payload: InitPayload::NamespaceJoinRequest {
+                namespace_id: NAMESPACE,
+                invitation_bytes,
+                joiner_public_key: party_id,
+                joiner_credential_bytes: borsh::to_vec(
+                    &calimero_context::test_support::credential(&party_id),
+                )
+                .expect("borsh the credential"),
+            },
+            next_nonce: crate::sync::helpers::generate_nonce(),
+            pop: Some(pop),
+        };
+        let (responder, mut dialer) = Stream::test_pair();
+        let dial = async move {
+            crate::sync::stream::send(&mut dialer, &init, None)
+                .await
+                .expect("send the join request");
+            crate::sync::stream::recv(&mut dialer, None, Duration::from_secs(5))
+                .await
+                .ok()
+                .flatten()
+        };
+        let ((), reply) = tokio::join!(sm.handle_opened_stream(peer, Box::new(responder)), dial);
+        match reply {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::NamespaceJoinResponse {
+                        key_envelope_bytes, ..
+                    },
+                ..
+            }) => Ok(key_envelope_bytes),
+            Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceJoinRejected { reason },
+                ..
+            }) => Err(reason),
+            other => panic!("unexpected reply to a namespace join: {other:?}"),
+        }
+    }
+
+    /// A member's device the namespace narrowed out or revoked is not handed the
+    /// namespace key by joining again; a live device of another member is.
+    #[tokio::test]
+    async fn a_withdrawn_device_is_not_served_the_namespace_key() {
+        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let ns = ContextGroupId::from(NAMESPACE);
+        let admin_sk = PrivateKey::from([0x61; 32]);
+        let admitter = found(&store, &admin_sk);
+
+        let mut members = Vec::new();
+        for seed in [0x71, 0x72, 0x73] {
+            let device_sk = PrivateKey::from([seed; 32]);
+            let account =
+                calimero_context::test_support::enrol(&store, &ns, &device_sk.public_key());
+            MembershipRepository::new(&store)
+                .add_member(&ns, &account, GroupMemberRole::Member)
+                .expect("seat the member");
+            members.push((device_sk, account));
+        }
+        let (descoped_sk, descoped_account) = &members[0];
+        let _dropped = AccountBindingRepository::new(&store)
+            .narrow(
+                &ns,
+                *descoped_account,
+                DeviceId::from(*descoped_sk.public_key()),
+                1,
+            )
+            .expect("narrow the device out");
+        let revoked_sk = &members[2].0;
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&ns, DeviceId::from(*revoked_sk.public_key()))
+            .expect("revoke the device");
+
+        let served = |reply: Result<Vec<u8>, String>| reply.is_ok_and(|key| !key.is_empty());
+        let refused = |reply: Result<Vec<u8>, String>| {
+            reply.is_err_and(|reason| reason.contains("revoked or narrowed out"))
+        };
+        assert!(
+            served(join(&sm, &members[1].0, invitation(&admin_sk, admitter, 0x01)).await),
+            "precondition: a live device of a member is served the key"
+        );
+        assert!(
+            refused(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x02)).await),
+            "a device narrowed out of the namespace must be refused"
+        );
+        assert!(
+            refused(join(&sm, revoked_sk, invitation(&admin_sk, admitter, 0x03)).await),
+            "a device revoked in the namespace must be refused"
+        );
+
+        // Linked again at a later scope, the narrowed device is live once more.
+        let credential = calimero_context::test_support::credential(&descoped_sk.public_key());
+        let _bound = AccountBindingRepository::new(&store)
+            .apply_link(
+                &ns,
+                &credential.genesis,
+                &credential.chain,
+                &credential.statement,
+                2,
+            )
+            .expect("link the device again")
+            .expect("the link above the floor is admitted");
+        assert!(
+            served(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x04)).await),
+            "a device linked again above its floor is served the key"
+        );
     }
 }

@@ -24,6 +24,7 @@ use calimero_store::db::Database;
 use calimero_store::Store;
 use calimero_store_encryption::EncryptedDatabase;
 use calimero_store_rocksdb::RocksDB;
+use calimero_utils_actix::supervise::{exit_on_panic, restart_on_panic};
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use futures_util::FutureExt;
@@ -38,7 +39,7 @@ use crate::dag_compactor::DagCompactor;
 use crate::gc::GarbageCollector;
 use crate::network_event_channel::{self, NetworkEventChannelConfig};
 use crate::network_event_processor::NetworkEventBridge;
-use crate::node_metrics::{self, NodeMetrics};
+use crate::node_metrics::{self, record_actor_restart, NodeMetrics};
 use crate::state_delta_bridge::{start_state_delta_actor, STATE_DELTA_CHANNEL_CAPACITY};
 use crate::sync::{PrometheusSyncMetrics, SyncConfig, SyncManager};
 use crate::sync_session_bridge::{start_sync_session_actor, SYNC_SESSION_CHANNEL_CAPACITY};
@@ -51,6 +52,11 @@ pub use calimero_node_primitives::NodeMode;
 /// teardown time so a wedged subsystem cannot block process exit indefinitely
 /// past a `SIGTERM` (past which an orchestrator would `SIGKILL` us anyway).
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// Upper bound on closing peer connections at shutdown. Each close is local
+/// and immediate, apart from yamux's goodbye over TCP, so this is short. A
+/// peer that does not answer in time is still dropped when the process exits.
+const NETWORK_CLOSE_GRACE: Duration = Duration::from_secs(3);
 
 /// Resolve when the process receives a termination signal (`SIGINT`/Ctrl-C or,
 /// on unix, `SIGTERM`). Used as a `tokio::select!` arm so the node can drain
@@ -337,7 +343,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         context_manager
     };
 
-    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
+    let _ignored = exit_on_panic(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");
         context_manager
     });
@@ -520,14 +526,23 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     );
     sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
 
-    // #2319: divergence counter — the hash-heartbeat handler bumps this
-    // whenever it sees a peer with the same DAG heads but a different
-    // storage root hash. Exposed as `sync_root_hash_divergence_detected_total`.
-    let divergence_detected = prometheus_client::metrics::counter::Counter::default();
-    registry.sub_registry_with_prefix("sync").register(
+    // #2319: divergence counters, bumped by the hash-heartbeat handler when it
+    // sees a peer with the same DAG heads but a different storage root hash.
+    // prometheus-client appends `_total` to every counter, so the first is
+    // exposed as `sync_root_hash_divergence_detected_total_total`; its name is
+    // left as is so existing dashboards keep their series. The second is
+    // exposed as `sync_root_hash_divergence_escalated_total`.
+    let divergence_metrics = crate::manager::DivergenceMetrics::default();
+    let sync_registry = registry.sub_registry_with_prefix("sync");
+    sync_registry.register(
         "root_hash_divergence_detected_total",
-        "Times the hash-heartbeat observed a peer with the same DAG heads but a different storage root hash (#2319)",
-        divergence_detected.clone(),
+        "Every hash-heartbeat observation of a peer with the same DAG heads but a different storage root hash, transient ones included; rises with write load (#2319)",
+        divergence_metrics.detected.clone(),
+    );
+    sync_registry.register(
+        "root_hash_divergence_escalated",
+        "Same-DAG / different-root divergences that persisted unchanged past the heartbeat persistence window, counted once per stuck hash pair (#2319)",
+        divergence_metrics.escalated.clone(),
     );
 
     let node_manager = NodeManager::new(
@@ -539,14 +554,18 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         node_state.clone(),
         state_delta_tx,
         sync_session_tx,
-        divergence_detected,
+        divergence_metrics,
     );
 
     // Start NodeManager actor and get its address
-    let node_manager_addr = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
-        assert!(node_recipient.init(ctx), "failed to initialize");
-        node_manager
-    });
+    let node_manager_addr = restart_on_panic(
+        &arbiter_pool.get().await?,
+        record_actor_restart,
+        move |ctx| {
+            assert!(node_recipient.init(ctx), "failed to initialize");
+            node_manager
+        },
+    );
 
     // Start the network event bridge in a dedicated tokio task
     // This bridges the channel to NodeManager, ensuring reliable message delivery
@@ -588,11 +607,16 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         gc_interval,
     );
 
-    let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| gc);
+    // Held until shutdown, here and for the compactor: restarting an actor needs a live sender.
+    let _gc = restart_on_panic(
+        &arbiter_pool.get().await?,
+        record_actor_restart,
+        move |_ctx| gc,
+    );
 
     // Start DAG compaction actor (issue #2026). Enabled by default; bounds
     // on-disk delta growth unless `[dag_compaction] enabled = false`.
-    if config.dag_compaction.enabled {
+    let _compactor = if config.dag_compaction.enabled {
         // Fail fast on a misconfigured-but-enabled config rather than silently
         // skipping compaction. With compaction default-on, a silent skip (e.g.
         // an operator setting `retain_recent_count >= min_deltas_before_compact`
@@ -606,9 +630,19 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
             config.dag_compaction.retain_recent_count,
             config.dag_compaction.min_deltas_before_compact,
         );
-        let compactor = DagCompactor::new(node_state.delta_stores_handle(), config.dag_compaction);
-        let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |_ctx| compactor);
-    }
+        let compactor = DagCompactor::new(
+            node_state.delta_stores_handle(),
+            context_client.clone(),
+            config.dag_compaction,
+        );
+        Some(restart_on_panic(
+            &arbiter_pool.get().await?,
+            record_actor_restart,
+            move |_ctx| compactor,
+        ))
+    } else {
+        None
+    };
 
     // Fuse the sync driver: it is normally long-lived, but if it ever resolves,
     // a bare `&mut sync` arm would keep being selected and re-poll a completed
@@ -693,7 +727,27 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 3. Signal and drain the network-event bridge. Best-effort: on the
+    // 3. Close every peer connection while the actix system is still
+    //    running. A QUIC peer only learns a connection is gone from a close
+    //    packet. The task that sends it runs on the network actor's arbiter,
+    //    so once step 5 stops the system the packet cannot go out, and the
+    //    peer keeps the dead connection until its idle timeout. If this node
+    //    restarts within that time, the peer counts the new connection as a
+    //    second one and does not send its gossip subscriptions, so the
+    //    restarted node cannot sync or fetch blobs from it. The network actor
+    //    also refuses new connections from here on, so a peer reconnecting
+    //    as it is dropped cannot leave another stale connection. After the
+    //    HTTP drain, because in-flight requests may still need the network.
+    if tokio::time::timeout(NETWORK_CLOSE_GRACE, network_client.close_all_connections())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            "peer connections did not all close within the shutdown grace period; continuing"
+        );
+    }
+
+    // 4. Signal and drain the network-event bridge. Best-effort: on the
     //    system-stop exit path the Actix arbiters may already be gone, so the
     //    notify/await is a courtesy drain rather than a guarantee.
     bridge_shutdown.notify_one();
@@ -710,7 +764,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 4. Stop the Actix system, which ends every arbiter thread and with it
+    // 5. Stop the Actix system, which ends every arbiter thread and with it
     //    every actor.
     //
     //    The system did already come down without this, but only by accident and
@@ -751,7 +805,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 5. Abort + reap the detached background tasks so none of them can wake
+    // 6. Abort + reap the detached background tasks so none of them can wake
     //    up and touch the datastore after we flush. Their RocksDB writes are
     //    synchronous and inline (none use `spawn_blocking`), so a cancellation
     //    can only be observed at an `.await` boundary — after any in-progress
@@ -773,7 +827,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         }
     }
 
-    // 6. Flush the datastore so an abrupt process exit immediately afterwards
+    // 7. Flush the datastore so an abrupt process exit immediately afterwards
     //    cannot lose what the just-drained writers persisted. The RocksDB
     //    `Drop` impl is a backstop for any path that skips this.
     if !stop_cause.flushes() {

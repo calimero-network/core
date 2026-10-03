@@ -9,6 +9,7 @@ use calimero_server_primitives::admin::{
 use eyre::Result;
 
 use super::Client;
+use crate::connection::NETWORK_BOUND_REQUEST_TIMEOUT;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
 impl<A, S> Client<A, S>
@@ -41,7 +42,11 @@ where
     ) -> Result<InstallApplicationResponse> {
         let response = self
             .connection
-            .post("admin-api/install-application", request)
+            .post_with_timeout(
+                "admin-api/install-application",
+                request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
             .await?;
         Ok(response)
     }

@@ -35,6 +35,28 @@ use tracing::{error, info, warn};
 
 use crate::handlers::stream::incoming::FromIncoming;
 
+/// Private entry points the fuzz targets drive, compiled only under `cargo fuzz`.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz_api {
+    use libp2p::identity::Keypair;
+    use libp2p::PeerId;
+
+    use crate::blob_provider_record::BlobProviderRecord;
+
+    pub fn blob_provider_record_signed_value(
+        record_key: &[u8],
+        keypair: &Keypair,
+        size: u64,
+    ) -> eyre::Result<Vec<u8>> {
+        BlobProviderRecord::signed_value(record_key, keypair, size)
+    }
+
+    pub fn blob_provider_record_verify(record_key: &[u8], value: &[u8]) -> Option<PeerId> {
+        BlobProviderRecord::verify(record_key, value)
+    }
+}
+
 pub use calimero_network_primitives::autonat_v2 as autonat;
 pub mod behaviour;
 mod blob_provider_record;
@@ -94,6 +116,14 @@ pub struct NetworkManager {
     /// Detects and repairs a subscriber table that has fallen out of step with
     /// the peers we are actually meshed with. See [`subscription_repair`].
     subscription_repair: SubscriptionRepair,
+    /// Set by [`CloseAllConnections`] at shutdown, after which the node
+    /// connects to nothing. See [`handlers::commands::close_all_connections`].
+    ///
+    /// [`CloseAllConnections`]: calimero_network_primitives::messages::CloseAllConnections
+    closing_all_connections: bool,
+    /// Callers of `CloseAllConnections` waiting for the last connection to
+    /// close.
+    pending_close_all: Vec<oneshot::Sender<()>>,
     metrics: Metrics,
 }
 
@@ -159,6 +189,8 @@ impl NetworkManager {
             identity: config.identity.clone(),
             inbound_record_quota: InboundRecordQuota::default(),
             subscription_repair: SubscriptionRepair::default(),
+            closing_all_connections: false,
+            pending_close_all: Vec::new(),
             metrics: Metrics::new(prom_registry),
         };
 

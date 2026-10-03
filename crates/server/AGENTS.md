@@ -92,6 +92,7 @@ src/
 │   ├── handlers.rs           # SSE handlers
 │   └── ...
 ├── auth.rs                   # Authentication middleware
+├── proxy_permissions.rs      # Proxy mode: X-Auth-Permissions → GrantedPermissions
 ├── sealed.rs                 # Sealed transport: /sealed/v2 envelope, wraps the router
 ├── sealed/
 │   └── session.rs            # Noise NK handshake and the sessions it opens
@@ -175,6 +176,9 @@ POST /jsonrpc                         # JSON-RPC 2.0 endpoint
 ```
 WS   /ws                              # WebSocket connection
 ```
+
+The upgrade needs `context:subscribe`; each `execute` message needs `context:execute` for its
+context and method. See "Execute authority" below.
 
 ### SSE
 
@@ -299,6 +303,29 @@ covers the token path.
 
 `POST /admin-api/contexts/{id}/presence-intents` (`admin/handlers/context/presence_intent.rs`) is how an account with no node publishes ephemeral presence. It sits on the public `delegated_execution_routes()` router with the other intents routes: the device's signature over the `PresenceStatement` is the credential, and the certificate in `authorProof` ties the device to its account. The handler only rebuilds the update (the context from the path, the author from the certificate's key, so a client cannot name another) and hands it to `NodeClient::publish_delegated_ephemeral`, which makes every decision. Each `DelegatedPresenceError` has its own status (`status_for`). It is not `/intents`: presence runs nothing, spends no warrant nonce and changes no state.
 
+## Client key bindings
+
+A client key minted by `POST /admin/client-key` authenticates as the node owner,
+so its bindings are the only thing that narrows it. `context[<ctx>,<identity>]`
+and `application-binding[<app>]` in its permission list become a
+`ClientKeyScope` extension, and every surface that names a context or group
+checks it:
+
+- `/jsonrpc`, WS `execute` and context subscribe (WS and SSE): the context must
+  be the bound one, or run the bound application.
+- Group subscribe (WS and SSE) and admin routes with a `{group_id}` or
+  `{namespace_id}`: a context binding reaches only the groups on the chain from
+  its context's group up to the namespace; an application binding only groups
+  targeting that application.
+- Admin routes with a `{context_id}`, and `/contexts/sync/{id}`, are refused with
+  `403` outside the binding (`admin/client_key_scope.rs`). `POST /contexts/sync`
+  with no id syncs every context and is refused outright.
+- SSE: a bound key's session principal includes its binding, so it can neither
+  adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
+
+Every check fails closed when the context or group cannot be resolved. A key
+with no binding is unaffected.
+
 ## Sealed transport
 
 `src/sealed.rs` lets a client encrypt its traffic end to end to the TD, so TLS
@@ -339,6 +366,39 @@ sealed under the session and responses stream back in sealed frames. Six rules:
   `src/sealed/noise.ts`). The vectors in `sealed/tests.rs` are repeated there
   verbatim, and mero-js runs the handshake itself, so change both or neither.
 
+## Execute authority
+
+`/ws` and `/jsonrpc` are each several authorities behind one route. The route
+check only says a token may reach the path: `/ws` is admitted on
+`context:subscribe`, and `/jsonrpc` on any `context:execute`, while the context
+and method a call names are in the body. So the guard hands the token's
+permissions over as `GrantedPermissions`, and `execute_request` in
+`src/execute.rs`, the one function both transports call, checks `may_execute`
+(`context:execute[<ctx>,,<method>]`) before it reads anything.
+
+- **Holds for the node owner too.** A client key is answered as the node
+  owner, which skips the membership check, but its token was minted for some
+  purpose. A token minted to watch events must not be spent on writes.
+- **Proxy mode reads `X-Auth-Permissions`** (`src/proxy_permissions.rs`),
+  which mero-auth's `/auth/validate` writes and the proxy forwards. It needs
+  no opt-in because it can only narrow: a request naming none is answered as
+  proxy mode always answered it. mero-auth comma-joins the list, and a
+  permission's own parameters contain commas, so it is split only outside
+  brackets.
+- **Guard ran, no permissions** is refused, never read as unrestricted.
+- **An account-anchored session never acts as the node.** `/jsonrpc` (through
+  `jsonrpc::caller_identity`) and WS `execute` refuse a caller holding only
+  `AuthenticatedAccount`, whether the embedded guard or `proxy_identity` set it:
+  `execute` and `set_ephemeral` run as this node's own context identity. Its
+  writes go through `/intents` with a warrant, its presence through
+  `/presence-intents`.
+- **A method's own `Err` is mapped once**, by `execute::method_output`, into
+  `ExecutionError::FunctionCallError`. JSON-RPC, WS, the delegated `/intents`
+  and the account `/query` all use it; the two admin routes answer it with
+  `admin::service::method_error_response` (`400`, JSON-RPC's `type`/`data` plus
+  an `error` string). Never answer a method error as a success with a `null`
+  return.
+
 ## Subscription authority
 
 Subscribing is authorized once, at subscribe time, by the gates in
@@ -346,6 +406,8 @@ Subscribing is authorized once, at subscribe time, by the gates in
 `authorize_group_subscriptions`). Keeping that decision true afterwards is
 `src/subscription_grants.rs`, and there are three rules worth knowing before
 touching either.
+A caller with an identity must be a member in every auth mode, proxy included, since a proxy tenant is one caller among many.
+Only the node owner and an identity-less caller on an auth-off node bypass this.
 
 **The gate is the only authority.** A grant never *grants* anything; it only
 records what a connection's subscriptions depend on, so a membership change can

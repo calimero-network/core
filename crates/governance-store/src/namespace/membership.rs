@@ -408,7 +408,7 @@ impl<'a> NamespaceMembershipService<'a> {
             }
         }
 
-        for account in crate::tee::tee_admission_records(store, group_id)?.into_keys() {
+        for account in crate::tee::tee_admitted_accounts(store, group_id)? {
             let _ = out.insert(account);
         }
 
@@ -514,9 +514,13 @@ impl<'a> NamespaceMembershipService<'a> {
         signed_invitation: &SignedGroupOpenInvitation,
         account: &JoinAccountCredential,
     ) -> EyreResult<()> {
+        let namespace = ContextGroupId::from(self.namespace_id.to_bytes());
         if !crate::ops::namespace::member_joined_open::join_op_proves_ownership(
-            signer, member, account,
-        ) {
+            &self.permissions(&namespace),
+            signer,
+            member,
+            account,
+        )? {
             bail!(
                 "MemberJoined signer ({signer}) does not hold a credential for member ({member:?})"
             );

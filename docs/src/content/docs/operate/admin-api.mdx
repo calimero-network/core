@@ -201,6 +201,13 @@ in this order:
 If the `Authorization` header is present, the `?token=` query parameter is
 ignored entirely.
 
+The upgrade needs `context:subscribe`. Each `execute` message is then checked
+against the same token for `context:execute` on its context (and method, for a
+method-scoped grant), so a subscribe-only token can subscribe but its `execute`
+messages are refused. `/jsonrpc` calls are held to the same check. In proxy auth
+mode the node takes the token's permissions from the `X-Auth-Permissions` header
+the proxy forwards; see [Where a scope is checked](/operate/auth/#where-a-scope-is-checked).
+
 ## Server-Sent Events
 
 | Method | Path | Purpose |
@@ -325,7 +332,7 @@ the path parameter — these are reproduced exactly as routed below.
 | GET | `/admin-api/groups/:namespace_id/migration-status` | Get migration status (by namespace). |
 | POST | `/admin-api/groups/:namespace_id/migration/abort` | Abort a migration (by namespace). |
 | POST | `/admin-api/groups/:group_id/issue-ownership-proof` | Issue a group ownership proof. |
-| POST | `/admin-api/groups/:group_id/issue-namespace-ownership-proof` | Issue a namespace ownership proof. |
+| POST | `/admin-api/groups/:group_id/issue-namespace-ownership-proof` | Issue a namespace ownership proof. Beside the signed proof the answer carries `founding` (`{ founderAccountId, salt }`) and `credential` (hex borsh `AccountProof<DeviceCert>` over the signing key), unsigned and self-verifying, so a verifier without governance state can confirm the signer is a node of the account that founded the namespace. Each is absent when the node cannot produce it. |
 | POST | `/admin-api/groups/:group_id/sync` | Sync a group. |
 | POST | `/admin-api/groups/:group_id/join-via-inheritance` | Join a subgroup via inheritance. |
 | GET | `/admin-api/groups/:group_id/members/:identity/capabilities` | Get a member's capabilities. |

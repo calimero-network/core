@@ -1326,6 +1326,7 @@ dependencies = [
  "borsh",
  "calimero-account",
  "calimero-app-downloader",
+ "calimero-authz",
  "calimero-blobstore",
  "calimero-context-client",
  "calimero-context-config",
@@ -1513,7 +1514,6 @@ dependencies = [
  "calimero-wasm-abi",
  "camino",
  "clap",
- "dashmap",
  "ed25519-dalek 3.0.0",
  "eyre",
  "flate2",
@@ -1914,6 +1914,7 @@ dependencies = [
  "pastey",
  "tokio",
  "tokio-stream",
+ "tracing",
 ]
 
 [[package]]
@@ -9920,6 +9921,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "storage-compare"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-storage",
+ "calimero-store-rocksdb",
+ "rocksdb",
+ "tempfile",
+]
+
+[[package]]
 name = "storage-cost"
 version = "0.1.0"
 dependencies = [
@@ -12470,9 +12482,9 @@ dependencies = [
 
 [[package]]
 name = "xxhash-rust"
-version = "0.8.15"
+version = "0.8.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "yamux"

@@ -19,8 +19,6 @@ mod common;
 
 const USER_DATA: &[u8] = b"a user's blob, nothing to do with any application";
 
-const WASM: &[u8] = b"raw wasm, not a bundle"; // raw install adopts the governance-named id rather than deriving one
-
 /// A network that accepts every announce and counts them.
 struct AnnounceCounter {
     announces: Arc<AtomicUsize>,
@@ -83,7 +81,7 @@ async fn node_with_an_installed_app(
         .expect("store bytecode");
     let source: ApplicationSource = "https://reg.example/app.mpk".parse().expect("source");
     node_client
-        .write_application_row(&named_id, &bytecode, size, &source, None)
+        .write_application_row(&named_id, &bytecode, size, &source)
         .expect("install the application");
 
     let (user_blob, _size) = node_client
@@ -172,27 +170,22 @@ async fn a_node_with_no_applications_shares_everything() {
         .expect("gate read"));
 }
 
-/// A row naming bytecode this node lacks, built locally so it carries no
-/// coordinates - where a mode-blind fetch falls through to any peer.
+/// A row naming `bundle`, which this node lacks, with no coordinates - where a
+/// mode-blind fetch falls through to any peer.
 async fn node_missing_its_bytecode(
     network: NetworkClient,
-) -> (
-    NodeClient,
-    ApplicationId,
-    BlobId,
-    tempfile::TempDir,
-    tempfile::TempDir,
-) {
+    bundle: &[u8],
+    named_id: ApplicationId,
+) -> (NodeClient, BlobId, tempfile::TempDir, tempfile::TempDir) {
     let (node_client, data, blobs) = common::create_test_node_client_with(None, network).await;
-    let named_id = ApplicationId::from([0x7A; 32]);
-    let bytecode = common::blob_id_of(WASM).await;
-    let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
+    let bytecode = common::blob_id_of(bundle).await;
+    let source: ApplicationSource = "file:///home/dev/app.mpk".parse().expect("source");
     node_client
-        .write_application_row(&named_id, &bytecode, WASM.len() as u64, &source, None)
+        .write_application_row(&named_id, &bytecode, bundle.len() as u64, &source)
         .expect("seed the row governance named");
     assert!(!node_client.has_blob(&bytecode).expect("lookup"));
 
-    (node_client, named_id, bytecode, data, blobs)
+    (node_client, bytecode, data, blobs)
 }
 
 fn acquire(application_id: ApplicationId, bytecode: BlobId, context: &ContextId) -> AppRequest<'_> {
@@ -210,10 +203,12 @@ fn acquire(application_id: ApplicationId, bytecode: BlobId, context: &ContextId)
 #[actix::test]
 async fn context_bytecode_is_acquired_only_from_the_configured_source() {
     let context = ContextId::from([0x11; 32]);
+    let (bundle, named_id) = common::minimal_signed_bundle_bytes("com.example.app", "1.0.0");
 
     let (network, _peer, queries) =
-        common::counting_peer_network(common::PeerBehavior::Serves(WASM.to_vec()));
-    let (node_client, named_id, bytecode, _data, _blobs) = node_missing_its_bytecode(network).await;
+        common::counting_peer_network(common::PeerBehavior::Serves(bundle.clone()));
+    let (node_client, bytecode, _data, _blobs) =
+        node_missing_its_bytecode(network, &bundle, named_id).await;
 
     let http = http(&node_client);
     assert_eq!(
@@ -232,8 +227,9 @@ async fn context_bytecode_is_acquired_only_from_the_configured_source() {
     assert!(!http.has_blob(&bytecode).expect("lookup"));
 
     let (network, _peer, queries) =
-        common::counting_peer_network(common::PeerBehavior::Serves(WASM.to_vec()));
-    let (node_client, named_id, bytecode, _data, _blobs) = node_missing_its_bytecode(network).await;
+        common::counting_peer_network(common::PeerBehavior::Serves(bundle.clone()));
+    let (node_client, bytecode, _data, _blobs) =
+        node_missing_its_bytecode(network, &bundle, named_id).await;
 
     let dht = node_client.with_registry(RegistryConfig::new(RegistryMode::Dht, None));
     assert_eq!(

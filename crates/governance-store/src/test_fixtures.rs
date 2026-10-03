@@ -489,6 +489,213 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
 /// non-emptiness matters (see [`FixedAuthorizer`]).
 pub const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];
 
+/// A projection whose cut holds nobody as a member, to tell a gate that reads the
+/// cut from one that reads live rows.
+pub struct NotMemberAtCut;
+
+impl crate::authorizer::AtCutAuthorizer for NotMemberAtCut {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        Some(crate::authorizer::AtCutMembershipPath::None)
+    }
+}
+
+/// A projection that folds every member in as an inheritor, as the fold does for
+/// one removed from an ancestor: it holds no deny-list or re-entry rows.
+pub struct InheritsAtCut;
+
+impl crate::authorizer::AtCutAuthorizer for InheritsAtCut {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        Some(crate::authorizer::AtCutMembershipPath::Inherited)
+    }
+}
+
+/// The groups and members [`kicked_from_open`] builds.
+pub struct KickedFromOpen {
+    pub ns: ContextGroupId,
+    pub restricted: ContextGroupId,
+    pub open: ContextGroupId,
+    pub child: ContextGroupId,
+    pub grandchild: ContextGroupId,
+    pub kicked: (PrivateKey, AccountId),
+    pub honest: (PrivateKey, AccountId),
+}
+
+/// `ns <- restricted <- open <- child <- grandchild` (Open below `restricted`, so `child`
+/// keys itself); `kicked` and `honest` inherit from `restricted`, and `kicked` was removed from `open`.
+pub fn kicked_from_open(store: &Store) -> KickedFromOpen {
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let ns_id = [0x4Au8; 32];
+    let ns = ContextGroupId::from(ns_id);
+    let ((admin_sk, _), admin) = bootstrap_namespace_with_admin_account(store, ns_id);
+    let restricted = ContextGroupId::from([0x4Bu8; 32]);
+    let open = ContextGroupId::from([0x4Cu8; 32]);
+    let child = ContextGroupId::from([0x4Du8; 32]);
+    let grandchild = ContextGroupId::from([0x4Eu8; 32]);
+
+    let mut parent = ns;
+    for group in [restricted, open, child, grandchild] {
+        nest_for_test(store, &parent, &group);
+        MetaRepository::new(store)
+            .save(&group, &sample_meta_with_admin(admin))
+            .unwrap();
+        let visibility = if group == restricted {
+            VisibilityMode::Restricted
+        } else {
+            VisibilityMode::Open
+        };
+        crate::CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&group, visibility)
+            .unwrap();
+        parent = group;
+    }
+
+    let member = |seed: u8| {
+        let sk = PrivateKey::from([seed; 32]);
+        let account = enrol_member(store, &ns, &sk.public_key());
+        for group in [ns, restricted] {
+            MembershipRepository::new(store)
+                .add_member(&group, &account, GroupMemberRole::Member)
+                .unwrap();
+            crate::CapabilitiesRepository::new(store)
+                .set_member_capability(
+                    &group,
+                    &account,
+                    MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+                )
+                .unwrap();
+        }
+        (sk, account)
+    };
+    let kicked = member(0x61);
+    let honest = member(0x62);
+
+    let kick = SignedGroupOp::sign(
+        &admin_sk,
+        open.to_bytes().into(),
+        vec![],
+        1,
+        dummy_member_removed_op(kicked.1),
+    )
+    .expect("sign MemberRemoved");
+    crate::apply_local_signed_group_op(store, &kick).expect("apply MemberRemoved");
+
+    KickedFromOpen {
+        ns,
+        restricted,
+        open,
+        child,
+        grandchild,
+        kicked,
+        honest,
+    }
+}
+
 /// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) standing in for a
 /// projection that has NOT folded the ancestry the op's cut cites — the
 /// catching-up replica, mid-backfill.
@@ -641,11 +848,13 @@ pub fn record_credential(
 
 /// Stub `NetworkManager` for tests that call
 /// `NamespaceGovernance::sign_apply_and_publish[_returning_op]` end to end:
-/// resolves only the two `NetworkMessage` variants that path touches
-/// (`Publish`, `MeshPeerCount`) and drops the rest, so the publish step
+/// resolves only the three `NetworkMessage` variants that path touches
+/// (`Publish`, `MeshPeerCount`, `SubscribedPeers`) and drops the rest, so the publish step
 /// completes without a live libp2p swarm. Mirrors the `CountingNetworkActor`
 /// pattern in `calimero_node_primitives::client::publish_on_namespace_now_tests`.
-struct StubNetworkActor;
+struct StubNetworkActor {
+    subscribers: Vec<libp2p::PeerId>,
+}
 
 impl actix::Actor for StubNetworkActor {
     type Context = actix::Context<Self>;
@@ -667,6 +876,9 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             }
             NetworkMessage::Publish { outcome, .. } => {
                 let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
+            }
+            NetworkMessage::SubscribedPeers { outcome, .. } => {
+                let _ = outcome.send(self.subscribers.clone());
             }
             _ => {}
         }
@@ -697,14 +909,8 @@ impl actix::Handler<calimero_node_primitives::messages::NodeMessage> for Capturi
     }
 }
 
-/// Build a real `NodeClient`/`AckRouter` pair for tests that publish end to end -
-/// the namespace governance path and the device-link path both use it: a namespace
-/// with a bootstrapped admin (returned as the signing key), and a
-/// `NodeClient` whose network side is wired to `StubNetworkActor` so the
-/// publish step resolves without a swarm. The `TempDir` keeps the stub
-/// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
-/// never touches it, but `NodeClient::new` requires a real `BlobManager`).
-pub async fn namespace_publish_fixture() -> (
+/// What [`namespace_publish_fixture`] hands a test.
+pub type PublishFixture = (
     Store,
     calimero_node_primitives::client::NodeClient,
     calimero_context_client::local_governance::AckRouter,
@@ -712,7 +918,23 @@ pub async fn namespace_publish_fixture() -> (
     PrivateKey,
     tempfile::TempDir,
     tokio::sync::mpsc::UnboundedReceiver<calimero_node_primitives::messages::NodeMessage>,
-) {
+);
+
+/// Build a real `NodeClient`/`AckRouter` pair for tests that publish end to end -
+/// the namespace governance path and the device-link path both use it: a namespace
+/// with a bootstrapped admin (returned as the signing key), and a
+/// `NodeClient` whose network side is wired to `StubNetworkActor` so the
+/// publish step resolves without a swarm. The `TempDir` keeps the stub
+/// blobstore filesystem alive for the caller's duration (`sign_apply_and_publish`
+/// never touches it, but `NodeClient::new` requires a real `BlobManager`).
+pub async fn namespace_publish_fixture() -> PublishFixture {
+    namespace_publish_fixture_with_subscribers(Vec::new()).await
+}
+
+/// [`namespace_publish_fixture`], with the swarm listing `subscribers` on every topic.
+pub async fn namespace_publish_fixture_with_subscribers(
+    subscribers: Vec<libp2p::PeerId>,
+) -> PublishFixture {
     use actix::Actor;
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::NetworkMessage;
@@ -736,7 +958,7 @@ pub async fn namespace_publish_fixture() -> (
     let network_client = NetworkClient::new(network_recipient.clone());
     let _addr = StubNetworkActor::create(move |ctx| {
         assert!(network_recipient.init(ctx), "network recipient init");
-        StubNetworkActor
+        StubNetworkActor { subscribers }
     });
 
     let (event_sender, _) = tokio::sync::broadcast::channel(16);

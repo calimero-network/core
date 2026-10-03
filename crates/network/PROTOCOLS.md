@@ -109,6 +109,9 @@ stream.send(Message::new(data)).await?;
 let response = stream.recv().await?;
 ```
 
+Inbound sync streams are capped at 256 at once, 60 per peer, counted from the moment a stream opens until its responder session ends.
+A stream opened past either cap is dropped, not queued; the dialer's request fails and periodic sync reconciles.
+
 ### CALIMERO_BLOB_PROTOCOL
 
 ```
@@ -141,6 +144,8 @@ Requester                              Provider
 ```
 
 If the provider does not hold the blob it replies `BlobResponse { found: false }` and sends no chunks. The requester bounds the transfer with a 60s overall and 30s per-chunk timeout, and recomputes the `BlobId` from the assembled bytes before accepting them. Non-public blobs require a signed `BlobAuth` (member of `context_id`) on the request.
+
+The provider drops a stream whose request does not arrive within 10s. Inbound blob streams (this protocol and `CALIMERO_BLOB_ANNOUNCE_PROTOCOL` together) are capped at 128 at once, 32 per peer; a stream opened past either cap is dropped, not queued, which the requester reads as "not held".
 
 ### CALIMERO_BLOB_ANNOUNCE_PROTOCOL
 

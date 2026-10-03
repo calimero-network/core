@@ -1,6 +1,6 @@
 use crate::authorizer::AtCutAuthorizer;
 use crate::MembershipRepository;
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
@@ -281,6 +281,32 @@ impl<'a> PermissionChecker<'a> {
         }
         self.ensure_live_fallback_is_sound_for_account(member)?;
         MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, member)
+    }
+
+    /// Is `device` bound to `account` at an epoch past `device_epoch` at the op's cut,
+    /// so a certificate at that epoch names a key the device has rotated out?
+    pub fn device_epoch_superseded(
+        &self,
+        account: &AccountId,
+        device: &DeviceId,
+        device_epoch: u32,
+    ) -> EyreResult<bool> {
+        if let Some(verdict) = self.authorizer.device_epoch_superseded_at_cut(
+            &self.group_id,
+            account,
+            device,
+            device_epoch,
+            self.parents,
+        ) {
+            return Ok(verdict);
+        }
+        self.ensure_live_fallback_is_sound_for_account(account)?;
+        let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        Ok(crate::AccountBindingRepository::new(self.store)
+            .raw_binding(&namespace, *device)?
+            .is_some_and(|bound| {
+                bound.account == *account.as_bytes() && device_epoch < bound.device_epoch
+            }))
     }
 
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {

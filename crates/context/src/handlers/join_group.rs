@@ -127,29 +127,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     };
                     let target_application_id =
                         calimero_primitives::application::ApplicationId::from(application_id);
-                    // Prefer the invitation's `bytecode_id` field when present.
-                    // When it is missing (e.g. an older Python client on
-                    // the wire deserialized the invitation against a
-                    // pre-`bytecode_id` `SignedGroupOpenInvitation` and
-                    // silently dropped the unknown field on its
-                    // re-serialize), re-derive locally using the SAME
-                    // algorithm the originator used in `create_group`
-                    // (`blob_id(app_meta.bytecode)`), which is
-                    // deterministic across nodes that hold the same
-                    // application bytecode. Final fallback to zero
-                    // applies only when neither the invitation nor a
-                    // locally-installed application can produce a value
-                    // — in that case the existing self-heal on the next
-                    // governance op still recovers, just one
-                    // gossip-round later.
-                    let bytecode_id = invitation.bytecode_id.unwrap_or_else(|| {
-                        let handle = datastore.handle();
-                        let key = calimero_store::key::ApplicationMeta::new(target_application_id);
-                        match handle.get(&key) {
-                            Ok(Some(app_meta)) => *app_meta.bytecode.blob_id().as_ref(),
-                            _ => [0u8; 32],
-                        }
-                    });
+                    // Never the local row: any group can point it at its own blob. Zero
+                    // self-heals from the group's next `ContextRegistered` or target op.
+                    let bytecode_id = invitation.bytecode_id.unwrap_or_default();
                     // The placeholder, never `invitation.inviter_account`.
                     //
                     // That hint rides in the UNSIGNED envelope —
@@ -369,16 +349,25 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // node-side `SyncManager` into the context crate,
                 // which the layering prohibits.
                 let mut any_applied = false;
-                for op_bytes in &join_result.governance_ops {
-                    if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(op_bytes) {
-                        match context_client.apply_signed_namespace_op(op).await {
-                            Ok(NamespaceApplyOutcome::Applied { .. }) => {
-                                any_applied = true;
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                warn!(?e, "failed to apply governance op from join response");
-                            }
+                // Parents first, and only ops of this namespace: the responder
+                // serves them in hash order.
+                let catch_up_ops = calimero_governance_types::order_parents_first(
+                    join_result
+                        .governance_ops
+                        .iter()
+                        .filter_map(|bytes| borsh::from_slice::<SignedNamespaceOp>(bytes).ok())
+                        .filter(|op| op.namespace_id.to_bytes() == namespace_id)
+                        .collect(),
+                    |op| op,
+                );
+                for op in catch_up_ops {
+                    match context_client.apply_signed_namespace_op(op).await {
+                        Ok(NamespaceApplyOutcome::Applied { .. }) => {
+                            any_applied = true;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!(?e, "failed to apply governance op from join response");
                         }
                     }
                 }

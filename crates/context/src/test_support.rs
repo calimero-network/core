@@ -65,6 +65,32 @@ pub fn credential(
     )
 }
 
+/// An invitation to `group` whose signature does not verify: enough for a test
+/// that only needs an op to be judged for admission, never applied.
+#[must_use]
+pub fn unverified_invitation(
+    group: &ContextGroupId,
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    use calimero_context_config::types::{
+        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    SignedGroupOpenInvitation {
+        invitation: GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from([0x52; 32]),
+            group_id: *group,
+            expiration_timestamp: 0,
+            invitation_nonce: [0x53; 32],
+            invited_role: 1,
+            admitters: Vec::new(),
+        },
+        inviter_signature: String::new(),
+        inviter_account: None,
+        application_id: None,
+        bytecode_id: None,
+        admitter_addrs: Vec::new(),
+    }
+}
+
 /// The account `sign_pk` will speak for once enrolled.
 #[must_use]
 pub fn account_for(sign_pk: &PublicKey) -> AccountId {
@@ -766,6 +792,9 @@ pub(crate) mod actor {
                 NetworkMessage::MeshPeerCount { request, outcome } => {
                     let _ignored = self.broadcast.send(request.0.to_string());
                     let _ignored = outcome.send(0);
+                }
+                NetworkMessage::SubscribedPeers { outcome, .. } => {
+                    let _ignored = outcome.send(Vec::new());
                 }
                 NetworkMessage::Publish { request, outcome } => {
                     let _ignored = self.broadcast.send(request.topic.to_string());

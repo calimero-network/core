@@ -1,6 +1,5 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_stream::stream;
@@ -15,7 +14,6 @@ use calimero_primitives::events::NodeEvent;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use dashmap::DashMap;
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
 use libp2p::gossipsub::TopicHash;
@@ -113,6 +111,17 @@ pub struct TeeAdmissionParams {
 /// The reply half of the direct TEE admission channel: the peer that admitted
 /// this node, or an error naming every refusal.
 pub type TeeAdmissionReply = oneshot::Sender<eyre::Result<PeerId>>;
+
+/// How long the sync manager lets one direct TEE admission run before it
+/// answers it as a refusal.
+///
+/// The same order as `fleet-join`'s own wait for admission, which follows the
+/// direct request and still has the broadcast to fall back on.
+pub const TEE_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How much longer than [`TEE_ADMISSION_DEADLINE`] the requester waits for that
+/// answer, covering the time the request queues for the sync manager.
+const TEE_ADMISSION_REPLY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct SyncClient {
@@ -267,17 +276,31 @@ impl SyncClient {
     /// An `Err` means nobody admitted it — every address refused, or none could
     /// be reached — and names each refusal. The caller still has the broadcast
     /// to fall back on; this path only replaces hoping with asking.
+    ///
+    /// Bounded: the sync manager answers within [`TEE_ADMISSION_DEADLINE`], and
+    /// a reply that has not come by then plus a grace is reported as a timeout
+    /// rather than waited on.
     pub async fn request_tee_admission(&self, params: TeeAdmissionParams) -> eyre::Result<PeerId> {
+        let budget = TEE_ADMISSION_DEADLINE + TEE_ADMISSION_REPLY_GRACE;
         let Some(tx) = &self.tee_admission_tx else {
             eyre::bail!("this node was built without the direct TEE admission channel");
         };
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send((params, reply_tx))
+        let exchange = async {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            tx.send((params, reply_tx))
+                .await
+                .map_err(|_| eyre::eyre!("TEE admission channel closed"))?;
+            reply_rx
+                .await
+                .map_err(|_| eyre::eyre!("TEE admission response channel dropped"))?
+        };
+        tokio::time::timeout(budget, exchange)
             .await
-            .map_err(|_| eyre::eyre!("TEE admission channel closed"))?;
-        reply_rx
-            .await
-            .map_err(|_| eyre::eyre!("TEE admission response channel dropped"))?
+            .unwrap_or_else(|_elapsed| {
+                Err(eyre::eyre!(
+                    "no answer to the direct TEE admission request within {budget:?}"
+                ))
+            })
     }
 }
 
@@ -325,14 +348,6 @@ pub struct NodeClient {
     /// DB each `perform_interval_sync`. `None` in unit/integration
     /// tests that construct `NodeClient` without a running node.
     local_delta_tx: Option<mpsc::Sender<LocalAppliedDelta>>,
-    /// Per-topic set of remote peers we've observed `Subscribed` to,
-    /// minus those we've subsequently observed `Unsubscribed`. Populated
-    /// by `subscriptions::handle_subscribed/unsubscribed` in the node
-    /// crate; queried by `governance_broadcast::assert_transport_ready`
-    /// on the publish path. Shared by `Arc<DashMap>` so the writer
-    /// (NodeManager event handler) and readers (concurrent publishers)
-    /// see the same map without an actor mailbox round-trip.
-    known_subscribers: Arc<DashMap<TopicHash, HashSet<PeerId>>>,
     registry: RegistryConfig, // the one source
     /// Availability-node lookup used to order blob-probe candidates and to
     /// address blob announcements. Filled in by `calimero-node` after the node
@@ -345,7 +360,6 @@ pub struct NodeClient {
     /// state, not an error.
     recent_providers: RecentProviders,
     local_peer_id: Arc<tokio::sync::OnceCell<PeerId>>,
-    row_writes: Arc<std::sync::Mutex<()>>, // serializes application-row check-then-write
 }
 
 impl NodeClient {
@@ -373,12 +387,10 @@ impl NodeClient {
             event_sender,
             sync_client,
             local_delta_tx,
-            known_subscribers: Arc::new(DashMap::new()),
             registry: RegistryConfig::default(),
             member_roles: MemberRolesSlot::default(),
             recent_providers: RecentProviders::default(),
             local_peer_id: Arc::default(),
-            row_writes: Arc::default(),
         }
     }
 
@@ -404,46 +416,13 @@ impl NodeClient {
         self.member_roles.install(roles)
     }
 
-    /// Record that `peer_id` subscribed to `topic`. Called from the
-    /// gossipsub `Subscribed` event handler. Idempotent: re-subscriptions
-    /// are deduped by the per-topic `HashSet`.
-    pub fn record_peer_subscribed(&self, peer_id: PeerId, topic: TopicHash) {
-        let _new = self
-            .known_subscribers
-            .entry(topic)
-            .or_default()
-            .insert(peer_id);
-    }
-
-    /// Record that `peer_id` unsubscribed from `topic`. The map entry is
-    /// removed once its set goes empty so [`known_subscribers`](Self::known_subscribers)
-    /// returns 0 instead of an empty-set marker — Phase-1 readiness
-    /// treats both identically, but the cleanup keeps the map bounded.
-    ///
-    /// The set-mutation and the empty-entry cleanup are split into two
-    /// shard-lock acquisitions, but the cleanup uses [`DashMap::remove_if`]
-    /// so a concurrent `record_peer_subscribed` for the same topic
-    /// arriving between them cannot have its insertion silently erased —
-    /// `remove_if` re-checks emptiness atomically inside the shard lock.
-    pub fn record_peer_unsubscribed(&self, peer_id: &PeerId, topic: &TopicHash) {
-        if let Some(mut set) = self.known_subscribers.get_mut(topic) {
-            let _ = set.remove(peer_id);
-        }
-        let _ = self
-            .known_subscribers
-            .remove_if(topic, |_, set| set.is_empty());
-    }
-
-    /// Number of distinct remote peers currently observed subscribed to
-    /// `topic` (NOT mesh members — subscription is the strict superset).
-    /// Used by Phase-1 governance readiness to cap the required mesh
-    /// quorum: a 2-node namespace cannot reach `mesh_n_low` regardless,
-    /// so the readiness gate must be aware of the population size.
-    pub fn known_subscribers(&self, topic: &TopicHash) -> usize {
-        self.known_subscribers
-            .get(topic)
-            .map(|set| set.len())
-            .unwrap_or(0)
+    /// Remote peers the swarm lists as subscribed to `topic` (NOT mesh members).
+    /// Read live, so a peer drops out when its last connection closes.
+    pub async fn known_subscribers(&self, topic: &TopicHash) -> usize {
+        self.network_client
+            .subscribed_peers(topic.clone())
+            .await
+            .len()
     }
 
     /// Gossipsub `mesh_n_low` — see [`gossipsub_mesh_n_low_default`].
@@ -784,7 +763,7 @@ impl NodeClient {
 
     /// This node's own `PeerId`, read from the network once: it is fixed for the
     /// process, and every signed blob read names it.
-    async fn local_peer_id(&self) -> PeerId {
+    pub async fn local_peer_id(&self) -> PeerId {
         *self
             .local_peer_id
             .get_or_init(|| async { self.network_client.network_status().await.local_peer_id })
@@ -1708,5 +1687,76 @@ mod publish_on_namespace_now_tests {
             1 + ADMIT_AFTER_CYCLES,
             "must stop announcing the instant admission is observed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tee_admission_request_tests {
+    use tokio::sync::mpsc;
+
+    use super::SyncClient;
+
+    /// A direct TEE admission whose answer never comes is reported as a timeout
+    /// rather than waited on. `fleet-join` awaits this before its own bounded
+    /// wait, and on a node that asked itself it waited forever.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_tee_admission_request_times_out() {
+        let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(1);
+        let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(1);
+        let (ns_join_tx, _ns_join_rx) = mpsc::channel(1);
+        let (open_subgroup_join_tx, _open_rx) = mpsc::channel(1);
+        let (relay_sealed_join_tx, _relay_rx) = mpsc::channel(1);
+        let (tee_tx, mut tee_rx) = mpsc::channel(1);
+        let sync_client = SyncClient::new(
+            ctx_sync_tx,
+            ns_sync_tx,
+            ns_join_tx,
+            open_subgroup_join_tx,
+            relay_sealed_join_tx,
+        )
+        .with_tee_admission(tee_tx);
+
+        // Takes the request and holds its reply open without ever answering,
+        // the way the sync manager did while its admission hung.
+        let holder = tokio::spawn(async move {
+            let request = tee_rx.recv().await;
+            std::future::pending::<()>().await;
+            drop(request);
+        });
+
+        let public_key = calimero_primitives::identity::PublicKey::from([0x11; 32]);
+        let genesis = calimero_account::AccountGenesis::new(public_key);
+        let params = super::TeeAdmissionParams {
+            namespace_id: [0x7E; 32],
+            admitter_addrs: Vec::new(),
+            public_key,
+            quote_bytes: Vec::new(),
+            nonce: [0x22; 32],
+            account: Box::new(calimero_governance_types::JoinAccountCredential {
+                statement: calimero_account::DeviceCert {
+                    account: genesis.account_id(),
+                    device: calimero_account::DeviceId::from([0u8; 32]),
+                    sign_pk: public_key,
+                    kem_pk: calimero_account::KemPublicKey::from([0u8; 32]),
+                    key_epoch: 0,
+                    device_epoch: 0,
+                    signature: [0u8; 64],
+                },
+                genesis,
+                chain: Vec::new(),
+            }),
+            release_version: None,
+        };
+
+        let started = tokio::time::Instant::now();
+        let refusal = sync_client
+            .request_tee_admission(params)
+            .await
+            .expect_err("nobody answered, so nobody admitted us");
+
+        let bound = super::TEE_ADMISSION_DEADLINE + super::TEE_ADMISSION_REPLY_GRACE;
+        assert_eq!(started.elapsed(), bound, "{refusal:#}");
+        assert!(format!("{refusal:#}").contains("no answer"), "{refusal:#}");
+        holder.abort();
     }
 }

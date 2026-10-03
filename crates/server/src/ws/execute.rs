@@ -7,17 +7,18 @@
 //! envelope reuses the JSON-RPC [`ExecutionRequest`] so validation and shape
 //! match `/jsonrpc` exactly.
 //!
-//! Auth is connection-level: the HTTP upgrade is gated by `auth::guard_layer`
-//! (see `service_mounts`), and individual messages are not re-authenticated, so
-//! `execute` here runs with the same authority as the connection's subscriptions.
+//! The upgrade is gated on `context:subscribe` alone, so each `execute` is
+//! checked against the permissions the connection's token carried, by
+//! [`execute_request`], the gate `/jsonrpc` goes through too.
 
 use calimero_server_primitives::jsonrpc::ExecutionRequest;
 use calimero_server_primitives::validation::Validate;
 use calimero_server_primitives::ws::{ResponseBody, ResponseBodyError, ServerResponseError};
 use tracing::{error, field, info, warn, Span};
 
+use crate::auth::GrantedPermissions;
 use crate::caller_account::EventCaller;
-use crate::execute::{execute_request, CallerIdentity};
+use crate::execute::{execute_request, CallerIdentity, ACCOUNT_SESSION_REFUSAL};
 use crate::ws::ServiceState;
 
 /// Validate and run an `execute` request, producing the response body to send
@@ -28,6 +29,7 @@ pub(crate) async fn handle(
     state: &ServiceState,
     caller: Option<EventCaller>,
     node_owner: bool,
+    granted: Option<&GrantedPermissions>,
     request: ExecutionRequest,
 ) -> ResponseBody {
     let validation_errors = request.validate();
@@ -60,9 +62,8 @@ pub(crate) async fn handle(
 
     let caller_identity = match caller.as_ref() {
         Some(EventCaller::Key(key)) => CallerIdentity::Key(key),
-        // An account-anchored session can now hold a WebSocket (#3942), which it
-        // could not before, so this arm is reachable where it was not. It is
-        // refused rather than served: `execute` runs as a context identity, and
+        // An account-anchored session can hold a WebSocket. It is refused rather
+        // than served: `execute` runs as a context identity, and
         // an account that runs no node holds none. A delegated device's write
         // goes through `POST /admin-api/contexts/:id/intents` with a warrant,
         // which is what carries the author's consent; a session alone is not
@@ -74,11 +75,7 @@ pub(crate) async fn handle(
                  needs a warrant via POST /admin-api/contexts/:id/intents"
             );
             return ResponseBody::Error(ResponseBodyError::ServerError(
-                ServerResponseError::ParseError(
-                    "an account-authenticated session cannot execute directly; \
-                     submit a warranted intent instead"
-                        .to_owned(),
-                ),
+                ServerResponseError::ParseError(ACCOUNT_SESSION_REFUSAL.to_owned()),
             ));
         }
         None => {
@@ -91,7 +88,15 @@ pub(crate) async fn handle(
             CallerIdentity::NodeOwner
         }
     };
-    match execute_request(&state.ctx_client, caller_identity, request).await {
+    match execute_request(
+        &state.ctx_client,
+        caller_identity,
+        state.auth_enabled,
+        granted,
+        request,
+    )
+    .await
+    {
         Ok(response) => match serde_json::to_value(response) {
             Ok(value) => {
                 info!("Request completed successfully");

@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
+use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
 use calimero_store::db::InMemoryDB;
@@ -20,6 +21,7 @@ use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use libp2p::PeerId;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
@@ -98,9 +100,6 @@ pub async fn node_client_over(
 }
 
 /// A network that accepts every blob announce and drops every other command.
-///
-/// Its actor runs on a system of its own thread, so a caller on any runtime can
-/// announce through it.
 pub fn network_accepting_announces() -> NetworkClient {
     struct AcceptAnnounces;
 
@@ -118,15 +117,64 @@ pub fn network_accepting_announces() -> NetworkClient {
         }
     }
 
+    network_on_own_system(|| AcceptAnnounces)
+}
+
+/// A network of one context peer that holds `blob` (or nothing) and answers
+/// every probe and fetch for it; it accepts announces and drops anything else.
+pub fn network_of_one_peer(blob: Option<Vec<u8>>) -> NetworkClient {
+    struct Serves(Option<Vec<u8>>);
+
+    impl actix::Actor for Serves {
+        type Context = actix::Context<Self>;
+    }
+
+    impl actix::Handler<NetworkMessage> for Serves {
+        type Result = ();
+
+        fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
+            match msg {
+                NetworkMessage::SubscribedPeers { outcome, .. } => {
+                    let _ignored = outcome.send(vec![PeerId::random()]);
+                }
+                NetworkMessage::ProbeBlob { outcome, .. } => {
+                    let probe =
+                        self.0
+                            .as_ref()
+                            .map_or(BlobProbe::Absent, |bytes| BlobProbe::Held {
+                                size: Some(bytes.len() as u64),
+                            });
+                    let _ignored = outcome.send(Ok(probe));
+                }
+                NetworkMessage::RequestBlob { outcome, .. } => {
+                    let _ignored = outcome.send(Ok(self.0.clone()));
+                }
+                NetworkMessage::AnnounceBlob { outcome, .. } => {
+                    let _ignored = outcome.send(Ok(()));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    network_on_own_system(move || Serves(blob))
+}
+
+/// Binds a network to `actor` on an actix system of its own thread, so a caller
+/// on any runtime can reach it.
+fn network_on_own_system<A>(actor: impl FnOnce() -> A + Send + 'static) -> NetworkClient
+where
+    A: actix::Actor<Context = actix::Context<A>> + actix::Handler<NetworkMessage>,
+{
     let recipient = LazyRecipient::new();
     let bound = recipient.clone();
     let (started, ready) = std::sync::mpsc::channel();
     drop(std::thread::spawn(move || {
         let system = actix::System::new();
         system.block_on(async move {
-            let _addr = <AcceptAnnounces as actix::Actor>::create(move |ctx| {
+            let _addr = A::create(move |ctx| {
                 assert!(bound.init(ctx));
-                AcceptAnnounces
+                actor()
             });
         });
         started.send(()).unwrap();
@@ -229,12 +277,25 @@ pub fn pack_entries<P: AsRef<Path>>(dir: &TempDir, name: &str, entries: &[(P, &[
 /// A signed single-wasm bundle on disk, the shape `cargo mero bundle` produces.
 pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8PathBuf {
     let path = dir.path().join(format!("{package}-{version}.mpk"));
-    let mut tar = Builder::new(GzEncoder::new(
-        fs::File::create(&path).unwrap(),
-        Compression::default(),
-    ));
-
     let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    fs::write(&path, pack_signed(package, version, wasm, &signing_key)).unwrap();
+    path.try_into().unwrap()
+}
+
+/// `wasm` as the signed bundle a node runs; a fixed key, so the same wasm is
+/// the same blob. Raw wasm never runs, so every executing fixture stores this.
+pub fn signed_wasm(wasm: &[u8]) -> Vec<u8> {
+    pack_signed(
+        "com.test.app",
+        "1.0.0",
+        wasm,
+        &SigningKey::from_bytes(&[7; 32]),
+    )
+}
+
+fn pack_signed(package: &str, version: &str, wasm: &[u8], signing_key: &SigningKey) -> Vec<u8> {
+    let mut tar = Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+
     let manifest = BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),
@@ -258,7 +319,7 @@ pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8P
         signature: None,
     };
     let mut manifest_json = serde_json::to_value(&manifest).unwrap();
-    sign_manifest_json(&mut manifest_json, &signing_key).unwrap();
+    sign_manifest_json(&mut manifest_json, signing_key).unwrap();
 
     for (name, bytes) in [
         ("manifest.json", serde_json::to_vec(&manifest_json).unwrap()),
@@ -270,7 +331,5 @@ pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8P
         header.set_cksum();
         tar.append(&header, bytes.as_slice()).unwrap();
     }
-    tar.into_inner().unwrap().finish().unwrap();
-
-    path.try_into().unwrap()
+    tar.into_inner().unwrap().finish().unwrap()
 }

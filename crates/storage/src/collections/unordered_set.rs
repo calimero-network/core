@@ -69,7 +69,11 @@ where
         let elements = self
             .inner
             .entries_with_storage_type()
-            .expect("read set elements for re-key");
+            .expect("read set elements for re-key")
+            .into_iter()
+            .filter(|(id, value, _)| self.inner.value_filed_under(*id, value.as_ref()))
+            .map(|(_, value, storage_type)| (value, storage_type))
+            .collect::<Vec<_>>();
         self.inner.clear_for_rekey().expect("clear set for re-key");
         self.inner.reassign_deterministic_id_under(
             Some(parent_id),
@@ -188,7 +192,11 @@ where
         let elements = self
             .inner
             .entries_with_storage_type()
-            .expect("failed to read elements for migration");
+            .expect("failed to read elements for migration")
+            .into_iter()
+            .filter(|(id, value, _)| self.inner.value_filed_under(*id, value.as_ref()))
+            .map(|(_, value, storage_type)| (value, storage_type))
+            .collect::<Vec<_>>();
 
         // Clear the collection (removes old entries with old IDs).
         // Uses the re-key clear so `Frozen` entries are relocated (re-inserted
@@ -238,9 +246,14 @@ where
             .inner
             .resolve(compute_id(self.inner.id(), value.as_ref()));
 
-        if self.inner.get_mut(id)?.is_some() {
-            return Ok(false);
-        };
+        if let Some(mut stored) = self.inner.get_mut(id)? {
+            if *stored == value {
+                return Ok(false);
+            }
+            // A peer filed another value here, which reads leave out: refile it.
+            *stored = value;
+            return Ok(true);
+        }
 
         let _ignored = self.inner.insert(
             Some(id),
@@ -271,13 +284,16 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn iter(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
+    pub fn iter(&self) -> Result<impl Iterator<Item = V> + '_, StoreError>
+    where
+        V: AsRef<[u8]>,
+    {
         // See the matching ITER_DROP diagnostic on
         // `UnorderedMap::entries` — surfaces silent NotFound drops from
         // the inner iterator instead of swallowing them via
         // `.flatten().fuse()`.
         let collection_id = self.inner.id();
-        Ok(self.inner.entries()?.filter_map(move |result| match result {
+        Ok(self.inner.values()?.filter_map(move |result| match result {
             Ok(item) => Some(item),
             Err(error) => {
                 tracing::error!(
@@ -332,7 +348,12 @@ where
             .inner
             .resolve(compute_id(self.inner.id(), value.as_ref()));
 
-        self.inner.contains(id)
+        // The trie probe alone answers an absent value; only a present one reads the entry.
+        Ok(self.inner.contains(id)?
+            && self
+                .inner
+                .get(id)?
+                .is_some_and(|stored| stored.borrow() == value))
     }
 
     /// Remove a key from the set, returning the value at the key if it previously existed.
@@ -356,9 +377,10 @@ where
             return Ok(false);
         };
 
-        let _ignored = entry.remove()?;
+        // A value a peer filed here under another value is deleted, but was not this one.
+        let removed = entry.remove()?.borrow() == value;
 
-        Ok(true)
+        Ok(removed)
     }
 
     /// Clear the set, removing all items.
@@ -376,14 +398,14 @@ where
 
 impl<V, S> Eq for UnorderedSet<V, S>
 where
-    V: Eq + BorshSerialize + BorshDeserialize,
+    V: Eq + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     S: StorageAdaptor,
 {
 }
 
 impl<V, S> PartialEq for UnorderedSet<V, S>
 where
-    V: PartialEq + BorshSerialize + BorshDeserialize,
+    V: PartialEq + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     S: StorageAdaptor,
 {
     fn eq(&self, other: &Self) -> bool {
@@ -393,7 +415,7 @@ where
 
 impl<V, S> Ord for UnorderedSet<V, S>
 where
-    V: Ord + BorshSerialize + BorshDeserialize,
+    V: Ord + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     S: StorageAdaptor,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -403,7 +425,7 @@ where
 
 impl<V, S> PartialOrd for UnorderedSet<V, S>
 where
-    V: PartialOrd + BorshSerialize + BorshDeserialize,
+    V: PartialOrd + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -413,7 +435,7 @@ where
 
 impl<V, S> fmt::Debug for UnorderedSet<V, S>
 where
-    V: fmt::Debug + BorshSerialize + BorshDeserialize,
+    V: fmt::Debug + BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     S: StorageAdaptor,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -451,7 +473,7 @@ where
 
 impl<V, S> Serialize for UnorderedSet<V, S>
 where
-    V: BorshSerialize + BorshDeserialize + Serialize,
+    V: BorshSerialize + BorshDeserialize + Serialize + AsRef<[u8]>,
     S: StorageAdaptor,
 {
     fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>

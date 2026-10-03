@@ -3,19 +3,11 @@ name: CI
 on:
   push:
     branches: ["master"]
+  merge_group:
+  # Every PR, with no `paths:` filter: the `Rust` check is required, and `scope`
+  # below skips what a change cannot reach (all of it, for docs). A filter would
+  # need a stub workflow to report the check whenever it skipped.
   pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "crates/**"
-      - "apps/**"
-      - "e2e-tests/**"
-      - "tools/**"
-      - "scripts/check-wasm-size.sh"
-      - "scripts/check-storage-cost.sh"
-      - "scripts/check-like-ci.py"
-      - "scripts/tests/check-like-ci.test.sh"
-      - ".github/workflows/ci-checks.yml"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -33,69 +25,102 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
-  # Whether a secret written on Windows is unreadable to other local users, which Linux cannot check.
-  windows-secrets:
-    name: Windows secret permissions
-    runs-on: windows-latest
+  # The Windows lanes (secret permissions, node smoke) live in platforms.yml: nightly,
+  # and on a PR whose change can reach Windows-only code.
+
+  # Which of the narrow jobs below this change can reach: each is scoped by the
+  # packages it builds, followed through their dependency closure, so a change
+  # that cannot alter what a job compiles does not run it (scripts/ci-scope.py).
+  # Fails closed: any lookup or script failure runs every job.
+  scope:
+    name: Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.decide.outputs.rust }}
+      storage_cost: ${{ steps.decide.outputs.storage_cost }}
+      wasm_size: ${{ steps.decide.outputs.wasm_size }}
+      cargo_mero_e2e: ${{ steps.decide.outputs.cargo_mero_e2e }}
+      apps: ${{ steps.decide.outputs.apps }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Test the scope rules
+        run: python3 scripts/tests/ci-scope-test.py
 
-      - name: Test the owner-only file helper
-        run: cargo test -p calimero-utils-fs
+      - name: Check no docs-only change starts a code workflow
+        run: python3 scripts/tests/ci-paths-test.py
 
-  # The only job that runs merod on Windows: RocksDB, the server bind and shutdown
-  # have no unix stand-in, and the release workflow only builds merod.exe.
-  windows-node-smoke:
-    name: Windows node smoke
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Check every rust-cache group hashes one environment
+        run: python3 scripts/check-rust-cache-groups.py
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Decide which jobs this change reaches
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          # push: the pushed range; merge_group: the queue entry against its base.
+          FROM: ${{ github.event.before || github.event.merge_group.base_sha }}
+          TO: ${{ github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -uo pipefail
+          # Every failure below leaves `files` empty, and ci-scope.py runs every
+          # job on empty input: skipping is the silent direction.
+          files=""
+          case "$EVENT" in
+            pull_request)
+              # The files API lists at most 3000 paths.
+              if listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 3000 ]; then
+                files=$listed
+              fi
+              ;;
+            push | merge_group)
+              # A new branch has an all-zero `before`; compare lists at most 300 files.
+              if [ -n "${FROM//0/}" ] \
+                && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 300 ]; then
+                files=$listed
+              fi
+              ;;
+          esac
+          [ -n "$files" ] || echo "::notice::could not list this change's files; every job runs"
+          printf '%s\n' "$files" | python3 scripts/ci-scope.py >> "$GITHUB_OUTPUT"
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          shared-key: windows-node-smoke
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      # librocksdb-sys needs libclang for bindgen; aws-lc-sys needs NASM.
-      - name: Point bindgen at the image's LLVM
-        shell: bash
-        run: printf 'LIBCLANG_PATH=%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
-
-      - name: Install NASM
-        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
-
-      # These drive a real node, so they are #[ignore]d by default.
-      - name: Drive a real node on Windows
-        run: cargo test -p merod --test watchdog_live -- --include-ignored --test-threads 1
-
-  # The required status check: passes only if every Rust job below passes.
+  # The required status check: passes only if every Rust job below passes, or was
+  # skipped because `scope` found that the change cannot reach it. A failed or
+  # skipped `scope` fails it.
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [rust-lint, rust-test, rust-features, rust-apps, rust-supply-chain]
+    needs: [scope, rust-lint, rust-test, rust-features, rust-apps, rust-supply-chain]
     runs-on: ubuntu-latest
     steps:
       - name: Require every Rust job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: jq -e 'all(.[]; .result == "success")' <<<"$NEEDS"
+          # job -> the `scope` output that decides whether it runs
+          GATES: '{"rust-lint":"rust","rust-test":"rust","rust-features":"rust","rust-supply-chain":"rust","rust-apps":"apps"}'
+        run: |
+          jq -e --argjson gates "$GATES" '
+            .scope.outputs as $scope
+            | to_entries | all(
+                .value.result == "success"
+                or (.value.result == "skipped" and ($gates[.key] // "") != "" and $scope[$gates[.key]] == "false")
+              )' <<<"$NEEDS"
 
   rust-lint:
     name: Rust lint
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
     runs-on: big-machine
     steps:
       - name: Checkout code
@@ -106,7 +131,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           components: rustfmt, clippy
           shared-key: ci-checks
           save-if: false
@@ -129,6 +153,12 @@ jobs:
       - name: Test check-like-ci
         if: ${{ !cancelled() }}
         run: bash scripts/tests/check-like-ci.test.sh
+
+      # The cargo-mero and merod caches key on this closure; one it misses is a
+      # source change that silently reuses a stale binary.
+      - name: Test path-dep-closure against cargo's resolve
+        if: ${{ !cancelled() }}
+        run: python3 scripts/tests/path-dep-closure-test.py
 
       # `calimero-storage/testing` lints that crate's feature-gated harness in the same pass.
       - name: Cargo clippy
@@ -162,6 +192,8 @@ jobs:
   # The only job that saves `ci-checks`; the others restore it read-only.
   rust-test:
     name: Rust tests
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
     runs-on: big-machine
     steps:
       - name: Checkout code
@@ -172,7 +204,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           # Tests that self-build app wasm must not race to install the target.
           targets: wasm32-unknown-unknown
           shared-key: ci-checks
@@ -199,6 +230,8 @@ jobs:
 
   rust-features:
     name: Rust feature-gated tests
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
     runs-on: big-machine
     steps:
       - name: Checkout code
@@ -209,7 +242,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           shared-key: ci-checks
           save-if: false
 
@@ -237,6 +269,8 @@ jobs:
 
   rust-apps:
     name: Rust apps
+    needs: scope
+    if: needs.scope.outputs.apps == 'true'
     runs-on: big-machine
     steps:
       - name: Checkout code
@@ -244,18 +278,33 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
+      # A hit is the output of this exact build (same app trees, cargo-mero,
+      # lockfile, toolchain, script and workflows), which already passed on master:
+      # only master saves, and only after the build below succeeds. e2e-rust-apps'
+      # Build Apps runs the same script with the same inputs, so they share it.
+      - name: Restore the apps, or set up to build them
+        id: apps
+        uses: ./.github/actions/wasm-apps
         with:
-          toolchain: stable
-          shared-key: ci-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          root: apps
+          script: scripts/build-all-apps.sh
+          workflows: .github/workflows/ci-checks.yml .github/workflows/e2e-rust-apps.yml
 
       - name: Build every app
+        if: steps.apps.outputs.hit != 'true'
         run: ./scripts/build-all-apps.sh
+
+      - name: Share the built apps
+        if: steps.apps.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.apps.outputs.paths }}
+          key: ${{ steps.apps.outputs.key }}
 
   rust-supply-chain:
     name: Rust supply chain
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -281,6 +330,8 @@ jobs:
 
   cargo-mero-e2e:
     name: cargo-mero e2e
+    needs: scope
+    if: needs.scope.outputs.cargo_mero_e2e == 'true'
     runs-on: big-machine
     steps:
       - name: Checkout code
@@ -291,10 +342,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: cargo-mero-e2e
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: ci-checks
+          save-if: false
 
       - name: Cache fixture build output
         uses: actions/cache@v6
@@ -313,6 +363,8 @@ jobs:
   # PR-time guard against a wasm too large for merod to load; the fuzzy suite never runs on PRs.
   wasm-size:
     name: WASM size gate
+    needs: scope
+    if: needs.scope.outputs.wasm_size == 'true'
     runs-on: ubuntu-24.04-8cpu
     steps:
       - name: Checkout code
@@ -323,10 +375,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: wasm-size
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
@@ -346,7 +397,17 @@ jobs:
   # Storage costs are deterministic, so this gates; wall-clock benchmarks live in benchmarks.yml.
   storage-cost:
     name: Storage cost gate
+    needs: scope
+    if: needs.scope.outputs.storage_cost == 'true'
     runs-on: ubuntu-24.04-8cpu
+    # Row and byte counts depend on what the code does, not how it is optimised,
+    # and debug assertions stay off either way: both profiles reproduce the
+    # committed snapshot byte for byte. Fat LTO with one codegen unit is for
+    # shipped binaries; measured on one 4-cpu host it made this job 27.5 min
+    # against 20.4 without it, runtime included (`reproducible`: 935s vs 704s).
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -356,7 +417,6 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           shared-key: storage-cost
           save-if: ${{ github.ref == 'refs/heads/master' }}
 

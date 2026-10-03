@@ -52,7 +52,7 @@ pub(crate) fn apply(
     // signed it. Resolved from the credential rather than the checker: the
     // relay's binding is folded by no projected op, so a checker at the cut
     // would park an op every live check admits.
-    if !crate::ops::namespace::member_joined_open::join_op_proves_ownership(
+    if !crate::ops::namespace::member_joined_open::credential_names_signer(
         ctx.signer(),
         &relay,
         account,

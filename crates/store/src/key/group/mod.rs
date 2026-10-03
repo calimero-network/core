@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x57` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x58` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x58`**.
+// `0x59`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -2531,18 +2531,19 @@ impl Debug for GroupRevokedDevice {
     }
 }
 
-/// Signing keys of revoked devices (see [`GroupRevokedSigner`]).
+/// Signing keys of revoked or narrowed-out devices (see [`GroupRevokedSigner`]).
 pub const GROUP_REVOKED_SIGNER_PREFIX: u8 = 0x55;
 
-/// The signing key a revoked device was bound under in a group (see
-/// [`GROUP_REVOKED_SIGNER_PREFIX`]).
+/// The signing key a revoked or narrowed-out device was bound under in a group
+/// (see [`GROUP_REVOKED_SIGNER_PREFIX`]).
 ///
-/// Written beside the [`GroupRevokedDevice`] tombstone, from the binding the
-/// revocation deletes. A state delta names its author by signing key, and a
+/// Written from the binding a revocation (beside the [`GroupRevokedDevice`]
+/// tombstone) or a scope narrowing deletes, or from the link either refuses. A
+/// state delta names its author by signing key, and a
 /// [`calimero_primitives::identity::DeviceId`] cannot be derived from one, so
-/// without this row nothing left after a revocation maps the key back to the
+/// without this row nothing left after a withdrawal maps the key back to the
 /// device it signed for. The state-delta receive filter reads it to drop a
-/// revoked device's writes at the door.
+/// withdrawn device's writes at the door.
 ///
 /// Not terminal on its own: a signing key is the node's per-namespace identity,
 /// which a re-paired node keeps under its freshly minted device. A key that a live
@@ -2670,6 +2671,100 @@ impl Debug for GroupSignerAccount {
         f.debug_struct("GroupSignerAccount")
             .field("group_id", &self.group_id())
             .field("sign_pk", &self.sign_pk())
+            .finish()
+    }
+}
+
+/// Which devices' live bindings carry a signing key (see [`GroupSignerDevice`]).
+pub const GROUP_SIGNER_DEVICE_PREFIX: u8 = 0x58;
+
+/// A device whose stored binding in a group certifies `sign_pk`: the reverse of
+/// [`GroupDeviceBinding`]'s `sign_pk` field.
+///
+/// Gossip verifiers resolve a signing key to its account once per message, and
+/// without this they scanned every binding in the namespace to find one key. A
+/// prefix scan over `(group_id, sign_pk, *)` names the candidate devices
+/// instead; a key can have several, because a re-paired node keeps its signing
+/// key under a fresh device.
+///
+/// Kept in lockstep with the binding: written when one is stored, removed when
+/// one is deleted or rotated to another key. It says only that the binding names
+/// the key; whether that binding is live is still decided on read.
+///
+/// Valueless: `prefix(1) + group_id(32) + sign_pk(32) + device_id(32)` = 97 bytes.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupSignerDevice(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
+
+impl GroupSignerDevice {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], sign_pk: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_SIGNER_DEVICE_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(sign_pk))
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn sign_pk(&self) -> [u8; 32] {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        pk
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupSignerDevice {
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupSignerDevice {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupSignerDevice {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupSignerDevice")
+            .field("group_id", &self.group_id())
+            .field("sign_pk", &self.sign_pk())
+            .field("device_id", &self.device_id())
             .finish()
     }
 }
@@ -3905,7 +4000,9 @@ impl Debug for GroupPendingDeviceRotation {
 /// recorded arrival order (`0`). The row is rewritten with the full layout the
 /// next time `store_key_with_epoch` raises its epoch.
 ///
-/// Serialization is still derived, so every *new* write is the full four-field
+/// `flags` is tail-optional too: a buffer ending after `insertion_seq` has none set.
+///
+/// Serialization is still derived, so every *new* write is the full five-field
 /// layout; only the read side is lenient. Any field added after this one must
 /// extend the same tail-optional pattern rather than re-deriving.
 #[derive(Clone, Debug)]
@@ -3915,6 +4012,29 @@ pub struct GroupKeyValue {
     pub created_at: u64,
     pub epoch: u64,
     pub insertion_seq: u64,
+    /// [`Self::VOIDED`], or `0`.
+    pub flags: u8,
+}
+
+impl GroupKeyValue {
+    /// A void rotation introduced this key: it never becomes the current key,
+    /// whatever its epoch, and stays readable for what was sealed under it.
+    pub const VOIDED: u8 = 1;
+}
+
+/// Read a byte that may legitimately be absent because the buffer predates the
+/// field. See [`read_optional_trailing_u64`].
+#[cfg(feature = "borsh")]
+fn read_optional_trailing_u8<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Option<u8>> {
+    let mut buf = [0_u8; 1];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return Ok(None),
+            Ok(_) => return Ok(Some(buf[0])),
+            Err(err) if err.kind() == borsh::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// Read a `u64` that may legitimately be absent because the buffer predates the
@@ -3953,11 +4073,13 @@ impl BorshDeserialize for GroupKeyValue {
         let created_at = u64::deserialize_reader(reader)?;
         let epoch = read_optional_trailing_u64(reader)?.unwrap_or(0);
         let insertion_seq = read_optional_trailing_u64(reader)?.unwrap_or(0);
+        let flags = read_optional_trailing_u8(reader)?.unwrap_or(0);
         Ok(Self {
             group_key,
             created_at,
             epoch,
             insertion_seq,
+            flags,
         })
     }
 }
@@ -4323,6 +4445,7 @@ mod tests {
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
             ("GROUP_REVOKED_SIGNER", GROUP_REVOKED_SIGNER_PREFIX),
             ("GROUP_SIGNER_ACCOUNT", GROUP_SIGNER_ACCOUNT_PREFIX),
+            ("GROUP_SIGNER_DEVICE", GROUP_SIGNER_DEVICE_PREFIX),
             ("GROUP_DEVICE_SCOPE_FLOOR", GROUP_DEVICE_SCOPE_FLOOR_PREFIX),
             ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),
@@ -4819,6 +4942,7 @@ mod group_key_value_compat_tests {
             created_at: 7,
             epoch: 9,
             insertion_seq: 11,
+            flags: GroupKeyValue::VOIDED,
         };
         let decoded =
             GroupKeyValue::try_from_slice(&to_vec(&value).expect("serialize")).expect("decode");
@@ -4827,6 +4951,17 @@ mod group_key_value_compat_tests {
         assert_eq!(decoded.created_at, 7);
         assert_eq!(decoded.epoch, 9);
         assert_eq!(decoded.insertion_seq, 11);
+        assert_eq!(decoded.flags, GroupKeyValue::VOIDED);
+    }
+
+    #[test]
+    fn decodes_a_row_written_before_flags_with_none_set() {
+        let mut bytes = v2_bytes(7, 9);
+        bytes.extend_from_slice(&11_u64.to_le_bytes());
+        let decoded = GroupKeyValue::try_from_slice(&bytes).expect("a pre-flags row decodes");
+
+        assert_eq!(decoded.insertion_seq, 11);
+        assert_eq!(decoded.flags, 0, "an old key is not void");
     }
 
     /// Leniency is strictly tail-shaped: a *partial* trailing `u64` is

@@ -91,13 +91,25 @@ pub fn collect_migration_cohort(
 /// migration admin operations (`retry_group_upgrade`, `upgrade_group`) enforce
 /// via `require_admin`, NOT mere membership. Extracted as a pure (store read
 /// only) helper so the gate the handler applies can be exercised directly.
+///
+/// The authority checked is the CALLER's. For a node session (`requester` is
+/// `None`) the caller is the node, so it is the account `node_identity` is
+/// bound to. For a delegated account session (`requester` is `Some`) the node
+/// is a relay carrying the request — typically a `RelayTee`, never an admin —
+/// so its own account says nothing about the caller, and the gate checks the
+/// delegated account instead. One `require_admin` either way, so a non-admin
+/// is refused with the same error on both paths.
 pub fn authorize_migration_status(
     store: &calimero_store::Store,
     namespace_id: &ContextGroupId,
     node_identity: &PublicKey,
+    requester: Option<&AccountId>,
 ) -> eyre::Result<()> {
-    let node_account = crate::member_account::require(store, namespace_id, node_identity)?;
-    MembershipRepository::new(store).require_admin(namespace_id, &node_account)
+    let caller = match requester {
+        Some(account) => *account,
+        None => crate::member_account::require(store, namespace_id, node_identity)?,
+    };
+    MembershipRepository::new(store).require_admin(namespace_id, &caller)
 }
 
 /// Assemble and roll up a namespace's migration status.
@@ -163,6 +175,7 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
         GetMigrationStatusRequest {
             namespace_id,
             member_reports,
+            requester,
         }: GetMigrationStatusRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -173,7 +186,12 @@ impl Handler<GetMigrationStatusRequest> for ContextManager {
             // requires the same MANAGE/admin authority the sibling migration
             // admin operations (`retry_group_upgrade`, `upgrade_group`) enforce
             // via `require_admin`, not merely membership.
-            authorize_migration_status(&self.datastore, &namespace_id, &node_identity)?;
+            authorize_migration_status(
+                &self.datastore,
+                &namespace_id,
+                &node_identity,
+                requester.as_ref(),
+            )?;
 
             // Roll up the freshest per-member heartbeat reports the caller
             // snapshotted from the node-side `MigrationStatusCache`.
@@ -398,11 +416,122 @@ mod tests {
             "the rejected caller also passes the subscription-level gate"
         );
         assert!(
-            authorize_migration_status(&store, &ns, &member).is_err(),
+            authorize_migration_status(&store, &ns, &member, None).is_err(),
             "a non-admin member must be rejected by the migration-status admin gate"
         );
         // The admin passes the same gate.
-        assert!(authorize_migration_status(&store, &ns, &admin).is_ok());
+        assert!(authorize_migration_status(&store, &ns, &admin, None).is_ok());
+    }
+
+    /// A namespace with an admin, a plain member and a relay, each bound to its
+    /// own account. The relay holds `RelayTee`: it carries members' requests and
+    /// is never an admin, which is what a relay serving an account looks like.
+    struct RelayRig {
+        store: Store,
+        ns: ContextGroupId,
+        admin_key: PublicKey,
+        admin_account: calimero_account::AccountId,
+        member_key: PublicKey,
+        member_account: calimero_account::AccountId,
+        relay_key: PublicKey,
+    }
+
+    fn relay_rig() -> RelayRig {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0x44; 32]);
+        let admin_key = PublicKey::from([0xAD; 32]);
+        let member_key = PublicKey::from([0x11; 32]);
+        let relay_key = PublicKey::from([0x7E; 32]);
+
+        let admin_account = crate::test_support::enrol(&store, &ns, &admin_key);
+        let member_account = crate::test_support::enrol(&store, &ns, &member_key);
+        let relay_account = crate::test_support::enrol(&store, &ns, &relay_key);
+        MetaRepository::new(&store)
+            .save(&ns, &meta(admin_key))
+            .unwrap();
+        let membership = MembershipRepository::new(&store);
+        membership
+            .add_member(&ns, &admin_account, GroupMemberRole::Admin)
+            .unwrap();
+        membership
+            .add_member(&ns, &member_account, GroupMemberRole::Member)
+            .unwrap();
+        membership
+            .add_member(&ns, &relay_account, GroupMemberRole::RelayTee)
+            .unwrap();
+
+        RelayRig {
+            store,
+            ns,
+            admin_key,
+            admin_account,
+            member_key,
+            member_account,
+            relay_key,
+        }
+    }
+
+    /// An account that IS the namespace admin reads migration status through a
+    /// relay. The node answering is the relay, which is not an admin; the gate
+    /// must check the account the request is for, not the relay's own.
+    #[test]
+    fn admin_account_reads_migration_status_through_a_relay() {
+        let rig = relay_rig();
+        let result = authorize_migration_status(
+            &rig.store,
+            &rig.ns,
+            &rig.relay_key,
+            Some(&rig.admin_account),
+        );
+        assert!(
+            result.is_ok(),
+            "the namespace admin's account must pass through a relay, got {result:?}"
+        );
+    }
+
+    /// A plain-member account through a relay is refused with exactly the error
+    /// a non-admin NODE gets on the node path: the rule is the caller's admin
+    /// authority, whichever path the caller arrives on.
+    #[test]
+    fn member_account_through_a_relay_is_refused_like_a_non_admin_node() {
+        let rig = relay_rig();
+        let via_relay = authorize_migration_status(
+            &rig.store,
+            &rig.ns,
+            &rig.relay_key,
+            Some(&rig.member_account),
+        )
+        .expect_err("a plain member's account must be refused through a relay");
+        let as_node = authorize_migration_status(&rig.store, &rig.ns, &rig.member_key, None)
+            .expect_err("a plain member's node must be refused");
+
+        assert_eq!(via_relay.to_string(), as_node.to_string());
+        assert!(
+            matches!(
+                via_relay.downcast_ref::<calimero_governance_store::MembershipError>(),
+                Some(calimero_governance_store::MembershipError::NotAdmin { .. })
+            ),
+            "the refusal must be the governance not-admin error, got {via_relay:?}"
+        );
+        assert!(
+            via_relay
+                .to_string()
+                .contains(&rig.member_account.to_string()),
+            "the refusal must name the caller's account, not the relay's: {via_relay}"
+        );
+    }
+
+    /// The node path is unchanged: with no delegated account the gate checks
+    /// the node's own account, so an admin node passes and a relay acting for
+    /// nobody is refused.
+    #[test]
+    fn node_path_still_checks_the_nodes_own_account() {
+        let rig = relay_rig();
+        assert!(authorize_migration_status(&rig.store, &rig.ns, &rig.admin_key, None).is_ok());
+        assert!(
+            authorize_migration_status(&rig.store, &rig.ns, &rig.relay_key, None).is_err(),
+            "a relay reading for itself is not an admin"
+        );
     }
 
     /// The bytes a shipped binary writes for a `Completed` record, laid out by
