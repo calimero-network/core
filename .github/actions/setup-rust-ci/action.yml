@@ -24,10 +24,6 @@ inputs:
     description: "Condition for saving cache (e.g., github.ref == 'refs/heads/master')"
     required: false
     default: "${{ github.ref == 'refs/heads/master' }}"
-  libclang:
-    description: "Install libclang-dev on Linux (librocksdb-sys's bindgen needs it)"
-    required: false
-    default: "true"
 
 outputs:
   channel:
@@ -37,14 +33,12 @@ outputs:
 runs:
   using: "composite"
   steps:
-    # librocksdb-sys's bindgen dlopen's libclang at build-script time; ubuntu
-    # runners don't ship libclang-dev by default. macOS uses Homebrew's llvm instead (.cargo/config.toml).
-    - name: Install libclang (Linux)
-      if: runner.os == 'Linux' && inputs.libclang == 'true'
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends libclang-dev
+    # librocksdb-sys's bindgen dlopen's libclang at build-script time; the
+    # ubuntu images already ship one, so this only checks it is there.
+    # macOS finds its own; Windows callers point LIBCLANG_PATH at the image's LLVM.
+    - name: Check libclang (Linux)
+      if: runner.os == 'Linux'
+      uses: ./.github/actions/check-libclang
 
     - name: Install the pinned Rust toolchain
       id: toolchain
