@@ -4,11 +4,14 @@
 
 use core::cmp::Ordering;
 
-use calimero_account::{AccountProof, DeviceCert, DeviceId, DeviceScope};
+use calimero_account::{
+    AccountId, AccountProof, DeviceCert, DeviceId, DeviceScope, SignedDeviceRevocation,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::{
     GroupAccountDevice, GroupAccountDeviceLabel, GroupAccountDeviceLabelValue,
-    GroupAccountDeviceValue, GROUP_ACCOUNT_DEVICE_PREFIX,
+    GroupAccountDeviceRevocation, GroupAccountDeviceValue, GROUP_ACCOUNT_DEVICE_PREFIX,
+    GROUP_ACCOUNT_DEVICE_REVOCATION_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -130,6 +133,47 @@ impl<'a> AccountDeviceRegistry<'a> {
             }))
     }
 
+    /// Keep the account's own proof that it withdrew one of its devices. The caller
+    /// verifies it; the first one kept stands, since each withdraws the same device.
+    ///
+    /// # Errors
+    /// Propagates the store read or write failure.
+    pub fn record_revocation(&self, proof: &SignedDeviceRevocation) -> EyreResult<()> {
+        let (account, device) = (proof.statement.account, proof.statement.device);
+        let key = GroupAccountDeviceRevocation::new(
+            self.namespace.to_bytes(),
+            account,
+            *device.as_bytes(),
+        );
+        let mut handle = self.store.handle();
+        if !handle.has(&key)? {
+            handle.put(&key, proof)?;
+        }
+        Ok(())
+    }
+
+    /// Every withdrawal of `account`'s devices this namespace holds its proof of.
+    ///
+    /// # Errors
+    /// Propagates the store scan or read failure.
+    pub fn revocations(&self, account: AccountId) -> EyreResult<Vec<SignedDeviceRevocation>> {
+        let namespace = self.namespace.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupAccountDeviceRevocation::new(namespace, account, [0u8; 32]),
+            GROUP_ACCOUNT_DEVICE_REVOCATION_PREFIX,
+            |k| k.group_id() == namespace && k.account() == account,
+        )?;
+        let handle = self.store.handle();
+        let mut proofs = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(proof) = handle.get::<GroupAccountDeviceRevocation>(&key)? {
+                proofs.push(proof);
+            }
+        }
+        Ok(proofs)
+    }
+
     /// Every device row in this namespace's registry, revoked ones included.
     ///
     /// The device listing needs the revoked rows - `revoked: true` is what a
@@ -180,7 +224,10 @@ impl<'a> AccountDeviceRegistry<'a> {
 
 #[cfg(test)]
 mod tests {
-    use calimero_account::{AccountProof, DeviceCert, DeviceId, DeviceScope, KemPublicKey};
+    use calimero_account::{
+        AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, DeviceRevocation,
+        DeviceScope, KemPublicKey, SignedDeviceRevocation,
+    };
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::identity::PrivateKey;
@@ -348,6 +395,47 @@ mod tests {
                 .expect("read")
                 .is_some(),
             "the row itself survives; only the served set drops it"
+        );
+    }
+
+    fn withdrawal(
+        root: &PrivateKey,
+        account: AccountId,
+        device: DeviceId,
+    ) -> SignedDeviceRevocation {
+        AccountProof {
+            genesis: AccountGenesis::new(root.public_key()),
+            chain: vec![],
+            statement: DeviceRevocation::sign(root, account, device, 0).expect("sign"),
+        }
+    }
+
+    /// A withdrawal is kept under the account its proof names, so another account's
+    /// proof naming the same device neither takes this account's slot nor reads as it.
+    #[test]
+    fn another_accounts_withdrawal_does_not_take_this_accounts_slot() {
+        let store = test_store();
+        let registry = AccountDeviceRegistry::new(&store, ContextGroupId::from(NS));
+        let root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's root");
+        let device = DeviceId::from([0x62; 32]);
+        let stranger = PrivateKey::from([0x63; 32]);
+        let stranger_account = AccountGenesis::new(stranger.public_key()).account_id();
+        let foreign = withdrawal(&stranger, stranger_account, device);
+        let own = withdrawal(root.signing_key(), root.account(), device);
+
+        for offered in [&foreign, &own] {
+            registry.record_revocation(offered).expect("record");
+        }
+
+        assert_eq!(
+            registry.revocations(root.account()).expect("read"),
+            vec![own]
+        );
+        assert_eq!(
+            registry.revocations(stranger_account).expect("read"),
+            vec![foreign]
         );
     }
 

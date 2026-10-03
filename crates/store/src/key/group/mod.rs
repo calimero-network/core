@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x58` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x59` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x59`**.
+// `0x5A`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -2883,6 +2883,90 @@ impl Debug for GroupAccountDevice {
     }
 }
 
+/// Prefix for [`GroupAccountDeviceRevocation`].
+pub const GROUP_ACCOUNT_DEVICE_REVOCATION_PREFIX: u8 = 0x59;
+
+/// The root-signed withdrawal of one device of the account, keyed by account and
+/// device. Kept whole so a device can replay it into a namespace it gains.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupAccountDeviceRevocation(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
+
+impl GroupAccountDeviceRevocation {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], account: AccountId, device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_ACCOUNT_DEVICE_REVOCATION_PREFIX,
+        ])
+        .concat(GenericArray::from(group_id))
+        .concat(GenericArray::from(*account.as_bytes()))
+        .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn account(&self) -> AccountId {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        AccountId::from(id)
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..97]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupAccountDeviceRevocation {
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupAccountDeviceRevocation {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupAccountDeviceRevocation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupAccountDeviceRevocation")
+            .field("group_id", &self.group_id())
+            .field("account", &self.account())
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
 /// Prefix for [`GroupAccountDeviceLabel`].
 pub const GROUP_ACCOUNT_DEVICE_LABEL_PREFIX: u8 = 0x53;
 
@@ -4448,6 +4532,10 @@ mod tests {
             ("GROUP_SIGNER_DEVICE", GROUP_SIGNER_DEVICE_PREFIX),
             ("GROUP_DEVICE_SCOPE_FLOOR", GROUP_DEVICE_SCOPE_FLOOR_PREFIX),
             ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
+            (
+                "GROUP_ACCOUNT_DEVICE_REVOCATION",
+                GROUP_ACCOUNT_DEVICE_REVOCATION_PREFIX,
+            ),
             ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),
             ("GROUP_MEMBER_BY_ACCOUNT", GROUP_MEMBER_BY_ACCOUNT_PREFIX),
             (
