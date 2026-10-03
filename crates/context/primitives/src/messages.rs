@@ -318,9 +318,8 @@ pub enum ExecuteError {
         "context upgrade in progress for group {group_id:?}; writes refused until migration completes"
     )]
     UpgradeInProgress { group_id: ContextGroupId },
-    /// An `xcall` targeted a method not marked `#[app::xcall]`, refused before
-    /// execution. Only raised for modules that declare at least one entry point;
-    /// apps that declare none are not gated.
+    /// An `xcall` targeted a method not marked `#[app::xcall]`, or a module that
+    /// declares no entry point, refused before execution.
     #[error(
         "xcall on context '{context_id}' denied: target method is not an #[app::xcall] entry point"
     )]
@@ -471,6 +470,10 @@ pub enum NamespaceApplyOutcome {
     /// Op was accepted but is waiting for missing parents; caller should
     /// proactively trigger a namespace backfill.
     Pending,
+    /// Op has a missing parent and was not buffered, because its signer is not
+    /// certified in the namespace. A backfill from the sender can supply the
+    /// ancestry that certifies it.
+    NotAdmitted,
     /// Op was already present in the governance DAG; no action required.
     Duplicate,
 }

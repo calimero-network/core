@@ -31,7 +31,7 @@ mod void;
 #[cfg(test)]
 mod void_tests;
 
-pub use void::AuthorityBase;
+pub use void::{Acting, AuthorityBase};
 
 #[cfg(test)]
 mod shared_writers_tests;

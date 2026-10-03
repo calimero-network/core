@@ -10,11 +10,26 @@ An improvement blocks too: the snapshot is the reviewed record of what an operat
 - `tools/storage-cost` + `scripts/check-storage-cost.sh`, snapshotted in `tools/storage-cost/storage-costs.json`.
 - State rows (`rows_*`) and node-local ordered-index rows (`index_rows_*`, used by `SortedMap` and `IndexedMap`) are counted separately, because they live in different columns and only state is synced or hashed.
   An index metric is left out of the JSON when it is zero, and the gate reads a missing one as zero.
+- SHA-256 work (`hash_calls`, `hash_blocks`): every hash `calimero-storage` finishes, and the compression blocks it runs (`ceil((len + 9) / 64)`), counted through `crates/storage/src/hash_meter.rs` under the `cost-meter` feature that only `tools/storage-cost` enables.
+  This is the CPU proxy. Re-hashing a row's data on every decode costs no extra row: #4266 did that, and its read workloads (`unordered_map_get`, `rga_get_nth`, `nested_map_get`) kept every row count while their `hash_blocks` rose 100-200%. It is a count, so it reproduces on any machine.
+  Storage code hashes through `crate::hash_meter::Sha256`: a module naming `sha2` directly is uncounted, and a unit test refuses it.
 - Bytes that row counts cannot see are gated by tests in `tools/storage-cost/tests/`: `keystroke_bytes.rs` (what one keystroke rewrites) and `delta_bytes.rs` (the ancestor bytes one write ships in its delta, which every node keeps in its DAG history; `-- --nocapture` prints each action's breakdown).
 
 To accept a change, regenerate the snapshot and commit it so the delta shows up in the PR diff:
 
     cargo run -p storage-cost --bin storage-cost --release > tools/storage-cost/storage-costs.json
+
+## Tier 1b - scaling guards (BLOCKING)
+
+Ordinary `#[test]`s that time one operation at a small and a large input and assert the *ratio*, never an absolute time.
+The ratio is what a complexity bug changes and what a slower machine does not: growing the input 8x grows a linear path ~8x and a quadratic one ~64x, so a bound between the two (24x, keeping the fastest of three runs) fails a quadratic regression on any runner and passes a linear path even in a debug build under `nextest`.
+
+- `crates/dag/tests/complexity.rs`: the pending-set paths a peer drives (many waiters on one missing parent, inserts into a full map, an origin flooding at its quota, reverse-chain and fan-in cascades).
+  It caught `cleanup_stale` and per-origin eviction going quadratic: 44x and 64x growth on the old code, 8-10x after the fix.
+
+Write one when a path's cost depends on state a peer can grow (a pending set, a queue, a bucket of waiters) and the right answer is "linear" or "flat".
+Build the fixture outside the timed region, size it so the large run is a few tens of milliseconds, and also assert the result (counts, order), so the test is a correctness check as well as a timing one.
+Pair it with a Criterion sweep over the same shape in Tier 2, which shows the trend the guard only bounds.
 
 ## Tier 2 - criterion benches (REPORTING ONLY)
 
@@ -26,7 +41,8 @@ To accept a change, regenerate the snapshot and commit it so the delta shows up 
 
 Criterion compiles benches with release optimisations; never read numbers from a debug build.
 
-`master` saves a baseline per commit, and a PR labelled `run-benchmarks` compares against it with `critcmp` (`.github/workflows/benchmarks.yml`).
+`master` saves a baseline per commit, and a PR compares against it with `critcmp` (`.github/workflows/benchmarks.yml`): a PR benches only while it carries the `run-benchmarks` label, and then benches every crate, again on each push. A storage change without the label is covered by the deterministic storage cost gate in `ci-checks.yml` instead.
+Neither ever fails the PR. On a fork PR the comparison runs but cannot comment (its token is read-only), so read the `compare` job's log.
 
 ## Tier 3 - macro
 
@@ -40,7 +56,7 @@ The document-ceiling probes in `crates/runtime/tests/{chat,rga,fugue}_wall.rs` a
 3. Module docs say what question the bench answers.
 4. Never copy a private function's body; add a `pub(crate)` seam instead.
 5. Run `cargo bench --workspace --benches --no-run` before pushing.
-6. For a crate's *first* `[[bench]]`, add the crate to `matrix.crate` in `.github/workflows/benchmarks.yml`, or it silently gets no `master` baseline.
+6. For a crate's *first* `[[bench]]`, add the crate to the `all` list in the `plan` job of `.github/workflows/benchmarks.yml`, or it silently gets no `master` baseline.
 
 ## Reading the comparison
 
@@ -51,3 +67,4 @@ Otherwise the `compare` job posts a "no comparison" message naming which case it
 - 5-20% on one benchmark, nothing else: usually noise too. Re-run before believing it.
 - A whole group moving one way, or a change in the SHAPE of a sweep: real, and worth explaining in the PR.
 - A cost gate failing: not noise, ever. That is a counted operation, and the snapshot moved.
+  A `hash_blocks` delta with no row delta is the CPU change criterion shows only noisily: read which workloads moved before regenerating.

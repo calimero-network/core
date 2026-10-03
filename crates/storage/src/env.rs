@@ -320,18 +320,30 @@ pub fn storage_write(key: Key, value: &[u8]) -> bool {
     crate::row::write(key, value, imp::storage_read, imp::storage_write)
 }
 
+/// Reads entity `id`'s index, decoded (see [`crate::row::read_index`]).
+#[must_use]
+pub fn storage_read_index(id: Id) -> Option<std::io::Result<crate::index::EntityIndex>> {
+    crate::row::read_index(id, imp::storage_read)
+}
+
+/// Writes `index` to its entity's row (see [`crate::row::write_index`]).
+#[must_use]
+pub fn storage_write_index(index: &crate::index::EntityIndex) -> bool {
+    crate::row::write_index(index.id(), index, imp::storage_read, imp::storage_write)
+}
+
 /// Reads entity `id`'s index and data with one row read (see
 /// [`crate::row::read_entity`]).
 #[must_use]
-pub fn storage_read_entity(id: Id) -> crate::row::Row {
+pub fn storage_read_entity(id: Id) -> crate::row::EntityRow {
     crate::row::read_entity(id, imp::storage_read)
 }
 
-/// Writes entity `id`'s index and data in one row write (see
+/// Writes entity `index.id()`'s index and data in one row write (see
 /// [`crate::row::write_entity`]).
 #[must_use]
-pub fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) -> bool {
-    crate::row::write_entity(id, index, data, imp::storage_write)
+pub fn storage_write_entity(index: &crate::index::EntityIndex, data: &[u8]) -> bool {
+    crate::row::write_entity(index.id(), index, data, imp::storage_write)
 }
 
 // === Ordered secondary index (SortedMap, core#2559) ===
@@ -438,18 +450,37 @@ pub fn private_storage_write(key: Key, value: &[u8]) -> bool {
     )
 }
 
+/// Reads entity `id`'s index from private storage, decoded (see
+/// [`crate::row::read_index`]).
+#[must_use]
+pub fn private_storage_read_index(id: Id) -> Option<std::io::Result<crate::index::EntityIndex>> {
+    crate::row::read_index(id, imp::private_storage_read)
+}
+
+/// Writes `index` to its entity's row in private storage (see
+/// [`crate::row::write_index`]).
+#[must_use]
+pub fn private_storage_write_index(index: &crate::index::EntityIndex) -> bool {
+    crate::row::write_index(
+        index.id(),
+        index,
+        imp::private_storage_read,
+        imp::private_storage_write,
+    )
+}
+
 /// Reads entity `id`'s index and data from private storage with one row read
 /// (see [`crate::row::read_entity`]).
 #[must_use]
-pub fn private_storage_read_entity(id: Id) -> crate::row::Row {
+pub fn private_storage_read_entity(id: Id) -> crate::row::EntityRow {
     crate::row::read_entity(id, imp::private_storage_read)
 }
 
-/// Writes entity `id`'s index and data to private storage in one row write
-/// (see [`crate::row::write_entity`]).
+/// Writes entity `index.id()`'s index and data to private storage in one row
+/// write (see [`crate::row::write_entity`]).
 #[must_use]
-pub fn private_storage_write_entity(id: Id, index: &[u8], data: &[u8]) -> bool {
-    crate::row::write_entity(id, index, data, imp::private_storage_write)
+pub fn private_storage_write_entity(index: &crate::index::EntityIndex, data: &[u8]) -> bool {
+    crate::row::write_entity(index.id(), index, data, imp::private_storage_write)
 }
 
 /// Fill the buffer with random bytes.
@@ -959,10 +990,10 @@ mod calimero_vm {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod mocked {
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use std::cell::RefCell;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use calimero_primitives::identity::PublicKey;
     use rand::Rng;
 
     use super::RuntimeEnv;
@@ -1371,9 +1402,8 @@ mod mocked {
         VERIFY_CALLS.with(|c| c.set(0));
     }
 
-    /// Verifies an Ed25519 signature.
-    ///
-    /// Uses a pure-Rust implementation for testing.
+    /// Verifies an Ed25519 signature strictly, as the guest's host function does:
+    /// a small-order key would let a trivial signature verify any message.
     pub(super) fn ed25519_verify(
         signature: &[u8; 64],
         public_key: &[u8; 32],
@@ -1382,15 +1412,9 @@ mod mocked {
         #[cfg(any(test, feature = "testing"))]
         VERIFY_CALLS.with(|c| c.set(c.get().saturating_add(1)));
 
-        // We need to parse the public key.
-        // If parsing fails, the signature is invalid.
-        let Ok(public_key) = VerifyingKey::from_bytes(public_key) else {
-            return false;
-        };
-
-        let signature = Signature::from_bytes(signature);
-        // Perform the verification.
-        public_key.verify(message, &signature).is_ok()
+        PublicKey::from(*public_key)
+            .verify_raw_signature(message, signature)
+            .is_ok()
     }
 
     /// Get a new hybrid timestamp from the HLC

@@ -1,9 +1,13 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
 
 use super::{IndexValue, Indexed, IndexedMap};
+use crate::address::Id;
 use crate::collections::{LwwRegister, UnorderedMap};
-use crate::entities::Data;
+use crate::entities::{ChildInfo, Data, Metadata};
 use crate::env;
+use crate::index::Index;
+use crate::interface::{Action, ApplyContext, Interface};
 use crate::store::mocked::{self, MockedStorage};
 use crate::store::{Key, StorageAdaptor};
 
@@ -560,4 +564,93 @@ fn a_write_through_the_map_keeps_a_current_index_current() {
         ["i3", "i4"]
     );
     assert_eq!(map.query("labels").eq("ops").keys().unwrap(), ["i6"]);
+}
+
+/// A peer's copy of "i1", filed where "i9" would live, as a delta carries it.
+fn misfile_a_copy_of_i1(map: &IndexedMap<String, Issue, Backed>) -> Id {
+    let mut data = Interface::<Backed>::find_by_id_raw(map.inner.entry_id("i1")).unwrap();
+    let filed_at = map.inner.entry_id("i9");
+    data.truncate(data.len() - size_of::<Id>());
+    data.extend_from_slice(filed_at.as_bytes());
+    let misfiled = Action::Add {
+        id: filed_at,
+        data,
+        ancestors: vec![ChildInfo::new(map.inner.id(), [0; 32], Metadata::default())],
+        metadata: Metadata::new(1, 1),
+    };
+    Interface::<Backed>::apply_action(misfiled, &ApplyContext::empty()).unwrap();
+    assert_eq!(
+        Index::<Backed>::child_count(map.inner.id()),
+        6,
+        "the misfiled entry must have landed"
+    );
+    filed_at
+}
+
+#[test]
+fn a_query_leaves_out_an_entry_filed_under_another_keys_id() {
+    let map = tracker();
+    misfile_a_copy_of_i1(&map);
+
+    assert_eq!(
+        sorted(map.query("status").eq("open").keys().unwrap()),
+        ["i1", "i3", "i4"]
+    );
+}
+
+#[test]
+fn a_contains_does_not_see_an_entry_filed_under_another_keys_id() {
+    let map = tracker();
+    misfile_a_copy_of_i1(&map);
+
+    assert!(!map.contains("i9").unwrap());
+}
+
+#[test]
+fn an_index_built_before_is_rebuilt_without_the_misfiled_entry() {
+    let map = tracker();
+    let filed_at = misfile_a_copy_of_i1(&map);
+    // The row and marker an index built before misfiled entries were left out holds.
+    let copy = map
+        .inner
+        .get_by_id(map.inner.entry_id("i1"))
+        .unwrap()
+        .unwrap()
+        .1;
+    for (index, keys) in super::keys_of(&copy).into_iter().enumerate() {
+        for key in keys {
+            assert!(Backed::index_put(
+                map.space(index),
+                &super::row_key(&key, filed_at),
+                filed_at
+            ));
+        }
+    }
+    let mut fingerprint = Sha256::new();
+    fingerprint.update([1_u8]); // the version before misfiled entries were left out
+    for name in Issue::INDEXES {
+        fingerprint.update((name.len() as u64).to_le_bytes());
+        fingerprint.update(name.as_bytes());
+    }
+    let mut marker = map.marker()[..size_of::<Id>()].to_vec();
+    marker.extend_from_slice(&fingerprint.finalize());
+    assert!(Backed::index_meta_put(map.marker_id(), &marker));
+
+    assert_eq!(map.query("status").eq("open").count().unwrap(), 3);
+}
+
+#[test]
+fn an_insert_at_that_key_refiles_the_misfiled_entry() {
+    let mut map = tracker();
+    misfile_a_copy_of_i1(&map);
+
+    let previous = map
+        .insert("i9".to_owned(), issue("closed", None, &[], 90))
+        .unwrap();
+    assert!(previous.is_none());
+    assert_eq!(
+        sorted(map.query("status").eq("closed").keys().unwrap()),
+        ["i2", "i9"]
+    );
+    assert_eq!(map.query("status").eq("open").count().unwrap(), 3);
 }

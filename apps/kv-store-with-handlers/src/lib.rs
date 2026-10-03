@@ -135,8 +135,8 @@ impl KvStore {
     #[app::handler]
     pub fn insert_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         self.log_handler_call("insert_handler", &format!("key={key}, value={value}"))?;
-        // Add your insert-specific logic here
-        // For example: send notifications, update external systems, etc.
+        // Handlers run on every receiving node, possibly more than once, with the emitter's
+        // arguments: stay idempotent, change only this context's state, no external side effects.
         Ok(())
     }
 
@@ -144,8 +144,6 @@ impl KvStore {
     #[app::handler]
     pub fn update_handler(&mut self, key: &str, value: &str) -> app::Result<()> {
         self.log_handler_call("update_handler", &format!("key={key}, value={value}"))?;
-        // Add your update-specific logic here
-        // For example: log changes, update caches, etc.
         Ok(())
     }
 
@@ -153,8 +151,6 @@ impl KvStore {
     #[app::handler]
     pub fn remove_handler(&mut self, key: &str) -> app::Result<()> {
         self.log_handler_call("remove_handler", &format!("key={key}"))?;
-        // Add your remove-specific logic here
-        // For example: cleanup external resources, etc.
         Ok(())
     }
 
@@ -162,8 +158,6 @@ impl KvStore {
     #[app::handler]
     pub fn clear_handler(&mut self) -> app::Result<()> {
         self.log_handler_call("clear_handler", "all items cleared")?;
-        // Add your clear-specific logic here
-        // For example: cleanup all external resources, etc.
         Ok(())
     }
 

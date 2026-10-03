@@ -1,4 +1,3 @@
-use calimero_governance_store::{MetadataRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -15,6 +14,7 @@ use reqwest::StatusCode;
 use tracing::debug;
 
 use crate::admin::caller_scope::{list_scope_for, ListScope};
+use crate::admin::handlers::groups::list_subgroups::visible_children;
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
@@ -62,7 +62,7 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, node_owner, account.clone(), device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
@@ -73,31 +73,110 @@ pub async fn handler(
         return refusal;
     }
 
-    let groups = match NamespaceRepository::new(&state.store).list_children(&namespace_id) {
-        Ok(groups) => groups,
+    let entries = match visible_children(&state, &namespace_id, account.map(|Extension(a)| a)) {
+        Ok(children) => children
+            .into_iter()
+            .map(|(group_id, name)| NamespaceGroupEntryApiResponse {
+                group_id: hex::encode(group_id.to_bytes()),
+                name,
+            })
+            .collect(),
         Err(err) => return parse_api_error(err).into_response(),
     };
-
-    let mut entries = Vec::with_capacity(groups.len());
-    for group_id in groups {
-        let name = match MetadataRepository::new(&state.store).group_metadata(&group_id) {
-            Ok(rec) => rec.and_then(|r| r.name),
-            Err(err) => {
-                error!(
-                    ?err,
-                    "Failed to resolve group metadata while listing namespace groups"
-                );
-                return parse_api_error(err).into_response();
-            }
-        };
-        entries.push(NamespaceGroupEntryApiResponse {
-            group_id: hex::encode(group_id.to_bytes()),
-            name,
-        });
-    }
 
     ApiResponse {
         payload: ListNamespaceGroupsApiResponse { data: entries },
     }
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::{Extension, Router};
+    use calimero_context_client::client::ContextClient;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::MembershipRepository;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_server_primitives::admin::ListNamespaceGroupsApiResponse;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tower::ServiceExt;
+
+    use super::handler;
+    use crate::auth::AuthenticatedAccount;
+    use crate::{AdminState, NodeReadiness};
+
+    /// Whether the namespace listing names its Restricted subgroup to an account
+    /// holding `role` in the namespace, and a row in the subgroup if `in_subgroup`.
+    async fn lists_the_restricted_subgroup(role: GroupMemberRole, in_subgroup: bool) -> bool {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (namespace, subgroup, account) =
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                &store,
+                PublicKey::from([0x5C; 32]),
+                role,
+            );
+        if in_subgroup {
+            MembershipRepository::new(&store)
+                .add_member(
+                    &ContextGroupId::from(*subgroup.as_bytes()),
+                    &account,
+                    GroupMemberRole::Member,
+                )
+                .expect("seat the account in the subgroup");
+        }
+        let (event_sender, _rx) = tokio::sync::broadcast::channel(16);
+        let (node_client, _blob_dir) = crate::test_support::test_node_client(
+            &store,
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+        )
+        .await;
+        let ctx_client =
+            ContextClient::new(store.clone(), node_client.clone(), LazyRecipient::new());
+        let state = Arc::new(AdminState::new(
+            store,
+            ctx_client,
+            node_client,
+            Arc::new(NodeReadiness::new()),
+            [0; 32],
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+        let app = Router::new()
+            .route("/namespaces/{namespace_id}/groups", get(handler))
+            .layer(Extension(state))
+            .layer(Extension(AuthenticatedAccount(account)));
+
+        let uri = format!("/namespaces/{}/groups", hex::encode(namespace.as_bytes()));
+        let response = app
+            .oneshot(Request::get(uri).body(Body::empty()).expect("a request"))
+            .await
+            .expect("the listing route answers");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read the response");
+        let listed: ListNamespaceGroupsApiResponse =
+            serde_json::from_slice(&body).expect("a listing");
+        let subgroup = hex::encode(subgroup.as_bytes());
+        listed.data.iter().any(|entry| entry.group_id == subgroup)
+    }
+
+    #[actix::test]
+    async fn a_restricted_subgroup_is_listed_only_to_the_namespace_admin_and_its_members() {
+        assert!(
+            lists_the_restricted_subgroup(GroupMemberRole::Admin, false).await,
+            "precondition: the namespace admin sees it"
+        );
+        assert!(lists_the_restricted_subgroup(GroupMemberRole::Member, true).await);
+        assert!(!lists_the_restricted_subgroup(GroupMemberRole::Member, false).await);
+    }
 }

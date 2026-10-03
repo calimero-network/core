@@ -30,6 +30,8 @@ pub struct GenerateClientKeyRequest {
     /// Target node URL for which to generate the client key
     pub target_node_url: Option<String>,
 
+    pub application_id: Option<String>,
+
     /// Seconds this key stays valid. Defaults to
     /// [`DEFAULT_CLIENT_KEY_TTL_SECS`] when absent.
     ///
@@ -201,6 +203,15 @@ pub async fn generate_client_key_handler(
     if !context_id.is_empty() && !context_identity.is_empty() {
         let default_permission = format!("context[{context_id},{context_identity}]");
         all_permissions.push(default_permission);
+    }
+
+    if let Some(application_id) = request
+        .application_id
+        .as_deref()
+        .map(sanitize_identifier)
+        .filter(|id| !id.is_empty())
+    {
+        all_permissions.push(crate::auth::bindings::application_binding(&application_id));
     }
 
     // Add and validate additional permissions
@@ -394,6 +405,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_mint_naming_its_application_binds_the_key_to_it() {
+        let (state, headers) = admin_state().await;
+
+        let response = generate_client_key_handler(
+            Extension(Arc::clone(&state)),
+            headers,
+            ValidatedJson(GenerateClientKeyRequest {
+                context_id: None,
+                context_identity: None,
+                permissions: Some(vec!["context:execute".to_string()]),
+                target_node_url: None,
+                application_id: Some("app-a".to_string()),
+                ttl_secs: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        let (_, key) = clients.first().expect("one client key");
+        let bindings = crate::auth::bindings::ClientKeyBindings::from_permissions(&key.permissions);
+        assert_eq!(bindings.application_id.as_deref(), Some("app-a"));
+        assert!(key.permissions.contains(&"context:execute".to_string()));
+    }
+
+    #[tokio::test]
     async fn back_to_back_mints_do_not_overwrite_each_other() {
         let (state, headers) = admin_state().await;
 
@@ -406,6 +444,7 @@ mod tests {
                     context_identity: None,
                     permissions: Some(vec!["admin".to_string()]),
                     target_node_url: None,
+                    application_id: None,
                     ttl_secs: None,
                 }),
             )
@@ -449,6 +488,7 @@ mod tests {
                 context_identity: context.map(|(_, identity)| identity.to_owned()),
                 permissions: Some(permissions.iter().map(|p| (*p).to_owned()).collect()),
                 target_node_url: None,
+                application_id: None,
                 ttl_secs: None,
             }),
         )

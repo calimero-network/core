@@ -16,6 +16,7 @@ use calimero_governance_store::{
     get_group_for_context, CapabilitiesRepository, GroupKeyring, MembershipRepository,
     MetaRepository, MetadataRepository, NamespaceRepository, NodeDeviceRepository,
 };
+use calimero_node_primitives::test_fixtures::signed_wasm;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -36,7 +37,11 @@ use crate::test_support::{actor, credential, enrol, enrol_holder};
 /// 0}`), the register-read descriptor at 96 (`{ptr: 0, len: 32}`), the one-byte
 /// artifact descriptor at 112 (`{ptr: 32, len: 1}`), the owned-artifact
 /// descriptor at 128 (`{ptr: 512, len}`) and the owned artifact at 512.
-fn module() -> String {
+///
+/// With `init_signs`, `init` commits [`owned_artifact`] instead: an `init`
+/// that writes an entry this node signs for the author.
+fn module_with(init_signs: bool) -> String {
+    let init_artifact = if init_signs { 128 } else { 80 };
     let artifact = owned_artifact();
     let mut descriptor = 512_u64.to_le_bytes().to_vec();
     descriptor.extend((artifact.len() as u64).to_le_bytes());
@@ -64,7 +69,7 @@ fn module() -> String {
         (func (export "init")
             (call $account_id (i64.const 0))
             (drop (call $read_register (i64.const 0) (i64.const 96)))
-            (call $commit (i64.const 64) (i64.const 80)))
+            (call $commit (i64.const 64) (i64.const {init_artifact})))
         (func (export "set")
             (call $account_id (i64.const 0))
             (drop (call $read_register (i64.const 0) (i64.const 96)))
@@ -76,6 +81,7 @@ fn module() -> String {
 "#,
         descriptor = escape(&descriptor),
         artifact = escape(&artifact),
+        init_artifact = init_artifact,
     )
 }
 
@@ -153,6 +159,15 @@ struct Fixture {
 }
 
 async fn fixture(relay_standing: Standing, author_may_create: bool) -> Fixture {
+    fixture_with(relay_standing, author_may_create, false).await
+}
+
+/// [`fixture`], whose `init` signs an entry for the author when `init_signs`.
+async fn fixture_with(
+    relay_standing: Standing,
+    author_may_create: bool,
+    init_signs: bool,
+) -> Fixture {
     global_runtime();
     let store = Store::new(Arc::new(InMemoryDB::owned()));
     NodeDeviceRepository::new(&store)
@@ -160,10 +175,10 @@ async fn fixture(relay_standing: Standing, author_may_create: bool) -> Fixture {
         .expect("provision the account root an initialised node has");
     let harness = actor::over(store.clone()).await;
 
-    let wasm = wat::parse_str(module()).expect("parse the module");
+    let wasm = wat::parse_str(module_with(init_signs)).expect("parse the module");
     let (blob_id, size) = harness
         .node_client
-        .add_blob(Cursor::new(wasm.clone()), Some(wasm.len() as u64), None)
+        .add_blob(Cursor::new(signed_wasm(&wasm)), None, None)
         .await
         .expect("store the wasm");
     let application_id = ApplicationId::from(APP);
@@ -386,11 +401,23 @@ async fn a_relay_creates_a_context_for_a_member_and_init_runs_as_the_member() {
 /// peer refuses the entries `init` would write for the member under its key:
 /// only a `RelayTee` signs on a member's behalf. So it is refused before `init`
 /// runs, and nothing is created or published.
+/// A relay that is a plain member holding `CAN_AUTHOR_ON_BEHALF`, not a
+/// `RelayTee`, creates a context whose `init` signs nothing: nothing is written
+/// on the author's behalf, so the creation gate alone decides.
 #[actix::test]
-async fn a_relay_that_is_not_a_relay_tee_is_refused_before_init_runs() {
+async fn a_relay_that_is_not_a_relay_tee_creates_a_context_whose_init_signs_nothing() {
+    let fx = fixture(Standing::Granted, true).await;
+    let _created = fx.create(fx.delegation()).await.expect("created");
+    assert!(fx.created());
+}
+
+/// The same relay is refused when `init` signs an entry for the author: only a
+/// `RelayTee` writes on a member's behalf. Nothing is created or published.
+#[actix::test]
+async fn a_relay_that_is_not_a_relay_tee_is_refused_when_init_signs_an_entry() {
     use calimero_governance_store::OnBehalfRefusal;
 
-    let mut fx = fixture(Standing::Granted, true).await;
+    let mut fx = fixture_with(Standing::Granted, true, true).await;
     let _ = fx.harness.broadcast_topics();
     let err = fx.create(fx.delegation()).await.expect_err("refused");
     assert_eq!(

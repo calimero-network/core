@@ -24,21 +24,28 @@ async fn handle(
     // lookups below can touch the store, so we must not hold a lock across them:
     // holding the write lock across `has_member` would stall the node-event task
     // that reads `subscriptions` on every broadcast.
-    let (caller, node_owner) = {
+    let (caller, node_owner, scope) = {
         let inner = connection_state.inner.read().await;
-        (inner.caller, inner.node_owner)
+        (inner.caller, inner.node_owner, inner.scope.clone())
     };
 
     // Only subscribe to contexts this connection is authorized to observe.
     // Context events carry state roots and application execution-event payloads,
     // so delivering them to a non-member is a cross-context data leak. The node
-    // owner (and a no-auth dev server) may observe everything; any other
-    // connection must prove membership via its authenticated caller identity.
+    // owner (and an identity-less caller on a no-auth server) may observe
+    // everything; a caller with an identity must be a member.
     // Unauthorized ids are dropped rather than subscribed, and the response
     // reflects only the contexts that were actually subscribed. This runs
     // without holding any lock.
     let mut subscribed = Vec::with_capacity(request.context_ids.len());
     for id in request.context_ids {
+        if scope
+            .as_ref()
+            .is_some_and(|s| !s.permits_context(&state.ctx_client, &id))
+        {
+            warn!(context_id=%id, "denying WS subscription: context outside the client key's bindings");
+            continue;
+        }
         if caller_may_observe_context(
             &state.ctx_client,
             state.auth_enabled,
@@ -52,12 +59,24 @@ async fn handle(
         }
     }
 
+    let group_ids = request.group_ids.into_iter().filter(|group_id| {
+        let permitted = scope.as_ref().is_none_or(|s| {
+            s.permits_group(
+                state.ctx_client.datastore(),
+                &ContextGroupId::from(*group_id.as_bytes()),
+            )
+        });
+        if !permitted {
+            warn!(group_id=%group_id, "denying WS group subscription: group outside the client key's bindings");
+        }
+        permitted
+    });
     let groups = authorize_group_subscriptions(
         &state.ctx_client,
         state.auth_enabled,
         node_owner,
         caller.as_ref(),
-        request.group_ids,
+        group_ids,
     );
     for group_id in &groups.denied {
         warn!(group_id=%group_id, "denying WS group subscription: caller is not a member of the group");
@@ -144,20 +163,14 @@ async fn handle(
 
 /// Whether a connection may subscribe to (observe) a context's event stream.
 ///
-/// The node owner and a no-auth dev server may observe everything. Any other
-/// connection must present an authenticated caller that is a member of the
-/// context (`caller_is_member == Some(true)`); a connection with no caller
-/// identity (`None`) is denied when auth is enabled.
+/// The node owner observes everything; a caller with an identity only what it is a member of,
+/// since a proxy tenant is one caller among many. One with no identity passes only with auth off.
 pub(crate) fn may_observe_context(
     auth_enabled: bool,
     node_owner: bool,
     caller_is_member: Option<bool>,
 ) -> bool {
-    if node_owner || !auth_enabled {
-        true
-    } else {
-        caller_is_member.unwrap_or(false)
-    }
+    node_owner || caller_is_member.unwrap_or(!auth_enabled)
 }
 
 /// Context-observation authorization gate, shared by every transport that
@@ -507,6 +520,14 @@ mod tests {
         assert!(may_observe_context(false, false, None));
     }
 
+    // Proxy mode has no embedded guard, but a proxy-identity tenant is one caller
+    // among many, so it is held to its own membership.
+    #[test]
+    fn no_auth_server_denies_a_caller_known_not_to_be_a_member() {
+        assert!(may_observe_context(false, false, Some(true)));
+        assert!(!may_observe_context(false, false, Some(false)));
+    }
+
     #[test]
     fn member_is_allowed_non_member_and_no_caller_denied() {
         assert!(may_observe_context(true, false, Some(true)));
@@ -518,6 +539,12 @@ mod tests {
     fn group_gate_owner_and_no_auth_observe_everything() {
         assert!(may_observe_group(true, true, None));
         assert!(may_observe_group(false, false, None));
+    }
+
+    #[test]
+    fn group_gate_no_auth_denies_a_caller_known_not_to_be_a_member() {
+        assert!(may_observe_group(false, false, Some(true)));
+        assert!(!may_observe_group(false, false, Some(false)));
     }
 
     #[test]
