@@ -20,6 +20,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::auth::GrantedPermissions;
 
+/// Why an account-anchored session may not `execute`: it holds no identity of this node's.
+pub(crate) const ACCOUNT_SESSION_REFUSAL: &str =
+    "an account-authenticated session cannot execute directly; submit a warranted intent instead";
+
 /// Who is making an execute call, as determined by the auth layer.
 ///
 /// Using an explicit enum instead of `Option<PublicKey>` makes the bypass path
