@@ -6,6 +6,7 @@ use std::sync::Arc;
 use calimero_app_downloader::registry::{RegistryConfig, RegistryMode, PENDING_BLOB_SHARE_SOURCE};
 use calimero_app_downloader::source::dht::PeerBlobs;
 use calimero_app_downloader::{app_source, AppRequest, ApplicationDownloader, Outcome};
+use calimero_node_primitives::bundle::dev_signing_key;
 use calimero_node_primitives::client::application::{InstallOrigin, NotABundle};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
@@ -317,6 +318,58 @@ async fn a_bare_install_refuses_a_substituted_package() {
         node_client.list_blobs().expect("list").is_empty(),
         "a refused install must leave no bytes behind"
     );
+}
+
+/// The development key is public, so its signature proves nothing: a node
+/// installs such a bundle only when run with `--dev`.
+#[tokio::test]
+async fn a_bare_install_refuses_a_dev_signed_bundle() {
+    let (bundle, dev_id) =
+        common::signed_bundle_bytes_by(&dev_signing_key(), PACKAGE, VERSION, &[]);
+
+    let (url, server) = common::serve_once(bundle).await;
+    let (node_client, _data, _blobs) = node_pointed_at(&base_of(&url)).await;
+
+    let err = node_client
+        .install_by_coords(PACKAGE, VERSION, InstallOrigin::Operator)
+        .await
+        .expect_err("a dev-signed bundle must be refused without --dev");
+    let _ignored = server.await;
+
+    assert!(
+        err.to_string().contains("run merod with --dev"),
+        "got: {err}"
+    );
+    assert!(node_client
+        .get_application(&dev_id)
+        .expect("row read")
+        .is_none());
+    assert!(node_client.list_blobs().expect("list").is_empty());
+}
+
+#[tokio::test]
+async fn a_registry_download_refuses_a_dev_signed_bundle() {
+    let (bundle, dev_id) =
+        common::signed_bundle_bytes_by(&dev_signing_key(), PACKAGE, VERSION, &[]);
+    let expected_blob = common::blob_id_of(&bundle).await;
+
+    let (node_client, _data, _blobs) = common::create_test_node_client(None).await;
+    let (url, server) = common::serve_once(bundle).await;
+
+    let err = download(&node_client, &base_of(&url), &req(expected_blob, dev_id))
+        .await
+        .expect_err("a dev-signed bundle must be refused without --dev");
+    let _ignored = server.await;
+
+    assert!(
+        format!("{err:#}").contains("run merod with --dev"),
+        "got: {err:#}"
+    );
+    assert!(node_client
+        .get_application(&dev_id)
+        .expect("row read")
+        .is_none());
+    assert!(node_client.list_blobs().expect("list").is_empty());
 }
 
 /// An id is derived from (package, signer) and so is version-stable: a sibling

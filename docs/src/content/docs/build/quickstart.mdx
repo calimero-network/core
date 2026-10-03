@@ -85,7 +85,8 @@ CLI — `app`, `context`, `namespace`, `call`).
 
    The bundle is named from the manifest's `package` and `version`, not the
    crate name: `dist/com.example.my-app-0.1.0.mpk`. `--dev` signs with the
-   well-known development key, which the registry refuses - see
+   well-known development key, which the registry and any node not run with
+   `--dev` refuse - see
    [Packaging & signing](/build/packaging-signing/) for release keys.
 
 </Steps>
@@ -98,8 +99,11 @@ CLI — `app`, `context`, `namespace`, `call`).
 
    ```sh
    merod --node node1 init --server-port 2428 --swarm-port 2528
-   merod --node node1 run
+   merod --node node1 run --dev
    ```
+
+   `--dev` lets this node install the bundle you signed with the development
+   key in step 4. A node run without it refuses such bundles.
 
    `merod --node node1 init --help` lists the full set (swarm/server host and
    port, boot nodes, mDNS, auth mode). Config and data live under

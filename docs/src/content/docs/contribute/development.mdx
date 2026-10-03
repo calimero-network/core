@@ -62,14 +62,17 @@ two nodes that talk to each other:
 
    ```sh
    merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns
-   merod --node node1 run
+   merod --node node1 run --dev
    ```
+
+   `--dev` lets the node install bundles signed with the development key
+   (`cargo mero bundle --dev`), which it otherwise refuses.
 
 2. Initialize the second node so it can find the first:
 
    ```sh
    merod --node node2 init --server-port 2429 --swarm-port 2529 --mdns
-   merod --node node2 run
+   merod --node node2 run --dev
    ```
 
    `--mdns` is on both, and it is load-bearing rather than tidy-up. mDNS is off by
@@ -88,7 +91,7 @@ two nodes that talk to each other:
 
    merod --node node2 init --server-port 2429 --swarm-port 2529 \
      --boot-nodes /ip4/127.0.0.1/tcp/2528/p2p/<node1-peer-id>
-   merod --node node2 run
+   merod --node node2 run --dev
    ```
 
 3. Drive nodes from the CLI with `meroctl`, or turn up logging with `RUST_LOG`:

@@ -44,7 +44,7 @@ mero-sign sign <MANIFEST_PATH> --dev
 ```
 
 ```
-⚠  Signed with DEVELOPMENT key. This bundle cannot be published to the registry.
+⚠  Signed with DEVELOPMENT key. This bundle cannot be published to the registry and installs only on a node run with `merod run --dev`.
    signerId: did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd
 ```
 
@@ -98,7 +98,7 @@ Reach for the `mero-sign` binary directly only to re-sign an existing `manifest.
 ## Security notes
 
 1. **Never commit signing keys** to version control.
-2. **Use `--dev` only for local development and CI** - it relies on a public, well-known key, so bundles signed with it are refused by the registry.
+2. **Use `--dev` only for local development and CI** - it relies on a public, well-known key, so bundles signed with it are refused by the registry and by any node not run with `merod run --dev`.
 3. **Generate a unique production key** for anything you publish, and store it outside the repository.
 4. **The signer is part of the app identity.** The `ApplicationId` is derived from `(package, signerId)`, so changing the signing key forks the app for every node. See [SIGNING.md](../cargo-mero/SIGNING.md).
 

@@ -81,6 +81,11 @@ pub struct ConfigFile {
     /// resolving and serving nothing; `merod init` writes it, an upgrade must add it.
     #[serde(default)]
     pub registry: RegistryConfig,
+
+    /// DEV/TEST ONLY. Install and run bundles signed with the public development
+    /// key; `merod run --dev` sets it for one run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dev: bool,
 }
 
 /// Configuration for TEE (Trusted Execution Environment) features.
@@ -532,6 +537,7 @@ impl ConfigFile {
             tee: None,
             dag_compaction: DagCompactionConfig::default(),
             registry: RegistryConfig::default(),
+            dev: false,
         }
     }
 
@@ -972,6 +978,24 @@ mod registry_section_tests {
         let cfg: ConfigFile =
             toml::from_str(&legacy_config_toml()).expect("legacy config must deserialize");
         assert!(cfg.registry.base_url.is_none());
+    }
+
+    #[test]
+    fn dev_is_off_unless_set() {
+        let legacy: ConfigFile = toml::from_str(&legacy_config_toml()).expect("legacy config");
+        assert!(!legacy.dev);
+        let written: toml::Table = toml::from_str(&toml::to_string(&legacy).unwrap()).unwrap();
+        assert!(
+            !written.contains_key("dev"),
+            "an off flag is not written out"
+        );
+
+        let toml = format!("dev = true\n{}", legacy_config_toml());
+        let dev: ConfigFile = toml::from_str(&toml).expect("config with dev must deserialize");
+        assert!(dev.dev);
+
+        let rewritten: ConfigFile = toml::from_str(&toml::to_string(&dev).unwrap()).unwrap();
+        assert!(rewritten.dev, "a saved config keeps the flag");
     }
 
     #[test]

@@ -272,7 +272,8 @@ cargo test -p calimero-node --test network_simulation
   drops an envelope whose `namespace_id` is not the arrival topic's
 - `VerifiedBundle` is the only way to read artifact bytes out of a
   `.mpk`; `extract_bundle_files` is module-private so the compiler
-  enforces it. Construction requires a valid manifest signature, and
+  enforces it. Construction requires a valid manifest signature (and
+  refuses the public dev signer unless `merod run --dev` set `accept_dev`), and
   every wasm artifact is digest-checked against the signed manifest
   before its bytes are returned. Nothing is unpacked to disk: the
   `.mpk` stays a content-addressed blob, and a multi-service install

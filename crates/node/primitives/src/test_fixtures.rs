@@ -276,9 +276,20 @@ pub fn pack_entries<P: AsRef<Path>>(dir: &TempDir, name: &str, entries: &[(P, &[
 
 /// A signed single-wasm bundle on disk, the shape `cargo mero bundle` produces.
 pub fn bundle(dir: &TempDir, package: &str, version: &str, wasm: &[u8]) -> Utf8PathBuf {
-    let path = dir.path().join(format!("{package}-{version}.mpk"));
     let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    fs::write(&path, pack_signed(package, version, wasm, &signing_key)).unwrap();
+    bundle_signed_by(dir, package, version, wasm, &signing_key)
+}
+
+/// [`bundle`], signed with a key the caller picks.
+pub fn bundle_signed_by(
+    dir: &TempDir,
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    signing_key: &SigningKey,
+) -> Utf8PathBuf {
+    let path = dir.path().join(format!("{package}-{version}.mpk"));
+    fs::write(&path, pack_signed(package, version, wasm, signing_key)).unwrap();
     path.try_into().unwrap()
 }
 

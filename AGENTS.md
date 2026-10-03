@@ -342,15 +342,16 @@ Grounded in the [Concepts & Scopes](docs/src/content/docs/protocol/concepts.mdx)
 ```bash
 # Initialize and run first node. `--mdns` only matters once a second node has to
 # find it — see below — but it is set here so the pair works as written.
+# `--dev` lets the node install bundles signed with the development key.
 merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns
-merod --node node1 run
+merod --node node1 run --dev
 
 # Second node connecting to first. BOTH need `--mdns`: it is off by default since
 # #3620, and two nodes with no bootstrap peer and no rendezvous have NO other way
 # to find each other. The failure is indirect — the join reports a key-delivery
 # timeout, not "no peer" — so it reads as a broken join rather than as discovery.
 merod --node node2 init --server-port 2429 --swarm-port 2529 --mdns
-merod --node node2 run
+merod --node node2 run --dev
 
 # Or an explicit bootstrap, which needs node1's PEER ID — a bare
 # /ip4/../tcp/.. is rejected at startup ("Failed to parse peer id from addr").

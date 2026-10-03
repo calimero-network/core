@@ -336,6 +336,7 @@ pub struct NodeClient {
     recent_providers: RecentProviders,
     local_peer_id: Arc<tokio::sync::OnceCell<PeerId>>,
     row_writes: Arc<std::sync::Mutex<()>>, // serializes application-row check-then-write
+    accept_dev_bundles: bool,              // `merod run --dev`: trust the public development key
 }
 
 impl NodeClient {
@@ -368,6 +369,7 @@ impl NodeClient {
             recent_providers: RecentProviders::default(),
             local_peer_id: Arc::default(),
             row_writes: Arc::default(),
+            accept_dev_bundles: false,
         }
     }
 
@@ -376,6 +378,14 @@ impl NodeClient {
     #[must_use]
     pub fn with_registry(mut self, registry: RegistryConfig) -> Self {
         self.registry = registry;
+        self
+    }
+
+    /// Accept bundles signed with the public development key. Off unless the
+    /// node runs with `--dev`.
+    #[must_use]
+    pub fn with_dev_bundles(mut self, accept: bool) -> Self {
+        self.accept_dev_bundles = accept;
         self
     }
 

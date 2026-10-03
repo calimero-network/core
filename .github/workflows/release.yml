@@ -453,7 +453,7 @@ jobs:
           target_commit: ${{ needs.prepare.outputs.target_commit }}
 
   # Dev-signed kv-store .mpk: exercises `cargo mero bundle` end-to-end, giving SDK e2e suites a stable
-  # ApplicationId. Dev-signed bundles are registry-refused, so this can't leak into real distribution.
+  # ApplicationId. Dev-signed bundles are registry-refused, and a node installs one only with `--dev`.
   # Only when this run publishes a release, the one thing that reads the bundle.
   # It used to build on every PR too, to catch a `cargo mero bundle` break, which
   # PRs still catch: e2e's Build Apps bundles kv-store (and every e2e app) when

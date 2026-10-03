@@ -103,7 +103,7 @@ impl ApplicationStore for NodeClient {
         let bundle_data: Arc<[u8]> = Arc::from(bytes);
         // Derive before installing: `install_bundle` writes the row and a
         // blob per service, and nothing reclaims either on a mismatch.
-        let derived = derive_bundle_id(Arc::clone(&bundle_data)).await?;
+        let derived = derive_bundle_id(Arc::clone(&bundle_data), self.accept_dev_bundles).await?;
         if derived != *application_id {
             bail!(
                 "application mismatch: registry artifact is {derived}, not the \

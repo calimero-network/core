@@ -171,7 +171,8 @@ fn print_dev_warning() {
     eprintln!("  WARNING: signing with the DEVELOPMENT key");
     eprintln!();
     eprintln!("  The dev key is a well-known, public seed. It is fine for");
-    eprintln!("  local testing but is REFUSED by the registry.");
+    eprintln!("  local testing but is REFUSED by the registry, and a node");
+    eprintln!("  installs it only when run with `merod run --dev`.");
     eprintln!();
     eprintln!("  For a publishable bundle, generate a real key:");
     eprintln!("      cargo mero key generate --output my-key.json");

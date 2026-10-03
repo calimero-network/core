@@ -28,8 +28,9 @@ cargo mero bundle --key key.json --no-icon    sign with it (CI: export MERO_SIGN
 ```
 
 For local testing only, `cargo mero bundle --dev --no-icon` signs with a
-well-known public development key. Anyone can produce that signature and the
-registry refuses such bundles, so do not use it for anything you ship.
+well-known public development key. Anyone can produce that signature, so the
+registry refuses such bundles and a node installs them only when run with
+`merod run --dev`. Do not use it for anything you ship.
 
 ## Where the code lives
 

@@ -27,12 +27,15 @@ pub struct NotABundle;
 
 /// The id a bundle installs under, from its verified manifest and signer alone.
 /// Raw wasm has none, so every remote install refuses it here.
-pub(super) async fn derive_bundle_id(bundle_data: Arc<[u8]>) -> eyre::Result<ApplicationId> {
+pub(super) async fn derive_bundle_id(
+    bundle_data: Arc<[u8]>,
+    accept_dev: bool,
+) -> eyre::Result<ApplicationId> {
     tokio::task::spawn_blocking(move || {
         if !bundle::is_bundle_blob(&bundle_data) {
             return Err(NotABundle.into());
         }
-        let verified = bundle::VerifiedBundle::open(bundle_data)?;
+        let verified = bundle::VerifiedBundle::open(bundle_data, accept_dev)?;
         ApplicationId::for_bundle(&verified.manifest().package, verified.signer_id())
     })
     .await?
@@ -55,8 +58,9 @@ impl NodeClient {
     ) -> eyre::Result<ApplicationId> {
         // Every artifact, including the unnamed single-service one that gets no
         // blob of its own, so substituted bytes are refused before first execution.
+        let accept_dev = self.accept_dev_bundles;
         let (verified, wasm) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
-            let verified = bundle::VerifiedBundle::open(bundle_data)?;
+            let verified = bundle::VerifiedBundle::open(bundle_data, accept_dev)?;
             let wasm = verified.all_wasm()?;
             Ok((verified, wasm))
         })
@@ -300,7 +304,7 @@ impl NodeClient {
             bail!("bundle blob not found");
         };
 
-        let derived = derive_bundle_id(Arc::clone(&bundle_bytes)).await?;
+        let derived = derive_bundle_id(Arc::clone(&bundle_bytes), self.accept_dev_bundles).await?;
         if derived != *expected {
             bail!("application mismatch: expected {expected}, got {derived}");
         }

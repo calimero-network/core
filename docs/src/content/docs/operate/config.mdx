@@ -25,6 +25,7 @@ These live at the root of the file, outside any section.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `mode` | `"standard"` \| `"readonly"` | `"standard"` | Node role. `readonly` disables JSON-RPC execution and is used for observer / TEE nodes. (The values serialize lowercase; the `merod init --mode` flag spells the read-only value `read-only`.) |
+| `dev` | bool | `false` | DEV/TEST ONLY. Install and run bundles signed with the public development key (`cargo mero bundle --dev`), which the node otherwise refuses. `merod run --dev` sets it for one run. |
 
 ## `[identity]`
 

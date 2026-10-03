@@ -366,7 +366,8 @@ meroctl --node <NODE> call -i --context <CONTEXT_ID>
 
 `<path>` may be a signed `.mpk` bundle, or a project directory with a
 `Cargo.toml` (which is bundled with `cargo mero bundle --dev --no-icon` into
-`dist/dev.mpk`).
+`dist/dev.mpk`). A dev-signed bundle installs only on a node run with
+`merod run --dev`.
 
 ```sh
 meroctl --node node1 dev start ./my-app --group-id <group_id> --watch

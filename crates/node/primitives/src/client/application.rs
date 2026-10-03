@@ -117,8 +117,9 @@ impl NodeClient {
         if !Self::is_bundle_blob(&blob_bytes) {
             return Ok(Some(vec![None]));
         }
+        let accept_dev = self.accept_dev_bundles;
         let names = tokio::task::spawn_blocking(move || -> eyre::Result<Vec<Option<String>>> {
-            let verified = bundle::VerifiedBundle::open(blob_bytes)?;
+            let verified = bundle::VerifiedBundle::open(blob_bytes, accept_dev)?;
             Ok(verified
                 .manifest()
                 .wasm_artifacts()
@@ -143,8 +144,9 @@ impl NodeClient {
         if !Self::is_bundle_blob(&blob_bytes) {
             return Ok(None);
         }
+        let accept_dev = self.accept_dev_bundles;
         let manifest = tokio::task::spawn_blocking(move || {
-            bundle::VerifiedBundle::open(blob_bytes).map(|v| v.manifest().clone())
+            bundle::VerifiedBundle::open(blob_bytes, accept_dev).map(|v| v.manifest().clone())
         })
         .await
         .map_err(|e| eyre::eyre!("bundle manifest read task failed: {e}"))??;
@@ -235,8 +237,10 @@ impl NodeClient {
             };
             let size = blob_bytes.len() as u64;
             if Self::is_bundle_blob(&blob_bytes) {
+                let accept_dev = self.accept_dev_bundles;
                 let manifest = match tokio::task::spawn_blocking(move || {
-                    bundle::VerifiedBundle::open(blob_bytes).map(|v| v.manifest().clone())
+                    bundle::VerifiedBundle::open(blob_bytes, accept_dev)
+                        .map(|v| v.manifest().clone())
                 })
                 .await
                 {
@@ -296,12 +300,13 @@ impl NodeClient {
         let blob_id = *blob_id;
         // Detection gunzips too, so it belongs on the blocking pool with the
         // read it gates rather than on the reactor thread.
+        let accept_dev = self.accept_dev_bundles;
         let wasm = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
             if !Self::is_bundle_blob(&blob_bytes) {
                 return Err(eyre::Report::new(NotABundle)
                     .wrap_err(format!("{blob_id} is raw wasm, which never runs")));
             }
-            bundle::VerifiedBundle::open(blob_bytes)?.wasm(service.as_deref())
+            bundle::VerifiedBundle::open(blob_bytes, accept_dev)?.wasm(service.as_deref())
         })
         .await??;
         Ok(Some(wasm))
