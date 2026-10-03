@@ -795,6 +795,135 @@ fn hydrate(read_index: impl Fn(Id) -> Option<EntityIndex>, slot: Slot) -> ChildI
     ChildInfo::new(slot.id, slot.hash, metadata)
 }
 
+/// Row access through `S` that serves a row read once again without a second
+/// host read, until a write through it replaces the row. It lives for one link
+/// within one call (see [`Link`]), so it never outlasts what it read.
+struct Primed<S> {
+    read: core::cell::RefCell<Vec<(Key, Option<Vec<u8>>)>>,
+    _phantom: core::marker::PhantomData<S>,
+}
+
+impl<S: StorageAdaptor> Rows for Primed<S> {
+    fn get(&self, key: Key) -> Option<Vec<u8>> {
+        let mut read = self.read.borrow_mut();
+        if let Some((_, bytes)) = read.iter().find(|(held, _)| *held == key) {
+            return bytes.clone();
+        }
+        let bytes = S::storage_read(key);
+        read.push((key, bytes.clone()));
+        bytes
+    }
+    fn put(&mut self, key: Key, value: &[u8]) {
+        self.read.get_mut().retain(|(held, _)| *held != key);
+        let _ignored = S::storage_write(key, value);
+    }
+    fn del(&mut self, key: Key) {
+        self.read.get_mut().retain(|(held, _)| *held != key);
+        let _ignored = S::storage_remove(key);
+    }
+}
+
+/// One child's link under a parent, prepared by a single descent of the
+/// parent's trie: whether the child is linked there already, the parent's next
+/// position, and the rows the link rewrites, each read once.
+///
+/// A local insert has to settle the child's position before it writes the
+/// child's own row, and write that row before the parent lists it (entry
+/// before parent, see `Interface::add_child_to`). Asking the trie whether the
+/// child holds a position, then for the next one, then linking it, descended
+/// three times. The descent here reads exactly the rows the link then reads,
+/// in the same order, and [`insert`](Self::insert) takes them from it. Nothing
+/// between the two may write a row of this trie: the caller writes only the
+/// child's own index row, which lives elsewhere, and holds the index mutation
+/// guard across both, so no other thread writes one either.
+pub(crate) struct Link<S: StorageAdaptor> {
+    parent: Id,
+    rows: Primed<S>,
+    held: Option<Slot>,
+    next_order: u64,
+}
+
+impl<S: StorageAdaptor> Link<S> {
+    /// The rows [`insert_at`] reads on its way to `child_id`'s slot: from the
+    /// root, one per level, down to a bucket or an absent row. `held` is what
+    /// [`find`] reports, which stops at a node that has no slot for the next
+    /// nibble where `insert_at` reads on (normally an absent row).
+    fn prepare(parent: Id, child_id: Id) -> Self {
+        let rows = Primed {
+            read: core::cell::RefCell::new(Vec::new()),
+            _phantom: core::marker::PhantomData,
+        };
+        let mut path = Vec::new();
+        let mut on_find_path = true;
+        let mut held = None;
+        let mut next_order = 0;
+        loop {
+            let row = read_row(&rows, parent, &path);
+            if path.is_empty() {
+                next_order = row.as_ref().map_or(0, |row| row.next_order);
+            }
+            match row.map(|row| row.body) {
+                None => break,
+                Some(Body::Bucket(bucket)) => {
+                    if on_find_path {
+                        held = bucket
+                            .entries
+                            .binary_search_by_key(&child_id, |slot| slot.id)
+                            .ok()
+                            .map(|i| bucket.entries[i]);
+                    }
+                    break;
+                }
+                Some(Body::Node(node)) => {
+                    let nib = nibble(child_id, path.len());
+                    on_find_path &= node.slots.binary_search_by_key(&nib, |(n, _)| *n).is_ok();
+                    path.push(nib);
+                }
+            }
+        }
+        Self {
+            parent,
+            rows,
+            held,
+            next_order,
+        }
+    }
+
+    /// The child as linked here already, as [`ChildTrie::get`] gives it.
+    pub(crate) fn held(&self) -> Option<ChildInfo> {
+        self.held.map(|slot| hydrate(read_index::<S>, slot))
+    }
+
+    /// Whether the child is linked here already, without reading its row.
+    pub(crate) const fn holds(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// [`ChildTrie::next_order`], from the root row the descent read.
+    pub(crate) const fn next_order(&self) -> u64 {
+        self.next_order
+    }
+
+    /// [`ChildTrie::insert`] of `child`, the child this link was prepared for.
+    pub(crate) fn insert(mut self, child: ChildInfo) -> [u8; 32] {
+        let parent = self.parent;
+        let tally = admitted_count::before_change_with::<S>(parent, || {
+            read_row(&self.rows, parent, &[]).map_or(EMPTY, |row| row.body.hash())
+        });
+        let slot = Slot::of(&child);
+        let (root, added) = insert_at(&mut self.rows, parent, &mut Vec::new(), slot);
+        if let Some(tally) = tally {
+            // A replaced child contributes what it did before: what a
+            // collection admits is decided by the stamp in the child's index
+            // row, and nothing rewrites a linked child's stamp across that
+            // line (see `admitted_count`).
+            let linked = added.then(|| hydrate(read_index::<S>, slot));
+            tally.finish::<S>(root, None, linked.as_ref());
+        }
+        root
+    }
+}
+
 /// Per-parent child trie.
 ///
 /// Its shape is a pure function of the child set: the subtree under a prefix is
@@ -825,18 +954,13 @@ impl<S: StorageAdaptor> ChildTrie<S> {
 
     /// Insert or replace `child`. Returns the trie's new root hash.
     pub fn insert(&self, child: ChildInfo) -> [u8; 32] {
-        let tally = admitted_count::before_change::<S>(self.parent);
-        let slot = Slot::of(&child);
-        let (root, added) = insert_at(&mut Self::rows(), self.parent, &mut Vec::new(), slot);
-        if let Some(tally) = tally {
-            // A replaced child contributes what it did before: what a
-            // collection admits is decided by the stamp in the child's index
-            // row, and nothing rewrites a linked child's stamp across that
-            // line (see `admitted_count`).
-            let linked = added.then(|| hydrate(read_index::<S>, slot));
-            tally.finish::<S>(root, None, linked.as_ref());
-        }
-        root
+        self.link(child.id()).insert(child)
+    }
+
+    /// Prepare to link `child_id`, descending to where it belongs once. See
+    /// [`Link`].
+    pub(crate) fn link(&self, child_id: Id) -> Link<S> {
+        Link::prepare(self.parent, child_id)
     }
 
     /// Store `child`'s hash in its slot, if it is linked here under another

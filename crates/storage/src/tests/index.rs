@@ -2703,7 +2703,7 @@ mod parent_loops {
             [
                 Index::<MainStorage>::recalculate_ancestor_hashes_for_now(x()).err(),
                 Index::<MainStorage>::get_ancestors_of(x()).err(),
-                Index::<MainStorage>::get_delta_ancestors_of(x()).err(),
+                Index::<MainStorage>::get_delta_ancestors_of(x(), Some(a())).err(),
                 Index::<MainStorage>::recalculate_ancestor_hashes_for_all(
                     [x(), a()].into_iter().collect(),
                 )

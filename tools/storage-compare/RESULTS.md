@@ -435,3 +435,140 @@ the same before and after.
 - A delta updating 1 or 64 entries writes no row more than once, and the receiver's root
   equals the sender's.
 - Every case also checks the root against a store built directly with the final contents.
+
+## Follow-up: write path re-reads
+
+This section covers findings 3 and 4 of the tree follow-up. After #4401, the local
+write path still re-read rows it had just read or written. Within one call it now passes
+those rows along instead. Nothing is cached across calls, and no state is kept on the
+node, so every replica still issues the same host calls for the same call. All evidence
+here is deterministic: `storage-cost` counts, plus a host-call trace of one
+`UnorderedMap` call at 1,000 entries.
+
+### Trace of one call, rows read
+
+| call | before | after |
+|---|---:|---:|
+| insert a new key | 21 | 11 |
+| update an existing key | 13 | 9 |
+
+Rows written are unchanged: 8 for the insert and 7 for the update. The reads the insert
+no longer makes:
+
+- The entry's row 5 of its 7 times:
+  - the first read in `save_raw_stamped`
+  - both reads in `save_internal` (the index, then `Key::Entry`)
+  - `rehashed`
+  - the first step of `get_delta_ancestors_of`
+- The map's row once: the walk now starts from the parent index that the link has just
+  saved.
+- The map's trie 4 times. `add_child_to` used to look the entry up (3 rows), read the
+  root again for `next_order`, then descend a third time to link. Now
+  `ChildTrie::link` descends once, and that same descent decides the position and holds
+  the rows that the link rewrites.
+
+The update no longer reads the entry's row in `save_internal` (twice), in `rehashed`, or
+at the start of the walk.
+
+### What each removed read was, and why it is redundant
+
+- **`save_raw_stamped`'s read after a link.** `Index::add_child_through` returns the row
+  it has just written, and the bytes are in hand. The trie writes, the parent's save and
+  the walk that follow never write the child's row. The one exception is a child that is
+  its own parent, which returns no row. A walk that reached the child would go round a
+  loop and end in `ParentChainTooLong`.
+- **`save_internal`'s index and `Key::Entry` reads.** `save_raw_stamped` now reads the
+  row once, index and data together, and hands it on. Between that read and
+  `save_internal`, only read-only checks run. When the index decodes, its data is exactly
+  what a `Key::Entry` read returns. A row without an index still reads `Key::Entry` for
+  the app-root comparison. The apply path also now reads index and data in one go, which
+  is why `unordered_map_sync_update` drops by one read per entry.
+- **`rehashed`'s read.** `save_internal` passes on the index it read, but only when the
+  write kept one side's bytes whole (`picks_one_side`) and the entity is not an app root.
+  Merge code, `add_root` and a root merge can write the row: merging a value that holds a
+  collection writes its entries, and their walk rewrites this row. Those paths read it
+  again, as before.
+- **The walk's first read.** The walk starts from the index that `write_value_for` or
+  the link has just saved (`recalculate_ancestor_hashes_above`). A deferred scope still
+  only records the id.
+- **`get_delta_ancestors_of`'s first step.** Writing a value never moves an entity, so
+  its parent is still the one in the row read at the start.
+- **The `Shared` stamp's stored writers and the schema re-stamp.** The writers come from
+  the row read at the start, not from `get_metadata`. The schema re-stamp works on the
+  row `save_internal` has just written: before, it made two reads and wrote through a
+  read-modify-write.
+
+All of these assume that no other writer gets in between the read and the write. On a
+node the sync apply runs on another thread, so `save_raw_stamped` and the link now hold
+the reentrant index mutation guard from their read, or descent, through to the write.
+The two `tests::concurrency` cases that race execute against apply failed without this.
+
+### Rows per call at the largest size (`storage-costs.json`)
+
+| workload | n | rows read | hash_blocks |
+|---|---:|---|---|
+| `unordered_map_insert` | 10,000 | 219,625 → 115,381 (−47%) | 910,470 → 801,577 (−12%) |
+| `vector_push` | 10,000 | 209,665 → 105,381 (−50%) | 890,891 → 781,958 (−12%) |
+| `nested_map_insert` | 10,000 | 299,665 → 165,412 (−45%) | 1,210,657 → 1,041,745 (−14%) |
+| `lww_register_set` | 10,000 | 190,033 → 120,019 (−37%) | 648,966 → 569,152 (−12%) |
+| `authored_map_insert` | 10,000 | 34 → 19 (−44%) | 153 → 131 (−14%) |
+| `authored_vector_push` | 10,000 | 29 → 14 (−52%) | 127 → 111 (−13%) |
+| `fugue_text_insert` | 10,000 | 763 → 406 (−47%) | 4,743 → 3,497 (−26%) |
+| `indexed_map_update` | 10,000 | 16 → 12 (−25%) | 120 → 108 (−10%) |
+| `unordered_map_sync_update` | 10,000 | 153,987 → 133,987 (−13%) | 324,036 → 304,036 (−6%) |
+
+No row count, hash count or index count went up anywhere. Rows written and removed, and
+every `index_rows_*` value, are unchanged in all 160 workloads.
+
+Stored bytes are unchanged too. For each of the 160 workloads, a SHA-256 over every key
+and value of the resulting store (state rows, ordered index and index meta) is identical
+between the base and this change.
+
+`tests/ancestor_walk_cost.rs` pins the counts: an insert reads 11 rows and an update 9,
+no index row is read more than twice, and both leave the root that a store built
+directly would hold.
+
+### Left as is
+
+- **The entry lookup in `get_mut`/`find_by_id`.** App code runs between it and the
+  save, and mutating a nested collection writes through this row.
+- **The read in `write_child_index` for a new key.** That lookup is in the collection
+  layer, and it also hides tombstones, which the link has to see.
+- **The entry's empty trie root, read twice (`full_hash_from_trie`).**
+- **The map's row read for the action's ancestors.** It is another function's read, and
+  saving it would mean threading the parent's parent out of the link.
+
+### `fugue_text_insert_per_char` replaced by `fugue_text_append`
+
+With the fixed per-call reads gone, the flat-curve gate failed on
+`fugue_text_insert_per_char`: reads/entry went from 10.4 at n=10 to 27.6 at n=10,000,
+2.65x against a budget of 2x. On master the same workload measured 1.89x, but only
+because about 4 more fixed reads per call raised its n=10 baseline. Between n=1,000 and
+n=10,000 it already grew 13.5 → 31.6.
+
+That growth is FugueText's documented design, not a regression. An insert by position
+recomputes the order from the stored blocks, one row per `MAX_RUN_LEN` (256) characters,
+because node-local derived state would make gas differ between replicas (see "FugueText
+constraints" in `crates/storage/AGENTS.md`). A host-call trace of one append reads 4
+blocks at n=1,000 and 40 at n=10,000. With the block scan taken out, the remaining
+per-call cost is flat at 7.0–7.6 reads. A build typed a character at a time therefore
+costs about `C + n/512` reads per entry, which no flat per-entry budget can hold, and
+the lower `C` is, the further the ratio exceeds it.
+
+So the workload now measures what the build was standing in for: one append onto an
+`n`-character document, classed `KnownLinearInN` like `fugue_text_char_at`. The gate
+still fails if a keystroke's cost stops being linear in either direction. `MAX_GROWTH`
+is unchanged, and `fugue_text_insert` (one paste) stays `FlatPerEntry`.
+
+## Per-call time after the follow-ups
+
+`storage-compare`, in-memory store, median µs per call. Each cell is the median of 5
+rounds interleaved across the three builds, at load 1.5–2.6. These were taken on a
+different host from the tables above, so compare within this table only. Delta bytes
+were identical in every build.
+
+| call | before #4398 (`3acdaf5`) | master with #4398 + #4401 (`e3bb965`) | + write path re-reads |
+|---|---:|---:|---:|
+| kv set | 82.0 | 42.8 (−48%) | 33.0 (−60%) |
+| kv update | 63.2 | 36.5 (−42%) | 31.3 (−50%) |
+| chat send | 89.7 | 49.3 (−45%) | 36.8 (−59%) |

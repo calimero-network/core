@@ -354,11 +354,18 @@ fn fugue_text_apply_delta(n: usize) {
     .expect("apply_delta should succeed");
 }
 
-fn fugue_text_insert_per_char(n: usize) {
-    let mut text = Root::new(FugueText::<MainStorage>::new);
-    for i in 0..n {
-        text.insert(i, 'a').expect("insert should succeed");
-    }
+/// One keystroke at the end of an `n`-character document. Linear in `n`, by
+/// design: an insert by position recomputes the order from the stored blocks,
+/// one row per `MAX_RUN_LEN` (256) characters, because node-local derived
+/// state would make gas differ between replicas (see `crates/storage/AGENTS.md`,
+/// "FugueText constraints"). Measured as one call rather than as a build typed
+/// a character at a time: a build's reads/entry is that per-block cost averaged
+/// over every size it passes through, which no flat per-entry budget can hold
+/// at any fixed cost per call.
+fn fugue_text_append(n: usize) {
+    let mut text = build_fugue_text(n);
+    reset_counters();
+    text.insert(n, 'a').expect("insert should succeed");
 }
 
 fn fugue_text_insert_middle(n: usize) {
@@ -898,12 +905,7 @@ pub fn all() -> Vec<Workload> {
         ),
         ("nested_map_insert", FlatPerEntry, 0, nested_map_insert),
         ("nested_map_get", ConstantPerCall, 0, nested_map_get),
-        (
-            "fugue_text_insert_per_char",
-            FlatPerEntry,
-            0,
-            fugue_text_insert_per_char,
-        ),
+        ("fugue_text_append", KnownLinearInN, 0, fugue_text_append),
         ("fugue_text_insert", FlatPerEntry, 0, fugue_text_insert),
         ("fugue_text_char_at", KnownLinearInN, 0, fugue_text_char_at),
         (

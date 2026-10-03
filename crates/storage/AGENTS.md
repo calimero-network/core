@@ -869,6 +869,23 @@ struct MyType {
   did the walk's work eagerly, once per action, and defeated the batch.
   `tests/ancestor_walk_cost.rs` pins the rows a write and a delta cost and the
   root they leave.
+- **A local write hands the row it holds down the path instead of reading it
+  again** (`HeldRow`, `Index::row_of`). `save_raw` reads the entity's row once
+  (index and data together) and passes it to `save_internal`, which passes the
+  index to `write_value_for`/`rehashed`; the walk starts from the index just
+  saved (`recalculate_ancestor_hashes_above`), the action's ancestors from the
+  parent that row names, and the schema re-stamp from the row just written
+  (`restamp_schema_version`). `Interface::add_child_to` hands `save_raw` the row
+  its link wrote (`Index::add_child_through`), and settles the entry's position
+  and links it in ONE descent of the parent's trie (`ChildTrie::link`, a
+  `child_trie::Link` that holds the rows it read until it writes them). A held
+  row is only valid while nothing has written it: `save_internal` drops it
+  across an app root's merge and any merge that runs code
+  (`picks_one_side`), since merging a value that holds a collection writes its
+  entries and their walk rewrites this row; and the index mutation guard spans
+  from the read (or the descent) to the write, so on a node the sync apply
+  thread cannot write in between. Do not hold a row across app code, a merge or
+  a write you have not checked; read it instead.
 - **A local write is stamped after what it overwrites, never just "now".**
   `save_raw` stamps `max(now, stored updated_at + 1, deleted_at + 1)` (the
   `stamp_after_stored` helper, on the index row it already reads), a delete
