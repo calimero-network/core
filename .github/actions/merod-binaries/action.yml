@@ -158,10 +158,10 @@ runs:
             && { [ "$NEED_AUTH" != true ] || have mero-auth; }
         }
         # "running" only while e2e-rust-apps.yml has a STARTED run for this commit
-        # with a `Build merod image` job that has not completed. There are two (the
-        # default image, and mock-tee + mero-auth beside it), so any one of them
-        # still running counts: the default finishing first says nothing about
-        # mock-tee. A run that is still pending (on master, queued behind the
+        # with a `Build merod image` job that has not completed. There are three
+        # (the default image, and mock-tee and mero-auth each beside it), so any one
+        # of them still running counts: the default finishing first says nothing
+        # about mock-tee. A run that is still pending (on master, queued behind the
         # previous push by its concurrency group) has no jobs yet and may not
         # start for an hour: treating it as in flight held SDK E2E for its whole wait.
         producer_running() {

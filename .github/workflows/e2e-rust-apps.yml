@@ -140,13 +140,14 @@ jobs:
     name: Build Image
     uses: ./.github/workflows/build-merod-image.yml
 
-  # ── The mock-TEE image and mero-auth, beside the default image ──
-  # Only the mock-TEE groups and Relay need these, so they build in parallel with
-  # Build Image instead of after it, and every other group starts without them.
-  # The name keeps "Build merod image": merod-binaries' wait-for-producer (sdk-e2e
+  # ── The mock-TEE image and mero-auth, each beside the default image ──
+  # Only the mock-TEE groups need the one and only Relay the other, so each builds
+  # in its own job, in parallel with Build Image instead of after it: every other
+  # group starts without them, and neither waits for the other to compile.
+  # Both names keep "Build merod image": merod-binaries' wait-for-producer (sdk-e2e
   # waits here for mock-tee) watches every job of that name in this workflow.
   build-mock-tee-image:
-    name: Build merod image (mock-tee, mero-auth)
+    name: Build merod image (mock-tee)
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 20
     steps:
@@ -162,14 +163,14 @@ jobs:
           shared-key: merod-release-fast
           save-if: false
 
-      # sdk-e2e (mock-tee) and Relay (mero-auth) restore these from the cache.
-      - name: Build the mock-tee merod and mero-auth binaries
+      # sdk-e2e restores this binary from the cache.
+      - name: Build the mock-tee merod binary
         uses: ./.github/actions/merod-binaries
         env:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          variants: mock-tee,mero-auth
+          variants: mock-tee
 
       # blob-presence-tee-serves and the other mock-TEE scenarios boot `merod run
       # --mock-tee`, which needs the mock-attestation feature. It stays out of the
@@ -197,6 +198,34 @@ jobs:
           path: /tmp/merod-local-mock-tee.tar.zst
           retention-days: 1
           compression-level: 0
+
+  # Relay's standalone mero-auth, built from this tree. It makes no image and no
+  # artifact: Relay restores it from the merod-bin cache (merod-binaries'
+  # mero-auth variant), which this job is the one saver of for this tree.
+  build-mero-auth:
+    name: Build merod image (mero-auth)
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Reads Build Image's warm cache; that job is its one saver.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: merod-release-fast
+          save-if: false
+
+      - name: Build the mero-auth binary
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          variants: mero-auth
 
   # ── Scenario convergence lint ──
   # Ratcheted against scripts/e2e-convergence-baseline.txt: only a NEW finding fails.
@@ -285,7 +314,7 @@ jobs:
   # ingress needs a mero-auth built from this branch and a traefik beside it.
   relay-device-login:
     name: Relay device login (proxy mode behind Traefik + mero-auth)
-    needs: [build-image, build-mock-tee-image, build-apps]
+    needs: [build-image, build-mero-auth, build-apps]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -312,7 +341,7 @@ jobs:
           chmod +x ./merod
 
       # Not a published image: what is under test is the `/auth/validate` of THIS
-      # branch naming the session's account. build-mock-tee-image built it from
+      # branch naming the session's account. build-mero-auth built it from
       # this tree (merod-binaries' mero-auth variant), so this restores it rather
       # than compiling it again; a miss builds it here.
       - name: Get mero-auth
