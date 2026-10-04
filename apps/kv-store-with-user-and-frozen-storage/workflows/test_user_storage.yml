@@ -6,6 +6,8 @@ stop_all_nodes: false
 restart: false  
 wait_timeout: 120
 
+auth_mode: proxy
+
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge

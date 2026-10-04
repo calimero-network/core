@@ -34,6 +34,8 @@ description: >
 nuke_on_start: true
 nuke_on_end: false
 
+auth_mode: proxy
+
 # Two Docker nodes. The ports are pinned rather than auto-allocated because the
 # `target: local` script steps build their URLs by hand: with base_rpc_port set,
 # merobox publishes host port `base_rpc_port + i` for node i+1, so

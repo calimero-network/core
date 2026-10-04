@@ -11,6 +11,8 @@ description: >
 
 force_pull_image: false
 
+auth_mode: proxy
+
 nodes:
   count: 1
   image: merod:local

@@ -3,6 +3,8 @@ description: >
   every node and merge with a concurrent edit from another node.
 name: Fugue Collab Apply Delta
 
+auth_mode: proxy
+
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge

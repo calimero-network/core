@@ -3,6 +3,8 @@ description: >
   writer adds its heading, with isolation asserted at each step.
 name: Fugue Collab Figure 2 Multi-Replica
 
+auth_mode: proxy
+
 nodes:
   count: 3
   image: ghcr.io/calimero-network/merod:edge

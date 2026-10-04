@@ -33,6 +33,8 @@ description: >
 
 force_pull_image: false
 
+auth_mode: proxy
+
 nodes:
   tee-mode-owner:
     port: 2428
