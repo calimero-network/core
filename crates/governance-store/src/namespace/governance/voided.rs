@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_op::{Op, OpPayload};
 use calimero_op_adapter::payload_from_group_op;
 use calimero_primitives::context::GroupMemberRole;
@@ -29,8 +30,33 @@ pub(super) fn may_void_others(op: &Op) -> bool {
         op.payload,
         OpPayload::MemberRemoved { .. }
             | OpPayload::MemberAdded { .. }
+            | OpPayload::MemberCapabilitySet { .. }
             | OpPayload::DeviceRevoked { .. }
     )
+}
+
+/// The capability bits that admit a member who is no admin to `op`, for the kinds
+/// the projection folds as nothing; it reads the rest from the payload. Mirrors the
+/// `require_*` gates the apply runs.
+fn capability_beyond_payload(op: &GroupOp, author: &AccountId) -> u32 {
+    let bits = match op {
+        GroupOp::TargetApplicationSet { .. }
+        | GroupOp::GroupMigrationSet { .. }
+        | GroupOp::CascadeUpgrade { .. } => MemberCapabilities::MANAGE_APPLICATION,
+        GroupOp::GroupMetadataSet { .. } | GroupOp::ContextMetadataSet { .. } => {
+            MemberCapabilities::CAN_MANAGE_METADATA
+        }
+        // A member sets its own metadata without one.
+        GroupOp::MemberMetadataSet { member, .. } if member != author => {
+            MemberCapabilities::CAN_MANAGE_METADATA
+        }
+        GroupOp::ContextRegistered { .. } => MemberCapabilities::CAN_CREATE_CONTEXT,
+        GroupOp::ContextCapabilityGranted { .. } | GroupOp::ContextCapabilityRevoked { .. } => {
+            MemberCapabilities::MANAGE_MEMBERS
+        }
+        _ => return 0,
+    };
+    bits.bits()
 }
 
 /// What the void ops of one group wrote.
@@ -99,7 +125,12 @@ impl NamespaceGovernance<'_> {
         delta_id: [u8; 32],
     ) -> EyreResult<bool> {
         let op = self.unified_op(signed, decrypted, opened_root, delta_id);
-        let void = self.authorizer.op_is_void(group, &op).unwrap_or(false);
+        let capability =
+            decrypted.map_or(0, |inner| capability_beyond_payload(inner, &op.author()));
+        let void = self
+            .authorizer
+            .op_is_void(group, capability, &op)
+            .unwrap_or(false);
         if void {
             VoidLedger::new(self.store, self.namespace_id).note_voided(delta_id)?;
         }

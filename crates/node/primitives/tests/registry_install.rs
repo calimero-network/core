@@ -6,7 +6,7 @@ use std::sync::Arc;
 use calimero_app_downloader::registry::{RegistryConfig, RegistryMode, PENDING_BLOB_SHARE_SOURCE};
 use calimero_app_downloader::source::dht::PeerBlobs;
 use calimero_app_downloader::{app_source, AppRequest, ApplicationDownloader, Outcome};
-use calimero_node_primitives::client::application::InstallOrigin;
+use calimero_node_primitives::client::application::{InstallOrigin, NotABundle};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
@@ -140,48 +140,34 @@ fn row(store: &Store, application_id: ApplicationId) -> types::ApplicationMeta {
         .expect("row must exist under the id governance named")
 }
 
-/// A raw-wasm id folds in per-node values, so its row is adopted under the
-/// named id - and records the coordinates it was actually fetched from.
+/// Raw wasm derives no id, so a group naming it could bind it under any id;
+/// only a signed bundle is installed from a remote request.
 #[tokio::test]
-async fn a_raw_wasm_registry_install_records_its_coordinates() {
-    let bytes = b"raw wasm, not a bundle".to_vec();
-    let expected_blob = common::blob_id_of(&bytes).await;
+async fn downloaded_raw_wasm_is_refused_and_writes_no_row() {
+    let raw = b"raw wasm, not a bundle".to_vec();
+    let raw_blob = common::blob_id_of(&raw).await;
     let named_id = ApplicationId::from([0xB1; 32]);
 
-    let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let (node_client, _data, _blobs) = common::create_test_node_client(Some(store.clone())).await;
-    let (url, server) = common::serve_once(bytes).await;
+    let (node_client, _data, _blobs) = common::create_test_node_client(None).await;
+    let (url, server) = common::serve_once(raw).await;
 
-    assert_eq!(
-        download(&node_client, &base_of(&url), &req(expected_blob, named_id))
-            .await
-            .expect("the walk must not fault"),
-        Outcome::Installed
-    );
+    let err = download(&node_client, &base_of(&url), &req(raw_blob, named_id))
+        .await
+        .expect_err("raw wasm a group named must be refused");
     let _ignored = server.await;
 
-    let row = row(&store, named_id);
-    assert_eq!(&*row.package, PACKAGE);
-    assert_eq!(&*row.version, VERSION);
-}
-
-/// A locally built app is published nowhere. Absent coordinates must stay
-/// absent: a placeholder would aim the resolver at a URL nobody published.
-#[tokio::test]
-async fn absent_coordinates_are_written_as_absent() {
-    let named_id = ApplicationId::from([0xB2; 32]);
-    let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
-
-    let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let (node_client, _data, _blobs) = common::create_test_node_client(Some(store.clone())).await;
-
-    node_client
-        .write_application_row(&named_id, &BlobId::from([0x33; 32]), 12, &source, None)
-        .expect("row write");
-
-    let row = row(&store, named_id);
-    assert!(row.package.is_empty(), "got package {:?}", row.package);
-    assert!(row.version.is_empty(), "got version {:?}", row.version);
+    assert!(
+        err.downcast_ref::<NotABundle>().is_some(),
+        "refused as raw wasm, got: {err}"
+    );
+    assert!(
+        node_client
+            .get_application(&named_id)
+            .expect("row read")
+            .is_none(),
+        "a refused install must write no row"
+    );
+    assert!(!node_client.has_blob(&raw_blob).expect("blob lookup"));
 }
 
 /// A bundle that verifies but names another application must leave nothing:
@@ -591,7 +577,7 @@ async fn downloaded_raw_wasm_never_replaces_a_raw_row_and_is_released() {
     let held_blob = store_blob(&node_client, &held).await;
     let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
     node_client
-        .write_application_row(&named_id, &held_blob, held.len() as u64, &source, None)
+        .write_application_row(&named_id, &held_blob, held.len() as u64, &source)
         .expect("first install");
 
     let _refused = download(&node_client, &base_of(&url), &req(raw_blob, named_id))
@@ -674,13 +660,12 @@ async fn an_expected_blob_install_accepts_the_same_version() {
     assert_eq!(row(&store, id).bytecode.blob_id(), rebuilt_blob);
 }
 
-/// The stub governance seeds before any bytes arrive names no release, so
-/// raw wasm may fill it.
+/// The stub governance seeds before any bytes arrive holds nothing, and raw
+/// wasm still may not fill it.
 #[tokio::test]
-async fn downloaded_raw_wasm_fills_a_placeholder_row() {
+async fn downloaded_raw_wasm_never_fills_a_placeholder_row() {
     let raw = b"raw wasm, not a bundle".to_vec();
     let raw_blob = common::blob_id_of(&raw).await;
-    let raw_size = raw.len() as u64;
     let named_id = ApplicationId::from([0xB3; 32]);
     let (url, server) = common::serve_once(raw).await;
 
@@ -706,13 +691,11 @@ async fn downloaded_raw_wasm_fills_a_placeholder_row() {
         )
         .expect("seed stub");
 
-    assert_eq!(
-        download(&node_client, &base_of(&url), &req(raw_blob, named_id))
-            .await
-            .expect("the walk must not fault"),
-        Outcome::Installed
-    );
+    let _refused = download(&node_client, &base_of(&url), &req(raw_blob, named_id))
+        .await
+        .expect_err("raw wasm must not fill a stub");
     let _ignored = server.await;
 
-    assert_eq!(row(&store, named_id).size, raw_size);
+    assert_eq!(row(&store, named_id).size, 0, "the stub must stay a stub");
+    assert!(!node_client.has_blob(&raw_blob).expect("blob lookup"));
 }

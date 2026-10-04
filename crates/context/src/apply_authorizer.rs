@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{
@@ -25,6 +25,7 @@ use calimero_governance_store::{
 };
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::identity::PublicKey;
+use calimero_projection::Acting;
 use calimero_store::Store;
 
 use crate::scope_projection::{authority_base, ScopeProjections};
@@ -143,12 +144,25 @@ impl AtCutAuthorizer for VoidJudge<'_> {
         None
     }
 
+    // No replay predates this gate, so reading the cut changes no answer a replay gave.
+    fn device_epoch_superseded_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        device: &DeviceId,
+        device_epoch: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        self.0
+            .device_epoch_superseded_at_cut(group, account, device, device_epoch, parents)
+    }
+
     fn forget(&self) {
         self.0.forget();
     }
 
-    fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {
-        self.0.op_is_void(group, op)
+    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
+        self.0.op_is_void(group, capability, op)
     }
 
     fn voided_ops(
@@ -271,14 +285,39 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         })
     }
 
-    fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {
+    fn device_epoch_superseded_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        device: &DeviceId,
+        device_epoch: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?.0.device_epoch_superseded_at_cut(
+            self.store,
+            *group,
+            account,
+            device,
+            device_epoch,
+            parents,
+        )
+    }
+
+    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
         let folded = self.folded(group)?;
         let (projection, namespace_id, _) = &*folded;
         projection.op_is_void(
             &ScopeId::from(*namespace_id),
             authority_base(self.store, *namespace_id)?,
             op,
-            Some(*group),
+            Some(Acting {
+                group: *group,
+                capability,
+            }),
         )
     }
 
@@ -599,9 +638,12 @@ mod tests {
         let authorizer = EphemeralProjectionAuthorizer::new(&store);
 
         let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
-        assert_eq!(authorizer.op_is_void(&root, &from_the_old_cut), Some(true));
+        assert_eq!(
+            authorizer.op_is_void(&root, 0, &from_the_old_cut),
+            Some(true)
+        );
         let by_alice = add(ALICE, &[&sam], ZED, GroupMemberRole::Member);
-        assert_eq!(authorizer.op_is_void(&root, &by_alice), Some(false));
+        assert_eq!(authorizer.op_is_void(&root, 0, &by_alice), Some(false));
     }
 
     #[test]
@@ -686,7 +728,7 @@ mod tests {
 
         let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
         assert_eq!(
-            judge.op_is_void(&root, &from_the_old_cut),
+            judge.op_is_void(&root, 0, &from_the_old_cut),
             Some(true),
             "judged against the projection"
         );

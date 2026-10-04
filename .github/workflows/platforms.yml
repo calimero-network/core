@@ -35,6 +35,15 @@ on:
       - "scripts/needs-windows-ci.py"
       - "scripts/tests/needs-windows-ci-test.py"
       - "scripts/e2e-fixture-registry.sh"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
+      - "tools/calimero-abi/README.md"
+      - "tools/cargo-mero/README.md"
+      - "tools/cargo-mero/tests/fixtures/demo-app/GUIDE.md"
+      - "tools/cargo-mero/tests/fixtures/multi-app/GUIDE.md"
+      - "tools/mero-sign/README.md"
 
 permissions:
   contents: read
@@ -143,7 +152,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        uses: ./.github/actions/rust-toolchain
 
       - name: Test the owner-only file helper
         run: cargo test -p calimero-utils-fs
@@ -164,14 +173,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      # The windows cache, which windows-merod saves.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          shared-key: windows-node-smoke
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: windows
+          save-if: false
 
       # librocksdb-sys needs libclang for bindgen; aws-lc-sys needs NASM.
       - name: Point bindgen at the image's LLVM
@@ -193,19 +200,19 @@ jobs:
     if: needs.gate.outputs.windows == 'true'
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only # as windows-node-smoke builds, so they share the windows cache
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      # The one saver of the windows cache that windows-node-smoke restores too.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          shared-key: windows-e2e
+          shared-key: windows
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Same pair the release build and windows-node-smoke need.
@@ -243,16 +250,12 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: platforms-kv-store
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
-
-      - name: Build kv-store app
-        run: cargo mero build --manifest-path apps/kv-store/Cargo.toml
 
       - name: Build kv-store bundle
         run: (cd apps/kv-store && cargo mero bundle --dev --no-icon)
@@ -422,11 +425,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup rust cache
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      # Saves nothing, like release.yml's build job: a release cache per OS was
+      # gigabytes of the repo's 10 GB, reused at best by the next night's build.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          key: release
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: release
+          save-if: false
 
       - name: Point bindgen at the image's LLVM (Windows)
         if: runner.os == 'Windows'

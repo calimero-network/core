@@ -30,6 +30,12 @@
 //! the `UNSUBSCRIBE`, re-adds us on the `SUBSCRIBE`, and grafts us back — and
 //! that GRAFT is what finally teaches us the subscription we were missing,
 //! because a peer that grafts us must be subscribed to the topic it grafted on.
+//!
+//! A node that shuts down cleanly no longer leaves this state behind, because
+//! it closes its connections first (see
+//! [`close_all_connections`](crate::handlers::commands::close_all_connections)).
+//! This repair still covers a node that crashed or was killed, which has no
+//! chance to close anything.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

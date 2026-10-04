@@ -34,6 +34,9 @@ on:
       - "scripts/check-endpoint-coverage.sh"
       - "scripts/tests/check-endpoint-coverage.test.sh"
       - "scripts/tests/resolve-paired-ref.test.sh"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
   push:
     branches:
       - master
@@ -86,15 +89,12 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Rust toolchain
-        # Pinned to a commit SHA (supply-chain hygiene); comment tracks the tag.
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      # The pinned toolchain and the merod-release-fast cache, which only its owner saves.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
         with:
-          shared-key: cargo-lock-deps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: merod-release-fast
+          save-if: false
 
       # `mock-attestation` only lets a node opt into `--mock-tee`; the main node
       # below runs without it, exactly as a default build would. The same binary

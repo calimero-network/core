@@ -60,6 +60,8 @@ mod delta_store_batch_test;
 #[cfg(test)]
 mod delta_store_lock_inversion_test;
 #[cfg(test)]
+mod delta_store_sweep_lock_test;
+#[cfg(test)]
 mod ephemeral_dispatch_e2e;
 #[cfg(test)]
 mod ephemeral_node_client_e2e;

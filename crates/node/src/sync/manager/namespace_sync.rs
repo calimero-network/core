@@ -1328,7 +1328,10 @@ impl SyncManager {
     /// could hold an entry per address (up to `MAX_ADMITTER_ADDRS`), each of
     /// which the connect loop would try ahead of discovery at a full
     /// stream-open timeout apiece.
-    fn admitter_routes(invitation_bytes: &[u8]) -> Vec<(PeerId, Vec<libp2p::Multiaddr>)> {
+    fn admitter_routes(
+        invitation_bytes: &[u8],
+        local_peer: &PeerId,
+    ) -> Vec<(PeerId, Vec<libp2p::Multiaddr>)> {
         let Ok(invitation) = borsh::from_slice::<
             calimero_context_config::types::SignedGroupOpenInvitation,
         >(invitation_bytes) else {
@@ -1338,6 +1341,7 @@ impl SyncManager {
         super::namespace_join::group_admitter_routes(
             &invitation.admitter_addrs,
             MAX_ADMITTER_MACHINES_DIALED,
+            local_peer,
         )
     }
 
@@ -1430,7 +1434,8 @@ impl SyncManager {
         // Only an admitter can complete this join, so trying one first is not a
         // preference so much as the difference between a round trip that can
         // succeed and one that can only be refused.
-        let admitter_routes = Self::admitter_routes(&params.invitation_bytes);
+        let admitter_routes =
+            Self::admitter_routes(&params.invitation_bytes, &self.local_peer_id().await);
         let admitter_peers: Vec<libp2p::PeerId> =
             admitter_routes.iter().map(|(peer, _)| *peer).collect();
 
@@ -1714,7 +1719,7 @@ impl SyncManager {
             }
         };
 
-        let Ok(mut stream) = self.sync_network.open_stream(peer).await else {
+        let Ok(mut stream) = self.open_stream_bounded(peer).await else {
             debug!("failed to open stream for namespace sync");
             return 0;
         };
@@ -2274,7 +2279,7 @@ impl SyncManager {
     ) -> Option<(Vec<u8>, PublicKey, Vec<u8>)> {
         use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
-        let mut stream = match self.sync_network.open_stream(peer).await {
+        let mut stream = match self.open_stream_bounded(peer).await {
             Ok(s) => s,
             Err(err) => {
                 debug!(%err, "failed to open stream for group-key request");
@@ -3720,7 +3725,7 @@ mod admitter_derivation_tests {
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
 
-    use super::{SyncManager, MAX_ADMITTER_MACHINES_DIALED};
+    use super::{PeerId, SyncManager, MAX_ADMITTER_MACHINES_DIALED};
 
     /// An invitation carrying `count` addresses, each naming a different peer.
     fn invitation_naming_distinct_machines(count: usize) -> Vec<u8> {
@@ -3756,7 +3761,10 @@ mod admitter_derivation_tests {
     #[test]
     fn more_machines_than_the_cap_are_dropped_not_carried() {
         let over = MAX_ADMITTER_MACHINES_DIALED + 4;
-        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(over));
+        let routes = SyncManager::admitter_routes(
+            &invitation_naming_distinct_machines(over),
+            &PeerId::random(),
+        );
 
         assert_eq!(
             routes.len(),
@@ -3769,7 +3777,10 @@ mod admitter_derivation_tests {
 
     #[test]
     fn fewer_machines_than_the_cap_are_all_kept() {
-        let routes = SyncManager::admitter_routes(&invitation_naming_distinct_machines(3));
+        let routes = SyncManager::admitter_routes(
+            &invitation_naming_distinct_machines(3),
+            &PeerId::random(),
+        );
         assert_eq!(routes.len(), 3, "the cap must not drop what fits under it");
     }
 
@@ -3778,7 +3789,7 @@ mod admitter_derivation_tests {
     #[test]
     fn an_invitation_that_does_not_decode_yields_no_machines() {
         assert!(
-            SyncManager::admitter_routes(b"not an invitation").is_empty(),
+            SyncManager::admitter_routes(b"not an invitation", &PeerId::random()).is_empty(),
             "a hint set that cannot be read is empty, not an error"
         );
     }
@@ -3789,7 +3800,7 @@ mod admitter_derivation_tests {
 mod authz_matrix;
 
 #[cfg(test)]
-mod group_key_recovery_anchor_tests {
+pub(super) mod group_key_recovery_anchor_tests {
     //! Who `recover_missing_group_keys` believes, driven end to end against a
     //! scripted [`MockSyncNetwork`] with a real store behind the manager.
     //!
@@ -3841,7 +3852,9 @@ mod group_key_recovery_anchor_tests {
 
     /// A `SyncManager` over an in-memory store whose network is `mock`, with no
     /// actor behind it: the key-recovery path needs only the store and streams.
-    pub(super) async fn manager(mock: Arc<MockSyncNetwork>) -> (SyncManager, Store, TempDir) {
+    pub(in crate::sync::manager) async fn manager(
+        mock: Arc<MockSyncNetwork>,
+    ) -> (SyncManager, Store, TempDir) {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let (sync_manager, tmp) = manager_over(store.clone(), mock).await;
         (sync_manager, store, tmp)

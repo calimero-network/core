@@ -19,6 +19,13 @@ on:
       - ".github/actions/merod-binaries/**"
       - ".github/actions/setup-merobox/**"
       - "scripts/e2e-fixture-registry.sh"
+      - ".github/actions/setup-cargo-mero/**"
+      - ".github/actions/wasm-apps/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
 
   pull_request:
     branches: [master]
@@ -32,6 +39,13 @@ on:
       - ".github/actions/merod-binaries/**"
       - ".github/actions/setup-merobox/**"
       - "scripts/e2e-fixture-registry.sh"
+      - ".github/actions/setup-cargo-mero/**"
+      - ".github/actions/wasm-apps/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
 
   workflow_dispatch:
 
@@ -51,6 +65,9 @@ jobs:
   build-merod:
     name: Build merod image
     uses: ./.github/workflows/build-merod-image.yml
+    with:
+      # e2e-rust-apps' call saves this cache; two savers on one push race.
+      save-cache: false
 
   build-wasms:
     name: Build WASM fixtures
@@ -62,21 +79,29 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
+      # A hit is these exact fixtures, built on master from the same migration-app
+      # trees, cargo-mero, lockfile, toolchain and script; a crate change that
+      # none of them reaches no longer rebuilds them. Restoring skips Rust and
+      # cargo-mero entirely. A miss reads the warm wasm-apps dependency cache but
+      # never saves it: e2e-rust-apps' Build Apps is its one saver.
+      - name: Restore the fixtures, or set up to build them
+        id: fixtures
+        uses: ./.github/actions/wasm-apps
         with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-          # Read the warm e2e-rust-apps dependency cache, but never SAVE under
-          # that key — build-merod owns it, and a second writer only races.
-          shared-key: e2e-rust-apps
-          save-if: false
-
-      - name: Setup cargo mero
-        uses: ./.github/actions/setup-cargo-mero
+          root: apps/migrations
+          script: workflows/app-migration/build-wasms.sh
+          workflows: .github/workflows/app-migration-e2e.yml
 
       - name: Build all WASM fixtures
+        if: steps.fixtures.outputs.hit != 'true'
         run: bash workflows/app-migration/build-wasms.sh
+
+      - name: Share the built fixtures
+        if: steps.fixtures.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.fixtures.outputs.paths }}
+          key: ${{ steps.fixtures.outputs.key }}
 
       - name: Upload WASM fixtures artifact
         uses: actions/upload-artifact@v7
@@ -104,11 +129,10 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
           # Read the warm e2e-rust-apps dependency cache, but never SAVE under that
           # key - build-merod owns it, and a second writer only races.
-          shared-key: e2e-rust-apps
+          shared-key: wasm-apps
           save-if: false
 
       - name: Build calimero-abi

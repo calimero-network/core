@@ -164,6 +164,14 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 // never be reused.
                 let _stale = self.ping_failures.remove(&connection_id);
 
+                // Shutting down: this close was requested, and the recovery
+                // below would only dial the peer again. See
+                // `close_all_connections`.
+                if self.closing_all_connections {
+                    self.resolve_close_all_if_done();
+                    return;
+                }
+
                 if !self.swarm.is_connected(&peer_id) {
                     // Two mutually-exclusive branches keyed on the role
                     // of the disconnected peer:

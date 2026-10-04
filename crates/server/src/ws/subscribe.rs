@@ -32,8 +32,8 @@ async fn handle(
     // Only subscribe to contexts this connection is authorized to observe.
     // Context events carry state roots and application execution-event payloads,
     // so delivering them to a non-member is a cross-context data leak. The node
-    // owner (and a no-auth dev server) may observe everything; any other
-    // connection must prove membership via its authenticated caller identity.
+    // owner (and an identity-less caller on a no-auth server) may observe
+    // everything; a caller with an identity must be a member.
     // Unauthorized ids are dropped rather than subscribed, and the response
     // reflects only the contexts that were actually subscribed. This runs
     // without holding any lock.
@@ -163,20 +163,14 @@ async fn handle(
 
 /// Whether a connection may subscribe to (observe) a context's event stream.
 ///
-/// The node owner and a no-auth dev server may observe everything. Any other
-/// connection must present an authenticated caller that is a member of the
-/// context (`caller_is_member == Some(true)`); a connection with no caller
-/// identity (`None`) is denied when auth is enabled.
+/// The node owner observes everything; a caller with an identity only what it is a member of,
+/// since a proxy tenant is one caller among many. One with no identity passes only with auth off.
 pub(crate) fn may_observe_context(
     auth_enabled: bool,
     node_owner: bool,
     caller_is_member: Option<bool>,
 ) -> bool {
-    if node_owner || !auth_enabled {
-        true
-    } else {
-        caller_is_member.unwrap_or(false)
-    }
+    node_owner || caller_is_member.unwrap_or(!auth_enabled)
 }
 
 /// Context-observation authorization gate, shared by every transport that
@@ -526,6 +520,14 @@ mod tests {
         assert!(may_observe_context(false, false, None));
     }
 
+    // Proxy mode has no embedded guard, but a proxy-identity tenant is one caller
+    // among many, so it is held to its own membership.
+    #[test]
+    fn no_auth_server_denies_a_caller_known_not_to_be_a_member() {
+        assert!(may_observe_context(false, false, Some(true)));
+        assert!(!may_observe_context(false, false, Some(false)));
+    }
+
     #[test]
     fn member_is_allowed_non_member_and_no_caller_denied() {
         assert!(may_observe_context(true, false, Some(true)));
@@ -537,6 +539,12 @@ mod tests {
     fn group_gate_owner_and_no_auth_observe_everything() {
         assert!(may_observe_group(true, true, None));
         assert!(may_observe_group(false, false, None));
+    }
+
+    #[test]
+    fn group_gate_no_auth_denies_a_caller_known_not_to_be_a_member() {
+        assert!(may_observe_group(false, false, Some(true)));
+        assert!(!may_observe_group(false, false, Some(false)));
     }
 
     #[test]

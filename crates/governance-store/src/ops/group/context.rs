@@ -22,6 +22,7 @@ use crate::{
 use calimero_account::AccountId;
 use calimero_app_downloader::registry::{RegistryCoords, PENDING_BLOB_SHARE_SOURCE};
 use calimero_context_config::types::ContextGroupId;
+use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -312,6 +313,7 @@ pub(crate) fn seed_target_application_row(
         return Ok(());
     }
     let key = calimero_store::key::ApplicationMeta::new(*target_application_id);
+    let _rows = lock_application_rows(); // an install between has and put would be overwritten
     if store.handle().has(&key)? {
         return Ok(());
     }

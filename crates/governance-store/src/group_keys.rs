@@ -248,6 +248,13 @@ impl<'a> GroupKeyring<'a> {
         Ok(handle.get(&entry)?.map(|v: GroupKeyValue| v.group_key))
     }
 
+    /// The epoch `key_id` is held at, or `None` when it is not held.
+    pub fn key_epoch(&self, key_id: &[u8; 32]) -> EyreResult<Option<u64>> {
+        let entry = GroupKeyEntry::new(self.group_id.to_bytes(), *key_id);
+        let handle = self.store.handle();
+        Ok(handle.get(&entry)?.map(|v: GroupKeyValue| v.epoch))
+    }
+
     /// Delete a single stored group key by its `key_id`. Idempotent (a missing
     /// entry is a no-op). Unlike [`Self::delete_all_for_group`] this does NOT
     /// require the membership-removed purge precondition, because it targets one

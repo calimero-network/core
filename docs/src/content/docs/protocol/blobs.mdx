@@ -104,7 +104,7 @@ functions exposed to the WASM guest. Writing is a streaming
 blob_create() -> fd
 blob_write(fd, src: Buffer)                 -> bytes_written
 blob_close(fd, dst: BufferMut[32]) -> 1     // writes the final BlobId into dst[0..32]
-blob_open(blob_id: Buffer[32])              -> fd
+blob_open(blob_id: Buffer[32])              -> fd   // traps unless held for the context
 blob_open_in_context(blob_id: Buffer[32], context_id: Buffer[32]) -> fd  // 0 if unavailable
 blob_read(fd, dst: BufferMut)               -> bytes_read   // 0 at end of blob
 blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1  // 0 if not held for the context
@@ -126,7 +126,11 @@ blob_announce_to_context(blob_id: Buffer[32], context_id: Buffer[32]) -> 1  // 0
 
 4. **`blob_open(blob_id)`** opens a read handle for an existing blob and returns
    an `fd`. The bytes are streamed lazily — opening does not yet fetch anything.
-   Local-only: returns `0` if this node does not already hold the blob.
+   Local-only, and only for a blob held for the executing context (the same
+   `Column::BlobOwner` index that decides what its peers are served): any
+   other blob traps with `BlobNotHeldForContext`, because the blob store is
+   node-wide and a blob id is no secret. A blob uploaded before this node joined
+   the context is held for none; `blob_open_in_context` is the portable read.
 
 5. **`blob_open_in_context(blob_id, context_id)`** is `blob_open`'s
    network-aware sibling: if the blob is not held for the context, it consults
@@ -157,6 +161,10 @@ The host functions surface these errors:
 - `BlobsNotSupported` — the node is configured without a blob/network client
   (the API is unavailable, e.g. in a bare VM).
 - `TooManyBlobHandles` — opening would exceed `max_blob_handles`.
+- `BlobContextMismatch`: `blob_open_in_context` or `blob_announce_to_context`
+  named a context other than the executing one.
+- `BlobNotHeldForContext`: `blob_open` named a blob not held for the
+  executing context.
 - `InvalidBlobHandle` — unknown `fd`, or using a write handle where a read
   handle is required (or vice versa).
 - `BlobWriteTooLarge` / `BlobBufferTooLarge` — the write chunk or the read
