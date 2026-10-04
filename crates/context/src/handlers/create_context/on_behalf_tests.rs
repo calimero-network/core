@@ -27,6 +27,8 @@ use futures_util::io::Cursor;
 
 use crate::test_support::{actor, credential, enrol, enrol_holder};
 
+mod xcall_private_state;
+
 /// `init` reads the executing account (`account_id`) into memory and commits
 /// it as the root hash, with an empty artifact; `set` does the same with a
 /// one-byte artifact, as a method run must carry one, and writes no signed
@@ -168,6 +170,12 @@ async fn fixture_with(
     author_may_create: bool,
     init_signs: bool,
 ) -> Fixture {
+    let wasm = wat::parse_str(module_with(init_signs)).expect("parse the module");
+    fixture_of(relay_standing, author_may_create, wasm).await
+}
+
+/// [`fixture`], running `wasm` as the group's application.
+async fn fixture_of(relay_standing: Standing, author_may_create: bool, wasm: Vec<u8>) -> Fixture {
     global_runtime();
     let store = Store::new(Arc::new(InMemoryDB::owned()));
     NodeDeviceRepository::new(&store)
@@ -175,7 +183,6 @@ async fn fixture_with(
         .expect("provision the account root an initialised node has");
     let harness = actor::over(store.clone()).await;
 
-    let wasm = wat::parse_str(module_with(init_signs)).expect("parse the module");
     let (blob_id, size) = harness
         .node_client
         .add_blob(Cursor::new(signed_wasm(&wasm)), None, None)
