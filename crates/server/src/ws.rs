@@ -1305,9 +1305,11 @@ mod tests {
     use tokio::sync::{broadcast, mpsc, RwLock};
     use tokio::time::sleep;
     use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
     use super::{ws_handler, BrowserOrigins, ServiceState, WsConfig};
+    use crate::origin_guard::{refuse_foreign_origins, OriginGuard};
 
     /// Everything a test needs to talk to a running WS server: the bound URL,
     /// a handle to the shared state (for asserting on the connection map), and
@@ -1678,16 +1680,11 @@ mod tests {
         );
     }
 
-    /// Through `service`, so the names and the list come from the server config.
-    #[tokio::test]
-    async fn ws_upgrade_refuses_foreign_origin() {
-        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-
+    /// A server as `start` builds it: the service from the server config behind
+    /// the router-wide guard, with the caller a token would have proved.
+    async fn spawn_guarded_ws(embedded_auth: bool) -> (SocketAddr, TempDir) {
         let mut config = crate::config::ServerConfig::new(
-            vec![
-                "/ip4/127.0.0.1/tcp/2528".parse().unwrap(),
-                "/ip4/192.0.2.7/tcp/2528".parse().unwrap(),
-            ],
+            vec!["/ip4/127.0.0.1/tcp/2528".parse().unwrap()],
             libp2p::identity::Keypair::generate_ed25519(),
             None,
             None,
@@ -1696,56 +1693,97 @@ mod tests {
         );
         config.cors.allowed_origins = Some(vec!["https://app.example".to_owned()]);
         let (event_sender, _) = broadcast::channel(16);
-        let (node_client, ctx_client, _blob_dir) =
+        let (node_client, ctx_client, blob_dir) =
             test_clients(LazyRecipient::new(), event_sender).await;
-        let (path, route) =
-            super::service(&config, node_client, ctx_client, false).expect("WebSocket enabled");
+        let (path, route) = super::service(&config, node_client, ctx_client, embedded_auth)
+            .expect("WebSocket enabled");
+        let app = Router::new()
+            .route(&path, route)
+            .layer(Extension(crate::auth::AuthenticatedKey(PublicKey::from(
+                [7; 32],
+            ))))
+            .layer(axum::middleware::from_fn_with_state(
+                OriginGuard::new(embedded_auth, config.cors.allowed_origins.as_deref()),
+                refuse_foreign_origins,
+            ));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let _server = tokio::spawn(async move {
-            axum::serve(listener, Router::new().route(&path, route))
-                .await
-                .unwrap();
-        });
+        drop(tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        }));
+        (addr, blob_dir)
+    }
 
-        let upgrade = |host: String, origin: String| async move {
-            let mut req = format!("ws://{addr}/ws").into_client_request().unwrap();
-            let _ = req.headers_mut().insert("host", host.parse().unwrap());
+    /// The answer to a real upgrade that names the node by `host` on its port.
+    async fn upgrade(addr: SocketAddr, host: &str, origin: Option<&str>) -> StatusCode {
+        let mut req = format!("ws://{addr}/ws").into_client_request().unwrap();
+        let host = format!("{host}:{}", addr.port());
+        let _ = req.headers_mut().insert("host", host.parse().unwrap());
+        if let Some(origin) = origin {
             let _ = req.headers_mut().insert("origin", origin.parse().unwrap());
-            match connect_async(req).await {
-                Ok((_, response)) => response.status(),
-                Err(WsError::Http(response)) => response.status(),
-                Err(err) => panic!("upgrade failed before a response: {err}"),
+        }
+        match connect_async(req).await {
+            Ok((_, response)) => response.status(),
+            Err(WsError::Http(response)) => response.status(),
+            Err(err) => panic!("upgrade failed before a response: {err}"),
+        }
+    }
+
+    /// The token travels in the query, so the origin is judged with embedded auth too.
+    #[tokio::test]
+    async fn ws_upgrade_refuses_foreign_origin() {
+        for embedded_auth in [false, true] {
+            let (addr, _blob_dir) = spawn_guarded_ws(embedded_auth).await;
+            let rebound = format!("http://evil.example:{}", addr.port());
+            for (host, origin, case) in [
+                ("127.0.0.1", "https://evil.example", "a foreign origin"),
+                (
+                    "evil.example",
+                    &*rebound,
+                    "a rebound name as Origin and Host",
+                ),
+                ("127.0.0.1", "null", "an opaque origin"),
+            ] {
+                assert_eq!(
+                    upgrade(addr, host, Some(origin)).await,
+                    StatusCode::FORBIDDEN,
+                    "{case}, embedded auth: {embedded_auth}"
+                );
             }
-        };
-        let own = format!("127.0.0.1:{}", addr.port());
-        let listed_address = format!("192.0.2.7:{}", addr.port());
-        let rebound = format!("evil.example:{}", addr.port());
-        assert_eq!(
-            upgrade(own.clone(), format!("http://{own}")).await,
-            StatusCode::SWITCHING_PROTOCOLS,
-            "control: a page this node serves"
-        );
-        assert_eq!(
-            upgrade(listed_address.clone(), format!("http://{listed_address}")).await,
-            StatusCode::SWITCHING_PROTOCOLS,
-            "control: a page served under a configured listen address"
-        );
-        assert_eq!(
-            upgrade(own.clone(), "https://app.example".to_owned()).await,
-            StatusCode::SWITCHING_PROTOCOLS,
-            "control: an origin in [server.cors] allowed_origins"
-        );
-        assert_eq!(
-            upgrade(own, "https://evil.example".to_owned()).await,
-            StatusCode::FORBIDDEN,
-            "a foreign origin"
-        );
-        assert_eq!(
-            upgrade(rebound.clone(), format!("http://{rebound}")).await,
-            StatusCode::FORBIDDEN,
-            "a foreign name whose Origin equals its Host"
-        );
+        }
+    }
+
+    /// One rule for HTTP and sockets: what may call a route may open a socket.
+    #[tokio::test]
+    async fn ws_upgrade_admits_what_the_origin_guard_admits() {
+        let mut refused = Vec::new();
+        for embedded_auth in [false, true] {
+            let (addr, _blob_dir) = spawn_guarded_ws(embedded_auth).await;
+            let own = format!("http://127.0.0.1:{}", addr.port());
+            let unlisted_address = format!("http://192.168.1.5:{}", addr.port());
+            for (host, origin, case) in [
+                ("127.0.0.1", None, "no Origin: not a browser"),
+                ("127.0.0.1", Some(&*own), "a page this node serves"),
+                ("127.0.0.1", Some("https://app.example"), "a listed origin"),
+                ("127.0.0.1", Some("http://localhost:5173"), "a dev page"),
+                (
+                    "127.0.0.1",
+                    Some("tauri://localhost"),
+                    "the desktop webview",
+                ),
+                (
+                    "192.168.1.5",
+                    Some(&*unlisted_address),
+                    "its own page under an address it does not listen on",
+                ),
+            ] {
+                let status = upgrade(addr, host, origin).await;
+                if status != StatusCode::SWITCHING_PROTOCOLS {
+                    refused.push(format!("{case}, embedded auth {embedded_auth}: {status}"));
+                }
+            }
+        }
+        assert!(refused.is_empty(), "{refused:#?}");
     }
 
     // A group subscriber receives GroupMembership events for its group; a
