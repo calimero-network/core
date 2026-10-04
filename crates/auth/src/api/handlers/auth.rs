@@ -26,6 +26,9 @@ use crate::AuthError;
 /// the two notions of "expired" cannot disagree.
 const JWT_EXPIRY_LEEWAY_SECS: u64 = 60;
 
+#[cfg(debug_assertions)]
+const SEC_FETCH_SITE: &str = "sec-fetch-site"; // sent by browsers even when Origin is omitted
+
 /// Whether an access token and a refresh token were issued for the same key.
 /// The key, not `sub`: every client key of one user shares its `sub`.
 fn tokens_share_key(access: &Claims, refresh: &Claims) -> bool {
@@ -926,8 +929,8 @@ pub async fn mock_token_handler(
 ) -> impl IntoResponse {
     warn!("⚠️  MOCK TOKEN ENDPOINT ACCESSED - This should only be used for testing!");
 
-    // Test scripts send no Origin, and no browser page should hold a mock admin token.
-    if headers.contains_key(header::ORIGIN) {
+    // Test scripts send neither header, and no browser page should hold a mock admin token.
+    if headers.contains_key(header::ORIGIN) || headers.contains_key(SEC_FETCH_SITE) {
         warn!("Mock token endpoint refused a browser request");
         return error_response(
             StatusCode::FORBIDDEN,
