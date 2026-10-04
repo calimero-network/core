@@ -62,6 +62,11 @@ Joining is a two-part dance, because a new member needs two things: a row in the
 
 The membership operation is public on the governance scope; the key delivery is a private, wrapped envelope. Once the joiner unwraps the key, every prior and future operation in the scope becomes readable, and they fold the scope just like anyone else.
 
+A join by an account that is already a member changes no role.
+A member promoted to admin who presents another invitation stays an admin, and a member presenting an admin invitation stays a member; only an admin's role change moves a standing role.
+The join is still recorded, and it still links the device it was made from.
+The [projection](/protocol/projection/#the-one-slot-that-is-not-a-plain-register-joins) folds it the same way, in any arrival order.
+
 ### Which group an invitation may target
 
 An invitation names a `group_id`, and that may be the namespace root or a `Restricted` subgroup — but **not a subgroup on an `Open` chain to its namespace**. The reason is the key, not the membership row.

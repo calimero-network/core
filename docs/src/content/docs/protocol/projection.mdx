@@ -76,6 +76,26 @@ A `Delete` records a stamp exactly like a write — which is why the stale re-ad
 
 This is also where **order-independence** comes from: because a slot only ever remembers the single highest stamp it has seen, the order operations arrive in can't change the outcome. Replay the same set in any order — authored, gossiped, or backfilled — and every slot lands on the same value.
 
+### The one slot that is not a plain register: joins
+
+A member's role is a last-writer-wins slot for an add, a role change, a removal and a leave.
+An invitation join is different, because the node skips a join by an account that already holds a membership row.
+Folding it as one more write would let a retried join put the invitation's role back over the role an admin set since.
+
+So a join never overrides a standing membership.
+It takes effect only when the member is absent, or when the latest of those writes is a removal or a leave with a lower stamp than the join.
+Among several such joins, the one with the lowest stamp wins, since the later ones were skipped.
+
+```text
+join(Member), set role Admin, join(Member)    → Admin
+join(Member), join(Admin)                     → Member
+join(Member), remove, join(ReadOnly)          → ReadOnly
+```
+
+This is still a function of the operation set and its stamps, so it is order-independent like every other slot.
+The fold keeps each join that beats the member's latest such write, so a removal that arrives after the joins on either side of it resolves to the same member as one that arrived between them.
+A TEE attestation admission is not a join in this sense: re-attesting converts a standing TEE role, so it folds as a plain write.
+
 ### What the projection holds
 
 The fold maintains one set of slots per plane. Together they are the complete materialized state of a scope:

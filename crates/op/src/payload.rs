@@ -189,9 +189,10 @@ pub enum OpPayload {
     /// different principal than the one it writes under. One payload removes the
     /// ordering entirely.
     ///
-    /// The membership half folds exactly as [`Self::MemberAdded`] and the device
-    /// half exactly as [`Self::DeviceLinked`] — same LWW slot, same op-local
-    /// credential rules — so this variant adds no new semantics, only atomicity.
+    /// The device half folds exactly as [`Self::DeviceLinked`]. The membership
+    /// half is a join, not a [`Self::MemberAdded`]: it never replaces a standing
+    /// role, as the apply skips a join by an account that holds a row. A TEE
+    /// role marks an attestation admission, which does fold as `MemberAdded`.
     MemberJoinedWithDevice {
         /// Group being joined.
         group: ContextGroupId,

@@ -118,8 +118,8 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
                     cert: account.statement,
                 }
             } else {
-                // Membership stands, the device does not — the same verdict the
-                // apply path reaches, which is the whole requirement.
+                // Folds as a plain add, not as a join: the apply refuses a join
+                // whose credential does not bind, so none here is a repeat join.
                 OpPayload::MemberAdded {
                     group,
                     member,

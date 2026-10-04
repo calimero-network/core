@@ -11,6 +11,7 @@
 //! order-independent.
 
 use std::borrow::Cow;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use sha2::{Digest, Sha256};
@@ -106,6 +107,9 @@ pub struct ScopeState {
     // --- membership plane ---
     groups: GroupMembers,
     member_clock: BTreeMap<(ContextGroupId, AccountId), Stamp>,
+    /// Each member's joins that beat its `member_clock`, which no join writes.
+    /// The earliest one is the membership while no add stands.
+    member_joins: BTreeMap<(ContextGroupId, AccountId), BTreeMap<Stamp, GroupMemberRole>>,
     // --- admin plane ---
     root_admin: Option<AccountId>,
     admin_clock: Option<Stamp>,
@@ -461,7 +465,14 @@ impl ScopeState {
                     let _ = self.member_removed_clock.insert(key, stamp);
                 }
                 if wins(stamp, self.member_clock.get(&key)) {
-                    if let Some(members) = self.groups.get_mut(group) {
+                    let _ = self.member_clock.insert(key, stamp);
+                    if let Some(rejoined) = self.joins_after(key, stamp) {
+                        let _ = self
+                            .groups
+                            .entry(*group)
+                            .or_default()
+                            .insert(*member, rejoined);
+                    } else if let Some(members) = self.groups.get_mut(group) {
                         let _ = members.remove(member);
                         // Drop the group entry once empty so "group never
                         // existed" and "all members removed" are the SAME
@@ -475,7 +486,6 @@ impl ScopeState {
                             let _ = self.groups.remove(group);
                         }
                     }
-                    let _ = self.member_clock.insert(key, stamp);
                 }
             }
             OpPayload::AdminChanged { new_admin } => {
@@ -607,12 +617,10 @@ impl ScopeState {
                 *floor = (*floor).max(*scope_epoch);
             }
 
-            // Both halves of a join, folded by the very same code the separate
-            // `MemberAdded` and `DeviceLinked` arms run. Neither half is
-            // conditional on the other: a credential this scope cannot admit
-            // still leaves the membership standing, which is the same verdict
-            // the live apply path reaches, and the membership half carries no
-            // information the device half needs.
+            // Both halves of a join. Neither is conditional on the other: a
+            // credential this scope cannot admit still leaves the membership
+            // standing, and a join that changes no membership still links its
+            // device. The device half is the `DeviceLinked` arm's own code.
             OpPayload::MemberJoinedWithDevice {
                 group,
                 member,
@@ -621,7 +629,13 @@ impl ScopeState {
                 chain,
                 cert,
             } => {
-                self.fold_member_added(*group, *member, role, stamp);
+                // A TEE admission converts a standing TEE row, so it is a plain
+                // write; an invitation join is skipped for a standing member.
+                if role.is_tee() {
+                    self.fold_member_added(*group, *member, role, stamp);
+                } else {
+                    self.fold_member_joined(*group, *member, role, stamp);
+                }
                 // A join carries no scope statement: epoch 0, as the live apply writes.
                 self.fold_device_linked(genesis, chain, cert, 0);
             }
@@ -780,10 +794,8 @@ impl ScopeState {
             .cloned()
     }
 
-    /// LWW-set `member`'s role in `group`.
-    ///
-    /// Shared by the `MemberAdded` and `MemberJoinedWithDevice` arms so a join
-    /// and a plain add can never write the membership slot differently.
+    /// LWW-set `member`'s role in `group`: an admin's add or role change, or a
+    /// TEE admission. Every join it beats is spent.
     fn fold_member_added(
         &mut self,
         group: ContextGroupId,
@@ -799,7 +811,57 @@ impl ScopeState {
                 .or_default()
                 .insert(member, role.clone());
             let _ = self.member_clock.insert(key, stamp);
+            let _ = self.joins_after(key, stamp);
         }
+    }
+
+    /// Fold an invitation join, which the apply skips for an account that holds
+    /// a row: it grants its role only to a member no add or earlier join seats.
+    fn fold_member_joined(
+        &mut self,
+        group: ContextGroupId,
+        member: AccountId,
+        role: &GroupMemberRole,
+        stamp: Stamp,
+    ) {
+        let key = (group, member);
+        let clock = self.member_clock.get(&key);
+        if !wins(stamp, clock) {
+            return;
+        }
+        // The clock is the latest add or removal, so an add stands unless it
+        // is the latest removal's (or nothing was ever written).
+        let add_stands = clock != self.member_removed_clock.get(&key);
+        let joins = self.member_joins.entry(key).or_default();
+        let _ = joins.insert(stamp, role.clone());
+        if add_stands {
+            return;
+        }
+        if let Some((_, earliest)) = joins.first_key_value() {
+            let _ = self
+                .groups
+                .entry(group)
+                .or_default()
+                .insert(member, earliest.clone());
+        }
+    }
+
+    /// Drop the joins of `key` that `stamp` beats, and return the role of the
+    /// earliest one left.
+    fn joins_after(
+        &mut self,
+        key: (ContextGroupId, AccountId),
+        stamp: Stamp,
+    ) -> Option<GroupMemberRole> {
+        let Entry::Occupied(mut joins) = self.member_joins.entry(key) else {
+            return None;
+        };
+        joins.get_mut().retain(|at, _| *at > stamp);
+        let earliest = joins.get().first_key_value().map(|(_, role)| role.clone());
+        if earliest.is_none() {
+            let _ = joins.remove();
+        }
+        earliest
     }
 
     /// Absorb a credential's account facts and bind its device, if admissible.

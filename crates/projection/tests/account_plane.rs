@@ -2216,6 +2216,34 @@ fn a_repeat_join_keeps_the_role_an_admin_set() {
     assert_eq!(resolved_role(&fx, &joiner.id), Some(GroupMemberRole::Admin));
 }
 
+/// Governance ops carry no clock, so only causal depth orders them: the same
+/// history as above, as a node folds it at the cut of the repeat join.
+#[test]
+fn a_repeat_join_keeps_the_role_at_its_cut_without_a_clock() {
+    let fx = Fixture::new();
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = join_op(&joiner, &device, GroupMemberRole::Member, 0, vec![]);
+    let promote = grant_role(
+        &fx.admin,
+        joiner.id,
+        GroupMemberRole::Admin,
+        0,
+        vec![join.id()],
+    );
+    let again = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+        0,
+        vec![promote.id()],
+    );
+    let log = [join, promote, again.clone()];
+
+    let view = ScopeState::acl_view_at(&log, &[again.id()]);
+    assert_eq!(role_in(&view, &joiner.id), Some(GroupMemberRole::Admin));
+}
+
 #[test]
 fn a_member_presenting_an_admin_invitation_stays_a_member() {
     let (mut fx, joiner, device) = joined_as_member();
