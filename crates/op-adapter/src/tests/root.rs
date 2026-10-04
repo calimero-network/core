@@ -122,6 +122,104 @@ fn a_repeat_invitation_join_folds_to_the_role_an_admin_set() {
     );
 }
 
+/// A namespace leave deletes the leaver's rows in every subgroup, so the role
+/// held there before it does not outlive a rejoin on another invitation.
+#[test]
+fn a_namespace_leave_ends_the_roles_held_in_its_subgroups() {
+    let root = [0x44; 32];
+    let subgroup = ContextGroupId::from([0x45; 32]);
+    let joiner_key = PublicKey::from([0x55; 32]);
+    let credential = real_join_account_for(joiner_key, 0x64);
+    let joiner = credential.statement.account;
+    let join = |gid: [u8; 32], invited_role: u8, nonce: u8| {
+        let mut signed_invitation = invitation_for(gid);
+        signed_invitation.invitation.invited_role = invited_role;
+        signed_invitation.invitation.invitation_nonce = [nonce; 32];
+        payload_from_root_op(&RootOp::MemberJoinedAt {
+            member: joiner,
+            signed_invitation,
+            joined_at: 42,
+            account: credential.clone(),
+        })
+        .expect("a join folds")
+    };
+    let made_admin = payload_from_group_op(
+        subgroup,
+        &GroupOp::MemberAdded {
+            member: joiner,
+            role: GroupMemberRole::Admin,
+        },
+    )
+    .expect("an add folds");
+    let leave = payload_from_group_op(
+        ContextGroupId::from(root),
+        &GroupOp::MemberLeft {
+            member: joiner,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("a leave folds");
+    let histories = [
+        (
+            vec![
+                join(root, 1, 1),
+                made_admin.clone(),
+                leave.clone(),
+                join(root, 1, 2),
+                join(subgroup.to_bytes(), 2, 3),
+            ],
+            Some(GroupMemberRole::ReadOnly),
+        ),
+        (
+            vec![
+                join(root, 1, 1),
+                made_admin.clone(),
+                leave.clone(),
+                join(root, 1, 2),
+            ],
+            None,
+        ),
+        (
+            vec![
+                join(root, 1, 1),
+                join(subgroup.to_bytes(), 1, 2),
+                leave,
+                join(root, 1, 3),
+                join(subgroup.to_bytes(), 0, 4),
+            ],
+            Some(GroupMemberRole::Admin),
+        ),
+    ];
+
+    let resolved = histories.map(|(payloads, expected)| {
+        let ops: Vec<Op> = (10u64..)
+            .step_by(10)
+            .zip(payloads)
+            .map(|(ns, payload)| {
+                Op::new(
+                    ScopeId::from(root),
+                    vec![],
+                    authorship_of(joiner, joiner_key),
+                    hlc(ns),
+                    payload,
+                    [0u8; 32],
+                    [0u8; 64],
+                )
+            })
+            .collect();
+        let groups = ScopeState::from_ops(&ops).acl_view().groups;
+        let role = groups
+            .get(&subgroup)
+            .and_then(|members| members.get(&joiner));
+        (role.cloned(), expected)
+    });
+
+    for (role, expected) in resolved.clone() {
+        assert_eq!(role, expected, "all histories: {resolved:?}");
+    }
+}
+
 #[test]
 fn root_op_encoder_mapping() {
     let admin = AccountId::from([1u8; 32]);
