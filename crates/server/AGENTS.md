@@ -342,6 +342,8 @@ sealed under the session and responses stream back in sealed frames. Six rules:
   merged router), not as a route. The opened request is handed back to the router
   and routed afresh, so auth, permissions and metrics see it as a direct request.
   CORS sits outside the envelope so the sealed response carries it.
+  `Host`, `X-Forwarded-Host` and `Origin` come from the outer hop, never the
+  envelope, so a page cannot seal a request that hides the page it came from.
 - **The transport key authenticates; it never encrypts.** Session keys come from
   both sides' ephemeral keys, so dropping a session (`SESSION_LIFETIME`, or idle)
   is what gives forward secrecy. Never send data under the static key alone: the
