@@ -329,6 +329,7 @@ Each app has test workflows in `workflows/` directory:
 ```yaml
 # workflows/simple-store.yml
 name: Simple KV Store Test
+auth_mode: proxy
 steps:
   - action: create_context
     app: kv-store
@@ -340,6 +341,8 @@ steps:
     args: '{"key": "test"}'
     expect: '"hello"'
 ```
+
+A scenario that logs in nothing must set `auth_mode: proxy`: `merod init` defaults to embedded auth, and merobox passes no `--auth-mode` when the key is absent.
 
 ## Building for Production
 

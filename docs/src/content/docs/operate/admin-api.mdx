@@ -65,8 +65,8 @@ Two practical notes:
 Admin routes split into **protected** and **public** sets. The protected set is
 wrapped in an auth guard whose behavior depends on `[server] auth_mode`:
 
-- `proxy` (default) — the node expects an external auth proxy in front of it.
-- `embedded` — the bundled `mero-auth` service enforces auth in-process.
+- `proxy` — the node expects an external auth proxy in front of it.
+- `embedded` (what `merod init` writes by default) — the bundled `mero-auth` service enforces auth in-process.
 
 The public routes below carry no auth guard and are always reachable when the
 admin API is enabled.

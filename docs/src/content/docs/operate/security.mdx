@@ -18,15 +18,15 @@ the [deployment guide](/operate/deployment/).
 ## Authentication modes
 
 The HTTP server (admin API, JSON-RPC, WebSocket, SSE) is gated by a single
-`server.auth_mode` setting. There are two modes, and the default is `proxy`.
+`server.auth_mode` setting. There are two modes. `merod init` writes `embedded` unless you pass `--auth-mode proxy`, and a config file that omits the key reads as `proxy`.
 
 | Mode | What it means | Where auth is enforced |
 | --- | --- | --- |
-| `proxy` (default) | The node does **not** authenticate requests itself. It expects an external authenticating proxy in front of it. | At your reverse proxy / auth proxy. |
-| `embedded` | The node runs the bundled auth service (`mero-auth`) in-process and validates JWTs itself. | Inside the node (see [Auth service & providers](/operate/auth/)). |
+| `proxy` | The node does **not** authenticate requests itself. It expects an external authenticating proxy in front of it. | At your reverse proxy / auth proxy. |
+| `embedded` (`merod init` default) | The node runs the bundled auth service (`mero-auth`) in-process and validates JWTs itself. | Inside the node (see [Auth service & providers](/operate/auth/)). |
 
 :::caution
-`proxy` is the default, and on its own it enforces **nothing**. A node started
+`proxy` on its own enforces **nothing**. A node started
 with `auth_mode = "proxy"` and a server bind reachable off-host exposes
 unauthenticated node administration. In `proxy` mode you are responsible for
 putting an authenticating proxy in front of the server bind; in `embedded` mode
@@ -67,7 +67,7 @@ loopback and reach it through a reverse proxy that terminates TLS and (in
 The node's HTTP server speaks **plain HTTP and has no built-in TLS**. For any
 access beyond loopback, terminate TLS at a reverse proxy (nginx, Caddy, Traefik,
 …) and forward to the loopback bind. That proxy is also where you enforce
-authentication when running the default `proxy` mode. The
+authentication when running `proxy` mode. The
 [deployment guide](/operate/deployment/#put-the-server-behind-a-reverse-proxy)
 has a working nginx sketch, including the WebSocket/SSE upgrade and buffering
 settings those streaming endpoints need.
@@ -483,8 +483,9 @@ hostnames and key handling to your environment.
    ```
 
 2. **Turn auth on.** Either run the bundled service
-   (`auth_mode = "embedded"`, above) so the node validates JWTs itself, or keep
-   the default `proxy` mode and put an authenticating proxy in front. Do not run
+   (`auth_mode = "embedded"`, the `merod init` default) so the node validates JWTs
+   itself, or pass `--auth-mode proxy` at init and put an authenticating proxy in
+   front. Do not run
    `proxy` mode with the bind reachable off-host and nothing enforcing auth.
 
 3. **Terminate TLS at the edge** and forward to the loopback bind. The node's
@@ -530,9 +531,9 @@ hostnames and key handling to your environment.
 1. **Do** keep `server.listen` on loopback (`127.0.0.1` / `::1`) and reach the
    admin API through a TLS-terminating reverse proxy.
 
-2. **Do** put an authenticating proxy in front of the node in the default
-   `proxy` mode — or switch to `auth_mode = "embedded"` so the node validates
-   tokens itself.
+2. **Do** put an authenticating proxy in front of the node in `proxy` mode
+   (`merod init --auth-mode proxy`) — or keep `auth_mode = "embedded"`, the init
+   default, so the node validates tokens itself.
 
 3. **Do** terminate TLS at the edge; the node's HTTP server has no built-in TLS.
 

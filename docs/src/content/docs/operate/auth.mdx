@@ -22,22 +22,24 @@ init flags, see the [config reference](/operate/config/) and
 The `server.auth_mode` setting picks how requests are authenticated.
 
 <Tabs>
-<TabItem label="proxy (default)">
+<TabItem label="proxy">
 
 The node does not authenticate requests itself. It expects an external,
-authenticating proxy in front of it that decides who gets through. This is the
-default. With no proxy in place, the server is effectively unauthenticated, so
-the loopback bind (see [Hardening](/operate/security/#keep-the-admin-api-off-public-interfaces))
+authenticating proxy in front of it that decides who gets through. `merod init`
+writes it only when you pass `--auth-mode proxy`, and a config file that omits
+`server.auth_mode` reads as `proxy`. With no proxy in place, the server is
+effectively unauthenticated, so the loopback bind (see [Hardening](/operate/security/#keep-the-admin-api-off-public-interfaces))
 matters.
 
 </TabItem>
-<TabItem label="embedded">
+<TabItem label="embedded (init default)">
 
 The node builds the `mero-auth` service in-process and serves its routes
 alongside the node's own endpoints. The node issues and validates JWTs itself —
 no external auth proxy is required for authentication (you still terminate TLS at
-the edge). Enable it with `merod init --auth-mode embedded`, by setting
-`server.auth_mode = "embedded"`, or per run with `merod run --auth-mode embedded`.
+the edge). It is what `merod init` writes unless you pass `--auth-mode proxy`, so
+init needs admin credentials or `--no-admin`. You can also set
+`server.auth_mode = "embedded"`, or pass `merod run --auth-mode embedded` per run.
 
 In embedded mode the auth store path (`auth_storage_path`, default `auth`) is
 resolved relative to the node home, so the auth database lives under
@@ -322,10 +324,11 @@ call:
 
 <Steps>
 
-1. Initialize (or reconfigure) the node for embedded auth:
+1. Initialize the node. Embedded auth is the default, so pass the admin
+   credentials (or `--no-admin`):
 
    ```sh
-   merod --node node1 init --auth-mode embedded
+   merod --node node1 init --admin-user admin --admin-password-stdin
    ```
 
 2. Confirm `server.auth_mode = "embedded"` in `config.toml` and that an
