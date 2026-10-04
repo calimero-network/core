@@ -37,6 +37,10 @@ Initialize node configuration: creates the home directory, generates an
 ed25519 identity keypair, writes `config.toml`, opens the datastore, and
 **provisions the node's account root** (see [account](#account)).
 
+`init` defaults to embedded auth, so the node authenticates its own callers.
+That needs admin credentials (`--admin-user` with `--admin-password-file` or `--admin-password-stdin`, or `MERO_AUTH_ADMIN_USER` and `MERO_AUTH_ADMIN_PASSWORD`) or `--no-admin`.
+Pass `--auth-mode proxy` only when a proxy in front of the node checks every caller.
+
 | Flag                                | Type / values            | Default            | Purpose                                                                 |
 | ----------------------------------- | ------------------------ | ------------------ | ----------------------------------------------------------------------- |
 | `--boot-nodes <ADDR>`               | multiaddr (repeatable)   | —                  | Explicit bootstrap node multiaddrs.                                     |
@@ -46,7 +50,7 @@ ed25519 identity keypair, writes `config.toml`, opens the datastore, and
 | `--swarm-port <PORT>`               | u16                      | `2428`             | Swarm (peer-to-peer) port.                                              |
 | `--server-host <HOST>`              | IP list                  | `127.0.0.1,::1`    | Hosts to listen on for the RPC server.                                  |
 | `--server-port <PORT>`              | u16                      | `2528`             | RPC / admin / JSON-RPC / WS / SSE port.                                 |
-| `--auth-mode <MODE>`                | `proxy`, `embedded`      | `proxy`            | Authentication mode for server endpoints.                               |
+| `--auth-mode <MODE>`                | `proxy`, `embedded`      | `embedded`         | Authentication mode for server endpoints. `proxy` authenticates no caller itself, so pass it only when a proxy in front of the node checks every one. |
 | `--auth-storage <KIND>`             | `persistent`, `memory`   | `persistent`       | Embedded-auth storage backend (only with `--auth-mode embedded`).       |
 | `--auth-storage-path <PATH>`        | path                     | `auth`             | Embedded-auth storage path (persistent storage only).                   |
 | `--mdns`                            | bool                     | `false`            | Enable mDNS local discovery (LAN / offline dev; off by default).         |
@@ -60,13 +64,16 @@ ed25519 identity keypair, writes `config.toml`, opens the datastore, and
 | `--mode <MODE>`                     | `standard`, `read-only`  | `standard`         | Node operation mode (read-only disables JSON-RPC execution).            |
 
 ```sh
-# Initialize with the default network and ports. The default proxy auth mode
-# lets any page served from localhost reach the admin API, so use it only on a
-# development machine.
-merod --node node1 init
+# Initialize with the default network and ports (embedded auth: the admin
+# password is read from stdin)
+merod --node node1 init --admin-user admin --admin-password-stdin
 
 # Initialize with custom ports
-merod --node node1 init --server-port 2528 --swarm-port 2428
+merod --node node1 init --admin-user admin --admin-password-stdin \
+  --server-port 2528 --swarm-port 2428
+
+# Initialize a node whose callers a proxy in front of it authenticates
+merod --node node1 init --auth-mode proxy
 ```
 
 <Aside type="note">
@@ -434,7 +441,7 @@ runs as a foreground service (under your process supervisor).
    so it is only reachable through a local reverse proxy:
 
    ```bash
-   merod --home /var/lib/calimero --node node1 init \
+   merod --home /var/lib/calimero --node node1 init --auth-mode proxy \
      --server-port 2528 --swarm-port 2428
    ```
 

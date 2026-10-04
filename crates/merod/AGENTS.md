@@ -32,9 +32,9 @@ merod [--node <name>] <subcommand>     # --node only where a store is opened
 │                 # export/import open the store directly — node must be STOPPED.
 │                 # warrant + login-statement never need --node; sign-cert,
 │                 # revoke-proof and sign-with-root need none with --from.
-├── init          # Initialize node configuration (mints the embedded-auth
-│                 # admin root key from --admin-user + password via
-│                 # file/stdin/env; --no-admin defers)
+├── init          # Initialize node configuration (embedded auth by default:
+│                 # mints the admin root key from --admin-user + password via
+│                 # file/stdin/env; --no-admin defers; --auth-mode proxy opts out)
 ├── run           # Start the node daemon (alias: up)
 ├── config        # Modify node configuration
 ├── auth          # Embedded-auth accounts (set-admin: offline admin-key mint)
@@ -294,9 +294,9 @@ rg -n "EyreResult" src/
 ## Running
 
 ```bash
-# Initialize node. The default `--auth-mode proxy` lets any page served from
-# localhost reach the admin API, so use it only on a development machine.
-merod --node node1 init --server-port 2428 --swarm-port 2528
+# Initialize node. `--auth-mode proxy` authenticates no caller, so any page
+# served from localhost can reach the admin API: use it only on a development machine.
+merod --node node1 init --auth-mode proxy --server-port 2428 --swarm-port 2528
 
 # Run with debug logging
 RUST_LOG=debug merod --node node1 run

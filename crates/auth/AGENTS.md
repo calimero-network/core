@@ -35,7 +35,7 @@ Building the binary requires `CALIMERO_AUTH_FRONTEND_PATH` to point at a built a
 
 It has two deployment shapes, both compiled from the same code:
 
-- **Proxy mode** (`AuthMode::Proxy` in `calimero-server`, the default): `mero-auth` runs as its own process (`src/main.rs`), and `calimero-server`/a reverse proxy calls `GET /auth/validate` (forward-auth pattern) to authorize each request before forwarding it.
+- **Proxy mode** (`AuthMode::Proxy` in `calimero-server`, what a config that omits `auth_mode` reads as; `merod init` writes embedded unless given `--auth-mode proxy`): `mero-auth` runs as its own process (`src/main.rs`), and `calimero-server`/a reverse proxy calls `GET /auth/validate` (forward-auth pattern) to authorize each request before forwarding it.
 - **Embedded mode** (`AuthMode::Embedded`): `calimero-server` calls `mero_auth::embedded::build_app(config)` directly (see `crates/server/src/auth.rs`) and mounts the returned `Router` at `/auth` and `/admin` inside its own Axum app - no second process, no HTTP hop for the check.
 
 ## Module inventory

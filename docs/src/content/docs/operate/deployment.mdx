@@ -73,7 +73,7 @@ subcommand after the image.
 
    docker run --rm \
      -v calimero-data:/data \
-     calimero-node --node node1 init
+     calimero-node --node node1 init --auth-mode proxy
    ```
 
    The image's `CALIMERO_HOME=/data` means the node home is `/data/node1`.
@@ -155,7 +155,7 @@ WantedBy=multi-user.target
 
    ```sh
    sudo useradd --system --home /var/lib/calimero --shell /sbin/nologin calimero
-   sudo -u calimero merod --home /var/lib/calimero --node node1 init
+   sudo -u calimero merod --home /var/lib/calimero --node node1 init --auth-mode proxy
    ```
 
 2. **Enable and start** the instance (`%i` is the node name):
@@ -230,7 +230,7 @@ the runbooks.
 The HTTP server speaks plain HTTP and has no built-in TLS. For any access beyond
 loopback, terminate TLS at a reverse proxy (nginx, Caddy, Traefik, …) and forward
 to the loopback bind. The proxy is also where you enforce authentication when
-running the default `auth_mode = "proxy"`.
+running `auth_mode = "proxy"` (pass `--auth-mode proxy` to `merod init`; its default is `embedded`).
 
 ```ini
 # nginx sketch — TLS at the edge, forward to the loopback server bind
@@ -255,7 +255,7 @@ server {
 ```
 
 <Aside type="caution" title="Auth lives at the proxy in proxy mode">
-With the default `auth_mode = "proxy"`, the node expects an external auth proxy
+With `auth_mode = "proxy"`, the node expects an external auth proxy
 in front of it — the protected admin routes are guarded on that assumption.
 Exposing `2528` without that proxy leaves administration unauthenticated. If you
 want the node to enforce auth itself, run `auth_mode = "embedded"` (see the

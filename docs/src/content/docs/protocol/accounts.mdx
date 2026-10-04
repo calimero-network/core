@@ -870,8 +870,8 @@ Two constraints on export:
 ### Recovering onto a replacement machine
 
 ```bash
-merod --node node1 init --server-port 2428 --swarm-port 2528   # fresh node
-merod --node node1 account import                              # paste the phrase
+merod --node node1 init --admin-user admin --admin-password-stdin   # fresh node
+merod --node node1 account import                                   # paste the phrase
 merod --node node1 run
 ```
 
