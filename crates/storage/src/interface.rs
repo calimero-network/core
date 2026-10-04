@@ -4259,6 +4259,7 @@ impl<S: StorageAdaptor> Interface<S> {
     /// the local-write authority rule lives in one place; each caller keeps its
     /// own nonce and any schema re-stamp.
     fn authorize_local_shared_stamp(
+        id: Id,
         claimed: &BTreeMap<AccountId, OpMask>,
     ) -> Result<Option<SharedStampAuthorization>, StorageError> {
         let executor: AccountId = crate::env::account_id().into();
@@ -4270,7 +4271,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // Same split as the other stamp site: authorized by account, stamped with the
         // key that will verify.
         let device: PublicKey = crate::env::device_id().into();
-        authorized.then(|| (claimed.clone(), device))
+        Ok(authorized.then(|| (claimed.clone(), device)))
     }
 
     /// Saves raw serialized data with orphan checking.
