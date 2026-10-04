@@ -781,9 +781,15 @@ async fn a_compacted_parent_is_still_refuted_while_this_run_remembers_its_positi
             .expect("Carol's chain applies");
     }
     assert!(
-        scene.store.compact(1, 1).await > 0,
+        scene.store.compact(1, 1).await.in_memory > 0,
         "the old deltas are pruned"
     );
+    // This scene holds no context lock or stored heads, so the compactor leaves the rows
+    // alone; delete the parent's row as the on-disk prune does on a node.
+    let mut handle = scene.world.store.handle();
+    handle
+        .delete(&key::ContextDagDelta::new(context(), [0x02; 32]))
+        .expect("the parent's row is deleted");
 
     // The parent's row is gone; the in-memory map is what still says where its author stood.
     let before = scene.joined();
