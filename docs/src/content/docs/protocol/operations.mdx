@@ -74,7 +74,7 @@ The `payload` is a single enum spanning four planes of change. Folding them into
 - **Membership** (`who`)
   - `MemberAdded { group, member, role }`
   - `MemberRemoved { group, member }`
-  - `MemberLeft { group, member }` — a self-leave; of the namespace root, it also removes the member from every subgroup
+  - `MemberLeft { group, member }` - a self-leave; of the namespace root, it also removes the member from every subgroup
 - **Admin & structure** (`gov`)
   - `AdminChanged`, `PolicyUpdated`
   - `SubgroupCreated / Reparented / Deleted`

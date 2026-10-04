@@ -102,7 +102,7 @@ type HandoffCandidates = BTreeMap<([u8; 32], [u8; 64]), RootKeyHandoff>;
 /// A slot only ever holds genuinely concurrent rotations from the same epoch by
 /// devices sharing one root key, so this is far above any legitimate need.
 const MAX_HANDOFF_CANDIDATES: usize = 8;
-const MAX_STANDING_JOINS: usize = 64; // joins of one member that may stand above its clock and still resolve exactly
+const MAX_STANDING_JOINS: usize = 64; // most joins above one member's clock that resolve exactly
 
 /// The deterministic projection of one scope's op-log: values + ACL + groups,
 /// each slot resolved last-writer-wins by `(hlc, op_id)`.
