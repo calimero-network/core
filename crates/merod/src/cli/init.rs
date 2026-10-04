@@ -298,7 +298,7 @@ pub struct InitCommand {
     /// replaces those two headers on every route it authenticates and strips
     /// them on every other one. The node cannot tell a header the proxy wrote
     /// from one a client did, so anywhere else it lets a caller name any
-    /// account. Ignored, with a warning, in embedded mode, where this process
+    /// account. Refused with `--auth-mode embedded`, where this process
     /// authenticates the caller itself.
     #[clap(long, default_value_t = false)]
     pub proxy_identity: bool,
@@ -409,6 +409,13 @@ impl InitCommand {
         reason = "TODO: Will be refactored"
     )]
     pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
+        if self.proxy_identity && matches!(self.auth_mode, Some(AuthModeArg::Embedded)) {
+            bail!(
+                "--proxy-identity needs proxy auth: with --auth-mode embedded this node \
+                 authenticates its callers itself"
+            );
+        }
+
         let mdns = self.mdns && !self.no_mdns;
 
         let path = root_args.node_home()?;
@@ -665,13 +672,6 @@ impl InitCommand {
             }
             None
         };
-
-        if self.proxy_identity && matches!(auth_mode, AuthMode::Embedded) {
-            warn!(
-                "--proxy-identity does nothing with --auth-mode embedded: this node \
-                 authenticates its callers itself",
-            );
-        }
 
         let mut server_config = ServerConfig::with_auth(
             self.server_host
