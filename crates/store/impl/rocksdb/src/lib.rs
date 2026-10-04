@@ -62,13 +62,13 @@
 mod tests;
 
 use calimero_store::config::StoreConfig;
-use calimero_store::db::{Column, Database};
+use calimero_store::db::{Column, Database, TableStats};
 use calimero_store::iter::{DBIter, Iter};
 use calimero_store::slice::Slice;
 use calimero_store::tx::{Operation, Transaction};
 use eyre::{bail, Result as EyreResult};
 use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, CompactOptions,
+    properties, BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, CompactOptions,
     DBCompressionType, DBRawIteratorWithThreadMode, Options, ReadOptions, ReadTier, Snapshot,
     WriteBatch, DB,
 };
@@ -416,6 +416,29 @@ impl Database<'_> for RocksDB {
         self.db
             .delete_range_cf(cf_handle, lo.as_ref(), hi.as_ref())?;
         Ok(())
+    }
+
+    fn table_stats(&self) -> EyreResult<Option<TableStats>> {
+        let mut stats = TableStats::default();
+        for column in Column::iter() {
+            let cf = self.try_cf_handle(column)?;
+            let read = |name: &properties::PropName| -> EyreResult<u64> {
+                Ok(self.db.property_int_value_cf(cf, name)?.unwrap_or(0))
+            };
+            stats.live_data_estimate = stats
+                .live_data_estimate
+                .saturating_add(read(properties::ESTIMATE_LIVE_DATA_SIZE)?);
+            stats.live_sst = stats
+                .live_sst
+                .saturating_add(read(properties::LIVE_SST_FILES_SIZE)?);
+            stats.total_sst = stats
+                .total_sst
+                .saturating_add(read(properties::TOTAL_SST_FILES_SIZE)?);
+            stats.memtable = stats
+                .memtable
+                .saturating_add(read(properties::CUR_SIZE_ALL_MEM_TABLES)?);
+        }
+        Ok(Some(stats))
     }
 
     fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {

@@ -278,7 +278,7 @@ pub fn logical_counter(ts: &HybridTimestamp) -> u32 {
 /// about 3e-14.
 #[must_use]
 pub fn hlc_seed_from_device_id(device_id: &[u8; 32]) -> [u8; 8] {
-    use sha2::{Digest, Sha256};
+    use crate::hash_meter::{Digest, Sha256};
     let digest = Sha256::digest(device_id);
     let mut seed = [0u8; 8];
     seed.copy_from_slice(&digest[..8]);

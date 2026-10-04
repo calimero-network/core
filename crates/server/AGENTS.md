@@ -386,6 +386,12 @@ permissions over as `GrantedPermissions`, and `execute_request` in
   permission's own parameters contain commas, so it is split only outside
   brackets.
 - **Guard ran, no permissions** is refused, never read as unrestricted.
+- **An account-anchored session never acts as the node.** `/jsonrpc` (through
+  `jsonrpc::caller_identity`) and WS `execute` refuse a caller holding only
+  `AuthenticatedAccount`, whether the embedded guard or `proxy_identity` set it:
+  `execute` and `set_ephemeral` run as this node's own context identity. Its
+  writes go through `/intents` with a warrant, its presence through
+  `/presence-intents`.
 - **A method's own `Err` is mapped once**, by `execute::method_output`, into
   `ExecutionError::FunctionCallError`. JSON-RPC, WS, the delegated `/intents`
   and the account `/query` all use it; the two admin routes answer it with
@@ -400,6 +406,8 @@ Subscribing is authorized once, at subscribe time, by the gates in
 `authorize_group_subscriptions`). Keeping that decision true afterwards is
 `src/subscription_grants.rs`, and there are three rules worth knowing before
 touching either.
+A caller with an identity must be a member in every auth mode, proxy included, since a proxy tenant is one caller among many.
+Only the node owner and an identity-less caller on an auth-off node bypass this.
 
 **The gate is the only authority.** A grant never *grants* anything; it only
 records what a connection's subscriptions depend on, so a membership change can
@@ -448,6 +456,16 @@ request re-stamps it.
   it listens on an unspecified one, and the hosts of `allowed_origins`). A browser's `Host`
   is whatever name it resolved, so it proves nothing until the node recognises it. Clients
   that send no `Origin` are not browsers and are unaffected.
+- In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
+  sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never
+  count `Sec-Fetch-Mode` alone: Node's built-in `fetch` sends it on every request, so it would
+  judge server-side SDK clients as browsers. It is admitted when the origin is listed or is a
+  loopback page (any host), or when every `Host` / `X-Forwarded-Host` (or the URI authority,
+  for HTTP/2) is a loopback name, an IP address or an `allowed_origins` host and the origin
+  matches one of them or is absent. Never admit a request because its
+  `Origin` equals its `Host`: under DNS rebinding the two are the attacker's name together. A
+  node served under a host name of its own must list that origin. The CORS layer calls the same
+  `admits`, so the two cannot disagree.
 - SSE streams are per-context
 - The `/sse/subscription` 200 is the client's readiness signal: once it lists a
   context, live events for it reach the stream. That holds only because

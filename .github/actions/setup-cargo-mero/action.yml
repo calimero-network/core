@@ -1,9 +1,76 @@
 name: Setup cargo mero
-description: "Put cargo-mero on PATH so steps can run `cargo mero <cmd>`"
+description: >
+  Put cargo-mero on PATH so steps can run `cargo mero <cmd>`. Built at most once
+  per source tree and restored everywhere else, instead of compiled in every job.
 
 runs:
   using: "composite"
   steps:
-    - name: Build and expose cargo-mero
+    # Git tree ids of every workspace directory cargo-mero is built from, as
+    # path-dep-closure.py follows them, so a new dependency can never reuse an
+    # old binary. The workspace version it bakes in lives in the root manifest,
+    # registry crates are pinned by the lockfile, the toolchain by
+    # rust-toolchain.toml.
+    - name: Key cargo-mero on its source trees
+      id: key
       shell: bash
-      run: scripts/setup-cargo-mero.sh >> "$GITHUB_PATH"
+      run: |
+        set -euo pipefail
+        mapfile -t dirs < <(python3 scripts/path-dep-closure.py tools/cargo-mero)
+        paths=("${dirs[@]}" Cargo.lock Cargo.toml rust-toolchain.toml .cargo
+          scripts/setup-cargo-mero.sh scripts/path-dep-closure.py .github/actions/setup-cargo-mero)
+        # A tree with uncommitted edits is not the tree its id names: build, never share.
+        if [ -n "$(git status --porcelain -- "${paths[@]}")" ]; then
+          echo "::warning::cargo-mero sources differ from HEAD; building without the shared cache"
+          share=false
+        else
+          share=true
+        fi
+        trees=$(for p in "${paths[@]}"; do printf '%s %s\n' "$p" "$(git rev-parse "HEAD:$p" 2>/dev/null || echo absent)"; done)
+        hash=$(printf '%s\n%s\n' "$trees" "$RUNNER_OS-$RUNNER_ARCH" | sha256sum | cut -c1-24)
+        {
+          echo "share=$share"
+          echo "key=cargo-mero-bin-v1-$hash"
+          echo "dir=$HOME/.cache/cargo-mero-bin"
+        } >> "$GITHUB_OUTPUT"
+        echo "cargo-mero trees:"; echo "$trees"
+
+    - name: Restore cargo-mero
+      id: restore
+      if: steps.key.outputs.share == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.key.outputs.dir }}
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Build cargo-mero
+      id: build
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        DIR: ${{ steps.key.outputs.dir }}
+      run: |
+        set -euo pipefail
+        built=$(env -u CARGO_MERO_BIN_DIR scripts/setup-cargo-mero.sh)
+        mkdir -p "$DIR"
+        cp "$built/cargo-mero" "$DIR/cargo-mero"
+
+    - name: Share cargo-mero
+      if: steps.build.outcome == 'success' && steps.key.outputs.share == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.key.outputs.dir }}
+        key: ${{ steps.key.outputs.key }}
+
+    # CARGO_MERO_BIN_DIR is what scripts/setup-cargo-mero.sh hands back, so the
+    # scripts that call it themselves (build-wasms.sh, abi-contract-check.sh, ...)
+    # take this binary too instead of compiling another.
+    - name: Expose cargo-mero
+      shell: bash
+      env:
+        DIR: ${{ steps.key.outputs.dir }}
+      run: |
+        set -euo pipefail
+        "$DIR/cargo-mero" mero --version
+        echo "$DIR" >> "$GITHUB_PATH"
+        echo "CARGO_MERO_BIN_DIR=$DIR" >> "$GITHUB_ENV"

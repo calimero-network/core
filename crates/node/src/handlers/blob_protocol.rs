@@ -530,13 +530,7 @@ mod tests {
             .expect("store user data");
         let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
         node_client
-            .write_application_row(
-                &ApplicationId::from([0x7A; 32]),
-                &bytecode,
-                size,
-                &source,
-                None,
-            )
+            .write_application_row(&ApplicationId::from([0x7A; 32]), &bytecode, size, &source)
             .expect("install the application");
 
         let http = node_client.clone().with_registry(RegistryConfig::new(
@@ -897,7 +891,7 @@ mod tests {
         let application_id = ApplicationId::from(*context_id);
         let source: ApplicationSource = "file:///home/dev/app.wasm".parse().expect("source");
         node_client
-            .write_application_row(&application_id, &bytecode_id, size, &source, None)
+            .write_application_row(&application_id, &bytecode_id, size, &source)
             .expect("install the application");
 
         let mut handle = store.handle();

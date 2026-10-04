@@ -79,6 +79,12 @@ impl Store {
             .approximate_size(col, Slice::from(start), Slice::from(end))
     }
 
+    /// Table-file accounting for the whole store (see
+    /// [`Database::table_stats`]). `None` for backends without table files.
+    pub fn table_stats(&self) -> EyreResult<Option<db::TableStats>> {
+        self.db.table_stats()
+    }
+
     // === Raw, untyped column access (ordered secondary index, core#2559) ===
     //
     // The typed `Handle`/`Entry` API requires fixed-size `KeyComponents`. The

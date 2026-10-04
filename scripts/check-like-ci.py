@@ -32,6 +32,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci-checks.yml"
 AGGREGATE_JOB = "rust"  # the required `Rust` check; its `needs` are the jobs run by default
+# Needs of that check that only decide what CI runs; a local run runs everything.
+CI_ONLY_JOBS = {"scope"}
 INSTALL_ACTION = "taiki-e/install-action"  # steps whose `tool:` binaries CI installs for later steps
 
 # (predicate, message) for things CI has and a workstation may not; True means missing.
@@ -67,7 +69,8 @@ def load_workflow(workflow: Path) -> dict:
 def default_jobs(doc: dict) -> list[str]:
     """The jobs the aggregate `Rust` check waits on, so a new one is picked up here."""
     needs = ((doc.get("jobs") or {}).get(AGGREGATE_JOB) or {}).get("needs") or []
-    return [needs] if isinstance(needs, str) else list(needs)
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    return [job for job in needs if job not in CI_ONLY_JOBS]
 
 
 def installed_tools(doc: dict, job: str) -> list[str]:

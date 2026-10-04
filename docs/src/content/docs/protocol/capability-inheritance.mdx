@@ -116,10 +116,11 @@ for _ in 0..=MAX_NAMESPACE_DEPTH {
 }
 ```
 
-Two subtleties worth calling out:
+Three subtleties worth calling out:
 
 - **The capability is checked at the *anchor*, not the target.** Whether you inherit into a deep Open subgroup depends on the `CAN_JOIN_OPEN_SUBGROUPS` bit you hold in the ancestor where your direct row lives — not on anything written at the subgroup you are being tested against.
 - **An admin grant short-circuits; a non-admin member is tentative.** An admin of any Open ancestor is a member of everything below on the chain. A non-admin member's inheritance is decided by the *first* direct-row ancestor encountered and may resolve to `None` (the bit is missing) even though they are a member higher up — that is the per-member deny-list use of the bit, described below.
+- **A removal or a leave is a wall for that member.** Being deny-listed in, removed from or having left an Open group the walk passes through before reaching any row ends inheritance there, so a member kicked from a group, or who left it, is not a member of anything below it either; re-entry is by an invitation to that group or an admin re-adding them. An admin of a group above the wall still reaches below it, as admin authority does. The fold holds no deny-list or re-entry rows, so the gates that decide from it ask `MembershipRepository::exited_ancestor` for this half. Reads under a fully Open chain stay namespace-wide, because the namespace key covers them.
 
 The loop is bounded by `MAX_NAMESPACE_DEPTH` (16); exceeding it is treated as a corrupt store (a possible cycle) and bails rather than looping forever.
 

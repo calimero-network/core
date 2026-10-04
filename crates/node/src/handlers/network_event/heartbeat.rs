@@ -141,12 +141,12 @@ pub(super) fn handle_hash_heartbeat(
                     return;
                 }
 
-            // #2319: surface divergence as a metric (`sync_root_hash_divergence_detected_total`)
-            // so vmagent can alert on the rate without grepping logs —
-            // with the determinism fixes this should stay near zero. Counted on
-            // EVERY observation, independent of the log-level gating below, so
-            // the rate stays faithful.
-            let _new = manager.divergence_detected.inc();
+            // #2319: count EVERY observation, independent of the log-level
+            // gating below. Every applied remote delta also heartbeats, so
+            // under write load this rises with writes x peers even when
+            // nothing is wrong; `divergence_metrics.escalated` below counts
+            // the divergences that did not heal.
+            let _new = manager.divergence_metrics.detected.inc();
 
             // Persistence gate: a divergence is only escalated to ERROR once the
             // SAME (our, their) hash pair has persisted for
@@ -282,6 +282,7 @@ pub(super) fn handle_hash_heartbeat(
             // escalation so a still-stuck divergence keeps ERRORing without
             // re-spawning a sync every heartbeat.
             if persistence == Persistence::Escalated {
+                let _new = manager.divergence_metrics.escalated.inc();
                 let node_client = manager.clients.node.clone();
                 let _ignored = ctx.spawn(
                     async move {

@@ -313,17 +313,19 @@ fn is_availability_node_for(
 
 /// Whether `public_key` is a TEE member covering `context_id`.
 ///
-/// Answered from [`crate::sync::availability_accounts_for_group`], which unions
-/// the context's own group with every ancestor up to the namespace root — a TEE
+/// Answered by [`crate::sync::is_availability_account`], which checks the
+/// context's own group and every ancestor up to the namespace root — a TEE
 /// admitted at the root has no direct row in an `Open` subgroup it follows by
 /// inheritance, and is an availability node for that subgroup's contexts all
 /// the same.
 ///
 /// The SEND side (`crate::availability_peers`) resolves who to announce to from
-/// that same function. Sharing it is deliberate: two implementations of "is
-/// this an availability member of this context, directly or by inheritance"
-/// would drift, and a send side that walked fewer levels than the receive side
-/// would silently announce to nobody in exactly the topology the fleet runs.
+/// [`crate::sync::availability_accounts_for_group`], and both read the one
+/// ancestor walk in `crate::sync::availability_levels`. Sharing it is
+/// deliberate: two walks for "is this an availability member of this context,
+/// directly or by inheritance" would drift, and a send side that walked fewer
+/// levels than the receive side would silently announce to nobody in exactly
+/// the topology the fleet runs.
 fn is_availability_member(
     store: &calimero_store::Store,
     context_id: &ContextId,
@@ -338,7 +340,9 @@ fn is_availability_member(
         return Ok(false);
     };
 
-    Ok(crate::sync::availability_accounts_for_group(store, &group_id).contains(&account))
+    Ok(crate::sync::is_availability_account(
+        store, &group_id, &account,
+    ))
 }
 
 #[cfg(test)]
@@ -697,6 +701,115 @@ mod tests {
         assert!(
             is_availability_member(&store, &context(), &key).expect("decide"),
             "a root-admitted ReadOnlyTee is an availability node for a subgroup context"
+        );
+    }
+
+    /// The receive side's point check and the send side's set must agree for
+    /// every role at every level: TEE and non-TEE, direct and inherited, member
+    /// and stranger. `is_availability_account` replaced a `contains` on that set,
+    /// so any account they disagree on is a behaviour change.
+    #[test]
+    fn the_point_check_agrees_with_the_availability_set() {
+        let store = test_store();
+        let root = ContextGroupId::from([0xA0; 32]);
+        let subgroup = ContextGroupId::from([0xB0; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&root, &subgroup)
+            .expect("nest subgroup");
+
+        let members = MembershipRepository::new(&store);
+        let placed = [
+            (root, GroupMemberRole::ReadOnlyTee, 0x11),
+            (root, GroupMemberRole::Member, 0x12),
+            (subgroup, GroupMemberRole::RelayTee, 0x13),
+            (subgroup, GroupMemberRole::Member, 0x14),
+            (subgroup, GroupMemberRole::Admin, 0x15),
+        ];
+        let mut accounts = vec![calimero_account::AccountId::from([0x99; 32])];
+        for (group, role, seed) in placed {
+            let account =
+                calimero_context::test_support::enrol(&store, &root, &PublicKey::from([seed; 32]));
+            members
+                .add_member(&group, &account, role)
+                .expect("add member");
+            accounts.push(account);
+        }
+
+        for group in [root, subgroup] {
+            let set = crate::sync::availability_accounts_for_group(&store, &group);
+            for account in &accounts {
+                assert_eq!(
+                    crate::sync::is_availability_account(&store, &group, account),
+                    set.contains(account),
+                    "{account:?} in {group:?}"
+                );
+            }
+        }
+    }
+
+    /// A blob announce asks about ONE announcer, so its cost must not grow with
+    /// the namespace: it used to list every member of the context's group and
+    /// each ancestor. One bound TEE and `n` other members; reading one member
+    /// row per level grows ~1x from 250 to 2000 members, listing them ~8x.
+    ///
+    /// On RocksDB, because the in-memory test store clones a whole column per
+    /// iterator and would charge the binding scan for the member rows.
+    #[test]
+    fn an_announce_check_does_not_grow_with_the_member_count() {
+        use std::time::Instant;
+
+        const SMALL: usize = 250;
+        const LARGE: usize = 8 * SMALL;
+        const MAX_GROWTH: f64 = 4.0;
+        const CALLS: usize = 50;
+
+        let measure = |n: usize| {
+            let dir = TempDir::new().expect("tempdir");
+            let path = dir.path().to_owned().try_into().expect("utf-8 path");
+            let store = Store::open::<calimero_store_rocksdb::RocksDB>(
+                &calimero_store::config::StoreConfig::new(path),
+            )
+            .expect("open rocksdb");
+            let group = ContextGroupId::from([0xA0; 32]);
+            let members = MembershipRepository::new(&store);
+            for i in 0..n {
+                let mut account = [0xA5; 32];
+                account[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                members
+                    .add_member(
+                        &group,
+                        &calimero_account::AccountId::from(account),
+                        GroupMemberRole::Member,
+                    )
+                    .expect("add member");
+            }
+            let key = PublicKey::from(TEE);
+            let account = calimero_context::test_support::enrol(&store, &group, &key);
+            members
+                .add_member(&group, &account, GroupMemberRole::ReadOnlyTee)
+                .expect("add the tee");
+            register_context_in_group(&store, &group, &context()).expect("register context");
+
+            (0..3)
+                .map(|_| {
+                    let start = Instant::now();
+                    for _ in 0..CALLS {
+                        assert!(is_availability_member(&store, &context(), &key).expect("decide"));
+                    }
+                    start.elapsed()
+                })
+                .min()
+                .expect("three runs")
+        };
+
+        let _warm = measure(SMALL);
+        let small = measure(SMALL);
+        let large = measure(LARGE);
+        let growth = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
+        assert!(
+            growth <= MAX_GROWTH,
+            "{SMALL} -> {LARGE} members took {small:?} -> {large:?} for {CALLS} checks, \
+             {growth:.1}x; one member row per level is ~1x, listing them ~8x"
         );
     }
 

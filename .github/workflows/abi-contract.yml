@@ -20,6 +20,14 @@ on:
       - "scripts/resolve-paired-ref.sh"
       - "scripts/build-all-apps.sh"
       - ".github/workflows/abi-contract.yml"
+      - ".github/actions/setup-cargo-mero/**"
+      - "scripts/setup-cargo-mero.sh"
+      - "scripts/path-dep-closure.py"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "apps/kv-store/GUIDE.md"
+      - "tools/calimero-abi/README.md"
 
 env:
   CARGO_TERM_COLOR: always
@@ -62,10 +70,9 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: abi-contract
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -87,6 +94,10 @@ jobs:
         run: |
           pnpm install --filter '@calimero-network/abi-codegen...'
           pnpm --filter '@calimero-network/abi-codegen' build
+
+      # abi-contract-check.sh takes this binary instead of compiling its own.
+      - name: Setup cargo mero
+        uses: ./.github/actions/setup-cargo-mero
 
       - name: Run ABI contract check
         env:

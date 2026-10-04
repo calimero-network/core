@@ -16,7 +16,8 @@ use tracing::debug;
 
 use super::NodeClient;
 
-pub use bind::InstallOrigin;
+pub use bind::{lock_application_rows, InstallOrigin};
+pub use install::NotABundle;
 pub use query::compare_versions;
 
 impl NodeClient {
@@ -281,9 +282,8 @@ impl NodeClient {
         Ok(versions)
     }
 
-    /// Application wasm bytes straight from a bytecode blob - the blobstore is
-    /// the only copy, so a context pinned to a blob the application row no
-    /// longer references still resolves. `None` when the blob is absent locally.
+    /// Wasm from a signed bundle blob, which a context pinned off the row still
+    /// resolves; `None` when absent. Raw wasm never runs: any group can name a blob.
     pub async fn application_bytes_from_blob(
         &self,
         blob_id: &BlobId,
@@ -293,11 +293,13 @@ impl NodeClient {
             return Ok(None);
         };
         let service = service_name.map(str::to_owned);
+        let blob_id = *blob_id;
         // Detection gunzips too, so it belongs on the blocking pool with the
         // read it gates rather than on the reactor thread.
         let wasm = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
             if !Self::is_bundle_blob(&blob_bytes) {
-                return Ok(blob_bytes);
+                return Err(eyre::Report::new(NotABundle)
+                    .wrap_err(format!("{blob_id} is raw wasm, which never runs")));
             }
             bundle::VerifiedBundle::open(blob_bytes)?.wasm(service.as_deref())
         })

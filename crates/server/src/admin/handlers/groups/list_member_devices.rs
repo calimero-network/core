@@ -96,7 +96,10 @@ fn collect(
             .collect());
     }
 
-    if !membership.is_member(group_id, &caller)? {
+    if membership
+        .effective_capabilities(group_id, &caller)?
+        .is_none()
+    {
         return Err(not_a_group_member(group_id));
     }
 
@@ -158,8 +161,10 @@ mod tests {
     use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
     use calimero_context::error::ContextError;
     use calimero_context_config::types::ContextGroupId;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
     use calimero_governance_store::{
-        AccountBindingRepository, MembershipRepository, NamespaceRepository,
+        AccountBindingRepository, CapabilitiesRepository, DenyListRepository, MembershipRepository,
+        NamespaceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -317,6 +322,41 @@ mod tests {
 
         assert_eq!(accounts(&members), vec![node_account]);
         assert_eq!(members[0].devices.len(), 2);
+    }
+
+    /// Kicking or leaving an Open subgroup a member inherits deny-lists it there
+    /// rather than deleting a row, and that entry is what refuses it.
+    #[test]
+    fn a_member_removed_from_an_inherited_subgroup_is_refused() {
+        let (store, node_account, _peer) = seed(GroupMemberRole::Member);
+        let subgroup = ContextGroupId::from([0x22; 32]);
+        NamespaceRepository::new(&store)
+            .nest(&namespace(), &subgroup)
+            .expect("nest the subgroup");
+        let capabilities = CapabilitiesRepository::new(&store);
+        capabilities
+            .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .expect("open the subgroup");
+        capabilities
+            .set_member_capability(
+                &namespace(),
+                &node_account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("let this node inherit into it");
+        let members = collect(&store, &subgroup, 0, usize::MAX).expect("an inheritor reads");
+        assert_eq!(accounts(&members), vec![node_account]);
+
+        DenyListRepository::new(&store)
+            .mark(&subgroup, &node_account)
+            .expect("remove this node from the subgroup");
+
+        let err =
+            collect(&store, &subgroup, 0, usize::MAX).expect_err("a removed member reads nothing");
+        assert!(matches!(
+            err.downcast_ref::<ContextError>(),
+            Some(ContextError::NotAGroupMember { .. })
+        ));
     }
 
     /// Symmetric with `/groups/:group_id/members`: an admin of a subgroup sees

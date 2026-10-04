@@ -28,7 +28,7 @@ mod void;
 #[cfg(test)]
 mod void_tests;
 
-pub use void::AuthorityBase;
+pub use void::{Acting, AuthorityBase};
 
 #[cfg(test)]
 pub mod testing;

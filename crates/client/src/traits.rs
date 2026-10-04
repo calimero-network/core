@@ -204,10 +204,15 @@ pub struct ClientSettings {
     pub user_agent: String,
 }
 
+/// The default HTTP request timeout, in seconds: [`ClientSettings`]'s default,
+/// and what every [`ConnectionInfo`](crate::connection::ConnectionInfo) request
+/// is bounded by unless the call is one the node legitimately takes longer on.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
+
 impl Default for ClientSettings {
     fn default() -> Self {
         Self {
-            request_timeout: 30,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT_SECS,
             max_retries: 3,
             retry_delay_ms: 1000,
             use_http2: true,

@@ -13,6 +13,10 @@ on:
       - "scripts/fuzz.sh"
       - "scripts/fuzz-ci.sh"
       - ".github/workflows/fuzz.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+      - "tools/mero-sign/README.md"
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:

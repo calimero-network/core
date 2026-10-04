@@ -13,6 +13,7 @@ use calimero_context_client::local_governance::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
+use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_op::Op;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::context::GroupMemberRole;
@@ -21,6 +22,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use libp2p::gossipsub::TopicHash;
 
+use crate::deferred_rotation::DeferredRotations;
 use crate::governance_broadcast::{
     self, assert_transport_ready, classify_publish_readiness, ns_topic,
     publish_and_await_ack_namespace, timeout_for_namespace_op, DeliveryReport, PublishReadiness,
@@ -35,7 +37,7 @@ use super::super::{
 };
 use super::dag::{NamespaceDagService, NamespaceHead};
 use super::op_log::NamespaceOpLogService;
-use super::retry::NamespaceRetryService;
+use super::retry::{NamespaceRetryService, RetryCandidate};
 
 mod voided;
 
@@ -772,6 +774,11 @@ impl<'a> NamespaceGovernance<'a> {
                 let inner_decrypted = resolved_key.is_some();
                 if !inner_decrypted {
                     keep_bytes &= self.admit_unreadable(op)?;
+                    // The key-arrival replay applies the rotation at this op's sequence.
+                    if keep_bytes && key_rotation.is_some() {
+                        DeferredRotations::new(self.store, self.namespace_id)
+                            .defer(delta_id, op_sequence)?;
+                    }
                 }
                 let inner_op = resolved_key
                     .as_ref()
@@ -796,39 +803,13 @@ impl<'a> NamespaceGovernance<'a> {
                     }
                 }
 
-                if let Some(rotation) = key_rotation {
-                    // A delegated removal names the admin the rotation is on behalf of;
-                    // anything else rotates on the signer's own authority.
-                    let delegated_inner = inner_op
-                        .as_ref()
-                        .filter(|inner| matches!(inner, GroupOp::OnBehalf { .. }));
-                    // A rotation rides an op, and is void with it: the key it
-                    // carries is one a removed admin holds.
-                    let rotation_is_void = match inner_op.as_ref() {
-                        Some(inner) => {
-                            self.op_is_void(&group_id_typed, op, Some(inner), None, delta_id)?
-                        }
-                        None => false,
-                    };
-                    if rotation_is_void {
-                        tracing::info!(
-                            group_id = %hex::encode(group_id_typed.to_bytes()),
-                            signer = %op.signer,
-                            "ignoring key rotation: the signer's removal is concurrent with it"
-                        );
-                    } else {
-                        self.apply_key_rotation(
-                            &group_id_typed,
-                            op,
-                            rotation,
-                            inner_decrypted,
-                            delegated_inner,
-                            op_sequence,
-                            delta_id,
-                            &mut result,
-                        )?;
-                    }
-                }
+                self.apply_carried_rotation(
+                    op,
+                    inner_op.as_ref(),
+                    op_sequence,
+                    delta_id,
+                    &mut result,
+                )?;
             }
             // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op type
             // contributes nothing to apply (it folds as a `Noop` in decode),
@@ -1942,6 +1923,27 @@ impl<'a> NamespaceGovernance<'a> {
         // changing which key the group uses still requires an admin-signed
         // rotation at the op's cut. Trying to do that authorization work with an
         // ordering mechanism is what refused the legitimate re-add.
+        //
+        // A replay (`depth > 0`) of a key already held is a no-op. The sealed-root
+        // retry has no applied marker, so it re-feeds deliveries applied long
+        // ago, and the epoch below is the head at the time of the call, not the
+        // op's sequence. Re-stamping there raised a stale key above a later
+        // rotation, making the key a removed member holds current again, and the
+        // re-drive below re-entered the walk that fed it. Whatever first stored
+        // the key already ranked it and re-drove its group.
+        if depth > 0
+            && GroupKeyring::new(self.store, gid)
+                .load_key_by_id(&GroupKeyring::key_id_for(&group_key))
+                .map_err(|e| eyre::eyre!("load delivered key: {e}"))?
+                .is_some()
+        {
+            tracing::debug!(
+                group_id = %hex::encode(group_id),
+                "replayed delivery of a key already held; leaving its rank as it is"
+            );
+            return Ok(None);
+        }
+
         // The op's sequence, read the same way `apply_signed_op` reads it for a
         // rotation. Monotone in the DAG, so it exceeds the epoch of any key this
         // node already holds for the group and the delivered key becomes current
@@ -2150,6 +2152,13 @@ impl<'a> NamespaceGovernance<'a> {
                 );
                 continue;
             }
+            // This walk has no applied marker, so it re-feeds creates this node
+            // folded long ago, and a create is not replay-safe: its fold seats the
+            // creator as admin again, and a moved group refuses it on every pass.
+            // Its side effect also re-drives the group, which re-enters this walk.
+            if self.group_created_already_folded(&root)? {
+                continue;
+            }
             // A replayed root op is judged as one applied on arrival is.
             if self.root_op_is_void(&gate_op, &root, gate_op.content_hash()?)? {
                 continue;
@@ -2204,6 +2213,28 @@ impl<'a> NamespaceGovernance<'a> {
             applied,
             divergence,
         })
+    }
+
+    /// Whether `root` is a `GroupCreated` (bare or delegated) for a group this
+    /// node has already folded.
+    ///
+    /// Folded means the parent edge and the birth visibility are both on disk:
+    /// the create writes the visibility last, so a fold cut short by a crash
+    /// still reads as unfolded and the next pass finishes it. The id is derived
+    /// from the create, so an existing group with that id is this op's group,
+    /// wherever it has been moved since.
+    fn group_created_already_folded(&self, root: &RootOp) -> EyreResult<bool> {
+        let group_id = match root {
+            RootOp::OnBehalf { op, .. } | RootOp::RootGuarded { op, .. } => {
+                return self.group_created_already_folded(op);
+            }
+            RootOp::GroupCreated { group_id, .. } => ContextGroupId::from(group_id.to_bytes()),
+            _ => return Ok(false),
+        };
+        Ok(NamespaceRepository::new(self.store)
+            .parent(&group_id)?
+            .is_some()
+            && CapabilitiesRepository::new(self.store).has_subgroup_visibility(&group_id)?)
     }
 
     pub(crate) fn retry_encrypted_ops_for_group(
@@ -2265,63 +2296,71 @@ impl<'a> NamespaceGovernance<'a> {
 
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
-        let retry_candidates = retry_service
-            .collect_retry_candidates_for_group(group_id)
-            .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
-        let attempted = retry_candidates.len();
-        if attempted > 0 {
-            record_namespace_retry_event("collected");
-        }
-
-        // Last-writer-wins across retry candidates that surface
-        // divergence. The outbox carrying this report to the node
-        // handler is a single slot (see `governance_dag.rs`), so
-        // collapsing here matches the fresh-arrival path's LWW
-        // semantics. In practice each retry batch unblocks a small
-        // number of ops and at most one is a `MemberRemoved` /
-        // `MemberLeft` that could report divergence.
+        let mut attempted = 0usize;
         // Whether the group phase folded anything, which is the only condition
         // under which the second sealed-root pass below can find new work.
         let mut group_applied = 0usize;
+        // A replayed rotation stores a key that may open more buffered ops, so pass again.
+        loop {
+            let retry_candidates = retry_service
+                .collect_retry_candidates_for_group(group_id)
+                .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
+            attempted += retry_candidates.len();
+            if !retry_candidates.is_empty() {
+                record_namespace_retry_event("collected");
+            }
+            let mut rotated = false;
 
-        for candidate in &retry_candidates {
-            let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
-                continue;
-            };
-            match self.decrypt_and_apply_group_op(
-                &candidate.signed_op,
-                &gid_typed,
-                &candidate.group_key,
-                encrypted,
-            ) {
-                // Surface divergence from retry-path applies. Once a
-                // retry replay applies an op, the DAG marks any later
-                // fresh arrival of the same op as `Duplicate` and the
-                // apply work — including the post-apply hash check —
-                // is skipped. That makes the retry path the *only*
-                // opportunity to detect divergence on retried ops:
-                // dropping it here means the reconcile trigger never
-                // fires for `MemberRemoved` / `MemberLeft` ops that
-                // were buffered pending `KeyDelivery`.
-                Ok(divergence) => {
-                    group_applied += 1;
-                    record_namespace_retry_event("applied");
-                    tracing::info!(
-                        group_id = %hex::encode(group_id),
-                        "retried encrypted op after KeyDelivery"
-                    );
-                    if divergence.is_some() {
-                        retry_divergence = divergence;
+            // Last-writer-wins across retry candidates that surface
+            // divergence. The outbox carrying this report to the node
+            // handler is a single slot (see `governance_dag.rs`), so
+            // collapsing here matches the fresh-arrival path's LWW
+            // semantics. In practice each retry batch unblocks a small
+            // number of ops and at most one is a `MemberRemoved` /
+            // `MemberLeft` that could report divergence.
+            for candidate in &retry_candidates {
+                let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
+                    continue;
+                };
+                match self.decrypt_and_apply_group_op(
+                    &candidate.signed_op,
+                    &gid_typed,
+                    &candidate.group_key,
+                    encrypted,
+                ) {
+                    // Surface divergence from retry-path applies. Once a
+                    // retry replay applies an op, the DAG marks any later
+                    // fresh arrival of the same op as `Duplicate` and the
+                    // apply work — including the post-apply hash check —
+                    // is skipped. That makes the retry path the *only*
+                    // opportunity to detect divergence on retried ops:
+                    // dropping it here means the reconcile trigger never
+                    // fires for `MemberRemoved` / `MemberLeft` ops that
+                    // were buffered pending `KeyDelivery`.
+                    Ok(divergence) => {
+                        group_applied += 1;
+                        record_namespace_retry_event("applied");
+                        tracing::info!(
+                            group_id = %hex::encode(group_id),
+                            "retried encrypted op after KeyDelivery"
+                        );
+                        rotated |= self.replay_deferred_rotation(candidate);
+                        if divergence.is_some() {
+                            retry_divergence = divergence;
+                        }
+                    }
+                    Err(e) => {
+                        record_namespace_retry_event("failed");
+                        tracing::warn!(
+                            group_id = %hex::encode(group_id),
+                            error = %format!("{e:#}"),
+                            "failed to retry encrypted op after KeyDelivery"
+                        );
                     }
                 }
-                Err(e) => {
-                    record_namespace_retry_event("failed");
-                    tracing::warn!(
-                        group_id = %hex::encode(group_id),
-                        error = %format!("{e:#}"),
-                        "failed to retry encrypted op after KeyDelivery"
-                    );
-                }
+            }
+            if !rotated {
+                break;
             }
         }
 
@@ -2479,67 +2518,165 @@ impl<'a> NamespaceGovernance<'a> {
     fn redrive_encrypted_ops_for_group_counted(&self, group_id: [u8; 32]) -> EyreResult<usize> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
-        let retry_candidates = retry_service
-            .collect_retry_candidates_for_group(group_id)
-            .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
-        if !retry_candidates.is_empty() {
-            record_namespace_retry_event("collected");
-        }
-
         let mut applied = 0usize;
-        for candidate in &retry_candidates {
-            let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
-                continue;
-            };
-            let signer = &candidate.signed_op.signer;
-            let nonce = candidate.signed_op.nonce;
-            // Pre-apply nonce-window membership tells a real apply apart from an
-            // idempotent replay: `apply_group_op_inner` short-circuits an
-            // already-windowed nonce to `Ok(None)` WITHOUT mutating, and
-            // advances the window only on a genuine apply.
-            let was_present = load_nonce_window(self.store, &gid_typed, signer)
-                .map(|w| w.contains(nonce))
-                .unwrap_or(false);
-            match self.decrypt_and_apply_group_op(
-                &candidate.signed_op,
-                &gid_typed,
-                &candidate.group_key,
-                encrypted,
-            ) {
-                Ok(_divergence) => {
-                    let now_present = load_nonce_window(self.store, &gid_typed, signer)
-                        .map(|w| w.contains(nonce))
-                        .unwrap_or(false);
-                    if !was_present && now_present {
-                        // Genuine apply: the (signer, nonce) was not in the
-                        // window before and is now. Only this path counts and
-                        // only this path increments the "applied" metric — a
-                        // nonce-deduped replay short-circuits to `Ok(None)`
-                        // WITHOUT writing, so counting it as "applied" would
-                        // inflate the metric (review fix B).
-                        record_namespace_retry_event("applied");
-                        applied += 1;
-                        tracing::info!(
+        // A replayed rotation stores a key that may open more buffered ops, so pass again.
+        loop {
+            let retry_candidates = retry_service
+                .collect_retry_candidates_for_group(group_id)
+                .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
+            if !retry_candidates.is_empty() {
+                record_namespace_retry_event("collected");
+            }
+            let mut rotated = false;
+            for candidate in &retry_candidates {
+                let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
+                    continue;
+                };
+                let signer = &candidate.signed_op.signer;
+                let nonce = candidate.signed_op.nonce;
+                // Pre-apply nonce-window membership tells a real apply apart from an
+                // idempotent replay: `apply_group_op_inner` short-circuits an
+                // already-windowed nonce to `Ok(None)` WITHOUT mutating, and
+                // advances the window only on a genuine apply.
+                let was_present = load_nonce_window(self.store, &gid_typed, signer)
+                    .map(|w| w.contains(nonce))
+                    .unwrap_or(false);
+                match self.decrypt_and_apply_group_op(
+                    &candidate.signed_op,
+                    &gid_typed,
+                    &candidate.group_key,
+                    encrypted,
+                ) {
+                    Ok(_divergence) => {
+                        rotated |= self.replay_deferred_rotation(candidate);
+                        let now_present = load_nonce_window(self.store, &gid_typed, signer)
+                            .map(|w| w.contains(nonce))
+                            .unwrap_or(false);
+                        if !was_present && now_present {
+                            // Genuine apply: the (signer, nonce) was not in the
+                            // window before and is now. Only this path counts and
+                            // only this path increments the "applied" metric — a
+                            // nonce-deduped replay short-circuits to `Ok(None)`
+                            // WITHOUT writing, so counting it as "applied" would
+                            // inflate the metric (review fix B).
+                            record_namespace_retry_event("applied");
+                            applied += 1;
+                            tracing::info!(
+                                group_id = %hex::encode(group_id),
+                                "curative re-drive applied a stranded encrypted op (#2848)"
+                            );
+                        } else {
+                            // Idempotent nonce-deduped replay: nothing was written.
+                            record_namespace_retry_event("nonce_skip");
+                        }
+                    }
+                    Err(e) => {
+                        record_namespace_retry_event("failed");
+                        tracing::warn!(
                             group_id = %hex::encode(group_id),
-                            "curative re-drive applied a stranded encrypted op (#2848)"
+                            error = %format!("{e:#}"),
+                            "curative re-drive: failed to apply a buffered encrypted op (#2848)"
                         );
-                    } else {
-                        // Idempotent nonce-deduped replay: nothing was written.
-                        record_namespace_retry_event("nonce_skip");
                     }
                 }
-                Err(e) => {
-                    record_namespace_retry_event("failed");
-                    tracing::warn!(
-                        group_id = %hex::encode(group_id),
-                        error = %format!("{e:#}"),
-                        "curative re-drive: failed to apply a buffered encrypted op (#2848)"
-                    );
-                }
+            }
+            if !rotated {
+                break;
             }
         }
 
         Ok(applied)
+    }
+
+    /// Apply the rotation riding the group op `op`, unless the op is void and the
+    /// rotation with it: the key it carries is one a removed admin holds.
+    fn apply_carried_rotation(
+        &self,
+        op: &SignedNamespaceOp,
+        inner_op: Option<&GroupOp>,
+        epoch: u64,
+        op_id: [u8; 32],
+        result: &mut ApplyNamespaceOpResult,
+    ) -> EyreResult<()> {
+        let NamespaceOp::Group {
+            group_id,
+            key_rotation: Some(rotation),
+            ..
+        } = &op.op
+        else {
+            return Ok(());
+        };
+        let rotation_is_void = match inner_op {
+            Some(inner) => self.op_is_void(group_id, op, Some(inner), None, op_id)?,
+            None => false,
+        };
+        if rotation_is_void {
+            tracing::info!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                signer = %op.signer,
+                "ignoring key rotation: the signer's removal is concurrent with it"
+            );
+            return Ok(());
+        }
+        // A delegated removal names the admin the rotation is on behalf of;
+        // anything else rotates on the signer's own authority.
+        let delegated_inner = inner_op.filter(|inner| matches!(inner, GroupOp::OnBehalf { .. }));
+        self.apply_key_rotation(
+            group_id,
+            op,
+            rotation,
+            inner_op.is_some(),
+            delegated_inner,
+            epoch,
+            op_id,
+            result,
+        )
+    }
+
+    /// [`Self::apply_deferred_rotation`], logging a failure: the deferral stays
+    /// recorded, so the next replay tries again. `true` when one was consumed.
+    fn replay_deferred_rotation(&self, candidate: &RetryCandidate) -> bool {
+        self.apply_deferred_rotation(candidate).unwrap_or_else(|e| {
+            tracing::warn!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                error = %format!("{e:#}"),
+                "failed to apply a deferred key rotation; the next replay retries it"
+            );
+            false
+        })
+    }
+
+    /// Apply the rotation a replayed op carried when it was deferred on arrival. The
+    /// key it seals under may have arrived later at a higher epoch, which it must outrank.
+    fn apply_deferred_rotation(&self, candidate: &RetryCandidate) -> EyreResult<bool> {
+        let NamespaceOp::Group {
+            group_id,
+            key_id,
+            encrypted,
+            key_rotation: Some(_),
+        } = &candidate.signed_op.op
+        else {
+            return Ok(false);
+        };
+        let op_id = candidate.signed_op.content_hash()?;
+        let deferred = DeferredRotations::new(self.store, self.namespace_id);
+        let Some(sequence) = deferred.sequence(op_id)? else {
+            return Ok(false);
+        };
+        let inner = GroupKeyring::decrypt_op(&candidate.group_key, encrypted)?;
+        let epoch = GroupKeyring::new(self.store, *group_id)
+            .key_epoch(key_id.as_bytes())?
+            .map_or(sequence, |sealing| sequence.max(sealing.saturating_add(1)));
+        let mut result = ApplyNamespaceOpResult::default();
+        self.apply_carried_rotation(
+            &candidate.signed_op,
+            Some(&inner),
+            epoch,
+            op_id,
+            &mut result,
+        )?;
+        deferred.forget(op_id)?;
+        Ok(true)
     }
 
     /// Process the plaintext `key_rotation` bundle attached to a group op.
@@ -2550,7 +2687,8 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// 1. `inner_decrypted` — we hold the current key (i.e. are a member); a
     ///    rotation for a group we don't belong to is ignored so it can't poison
-    ///    an arbitrary group's keyring.
+    ///    an arbitrary group's keyring. One that arrives before that key is
+    ///    deferred and applied by the key-arrival replay.
     /// 2. `op.signer` is an admin of the group **at the op's causal cut** — only
     ///    an admin may remove a member and rotate the key. This is the missing
     ///    "authorized rotator" check.
@@ -2809,6 +2947,8 @@ impl<'a> NamespaceGovernance<'a> {
             // and skip the bootstrap path in join_context.
             if *application_id != ZERO_APPLICATION_ID {
                 let bytecode_id = calimero_store::key::ApplicationMeta::new(*application_id);
+                // An install between the check and the put would be overwritten by the stub.
+                let _rows = lock_application_rows();
                 let handle = self.store.handle();
                 if !handle.has(&bytecode_id)? {
                     drop(handle);

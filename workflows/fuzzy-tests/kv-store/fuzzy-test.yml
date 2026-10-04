@@ -265,6 +265,17 @@ steps:
     timeout: 180
     check_interval: 2
 
+  # Converging at the end is not enough: a same-DAG / different-root
+  # divergence that stayed stuck for a heartbeat period mid-run and was only
+  # healed later by the recovery sync is still a bug. Transient divergences
+  # (counted in sync_root_hash_divergence_detected_total_total, logged at WARN)
+  # are expected under this load and do not match.
+  - name: No node reported a stuck root-hash divergence
+    type: assert_log_absent
+    nodes: [fuzzy-kv-node-1, fuzzy-kv-node-2, fuzzy-kv-node-3, fuzzy-kv-node-4]
+    patterns:
+      - "DIVERGENCE DETECTED"
+
   - name: Final KV Store entry count check
     type: call
     node: fuzzy-kv-node-1

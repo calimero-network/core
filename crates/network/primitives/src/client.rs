@@ -33,9 +33,10 @@ pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
 
 use crate::blob_types::{BlobAuth, BlobProbe};
 use crate::messages::{
-    AnnounceBlob, Bootstrap, ConnectedPeers, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats,
-    NetworkMessage, NetworkStatus, OpenStream, PeerAddrs, PeerCount, ProbeBlob, Publish, QueryBlob,
-    RequestBlob, SendBlobAnnouncement, SetPeerScore, Subscribe, SubscribedPeers, Unsubscribe,
+    AnnounceBlob, Bootstrap, CloseAllConnections, ConnectedPeers, Dial, ListenOn, MeshPeerCount,
+    MeshPeers, MeshStats, NetworkMessage, NetworkStatus, OpenStream, PeerAddrs, PeerCount,
+    ProbeBlob, Publish, QueryBlob, RequestBlob, SendBlobAnnouncement, SetPeerScore, Subscribe,
+    SubscribedPeers, Unsubscribe,
 };
 use crate::network_status::NetworkStatusSnapshot;
 use crate::stream::Stream;
@@ -265,6 +266,31 @@ impl NetworkClient {
             .expect("Mailbox not to be dropped");
 
         rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Close every peer connection and stop accepting or dialing new ones.
+    /// Returns once none is left.
+    ///
+    /// Shutdown only. See [`CloseAllConnections`] for why a node must do this
+    /// before it stops. A network actor that is already gone has no
+    /// connections left to close, so that case returns quietly instead of
+    /// panicking during shutdown.
+    pub async fn close_all_connections(&self) {
+        let (tx, rx) = oneshot::channel();
+
+        if self
+            .network_manager
+            .send(NetworkMessage::CloseAllConnections {
+                request: CloseAllConnections,
+                outcome: tx,
+            })
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        let _closed: Result<(), _> = rx.await;
     }
 
     /// Per-topic mesh peer-count snapshot for every topic this node is
