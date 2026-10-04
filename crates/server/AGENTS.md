@@ -462,7 +462,11 @@ request re-stamps it.
   judge server-side SDK clients as browsers. It is admitted when the origin is listed or is a
   loopback page (any host), or when every `Host` / `X-Forwarded-Host` (or the URI authority,
   for HTTP/2) is a loopback name, an IP address or an `allowed_origins` host and the origin
-  matches one of them or is absent. Never admit a request because its
+  matches one of them or is absent.
+  With no `Origin`, `Sec-Fetch-Site` must be `same-origin` or `none`, or the request a top-level navigation (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`): another page's `<img>`, script or frame names the node's own host too.
+  That holds for `same-site` as well, since a sibling page that sends its `Origin` is refused.
+  A page on another origin that embeds a node resource must send `Origin` (`crossorigin`) to be judged by it.
+  Never admit a request because its
   `Origin` equals its `Host`: under DNS rebinding the two are the attacker's name together. A
   node served under a host name of its own must list that origin. The CORS layer calls the same
   `admits`, so the two cannot disagree.

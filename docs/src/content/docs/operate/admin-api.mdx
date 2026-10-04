@@ -97,6 +97,10 @@ built-in `fetch` sends it on every request.) Such a request is served when:
   the node's own, and the origin is the node's own origin (it matches one of
   those hosts) or absent.
 
+A request with no `Origin` is served under the last rule only when the browser marks it `Sec-Fetch-Site: same-origin` (the node's own page) or `none` (a typed address or bookmark), or when it is a top-level navigation (`Sec-Fetch-Mode: navigate` with `Sec-Fetch-Dest: document`), such as a link to the dashboard.
+An `<img>`, `<script>` or `<iframe>` on any other page, `same-site` ones included, gets `403`, so another site can neither trigger a `GET`, frame the node nor time its answer.
+A listed or loopback page that embeds a node resource this way must add the `crossorigin` attribute, so the request carries its `Origin`.
+
 A host is the node's own when it is a loopback name, an IP address, or the host
 of an `allowed_origins` entry. A browser's `Host` is whatever name it resolved,
 so on its own it proves nothing: under DNS rebinding a page on

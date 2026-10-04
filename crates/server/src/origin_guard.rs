@@ -19,6 +19,8 @@ static FIRST_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
 /// it would judge every server-side SDK client as a browser. A browser sends
 /// `Sec-Fetch-Site` on every request, and a page can neither set nor drop it.
 const FETCH_SITE: &str = "sec-fetch-site";
+const FETCH_MODE: &str = "sec-fetch-mode"; // `navigate` for a page load
+const FETCH_DEST: &str = "sec-fetch-dest"; // `document` only for a top-level one
 
 /// The headers that name the host a request was sent to.
 const HOST_HEADERS: [&str; 2] = ["host", "x-forwarded-host"];
@@ -63,7 +65,8 @@ impl OriginGuard {
     /// A request with no `Origin` and no `Sec-Fetch-Site` is not a browser's,
     /// and is let through as before. A browser's is admitted when its origin is
     /// listed or is a loopback page, or when every host it names is one of this
-    /// node's own and the origin is one of those hosts (or absent).
+    /// node's own and the origin is one of those hosts, or is absent on a
+    /// request `is_own_fetch_or_navigation` vouches for.
     ///
     /// The host is what makes this hold under DNS rebinding. A page on
     /// `attacker.example` whose name is re-pointed at this node sends
@@ -106,7 +109,7 @@ impl OriginGuard {
         }
 
         let Some(origin) = origin else {
-            return true;
+            return is_own_fetch_or_navigation(headers);
         };
         let Some((scheme, authority)) = origin
             .to_str()
@@ -141,6 +144,14 @@ impl OriginGuard {
                 .is_ok()
             || self.allowed_hosts.contains(&host)
     }
+}
+
+/// With no `Origin`, another page's `<img>`, script or frame names the node's
+/// own host too. A followed link or typed address (`none`) still gets through.
+fn is_own_fetch_or_navigation(headers: &HeaderMap) -> bool {
+    let value = |name| headers.get(name).and_then(|value| value.to_str().ok());
+    matches!(value(FETCH_SITE), Some("same-origin" | "none"))
+        || (value(FETCH_MODE) == Some("navigate") && value(FETCH_DEST) == Some("document"))
 }
 
 /// A page served from this machine: a local dev server or a Tauri webview.
