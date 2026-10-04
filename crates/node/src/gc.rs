@@ -80,6 +80,15 @@ const GC_COMPACT_MAX_WRITE_AMP: u64 = 32;
 /// a handful of tombstone rows is not worth even a small rewrite.
 const GC_COMPACT_MIN_BYTES: u64 = 64 * 1024;
 
+/// Whether deleting `reclaimed` bytes from a slice that takes `size` bytes is
+/// worth compacting that slice now: at least [`GC_COMPACT_MIN_BYTES`], and at
+/// least 1/[`GC_COMPACT_MAX_WRITE_AMP`] of the slice. The one bar for every
+/// sweep that deletes rows and then compacts what it deleted from (this GC's
+/// state slices, DAG compaction's delta slices).
+pub(crate) fn worth_compacting(reclaimed: u64, size: u64) -> bool {
+    reclaimed >= GC_COMPACT_MIN_BYTES && reclaimed.saturating_mul(GC_COMPACT_MAX_WRITE_AMP) >= size
+}
+
 /// Message to trigger garbage collection.
 #[derive(Copy, Clone, Debug, Message)]
 #[rtype(result = "()")]
@@ -109,7 +118,7 @@ impl GarbageCollector {
     /// * `store` - Store handle for accessing the database
     /// * `context_client` - Source of the per-context execution locks
     /// * `stability` - How far each member device has caught up, from beacons
-    /// * `interval` - Time between GC runs (default: 1 hour)
+    /// * `interval` - Time between GC runs (`[gc] check_interval`)
     pub(crate) fn new(
         store: Store,
         context_client: ContextClient,
@@ -179,6 +188,7 @@ impl GarbageCollector {
 
             let mut stats = GCStats {
                 contexts_scanned: plan.contexts_scanned,
+                rows_scanned: plan.rows_scanned,
                 capped: plan.capped,
                 ..GCStats::default()
             };
@@ -217,8 +227,14 @@ impl GarbageCollector {
                     error!(error = ?join_err, "Garbage collection compaction panicked")
                 }
             }
-            stats.duration_ms = start.elapsed().as_millis() as u64;
+            let elapsed = start.elapsed();
+            stats.duration_ms = elapsed.as_millis() as u64;
             stats.log();
+            crate::node_metrics::record_gc_sweep(
+                elapsed,
+                stats.rows_scanned,
+                stats.tombstones_collected,
+            );
         });
     }
 }
@@ -268,6 +284,9 @@ struct Plan {
     work: BTreeMap<ContextId, ContextWork>,
     /// Number of distinct contexts observed during the scan.
     contexts_scanned: usize,
+    /// Number of state rows the scan read. The scan reads every one, so this
+    /// is what a sweep costs regardless of how many tombstones it finds.
+    rows_scanned: u64,
     /// Whether the scan stopped early at the per-run deletion cap.
     capped: bool,
 }
@@ -328,6 +347,7 @@ impl Sweeper {
         let mut last_context = None;
 
         while let Some(entry) = iter.next()? {
+            plan.rows_scanned += 1;
             let context_id = entry.context_id();
             if last_context != Some(context_id) {
                 plan.contexts_scanned += 1;
@@ -499,9 +519,6 @@ impl Sweeper {
     fn compact_reclaimed(&self, reclaimed: &BTreeMap<ContextId, u64>) -> usize {
         let mut compacted = 0;
         for (&context_id, &bytes) in reclaimed {
-            if bytes < GC_COMPACT_MIN_BYTES {
-                continue;
-            }
             let lo = ContextState::new(context_id, [0; STATE_KEY_LEN]);
             let hi = ContextState::new(context_id, [u8::MAX; STATE_KEY_LEN]);
             let (lo, hi) = (lo.as_key().as_bytes(), hi.as_key().as_bytes());
@@ -512,7 +529,7 @@ impl Sweeper {
                     continue;
                 }
             };
-            if bytes.saturating_mul(GC_COMPACT_MAX_WRITE_AMP) < size {
+            if !worth_compacting(bytes, size) {
                 continue;
             }
             let t = Instant::now();
@@ -533,6 +550,7 @@ impl Sweeper {
         let plan = self.scan(now_nanos)?;
         let mut stats = GCStats {
             contexts_scanned: plan.contexts_scanned,
+            rows_scanned: plan.rows_scanned,
             capped: plan.capped,
             ..GCStats::default()
         };
@@ -614,6 +632,8 @@ struct GCStats {
     parents_pruned: usize,
     /// Number of distinct contexts observed during the sweep.
     contexts_scanned: usize,
+    /// Number of state rows the scan read.
+    rows_scanned: u64,
     /// Number of contexts whose state slice was compacted after the deletes.
     contexts_compacted: usize,
     /// Duration of the GC run in milliseconds.
@@ -634,6 +654,7 @@ impl GCStats {
                 tombstones_collected = self.tombstones_collected,
                 parents_pruned = self.parents_pruned,
                 contexts_scanned = self.contexts_scanned,
+                rows_scanned = self.rows_scanned,
                 contexts_compacted = self.contexts_compacted,
                 duration_ms = self.duration_ms,
                 capped = self.capped,

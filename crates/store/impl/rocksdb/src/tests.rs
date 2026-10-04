@@ -774,3 +774,51 @@ fn state_compression_options_reach_the_family() {
         "the deletion-triggered compaction collector must survive the options string"
     );
 }
+
+#[test]
+fn table_stats_separate_live_data_from_overwritten_garbage() {
+    let dir = TempDir::with_prefix("_calimero_store_table_stats").expect("tempdir");
+    let dir_path = dir.path().to_owned().try_into().expect("path conversion");
+    let db = RocksDB::open(&StoreConfig::new(dir_path)).expect("db open");
+
+    let payload = vec![0xAB_u8; 4096];
+    let write_all = |db: &RocksDB| {
+        for i in 0..64u8 {
+            let key = [0x30, i];
+            db.put(
+                Column::Identity,
+                Slice::from(&key[..]),
+                Slice::from(payload.as_slice()),
+            )
+            .expect("put");
+        }
+    };
+
+    write_all(&db);
+    let buffered = db
+        .table_stats()
+        .expect("table stats")
+        .expect("rocksdb has tables");
+    assert!(buffered.memtable > 0, "unflushed writes sit in a memtable");
+
+    // Overwrite the same keys into two more table files: the live data is
+    // unchanged, the files now hold three copies of it. Three, not more: a
+    // fourth L0 file reaches RocksDB's default compaction trigger, and a
+    // background compaction would drop the garbage this test looks for.
+    db.flush().expect("flush");
+    for _ in 0..2 {
+        write_all(&db);
+        db.flush().expect("flush");
+    }
+
+    let stats = db
+        .table_stats()
+        .expect("table stats")
+        .expect("rocksdb has tables");
+    assert!(stats.live_sst > 0, "flushed data is in table files");
+    assert!(stats.total_sst >= stats.live_sst);
+    assert!(
+        stats.live_data_estimate < stats.live_sst,
+        "overwritten versions count in the table files but not in the live-data estimate: {stats:?}"
+    );
+}

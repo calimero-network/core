@@ -591,7 +591,7 @@ impl<S: StorageAdaptor> FugueText<S> {
     /// under an id their key does not derive.
     fn scan(&self) -> Result<Scan, StoreError> {
         let mut scan = Scan::default();
-        for (id, key, block) in self.blocks.entries_with_ids()? {
+        for (id, key, block) in self.blocks.raw_entries_with_ids()? {
             if id != self.blocks.entry_id(&key) {
                 let _new = scan.misfiled.insert(id);
             } else if block.is_sound(key.id()) {
@@ -618,7 +618,7 @@ impl<S: StorageAdaptor> FugueText<S> {
         &mut self,
         other: &FugueText<S2>,
     ) -> Result<(), StoreError> {
-        for (id, key, incoming) in other.blocks.entries_with_ids()? {
+        for (id, key, incoming) in other.blocks.raw_entries_with_ids()? {
             if id != other.blocks.entry_id(&key) {
                 continue;
             }

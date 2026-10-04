@@ -66,6 +66,7 @@ impl Handler<PrecompileApplicationRequest> for ContextManager {
 mod tests {
     use futures_util::io::Cursor;
 
+    use calimero_node_primitives::test_fixtures::signed_wasm;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::blobs::BlobId;
     use calimero_store::db::InMemoryDB;
@@ -105,9 +106,10 @@ mod tests {
             .expect("provision the account root an initialised node has");
         let harness = actor::over(store.clone()).await;
 
+        let bundle = signed_wasm(wasm);
         let (blob_id, size) = harness
             .node_client
-            .add_blob(Cursor::new(wasm), Some(wasm.len() as u64), None)
+            .add_blob(Cursor::new(&bundle), Some(bundle.len() as u64), None)
             .await
             .expect("store the wasm");
         let application_id = ApplicationId::from([id; 32]);

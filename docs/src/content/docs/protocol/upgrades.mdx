@@ -195,10 +195,9 @@ application from a signed bundle.
 **A `manifest.json` past 8 MiB of decompressed data classifies as "not a bundle".**
 Installing such an archive from a `.mpk` path reports the cap directly. Reading it
 back as a blob does not: the classifier that decides bundle-or-raw-wasm answers "not
-a bundle" when the scan trips the cap, so the blob is handed to the runtime as raw
-wasm and rejected there - a `.mpk` starts with the gzip magic `1f 8b` and can never
-be valid wasm. It fails closed either way, but on that second path the error names an
-instantiation failure rather than the cap. `cargo mero bundle` writes `manifest.json`
+a bundle" when the scan trips the cap, and raw wasm never runs, so the read is refused.
+It fails closed either way, but on that second path the error names a missing bundle
+rather than the cap. `cargo mero bundle` writes `manifest.json`
 as the archive's first entry, so bundles it produces are never affected; a bundle
 built by hand should place the manifest first.
 </Aside>
@@ -593,7 +592,7 @@ A cascade descendant is never the key, because the id a client subscribes with i
 
 Read `localContexts*` as "on the node that emitted this" and `total` on `MigrationProgress` as the pinned cohort size; the two are unrelated numbers, which is why neither is spelled `total` on the other.
 `MigrationProgress` carries counters and nothing else. The per-member detail behind them (who is still on the old version, who failed and why) stays in
-`GET /groups/:namespace_id/migration-status`, which requires admin authority over the namespace.
+`GET /groups/:namespace_id/migration-status`, which requires admin authority over the namespace: the node's own for a node session, the delegated account's for an account served through a relay.
 `CascadeProgress` is the one payload that names a descendant subgroup, so it is delivered only to a subscriber holding that same admin authority: enumerating a `Restricted` subgroup is not something a plain member may do. The other three reach every subscribed member.
 
 Under lazy upgrades `completedAt` on the per-group upgrade row remains node-local and says nothing about the fleet.

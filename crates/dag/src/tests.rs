@@ -1376,6 +1376,35 @@ async fn test_prune_to_recent_never_prunes_pending() {
     assert!(dag.has_delta(&[9; 32]));
 }
 
+#[tokio::test]
+async fn test_prune_to_recent_keeps_parents_a_pending_delta_holds() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    // Applied chain 1 <- 2 <- 3 <- 4 <- 5 (head 5), plus [9] pending on the old
+    // applied [2] and on [8], which never arrives.
+    for i in 1..=5u8 {
+        let parent = if i == 1 { [0; 32] } else { [i - 1; 32] };
+        let delta = CausalDelta::new_test([i; 32], vec![parent], TestPayload { value: i as u32 });
+        dag.add_delta(delta, &applier).await.unwrap();
+    }
+    let pending = CausalDelta::new_test([9; 32], vec![[2; 32], [8; 32]], TestPayload { value: 9 });
+    dag.add_delta(pending, &applier).await.unwrap();
+    assert_eq!(dag.pending_stats().count, 1);
+
+    // The window is 5 and 4. [2] stays outside the budget because [9] holds
+    // it; everything else older goes.
+    let mut pruned = dag.prune_to_recent(2);
+    pruned.sort();
+    assert_eq!(pruned, vec![[1; 32], [3; 32]]);
+    assert!(dag.is_applied(&[2; 32]), "a pending delta's parent stays");
+
+    // [9] still applies once [8] arrives, without relying on `pruned`.
+    let missing = CausalDelta::new_test([8; 32], vec![[5; 32]], TestPayload { value: 8 });
+    dag.add_delta(missing, &applier).await.unwrap();
+    assert!(dag.is_applied(&[9; 32]));
+}
+
 #[test]
 fn causal_delta_kind_borsh_roundtrips_both_variants() {
     for kind in [
@@ -1638,7 +1667,10 @@ async fn origin_charges_are_released_when_pending_deltas_leave() {
     dag.add_delta(orphan(2, 2), &AdmissionApplier)
         .await
         .unwrap();
-    assert_eq!(dag.pending_by_origin.get(&origin_of(1)), Some(&2));
+    assert_eq!(
+        dag.pending_by_origin.get(&origin_of(1)).map(BTreeMap::len),
+        Some(2)
+    );
 
     // The missing parent arrives: both leave `pending` by applying.
     let parent = CausalDelta::new_test([200; 32], vec![[0; 32]], TestPayload { value: 0 });

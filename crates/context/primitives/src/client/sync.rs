@@ -3,7 +3,7 @@
 
 use calimero_app_downloader::registry::{stored_coords, PENDING_BLOB_SHARE_SOURCE};
 use calimero_app_downloader::{AppRequest, Outcome};
-use calimero_node_primitives::client::application::InstallOrigin;
+use calimero_node_primitives::client::application::{lock_application_rows, InstallOrigin};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
@@ -86,10 +86,8 @@ impl ContextClient {
 
         let probe = blob_bytes.to_vec();
         if !tokio::task::spawn_blocking(move || NodeClient::is_bundle_blob(&probe)).await? {
-            // A raw-wasm id is derived from the bytes, size, source and metadata
-            // it was installed with, and a stub row carries none of them
-            // faithfully - installing would write a row under a different id.
-            warn!(%application_id, %blob_id, "application bytecode is not a bundle; it can only be installed through a context sync");
+            // Raw wasm derives no id, so no remote path installs it.
+            warn!(%application_id, %blob_id, "application bytecode is not a signed bundle; refusing to install it");
             return Ok(false);
         }
 
@@ -170,7 +168,7 @@ impl ContextClient {
         };
 
         // One resolver for both planes, and the row stays under the id
-        // governance named: a re-derived raw-wasm id varies per node.
+        // governance named.
         if application_id != ApplicationId::zero() {
             let bytecode_id = key::ApplicationMeta::new(application_id);
             if let Some(row) = handle.get(&bytecode_id)? {
@@ -206,22 +204,27 @@ impl ContextClient {
                      — the configured source delivers it once governance names a blob"
                 );
                 let zero_blob = key::BlobMeta::new(BlobId::from([0_u8; 32]));
-                handle.put(
-                    &bytecode_id,
-                    &types::ApplicationMeta::new(
-                        zero_blob,
-                        0,
-                        PENDING_BLOB_SHARE_SOURCE.to_owned().into_boxed_str(),
-                        Box::default(),
-                        zero_blob,
-                        types::PackageInfo {
-                            package: String::new().into_boxed_str(),
-                            version: String::new().into_boxed_str(),
-                            signer_id: String::new().into_boxed_str(),
-                            state_version: 0,
-                        },
-                    ),
-                )?;
+                // Re-checked under the lock: an install since the read above must win.
+                // Never held across an await, where put_bundle_row would take it too.
+                let _rows = lock_application_rows();
+                if !handle.has(&bytecode_id)? {
+                    handle.put(
+                        &bytecode_id,
+                        &types::ApplicationMeta::new(
+                            zero_blob,
+                            0,
+                            PENDING_BLOB_SHARE_SOURCE.to_owned().into_boxed_str(),
+                            Box::default(),
+                            zero_blob,
+                            types::PackageInfo {
+                                package: String::new().into_boxed_str(),
+                                version: String::new().into_boxed_str(),
+                                signer_id: String::new().into_boxed_str(),
+                                state_version: 0,
+                            },
+                        ),
+                    )?;
+                }
             }
         }
 

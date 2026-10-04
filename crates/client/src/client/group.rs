@@ -52,6 +52,7 @@ use calimero_server_primitives::admin::{
     ListGroupMembersApiResponse, ListMemberDevicesApiResponse,
 };
 
+use crate::connection::NETWORK_BOUND_REQUEST_TIMEOUT;
 use crate::traits::ClientAuthenticator;
 use crate::traits::ClientStorage;
 
@@ -237,7 +238,11 @@ where
     ) -> Result<UpgradeGroupApiResponse> {
         let response = self
             .connection
-            .post(&format!("admin-api/groups/{group_id}/upgrade"), request)
+            .post_with_timeout(
+                &format!("admin-api/groups/{group_id}/upgrade"),
+                request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
             .await?;
         Ok(response)
     }
@@ -297,9 +302,10 @@ where
     ) -> Result<UpgradeGroupApiResponse> {
         let response = self
             .connection
-            .post(
+            .post_with_timeout(
                 &format!("admin-api/groups/{group_id}/upgrade/retry"),
                 request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
             )
             .await?;
         Ok(response)
@@ -312,7 +318,11 @@ where
     ) -> Result<SyncGroupApiResponse> {
         let response = self
             .connection
-            .post(&format!("admin-api/groups/{group_id}/sync"), request)
+            .post_with_timeout(
+                &format!("admin-api/groups/{group_id}/sync"),
+                request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
             .await?;
         Ok(response)
     }
@@ -320,7 +330,10 @@ where
     pub async fn join_context(&self, context_id: &str) -> Result<JoinContextApiResponse> {
         let response = self
             .connection
-            .post_no_body(&format!("admin-api/contexts/{context_id}/join"))
+            .post_no_body_with_timeout(
+                &format!("admin-api/contexts/{context_id}/join"),
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
             .await?;
         Ok(response)
     }
@@ -334,7 +347,10 @@ where
     ) -> Result<JoinSubgroupInheritanceApiResponse> {
         let response = self
             .connection
-            .post_no_body(&format!("admin-api/groups/{group_id}/join-via-inheritance"))
+            .post_no_body_with_timeout(
+                &format!("admin-api/groups/{group_id}/join-via-inheritance"),
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
             .await?;
         Ok(response)
     }

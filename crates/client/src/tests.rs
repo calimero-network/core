@@ -1691,3 +1691,128 @@ mod request_proof {
         let _ignored: serde_json::Value = conn.get("admin-api/old").await.unwrap();
     }
 }
+
+// ---- Request timeouts ----
+
+mod request_timeouts {
+    use std::time::{Duration, Instant};
+
+    use url::Url;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::{NoopAuth, NoopStorage};
+    use crate::client::Client;
+    use crate::client::FLEET_JOIN_REQUEST_TIMEOUT;
+    use crate::connection::{ConnectionInfo, DEFAULT_REQUEST_TIMEOUT};
+    use crate::traits::ClientSettings;
+
+    /// A node that accepts every connection and never answers on any of them.
+    async fn silent_node() -> Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        drop(tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        }));
+        Url::parse(&format!("http://{addr}/")).expect("url")
+    }
+
+    /// The bound every request gets by default is the documented settings
+    /// default, and a connection applies it without being asked to.
+    #[test]
+    fn a_connection_is_bounded_by_the_settings_default() {
+        let conn = ConnectionInfo::new(
+            Url::parse("http://127.0.0.1:1/").expect("url"),
+            None,
+            NoopAuth,
+            NoopStorage,
+        );
+        assert_eq!(
+            DEFAULT_REQUEST_TIMEOUT,
+            Duration::from_secs(ClientSettings::default().request_timeout)
+        );
+        assert_eq!(conn.request_timeout(), DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    /// A node that never answers costs the request timeout, not forever:
+    /// `meroctl tee fleet-join` against a node stuck asking itself for
+    /// admission never returned.
+    #[tokio::test]
+    async fn a_request_the_node_never_answers_times_out() {
+        let conn = ConnectionInfo::new(silent_node().await, None, NoopAuth, NoopStorage)
+            .with_request_timeout(Duration::from_millis(200));
+        let client = Client::new(conn).expect("client");
+
+        let started = Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(10), client.network_status())
+            .await
+            .expect("the request gave up on its own");
+
+        assert!(result.is_err(), "a node that never answers answered");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "gave up after {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// fleet-join is answered only after the node's own bounded waits, so it
+    /// keeps its longer bound even on a connection whose default is shorter
+    /// than the node takes.
+    #[tokio::test]
+    async fn fleet_join_keeps_its_own_longer_bound() {
+        assert!(FLEET_JOIN_REQUEST_TIMEOUT > DEFAULT_REQUEST_TIMEOUT);
+
+        let server = MockServer::start().await;
+        let slow = Duration::from_millis(600);
+        Mock::given(method("POST"))
+            .and(path("/admin-api/tee/fleet-join"))
+            .respond_with(ResponseTemplate::new(200).set_delay(slow).set_body_json(
+                serde_json::json!({
+                    "status": "joined",
+                    "group_id": "aa",
+                    "namespace_id": "aa",
+                    "public_key": "pk",
+                    "account": "bb",
+                    "admitted": true,
+                    "auto_follow_enabled": true,
+                    "contexts_joined": [],
+                }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/admin-api/slow"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(slow)
+                    .set_body_json(serde_json::json!({})),
+            )
+            .mount(&server)
+            .await;
+
+        let url = Url::parse(&server.uri()).expect("url");
+        let conn = ConnectionInfo::new(url, None, NoopAuth, NoopStorage)
+            .with_request_timeout(Duration::from_millis(200));
+        let client = Client::new(conn).expect("client");
+
+        assert!(
+            client
+                .connection()
+                .get::<serde_json::Value>("admin-api/slow")
+                .await
+                .is_err(),
+            "precondition: an ordinary call gives up before the node answers"
+        );
+        let joined = client
+            .fleet_join("aa".to_owned())
+            .await
+            .expect("fleet-join waits for the node's answer");
+        assert!(joined.admitted);
+    }
+}

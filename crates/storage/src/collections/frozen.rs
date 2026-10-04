@@ -16,9 +16,9 @@
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeStrategy, Mergeable, StorageStrategy};
 use super::{StorageError, StoreError, UnorderedMap};
 use crate::entities::{Data, Element, StorageType};
+use crate::hash_meter::{Digest, Sha256};
 use crate::store::{MainStorage, StorageAdaptor};
 use borsh::{BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 use super::frozen_value::FrozenValue;

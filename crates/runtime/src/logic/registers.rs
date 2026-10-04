@@ -1,3 +1,4 @@
+use core::cell::Cell;
 use std::collections::hash_map::{Entry, HashMap};
 
 use crate::errors::HostError;
@@ -9,6 +10,9 @@ const REGISTER_SIZE: u64 = size_of::<u64>() as u64;
 pub struct Registers {
     inner: HashMap<u64, Box<[u8]>>,
     total_size: u64,
+    /// Bytes host calls copied into registers or across guest memory, capped at
+    /// [`VMLimits::max_host_bytes`]. A `Cell` because the guest-memory helpers hold `&self`.
+    host_bytes: Cell<u64>,
 }
 
 impl Registers {
@@ -23,10 +27,25 @@ impl Registers {
         self.inner.get(&id).map(|v| v.len() as u64)
     }
 
+    /// Charges `bytes` a host call copies against [`VMLimits::max_host_bytes`].
+    pub fn charge_host_bytes(&self, limits: &VMLimits, bytes: usize) -> VMLogicResult<()> {
+        let attempted = self.host_bytes.get().saturating_add(bytes as u64);
+        if attempted > limits.max_host_bytes {
+            return Err(HostError::HostBytesLimitExceeded {
+                attempted,
+                max: limits.max_host_bytes,
+            }
+            .into());
+        }
+        self.host_bytes.set(attempted);
+        Ok(())
+    }
+
     pub fn set<T>(&mut self, limits: &VMLimits, id: u64, data: T) -> VMLogicResult<()>
     where
         T: Into<Box<[u8]>> + AsRef<[u8]>,
     {
+        self.charge_host_bytes(limits, data.as_ref().len())?;
         let register_len = self.inner.len();
         let entry = self.inner.entry(id);
 

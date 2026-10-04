@@ -1,20 +1,19 @@
 name: Build merod image (reusable)
 
-# Reusable workflow, called by e2e-rust-apps.yml and app-migration-e2e.yml. Sole writer of
-# the "e2e-rust-apps" rust-cache; callers must set the SAME env (incl. RUST_LOG) or keys diverge.
+# Reusable workflow, called by e2e-rust-apps.yml and app-migration-e2e.yml. The
+# e2e-rust-apps call is the one writer of the "merod-release-fast" rust-cache: two
+# callers saving the same key on the same push raced, and the loser's save failed.
+# The default variant only: e2e-rust-apps builds its mock-TEE image and mero-auth
+# in jobs beside this one, so the groups on this image never wait for them.
 
 on:
   workflow_call:
     inputs:
-      with-mock-tee-image:
-        description: >
-          Also build and upload `merod:local-mock-tee` — the same merod compiled
-          with `--features mock-attestation`, which is what `merod run
-          --mock-tee` requires. Off by default so callers that have no mock-TEE
-          scenario (app-migration-e2e) do not pay for a second compile.
+      save-cache:
+        description: Save the merod-release-fast rust-cache on master. Exactly one caller should.
         type: boolean
         required: false
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -22,7 +21,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  # Must mirror app-migration-e2e.yml's env for cache-key parity (see header).
+  # Kept from when rust-cache hashed the environment into its key; it no longer does.
   RUST_LOG: info,calimero_=debug
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
@@ -40,16 +39,18 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          shared-key: e2e-rust-apps
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: merod-release-fast
+          save-if: ${{ github.ref == 'refs/heads/master' && inputs.save-cache }}
 
-      # Fat LTO + codegen-units=1 (prod profile) is the slow part, skipped for e2e.
-      # Set via $GITHUB_ENV AFTER rust-cache: it hashes these into its cache key.
-      - name: Configure fast e2e build profile
-        run: |
-          echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
-          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256" >> "$GITHUB_ENV"
+      # Built at most once per source tree: sync-regression and app-migration-e2e
+      # restore this binary from the cache instead of compiling their own.
+      - name: Build the merod binary
+        uses: ./.github/actions/merod-binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          variants: default
 
       - name: Build local merod image
         uses: ./.github/actions/build-local-merod
@@ -65,43 +66,5 @@ jobs:
         with:
           name: merod-image
           path: /tmp/merod-local.tar.zst
-          retention-days: 1
-          compression-level: 0
-
-      # mock-attestation must stay out of the shared image so it matches the
-      # production feature set; built separately, reusing the warm target dir.
-      - name: Build mock-attestation merod binary
-        if: inputs.with-mock-tee-image
-        env:
-          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cargo build -p merod --release --features mock-attestation \
-            --target x86_64-unknown-linux-gnu
-
-      - name: Build mock-attestation Docker image
-        if: inputs.with-mock-tee-image
-        run: |
-          mkdir -p bin/amd64
-          cp target/x86_64-unknown-linux-gnu/release/merod bin/amd64/
-          # meroctl is not needed for e2e tests but the Dockerfile expects it
-          touch bin/amd64/meroctl
-          docker build \
-            -f .github/workflows/deps/prebuilt.Dockerfile \
-            -t merod:local-mock-tee \
-            --build-arg TARGETARCH=amd64 \
-            .
-          docker images merod:local-mock-tee
-
-      - name: Save and upload mock-attestation Docker image
-        if: inputs.with-mock-tee-image
-        run: docker save merod:local-mock-tee | zstd -T0 -3 -o /tmp/merod-local-mock-tee.tar.zst
-
-      - name: Upload mock-attestation Docker image
-        if: inputs.with-mock-tee-image
-        uses: actions/upload-artifact@v7
-        with:
-          name: merod-image-mock-tee
-          path: /tmp/merod-local-mock-tee.tar.zst
           retention-days: 1
           compression-level: 0

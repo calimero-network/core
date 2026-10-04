@@ -427,6 +427,7 @@ impl SyncManager {
                     );
                 }
                 calimero_node_primitives::sync::SnapshotSafety::Initialized => {
+                    self.metrics().record_snapshot_blocked();
                     return Err(eyre::eyre!(
                         "Snapshot safety check failed: {:?}",
                         SnapshotError::SnapshotOnInitializedNode
@@ -487,7 +488,8 @@ impl SyncManager {
             self.context_client.datastore(),
             context_id,
             boundary.boundary_root_hash,
-        )?;
+        )
+        .inspect_err(|_| self.metrics().record_verification_failure())?;
 
         // Publish root_hash + dag_heads in one atomic ContextMeta write. Two
         // separate read-modify-writes (force_root_hash then update_dag_heads)
@@ -505,6 +507,13 @@ impl SyncManager {
             .await;
 
         info!(%context_id, applied_records, "Snapshot sync completed successfully");
+        self.metrics().record_session_cost(
+            "Snapshot",
+            super::metrics::SessionCost {
+                entities_transferred: applied_records as u64,
+                ..Default::default()
+            },
+        );
 
         Ok(SnapshotSyncResult {
             boundary_root_hash: boundary.boundary_root_hash,
@@ -2972,9 +2981,10 @@ fn settle_snapshot_activation(
     let gid = get_group_for_context(store, &context_id).ok().flatten()?;
     let meta = MetaRepository::new(store).load(&gid).ok().flatten()?;
     // Bind to the schema the synced data actually carries; fall back to the
-    // group target only when the snapshot carried no schema stamp.
+    // group target when the snapshot carried no stamp or one the group never named.
     let bind = data_schema
         .filter(|k| *k != [0u8; 32])
+        .filter(|k| calimero_context::activation::group_registers_bytecode(store, &gid, *k))
         .unwrap_or(meta.target.bytecode_id);
     if bind == [0u8; 32] {
         return None; // zero-key group: no bytecode signal to bind
@@ -4183,6 +4193,18 @@ mod tests {
                 },
             )
             .unwrap();
+        // The behind release is one the group named before its target moved on.
+        calimero_governance_store::UpgradeLadderRepository::new(&store)
+            .append(
+                &gid,
+                key::LadderRung {
+                    bytecode_id: BEHIND_KEY,
+                    application_id: ApplicationId::from([0xAC; 32]),
+                    package: String::new(),
+                    version: String::new(),
+                },
+            )
+            .unwrap();
         register_context_in_group(&store, &gid, &ctx).unwrap();
         store
             .handle()
@@ -4195,6 +4217,53 @@ mod tests {
             calimero_context::activation::activated_bytecode(&store, &ctx),
             Some(BEHIND_KEY),
             "marker must bind to the synced data's real schema, not the group target"
+        );
+    }
+
+    #[test]
+    fn settle_snapshot_activation_ignores_a_schema_the_group_never_named() {
+        // The stamp is the serving peer's word: a blob the group never named
+        // (another group's squat on this node) must not bind the marker.
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::{register_context_in_group, MetaRepository};
+        use calimero_primitives::application::ApplicationId;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key;
+        use calimero_store::Store;
+
+        const TARGET_KEY: [u8; 32] = [0x2B; 32];
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let gid = ContextGroupId::from([0x63; 32]);
+        let ctx = ContextId::from([0x54; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &gid,
+                &key::GroupMetaValue {
+                    target: GroupTarget {
+                        application_id: ApplicationId::from([0xAC; 32]),
+                        bytecode_id: TARGET_KEY,
+                        package: Box::default(),
+                        version: Box::default(),
+                    },
+                    created_at: 0,
+                    admin_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
+                    owner_identity: calimero_primitives::identity::AccountId::from([0x07; 32]),
+                    migration: None,
+                    auto_join: false,
+                },
+            )
+            .unwrap();
+        register_context_in_group(&store, &gid, &ctx).unwrap();
+        store
+            .handle()
+            .put(&key::ContextResyncRequested::new(ctx), &())
+            .unwrap();
+
+        settle_snapshot_activation(&store, ctx, Some([0xEE; 32]));
+
+        assert_eq!(
+            calimero_context::activation::activated_bytecode(&store, &ctx),
+            Some(TARGET_KEY)
         );
     }
 

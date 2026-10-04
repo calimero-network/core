@@ -109,6 +109,9 @@ stream.send(Message::new(data)).await?;
 let response = stream.recv().await?;
 ```
 
+Inbound sync streams are capped at 256 at once, 60 per peer, counted from the moment a stream opens until its responder session ends.
+A stream opened past either cap is dropped, not queued; the dialer's request fails and periodic sync reconciles.
+
 ### CALIMERO_BLOB_PROTOCOL
 
 ```

@@ -16,7 +16,7 @@ const PROBE: Probe = Probe {
     app: "fugue-editor",
     gate: "\n\
            The in-repo gate for the related property does not depend on this app:\n\
-           \x20 cargo test -p storage-cost      (fugue_text_insert_per_char, \
+           \x20 cargo test -p storage-cost      (fugue_text_append, \
            fugue_text_char_at)\n\
            \x20 ./scripts/check-storage-cost.sh\n",
 };
@@ -92,7 +92,7 @@ const TRANSACTION_GROWTH: usize = 1_000; // characters pasted between two transa
 #[ignore = "slow: executes thousands of real WASM calls against the compiled \
             fugue-editor app to find where insert_text/get_text/char_at actually \
             exhaust gas. The in-repo gate for the same underlying property is \
-            `cargo test -p storage-cost` (fugue_text_insert_per_char, \
+            `cargo test -p storage-cost` (fugue_text_append, \
             fugue_text_char_at)."]
 fn typing_and_reading_walls() {
     let wasm = editor_wasm();

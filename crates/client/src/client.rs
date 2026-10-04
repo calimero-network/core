@@ -34,6 +34,8 @@ mod namespace;
 mod packages;
 mod system;
 
+pub use system::FLEET_JOIN_REQUEST_TIMEOUT;
+
 pub trait UrlFragment: ScopedAlias + AliasKind {
     const KIND: &'static str;
 

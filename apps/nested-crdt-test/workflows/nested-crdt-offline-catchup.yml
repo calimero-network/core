@@ -259,16 +259,19 @@ steps:
       - 'json_equal({{k01_n3}}, {"output": 1})'
       - 'json_equal({{k12_n3}}, {"output": 1})'
 
+  # Node-3 can be on either end of that session. If it syncs first it is the
+  # initiator; if a peer reaches it first, the peer pushes the entries and
+  # node-3 is the responder, whose root is re-anchored at the end of the
+  # session, so node-3's own next sync finds the roots equal and never selects
+  # anything. Which side wins is a race, so accept either role; what must not
+  # happen is a catch-up over deltas, which logs neither line.
   - name: Node-3 caught up over HashComparison, not another protocol
     type: assert_log_present
     nodes:
       - nested-offline-3
     regex: true
-    # merod colours its log fields, so ANSI codes sit between `protocol` and
-    # `=HashComparison`; only the message and the value itself are contiguous.
     patterns:
-      - "Protocol selected.*HashComparison"
-      - "Starting HashComparison sync \\(initiator\\)"
+      - "Starting HashComparison sync \\(initiator\\)|HashComparison responder complete"
 
   # The repair rides an EntityPush from whichever peer initiates towards
   # node-3, so a peer-side session has to have happened too.

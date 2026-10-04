@@ -975,6 +975,82 @@ mod tests {
             policy.mode,
             calimero_context_client::local_governance::TeeAdmissionMode::Relay
         );
+
+        // The relay is the namespace's only TEE, so an invitation minted with
+        // the default admitters names it beside the founder. It is admitted by
+        // `FoundingRelayAttested`, not `MemberJoinedViaTeeAttestation`, and the
+        // default used to read only the latter.
+        let admitters =
+            calimero_governance_store::NamespaceMembershipService::default_admitters(&store, &ns)
+                .expect("read the default admitters");
+        assert_eq!(
+            admitters,
+            {
+                let mut both = vec![author, relay];
+                both.sort();
+                both
+            },
+            "the founder and the founding relay admit by default"
+        );
+
+        // A node admitted later — a fleet TEE, say — starts with only what is
+        // in the clear: the delegated genesis. The attestation that made the
+        // relay a TEE is sealed under the namespace key, which that node is
+        // still asking for. It must still recognise the relay as an anchor
+        // to take that key from, or the only node holding it is refused, and
+        // the founder, the one other anchor, has no node.
+        let newcomer = Store::new(Arc::new(InMemoryDB::owned()));
+        let cleartext: Vec<_> =
+            calimero_governance_store::NamespaceOpLogService::new(&store, ns.to_bytes().into())
+                .collect_root_ops()
+                .expect("read the namespace log")
+                .into_iter()
+                .filter(|op| {
+                    matches!(
+                        op.op,
+                        calimero_context_client::local_governance::NamespaceOp::Root(_)
+                    )
+                })
+                .collect();
+        assert_eq!(cleartext.len(), 1, "only the genesis is in the clear");
+        for op in &cleartext {
+            let _ = calimero_governance_store::apply_signed_namespace_op(&newcomer, op)
+                .expect("the cleartext genesis applies on a keyless node");
+        }
+        assert!(
+            GroupKeyring::new(&newcomer, ns)
+                .load_current_key()
+                .expect("read")
+                .is_none(),
+            "the newcomer holds no key yet"
+        );
+        assert_eq!(
+            MembershipRepository::new(&newcomer)
+                .role_of(&ns, &relay)
+                .expect("read"),
+            Some(GroupMemberRole::Member),
+            "without the key the relay's TEE standing is out of sight"
+        );
+        let anchors = MembershipRepository::new(&newcomer)
+            .anchor_device_keys(&ns)
+            .expect("read the anchors");
+        assert!(
+            anchors.contains(&relay_pk),
+            "the founding relay's device is a key anchor from the genesis alone"
+        );
+
+        // Recognised only while it holds its seat: a founding relay removed
+        // from the namespace is not trusted for its key.
+        MembershipRepository::new(&newcomer)
+            .remove_member(&ns, &relay)
+            .expect("remove the relay");
+        assert!(
+            !MembershipRepository::new(&newcomer)
+                .anchor_device_keys(&ns)
+                .expect("read the anchors")
+                .contains(&relay_pk),
+            "a removed founding relay is no longer an anchor"
+        );
     }
 
     /// In a namespace founded through the relay, with the relay attested as its

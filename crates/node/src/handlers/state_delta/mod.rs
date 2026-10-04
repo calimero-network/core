@@ -1,6 +1,8 @@
 //! State delta handling for BroadcastMessage::StateDelta
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
+use std::collections::HashSet;
+
 use calimero_context::scope_projection::ScopeProjections;
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernanceParentEdge;
@@ -31,7 +33,7 @@ mod verify;
 pub(crate) use buffering::{
     drain_absorbed, drain_all_absorbed, drain_all_governance_pending, recover_absorbed_on_startup,
 };
-use buffering::{drain_governance_pending, fence_and_maybe_absorb, FenceOutcome};
+use buffering::{drain_governance_pending, fence_and_maybe_absorb, park_first_copy, FenceOutcome};
 // Used only by the in-module test suite (the live drain/recover entry points
 // reach these internally within `buffering`).
 #[cfg(test)]
@@ -437,8 +439,8 @@ pub(crate) async fn apply_authorized_state_delta(
     // Parking rather than dropping matters because gossipsub does not re-deliver
     // a message it has already delivered: without a durable copy the only
     // recovery would be hash-heartbeat divergence triggering a snapshot sync.
-    // The original ciphertext is what gets stored — a replay is verified against
-    // the same bytes the sender signed.
+    // The envelope signature does not cover the payload, so the stored copy is
+    // unchecked until its replay re-derives the content address.
     if author_id != our_identity {
         if let BytecodeStatus::Missing(application_id) =
             application_bytecode_status(&node_clients.node, &node_clients.context, &context_id)?
@@ -465,10 +467,13 @@ pub(crate) async fn apply_authorized_state_delta(
             // Keyed by the awaited application rather than by `producing_bytecode_id`:
             // the application id resolves from local context metadata even when
             // nothing about the application has landed, and a delta may carry no
-            // `producing_bytecode_id` at all. `delta_id` keeps the key unique, so a
-            // re-delivery overwrites instead of duplicating.
-            calimero_governance_store::AbsorbRepository::new(node_clients.context.datastore())
-                .save(&context_id, *application_id.as_ref(), &record)?;
+            // `producing_bytecode_id` at all.
+            park_first_copy(
+                node_clients.context.datastore(),
+                &context_id,
+                *application_id.as_ref(),
+                &record,
+            )?;
             info!(
                 %context_id,
                 %author_id,
@@ -942,9 +947,14 @@ pub(crate) async fn apply_authorized_state_delta(
 
     // After successfully applying a remote delta, immediately broadcast our
     // updated root hash so lagging peers detect the divergence without waiting
-    // for the 30-second periodic heartbeat.
+    // for the 30-second periodic heartbeat. Read under the execution lock so a
+    // concurrent apply's two-step root / heads write can't be caught half done.
     if applied {
-        if let Ok(Some(ctx)) = node_clients.context.get_context(&context_id) {
+        if let Ok(Some(ctx)) = node_clients
+            .context
+            .get_context_consistent(&context_id)
+            .await
+        {
             if !ctx.root_hash.is_zero() {
                 let _ = node_clients
                     .node
@@ -1272,11 +1282,12 @@ pub async fn handle_state_delta(
     // O(1) and saves the drain + prefix-walk cost for traffic from
     // peers we've already explicitly removed.
     //
-    // It also refuses the signing key of a device the namespace has revoked
-    // (while no live binding speaks for that key). Here the filter is the only
-    // refusal on this path, not a shortcut: the cross-DAG check authorizes at the
-    // governance heads the author cites, and a revoked device that has not yet
-    // folded its own revocation cites heads from before it (core#4070). The
+    // It also refuses the signing key of a device the namespace has revoked or
+    // narrowed out (while no live binding speaks for that key). Here the filter
+    // is the only refusal on this path, not a shortcut: the cross-DAG check
+    // authorizes at the governance heads the author cites, and a revoked device
+    // that has not yet folded its own revocation cites heads from before it
+    // (core#4070). The
     // DAG-catchup of a peer's heads refuses it too; a delta fetched as the
     // parent of an accepted one does not, since its child vouches for it.
     //
@@ -1604,7 +1615,6 @@ async fn request_missing_deltas(
     // + envelope signature so the persist step writes them to the
     // `ContextDagDelta` row (next DAG-catchup serves can pass them on)
     // and the cross-DAG check + envelope verification fire before apply.
-    let mut to_fetch = missing_ids;
     type ParentFetch = (
         calimero_dag::CausalDelta<Vec<Action>>,
         [u8; 32], // delta_id (redundant with .id but kept for log clarity)
@@ -1620,6 +1630,12 @@ async fn request_missing_deltas(
         Option<calimero_node_primitives::sync::delta_auth::VerifiedEnvelope>,
         Option<[u8; 32]>, // events hash the id covers, kept so this node can serve it
     );
+    // Every id this walk has queued, so each is requested once.
+    let mut queued: HashSet<[u8; 32]> = HashSet::new();
+    let mut to_fetch: Vec<[u8; 32]> = missing_ids
+        .into_iter()
+        .filter(|id| queued.insert(*id))
+        .collect();
     let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
     // Accumulated (delta_id, events_data) pairs from any cascades that
@@ -1984,11 +2000,7 @@ async fn request_missing_deltas(
                         if *parent_id == [0; 32] {
                             continue;
                         }
-                        // Skip if we already have it or are about to fetch it
-                        if !delta_store.has_delta(parent_id).await
-                            && !to_fetch.contains(parent_id)
-                            && !fetched_deltas.iter().any(|(d, ..)| d.id == *parent_id)
-                        {
+                        if queued.insert(*parent_id) && !delta_store.has_delta(parent_id).await {
                             to_fetch.push(*parent_id);
                         }
                     }
@@ -3233,6 +3245,39 @@ mod tests {
             );
         }
 
+        /// A replay of an absorbed delta's signed envelope with another payload
+        /// leaves the first copy parked: the payload is unchecked until replay.
+        #[test]
+        fn a_replayed_envelope_does_not_replace_an_absorbed_delta() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let honest = sample_buffered([5; 32], APP_V1);
+            let replay = BufferedDelta {
+                payload: vec![0xEE; 3],
+                ..honest.clone()
+            };
+
+            for bd in [&honest, &replay] {
+                let outcome = fence_and_maybe_absorb(
+                    &store,
+                    &ctx,
+                    APP_V1,
+                    bd.id,
+                    bd.author_id,
+                    bd.hlc,
+                    false,
+                    || bd.clone(),
+                )
+                .unwrap();
+                assert!(matches!(outcome, FenceOutcome::Handled));
+            }
+
+            let parked = AbsorbRepository::new(&store)
+                .load(&ctx, APP_V1, honest.id)
+                .unwrap()
+                .expect("the delta stays parked");
+            assert_eq!(parked.payload, honest.payload);
+        }
+
         // ---- PR-6b Task 6b.5: drain-on-advance (verbatim replay) ----
 
         use super::super::drain_absorbed_records;
@@ -3274,6 +3319,23 @@ mod tests {
             handle
                 .put(&bytecode_id, &app_meta)
                 .expect("put ApplicationMeta");
+            // A loaded reader behind the target is a release its group named earlier.
+            if let Some(group_id) =
+                calimero_governance_store::get_group_for_context(store, context_id)
+                    .expect("read the context's group")
+            {
+                calimero_governance_store::UpgradeLadderRepository::new(store)
+                    .append(
+                        &group_id,
+                        key::LadderRung {
+                            bytecode_id: blob,
+                            application_id: ApplicationId::from([0xCC; 32]),
+                            package: String::new(),
+                            version: String::new(),
+                        },
+                    )
+                    .expect("record the rung");
+            }
         }
 
         /// REGRESSION (the PR-6b drain bug): a STALE v1 straggler delta —
@@ -3641,6 +3703,269 @@ mod tests {
                 drained, 0,
                 "no contexts with pending absorbs ⇒ nothing drains"
             );
+        }
+    }
+
+    /// The gossip path's parent walk asks its peer for each missing ancestor once.
+    mod parent_fetch_walk_tests {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use actix::Actor;
+        use calimero_network_primitives::client::NetworkClient;
+        use calimero_network_primitives::messages::NetworkMessage;
+        use calimero_network_primitives::stream::Stream;
+        use calimero_node_primitives::sync::delta_auth::delta_signature_payload;
+        use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+        use calimero_primitives::identity::PrivateKey;
+        use calimero_storage::delta::CausalDelta;
+        use calimero_storage::logical_clock::HybridTimestamp;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+        use calimero_utils_actix::LazyRecipient;
+        use libp2p::PeerId;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
+
+        use super::super::request_missing_deltas;
+        use crate::sync::helpers::generate_nonce;
+        use crate::sync::stream::{recv, send};
+        use crate::test_support::{context, delta_store_over};
+
+        const DEPTH: usize = 40; // ancestors the walk has to fetch
+        const BUDGET: Duration = Duration::from_secs(5); // walk timeout, also the fake peer's idle wait
+
+        /// Hands out one pre-opened stream, as a peer accepting the walk's dial.
+        struct OneStream(Option<Stream>);
+
+        impl Actor for OneStream {
+            type Context = actix::Context<Self>;
+        }
+
+        impl actix::Handler<NetworkMessage> for OneStream {
+            type Result = ();
+
+            fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
+                if let NetworkMessage::OpenStream { outcome, .. } = msg {
+                    let _ = outcome.send(self.0.take().ok_or_else(|| eyre::eyre!("one stream")));
+                }
+            }
+        }
+
+        /// `d[i]` names `d[i-1]` and `d[i-2]`, so each ancestor is named twice,
+        /// the second time while it is still waiting in the walk's queue.
+        fn skip_chain() -> Vec<CausalDelta> {
+            let mut deltas: Vec<CausalDelta> = Vec::new();
+            for i in 0..DEPTH {
+                let parents = match i {
+                    0 => vec![[0; 32]],
+                    1 => vec![deltas[0].id],
+                    _ => vec![deltas[i - 1].id, deltas[i - 2].id],
+                };
+                let hlc = HybridTimestamp::zero();
+                let id = CausalDelta::compute_id(&parents, &[], None, &hlc);
+                deltas.push(CausalDelta {
+                    id,
+                    parents,
+                    actions: Vec::new(),
+                    hlc,
+                    events_hash: None,
+                });
+            }
+            deltas
+        }
+
+        /// Serves `deltas` signed by `author` until the walk hangs up; returns
+        /// every id asked for.
+        async fn serve(
+            mut stream: Stream,
+            author: PrivateKey,
+            deltas: Vec<CausalDelta>,
+        ) -> Vec<[u8; 32]> {
+            let by_id: HashMap<_, _> = deltas.into_iter().map(|d| (d.id, d)).collect();
+            let mut asked = Vec::new();
+            while let Ok(Some(StreamMessage::Init {
+                payload: InitPayload::DeltaRequest { delta_id, .. },
+                ..
+            })) = recv(&mut stream, None, BUDGET).await
+            {
+                asked.push(delta_id);
+                let payload = match by_id.get(&delta_id) {
+                    Some(delta) => MessagePayload::DeltaResponse {
+                        delta: borsh::to_vec(delta).expect("encode delta").into(),
+                        author_id: author.public_key(),
+                        governance_position_blob: None,
+                        delta_signature: Some(sign(&author, delta)),
+                        delegation: None,
+                        tee_trigger: None,
+                    },
+                    None => MessagePayload::DeltaNotFound,
+                };
+                let reply = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload,
+                    next_nonce: generate_nonce(),
+                };
+                send(&mut stream, &reply, None).await.expect("send reply");
+            }
+            asked
+        }
+
+        fn sign(author: &PrivateKey, delta: &CausalDelta) -> [u8; 64] {
+            let payload =
+                delta_signature_payload(context(), delta.id, author.public_key(), None, delta.hlc)
+                    .expect("signature payload");
+            author.sign(&payload).expect("sign").to_bytes()
+        }
+
+        #[actix::test]
+        async fn each_missing_ancestor_is_requested_once() {
+            let deltas = skip_chain();
+            let head = deltas[DEPTH - 1].id;
+            let (ours, peer) = Stream::test_pair();
+            let recipient = LazyRecipient::new();
+            let network_client = NetworkClient::new(recipient.clone());
+            let _peer_addr = OneStream::create(move |ctx| {
+                assert!(recipient.init(ctx), "network recipient");
+                OneStream(Some(ours))
+            });
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let (delta_store, _tmp, _keep_alive) = delta_store_over(store.clone()).await;
+            let author = PrivateKey::random(&mut UnwrapErr(SysRng));
+            let server = tokio::spawn(serve(peer, author, deltas));
+
+            let _cascaded = request_missing_deltas(
+                network_client,
+                BUDGET,
+                context(),
+                vec![head, head],
+                PeerId::random(),
+                [0xBB; 32].into(),
+                delta_store,
+                store,
+                &crate::NodeState::new(),
+            )
+            .await
+            .expect("walk completes");
+
+            let mut asked = server.await.expect("server task");
+            let total = asked.len();
+            asked.sort_unstable();
+            asked.dedup();
+            assert_eq!(asked.len(), DEPTH, "every ancestor is fetched");
+            assert_eq!(total, DEPTH, "no ancestor is requested twice");
+        }
+    }
+
+    /// A delta parked because its application is not installed keeps its first
+    /// copy when the signed envelope is replayed with another payload.
+    mod parked_delta_tests {
+        use std::time::Duration;
+
+        use calimero_governance_store::AbsorbRepository;
+        use calimero_network_primitives::client::NetworkClient;
+        use calimero_node_primitives::sync::delta_auth::delta_signature_payload;
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::ContextId;
+        use calimero_primitives::identity::PrivateKey;
+        use calimero_storage::logical_clock::HybridTimestamp;
+        use calimero_store::key::{
+            ApplicationMeta, ContextIdentity, ContextMeta as ContextMetaKey,
+        };
+        use calimero_store::types::{self, ContextMeta};
+        use calimero_utils_actix::LazyRecipient;
+        use libp2p::PeerId;
+        use rand::rand_core::UnwrapErr;
+        use rand::rngs::SysRng;
+        use serial_test::serial;
+
+        use super::super::{handle_state_delta, StateDeltaContext, StateDeltaMessage};
+        use crate::test_node_harness::{boot_test_node, TestNode};
+
+        const CONTEXT: [u8; 32] = [0xC1; 32];
+        const APPLICATION: [u8; 32] = [0xA1; 32]; // named by the context, never installed
+        const DELTA: [u8; 32] = [0xD1; 32];
+
+        /// A context on an uninstalled application, with an identity this node owns.
+        fn host_context(node: &TestNode) {
+            let ours = PrivateKey::random(&mut UnwrapErr(SysRng));
+            let mut handle = node.store.handle();
+            let meta = ContextMeta::new(
+                ApplicationMeta::new(ApplicationId::from(APPLICATION)),
+                [0x01; 32],
+                Vec::new(),
+                None,
+            );
+            handle
+                .put(&ContextMetaKey::new(CONTEXT.into()), &meta)
+                .expect("context meta");
+            handle
+                .put(
+                    &ContextIdentity::new(CONTEXT.into(), ours.public_key()),
+                    &types::ContextIdentity {
+                        private_key: Some(*ours.as_bytes()),
+                    },
+                )
+                .expect("owned identity");
+        }
+
+        fn input(node: &TestNode, node_state: &crate::NodeState) -> StateDeltaContext {
+            StateDeltaContext {
+                node_clients: crate::NodeClients {
+                    context: node.context_client.clone(),
+                    node: node.node_client.clone(),
+                },
+                node_state: node_state.clone(),
+                network_client: NetworkClient::new(LazyRecipient::new()),
+                sync_timeout: Duration::from_secs(5),
+            }
+        }
+
+        /// `author`'s signed envelope for [`DELTA`], carrying `artifact`.
+        fn message(author: &PrivateKey, artifact: &[u8]) -> StateDeltaMessage {
+            let context_id = ContextId::from(CONTEXT);
+            let hlc = HybridTimestamp::zero();
+            let payload =
+                delta_signature_payload(context_id, DELTA, author.public_key(), None, hlc)
+                    .expect("signature payload");
+            StateDeltaMessage {
+                source: PeerId::random(),
+                context_id,
+                author_id: author.public_key(),
+                delta_id: DELTA,
+                parent_ids: Vec::new(),
+                hlc,
+                artifact: artifact.to_vec(),
+                nonce: [0; 12],
+                governance_position: None,
+                key_id: [0; 32],
+                delta_signature: Some(author.sign(&payload).expect("sign").to_bytes()),
+                delegation: None,
+                tee_trigger: None,
+                producing_bytecode_id: None,
+            }
+        }
+
+        #[tokio::test]
+        #[serial(boot_test_node)]
+        async fn a_replayed_envelope_does_not_replace_a_parked_delta() {
+            let node = boot_test_node().await;
+            host_context(&node);
+            let author = PrivateKey::random(&mut UnwrapErr(SysRng));
+            let node_state = crate::NodeState::new();
+
+            for artifact in [&b"honest"[..], &b"junk"[..]] {
+                handle_state_delta(input(&node, &node_state), message(&author, artifact))
+                    .await
+                    .expect("the delta is parked");
+            }
+
+            let parked = AbsorbRepository::new(&node.store)
+                .load(&CONTEXT.into(), APPLICATION, DELTA)
+                .expect("read the absorb buffer")
+                .expect("the delta is parked");
+            assert_eq!(parked.payload, b"honest");
         }
     }
 }

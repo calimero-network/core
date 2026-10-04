@@ -273,7 +273,13 @@ impl NodeManager {
                                 continue;
                             };
 
-                            let Ok(Some(context)) = context_client.get_context(&context_id) else {
+                            // Under the execution lock: a delta apply writes
+                            // the root and the heads in two steps, and a
+                            // heartbeat read between them advertises a
+                            // (heads, root) pair this node never held.
+                            let Ok(Some(context)) =
+                                context_client.get_context_consistent(&context_id).await
+                            else {
                                 continue;
                             };
 

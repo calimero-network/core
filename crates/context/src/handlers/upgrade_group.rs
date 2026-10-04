@@ -1037,7 +1037,12 @@ fn executing_bytecode(
     let application = handle
         .get(&context.application)?
         .ok_or_else(|| eyre::eyre!("context {context_id}'s application row is missing"))?;
-    Ok(*application.bytecode.blob_id().as_ref())
+    let blob = *application.bytecode.blob_id().as_ref();
+    // Every group shares the row; one the context's group never named says nothing of it.
+    if !crate::activation::context_group_registers_bytecode(datastore, context_id, blob) {
+        eyre::bail!("context {context_id}'s application row holds a release its group never named");
+    }
+    Ok(blob)
 }
 
 /// The migration a RESUMED propagation must carry (crash recovery, operator
@@ -1066,6 +1071,9 @@ pub(crate) async fn resolve_resumed_migration(
         .ok_or_else(|| crate::error::ContextError::ApplicationNotFound {
             application_id: target_application_id.to_string(),
         })?;
+    if !crate::activation::group_registers_bytecode(datastore, group_id, target_blob) {
+        refuse!("the target application row on this node holds a release this group never named");
+    }
 
     let mut resolved: Option<Option<String>> = None;
     for context_id in
