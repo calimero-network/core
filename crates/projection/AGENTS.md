@@ -79,7 +79,10 @@ Two ways to fold, for two different purposes:
 - **A join is not a role write.**
   An invitation join (`MemberJoinedWithDevice` with a non-TEE role) never replaces a standing membership, because the apply skips a join by an account that already holds a row.
   `member_clock` is stamped only by adds, role changes and removals; a join takes effect only when no add stands, that is when the member is absent or its latest write is a removal the join beats, and among several such joins the earliest stamp wins.
-  The fold keeps every join that beats `member_clock` in `member_joins` so the result is a function of the op set: a removal that arrives late still finds the join that follows it.
+  The fold keeps the joins that beat `member_clock` in `member_joins` so the result is a function of the op set: a removal that arrives late still finds the join that follows it.
+  No fixed-size summary does that, since any kept join may become the earliest one above a later removal, so the map is bounded instead: it keeps the latest `MAX_STANDING_JOINS + 1` joins of a member.
+  The latest, because a removal only ever spends joins from the earliest end, which makes "the latest N above the clock" the same set in every arrival order; the earliest N is not.
+  While more than `MAX_STANDING_JOINS` joins stand above the clock the earliest is unknown, and the member stands as `ReadOnly`, the least role an invitation grants, so a flood of re-signed joins can lower its signer's role in the fold and never raise it.
   The device half of a repeat join links its device as before.
   A TEE admission (a TEE role) still folds as a plain last-writer-wins `MemberAdded`, since re-attesting in the other mode converts the standing TEE row; so does a join whose credential does not bind, which the apply refuses.
 - **A namespace leave reaches every group of the scope.**

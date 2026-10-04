@@ -94,6 +94,8 @@ join(Member), remove, join(ReadOnly)          → ReadOnly
 
 This is still a function of the operation set and its stamps, so it is order-independent like every other slot.
 The fold keeps each join that beats the member's latest such write, so a removal that arrives after the joins on either side of it resolves to the same member as one that arrived between them.
+It keeps at most 65 of them per member, the latest ones.
+A member with more than 64 joins above its latest add, removal or leave resolves to `ReadOnly`, the least role an invitation grants, until one of those writes brings the count back down; the limit is a function of the operation set too, so it does not depend on arrival order.
 A TEE attestation admission is not a join in this sense: re-attesting converts a standing TEE role, so it folds as a plain write.
 
 ### A namespace leave reaches every subgroup
