@@ -2187,7 +2187,7 @@ fn joined_as_member() -> (Fixture, Account, Device) {
 }
 
 /// The role the whole of `fx`'s log resolves `account` to, at its head and in
-/// the streaming fold alike.
+/// the streaming fold alike; they agree here only because `fx`'s ops carry clocks.
 fn resolved_role(fx: &Fixture, account: &AccountId) -> Option<GroupMemberRole> {
     let at_head = role_in(&ScopeState::acl_view_at(&fx.log, &fx.head), account);
     let streamed = role_in(&ScopeState::from_ops(&fx.log).acl_view(), account);
@@ -2261,6 +2261,43 @@ fn a_repeat_join_keeps_the_role_at_its_cut_without_a_clock() {
     assert_eq!(role_in(&view, &joiner.id), Some(GroupMemberRole::Admin));
 }
 
+/// Governance ops carry no clock. The cut orders two chained joins by causal
+/// depth and keeps the first; the streaming fold has only their ids to go by,
+/// so its "earliest" join is the one with the lower id, in any arrival order.
+#[test]
+fn without_a_clock_the_cut_keeps_the_first_join_and_the_stream_the_lower_id() {
+    let mut stream_named_the_second_join = 0;
+    for seed in 0..32u8 {
+        let joiner = Account::new(0x40 + seed);
+        let device = joiner.enroll(0x80 + seed, 0);
+        let first = join_op(&joiner, &device, GroupMemberRole::Member, 0, vec![]);
+        let second = join_op(
+            &joiner,
+            &device,
+            GroupMemberRole::Admin,
+            0,
+            vec![first.id()],
+        );
+        let by_id = if first.id() < second.id() {
+            GroupMemberRole::Member
+        } else {
+            stream_named_the_second_join += 1;
+            GroupMemberRole::Admin
+        };
+
+        let at_cut = ScopeState::acl_view_at(&[first.clone(), second.clone()], &[second.id()]);
+        assert_eq!(role_in(&at_cut, &joiner.id), Some(GroupMemberRole::Member));
+        for order in arrival_orders(&[first, second]) {
+            let streamed = ScopeState::from_ops(&order).acl_view();
+            assert_eq!(role_in(&streamed, &joiner.id), Some(by_id.clone()));
+        }
+    }
+    assert!(
+        (1..32).contains(&stream_named_the_second_join),
+        "the stream must differ from the cut for some ids and not for others"
+    );
+}
+
 #[test]
 fn a_member_presenting_an_admin_invitation_stays_a_member() {
     let (mut fx, joiner, device) = joined_as_member();
@@ -2279,18 +2316,20 @@ fn a_member_presenting_an_admin_invitation_stays_a_member() {
     );
 }
 
+/// Only a leave readmits by invitation: the apply refuses a join by a member an
+/// admin removed, so that history never reaches the fold.
 #[test]
-fn a_rejoin_after_a_removal_takes_the_rejoins_role() {
+fn a_rejoin_after_a_leave_takes_the_rejoins_role() {
     let (mut fx, joiner, device) = joined_as_member();
-    let remove = fx.admin.sign_op(
+    let leave = device.sign_op(
         40,
         fx.head.clone(),
-        OpPayload::MemberRemoved {
+        OpPayload::MemberLeft {
             group: group(),
             member: joiner.id,
         },
     );
-    fx.push(remove);
+    fx.push(leave);
     let rejoin = join_op(
         &joiner,
         &device,
@@ -2401,10 +2440,10 @@ fn every_arrival_order_of_a_join_history_folds_alike() {
     let joiner = Account::new(0x5A);
     let device = joiner.enroll(0x5B, 0);
     let join = |role, ns| join_op(&joiner, &device, role, ns, vec![]);
-    let remove = fx.admin.sign_op(
+    let leave = device.sign_op(
         40,
         vec![],
-        OpPayload::MemberRemoved {
+        OpPayload::MemberLeft {
             group: group(),
             member: joiner.id,
         },
@@ -2420,10 +2459,10 @@ fn every_arrival_order_of_a_join_history_folds_alike() {
             GroupMemberRole::Admin,
         ),
         (
-            "join, remove, rejoin, join again",
+            "join, leave, rejoin, join again",
             vec![
                 join(GroupMemberRole::Member, 30),
-                remove,
+                leave,
                 join(GroupMemberRole::ReadOnly, 50),
                 join(GroupMemberRole::Admin, 60),
             ],
