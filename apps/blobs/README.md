@@ -214,14 +214,11 @@ This section shows how the client-side blob API and contract methods work togeth
 ### Upload Flow (Client → Contract → Network)
 
 ```typescript
-// 1. CLIENT: Upload file binary to blob storage
-const blobResponse = await blobClient.uploadBlob(
-  file,
-  onBlobProgress, // Optional progress callback
-  "" // Optional expected hash
-);
-
-const blobId = blobResponse.data.blobId; // e.g., "a3f1c0de9b7e44d2a8f5061c3b2e9d7f5a4c1b0e8d7f6a5b4c3d2e1f0a9b8c7d"
+// 1. CLIENT: Upload file binary to blob storage, for the context (mero-js).
+//    The context id is what makes the blob the context's, so the announce
+//    in step 3 can share it.
+const { blobId } = await mero.admin.uploadBlob({ data: file, contextId });
+// e.g., "a3f1c0de9b7e44d2a8f5061c3b2e9d7f5a4c1b0e8d7f6a5b4c3d2e1f0a9b8c7d"
 
 // 2. CLIENT: Call contract method with blob ID and metadata
 const response = await contractApi.upload_file(
@@ -281,27 +278,18 @@ async uploadDocument(
   contextId: string,
   name: string,
   file: File,
-  onBlobProgress?: (progress: number) => void,
   onStorageProgress?: () => void,
 ): Promise<{ data?: string; error?: any }> {
   try {
-    // Step 1: Upload blob to storage
-    const blobResponse = await blobClient.uploadBlob(
-      file,
-      onBlobProgress,
-      ''
-    );
-
-    if (blobResponse.error || !blobResponse.data?.blobId) {
-      return { error: blobResponse.error };
-    }
+    // Step 1: Upload blob to storage, for the context (mero-js)
+    const { blobId } = await mero.admin.uploadBlob({ data: file, contextId });
 
     // Step 2: Store metadata in contract
     onStorageProgress?.();
 
     const response = await contractApi.upload_file(
       name,
-      blobResponse.data.blobId,  // Blob ID from step 1
+      blobId,  // Blob ID from step 1
       file.size,
       file.type
     );
@@ -318,7 +306,9 @@ async uploadDocument(
 
 ### Available Blob Client Methods
 
-The `@calimero-network/calimero-client` provides these blob operations:
+The `@calimero-network/calimero-client` provides these blob operations. Its
+`uploadBlob` cannot name a context, so its uploads are held for none and the
+app's announce shares nothing; upload through mero-js with a `contextId`.
 
 ```typescript
 interface BlobApi {
@@ -354,8 +344,8 @@ interface BlobApi {
 2. **Network Announcement is Critical**
 
    - `env::blob_announce_to_context()` makes blob discoverable
-   - Without announcement, only the uploader can access the blob
-   - Announcement enables peer-to-peer sharing
+   - Only a blob held for the context is announced: upload it with the context's id
+   - A blob uploaded without a context is held for none, and announcing it shares nothing
 
 3. **Hex Encoding for Serialization**
 
@@ -438,7 +428,7 @@ The `workflows/blobs-example.yml` file provides end-to-end testing that demonstr
 **Upload Flow:**
 
 ```
-Client → blobClient.uploadBlob(file) → Blob Storage
+Client → blobClient.uploadBlob(file, context_id) → Blob Storage
 Blob Storage → returns blob_id → Client
 Client → contract.upload_file(blob_id, metadata) → Contract
 Contract → env::blob_announce_to_context(blob_id) → Network
@@ -458,6 +448,6 @@ Network → Finds peers with blob → Client receives data
 
 1. **Blob IDs are 32 bytes**: Always handle as `[u8; 32]` internally
 2. **Use hex for serialization**: `BlobId` converts to/from strings for JSON
-3. **Announce blobs to network**: Call `env::blob_announce_to_context()` after upload
+3. **Announce blobs to network**: Upload with the context's id, then call `env::blob_announce_to_context()`
 4. **Store metadata separately**: Blobs are content-addressed; metadata is in contract state
 5. **Events for UI updates**: Emit events for real-time client synchronization

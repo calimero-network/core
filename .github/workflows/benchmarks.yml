@@ -7,15 +7,52 @@ on:
   push:
     branches:
       - master
+  # `pull_request`, never `pull_request_target`: a fork's run gets a read-only
+  # token and no secrets, and no job here runs PR code with more than that.
   pull_request:
-    types: [labeled]
+    types: [labeled, opened, synchronize, reopened]
 
 jobs:
+  # Which crates to bench. A push to master benches every crate, keeping a
+  # baseline per commit; a PR benches only while it carries the
+  # `run-benchmarks` label, then every crate too. Wall-clock benches on shared
+  # runners are too noisy to gate on, so a PR opts in rather than paying for
+  # them on every storage change. It checks out nothing.
+  plan:
+    name: Plan benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      crates: ${{ steps.plan.outputs.crates }}
+    steps:
+      - name: Choose the crates
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          # The PR's labels as of this event, so a push to a labelled PR benches again.
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'run-benchmarks') }}
+        run: |
+          # A crate's first `[[bench]]` goes here, or it gets no master baseline.
+          all='["storage-cost","calimero-storage","calimero-store","calimero-blobstore","calimero-crypto","calimero-runtime","calimero-dag"]'
+          if [ "$EVENT" = push ]; then
+            crates="$all"
+          elif [ "$ACTION" = labeled ]; then
+            # Adding the label benches; adding any other label changes nothing.
+            if [ "$LABEL" = run-benchmarks ]; then crates="$all"; else crates='[]'; fi
+          elif [ "$LABELLED" = true ]; then
+            crates="$all"
+          else
+            crates='[]'
+          fi
+          echo "crates=$crates" >> "$GITHUB_OUTPUT"
+          echo "benchmarking: $crates"
+
   criterion:
     name: Criterion trend (${{ matrix.crate }})
-    if: >-
-      github.event_name == 'push' ||
-      github.event.label.name == 'run-benchmarks'
+    needs: plan
+    if: needs.plan.outputs.crates != '[]'
     # timing on shared runners is too noisy to gate on
     continue-on-error: true
     runs-on: ubuntu-24.04-8cpu
@@ -23,24 +60,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crate:
-          - storage-cost
-          - calimero-storage
-          - calimero-store
-          - calimero-blobstore
-          - calimero-crypto
-          - calimero-runtime
-          - calimero-dag
+        crate: ${{ fromJSON(needs.plan.outputs.crates) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      # Saves nothing. A cache per crate was seven entries of the repo's 10 GB
+      # for jobs that never gate, and they evicted the caches that do. No other
+      # group builds the bench profile (release: fat LTO, host target), so the
+      # restore finds nothing and the benches build cold.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          shared-key: bench-${{ matrix.crate }}
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: bench
+          save-if: false
 
       - name: Run benchmarks
         run: cargo bench -p ${{ matrix.crate }} -- --save-baseline ${{ github.sha }}
@@ -52,6 +85,11 @@ jobs:
           path: target/criterion
           retention-days: 30
 
+  # Reads only artifacts: this run's (data the PR's benches wrote, parsed by
+  # critcmp, never executed) and the base commit's from a master push run. On a
+  # fork PR the token is read-only whatever this asks for, so the comment step
+  # fails and the table stays in the job log; continue-on-error keeps that from
+  # failing the PR.
   compare:
     name: Compare against master
     needs: criterion
@@ -80,6 +118,7 @@ jobs:
           run_id=$(gh run list \
             --repo "${{ github.repository }}" \
             --workflow benchmarks.yml \
+            --event push \
             --commit "${{ github.event.pull_request.base.sha }}" \
             --status success \
             --json databaseId \

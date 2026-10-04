@@ -20,6 +20,8 @@ pub(crate) mod state_delta;
 mod stream_opened;
 pub(crate) mod tee_attestation_admission;
 
+pub(crate) use stream_opened::InboundStreamPermit;
+
 impl Handler<NodeMessage> for NodeManager {
     type Result = ();
 

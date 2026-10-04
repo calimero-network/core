@@ -476,32 +476,14 @@ impl VMHostFunctions<'_> {
             "js_std_d_print invoked"
         );
 
+        let ptr = usize::try_from(message_ptr).map_err(|_| HostError::IntegerOverflow)?;
         let len = usize::try_from(message_len).map_err(|_| HostError::IntegerOverflow)?;
-
-        // Bound the guest-provided length against actual guest memory *before*
-        // allocating. Sizing `vec![0u8; len]` directly from an unchecked guest
-        // length lets the guest force an enormous host allocation (OOM); the
-        // read below would reject an out-of-bounds region, but only after the
-        // allocation had already happened.
-        let bytes = if len == 0 {
-            Vec::new()
+        // An empty print never touches memory, so its pointer stays unchecked.
+        let message = if len == 0 {
+            String::new()
         } else {
-            let ptr = usize::try_from(message_ptr).map_err(|_| HostError::IntegerOverflow)?;
-            let memory = self.borrow_memory();
-            let memory_size = memory.data_size() as usize;
-            let end = ptr.checked_add(len).ok_or(HostError::InvalidMemoryAccess)?;
-            if end > memory_size {
-                return Err(HostError::InvalidMemoryAccess.into());
-            }
-
-            let mut buf = vec![0u8; len];
-            memory
-                .read(message_ptr, &mut buf)
-                .map_err(|_| HostError::InvalidMemoryAccess)?;
-            buf
+            String::from_utf8_lossy(self.read_guest_memory(ptr, len)?).into_owned()
         };
-
-        let message = String::from_utf8_lossy(&bytes).to_string();
         let max_len = {
             let logic = self.borrow_logic();
             if logic.logs.len()
@@ -1398,7 +1380,7 @@ impl VMHostFunctions<'_> {
                 // the verifier falls back to v2 stored-writers, which is
                 // safe for replicated state from a peer.
                 let sync_ctx = calimero_storage::interface::ApplyContext::empty();
-                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload, &sync_ctx)
+                calimero_storage::collections::Root::<Vec<u8>>::sync_opaque(&payload, &sync_ctx)
             })
             .map_err(|err| {
                 VMLogicError::from(HostError::Panic {

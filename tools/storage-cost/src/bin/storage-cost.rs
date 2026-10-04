@@ -1,4 +1,4 @@
-//! Emit the row-cost table as JSON on stdout, which
+//! Emit the row- and hash-cost table as JSON on stdout, which
 //! `scripts/check-storage-cost.sh` diffs against the committed snapshot.
 //!
 //! ```text

@@ -52,6 +52,7 @@ use actix::{
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_primitives::context::ContextId;
+use calimero_utils_actix::supervise::exit_on_panic;
 use dashmap::DashMap;
 use libp2p::PeerId;
 use prometheus_client::encoding::EncodeLabelSet;
@@ -63,6 +64,7 @@ use tracing::{debug, info, warn};
 
 use calimero_node_primitives::sync::SyncProtocol;
 
+use crate::handlers::InboundStreamPermit;
 use crate::sync::SyncManager;
 
 /// Mailbox capacity for the sync-session actor.
@@ -251,6 +253,8 @@ pub enum SyncSessionJob {
     Responder {
         peer_id: PeerId,
         stream: Box<Stream>,
+        /// Held until the session ends, so the stream counts against the inbound limits.
+        permit: InboundStreamPermit,
     },
     /// Locally-driven sync attempt; runs `perform_interval_sync`.
     /// `peer_id = None` lets the manager choose a peer.
@@ -417,7 +421,11 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
         let concurrency = Arc::clone(&self.concurrency);
 
         match job {
-            SyncSessionJob::Responder { peer_id, stream } => {
+            SyncSessionJob::Responder {
+                peer_id,
+                stream,
+                permit,
+            } => {
                 let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
                 // Responder: `handle_opened_stream` returns `()` so
                 // there is no `error_total` distinction here — only
@@ -425,6 +433,7 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                 let processed_total = Arc::clone(&self.processed_total);
                 let timeout_total = Arc::clone(&self.timeout_total);
                 let work = async move {
+                    let _permit = permit;
                     let _guard = in_flight_guard;
                     let started = Instant::now();
                     // #2319: one `timeout` covers BOTH waiting for a
@@ -714,7 +723,7 @@ pub fn start_sync_session_actor(
     let metrics = SyncSessionMetrics::new(registry);
     let metrics_for_actor = metrics.clone();
 
-    let addr = SyncSessionActor::start_in_arbiter(arbiter, move |ctx| {
+    let addr = exit_on_panic(arbiter, move |ctx| {
         ctx.set_mailbox_capacity(capacity);
         SyncSessionActor::new(
             sync_manager,

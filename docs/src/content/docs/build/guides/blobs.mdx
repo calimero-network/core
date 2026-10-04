@@ -29,7 +29,12 @@ The SDK exposes a file-descriptor-style API in `calimero_sdk::env`:
 | Read bytes | `blob_read(fd, &mut buf)` | bytes read |
 
 Write path: `blob_create` → `blob_write`… → `blob_close` (the returned id is the
-content hash). Read path: `blob_open` → `blob_read`… → `blob_close`.
+content hash). Read path: `blob_open` → `blob_read`… → `blob_close`. `blob_open`
+opens only a blob held for the current context: the app wrote it, it was
+uploaded with that `context_id` on a member node, it was fetched from the
+context's peers, or it is the context's own application. Anything else traps.
+To read a blob another node produced, use `blob_open_in_context`, which fetches
+it from the context's peers when this node does not hold it for the context.
 
 ## Announce so peers can fetch
 
@@ -62,8 +67,10 @@ pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::
 ```
 
 <Aside type="note" title="Who writes the bytes">
-  In `apps/blobs` the bytes are uploaded by a blob client and the method receives
-  the resulting `BlobId`; the contract's job is to record the id and announce it.
+  In `apps/blobs` the bytes are uploaded by a blob client with the context's
+  `context_id`, and the method receives the resulting `BlobId`; the contract's
+  job is to record the id and announce it. An upload naming no context is in no
+  context: announcing it returns `false` and shares nothing.
   Use the `blob_create`/`blob_write`/`blob_close` calls above when you produce the
   bytes inside the app itself.
 </Aside>
@@ -74,8 +81,9 @@ pub fn upload_file(&mut self, name: String, blob_id: BlobId, size: u64) -> app::
 </Aside>
 
 The full arc: write the bytes to get a content id, announce that id so the rest
-of the context learns the blob exists, then any peer opens it by id and streams
-the bytes — recomputing the id to confirm it got what it asked for.
+of the context learns the blob exists, then a peer's app opens it by id with
+`blob_open_in_context`, which fetches and streams the bytes, recomputing the id
+to confirm it got what it asked for.
 
 <SeqDiagram id="d-build-blobs-share" title="Upload, announce, and fetch a blob"
   lanes={[
@@ -91,7 +99,7 @@ the bytes — recomputing the id to confirm it got what it asked for.
     { from: 1, to: 0, label: 'BlobId (content hash)', dashed: true },
     { from: 0, to: 1, label: 'blob_announce_to_context(blob_id, ctx)' },
     { type: 'divider', label: 'peers in the context learn the blob exists' },
-    { from: 2, to: 1, label: 'blob_open(blob_id)' },
+    { from: 2, to: 1, label: 'blob_open_in_context(blob_id, ctx)' },
     { from: 1, to: 2, label: 'stream chunks', dashed: true },
     { from: 2, to: 2, label: 'recompute id, store bytes locally' },
   ]} />

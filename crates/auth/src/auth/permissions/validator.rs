@@ -85,7 +85,7 @@ static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 /// time, never the regex that happens to group them.
 static GROUP_OWN_READ_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-            r"^/admin-api/groups/([^/]+)(/contexts|/members|/subgroups|/metadata|/members/[^/]+/capabilities)?$",
+            r"^/admin-api/groups/([^/]+)(/contexts|/members|/subgroups|/metadata|/members/[^/]+/capabilities|/upgrade/status|/cascade-status|/migration-status)?$",
         )
         .unwrap()
 });
@@ -103,6 +103,14 @@ static CONTEXT_MEMBERSHIP_REGEX: LazyLock<Regex> =
 
 static CONTEXT_INTENTS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/intents$").unwrap());
+static CONTEXT_PRESENCE_INTENTS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/presence-intents$").unwrap());
+/// The group half of the delegated surface: creating a context for a member and
+/// governing a group for one. Matched before [`GROUP_REGEX`], which would
+/// otherwise take them as group mutations needing `group:manage`.
+static GROUP_INTENTS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^/admin-api/groups/([^/]+)/(context-intents|governance-intents)$").unwrap()
+});
 static CONTEXT_QUERY_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/query$").unwrap());
 
@@ -394,6 +402,20 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
     // and everything nested below it (members, metadata, settings, upgrade,
     // migration, signing keys, ownership proofs, sync, …). Reads require
     // `group:list[<id>]`, mutations `group:manage[<id>]`.
+    // The delegated surface's group routes, on the token that submits intents,
+    // as `/intents` is: the warrant each request carries decides whether it is
+    // authorised and whose it is. They name a group, not a context, so the
+    // grant is the unscoped intent permission — a token scoped to one context
+    // writes in it but does not create contexts or govern groups.
+    if GROUP_INTENTS_REGEX.is_match(path) {
+        return match method {
+            HttpMethod::GET | HttpMethod::POST => vec![Permission::Context(
+                ContextPermission::PerformIntent(ResourceScope::Global),
+            )],
+            _ => vec![],
+        };
+    }
+
     // Before the catch-all below, so these reads take the narrow verb and their
     // siblings do not.
     if let Some(captures) = GROUP_OWN_READ_REGEX.captures(path) {
@@ -492,6 +514,20 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
                 // was handing it node credentials — the thing this whole path
                 // exists to avoid.
                 HttpMethod::GET | HttpMethod::POST => {
+                    vec![Permission::Context(ContextPermission::PerformIntent(scope))]
+                }
+                _ => vec![],
+            };
+        }
+    }
+
+    // Presence for a member: the signed statement is the credential, as a
+    // warrant is for `/intents`, so it asks for the same scoped permission.
+    if let Some(captures) = CONTEXT_PRESENCE_INTENTS_REGEX.captures(path) {
+        if let Some(ctx_id) = captures.get(1) {
+            let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
+            return match method {
+                HttpMethod::POST => {
                     vec![Permission::Context(ContextPermission::PerformIntent(scope))]
                 }
                 _ => vec![],
@@ -2098,10 +2134,130 @@ mod tests {
             "context:list-own".to_owned(),
             "context:query".to_owned(),
             "context:subscribe".to_owned(),
+            "group:list-own".to_owned(),
             "namespace:list-own".to_owned(),
             "blob:add-own".to_owned(),
             "blob:get-own".to_owned(),
         ]
+    }
+
+    /// Every delegated route answers the token that submits intents, on the
+    /// protected router too.
+    ///
+    /// A node that keeps `delegated_access` off still mounts all four routes,
+    /// behind its own auth, so an operator can hand a client a scoped token
+    /// instead of opening them to the world. Before, only `/intents` was
+    /// mapped: `presence-intents` fell to the `admin` default-deny and the two
+    /// group routes to `group:manage`, so the token that could write through the
+    /// relay could neither create the context it writes in, govern its group,
+    /// nor publish presence there. The warrant (or signed statement) still
+    /// decides whether a request is authorised; the token decides who may ask.
+    #[test]
+    fn a_delegated_session_reaches_every_delegated_route() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+
+        for (method, path) in [
+            (Method::POST, "/admin-api/contexts/ctx-1/presence-intents"),
+            (Method::GET, "/admin-api/groups/grp-1/context-intents"),
+            (Method::POST, "/admin-api/groups/grp-1/context-intents"),
+            (Method::GET, "/admin-api/groups/grp-1/governance-intents"),
+            (Method::POST, "/admin-api/groups/grp-1/governance-intents"),
+        ] {
+            let req = Request::builder()
+                .method(method.clone())
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&req);
+            assert!(
+                matches!(
+                    required.as_slice(),
+                    [Permission::Context(ContextPermission::PerformIntent(_))]
+                ),
+                "{method} {path} must need the intent permission, got {required:?}",
+            );
+            assert!(
+                validator.validate_permissions(&session, &required),
+                "a delegated session must reach {method} {path} (required: {required:?})",
+            );
+        }
+    }
+
+    /// A member reads the upgrade and migration state of its own groups.
+    ///
+    /// They take the narrow `group:list-own`, as the group's other reads do,
+    /// and the handlers refuse a group outside the caller's scope as missing.
+    /// Starting, retrying or aborting an upgrade stays `group:manage`.
+    #[test]
+    fn a_delegated_session_reads_its_groups_upgrade_state_but_does_not_drive_it() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+        let required = |method: Method, path: &str| {
+            validator.determine_required_permissions(
+                &Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+
+        for path in [
+            "/admin-api/groups/grp-1/upgrade/status",
+            "/admin-api/groups/grp-1/cascade-status",
+            "/admin-api/groups/grp-1/migration-status",
+        ] {
+            assert!(
+                validator.validate_permissions(&session, &required(Method::GET, path)),
+                "a delegated session must read GET {path}",
+            );
+        }
+        for path in [
+            "/admin-api/groups/grp-1/upgrade",
+            "/admin-api/groups/grp-1/upgrade/retry",
+            "/admin-api/groups/grp-1/migration/abort",
+        ] {
+            assert!(
+                !validator.validate_permissions(&session, &required(Method::POST, path)),
+                "a delegated session must not POST {path}",
+            );
+        }
+    }
+
+    /// A token scoped to one context publishes presence there and nowhere
+    /// else, and does not reach the group routes, which name no context.
+    #[test]
+    fn a_context_scoped_intent_token_stays_in_its_context() {
+        let validator = PermissionValidator::new();
+        let scoped = vec!["context:intent[ctx-1]".to_owned()];
+        let required = |method: Method, path: &str| {
+            validator.determine_required_permissions(
+                &Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+
+        assert!(validator.validate_permissions(
+            &scoped,
+            &required(Method::POST, "/admin-api/contexts/ctx-1/presence-intents"),
+        ));
+        assert!(!validator.validate_permissions(
+            &scoped,
+            &required(Method::POST, "/admin-api/contexts/ctx-2/presence-intents"),
+        ));
+        for path in [
+            "/admin-api/groups/grp-1/context-intents",
+            "/admin-api/groups/grp-1/governance-intents",
+        ] {
+            assert!(
+                !validator.validate_permissions(&scoped, &required(Method::POST, path)),
+                "a context-scoped token must not reach {path}",
+            );
+        }
     }
 
     /// The criterion: a delegated client can find out what it may act on.

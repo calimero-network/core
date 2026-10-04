@@ -2,8 +2,10 @@
 # Usage: check-storage-cost.sh
 #
 # Fails if measured storage costs differ from the committed snapshot. Row
-# counts are deterministic, so any delta blocks - an improvement too, since the
-# snapshot is the reviewed record of what an operation costs. To accept one:
+# counts and SHA-256 work (`hash_calls`, `hash_blocks`: the CPU proxy, since
+# hashing costs no row) are deterministic, so any delta blocks - an
+# improvement too, since the snapshot is the reviewed record of what an
+# operation costs. To accept one:
 #
 #     cargo run -p storage-cost --bin storage-cost --release \
 #         > tools/storage-cost/storage-costs.json
@@ -39,7 +41,8 @@ deltas="$(jq -r -s '
   | [ (($old + $new) | keys[]) as $w
       | ((($old[$w].sizes // {}) + ($new[$w].sizes // {})) | keys[]) as $s
       | ["rows_read", "rows_written", "rows_removed",
-         "index_rows_read", "index_rows_written", "index_rows_removed"][] as $m
+         "index_rows_read", "index_rows_written", "index_rows_removed",
+         "hash_calls", "hash_blocks"][] as $m
       # An index metric is omitted from the JSON when zero, so a size that is
       # present reads a missing one as 0; a missing SIZE stays null either way.
       | { workload: $w, size: $s, metric: $m,

@@ -28,11 +28,35 @@ use crate::AdminState;
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    node_owner: Option<Extension<crate::auth::AuthenticatedNodeOwner>>,
+    account: Option<Extension<crate::auth::AuthenticatedAccount>>,
+    device: Option<Extension<crate::auth::AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     let namespace_id = match parse_group_id(&namespace_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
+
+    // Whose admin authority the read is gated on: the delegated account for an
+    // account session, `None` (this node's own account) for a node session. The
+    // same rule the scope check below applies, so the two cannot name different
+    // callers for one request.
+    let requester = crate::admin::caller_scope::narrow_to(
+        node_owner.as_ref().map(|e| &e.0),
+        account.as_ref().map(|e| &e.0),
+    );
+
+    // Before any read: a delegated session reaches this route on the narrow
+    // `group:list-own`, so it must be confined to its own groups here.
+    if let Some(refusal) = crate::admin::caller_scope::refuse_group_outside_caller_scope(
+        &state.ctx_client,
+        node_owner,
+        account,
+        device,
+        &namespace_id,
+    ) {
+        return refusal;
+    }
 
     info!(namespace_id=%namespace_id_str, "Getting migration status");
 
@@ -58,6 +82,7 @@ pub async fn handler(
         .get_migration_status(GetMigrationStatusRequest {
             namespace_id,
             member_reports,
+            requester,
         })
         .await
         .map_err(parse_api_error);

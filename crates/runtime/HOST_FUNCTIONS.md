@@ -435,10 +435,10 @@ Large binary object streaming.
 | `blob_create` | `() -> u64` | Opens new blob for writing, returns file descriptor. |
 | `blob_write` | `(fd: u64, data_ptr: u64) -> u64` | Writes data to blob, returns bytes written. |
 | `blob_close` | `(fd: u64, blob_id_ptr: u64) -> u32` | Closes blob, writes blob ID to buffer. |
-| `blob_open` | `(blob_id_ptr: u64) -> u64` | Opens existing blob for reading, returns file descriptor. |
-| `blob_open_in_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u64` | Opens a blob, fetching it from the executing context's peers when not local; any other context traps. |
+| `blob_open` | `(blob_id_ptr: u64) -> u64` | Opens a blob held for the executing context for reading, returns file descriptor; any other blob traps. |
+| `blob_open_in_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u64` | Opens a blob, fetching it from the executing context's peers when not held for that context; any other context traps. |
 | `blob_read` | `(fd: u64, data_ptr: u64) -> u64` | Reads data from blob into buffer. |
-| `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces blob availability to the executing context; any other context traps. |
+| `blob_announce_to_context` | `(blob_id_ptr: u64, context_id_ptr: u64) -> u32` | Announces a blob held for the executing context, else returns 0; any other context traps. |
 
 ### Utility
 
@@ -517,6 +517,8 @@ Host functions can fail with these common errors:
 | `InvalidRegisterId` | Requested register doesn't exist |
 | `DeserializationError` | Borsh deserialization failed |
 | `Panic` | Guest triggered panic |
+| `HostCallLimitExceeded` | More host calls than `max_host_calls` in one execution |
+| `HostBytesLimitExceeded` | Host calls copied more bytes into registers or across guest memory than `max_host_bytes` in one execution |
 
 ---
 
@@ -538,3 +540,5 @@ All operations are bounded by `VMLimits`:
 | `max_events` | 100 | Maximum events |
 | `max_event_kind_size` | 100 | Maximum event kind length (bytes) |
 | `max_event_data_size` | 16KB | Maximum event data size |
+| `max_host_calls` | 1000000 | Maximum host calls per execution; past it the call traps with `HostCallLimitExceeded` |
+| `max_host_bytes` | 6720MB | Maximum bytes host calls copy into registers or across guest memory per execution; past it the call traps with `HostBytesLimitExceeded` |

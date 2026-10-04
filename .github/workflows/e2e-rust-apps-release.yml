@@ -51,24 +51,17 @@ jobs:
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          toolchain: stable
-          shared-key: e2e-rust-apps-release
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: wasm-apps
+          save-if: false
 
       - name: Setup cargo mero
         uses: ./.github/actions/setup-cargo-mero
-
-      - name: Build scaffolding-e2e app
-        run: cargo mero build --manifest-path apps/scaffolding-e2e/Cargo.toml
 
       - name: Build scaffolding-e2e bundle
         run: (cd apps/scaffolding-e2e && cargo mero bundle --dev --no-icon)
 
       - name: Build scaffolding-e2e-multi bundle
         run: (cd apps/scaffolding-e2e-multi && cargo mero bundle --dev --no-icon)
-
-      - name: Build xcall-example app
-        run: cargo mero build --manifest-path apps/xcall-example/Cargo.toml
 
       - name: Build xcall-example bundle
         run: (cd apps/xcall-example && cargo mero bundle --dev --no-icon)

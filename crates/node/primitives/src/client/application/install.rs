@@ -20,12 +20,18 @@ use tracing::{debug, trace};
 
 use crate::client::NodeClient;
 
-// A payload that is no bundle at all, as opposed to one that fails to verify.
-const NOT_A_BUNDLE: &str = "not a signed application bundle";
+/// A payload that is no bundle at all, as opposed to one that fails to verify.
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[error("not a signed application bundle")]
+pub struct NotABundle;
 
 /// The id a bundle installs under, from its verified manifest and signer alone.
+/// Raw wasm has none, so every remote install refuses it here.
 pub(super) async fn derive_bundle_id(bundle_data: Arc<[u8]>) -> eyre::Result<ApplicationId> {
     tokio::task::spawn_blocking(move || {
+        if !bundle::is_bundle_blob(&bundle_data) {
+            return Err(NotABundle.into());
+        }
         let verified = bundle::VerifiedBundle::open(bundle_data)?;
         ApplicationId::for_bundle(&verified.manifest().package, verified.signer_id())
     })
@@ -157,7 +163,7 @@ impl NodeClient {
 
         let bundle_data: Arc<[u8]> = tokio::fs::read(&path).await?.into();
         if !bundle::is_bundle_blob(&bundle_data) {
-            bail!("{NOT_A_BUNDLE}: {path}");
+            bail!("{NotABundle}: {path}");
         }
 
         let Ok(uri) = Url::from_file_path(&path) else {
@@ -195,7 +201,7 @@ impl NodeClient {
             return Ok(None);
         };
         if !bundle::is_bundle_blob(&bundle_data) {
-            bail!("{NOT_A_BUNDLE}: {package}@{version}");
+            bail!("{NotABundle}: {package}@{version}");
         }
 
         // The marker, not this node's own base_url: a joiner resolves the app

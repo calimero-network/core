@@ -123,6 +123,13 @@ impl PredefinedEntry for key::GroupAccountEndorser {
     type DataType<'a> = ();
 }
 
+// The key itself is the fact — presence means "this device's binding certifies
+// this signing key".
+impl PredefinedEntry for key::GroupSignerDevice {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}
+
 impl PredefinedEntry for key::GroupConsumedInvitation {
     type Codec = Borsh;
     type DataType<'a> = ();
