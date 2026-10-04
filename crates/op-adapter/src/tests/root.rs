@@ -5,13 +5,14 @@ use calimero_account::AccountId;
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
 };
-use calimero_governance_types::RootOp;
-use calimero_op::{OpPayload, ScopeId};
+use calimero_governance_types::{GroupOp, RootOp};
+use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
+use calimero_projection::ScopeState;
 
-use crate::payload_from_root_op;
-use crate::tests::support::{real_join_account_for, test_join_account_for};
+use crate::tests::support::{authorship_of, hlc, real_join_account_for, test_join_account_for};
+use crate::{payload_from_group_op, payload_from_root_op};
 
 /// An admin-signed invitation for `group`, granting Admin (`invited_role: 0`).
 fn invitation_for(group: [u8; 32]) -> SignedGroupOpenInvitation {
@@ -68,6 +69,56 @@ fn a_replayed_credential_folds_no_device_on_either_join_shape() {
             member: m,
             role: GroupMemberRole::Admin,
         })
+    );
+}
+
+/// A member who presents a second invitation keeps the role an admin gave it
+/// since, as the apply skips a join by an account that already holds a row.
+#[test]
+fn a_repeat_invitation_join_folds_to_the_role_an_admin_set() {
+    let gid = [0x44; 32];
+    let group = ContextGroupId::from(gid);
+    let joiner_key = PublicKey::from([0x55; 32]);
+    let credential = real_join_account_for(joiner_key, 0x64);
+    let joiner = credential.statement.account;
+    let join = |nonce: u8| {
+        let mut signed_invitation = invitation_for(gid);
+        signed_invitation.invitation.invited_role = 1; // Member
+        signed_invitation.invitation.invitation_nonce = [nonce; 32];
+        payload_from_root_op(&RootOp::MemberJoinedAt {
+            member: joiner,
+            signed_invitation,
+            joined_at: 42,
+            account: credential.clone(),
+        })
+        .expect("a join folds")
+    };
+    let promote = payload_from_group_op(
+        group,
+        &GroupOp::MemberRoleSet {
+            member: joiner,
+            role: GroupMemberRole::Admin,
+        },
+    )
+    .expect("a role change folds");
+
+    let build = |ns: u64, payload: OpPayload| {
+        Op::new(
+            ScopeId::from([0u8; 32]),
+            vec![],
+            authorship_of(joiner, joiner_key),
+            hlc(ns),
+            payload,
+            [0u8; 32],
+            [0u8; 64],
+        )
+    };
+    let ops = [build(10, join(1)), build(20, promote), build(30, join(2))];
+
+    let groups = ScopeState::from_ops(&ops).acl_view().groups;
+    assert_eq!(
+        groups.get(&group).and_then(|members| members.get(&joiner)),
+        Some(&GroupMemberRole::Admin)
     );
 }
 

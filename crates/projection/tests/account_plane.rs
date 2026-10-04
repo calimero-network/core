@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use calimero_account::{
     AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
 };
-use calimero_authz::{authorize, Rejected};
+use calimero_authz::{authorize, AclView, Rejected};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
@@ -206,15 +206,73 @@ fn group() -> ContextGroupId {
 
 /// The op that makes `account` a member — authored by the scope's root admin.
 fn grant_membership(admin: &Device, account: AccountId, ns: u64, parents: Vec<[u8; 32]>) -> Op {
+    grant_role(admin, account, GroupMemberRole::Member, ns, parents)
+}
+
+/// An admin's add or role change of `account`: both fold as `MemberAdded`.
+fn grant_role(
+    admin: &Device,
+    account: AccountId,
+    role: GroupMemberRole,
+    ns: u64,
+    parents: Vec<[u8; 32]>,
+) -> Op {
     admin.sign_op(
         ns,
         parents,
         OpPayload::MemberAdded {
             group: group(),
             member: account,
-            role: GroupMemberRole::Member,
+            role,
         },
     )
+}
+
+/// The join `device` publishes for `joiner`, on an invitation carrying `role`.
+fn join_op(
+    joiner: &Account,
+    device: &Device,
+    role: GroupMemberRole,
+    ns: u64,
+    parents: Vec<[u8; 32]>,
+) -> Op {
+    device.sign_op(
+        ns,
+        parents,
+        OpPayload::MemberJoinedWithDevice {
+            group: group(),
+            member: joiner.id,
+            role,
+            genesis: joiner.genesis,
+            chain: joiner.chain.clone(),
+            cert: device.cert,
+        },
+    )
+}
+
+/// `account`'s direct role in [`group`], as `view` resolves it.
+fn role_in(view: &AclView, account: &AccountId) -> Option<GroupMemberRole> {
+    view.groups
+        .get(&group())
+        .and_then(|members| members.get(account))
+        .cloned()
+}
+
+/// Every arrival order of `ops`.
+fn arrival_orders(ops: &[Op]) -> Vec<Vec<Op>> {
+    if ops.len() <= 1 {
+        return vec![ops.to_vec()];
+    }
+    let mut orders = Vec::new();
+    for (first, op) in ops.iter().enumerate() {
+        let mut rest = ops.to_vec();
+        let _ = rest.remove(first);
+        for mut order in arrival_orders(&rest) {
+            order.insert(0, op.clone());
+            orders.push(order);
+        }
+    }
+    orders
 }
 
 /// Authorize `op` at its own causal cut over `log` — the real decision path.
@@ -2090,4 +2148,257 @@ fn a_join_folds_its_membership_and_its_device_together() {
         backward.root(),
         "a join must not make the projection order-dependent"
     );
+}
+
+// ------------------------------------------- a join is not a role write --
+
+/// A history that starts with `joiner` joining as a `Member`: the fixture, the
+/// joiner, its device, and the join.
+fn joined_as_member() -> (Fixture, Account, Device) {
+    let mut fx = Fixture::new();
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+        30,
+        fx.head.clone(),
+    );
+    fx.push(join);
+    (fx, joiner, device)
+}
+
+/// The role the whole of `fx`'s log resolves `account` to, at its head and in
+/// the streaming fold alike.
+fn resolved_role(fx: &Fixture, account: &AccountId) -> Option<GroupMemberRole> {
+    let at_head = role_in(&ScopeState::acl_view_at(&fx.log, &fx.head), account);
+    let streamed = role_in(&ScopeState::from_ops(&fx.log).acl_view(), account);
+    assert_eq!(
+        at_head, streamed,
+        "the two folds must agree on this history"
+    );
+    at_head
+}
+
+#[test]
+fn a_join_alone_grants_the_invited_role() {
+    let (fx, joiner, _) = joined_as_member();
+
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::Member)
+    );
+}
+
+/// The apply skips a join by an account that already holds a row, so a retried
+/// join must not put the invitation's role back over the one an admin set.
+#[test]
+fn a_repeat_join_keeps_the_role_an_admin_set() {
+    let (mut fx, joiner, device) = joined_as_member();
+    let promote = grant_role(
+        &fx.admin,
+        joiner.id,
+        GroupMemberRole::Admin,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(promote);
+    let again = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+        50,
+        fx.head.clone(),
+    );
+    fx.push(again);
+
+    assert_eq!(resolved_role(&fx, &joiner.id), Some(GroupMemberRole::Admin));
+}
+
+/// Governance ops carry no clock, so only causal depth orders them: the same
+/// history as above, as a node folds it at the cut of the repeat join.
+#[test]
+fn a_repeat_join_keeps_the_role_at_its_cut_without_a_clock() {
+    let fx = Fixture::new();
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = join_op(&joiner, &device, GroupMemberRole::Member, 0, vec![]);
+    let promote = grant_role(
+        &fx.admin,
+        joiner.id,
+        GroupMemberRole::Admin,
+        0,
+        vec![join.id()],
+    );
+    let again = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+        0,
+        vec![promote.id()],
+    );
+    let log = [join, promote, again.clone()];
+
+    let view = ScopeState::acl_view_at(&log, &[again.id()]);
+    assert_eq!(role_in(&view, &joiner.id), Some(GroupMemberRole::Admin));
+}
+
+#[test]
+fn a_member_presenting_an_admin_invitation_stays_a_member() {
+    let (mut fx, joiner, device) = joined_as_member();
+    let again = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Admin,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(again);
+
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::Member)
+    );
+}
+
+#[test]
+fn a_rejoin_after_a_removal_takes_the_rejoins_role() {
+    let (mut fx, joiner, device) = joined_as_member();
+    let remove = fx.admin.sign_op(
+        40,
+        fx.head.clone(),
+        OpPayload::MemberRemoved {
+            group: group(),
+            member: joiner.id,
+        },
+    );
+    fx.push(remove);
+    let rejoin = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::ReadOnly,
+        50,
+        fx.head.clone(),
+    );
+    fx.push(rejoin);
+
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::ReadOnly)
+    );
+}
+
+/// The device half of a join is not the membership half: a repeat join from a
+/// second device changes no role and still binds that device.
+#[test]
+fn a_repeat_join_from_a_new_device_still_links_it() {
+    let (mut fx, joiner, _) = joined_as_member();
+    let promote = grant_role(
+        &fx.admin,
+        joiner.id,
+        GroupMemberRole::Admin,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(promote);
+    let second = joiner.enroll(0x5C, 0);
+    let again = join_op(
+        &joiner,
+        &second,
+        GroupMemberRole::Member,
+        50,
+        fx.head.clone(),
+    );
+    fx.push(again);
+
+    assert_eq!(resolved_role(&fx, &joiner.id), Some(GroupMemberRole::Admin));
+    assert!(ScopeState::from_ops(&fx.log)
+        .acl_view()
+        .devices
+        .contains_key(&second.id));
+}
+
+/// A TEE admission is not an invitation join: re-attesting in the other mode
+/// converts the standing TEE row, so it stays a last-writer-wins write.
+#[test]
+fn a_tee_admission_still_converts_a_standing_tee_role() {
+    let mut fx = Fixture::new();
+    let tee = Account::new(0x5A);
+    let device = tee.enroll(0x5B, 0);
+    let admitted = join_op(
+        &tee,
+        &device,
+        GroupMemberRole::ReadOnlyTee,
+        30,
+        fx.head.clone(),
+    );
+    fx.push(admitted);
+    let converted = join_op(
+        &tee,
+        &device,
+        GroupMemberRole::RelayTee,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(converted);
+
+    assert_eq!(resolved_role(&fx, &tee.id), Some(GroupMemberRole::RelayTee));
+}
+
+/// The membership a join history resolves to feeds `governance_hash`, so it
+/// must be the same in every arrival order, and it must be the right one.
+#[test]
+fn every_arrival_order_of_a_join_history_folds_alike() {
+    let fx = Fixture::new();
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = |role, ns| join_op(&joiner, &device, role, ns, vec![]);
+    let remove = fx.admin.sign_op(
+        40,
+        vec![],
+        OpPayload::MemberRemoved {
+            group: group(),
+            member: joiner.id,
+        },
+    );
+    let histories = [
+        (
+            "join, promote, join again",
+            vec![
+                join(GroupMemberRole::Member, 30),
+                grant_role(&fx.admin, joiner.id, GroupMemberRole::Admin, 40, vec![]),
+                join(GroupMemberRole::Member, 50),
+            ],
+            GroupMemberRole::Admin,
+        ),
+        (
+            "join, remove, rejoin, join again",
+            vec![
+                join(GroupMemberRole::Member, 30),
+                remove,
+                join(GroupMemberRole::ReadOnly, 50),
+                join(GroupMemberRole::Admin, 60),
+            ],
+            GroupMemberRole::ReadOnly,
+        ),
+    ];
+
+    for (name, ops, expected) in histories {
+        let mut roots = Vec::new();
+        for order in arrival_orders(&ops) {
+            let state = ScopeState::from_ops(fx.log.iter().chain(&order));
+            assert_eq!(
+                role_in(&state.acl_view(), &joiner.id),
+                Some(expected.clone()),
+                "{name}: arrival order {:?}",
+                order.iter().map(|op| op.hlc).collect::<Vec<_>>()
+            );
+            roots.push(state.root());
+        }
+        assert!(
+            roots.windows(2).all(|pair| pair[0] == pair[1]),
+            "{name}: the root must not depend on arrival order"
+        );
+    }
 }
