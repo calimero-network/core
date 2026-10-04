@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, ORIGIN};
 use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::Router;
@@ -41,6 +41,7 @@ async fn echo(headers: HeaderMap, uri: Uri, body: Bytes) -> impl IntoResponse {
             ("x-echo-auth", header(AUTHORIZATION)),
             ("x-echo-uri", uri.to_string()),
             ("x-echo-host", header(HOST)),
+            ("x-echo-origin", header(ORIGIN)),
         ],
         body,
     )
@@ -290,6 +291,41 @@ async fn a_sealed_request_reaches_the_router_and_its_response_comes_back_sealed(
         Some("tee-node.example"),
         "the host auth checks a node-bound token against is the outer hop's"
     );
+}
+
+async fn echoed_origin(inner_origin: Option<&str>, outer_origin: Option<&str>) -> String {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let stated: Vec<_> = inner_origin
+        .map(|origin| ("origin", origin))
+        .into_iter()
+        .collect();
+    let (id, sealed) = client.seal(&head("POST", "/echo", &stated), b"");
+    let mut request = Request::post(SEALED_PATH)
+        .header(HOST, "tee-node.example")
+        .header(CONTENT_TYPE, SEALED_CONTENT_TYPE);
+    if let Some(origin) = outer_origin {
+        request = request.header(ORIGIN, origin);
+    }
+    let response = app(Arc::clone(&transport))
+        .oneshot(request.body(Body::from(sealed)).unwrap())
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let (head, _, _) = client.open_response(id, &body);
+    response_header(&head, "x-echo-origin").unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn a_sealed_request_carries_the_page_origin_of_the_outer_hop() {
+    let origin = echoed_origin(Some("http://localhost"), Some("https://app.example")).await;
+    assert_eq!(origin, "https://app.example");
+}
+
+#[tokio::test]
+async fn a_sealed_request_from_a_hop_without_an_origin_has_none() {
+    let origin = echoed_origin(Some("http://localhost"), None).await;
+    assert_eq!(origin, "none");
 }
 
 #[tokio::test]
