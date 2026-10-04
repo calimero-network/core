@@ -145,6 +145,7 @@ fn op_payload_discriminants_are_pinned() {
             genesis,
             chain: vec![],
         },
+        OpPayload::MemberLeft { group, member: pk },
     ];
 
     // Exhaustive: a new variant forces a new arm here.
@@ -174,10 +175,11 @@ fn op_payload_discriminants_are_pinned() {
             OpPayload::TeeAuthorityEvidence { .. } => 21,
             OpPayload::RelaySeated { .. } => 22,
             OpPayload::RootGuarded { .. } => 23,
+            OpPayload::MemberLeft { .. } => 24,
         }
     }
 
-    assert_eq!(all.len(), 24, "every OpPayload variant must be listed");
+    assert_eq!(all.len(), 25, "every OpPayload variant must be listed");
     for payload in &all {
         let bytes = borsh::to_vec(payload).expect("serialize");
         assert_eq!(

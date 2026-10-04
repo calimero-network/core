@@ -149,6 +149,7 @@ pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
     match payload {
         OpPayload::MemberAdded { group, .. }
         | OpPayload::MemberRemoved { group, .. }
+        | OpPayload::MemberLeft { group, .. }
         | OpPayload::MemberCapabilitySet { group, .. }
         | OpPayload::DefaultCapabilitiesSet { group, .. }
         | OpPayload::TeeAuthoringPolicySet { group, .. }
@@ -169,7 +170,9 @@ pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
 /// The account `op` would be removing, for the mutual-removal exemption.
 fn removes_account(op: &Op) -> Option<AccountId> {
     match &op.payload {
-        OpPayload::MemberRemoved { member, .. } => Some(*member),
+        OpPayload::MemberRemoved { member, .. } | OpPayload::MemberLeft { member, .. } => {
+            Some(*member)
+        }
         OpPayload::MemberAdded { member, role, .. } if !matches!(role, GroupMemberRole::Admin) => {
             Some(*member)
         }
@@ -226,7 +229,11 @@ fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool 
             } if author(op) != *member => {
                 capability_sets.push((*group, *member, capabilities.bits()));
             }
-            OpPayload::MemberRemoved { member, .. } if author(op) != *member => return true,
+            OpPayload::MemberRemoved { member, .. } | OpPayload::MemberLeft { member, .. }
+                if author(op) != *member =>
+            {
+                return true
+            }
             OpPayload::DeviceRevoked { device: target, .. } if device(op) != *target => {
                 return true
             }
@@ -271,7 +278,9 @@ fn capability_by_payload(op: &Op, author: AccountId) -> u32 {
         OpPayload::MemberAdded { role, .. } if !matches!(role, GroupMemberRole::Admin) => {
             MemberCapabilities::MANAGE_MEMBERS.bits()
         }
-        OpPayload::MemberRemoved { member, .. } if *member != author => {
+        OpPayload::MemberRemoved { member, .. } | OpPayload::MemberLeft { member, .. }
+            if *member != author =>
+        {
             MemberCapabilities::MANAGE_MEMBERS.bits()
         }
         OpPayload::SubgroupCreated { .. } => MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
@@ -421,7 +430,10 @@ impl<'a> Analysis<'a> {
                         kept: capabilities.bits(),
                     });
                 }
-                OpPayload::MemberRemoved { group, member } if author(op) != *member => {
+                OpPayload::MemberRemoved { group, member }
+                | OpPayload::MemberLeft { group, member }
+                    if author(op) != *member =>
+                {
                     removals.push(Removal {
                         op,
                         target: Target::Account(*member),

@@ -275,7 +275,8 @@ fn membership_touched(
         calimero_op::OpPayload::MemberJoinedWithDevice { group, member, .. } => {
             Some((*group, *member, MembershipOpKind::Join))
         }
-        calimero_op::OpPayload::MemberRemoved { group, member } => {
+        calimero_op::OpPayload::MemberRemoved { group, member }
+        | calimero_op::OpPayload::MemberLeft { group, member } => {
             Some((*group, *member, MembershipOpKind::Remove))
         }
         _ => None,

@@ -350,6 +350,16 @@ pub enum OpPayload {
         /// The handoff chain the proof carried.
         chain: Vec<RootKeyHandoff>,
     },
+
+    /// `member` leaves `group` of its own accord (`GroupOp::MemberLeft`).
+    ///
+    /// A removal of the member from `group`, and, when `group` is the scope's
+    /// root, from every other group of the scope too, as the apply cascades a
+    /// namespace leave onto the leaver's rows in every subgroup.
+    MemberLeft {
+        group: ContextGroupId,
+        member: AccountId,
+    },
 }
 
 impl OpPayload {
@@ -376,7 +386,8 @@ impl OpPayload {
             | Self::TeeAuthoringPolicySet { .. }
             | Self::TeeAuthorityEvidence { .. }
             | Self::RelaySeated { .. }
-            | Self::RootGuarded { .. } => true,
+            | Self::RootGuarded { .. }
+            | Self::MemberLeft { .. } => true,
             Self::Put { .. }
             | Self::Delete { .. }
             | Self::SetWriters { .. }

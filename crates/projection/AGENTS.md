@@ -82,6 +82,14 @@ Two ways to fold, for two different purposes:
   The fold keeps every join that beats `member_clock` in `member_joins` so the result is a function of the op set: a removal that arrives late still finds the join that follows it.
   The device half of a repeat join links its device as before.
   A TEE admission (a TEE role) still folds as a plain last-writer-wins `MemberAdded`, since re-attesting in the other mode converts the standing TEE row; so does a join whose credential does not bind, which the apply refuses.
+- **A namespace leave reaches every group of the scope.**
+  `MemberLeft` is a removal from its group, and when that group is the scope's root (its id is the scope id) the fold also removes the member from every other group at the leave's stamp, as the apply deletes a namespace leaver's direct row in every subgroup.
+  The latest such leave of each member is kept in `namespace_left` and folded into a `(group, member)` slot as one more removal: when the leave folds, for every slot that holds a membership write or a relay seat, and ahead of any later write to a slot.
+  Each slot therefore resolves over its own ops plus that removal, in any arrival order, and an add or a join stamped after the leave stands.
+  No subgroup tree is consulted, because every other group of a namespace scope descends from its root.
+  A leave of a subgroup reaches no other group, and neither does an admin's `MemberRemoved` of the root.
+  That last one matches the apply for an ordinary member and not for a TEE: the apply cascades a root TEE eviction onto the subgroups, and the fold does not.
+  A capability grant in a group where the member holds no membership write and no seat is not ended by the leave.
 - **A reparent/visibility-set op asserts existence.** `SubgroupReparented` and `SubgroupVisibilitySet` both LWW-set `exists = true` on the target slot, so a mutation that folds before its `SubgroupCreated` doesn't transiently hide a live subgroup. A later `SubgroupDeleted` still wins by its higher stamp - the assertion only fills the create gap, it never resurrects a deletion.
 - **`scope_root_with_entities` vs `root`: do not swap the entities root.** `entities_root` passed in MUST be the storage layer's Merkle root, not this projection's own `entities_hash()` - they are different hash functions over different structures, and the type system can't distinguish two `[u8; 32]`s. Passing the wrong one produces a valid-looking but semantically wrong root. Use `root()` when you want the projection's own entity hash end to end; use `scope_root_with_entities` only to fold authorization onto the storage layer's root.
 - **`OpPayload::Noop` folds to nothing.** It exists purely so an ancestry walk can traverse through a graph-only node (e.g. an op this replica can't decrypt) to reach ops behind it.

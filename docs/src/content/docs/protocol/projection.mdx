@@ -96,6 +96,23 @@ This is still a function of the operation set and its stamps, so it is order-ind
 The fold keeps each join that beats the member's latest such write, so a removal that arrives after the joins on either side of it resolves to the same member as one that arrived between them.
 A TEE attestation admission is not a join in this sense: re-attesting converts a standing TEE role, so it folds as a plain write.
 
+### A namespace leave reaches every subgroup
+
+A member who leaves the namespace root loses its direct row in every subgroup too, because the node deletes those rows when it applies the leave.
+The projection folds a leave as its own operation, `MemberLeft`, so it can do the same: a leave of the root is a removal of the member from every group of the scope, at the leave's stamp.
+
+```text
+join root, added to S as Admin, leave root, join root                      → no role in S
+join root, added to S as Admin, leave root, join root, join S (ReadOnly)   → ReadOnly in S
+join root, join S (Member), leave root, join root, join S (Admin)          → Admin in S
+```
+
+Each `(group, member)` slot resolves over its own operations plus that one removal, so the result does not depend on the order the leave and the subgroup operations arrive in.
+An add or a join with a higher stamp than the leave stands, which is how a member comes back.
+A leave of a subgroup reaches no other group.
+An admin's removal of a member from the root is not a leave: the node keeps that member's subgroup rows, and so does the projection.
+The one case the projection does not follow is a TEE node removed from the root by an admin, which the node evicts from every subgroup and the projection removes from the root only.
+
 ### What the projection holds
 
 The fold maintains one set of slots per plane. Together they are the complete materialized state of a scope:

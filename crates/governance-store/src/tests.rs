@@ -7281,6 +7281,16 @@ fn signed_invitation_for(
     group_id: ContextGroupId,
     nonce: [u8; 32],
 ) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    signed_invitation_with_role(admin_sk, group_id, nonce, 1)
+}
+
+/// [`signed_invitation_for`], granting `invited_role` (0 admin, 1 member, 2 read-only).
+fn signed_invitation_with_role(
+    admin_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    nonce: [u8; 32],
+    invited_role: u8,
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
     use calimero_context_config::types::{
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -7291,7 +7301,7 @@ fn signed_invitation_for(
         group_id,
         expiration_timestamp: 0,
         invitation_nonce: nonce,
-        invited_role: 1,
+        invited_role,
         // The inviter names itself, which is what the mint's default would
         // produce for an admin issuing its own invitation.
         admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],
@@ -7676,6 +7686,115 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
             .unwrap(),
         "being re-invited is exactly how a voluntary leaver comes back"
     );
+}
+
+/// The apply deletes a namespace leaver's row in every subgroup, and the
+/// projection folds the same: after every step both name one role per group.
+#[test]
+fn the_projection_agrees_with_the_apply_across_a_namespace_leave() {
+    use calimero_context_client::local_governance::RootOp;
+    use calimero_op::{Authorship, Op, OpPayload, ScopeId};
+    use calimero_projection::ScopeState;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    // How the member is first seated in the subgroup (an admin's add of Admin,
+    // or a Member invitation), and the invitation it later rejoins on.
+    for (seated_by_add, rejoin_role, rejoined_as) in [
+        (true, 2, GroupMemberRole::ReadOnly),
+        (false, 0, GroupMemberRole::Admin),
+    ] {
+        let store = test_store();
+        let admin_sk = PrivateKey::from([0x91u8; 32]);
+        let (ns_id, ns_gid, subgroup, admin) = reentry_fixture(&store, &admin_sk.public_key());
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        let member_sk = PrivateKey::from([0x92u8; 32]);
+        let member_pk = member_sk.public_key();
+        let member = account_for(&member_pk);
+
+        let mut folded = ScopeState::default();
+        let mut step = 0u8;
+        let mut agree_after = |payload: Option<OpPayload>| {
+            step += 1;
+            let op = Op::new(
+                ScopeId::from(ns_id),
+                vec![],
+                Authorship::unattributed(member_pk),
+                HybridTimestamp::default(),
+                payload.expect("the op folds"),
+                [0u8; 32],
+                [0u8; 64],
+            );
+            folded.apply_with_generation(&op, u32::from(step));
+            let groups = folded.acl_view().groups;
+            for group in [ns_gid, subgroup] {
+                assert_eq!(
+                    groups.get(&group).and_then(|members| members.get(&member)),
+                    MembershipRepository::new(&store)
+                        .role_of(&group, &member)
+                        .unwrap()
+                        .as_ref(),
+                    "step {step}, seated by add: {seated_by_add}"
+                );
+            }
+        };
+        let join = |group: ContextGroupId, invited_role: u8, nonce: u8| {
+            let invitation =
+                signed_invitation_with_role(&admin_sk, group, [nonce; 32], invited_role);
+            apply_member_joined(
+                &store,
+                ns_id,
+                &member_sk,
+                invitation.clone(),
+                u64::from(nonce),
+                &admin_sk,
+            )
+            .expect("apply the join");
+            calimero_op_adapter::payload_from_root_op(&RootOp::MemberJoinedAt {
+                member,
+                signed_invitation: invitation,
+                joined_at: 1,
+                account: real_join_account(&member_pk),
+            })
+        };
+        let group_op = |signer: &PrivateKey, group: ContextGroupId, op: GroupOp| {
+            let signed =
+                SignedGroupOp::sign(signer, group.to_bytes().into(), vec![], 9, op.clone())
+                    .expect("sign the group op");
+            apply_local_signed_group_op(&store, &signed).expect("apply the group op");
+            calimero_op_adapter::payload_from_group_op(group, &op)
+        };
+
+        agree_after(join(ns_gid, 1, 1));
+        agree_after(if seated_by_add {
+            let role = GroupMemberRole::Admin;
+            group_op(&admin_sk, subgroup, GroupOp::MemberAdded { member, role })
+        } else {
+            join(subgroup, 1, 2)
+        });
+        agree_after(group_op(
+            &member_sk,
+            ns_gid,
+            GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        ));
+        agree_after(join(ns_gid, 1, 3));
+        agree_after(join(subgroup, rejoin_role, 4));
+
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&subgroup, &member)
+                .unwrap(),
+            Some(rejoined_as)
+        );
+    }
 }
 
 #[test]

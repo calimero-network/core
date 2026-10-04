@@ -11,7 +11,8 @@ use calimero_op::{OpPayload, ScopeId};
 /// **In-model — the ops that move the unified `authorize` decision:**
 /// - `MemberAdded` / `MemberRoleSet` → `MemberAdded` (a role change is a
 ///   re-assert; `ScopeState`'s per-`(group, member)` LWW keeps the latest).
-/// - `MemberRemoved` / `MemberLeft` → `MemberRemoved`.
+/// - `MemberRemoved` → `MemberRemoved`; `MemberLeft` → `MemberLeft`, which the
+///   projection also cascades onto the subgroups when it leaves the namespace.
 /// - `MemberJoinedViaTeeAttestation` → `MemberAdded` (a hardware-attested TEE
 ///   node becomes a member with the granted role; the attestation evidence is
 ///   consumed by the admission gate, not the membership projection).
@@ -123,12 +124,14 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
                 role: role.clone(),
             })
         }
-        GroupOp::MemberRemoved { member, .. } | GroupOp::MemberLeft { member, .. } => {
-            Some(OpPayload::MemberRemoved {
-                group,
-                member: *member,
-            })
-        }
+        GroupOp::MemberRemoved { member, .. } => Some(OpPayload::MemberRemoved {
+            group,
+            member: *member,
+        }),
+        GroupOp::MemberLeft { member, .. } => Some(OpPayload::MemberLeft {
+            group,
+            member: *member,
+        }),
         // Capability plane — folded so the projection can resolve inherited
         // membership (the `CAN_JOIN_OPEN_SUBGROUPS` bit) at the cut.
         GroupOp::DefaultCapabilitiesSet { capabilities } => {

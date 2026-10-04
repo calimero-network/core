@@ -69,6 +69,7 @@ Both paths end with a removed membership row, a deny-list entry, and a `MemberRe
 | **Direct row** | Required — a purely inherited member has nothing to delete and bails with `MemberNotDirect` | Optional — an inherited Open-subgroup member with no direct row is removed via the soft-leave path |
 | **Key rotation** | **None** | **Yes** — a fresh scope key, wrapped to each remaining member |
 | **Owner** | Cannot self-leave (`OwnerCannotSelfLeave`) | Cannot be removed (`OwnerImmuneFromRemoval`) |
+| **Subgroup rows** | A leave of the namespace root also deletes the leaver's direct row in every subgroup; a leave of a subgroup touches no other group | Left in place, except for a TEE member removed from the namespace root, which is evicted from every subgroup |
 
 The asymmetry on key rotation is the whole point. An admin removal rotates the scope key forward — `MemberRemoved` carries a `KeyRotation` bundle with one wrapped envelope per *remaining* member and none for the removed one, so the removed member can read nothing authored after the cut. That is forward secrecy.
 

@@ -228,8 +228,25 @@ fn grant_role(
     )
 }
 
+/// The scope's root group: the namespace, a leave of which reaches every group.
+fn root_group() -> ContextGroupId {
+    ContextGroupId::from(*scope().as_bytes())
+}
+
 /// The join `device` publishes for `joiner`, on an invitation carrying `role`.
 fn join_op(
+    joiner: &Account,
+    device: &Device,
+    role: GroupMemberRole,
+    ns: u64,
+    parents: Vec<[u8; 32]>,
+) -> Op {
+    join_in(group(), joiner, device, role, ns, parents)
+}
+
+/// [`join_op`], on an invitation to `group`.
+fn join_in(
+    group: ContextGroupId,
     joiner: &Account,
     device: &Device,
     role: GroupMemberRole,
@@ -240,7 +257,7 @@ fn join_op(
         ns,
         parents,
         OpPayload::MemberJoinedWithDevice {
-            group: group(),
+            group,
             member: joiner.id,
             role,
             genesis: joiner.genesis,
@@ -2401,4 +2418,107 @@ fn every_arrival_order_of_a_join_history_folds_alike() {
             "{name}: the root must not depend on arrival order"
         );
     }
+}
+
+// --------------------------------------------- a namespace leave cascades --
+
+/// `payloads` as one causal chain of clockless ops by `device`, the way
+/// governance ops are authored, and `account`'s role in [`group`] at its end.
+fn role_after_chain(
+    device: &Device,
+    account: &AccountId,
+    payloads: Vec<OpPayload>,
+) -> Option<GroupMemberRole> {
+    let mut log: Vec<Op> = Vec::new();
+    for payload in payloads {
+        let parents = log.last().map(Op::id).into_iter().collect();
+        log.push(device.sign_op(0, parents, payload));
+    }
+    let head: Vec<[u8; 32]> = log.last().map(Op::id).into_iter().collect();
+    role_in(&ScopeState::acl_view_at(&log, &head), account)
+}
+
+/// The payload of `joiner`'s join of `group` on an invitation carrying `role`.
+fn join_payload(
+    group: ContextGroupId,
+    joiner: &Account,
+    device: &Device,
+    role: GroupMemberRole,
+) -> OpPayload {
+    join_in(group, joiner, device, role, 0, vec![]).payload
+}
+
+/// The apply deletes a namespace leaver's row in every subgroup, so a role
+/// held there does not come back with the leaver, and the next join seats it.
+#[test]
+fn a_namespace_leave_ends_the_role_held_in_a_subgroup() {
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = |group, role| join_payload(group, &joiner, &device, role);
+    let leave = OpPayload::MemberLeft {
+        group: root_group(),
+        member: joiner.id,
+    };
+    let made_admin = OpPayload::MemberAdded {
+        group: group(),
+        member: joiner.id,
+        role: GroupMemberRole::Admin,
+    };
+    let back_in_the_namespace = vec![
+        join(root_group(), GroupMemberRole::Member),
+        made_admin,
+        leave.clone(),
+        join(root_group(), GroupMemberRole::Member),
+    ];
+    let mut rejoined_read_only = back_in_the_namespace.clone();
+    rejoined_read_only.push(join(group(), GroupMemberRole::ReadOnly));
+    let joined_then_rejoined_as_admin = vec![
+        join(root_group(), GroupMemberRole::Member),
+        join(group(), GroupMemberRole::Member),
+        leave,
+        join(root_group(), GroupMemberRole::Member),
+        join(group(), GroupMemberRole::Admin),
+    ];
+
+    let role = |payloads| role_after_chain(&device, &joiner.id, payloads);
+    assert_eq!(role(back_in_the_namespace), None);
+    assert_eq!(role(rejoined_read_only), Some(GroupMemberRole::ReadOnly));
+    assert_eq!(
+        role(joined_then_rejoined_as_admin),
+        Some(GroupMemberRole::Admin)
+    );
+}
+
+/// Only a leave of the namespace cascades: the apply leaves the subgroup rows
+/// of a member an admin removed from the root, and of one who left a subgroup.
+#[test]
+fn neither_an_admin_removal_nor_a_subgroup_leave_cascades() {
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let other_subgroup = ContextGroupId::from([0x34; 32]);
+    let seated = vec![
+        join_payload(root_group(), &joiner, &device, GroupMemberRole::Member),
+        OpPayload::MemberAdded {
+            group: group(),
+            member: joiner.id,
+            role: GroupMemberRole::Admin,
+        },
+    ];
+    let role = |last| {
+        let mut payloads = seated.clone();
+        payloads.push(last);
+        role_after_chain(&device, &joiner.id, payloads)
+    };
+
+    let removed_from_the_root = role(OpPayload::MemberRemoved {
+        group: root_group(),
+        member: joiner.id,
+    });
+    let left_another_subgroup = role(OpPayload::MemberLeft {
+        group: other_subgroup,
+        member: joiner.id,
+    });
+
+    assert_eq!(removed_from_the_root, Some(GroupMemberRole::Admin));
+    assert_eq!(left_another_subgroup, Some(GroupMemberRole::Admin));
 }
