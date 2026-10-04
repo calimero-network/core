@@ -464,12 +464,9 @@ request re-stamps it.
 - Admin API requires authentication
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
-- A WebSocket upgrade from a browser (`Origin` present) is refused with `403` unless the
-  origin is listed in `[server.cors] allowed_origins`, or equals a `Host` / `X-Forwarded-Host`
-  that names this node (`BrowserOrigins`: loopback, the listen addresses, every address when
-  it listens on an unspecified one, and the hosts of `allowed_origins`). A browser's `Host`
-  is whatever name it resolved, so it proves nothing until the node recognises it. Clients
-  that send no `Origin` are not browsers and are unaffected.
+- A WebSocket upgrade is judged by the same `OriginGuard::admits` as every HTTP request, in every auth mode: the token travels in the `?token=` query, so `ws_handler` holds a guard that always enforces.
+  There is one origin rule for the node; never give a transport its own.
+  A hosted app must be listed in `[server.cors] allowed_origins` to open a socket, with embedded auth too.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never
   count `Sec-Fetch-Mode` alone: Node's built-in `fetch` sends it on every request, so it would

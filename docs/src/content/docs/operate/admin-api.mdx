@@ -112,6 +112,7 @@ in `allowed_origins`**, or its own pages are refused.
 
 Any other browser request gets `403` before a handler runs, on every route
 including `/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it.
+A WebSocket upgrade is held to this rule with embedded auth as well; see [WebSocket](#websocket).
 Private-network access is advertised only to origins listed in
 `allowed_origins`. Requests with neither an `Origin` nor `Sec-Fetch-Site` (curl,
 meroctl, SDKs outside a browser, Node's `fetch`) are unaffected, whatever host
@@ -205,6 +206,10 @@ in this order:
 
 If the `Authorization` header is present, the `?token=` query parameter is
 ignored entirely.
+
+Because the token may travel in the query, a browser's upgrade is also judged by its origin in every auth mode, by the same rule that proxy auth mode applies to every route (see [CORS and browser / Tauri clients](#cors-and-browser--tauri-clients)).
+A page that rule does not admit gets `403`, so an app hosted on another origin must be listed in `[server.cors] allowed_origins` to open a socket.
+A client that sends neither `Origin` nor `Sec-Fetch-Site` is not a browser and is unaffected.
 
 The upgrade needs `context:subscribe`. Each `execute` message is then checked
 against the same token for `context:execute` on its context (and method, for a
