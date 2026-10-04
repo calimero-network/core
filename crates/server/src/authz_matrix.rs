@@ -60,8 +60,7 @@ const TABLES: &[OpTable] = &[
             ReadmittedAfterKick,
             SecondDevice,
         ],
-        // The route lists every child of a namespace in scope, Restricted or not.
-        gap: &[DirectAdmin, DirectMember],
+        gap: &[],
     },
     OpTable {
         op: GatedOp::SubgroupInScope,
