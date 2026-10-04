@@ -532,7 +532,7 @@ hostnames and key handling to your environment.
    admin API through a TLS-terminating reverse proxy.
 
 2. **Do** put an authenticating proxy in front of the node in `proxy` mode
-   (`merod init --auth-mode proxy`) — or keep `auth_mode = "embedded"`, the init
+   (`merod init --auth-mode proxy`) - or keep `auth_mode = "embedded"`, the init
    default, so the node validates tokens itself.
 
 3. **Do** terminate TLS at the edge; the node's HTTP server has no built-in TLS.
