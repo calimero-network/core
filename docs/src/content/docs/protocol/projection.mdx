@@ -89,10 +89,16 @@ Among several such joins, the one with the lowest stamp wins, since the later on
 ```text
 join(Member), set role Admin, join(Member)    → Admin
 join(Member), join(Admin)                     → Member
-join(Member), remove, join(ReadOnly)          → ReadOnly
+join(Member), leave, join(ReadOnly)           → ReadOnly
 ```
 
+The third history uses a leave because that is the one the node admits: a member who left comes back on a freshly issued invitation.
+A member an admin removed does not, since the node refuses its join until an admin adds it again, so no such join reaches the log.
+
 This is still a function of the operation set and its stamps, so it is order-independent like every other slot.
+"Lowest stamp" means first in causal order only where the stamps carry causal depth, which is the fold at a cut (`acl_view_at`), the one authorization reads.
+The streaming fold behind the scope root stamps every operation at depth `0`, and governance operations carry no clock, so there it means the lowest operation id: the same on every node and in every arrival order, but not always the join that came first.
+For two chained joins on different invitations the cut resolves the first one's role, and the streaming state may hold the second's.
 The fold keeps each join that beats the member's latest such write, so a removal that arrives after the joins on either side of it resolves to the same member as one that arrived between them.
 It keeps at most 65 of them per member, the latest ones.
 A member with more than 64 joins above its latest add, removal or leave resolves to `ReadOnly`, the least role an invitation grants, until one of those writes brings the count back down; the limit is a function of the operation set too, so it does not depend on arrival order.
@@ -116,6 +122,7 @@ An add or a join with a higher stamp than the leave stands, which is how a membe
 A leave of a subgroup reaches no other group.
 An admin's removal of a member from the root is not a leave: the node keeps that member's subgroup rows, and so does the projection.
 The one case the projection does not follow is a TEE node removed from the root by an admin, which the node evicts from every subgroup and the projection removes from the root only.
+Like the join rule, this fold is part of `SignedNamespaceOp` version 22.
 
 ### What the projection holds
 

@@ -83,7 +83,10 @@ Two ways to fold, for two different purposes:
   No fixed-size summary does that, since any kept join may become the earliest one above a later removal, so the map is bounded instead: it keeps the latest `MAX_STANDING_JOINS + 1` joins of a member.
   The latest, because a removal only ever spends joins from the earliest end, which makes "the latest N above the clock" the same set in every arrival order; the earliest N is not.
   While more than `MAX_STANDING_JOINS` joins stand above the clock the earliest is unknown, and the member stands as `ReadOnly`, the least role an invitation grants, so a flood of re-signed joins can lower its signer's role in the fold and never raise it.
+  "Earliest" is causal only in `acl_view_at`, whose stamps carry causal depth; in the streaming fold clockless joins are ordered by op id, so `from_ops` can resolve the later of two chained joins (`without_a_clock_the_cut_keeps_the_first_join_and_the_stream_the_lower_id`).
+  The streaming state is what `ScopeProjections::scope_root_for` hashes, and sync compares that root between peers: it agrees across nodes holding the same ops, and it is not the membership authorization reads.
   The device half of a repeat join links its device as before.
+  A join is never void, so one concurrent with an admin's removal of the joiner can stand at a cut where the apply ends with the member removed.
   A TEE admission (a TEE role) still folds as a plain last-writer-wins `MemberAdded`; so does a join whose credential does not bind, which the apply refuses.
   That matches the apply where the admission meets no row or a TEE row, which re-attesting in the other mode converts.
   It does not match where the member holds a non-TEE row: the apply leaves an admin's decision alone (`admit_or_convert_tee_member`), and the fold replaces the role with the TEE one.
