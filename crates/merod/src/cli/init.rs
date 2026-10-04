@@ -883,7 +883,16 @@ fn parse_account_root_pk(given: &str) -> EyreResult<calimero_primitives::identit
 mod tests {
     use clap::Parser;
 
-    use super::InitCommand;
+    use super::{AuthModeArg, InitCommand};
+
+    #[test]
+    fn auth_mode_is_embedded_unless_proxy_is_asked_for() {
+        let default = InitCommand::try_parse_from(["merod"]).unwrap();
+        assert!(matches!(default.auth_mode, Some(AuthModeArg::Embedded)));
+
+        let proxy = InitCommand::try_parse_from(["merod", "--auth-mode", "proxy"]).unwrap();
+        assert!(matches!(proxy.auth_mode, Some(AuthModeArg::Proxy)));
+    }
 
     /// The rename must not break a node image that still passes the old name.
     ///
