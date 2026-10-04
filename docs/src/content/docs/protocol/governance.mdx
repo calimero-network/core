@@ -66,6 +66,7 @@ A join by an account that is already a member changes no role.
 A member promoted to admin who presents another invitation stays an admin, and a member presenting an admin invitation stays a member; only an admin's role change moves a standing role.
 The join is still recorded, and it still links the device it was made from.
 The [projection](/protocol/projection/#the-one-slot-that-is-not-a-plain-register-joins) folds it the same way, in any arrival order.
+This rule is part of `SignedNamespaceOp` version 22: a node on an older version folds a different role, so nodes of one namespace must be upgraded together.
 
 ### Which group an invitation may target
 
@@ -345,7 +346,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 21)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 22)
 ```
 
 ### Replay protection

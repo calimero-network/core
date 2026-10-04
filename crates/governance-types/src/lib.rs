@@ -2325,7 +2325,10 @@ pub struct SignedNamespaceOp {
 ///
 /// v21: an op concurrent with its signer's removal is void; nothing moves on the wire.
 /// An older node applies it, so the two disagree: a coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 21;
+///
+/// v22: a join never replaces a standing member's role; nothing moves on the wire.
+/// An older node folds another role, so the two disagree: a coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 22;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,
