@@ -42,6 +42,8 @@ description: >
 
 force_pull_image: false
 
+auth_mode: proxy
+
 nodes:
   admin-names-owner:
     port: 2428

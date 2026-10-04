@@ -3,6 +3,8 @@ description: >
   deletes the characters the other is typing beside.
 name: Fugue Collab Partition Heal
 
+auth_mode: proxy
+
 nodes:
   count: 3
   image: ghcr.io/calimero-network/merod:edge

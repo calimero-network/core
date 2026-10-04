@@ -9,6 +9,8 @@ description: >
 nuke_on_start: true
 nuke_on_end: false
 
+auth_mode: proxy
+
 # Pinned so the local script step can build the RPC URLs: node i+1 is served
 # on base_rpc_port + i.
 nodes:

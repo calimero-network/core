@@ -34,6 +34,8 @@ force_pull_image: false
 
 log_level: "info,calimero_node::tee_firing=debug,calimero_node::tee_scheduler=debug"
 
+auth_mode: proxy
+
 nodes:
   tee-cards-owner:
     port: 2428

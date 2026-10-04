@@ -3,6 +3,8 @@ description: >
   tombstoned out of the middle, and must arrive at the same text.
 name: Fugue Collab Late Joiner
 
+auth_mode: proxy
+
 nodes:
   count: 3
   image: ghcr.io/calimero-network/merod:edge
