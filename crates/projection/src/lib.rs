@@ -622,8 +622,8 @@ impl ScopeState {
                 chain,
                 cert,
             } => {
-                // A TEE admission converts a standing TEE row, so it is a plain
-                // write; an invitation join is skipped for a standing member.
+                // A TEE admission folds as a plain write: the apply's conversion of a
+                // TEE row, but not its refusal to touch a non-TEE one.
                 if role.is_tee() {
                     self.fold_member_added(*group, *member, role, stamp);
                 } else {

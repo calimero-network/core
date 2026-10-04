@@ -84,7 +84,10 @@ Two ways to fold, for two different purposes:
   The latest, because a removal only ever spends joins from the earliest end, which makes "the latest N above the clock" the same set in every arrival order; the earliest N is not.
   While more than `MAX_STANDING_JOINS` joins stand above the clock the earliest is unknown, and the member stands as `ReadOnly`, the least role an invitation grants, so a flood of re-signed joins can lower its signer's role in the fold and never raise it.
   The device half of a repeat join links its device as before.
-  A TEE admission (a TEE role) still folds as a plain last-writer-wins `MemberAdded`, since re-attesting in the other mode converts the standing TEE row; so does a join whose credential does not bind, which the apply refuses.
+  A TEE admission (a TEE role) still folds as a plain last-writer-wins `MemberAdded`; so does a join whose credential does not bind, which the apply refuses.
+  That matches the apply where the admission meets no row or a TEE row, which re-attesting in the other mode converts.
+  It does not match where the member holds a non-TEE row: the apply leaves an admin's decision alone (`admit_or_convert_tee_member`), and the fold replaces the role with the TEE one.
+  Matching it would make an admission a third kind of write, kept like a join, and the `GroupOp` form of the admission reaches the fold as a bare `MemberAdded` that cannot be told from an admin's.
 - **A namespace leave reaches every group of the scope.**
   `MemberLeft` is a removal from its group, and when that group is the scope's root (its id is the scope id) the fold also removes the member from every other group at the leave's stamp, as the apply deletes a namespace leaver's direct row in every subgroup.
   The latest such leave of each member is kept in `namespace_left` and folded into a `(group, member)` slot as one more removal: when the leave folds, for every slot that holds a membership write or a relay seat, and ahead of any later write to a slot.

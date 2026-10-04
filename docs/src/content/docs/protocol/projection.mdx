@@ -96,7 +96,9 @@ This is still a function of the operation set and its stamps, so it is order-ind
 The fold keeps each join that beats the member's latest such write, so a removal that arrives after the joins on either side of it resolves to the same member as one that arrived between them.
 It keeps at most 65 of them per member, the latest ones.
 A member with more than 64 joins above its latest add, removal or leave resolves to `ReadOnly`, the least role an invitation grants, until one of those writes brings the count back down; the limit is a function of the operation set too, so it does not depend on arrival order.
-A TEE attestation admission is not a join in this sense: re-attesting converts a standing TEE role, so it folds as a plain write.
+A TEE attestation admission is not a join in this sense: it folds as a plain write.
+That is what the node does when the account holds no role or a TEE role, which re-attesting converts.
+It is not what the node does when the account holds a non-TEE role: the node leaves that role alone, and the projection replaces it with the TEE role.
 
 ### A namespace leave reaches every subgroup
 

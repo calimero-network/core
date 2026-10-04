@@ -192,7 +192,8 @@ pub enum OpPayload {
     /// The device half folds exactly as [`Self::DeviceLinked`]. The membership
     /// half is a join, not a [`Self::MemberAdded`]: it never replaces a standing
     /// role, as the apply skips a join by an account that holds a row. A TEE
-    /// role marks an attestation admission, which does fold as `MemberAdded`.
+    /// role marks an attestation admission, which does fold as `MemberAdded`,
+    /// over a non-TEE row too, which the apply would leave alone.
     MemberJoinedWithDevice {
         /// Group being joined.
         group: ContextGroupId,
