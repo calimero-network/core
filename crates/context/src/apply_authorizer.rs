@@ -25,6 +25,7 @@ use calimero_governance_store::{
 };
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::identity::PublicKey;
+use calimero_projection::Acting;
 use calimero_store::Store;
 
 use crate::scope_projection::{authority_base, ScopeProjections};
@@ -160,8 +161,8 @@ impl AtCutAuthorizer for VoidJudge<'_> {
         self.0.forget();
     }
 
-    fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {
-        self.0.op_is_void(group, op)
+    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
+        self.0.op_is_void(group, capability, op)
     }
 
     fn voided_ops(
@@ -306,14 +307,17 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         )
     }
 
-    fn op_is_void(&self, group: &ContextGroupId, op: &Op) -> Option<bool> {
+    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
         let folded = self.folded(group)?;
         let (projection, namespace_id, _) = &*folded;
         projection.op_is_void(
             &ScopeId::from(*namespace_id),
             authority_base(self.store, *namespace_id)?,
             op,
-            Some(*group),
+            Some(Acting {
+                group: *group,
+                capability,
+            }),
         )
     }
 
@@ -634,9 +638,12 @@ mod tests {
         let authorizer = EphemeralProjectionAuthorizer::new(&store);
 
         let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
-        assert_eq!(authorizer.op_is_void(&root, &from_the_old_cut), Some(true));
+        assert_eq!(
+            authorizer.op_is_void(&root, 0, &from_the_old_cut),
+            Some(true)
+        );
         let by_alice = add(ALICE, &[&sam], ZED, GroupMemberRole::Member);
-        assert_eq!(authorizer.op_is_void(&root, &by_alice), Some(false));
+        assert_eq!(authorizer.op_is_void(&root, 0, &by_alice), Some(false));
     }
 
     #[test]
@@ -721,7 +728,7 @@ mod tests {
 
         let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
         assert_eq!(
-            judge.op_is_void(&root, &from_the_old_cut),
+            judge.op_is_void(&root, 0, &from_the_old_cut),
             Some(true),
             "judged against the projection"
         );

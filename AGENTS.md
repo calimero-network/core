@@ -244,6 +244,7 @@ merobox boots **real `merod` nodes as Docker containers** and drives them throug
 
 - Scenarios: `apps/scaffolding-e2e/workflows/*.yml` (~49 - group membership, key delivery, kick/rejoin, subgroups, leave, late-joiner, sync-resilience/partition, mesh-soak, etc.), plus `apps/blobs/workflows/`, `workflows/sync-tests/`, `workflows/app-migration/`.
 - Run one locally: `merobox bootstrap run <scenario.yml>` (then `merobox stop --all`). See [apps/AGENTS.md](apps/AGENTS.md) for the YAML format.
+- A new scenario for `e2e-rust-apps.yml` is an entry in `.github/e2e-scenarios.yml`; CI packs the entries into groups, one runner each. A failed group re-runs all its scenarios; its step summary names the one that failed, and its logs are under `docker-logs/<scenario>/` in the group's `logs-*` artifact.
 - Nodes are built **from the PR's own code** (`.github/actions/build-local-merod` → `merod:local`), so a green E2E means your actual code passed.
 
 ### Reading logs (to reproduce & validate)
@@ -263,12 +264,14 @@ RUST_LOG=calimero_node::sync=trace,calimero_context=debug merod --node node1 run
 
 | Workflow | Triggers on | Runs |
 | --- | --- | --- |
-| `e2e-rust-apps.yml` | any `crates/**` + app dirs | main merobox suite (scaffolding-e2e, xcall, blobs, kv-store) |
+| `e2e-rust-apps.yml` | any `crates/**` + app dirs | main merobox suite (scaffolding-e2e, xcall, blobs, kv-store): the scenarios in `.github/e2e-scenarios.yml`, several per runner (`scripts/e2e-scenario-groups.py`) |
 | `sync-regression.yml` | `crates/node/src/sync/**`, storage sync paths | `workflows/sync-tests/` |
 | `app-migration-e2e.yml` | migration paths | v1→v2 app-migration scenarios |
 | `sdk-e2e.yml` | SDK paths | SDK end-to-end |
 | `fuzzy-load-test.yml` | manual / load paths | fuzzy load |
 | `platforms.yml` | nightly; PRs reaching Windows-only code (`scripts/needs-windows-ci.py`); label `ci:platforms` | Windows tests and e2e, macOS/Windows release builds |
+
+Documentation never starts a code workflow: every `paths:` filter ends with `!**/*.md` / `!**/*.mdx`, re-including only the Markdown some code reads (an `include_str!` target, a manifest's `guide` or `readme`); `scripts/tests/ci-paths-test.py` fails a filter that lets docs back in. `ci-checks.yml` and `release.yml` carry required checks, so they run on every PR and skip work instead: `scripts/ci-scope.py` follows each job's packages through their dependency closure and skips a job the change cannot reach (the storage cost gate, WASM size gate, cargo-mero e2e and app builds run only when their inputs move; a docs-only PR builds nothing).
 
 ### Critical blind spot - what E2E CANNOT catch
 

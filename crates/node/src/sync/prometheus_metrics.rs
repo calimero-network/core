@@ -1,32 +1,43 @@
 //! Prometheus-based sync metrics implementation.
 //!
-//! Provides production-grade observability for the sync protocol using
-//! the `prometheus-client` crate (already in dependencies).
+//! Exports only what a production code path records. The
+//! [`SyncMetricsCollector`] trait also carries per-message, per-merge and
+//! per-phase hooks that the sync simulator (`crates/node/tests/sync_sim`)
+//! drives; production records cost once per session instead
+//! ([`SyncMetricsCollector::record_session_cost`]), so those hooks are not
+//! registered here. A series that is registered but never written reads a
+//! flat 0, which a dashboard cannot tell apart from "nothing went wrong".
 //!
 //! # Metric Categories
 //!
-//! ## Protocol Cost Metrics
-//! - `sync_messages_sent_total{protocol}`: Messages sent by protocol type
-//! - `sync_bytes_sent_total{protocol}`: Bytes sent by protocol type
-//! - `sync_round_trips_total{protocol}`: Round trips by protocol type
-//! - `sync_entities_transferred_total`: Total entities transferred
-//! - `sync_merges_total{crdt_type}`: CRDT merges by type
-//! - `sync_comparisons_total`: Hash comparisons performed
-//!
-//! ## Phase Timing
-//! - `sync_phase_duration_seconds{phase}`: Histogram of phase durations
-//!
 //! ## Safety Metrics (Invariant Monitoring)
-//! - `sync_snapshot_blocked_total`: Snapshot attempts blocked (I5)
-//! - `sync_verification_failures_total`: Verification failures (I7)
-//! - `sync_lww_fallback_total`: LWW fallback events
-//! - `sync_buffer_drops_total`: Delta buffer drops (I6)
+//! - `sync_snapshot_blocked_total`: Snapshot attempts blocked on an
+//!   initialised node (I5)
+//! - `sync_verification_failures_total`: Snapshot root-hash verification
+//!   failures (I7)
+//!
+//! Delta-buffer drops (I6) are counted as `sync_buffer_drops_total` by
+//! `node_metrics`, because the drop happens in `NodeState`, which has no
+//! handle to this collector.
 //!
 //! ## Sync Session Metrics
-//! - `sync_duration_seconds{protocol,outcome}`: Session duration histogram
+//! - `sync_duration_seconds{protocol,outcome}`: Session duration histogram,
+//!   successes and failures
 //! - `sync_attempts_total{protocol}`: Total sync attempts
 //! - `sync_successes_total{protocol}`: Successful syncs
 //! - `sync_failures_total{protocol}`: Failed syncs
+//! - `sync_protocol_selections_total{protocol}`: Adaptive selector decisions
+//!
+//! ## Session Cost (initiator side, per completed session)
+//! - `sync_round_trips_total{protocol}`: Request/response exchanges
+//! - `sync_comparisons_total{protocol}`: Tree-node hash comparisons
+//! - `sync_entities_transferred_total{protocol}`: Entities, records or deltas
+//!   applied or pushed
+//!
+//! Messages and bytes on the wire are counted at the transport by
+//! `node_metrics` (`sync_messages_sent_total`, `sync_bytes_sent_total`), both
+//! directions of every protocol, because the transport does not know which
+//! protocol a message belongs to.
 
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
@@ -36,7 +47,7 @@ use prometheus_client::registry::Registry;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use super::metrics::{PhaseTimer, SyncMetricsCollector};
+use super::metrics::{PhaseTimer, SessionCost, SyncMetricsCollector};
 
 /// Known sync protocol names for label sanitization.
 ///
@@ -51,17 +62,6 @@ const KNOWN_PROTOCOLS: &[&str] = &[
     "BloomFilter",
 ];
 
-/// Known CRDT type names for label sanitization.
-const KNOWN_CRDT_TYPES: &[&str] = &[
-    "GCounter",
-    "PnCounter",
-    "LwwRegister",
-    "GSet",
-    "ORSet",
-    "LwwMap",
-    "unknown",
-];
-
 /// Sanitize a protocol name to prevent unbounded label cardinality.
 ///
 /// Returns the protocol name if known, otherwise "unknown".
@@ -73,17 +73,6 @@ fn sanitize_protocol(protocol: &str) -> &'static str {
         .unwrap_or("unknown")
 }
 
-/// Sanitize a CRDT type name to prevent unbounded label cardinality.
-///
-/// Returns the CRDT type if known, otherwise "unknown".
-fn sanitize_crdt_type(crdt_type: &str) -> &'static str {
-    KNOWN_CRDT_TYPES
-        .iter()
-        .find(|&&t| t == crdt_type)
-        .copied()
-        .unwrap_or("unknown")
-}
-
 /// Labels for protocol-specific metrics.
 ///
 /// Label values are `&'static str` sourced from the `sanitize_*` allow-lists
@@ -91,18 +80,6 @@ fn sanitize_crdt_type(crdt_type: &str) -> &'static str {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ProtocolLabels {
     protocol: &'static str,
-}
-
-/// Labels for CRDT type metrics.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct CrdtLabels {
-    crdt_type: &'static str,
-}
-
-/// Labels for phase timing metrics.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct PhaseLabels {
-    phase: &'static str,
 }
 
 /// Labels for sync outcome metrics.
@@ -118,22 +95,9 @@ struct OutcomeLabels {
 /// All metrics are thread-safe and use atomic operations.
 #[derive(Debug)]
 pub struct PrometheusSyncMetrics {
-    // Protocol cost metrics
-    messages_sent: Family<ProtocolLabels, Counter>,
-    bytes_sent: Family<ProtocolLabels, Counter>,
-    round_trips: Family<ProtocolLabels, Counter>,
-    entities_transferred: Counter<u64, AtomicU64>,
-    merges_total: Family<CrdtLabels, Counter>,
-    comparisons_total: Counter<u64, AtomicU64>,
-
-    // Phase timing
-    phase_duration_seconds: Family<PhaseLabels, Histogram>,
-
     // Safety metrics
     snapshot_blocked_total: Counter<u64, AtomicU64>,
     verification_failures_total: Counter<u64, AtomicU64>,
-    lww_fallback_total: Counter<u64, AtomicU64>,
-    buffer_drops_total: Counter<u64, AtomicU64>,
 
     // Sync session metrics
     sync_duration_seconds: Family<OutcomeLabels, Histogram>,
@@ -143,6 +107,11 @@ pub struct PrometheusSyncMetrics {
 
     // Protocol selection metrics
     protocol_selections_total: Family<ProtocolLabels, Counter>,
+
+    // Session cost metrics
+    round_trips_total: Family<ProtocolLabels, Counter>,
+    comparisons_total: Family<ProtocolLabels, Counter>,
+    entities_transferred_total: Family<ProtocolLabels, Counter>,
 }
 
 impl PrometheusSyncMetrics {
@@ -161,22 +130,9 @@ impl PrometheusSyncMetrics {
     /// let metrics = PrometheusSyncMetrics::new(&mut registry);
     /// ```
     pub fn new(registry: &mut Registry) -> Self {
-        // Create metrics with sensible histogram buckets
         let metrics = Self {
-            messages_sent: Family::default(),
-            bytes_sent: Family::default(),
-            round_trips: Family::default(),
-            entities_transferred: Counter::default(),
-            merges_total: Family::default(),
-            comparisons_total: Counter::default(),
-            phase_duration_seconds: Family::new_with_constructor(|| {
-                // Buckets from 1ms to ~16s (15 exponential buckets, base 2)
-                Histogram::new(exponential_buckets(0.001, 2.0, 15))
-            }),
             snapshot_blocked_total: Counter::default(),
             verification_failures_total: Counter::default(),
-            lww_fallback_total: Counter::default(),
-            buffer_drops_total: Counter::default(),
             sync_duration_seconds: Family::new_with_constructor(|| {
                 // Buckets from 10ms to ~160s (15 exponential buckets, base 2)
                 Histogram::new(exponential_buckets(0.01, 2.0, 15))
@@ -185,44 +141,11 @@ impl PrometheusSyncMetrics {
             sync_successes_total: Family::default(),
             sync_failures_total: Family::default(),
             protocol_selections_total: Family::default(),
+            round_trips_total: Family::default(),
+            comparisons_total: Family::default(),
+            entities_transferred_total: Family::default(),
         };
 
-        // Register all metrics with descriptions
-        registry.register(
-            "sync_messages_sent",
-            "Total sync protocol messages sent",
-            metrics.messages_sent.clone(),
-        );
-        registry.register(
-            "sync_bytes_sent",
-            "Total sync protocol bytes sent",
-            metrics.bytes_sent.clone(),
-        );
-        registry.register(
-            "sync_round_trips",
-            "Total sync round trips",
-            metrics.round_trips.clone(),
-        );
-        registry.register(
-            "sync_entities_transferred",
-            "Total entities transferred during sync",
-            metrics.entities_transferred.clone(),
-        );
-        registry.register(
-            "sync_merges",
-            "Total CRDT merge operations",
-            metrics.merges_total.clone(),
-        );
-        registry.register(
-            "sync_comparisons",
-            "Total entity hash comparisons",
-            metrics.comparisons_total.clone(),
-        );
-        registry.register(
-            "sync_phase_duration_seconds",
-            "Duration of sync phases in seconds",
-            metrics.phase_duration_seconds.clone(),
-        );
         registry.register(
             "sync_snapshot_blocked",
             "Snapshot attempts blocked on initialized nodes (I5 protection)",
@@ -230,27 +153,17 @@ impl PrometheusSyncMetrics {
         );
         registry.register(
             "sync_verification_failures",
-            "Snapshot verification failures (I7 violations)",
+            "Snapshot root-hash verification failures (I7 violations)",
             metrics.verification_failures_total.clone(),
         );
         registry.register(
-            "sync_lww_fallback",
-            "LWW fallback events due to missing CRDT type metadata",
-            metrics.lww_fallback_total.clone(),
-        );
-        registry.register(
-            "sync_buffer_drops",
-            "Delta buffer drop events (I6 violation risk)",
-            metrics.buffer_drops_total.clone(),
-        );
-        registry.register(
             "sync_duration_seconds",
-            "Duration of sync sessions in seconds",
+            "Duration of sync sessions in seconds, by protocol and outcome (success / failure)",
             metrics.sync_duration_seconds.clone(),
         );
         registry.register(
             "sync_attempts",
-            "Total sync attempts by protocol",
+            "Total sync attempts (protocol is not known yet when an attempt starts, so labelled unknown)",
             metrics.sync_attempts_total.clone(),
         );
         registry.register(
@@ -260,7 +173,7 @@ impl PrometheusSyncMetrics {
         );
         registry.register(
             "sync_failures",
-            "Total failed syncs by protocol",
+            "Total failed syncs (labelled unknown: an attempt can fail before a protocol is chosen)",
             metrics.sync_failures_total.clone(),
         );
         registry.register(
@@ -268,51 +181,42 @@ impl PrometheusSyncMetrics {
             "Total protocol selection decisions by protocol",
             metrics.protocol_selections_total.clone(),
         );
+        registry.register(
+            "sync_round_trips",
+            "Request/response exchanges with the peer per completed initiator session, by protocol",
+            metrics.round_trips_total.clone(),
+        );
+        registry.register(
+            "sync_comparisons",
+            "Tree-node hash comparisons per completed initiator session, by protocol",
+            metrics.comparisons_total.clone(),
+        );
+        registry.register(
+            "sync_entities_transferred",
+            "Entities, snapshot records or deltas applied or pushed per completed initiator session, by protocol",
+            metrics.entities_transferred_total.clone(),
+        );
 
         metrics
     }
 }
 
+/// The per-message, per-merge, per-phase and LWW-fallback hooks have no
+/// production call site (see the module docs), so this collector ignores them
+/// rather than exporting series that would only ever read 0. Wire a call site
+/// and register a series together.
 impl SyncMetricsCollector for PrometheusSyncMetrics {
-    fn record_message_sent(&self, protocol: &str, bytes: usize) {
-        let labels = ProtocolLabels {
-            protocol: sanitize_protocol(protocol),
-        };
-        self.messages_sent.get_or_create(&labels).inc();
-        self.bytes_sent.get_or_create(&labels).inc_by(bytes as u64);
-    }
+    fn record_message_sent(&self, _protocol: &str, _bytes: usize) {}
 
-    fn record_round_trip(&self, protocol: &str) {
-        let labels = ProtocolLabels {
-            protocol: sanitize_protocol(protocol),
-        };
-        self.round_trips.get_or_create(&labels).inc();
-    }
+    fn record_round_trip(&self, _protocol: &str) {}
 
-    fn record_entities_transferred(&self, count: usize) {
-        self.entities_transferred.inc_by(count as u64);
-    }
+    fn record_entities_transferred(&self, _count: usize) {}
 
-    fn record_merge(&self, crdt_type: &str) {
-        let labels = CrdtLabels {
-            crdt_type: sanitize_crdt_type(crdt_type),
-        };
-        self.merges_total.get_or_create(&labels).inc();
-    }
+    fn record_merge(&self, _crdt_type: &str) {}
 
-    fn record_comparison(&self) {
-        self.comparisons_total.inc();
-    }
+    fn record_comparison(&self) {}
 
-    fn record_phase_complete(&self, timer: PhaseTimer) {
-        // Phase names are &'static str from our code, so no sanitization needed
-        let labels = PhaseLabels {
-            phase: timer.phase(),
-        };
-        self.phase_duration_seconds
-            .get_or_create(&labels)
-            .observe(timer.elapsed().as_secs_f64());
-    }
+    fn record_phase_complete(&self, _timer: PhaseTimer) {}
 
     fn record_snapshot_blocked(&self) {
         self.snapshot_blocked_total.inc();
@@ -322,13 +226,10 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
         self.verification_failures_total.inc();
     }
 
-    fn record_lww_fallback(&self) {
-        self.lww_fallback_total.inc();
-    }
+    fn record_lww_fallback(&self) {}
 
-    fn record_buffer_drop(&self) {
-        self.buffer_drops_total.inc();
-    }
+    /// Counted by `node_metrics::record_sync_buffer_drop` instead.
+    fn record_buffer_drop(&self) {}
 
     fn record_sync_start(&self, _context_id: &str, protocol: &str, _trigger: &str) {
         let labels = ProtocolLabels {
@@ -362,11 +263,29 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
             .inc();
     }
 
-    fn record_sync_failure(&self, _context_id: &str, protocol: &str, _reason: &str) {
-        let labels = ProtocolLabels {
-            protocol: sanitize_protocol(protocol),
-        };
-        self.sync_failures_total.get_or_create(&labels).inc();
+    fn record_sync_failure(
+        &self,
+        _context_id: &str,
+        protocol: &str,
+        duration: Duration,
+        _reason: &str,
+    ) {
+        let sanitized = sanitize_protocol(protocol);
+        // Failed attempts go into the duration histogram too, under
+        // `outcome="failure"`: a sync that times out is exactly the slow tail
+        // a p99 panel exists to show, and leaving it out made the histogram
+        // look healthiest while syncs were failing.
+        self.sync_duration_seconds
+            .get_or_create(&OutcomeLabels {
+                protocol: sanitized,
+                outcome: "failure",
+            })
+            .observe(duration.as_secs_f64());
+        self.sync_failures_total
+            .get_or_create(&ProtocolLabels {
+                protocol: sanitized,
+            })
+            .inc();
     }
 
     fn record_protocol_selected(&self, protocol: &str, _reason: &str, _divergence: f64) {
@@ -375,25 +294,52 @@ impl SyncMetricsCollector for PrometheusSyncMetrics {
         };
         self.protocol_selections_total.get_or_create(&labels).inc();
     }
+
+    fn record_session_cost(&self, protocol: &str, cost: SessionCost) {
+        let labels = ProtocolLabels {
+            protocol: sanitize_protocol(protocol),
+        };
+        self.round_trips_total
+            .get_or_create(&labels)
+            .inc_by(cost.round_trips);
+        self.comparisons_total
+            .get_or_create(&labels)
+            .inc_by(cost.comparisons);
+        self.entities_transferred_total
+            .get_or_create(&labels)
+            .inc_by(cost.entities_transferred);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn encoded(registry: &Registry) -> String {
+        let mut buffer = String::new();
+        prometheus_client::encoding::text::encode(&mut buffer, registry).unwrap();
+        buffer
+    }
+
     #[test]
     fn test_prometheus_metrics_creation() {
         let mut registry = Registry::default();
         let _metrics = PrometheusSyncMetrics::new(&mut registry);
+        let buffer = encoded(&registry);
 
-        // Verify metrics are registered by encoding
-        let mut buffer = String::new();
-        prometheus_client::encoding::text::encode(&mut buffer, &registry).unwrap();
-
-        // Check that some expected metrics are present
-        assert!(buffer.contains("sync_messages_sent"));
         assert!(buffer.contains("sync_snapshot_blocked"));
-        assert!(buffer.contains("sync_buffer_drops"));
+        assert!(buffer.contains("sync_verification_failures"));
+        // Never written in production, so never exported. (Messages and
+        // bytes are exported, but by `node_metrics` at the transport.)
+        for absent in [
+            "sync_messages_sent",
+            "sync_bytes_sent",
+            "sync_merges",
+            "sync_phase_duration_seconds",
+            "sync_lww_fallback",
+        ] {
+            assert!(!buffer.contains(absent), "{absent} exported:\n{buffer}");
+        }
     }
 
     #[test]
@@ -407,29 +353,43 @@ mod tests {
         let mut registry = Registry::default();
         let metrics = PrometheusSyncMetrics::new(&mut registry);
 
-        // Record some metrics
-        metrics.record_message_sent("HashComparison", 1024);
-        metrics.record_round_trip("HashComparison");
-        metrics.record_entities_transferred(10);
-        metrics.record_merge("GCounter");
-        metrics.record_comparison();
         metrics.record_snapshot_blocked();
         metrics.record_verification_failure();
-        metrics.record_lww_fallback();
-        metrics.record_buffer_drop();
-
-        let timer = metrics.start_phase("test_phase");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        metrics.record_phase_complete(timer);
-
         metrics.record_sync_start("ctx-123", "HashComparison", "timer");
         metrics.record_sync_complete("ctx-123", "HashComparison", Duration::from_millis(100), 50);
-        metrics.record_sync_failure("ctx-456", "Snapshot", "timeout");
+        metrics.record_sync_failure("ctx-456", "Snapshot", Duration::from_secs(30), "timeout");
         metrics.record_protocol_selected("HashComparison", "test", 0.05);
+        metrics.record_session_cost(
+            "LevelWise",
+            SessionCost {
+                round_trips: 7,
+                comparisons: 40,
+                entities_transferred: 3,
+            },
+        );
 
-        // Encode and verify non-empty
-        let mut buffer = String::new();
-        prometheus_client::encoding::text::encode(&mut buffer, &registry).unwrap();
-        assert!(!buffer.is_empty());
+        let buffer = encoded(&registry);
+        for line in [
+            "sync_round_trips_total{protocol=\"LevelWise\"} 7",
+            "sync_comparisons_total{protocol=\"LevelWise\"} 40",
+            "sync_entities_transferred_total{protocol=\"LevelWise\"} 3",
+        ] {
+            assert!(buffer.contains(line), "missing {line}:\n{buffer}");
+        }
+        assert!(buffer.contains("sync_snapshot_blocked_total 1"), "{buffer}");
+        assert!(
+            buffer.contains("sync_verification_failures_total 1"),
+            "{buffer}"
+        );
+        assert!(
+            buffer.contains(
+                "sync_duration_seconds_count{protocol=\"Snapshot\",outcome=\"failure\"} 1"
+            ),
+            "failed sync missing from the duration histogram:\n{buffer}"
+        );
+        assert!(
+            buffer.contains("sync_protocol_selections_total{protocol=\"HashComparison\"} 1"),
+            "{buffer}"
+        );
     }
 }

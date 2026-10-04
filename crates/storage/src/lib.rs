@@ -162,6 +162,10 @@ pub mod tests {
     #[cfg(test)]
     pub mod rotation_log_authorship;
 
+    /// A peer's delta that leaves bytes at the app root's fixed ids that
+    /// `Root::fetch` cannot decode is refused.
+    #[cfg(test)]
+    pub mod root_payload;
     #[cfg(test)]
     pub mod shared_occupation;
     /// Sync-merge batch resilience: a single rejected action (e.g. an unsigned

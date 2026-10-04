@@ -27,12 +27,16 @@ use super::fugue_text::{
 };
 use super::mark_schema::{expand_for, mark_prefix, Expand, MarkSchema};
 use super::{CrdtType, UnorderedMap};
-use crate::address::Id;
+use crate::hash_meter::{Digest, Sha256};
 use crate::store::{MainStorage, StorageAdaptor};
 
 const MARKS_FIELD: &str = "__rich_marks"; // child id namespace for the mark map
 const LAMPORT_EXHAUSTED: &str = "mark lamport space exhausted";
 const MARK_ID_TAKEN: &str = "mark id already in use";
+/// Ids a mark tries before it is refused: the minting replica's, then fresh
+/// ones (see [`next_replica`]). Each one taken is a row a peer had to plant.
+const MAX_MARK_ID_ATTEMPTS: u64 = 16;
+const MARK_REPLICA_DOMAIN: &[u8] = b"calimero:rich-text:mark-replica:v1";
 const SEED_WITH: &str = "mark_with_replica(start, end, key, value, replica)"; // the migration-safe minting call
 
 /// A Lamport-ordered, globally unique mark identity. Field order IS the
@@ -332,22 +336,15 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
             return Ok(None);
         }
 
-        let (marks, left_out) = self.rows()?;
+        let marks = self.marks()?;
         let index = PositionIndex::build(&tree);
         if uniform_value(&runs_of(&index, &marks, tree.len()), key, value, start, end) {
             return Ok(None);
         }
 
         let (start_anchor, end_anchor) = anchor_pair(&tree, start, end, expand)?;
-        self.put_mark(
-            (&marks, &left_out),
-            start_anchor,
-            end_anchor,
-            key,
-            value,
-            replica,
-        )
-        .map(Some)
+        self.put_mark(&marks, start_anchor, end_anchor, key, value, replica)
+            .map(Some)
     }
 
     /// Replay a [`DeltaUndo`] in order, returning the undo of the undo, so redo
@@ -655,7 +652,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         let _ignored = mark_prefix(key)?;
         let tree = self.text.tree()?;
         let index = PositionIndex::build(&tree);
-        let (marks, left_out) = self.rows()?;
+        let marks = self.marks()?;
 
         if let (Some(from), Some(to)) = (index.resolve(&start), index.resolve(&end)) {
             if from < to
@@ -664,7 +661,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
                 return Ok(None);
             }
         }
-        self.put_mark((&marks, &left_out), start, end, key, value, replica)
+        self.put_mark(&marks, start, end, key, value, replica)
             .map(Some)
     }
 
@@ -739,7 +736,7 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
 
     fn put_mark(
         &mut self,
-        (marks, left_out): (&[Mark], &BTreeSet<Id>),
+        marks: &[Mark],
         start: Anchor,
         end: Anchor,
         key: &str,
@@ -752,52 +749,57 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
                 .ok_or_else(|| invalid(LAMPORT_EXHAUSTED))?,
             None => 1,
         };
-        let id = MarkId { lamport, replica };
-        // Only a row left out of `marks` can sit here; writing over it would hide the new mark.
-        if left_out.contains(&self.marks.entry_id(&MarkKey::new(id))) {
-            return Err(invalid(MARK_ID_TAKEN));
+        let mut mark = Mark {
+            id: MarkId { lamport, replica },
+            start,
+            end,
+            key: key.to_owned(),
+            value: value.map(str::to_owned),
+        };
+        // A row already at the id is one no read returns: a readable row there
+        // would carry this lamport, above the top. Writing over it would hide the
+        // mark, so the mark moves to another replica. The lamport stays, so the
+        // mark is still read and still wins over every mark read before it.
+        let mut attempt = 0;
+        while self.mark_id_taken(mark.id) {
+            attempt += 1;
+            if attempt == MAX_MARK_ID_ATTEMPTS {
+                return Err(invalid(MARK_ID_TAKEN));
+            }
+            mark.id.replica = next_replica(&mark, attempt)?;
         }
-        let _ignored = self.marks.insert(
-            MarkKey::new(id),
-            Mark {
-                id,
-                start,
-                end,
-                key: key.to_owned(),
-                value: value.map(str::to_owned),
-            },
-        )?;
+        let id = mark.id;
+        let _ignored = self.marks.insert(MarkKey::new(id), mark)?;
         Ok(id)
+    }
+
+    /// Whether anything is stored at the id the mark row `id` would take: a row of
+    /// this map or of any other parent, decodable or not, live or deleted. Reads
+    /// the row's bytes without decoding them.
+    fn mark_id_taken(&self, id: MarkId) -> bool {
+        let row = S::storage_read_entity(self.marks.entry_id(&MarkKey::new(id)));
+        row.index.is_some() || row.data.is_some()
     }
 
     /// The rows a writer could have minted, ascending by [`MarkId`]. Diagnostics and undo stacks.
     /// A row whose lamport exceeds the row count is left out, here and in every read and mint.
-    pub fn marks(&self) -> Result<Vec<Mark>, StoreError> {
-        self.rows().map(|(marks, _)| marks)
-    }
-
-    /// [`marks`](Self::marks), plus the stored ids of the rows it leaves out, from the same pass.
     /// A row is left out too when its key is not its own id or it is filed under an id its key does not derive.
-    fn rows(&self) -> Result<(Vec<Mark>, BTreeSet<Id>), StoreError> {
-        let all: Vec<(Id, bool, Mark)> = self
+    pub fn marks(&self) -> Result<Vec<Mark>, StoreError> {
+        let all: Vec<(bool, Mark)> = self
             .marks
             .raw_entries_with_ids()?
             .map(|(id, key, mark)| {
                 let fits = key.id() == mark.id && id == self.marks.entry_id(&key);
-                (id, fits, mark)
+                (fits, mark)
             })
             .collect();
         let count = all.len() as u64;
-        let (mut marks, mut left_out) = (Vec::new(), BTreeSet::new());
-        for (id, fits, mark) in all {
-            if fits && mark.id.lamport <= count {
-                marks.push(mark);
-            } else {
-                let _new = left_out.insert(id);
-            }
-        }
+        let mut marks: Vec<Mark> = all
+            .into_iter()
+            .filter_map(|(fits, mark)| (fits && mark.id.lamport <= count).then_some(mark))
+            .collect();
         marks.sort_by_key(|mark| mark.id);
-        Ok((marks, left_out))
+        Ok(marks)
     }
 
     /// The id of the text this holds; two handles holding it name the same rows.
@@ -1125,13 +1127,47 @@ mod span_attrs_json {
     }
 }
 
+/// The replica `mark` moves to on its `attempt`-th try, when its id is taken.
+///
+/// Outside a migration, a random one, which no peer can plant a row ahead of.
+/// A migration mints the same mark on every node, so there it is
+/// [`derived_replica`]: a peer that guesses the exact mark could plant its
+/// [`MAX_MARK_ID_ATTEMPTS`] ids, and the mark is refused.
+fn next_replica(mark: &Mark, attempt: u64) -> Result<u64, StoreError> {
+    if crate::env::in_merge_mode() {
+        return derived_replica(mark, attempt);
+    }
+    let mut bytes = [0_u8; 8];
+    crate::env::random_bytes(&mut bytes);
+    Ok(u64::from_be_bytes(bytes))
+}
+
+/// The first 8 bytes of a hash of `mark` as it stands, id included, and of
+/// `attempt`: deterministic, so every node running a migration mints one id.
+fn derived_replica(mark: &Mark, attempt: u64) -> Result<u64, StoreError> {
+    let bytes = borsh::to_vec(mark).map_err(|_| invalid("mark does not encode"))?;
+    let digest: [u8; 32] = Sha256::new()
+        .chain_update(MARK_REPLICA_DOMAIN)
+        .chain_update(&bytes)
+        .chain_update(attempt.to_be_bytes())
+        .finalize()
+        .into();
+    let mut head = [0_u8; 8];
+    head.copy_from_slice(&digest[..8]);
+    Ok(u64::from_be_bytes(head))
+}
+
 /// Mark rows with a lamport beyond the row count are left out of reads and mints.
 #[cfg(test)]
 mod mark_lamport_bounds_tests {
-    use super::{minting_replica, Mark, MarkId, MarkKey, RichText, SEED_WITH};
+    use super::{
+        derived_replica, minting_replica, Mark, MarkId, MarkKey, RichText, MAX_MARK_ID_ATTEMPTS,
+        SEED_WITH,
+    };
     use crate::collections::fugue_text::Anchor;
     use crate::collections::{DefaultMarks, DeltaOp, Root};
     use crate::env;
+    use crate::store::{Key, MainStorage, StorageAdaptor};
 
     const OTHER_REPLICA: u64 = 9;
 
@@ -1222,13 +1258,123 @@ mod mark_lamport_bounds_tests {
         // Above the two rows, so left out of reads, and at the id the next mark would take.
         put_mark_row(&mut doc, local, 3, "bold", Some("other"));
 
-        let minted = doc.mark(0, 5, "underline", Some("true"));
+        let minted = doc
+            .mark(0, 5, "underline", Some("true"))
+            .expect("formatting is still possible")
+            .expect("a mark is written");
 
-        assert!(
-            minted.is_err(),
-            "the mark is refused rather than written where it cannot be read: {minted:?}"
+        assert_eq!(minted.lamport, 3, "the mark still wins over every read row");
+        assert_ne!(minted.replica, local, "the mark moves off the taken id");
+        assert_eq!(attribute(&doc, "underline").as_deref(), Some("true"));
+        // Three rows now, so the row at lamport 3 is within the count and read,
+        // as any row an honest writer could have minted is.
+        assert_eq!(attribute(&doc, "bold").as_deref(), Some("other"));
+    }
+
+    /// Bytes no `Mark` decodes from, at the id `id`'s row would take, under no parent.
+    fn plant_undecodable_row(doc: &RichText<DefaultMarks>, id: MarkId) {
+        let at = doc.marks.entry_id(&MarkKey::new(id));
+        let _written = MainStorage::storage_write(Key::Entry(at), &[120]);
+    }
+
+    #[test]
+    fn a_row_that_does_not_decode_at_the_id_of_the_next_mark_does_not_stop_formatting() {
+        let mut doc = document();
+        let local = minting_replica("RichText", "mark", SEED_WITH);
+        plant_undecodable_row(
+            &doc,
+            MarkId {
+                lamport: 1,
+                replica: local,
+            },
         );
-        assert_eq!(attribute(&doc, "bold"), None);
+
+        let minted = doc
+            .mark(0, 5, "bold", Some("true"))
+            .expect("formatting is still possible");
+
+        assert!(minted.is_some());
+        assert_eq!(attribute(&doc, "bold").as_deref(), Some("true"));
+    }
+
+    /// Plants a row at each of the first `taken` ids a whole-document `underline`
+    /// mark at lamport 1 would try, and returns that mark as first minted.
+    fn plant_rows_at_the_ids_a_mark_tries(doc: &RichText<DefaultMarks>, taken: u64) -> Mark {
+        let first = Mark {
+            id: MarkId {
+                lamport: 1,
+                replica: minting_replica("RichText", "mark", SEED_WITH),
+            },
+            start: Anchor::Start,
+            end: Anchor::End,
+            key: "underline".to_owned(),
+            value: Some("true".to_owned()),
+        };
+        let mut mark = first.clone();
+        for attempt in 1..=taken {
+            plant_undecodable_row(doc, mark.id);
+            mark.id.replica = derived_replica(&mark, attempt).unwrap();
+        }
+        first
+    }
+
+    /// [`RichText::put_mark`] of `first`'s whole-document `underline`, as a migration mints it.
+    fn put_mark_in_a_migration(
+        doc: &mut RichText<DefaultMarks>,
+        first: &Mark,
+    ) -> Result<MarkId, crate::collections::error::StoreError> {
+        env::with_merge_mode(|| {
+            doc.put_mark(
+                &[],
+                first.start,
+                first.end,
+                &first.key,
+                Some("true"),
+                first.id.replica,
+            )
+        })
+    }
+
+    #[test]
+    fn a_migration_mark_moves_past_every_taken_id_but_the_last_it_may_try() {
+        let mut doc = document();
+        let first = plant_rows_at_the_ids_a_mark_tries(&doc, MAX_MARK_ID_ATTEMPTS - 1);
+
+        let minted = put_mark_in_a_migration(&mut doc, &first).expect("one id is still free");
+
+        assert_eq!(minted.lamport, 1);
+        assert_eq!(attribute(&doc, "underline").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn a_migration_mark_whose_every_id_is_taken_is_refused() {
+        let mut doc = document();
+        let first = plant_rows_at_the_ids_a_mark_tries(&doc, MAX_MARK_ID_ATTEMPTS);
+
+        let minted = put_mark_in_a_migration(&mut doc, &first);
+
+        assert!(minted.is_err(), "the tries are bounded: {minted:?}");
+        assert_eq!(attribute(&doc, "underline"), None);
+    }
+
+    #[test]
+    fn rows_planted_at_every_id_a_guessed_mark_derives_do_not_stop_it_outside_a_migration() {
+        let mut doc = document();
+        let first = plant_rows_at_the_ids_a_mark_tries(&doc, MAX_MARK_ID_ATTEMPTS);
+
+        let minted = doc
+            .put_mark(
+                &[],
+                first.start,
+                first.end,
+                &first.key,
+                Some("true"),
+                first.id.replica,
+            )
+            .expect("a random replica is free");
+
+        assert_eq!(minted.lamport, 1);
+        assert_eq!(attribute(&doc, "underline").as_deref(), Some("true"));
     }
 
     /// A row for `id`, stored under `key` instead.
@@ -1260,7 +1406,9 @@ mod mark_lamport_bounds_tests {
         put_mark_row_under(&mut doc, taken, other(1), "bold");
 
         assert_eq!(attribute(&doc, "bold"), None);
-        assert!(doc.mark(0, 5, "underline", Some("true")).is_err());
+        let minted = doc.mark(0, 5, "underline", Some("true")).unwrap();
+        assert!(minted.is_some_and(|id| id != taken));
+        assert_eq!(attribute(&doc, "underline").as_deref(), Some("true"));
         let kept = doc.marks.get(&MarkKey::new(taken)).unwrap().unwrap();
         assert_eq!(kept.key, "bold");
     }
@@ -1301,7 +1449,9 @@ mod mark_lamport_bounds_tests {
             .unwrap();
 
         assert_eq!(attribute(&doc, "bold"), None);
-        assert!(doc.mark(0, 5, "underline", Some("true")).is_err());
-        assert_eq!(attribute(&doc, "underline"), None);
+        let minted = doc.mark(0, 5, "underline", Some("true")).unwrap();
+        assert!(minted.is_some_and(|id| MarkKey::new(id) != next));
+        assert_eq!(attribute(&doc, "underline").as_deref(), Some("true"));
+        assert_eq!(attribute(&doc, "bold"), None);
     }
 }

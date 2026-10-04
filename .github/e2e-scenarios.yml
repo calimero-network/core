@@ -1,0 +1,579 @@
+# Every merobox scenario `.github/workflows/e2e-rust-apps.yml` runs on a PR.
+#
+# The workflow does not run one job per entry: `scripts/e2e-scenario-groups.py`
+# packs these into a fixed number of groups, and each group's runner loads the
+# merod image, the app bundles and merobox once, then runs its scenarios one
+# after another (`scripts/e2e-run-scenario-group.sh`), cleaning every container,
+# network, volume and data directory between them.
+#
+# Fields, one entry per scenario:
+#   workflow        the scenario's name: unique, and how its logs and its line in
+#                   the step summary are labelled
+#   file            the scenario YAML, relative to apps/<app>
+#   app             the app directory the scenario runs from
+#   image           optional, default merod:local. `merod:local-dht` marks
+#                   peer-route scenarios (no fixture registry); `merod:local-mock-tee`
+#                   marks ones booting `merod run --mock-tee`. A group holds one image.
+#   registry_fetch  optional. "false" marks a scenario that fetches no bytecode,
+#                   since a node needs it only to run a context, not to join a
+#                   group; every other http-registry scenario must have fetched
+#                   from the fixture registry or it fails.
+#
+# Adding a scenario: add an entry here, and its measured duration to
+# scripts/e2e-scenario-durations.json once CI has timed it (until then it is
+# packed as if it took the default there). `scripts/check-scenario-coverage.py`
+# fails a scenario on disk that no entry names.
+scenarios:
+  - workflow: scaffolding-e2e
+    file: workflows/e2e.yml
+    app: scaffolding-e2e
+  - workflow: frozen-rga-convergence
+    file: workflows/frozen-rga-convergence.yml
+    app: scaffolding-e2e
+  # The only scenario where a delta's author is not its signer - the sole
+  # real-node coverage of the delegated envelope and warrant nonce ledger.
+  - workflow: delegated-authorship
+    file: workflows/delegated-authorship.yml
+    app: scaffolding-e2e
+  # Password-free session coverage: a device holding only a key logs in and reads (delegated-
+  # authorship above covers the write, but via username/password). Turns on account_proof.
+  - workflow: delegated-session
+    file: workflows/delegated-session.yml
+    app: scaffolding-e2e
+  # The other half of the architecture: no session and no token at all,
+  # just a signature on each request. Verified by unit tests and by a
+  # byte fixture three implementations agree on, but until this nothing
+  # had ever presented one to a running node.
+  - workflow: delegated-proof
+    file: workflows/delegated-proof.yml
+    app: scaffolding-e2e
+  # The posture a hosted relay actually runs: delegated execution served
+  # with NO node credential. Nothing covered it - `--public-intents`
+  # appeared in no scenario, so the flag deciding whether a relay is
+  # reachable by the clients it exists for had only production as
+  # evidence. Two nodes identical but for the flag, so a 200 has a 401
+  # beside it and the flag is provably what opened the route.
+  - workflow: public-intents
+    file: workflows/public-intents.yml
+    app: scaffolding-e2e
+  # A node holding no account root joins and writes under a certificate signed elsewhere - the
+  # cold-storage posture the account/device split exists for. Needs merobox >= 0.6.67.
+  - workflow: offline-account-root
+    file: workflows/offline-account-root.yml
+    app: scaffolding-e2e
+  # After two nodes concurrently add distinct SortedSet elements, membership converges but
+  # ORDERED reads (iter) may not; the ordered-read assertion is the discriminator.
+  - workflow: sorted-set-concurrent-convergence
+    file: workflows/sorted-set-concurrent-convergence.yml
+    app: scaffolding-e2e
+  - workflow: groups
+    file: workflows/groups.yml
+    app: scaffolding-e2e
+  - workflow: group-join-then-list-from-joiner
+    file: workflows/group-join-then-list-from-joiner.yml
+    app: scaffolding-e2e
+  - workflow: group-join-mesh-not-ready
+    file: workflows/group-join-mesh-not-ready.yml
+    app: scaffolding-e2e
+  # Asserts a peer discovered over mDNS reaches the KAD routing table; without it the fleet
+  # gossips fine but every DHT query returns closest_peers: [].
+  - workflow: kad-routing-from-identify
+    file: workflows/kad-routing-from-identify.yml
+    app: scaffolding-e2e
+  - workflow: group-3node
+    file: workflows/group-3node.yml
+    app: scaffolding-e2e
+  - workflow: group-context-isolation
+    file: workflows/group-context-isolation.yml
+    app: scaffolding-e2e
+  - workflow: group-late-joiner
+    file: workflows/group-late-joiner.yml
+    app: scaffolding-e2e
+    image: merod:local-dht
+  - workflow: group-governance-late-joiner
+    file: workflows/group-governance-late-joiner.yml
+    app: scaffolding-e2e
+  - workflow: group-governance-peer-down
+    file: workflows/group-governance-peer-down.yml
+    app: scaffolding-e2e
+  - workflow: group-subgroup
+    file: workflows/group-subgroup.yml
+    app: scaffolding-e2e
+  - workflow: group-subgroup-cold-sync
+    file: workflows/group-subgroup-cold-sync.yml
+    app: scaffolding-e2e
+  - workflow: group-subgroup-queued-deltas
+    file: workflows/group-subgroup-queued-deltas.yml
+    app: scaffolding-e2e
+  - workflow: group-membership
+    file: workflows/group-membership.yml
+    app: scaffolding-e2e
+  - workflow: account-device-revoke-lockout
+    file: workflows/account-device-revoke-lockout.yml
+    app: scaffolding-e2e
+  - workflow: account-device-reset-offline
+    file: workflows/account-device-reset-offline.yml
+    app: scaffolding-e2e
+  - workflow: account-facts-cross-namespace
+    file: workflows/account-facts-cross-namespace.yml
+    app: scaffolding-e2e
+    image: merod:local-dht
+  # Account-level pairing: only real nodes can say whether the link
+  # lands where the application scope aimed it.
+  - workflow: account-pairing-application-scope
+    file: workflows/account-pairing-application-scope.yml
+    app: scaffolding-e2e
+  - workflow: account-device-scope-replace
+    file: workflows/account-device-scope-replace.yml
+    app: scaffolding-e2e
+  - workflow: account-pairing-missed-publish
+    file: workflows/account-pairing-missed-publish.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: account-paired-device-founds-namespace
+    file: workflows/account-paired-device-founds-namespace.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: account-revoked-device-repairs
+    file: workflows/account-revoked-device-repairs.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: account-namespace-left-unfollows
+    file: workflows/account-namespace-left-unfollows.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: account-registry-replicates
+    file: workflows/account-registry-replicates.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: account-namespace-devices-follow
+    file: workflows/account-namespace-devices-follow.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: account-namespace-learned-after-pairing
+    file: workflows/account-namespace-learned-after-pairing.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: account-root-backup-restore
+    file: workflows/account-root-backup-restore.yml
+    app: scaffolding-e2e
+  - workflow: account-revoke-lost-device
+    file: workflows/account-revoke-lost-device.yml
+    app: scaffolding-e2e
+  - workflow: account-sibling-projected-by-founder
+    file: workflows/account-sibling-projected-by-founder.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: account-lost-holder-revoked-everywhere
+    file: workflows/account-lost-holder-revoked-everywhere.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: group-leave-context
+    file: workflows/group-leave-context.yml
+    app: scaffolding-e2e
+  # Governance only - no node ever joins a context, so nothing
+  # needs bytecode and the registry is never asked.
+  - workflow: group-leave-member
+    file: workflows/group-leave-member.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  # Governance only - no node ever joins a context, so nothing
+  # needs bytecode and the registry is never asked.
+  - workflow: group-leave-namespace
+    file: workflows/group-leave-namespace.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: group-kick-and-rejoin-keyshare
+    file: workflows/group-kick-and-rejoin-keyshare.yml
+    app: scaffolding-e2e
+  - workflow: group-kick-and-readd-deny-list
+    file: workflows/group-kick-and-readd-deny-list.yml
+    app: scaffolding-e2e
+  - workflow: group-leave-then-rejoin-via-inheritance
+    file: workflows/group-leave-then-rejoin-via-inheritance.yml
+    app: scaffolding-e2e
+  - workflow: group-private-add-then-write
+    file: workflows/group-private-add-then-write.yml
+    app: scaffolding-e2e
+  - workflow: group-remove-from-root-revokes-inherited
+    file: workflows/group-remove-from-root-revokes-inherited.yml
+    app: scaffolding-e2e
+  - workflow: group-capabilities
+    file: workflows/group-capabilities.yml
+    app: scaffolding-e2e
+  - workflow: group-member-channel-lifecycle
+    file: workflows/group-member-channel-lifecycle.yml
+    app: scaffolding-e2e
+    image: merod:local-dht
+  - workflow: group-metadata
+    file: workflows/group-metadata.yml
+    app: scaffolding-e2e
+  - workflow: hashcomparison-shared-user-reconcile
+    file: workflows/hashcomparison-shared-user-reconcile.yml
+    app: scaffolding-e2e
+  - workflow: shared-storage-concurrent-rotation-converge
+    file: workflows/shared-storage-concurrent-rotation-converge.yml
+    app: scaffolding-e2e
+  - workflow: shared-storage-account-writers-two-devices
+    file: workflows/shared-storage-account-writers-two-devices.yml
+    app: scaffolding-e2e
+  - workflow: shared-storage-account-writers-concurrent
+    file: workflows/shared-storage-account-writers-concurrent.yml
+    app: scaffolding-e2e
+  - workflow: group-subgroup-visibility-inheritance
+    file: workflows/group-subgroup-visibility-inheritance.yml
+    app: scaffolding-e2e
+  - workflow: group-open-self-join-key-delivery
+    file: workflows/group-open-self-join-key-delivery.yml
+    app: scaffolding-e2e
+  # Whether a namespace owner writing into an Open subgroup another member created is reachable
+  # on live nodes - the unit-level projection denies it, but join-path enrolment is implicit now.
+  - workflow: namespace-owner-writes-in-a-foreign-open-subgroup
+    file: workflows/namespace-owner-writes-in-a-foreign-open-subgroup.yml
+    app: scaffolding-e2e
+    image: merod:local-dht
+  - workflow: group-join-via-inheritance
+    file: workflows/group-join-via-inheritance.yml
+    app: scaffolding-e2e
+  - workflow: dm-subgroup-privacy
+    file: workflows/dm-subgroup-privacy.yml
+    app: scaffolding-e2e
+  # Governance only - node-2 joins the namespace and nothing joins a
+  # context, so no bytecode is fetched.
+  - workflow: group-join-never-published-in-the-clear
+    file: workflows/group-join-never-published-in-the-clear.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  # Governance only - no node ever joins a context, so nothing
+  # needs bytecode and the registry is never asked.
+  - workflow: group-list-subgroups-restricted-hidden
+    file: workflows/group-list-subgroups-restricted-hidden.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: member-removed-multi-context-convergence
+    file: workflows/member-removed-multi-context-convergence.yml
+    app: scaffolding-e2e
+  - workflow: member-removed-late-joiner-catchup
+    file: workflows/member-removed-late-joiner-catchup.yml
+    app: scaffolding-e2e
+  # member-removed-partition-window-reconcile.yml is intentionally not registered here: Docker-
+  # bridge partitions can't make the divergence deterministic. Covered by unit tests instead.
+  - workflow: group-default-capabilities-propagation
+    file: workflows/group-default-capabilities-propagation.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: group-reparent
+    file: workflows/group-reparent.yml
+    app: scaffolding-e2e
+  - workflow: group-reparent-and-cascade-delete
+    file: workflows/group-reparent-and-cascade-delete.yml
+    app: scaffolding-e2e
+    image: merod:local-dht
+  - workflow: group-multi-service
+    file: workflows/group-multi-service.yml
+    app: scaffolding-e2e
+  - workflow: handler-test
+    file: workflows/handler-test.yml
+    app: scaffolding-e2e
+  - workflow: xcall-example
+    file: workflows/xcall.yml
+    app: xcall-example
+    image: merod:local-dht
+  - workflow: shared-storage
+    file: workflows/test_shared_storage.yml
+    app: kv-store-with-shared-storage
+  # The only tier that proves authored state crosses a wire: every
+  # entry is `StorageType::User`, signed per action and verified
+  # against its owner at apply, and `converge_app` models that without
+  # a network. Also the only place the owner gate is refused from a
+  # DIFFERENT node — the local check inside `edit` binds just the node
+  # running it.
+  - workflow: authored-sorted-kv-store
+    file: workflows/authored-sorted-kv-store.yml
+    app: authored-sorted-kv-store
+  # The indexes are node-local and never synced, so only a second node
+  # shows that a query agrees with entries that arrived by sync: one
+  # node that never wrote builds its index from scratch, and the other
+  # rebuilds after a peer's change moved the collection under it.
+  - workflow: indexed-issue-tracker
+    file: workflows/indexed-issue-tracker.yml
+    app: indexed-issue-tracker
+  # Three collections, three node-local orders: a three-part compound
+  # index built from synced entries, a peer's post, pin and vote
+  # showing up in counts on the other node, and an authored comment
+  # that the other node's account cannot edit.
+  - workflow: indexed-forum
+    file: workflows/indexed-forum.yml
+    app: indexed-forum
+  # Each node's full-text index is built from the state it holds and
+  # never synced, so only a second node shows that it follows state:
+  # a peer's post found, a peer's delete gone, and a second context
+  # that never sees the first one's hits.
+  - workflow: search-chat
+    file: workflows/search-chat.yml
+    app: search-chat
+  # One field per write policy, each checked on the node that did not
+  # write: frozen values, write-once messages, moderated immutable
+  # announcements and moderator appointment, an authored page whose
+  # nested revisions are its author's, and content-addressed evidence.
+  - workflow: permissions-showcase
+    file: workflows/permissions-showcase.yml
+    app: permissions-showcase
+  - workflow: components-demo
+    file: workflows/components-demo.yml
+    app: components-demo
+  - workflow: blobs-lifecycle
+    file: workflows/blobs.yml
+    app: blobs
+  - workflow: blobs-api-example
+    file: workflows/blobs-example.yml
+    app: blobs
+  # Uploading with a context_id must publish a provider record; blobs.yml alone wouldn't catch a
+  # regression since its only second-node step reads CRDT metadata, not the blob.
+  - workflow: blob-announce-membership
+    file: workflows/blob-announce-namespace-membership.yml
+    app: blobs
+    image: merod:local-dht
+  # Needs the kad server-mode fix in crates/network/src/behaviour.rs: promotion to Server needs a
+  # CONFIRMED external address that AutoNAT can't obtain on a docker bridge.
+  - workflow: blob-cross-node-transfer
+    file: workflows/blob-cross-node-transfer.yml
+    app: blobs
+  - workflow: blob-cross-node-sizes
+    file: workflows/blob-cross-node-sizes.yml
+    app: blobs
+  # Blob custody is discovered by asking the context's peers, not a Kademlia provider record, so
+  # any surviving holder can serve. Docker-only: stop_node is a no-op under --no-docker.
+  - workflow: blob-presence-multi-holder
+    file: workflows/blob-presence-multi-holder.yml
+    app: blobs
+  # A mock-TEE replica is admitted read-only, the owner uploads and stops, and a third node
+  # fetches it - proving the TEE prefetched the blob bytes, not just referencing state.
+  - workflow: blob-presence-tee-serves
+    file: workflows/blob-presence-tee-serves.yml
+    app: blobs
+    image: merod:local-mock-tee
+  # A mock-TEE replica resolves a member's dice roll into TeeOnly state, but only once the
+  # namespace's TEE authoring policy names its MRTD: TEE authorship end to end.
+  - workflow: tee-dice-roll
+    file: workflows/tee-dice-roll.yml
+    app: tee-dice
+    image: merod:local-mock-tee
+  # The namespace TEE admission policy's `mode` decides who relays: a mock TEE admitted under
+  # `mode: relay` is a RelayTee and runs a member's /intents (200); under the default it is a
+  # ReadOnlyTee and is refused by role (403). Needs merobox >= 0.6.80.
+  - workflow: tee-admission-mode-relay
+    file: workflows/tee-admission-mode-relay.yml
+    app: scaffolding-e2e
+    image: merod:local-mock-tee
+  # Two mock-TEE authorities deal cards; one is stopped and the other takes every trigger
+  # it was elected for. Also proves the TEE scheduler fires a timer method on its own.
+  - workflow: tee-cards-failover
+    file: workflows/tee-cards-failover.yml
+    app: tee-cards
+    image: merod:local-mock-tee
+  # The deck is sealed while one mock-TEE is the only TEE; a second admitted afterwards deals
+  # from it once the first is stopped, because both hold the namespace TEE key.
+  - workflow: tee-cards-late-tee
+    file: workflows/tee-cards-late-tee.yml
+    app: tee-cards
+    image: merod:local-mock-tee
+  # Removing a mock-TEE that holds the namespace TEE key makes the remaining one rotate it,
+  # and the deck is still dealt from under the new key.
+  - workflow: tee-cards-rotate
+    file: workflows/tee-cards-rotate.yml
+    app: tee-cards
+    image: merod:local-mock-tee
+  # Two members claim one username; a mock-TEE registrar grants it to one, every node names
+  # that owner and the other sees `lost`; after a release the other claims it at epoch 1.
+  - workflow: name-registry-contested
+    file: workflows/name-registry-contested.yml
+    app: name-registry
+    image: merod:local-mock-tee
+  # The same contest with an admin as the authority: two members claim one username, the
+  # context's creator resolves it, and after a release the other gets it at epoch 1. A member
+  # cannot resolve, and once the role moves through set_admins the old admin cannot either.
+  - workflow: name-registry-admin
+    file: workflows/name-registry-admin.yml
+    app: name-registry-admin
+  - workflow: kv-store-joiner-cold
+    file: workflows/kv-store-joiner-cold.yml
+    app: scaffolding-e2e
+    image: merod:local-dht
+  - workflow: root-bootstrap-converge
+    file: workflows/root-bootstrap-converge.yml
+    app: scaffolding-e2e
+  - workflow: mesh-soak-8node
+    file: workflows/mesh-soak-8node.yml
+    app: scaffolding-e2e
+  # The only scenarios that discover peers via bootstrap rather than mDNS; a bootstrap/kad
+  # regression would leave every mDNS entry green and only these two red.
+  - workflow: discovery-bootstrap-only-2node
+    file: workflows/discovery-bootstrap-only-2node.yml
+    app: scaffolding-e2e
+  - workflow: discovery-bootstrap-only-4node
+    file: workflows/discovery-bootstrap-only-4node.yml
+    app: scaffolding-e2e
+  # The only scenario exercising rendezvous register/discover without also testing relay
+  # reservations and hole-punching, unlike the NAT sync-resilience scenarios below.
+  - workflow: discovery-rendezvous-3node
+    file: workflows/discovery-rendezvous-3node.yml
+    app: scaffolding-e2e
+  - workflow: auto-follow-on-context-registered
+    file: workflows/auto-follow/auto-follow-on-context-registered.yml
+    app: scaffolding-e2e
+  - workflow: auto-follow-backfill-on-join
+    file: workflows/auto-follow/auto-follow-backfill-on-join.yml
+    app: scaffolding-e2e
+  - workflow: auto-follow-flag-flipped-late
+    file: workflows/auto-follow/auto-follow-flag-flipped-late.yml
+    app: scaffolding-e2e
+  # node-2 opts out of auto-follow and never materialises a context, so
+  # by design nothing acquires from the registry in this scenario.
+  - workflow: auto-follow-no-rejection-spam
+    file: workflows/auto-follow/no-unknown-context-rejection-spam.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  - workflow: auto-follow-asymmetric-context-membership
+    file: workflows/auto-follow/asymmetric-context-membership.yml
+    app: scaffolding-e2e
+  # Uses topology: { type: nat } (merobox 0.6.19+) so peers sit behind a NAT gateway, forcing
+  # relay/DCUtR hole-punching; -symmetric variants force DCUtR to fail, keeping traffic on relay.
+  - workflow: sync-resilience-network-partition
+    file: workflows/sync-resilience-network-partition.yml
+    app: scaffolding-e2e
+  - workflow: sync-resilience-network-partition-symmetric
+    file: workflows/sync-resilience-network-partition-symmetric.yml
+    app: scaffolding-e2e
+  - workflow: sync-resilience-peer-restart
+    file: workflows/sync-resilience-peer-restart.yml
+    app: scaffolding-e2e
+  - workflow: sync-resilience-peer-restart-symmetric
+    file: workflows/sync-resilience-peer-restart-symmetric.yml
+    app: scaffolding-e2e
+  - workflow: sync-resilience-peer-restart-autoresync
+    file: workflows/sync-resilience-peer-restart-autoresync.yml
+    app: scaffolding-e2e
+  - workflow: sync-resilience-peer-pause
+    file: workflows/sync-resilience-peer-pause.yml
+    app: scaffolding-e2e
+  - workflow: sync-resilience-peer-pause-symmetric
+    file: workflows/sync-resilience-peer-pause-symmetric.yml
+    app: scaffolding-e2e
+  # sync-resilience-lossy-link.yml needs a custom merod image with iproute2 (tc) installed; the
+  # stock image lacks it, so inject_network_fault would short-circuit.
+  - workflow: abi-conformance
+    file: workflows/abi-conformance.yml
+    app: abi_conformance
+  - workflow: collaborative-editor
+    file: workflows/collaborative-editor.yml
+    app: collaborative-editor
+  - workflow: collaborative-editor-concurrent
+    file: workflows/collaborative-editor-concurrent.yml
+    app: collaborative-editor
+  # registry_fetch "false": a node cut off from its peers cannot fetch bytecode
+  - workflow: fugue-collab-figure2
+    file: workflows/fugue-collab-figure2.yml
+    app: fugue-collab
+    registry_fetch: "false"
+  - workflow: fugue-collab-partition-heal
+    file: workflows/fugue-collab-partition-heal.yml
+    app: fugue-collab
+    registry_fetch: "false"
+  - workflow: fugue-collab-restart-mid-edit
+    file: workflows/fugue-collab-restart-mid-edit.yml
+    app: fugue-collab
+    registry_fetch: "false"
+  - workflow: fugue-collab-late-joiner
+    file: workflows/fugue-collab-late-joiner.yml
+    app: fugue-collab
+    registry_fetch: "false"
+  - workflow: fugue-collab-large-paste
+    file: workflows/fugue-collab-large-paste.yml
+    app: fugue-collab
+    registry_fetch: "false"
+  - workflow: fugue-collab-anchors
+    file: workflows/fugue-collab-anchors.yml
+    app: fugue-collab
+    registry_fetch: "false"
+  - workflow: fugue-collab-apply-delta
+    file: workflows/fugue-collab-apply-delta.yml
+    app: fugue-collab
+    registry_fetch: "false"
+  - workflow: fugue-collab-undo
+    file: workflows/fugue-collab-undo.yml
+    app: fugue-collab
+    registry_fetch: "false"
+  - workflow: rich-marks
+    file: workflows/rich-marks.yml
+    app: rich-collab
+    registry_fetch: "false"
+  - workflow: rich-blocks
+    file: workflows/rich-blocks.yml
+    app: rich-collab
+    registry_fetch: "false"
+  - workflow: rich-catchup
+    file: workflows/rich-catchup.yml
+    app: rich-collab
+    registry_fetch: "false"
+  - workflow: kv-store-init
+    file: workflows/kv-store-init.yml
+    app: kv-store-init
+  - workflow: kv-store-with-handlers
+    file: workflows/kv-store-with-handlers.yml
+    app: kv-store-with-handlers
+  - workflow: frozen-storage
+    file: workflows/test_frozen_storage.yml
+    app: kv-store-with-user-and-frozen-storage
+  - workflow: user-storage
+    file: workflows/test_user_storage.yml
+    app: kv-store-with-user-and-frozen-storage
+  - workflow: bundle-invitation
+    file: workflows/bundle-invitation-test.yml
+    app: kv-store
+  # Single node, and it installs the app itself - nothing to acquire.
+  - workflow: kv-store-simple
+    file: workflows/simple-store.yml
+    app: kv-store
+    registry_fetch: "false"
+  - workflow: kv-store-workflow-example
+    file: workflows/workflow-example.yml
+    app: kv-store
+  # Asserts presence invariants: gossip delivery, replay-on-subscribe, TTL eviction, and that a
+  # presence write never touches the DAG. kv-store here is only a namespace/context scaffold.
+  - workflow: ephemeral-presence-e2e
+    file: workflows/ephemeral-presence-e2e.yml
+    app: kv-store
+  - workflow: ephemeral-open-subgroup-e2e
+    file: workflows/ephemeral-open-subgroup-e2e.yml
+    app: kv-store
+  - workflow: nested-crdt
+    file: workflows/nested-crdt-test.yml
+    app: nested-crdt-test
+  # Installs the bundle on every node itself - nothing to acquire.
+  - workflow: nested-crdt-offline-catchup
+    file: workflows/nested-crdt-offline-catchup.yml
+    app: nested-crdt-test
+    registry_fetch: "false"
+  - workflow: private-data-example
+    file: workflows/example.yml
+    app: private_data
+  - workflow: private-data
+    file: workflows/private-data.yml
+    app: private_data
+  - workflow: group-governance-cold-context-push-converge
+    file: workflows/group-governance-cold-context-push-converge.yml
+    app: scaffolding-e2e
+  - workflow: simple-sync
+    file: workflows/simple-sync.yml
+    app: scaffolding-e2e
+  - workflow: team-metrics-custom
+    file: workflows/team-metrics-custom.yml
+    app: team-metrics-custom
+  - workflow: team-metrics-macro
+    file: workflows/team-metrics-macro.yml
+    app: team-metrics-macro
+  - workflow: xcall-example-scenario
+    file: workflows/xcall-example.yml
+    app: xcall-example
+    image: merod:local-dht

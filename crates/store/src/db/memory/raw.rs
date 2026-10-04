@@ -66,10 +66,20 @@ impl<V> Default for DBArena<V> {
     }
 }
 
+/// One column's keys, shared copy-on-write with the iterators that read it.
+///
+/// An iterator reads a snapshot: what the column held when it was made, whatever
+/// is written afterwards. Cloning the map for every iterator made that snapshot
+/// cost O(rows in the column), so a prefix scan over a few keys paid for the
+/// whole column. The `Arc` makes the snapshot a refcount bump instead, and a
+/// write clones the map only while an iterator still holds it — at most once per
+/// iterator, and only when something writes during the iteration.
+type ColumnMap<K> = Arc<BTreeMap<K, Arc<Index>>>;
+
 #[derive(Debug)]
 pub struct InMemoryDBInner<K, V> {
     arena: DBArena<V>,
-    links: BTreeMap<Column, BTreeMap<K, Arc<Index>>>,
+    links: BTreeMap<Column, ColumnMap<K>>,
 }
 
 impl<K, V> Default for InMemoryDBInner<K, V> {
@@ -103,7 +113,7 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
     pub fn insert(&mut self, col: Column, key: K, value: V) -> EyreResult<()> {
         let idx = self.arena.write()?.insert(Arc::new(value));
 
-        let column = self.links.entry(col).or_default();
+        let column = Arc::make_mut(self.links.entry(col).or_default());
 
         if let Some(idx) = column.insert(key, Arc::new(idx)) {
             if let Ok(idx) = Arc::try_unwrap(idx) {
@@ -122,8 +132,12 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         let Some(column) = self.links.get_mut(&col) else {
             return Ok(());
         };
+        if !column.contains_key(key) {
+            // Nothing to remove, so no reason to copy a column an iterator holds.
+            return Ok(());
+        }
 
-        if let Some(idx) = column.remove(key) {
+        if let Some(idx) = Arc::make_mut(column).remove(key) {
             if let Ok(idx) = Arc::try_unwrap(idx) {
                 let Some(_value) = self.arena.write()?.remove(idx) else {
                     return Err(eyre!(
@@ -134,6 +148,13 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         }
 
         Ok(())
+    }
+
+    /// Values the arena holds, live or kept alive by a snapshot. A test reads it
+    /// to check that dropping the last snapshot reclaims what only it held.
+    #[cfg(test)]
+    pub fn arena_len(&self) -> usize {
+        self.arena.read().map_or(0, |arena| arena.len())
     }
 
     // TODO: We should consider returning Iterator here.
@@ -153,7 +174,7 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
 #[derive(Debug)]
 pub struct InMemoryIterInner<'a, K: Ord, V> {
     arena: DBArena<V>,
-    column: Option<BTreeMap<K, Arc<Index>>>,
+    column: Option<ColumnMap<K>>,
     state: Option<State<'a, K, V>>,
 }
 
@@ -165,7 +186,13 @@ struct State<'a, K, V> {
 
 impl<K: Ord, V> Drop for InMemoryIterInner<'_, K, V> {
     fn drop(&mut self) {
-        let Some(column) = self.column.as_mut() else {
+        // The range borrows the snapshot; end it before the snapshot goes.
+        self.state = None;
+
+        // Only the last holder of a snapshot can hold indices nothing else does.
+        // While the live column or another iterator still shares it, every
+        // index in it is reachable from there, so there is nothing to reclaim.
+        let Some(mut column) = self.column.take().and_then(Arc::into_inner) else {
             return;
         };
 
@@ -178,9 +205,9 @@ impl<K: Ord, V> Drop for InMemoryIterInner<'_, K, V> {
             return;
         };
         while let Some((_, idx)) = column.pop_first() {
-            // This iterator's clone is the sole remaining holder of the index —
-            // the live column already dropped its copy — so the arena slot is
-            // now unreachable and safe to reclaim.
+            // This snapshot is the sole remaining holder of the index — the
+            // live column already dropped its copy — so the arena slot is now
+            // unreachable and safe to reclaim.
             if Arc::strong_count(&idx) == 1 {
                 drop(arena.remove(*idx));
             }

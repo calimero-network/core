@@ -4,8 +4,10 @@ use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, Exec
 use tracing::error;
 
 use super::{Request, RpcError, ServiceState};
-use crate::auth::{AuthenticatedKey, AuthenticatedNodeOwner, GrantedPermissions};
-use crate::execute::execute_request;
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedKey, AuthenticatedNodeOwner, GrantedPermissions,
+};
+use crate::execute::{execute_request, ACCOUNT_SESSION_REFUSAL};
 
 impl Request for ExecutionRequest {
     type Response = ExecutionResponse;
@@ -16,17 +18,18 @@ impl Request for ExecutionRequest {
         state: Arc<ServiceState>,
         auth_key: Option<AuthenticatedKey>,
         auth_node_owner: Option<AuthenticatedNodeOwner>,
+        auth_account: Option<AuthenticatedAccount>,
         granted: Option<GrantedPermissions>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
         let context_id = self.context_id;
 
-        // The three auth paths (key / node-owner / no-auth mode) are resolved
-        // by the shared `caller_identity` helper — see its doc comment.
         let caller = super::caller_identity(
             &state,
             auth_key.as_ref(),
             auth_node_owner.as_ref(),
+            auth_account.as_ref(),
             "execute",
+            || ExecutionError::FunctionCallError(ACCOUNT_SESSION_REFUSAL.to_owned()),
         )?;
         execute_request(
             &state.ctx_client,
@@ -79,6 +82,7 @@ mod tests {
                 t.state.clone(),
                 None,
                 Some(AuthenticatedNodeOwner),
+                None,
                 Some(granted(&["context:execute[,,get]"])),
             )
             .await;

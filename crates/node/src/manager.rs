@@ -46,6 +46,23 @@ pub(crate) struct DivergenceMark {
     pub(crate) last_seen: Instant,
 }
 
+/// Counters for the same-DAG / different-root divergence the hash-heartbeat
+/// observes (#2319), registered under the `sync` prefix in `run.rs`.
+///
+/// The two answer different questions. `detected` counts every observation,
+/// including the transient ones a concurrent sync apply produces mid-flight:
+/// every applied remote delta also heartbeats, so under write load it rises
+/// with writes x peers and is a load signal, not a failure signal. `escalated`
+/// counts divergences that persisted unchanged for `DIVERGENCE_PERSIST_FOR`
+/// (once per stuck hash pair, on the same transition that logs
+/// `DIVERGENCE DETECTED` at ERROR), which background sync did not heal. Alert
+/// and gate on `escalated`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DivergenceMetrics {
+    pub(crate) detected: Counter,
+    pub(crate) escalated: Counter,
+}
+
 /// What one more observation of a divergence means for its streak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Persistence {
@@ -146,12 +163,8 @@ pub struct NodeManager {
     /// inbound sync streams here instead of `ctx.spawn`'ing them on
     /// this actor's Arbiter (issue #2316).
     pub(crate) sync_session_tx: crate::sync_session_bridge::SyncSessionSender,
-    /// `sync_root_hash_divergence_detected_total` — incremented by the
-    /// hash-heartbeat handler each time it observes a peer with the same
-    /// DAG heads but a different storage root hash (#2319). Lets vmagent
-    /// alert on divergence rate without grepping logs; with the #2319
-    /// determinism fixes this should stay near zero.
-    pub(crate) divergence_detected: Counter,
+    /// Same-DAG / different-root counters bumped by the hash-heartbeat handler.
+    pub(crate) divergence_metrics: DivergenceMetrics,
     /// Per-(context, peer) persistence tracker for same-DAG / different-root
     /// divergence (#2319 follow-up). The hash-heartbeat escalates to `error!`
     /// (and an active recovery sync) only after the SAME divergence persists for
@@ -267,7 +280,7 @@ impl NodeManager {
         state: NodeState,
         state_delta_tx: crate::state_delta_bridge::StateDeltaSender,
         sync_session_tx: crate::sync_session_bridge::SyncSessionSender,
-        divergence_detected: Counter,
+        divergence_metrics: DivergenceMetrics,
     ) -> Self {
         Self {
             clients: NodeClients {
@@ -285,7 +298,7 @@ impl NodeManager {
             readiness_addr: None,
             state_delta_tx,
             sync_session_tx,
-            divergence_detected,
+            divergence_metrics,
             divergence_streak: HashMap::new(),
             behind_sync_at: HashMap::new(),
             ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),

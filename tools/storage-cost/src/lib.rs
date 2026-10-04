@@ -31,6 +31,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use calimero_storage::delta::clear_pending_delta;
 use calimero_storage::env::{with_deterministic_env, with_runtime_env, IndexCallbacks, RuntimeEnv};
 use calimero_storage::hash_meter;
 use calimero_storage::reclaim::{prune_deleted_children, tombstone_deleted_at};
@@ -170,10 +171,21 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Costs) {
     // Hashing is counted per thread, not per store: what ran so far belongs to
     // the enclosing `measure`, if any, and what runs inside to this one.
     let previous = CURRENT.with(|c| c.borrow_mut().replace(Rc::clone(&backing)));
+    // The actions a write records wait in a thread-local buffer for a commit
+    // that a measurement never makes. The outermost `measure` drains it on
+    // both sides, so no run commits another's actions and a bench calling
+    // this thousands of times holds one run's worth, not all of them.
+    let outermost = previous.is_none();
+    if outermost {
+        clear_pending_delta();
+    }
     charge_hashing(previous.as_ref());
     let result = with_runtime_env(env, || with_deterministic_env(MEASURE_SEED, f));
     charge_hashing(Some(&backing));
     CURRENT.with(|c| *c.borrow_mut() = previous);
+    if outermost {
+        clear_pending_delta();
+    }
 
     let costs = backing.borrow().costs;
     (result, costs)
@@ -365,6 +377,25 @@ mod tests {
             costs.hash_calls > 0 && costs.hash_blocks >= costs.hash_calls,
             "harness observed no hashing — the `cost-meter` feature is not counting, \
              and the CPU gate is vacuous; got {costs:?}"
+        );
+    }
+
+    /// A write records its action for a commit no measurement makes; left
+    /// behind, the buffer grows by every run until a bench exhausts memory.
+    #[test]
+    fn measure_leaves_no_pending_actions_behind() {
+        let _ = measure(|| {
+            let mut map = Root::new(UnorderedMap::<String, String, MainStorage>::new);
+            map.insert("k".to_owned(), "v".to_owned())
+                .expect("insert should succeed");
+        });
+
+        let leftover =
+            calimero_storage::delta::commit_causal_delta(&[0; 32]).expect("commit should succeed");
+        assert!(
+            leftover.is_none(),
+            "measure left {} pending actions on the thread",
+            leftover.map_or(0, |delta| delta.actions.len())
         );
     }
 

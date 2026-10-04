@@ -17,9 +17,9 @@ use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 use zeroize::ZeroizeOnDrop;
 
-// Group-key prefix allocation ledger. Every byte in `0x20..=0x57` is taken
+// Group-key prefix allocation ledger. Every byte in `0x20..=0x58` is taken
 // except `0x25`, `0x2B` and `0x2C` (retired, below); **the next free byte is
-// `0x58`**.
+// `0x59`**.
 //
 // This pointer was stale when `GroupMemberByAccount` first claimed a byte: it
 // still read `0x4C`, which `NODE_ACCOUNT_DEVICE_CERT_PREFIX` had already taken
@@ -2675,6 +2675,100 @@ impl Debug for GroupSignerAccount {
     }
 }
 
+/// Which devices' live bindings carry a signing key (see [`GroupSignerDevice`]).
+pub const GROUP_SIGNER_DEVICE_PREFIX: u8 = 0x58;
+
+/// A device whose stored binding in a group certifies `sign_pk`: the reverse of
+/// [`GroupDeviceBinding`]'s `sign_pk` field.
+///
+/// Gossip verifiers resolve a signing key to its account once per message, and
+/// without this they scanned every binding in the namespace to find one key. A
+/// prefix scan over `(group_id, sign_pk, *)` names the candidate devices
+/// instead; a key can have several, because a re-paired node keeps its signing
+/// key under a fresh device.
+///
+/// Kept in lockstep with the binding: written when one is stored, removed when
+/// one is deleted or rotated to another key. It says only that the binding names
+/// the key; whether that binding is live is still decided on read.
+///
+/// Valueless: `prefix(1) + group_id(32) + sign_pk(32) + device_id(32)` = 97 bytes.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupSignerDevice(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
+
+impl GroupSignerDevice {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], sign_pk: [u8; 32], device_id: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from([GROUP_SIGNER_DEVICE_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(sign_pk))
+            .concat(GenericArray::from(device_id))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn sign_pk(&self) -> [u8; 32] {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
+        pk
+    }
+
+    #[must_use]
+    pub fn device_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
+        id
+    }
+}
+
+impl AsKeyParts for GroupSignerDevice {
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupSignerDevice {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupSignerDevice {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupSignerDevice")
+            .field("group_id", &self.group_id())
+            .field("sign_pk", &self.sign_pk())
+            .field("device_id", &self.device_id())
+            .finish()
+    }
+}
+
 /// Prefix for [`GroupDeviceScopeFloor`].
 pub const GROUP_DEVICE_SCOPE_FLOOR_PREFIX: u8 = 0x52;
 
@@ -4351,6 +4445,7 @@ mod tests {
             ("GROUP_REVOKED_DEVICE", GROUP_REVOKED_DEVICE_PREFIX),
             ("GROUP_REVOKED_SIGNER", GROUP_REVOKED_SIGNER_PREFIX),
             ("GROUP_SIGNER_ACCOUNT", GROUP_SIGNER_ACCOUNT_PREFIX),
+            ("GROUP_SIGNER_DEVICE", GROUP_SIGNER_DEVICE_PREFIX),
             ("GROUP_DEVICE_SCOPE_FLOOR", GROUP_DEVICE_SCOPE_FLOOR_PREFIX),
             ("GROUP_ACCOUNT_DEVICE", GROUP_ACCOUNT_DEVICE_PREFIX),
             ("GROUP_ACCOUNT_NAMESPACE", GROUP_ACCOUNT_NAMESPACE_PREFIX),

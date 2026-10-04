@@ -531,6 +531,97 @@ fn insert_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, slot: Slot) -
     }
 }
 
+/// What [`refresh_at`] did to the subtree it was given.
+#[derive(Default)]
+struct Refreshed {
+    /// The subtree's new hash, when any child's hash in it moved.
+    hash: Option<[u8; 32]>,
+    /// The subtree's hash before, when it moved and the subtree is the root.
+    old_root: Option<[u8; 32]>,
+    /// The highest position among the children whose hash moved: replacing a
+    /// child raises the root's position mark past it.
+    max_order: Option<u64>,
+}
+
+/// Stores each of `slots`' hashes as the hash of the child with its id, for
+/// those already linked in the subtree at `path` under another hash, in one
+/// descent. `slots` are sorted by id, all under `path`.
+///
+/// Leaves exactly the rows that replacing those children one at a time with
+/// [`insert_at`] leaves, and writes each row at most once, only when a hash
+/// beneath it moved. Nothing is written for a child that is not linked, which
+/// [`insert_at`] would add instead, or one whose slot already holds its hash.
+fn refresh_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, slots: &[Slot]) -> Refreshed {
+    let mut refreshed = Refreshed::default();
+    let Some(row) = read_row(rows, parent, path) else {
+        return refreshed;
+    };
+    let is_root = path.is_empty();
+    let next_order = |max_order: Option<u64>| match max_order {
+        Some(order) if is_root => row.next_order.max(order.saturating_add(1)),
+        _ if is_root => row.next_order,
+        _ => 0,
+    };
+    match row.body {
+        Body::Bucket(mut bucket) => {
+            for slot in slots {
+                let Ok(i) = bucket.entries.binary_search_by_key(&slot.id, |s| s.id) else {
+                    continue;
+                };
+                if bucket.entries[i].hash == slot.hash {
+                    continue;
+                }
+                if is_root && refreshed.old_root.is_none() {
+                    refreshed.old_root = Some(bucket.hash());
+                }
+                refreshed.max_order = refreshed.max_order.max(Some(slot.order));
+                bucket.entries[i] = *slot;
+            }
+            if refreshed.max_order.is_some() {
+                let next_order = next_order(refreshed.max_order);
+                refreshed.hash = Some(build(rows, parent, path, bucket.entries, next_order));
+            }
+        }
+        Body::Node(mut node) => {
+            let depth = path.len();
+            let mut rest = slots;
+            while let Some(first) = rest.first() {
+                // Sorted by id under one prefix, so grouped by this nibble.
+                let nib = nibble(first.id, depth);
+                let (under, after) =
+                    rest.split_at(rest.partition_point(|slot| nibble(slot.id, depth) == nib));
+                rest = after;
+                if node.slots.binary_search_by_key(&nib, |(n, _)| *n).is_err() {
+                    continue;
+                }
+                path.push(nib);
+                let below = refresh_at(rows, parent, path, under);
+                let _popped = path.pop();
+                let Some(hash) = below.hash else {
+                    continue;
+                };
+                if is_root && refreshed.old_root.is_none() {
+                    refreshed.old_root = Some(node.hash());
+                }
+                refreshed.max_order = refreshed.max_order.max(below.max_order);
+                node.set(nib, hash);
+            }
+            if refreshed.max_order.is_some() {
+                let hash = node.hash();
+                write_row(
+                    rows,
+                    parent,
+                    path,
+                    next_order(refreshed.max_order),
+                    Body::Node(node),
+                );
+                refreshed.hash = Some(hash);
+            }
+        }
+    }
+    refreshed
+}
+
 /// Removes `id` from the subtree at `path`, merging a node back into a bucket
 /// once it holds [`BUCKET_MAX`] or fewer. `None` when `id` is not there.
 fn remove_at(rows: &mut impl Rows, parent: Id, path: &mut Vec<u8>, id: Id) -> Option<[u8; 32]> {
@@ -682,15 +773,19 @@ fn lowest_under(path: &[u8]) -> Id {
     Id::new(bytes)
 }
 
+/// `S`'s index row for `id`, when it holds one that decodes.
+fn read_index<S: StorageAdaptor>(id: Id) -> Option<EntityIndex> {
+    S::storage_read_index(id).and_then(Result::ok)
+}
+
 /// A [`ChildInfo`] for `slot`, with the child's metadata read from its own
 /// index row.
 ///
 /// Falls back to bare metadata when that row is absent — a snapshot can link a
 /// child before installing it, and unit tests link bare ids — so such a child
 /// sorts by id alone until its row lands.
-fn hydrate(read: impl Fn(Key) -> Option<Vec<u8>>, slot: Slot) -> ChildInfo {
-    let metadata = read(Key::Index(slot.id))
-        .and_then(|bytes| EntityIndex::try_from_slice(&bytes).ok())
+fn hydrate(read_index: impl Fn(Id) -> Option<EntityIndex>, slot: Slot) -> ChildInfo {
+    let metadata = read_index(slot.id)
         .map(|index| index.metadata)
         .unwrap_or_else(|| Metadata {
             created_at: slot.created_at,
@@ -698,6 +793,135 @@ fn hydrate(read: impl Fn(Key) -> Option<Vec<u8>>, slot: Slot) -> ChildInfo {
             ..Metadata::default()
         });
     ChildInfo::new(slot.id, slot.hash, metadata)
+}
+
+/// Row access through `S` that serves a row read once again without a second
+/// host read, until a write through it replaces the row. It lives for one link
+/// within one call (see [`Link`]), so it never outlasts what it read.
+struct Primed<S> {
+    read: core::cell::RefCell<Vec<(Key, Option<Vec<u8>>)>>,
+    _phantom: core::marker::PhantomData<S>,
+}
+
+impl<S: StorageAdaptor> Rows for Primed<S> {
+    fn get(&self, key: Key) -> Option<Vec<u8>> {
+        let mut read = self.read.borrow_mut();
+        if let Some((_, bytes)) = read.iter().find(|(held, _)| *held == key) {
+            return bytes.clone();
+        }
+        let bytes = S::storage_read(key);
+        read.push((key, bytes.clone()));
+        bytes
+    }
+    fn put(&mut self, key: Key, value: &[u8]) {
+        self.read.get_mut().retain(|(held, _)| *held != key);
+        let _ignored = S::storage_write(key, value);
+    }
+    fn del(&mut self, key: Key) {
+        self.read.get_mut().retain(|(held, _)| *held != key);
+        let _ignored = S::storage_remove(key);
+    }
+}
+
+/// One child's link under a parent, prepared by a single descent of the
+/// parent's trie: whether the child is linked there already, the parent's next
+/// position, and the rows the link rewrites, each read once.
+///
+/// A local insert has to settle the child's position before it writes the
+/// child's own row, and write that row before the parent lists it (entry
+/// before parent, see `Interface::add_child_to`). Asking the trie whether the
+/// child holds a position, then for the next one, then linking it, descended
+/// three times. The descent here reads exactly the rows the link then reads,
+/// in the same order, and [`insert`](Self::insert) takes them from it. Nothing
+/// between the two may write a row of this trie: the caller writes only the
+/// child's own index row, which lives elsewhere, and holds the index mutation
+/// guard across both, so no other thread writes one either.
+pub(crate) struct Link<S: StorageAdaptor> {
+    parent: Id,
+    rows: Primed<S>,
+    held: Option<Slot>,
+    next_order: u64,
+}
+
+impl<S: StorageAdaptor> Link<S> {
+    /// The rows [`insert_at`] reads on its way to `child_id`'s slot: from the
+    /// root, one per level, down to a bucket or an absent row. `held` is what
+    /// [`find`] reports, which stops at a node that has no slot for the next
+    /// nibble where `insert_at` reads on (normally an absent row).
+    fn prepare(parent: Id, child_id: Id) -> Self {
+        let rows = Primed {
+            read: core::cell::RefCell::new(Vec::new()),
+            _phantom: core::marker::PhantomData,
+        };
+        let mut path = Vec::new();
+        let mut on_find_path = true;
+        let mut held = None;
+        let mut next_order = 0;
+        loop {
+            let row = read_row(&rows, parent, &path);
+            if path.is_empty() {
+                next_order = row.as_ref().map_or(0, |row| row.next_order);
+            }
+            match row.map(|row| row.body) {
+                None => break,
+                Some(Body::Bucket(bucket)) => {
+                    if on_find_path {
+                        held = bucket
+                            .entries
+                            .binary_search_by_key(&child_id, |slot| slot.id)
+                            .ok()
+                            .map(|i| bucket.entries[i]);
+                    }
+                    break;
+                }
+                Some(Body::Node(node)) => {
+                    let nib = nibble(child_id, path.len());
+                    on_find_path &= node.slots.binary_search_by_key(&nib, |(n, _)| *n).is_ok();
+                    path.push(nib);
+                }
+            }
+        }
+        Self {
+            parent,
+            rows,
+            held,
+            next_order,
+        }
+    }
+
+    /// The child as linked here already, as [`ChildTrie::get`] gives it.
+    pub(crate) fn held(&self) -> Option<ChildInfo> {
+        self.held.map(|slot| hydrate(read_index::<S>, slot))
+    }
+
+    /// Whether the child is linked here already, without reading its row.
+    pub(crate) const fn holds(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// [`ChildTrie::next_order`], from the root row the descent read.
+    pub(crate) const fn next_order(&self) -> u64 {
+        self.next_order
+    }
+
+    /// [`ChildTrie::insert`] of `child`, the child this link was prepared for.
+    pub(crate) fn insert(mut self, child: ChildInfo) -> [u8; 32] {
+        let parent = self.parent;
+        let tally = admitted_count::before_change_with::<S>(parent, || {
+            read_row(&self.rows, parent, &[]).map_or(EMPTY, |row| row.body.hash())
+        });
+        let slot = Slot::of(&child);
+        let (root, added) = insert_at(&mut self.rows, parent, &mut Vec::new(), slot);
+        if let Some(tally) = tally {
+            // A replaced child contributes what it did before: what a
+            // collection admits is decided by the stamp in the child's index
+            // row, and nothing rewrites a linked child's stamp across that
+            // line (see `admitted_count`).
+            let linked = added.then(|| hydrate(read_index::<S>, slot));
+            tally.finish::<S>(root, None, linked.as_ref());
+        }
+        root
+    }
 }
 
 /// Per-parent child trie.
@@ -730,18 +954,43 @@ impl<S: StorageAdaptor> ChildTrie<S> {
 
     /// Insert or replace `child`. Returns the trie's new root hash.
     pub fn insert(&self, child: ChildInfo) -> [u8; 32] {
-        let tally = admitted_count::before_change::<S>(self.parent);
-        let slot = Slot::of(&child);
-        let (root, added) = insert_at(&mut Self::rows(), self.parent, &mut Vec::new(), slot);
-        if let Some(tally) = tally {
-            // A replaced child contributes what it did before: what a
-            // collection admits is decided by the stamp in the child's index
-            // row, and nothing rewrites a linked child's stamp across that
-            // line (see `admitted_count`).
-            let linked = added.then(|| hydrate(S::storage_read, slot));
-            tally.finish::<S>(root, None, linked.as_ref());
+        self.link(child.id()).insert(child)
+    }
+
+    /// Prepare to link `child_id`, descending to where it belongs once. See
+    /// [`Link`].
+    pub(crate) fn link(&self, child_id: Id) -> Link<S> {
+        Link::prepare(self.parent, child_id)
+    }
+
+    /// Store `child`'s hash in its slot, if it is linked here under another
+    /// hash, and return the new root. `None` when no hash moved: `child` is not
+    /// linked, or its slot already holds that hash.
+    ///
+    /// Leaves the rows exactly as [`insert`](Self::insert) would for a child it
+    /// replaces under a new hash, but descends once instead of looking the child
+    /// up first, and writes nothing when the hash is already there.
+    pub(crate) fn refresh(&self, child: &ChildInfo) -> Option<[u8; 32]> {
+        self.refresh_all(core::slice::from_ref(child))
+    }
+
+    /// [`refresh`](Self::refresh) for several children in one descent, which
+    /// reads and writes each row once however many of them it holds: the rows
+    /// replacing them one at a time leaves, in any order.
+    pub(crate) fn refresh_all(&self, children: &[ChildInfo]) -> Option<[u8; 32]> {
+        let mut slots: Vec<Slot> = children.iter().map(Slot::of).collect();
+        slots.sort_by_key(|slot| slot.id);
+        slots.dedup_by_key(|slot| slot.id);
+        let refreshed = refresh_at(&mut Self::rows(), self.parent, &mut Vec::new(), &slots);
+        let hash = refreshed.hash?;
+        // A replaced child moves no count (see `insert`); the row only follows
+        // the root.
+        if let Some(old_root) = refreshed.old_root {
+            if let Some(tally) = admitted_count::before_change_at::<S>(self.parent, old_root) {
+                tally.finish::<S>(hash, None, None);
+            }
         }
-        root
+        Some(hash)
     }
 
     /// Remove `child_id`. Returns the new root hash.
@@ -763,7 +1012,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// Look up one child without materialising the rest.
     #[must_use]
     pub fn get(&self, child_id: Id) -> Option<ChildInfo> {
-        find(&Self::rows(), self.parent, child_id).map(|slot| hydrate(S::storage_read, slot))
+        find(&Self::rows(), self.parent, child_id).map(|slot| hydrate(read_index::<S>, slot))
     }
 
     /// Whether `child_id` is linked here, without reading its index row.
@@ -779,7 +1028,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     pub fn children_with_prefix(&self, prefix: &[u8]) -> Vec<ChildInfo> {
         with_prefix(&mut Self::rows(), self.parent, prefix)
             .into_iter()
-            .map(|slot| hydrate(S::storage_read, slot))
+            .map(|slot| hydrate(read_index::<S>, slot))
             .collect()
     }
 
@@ -800,7 +1049,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         );
         let children = out
             .into_iter()
-            .map(|slot| hydrate(S::storage_read, slot))
+            .map(|slot| hydrate(read_index::<S>, slot))
             .collect();
         (children, resume)
     }
@@ -881,7 +1130,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         );
         let mut out: Vec<ChildInfo> = out
             .into_iter()
-            .map(|slot| hydrate(S::storage_read, slot))
+            .map(|slot| hydrate(read_index::<S>, slot))
             .collect();
         out.sort();
         out
@@ -948,7 +1197,12 @@ impl<S: StorageAdaptor> ChildTrie<S> {
         };
         let mut slots = Vec::new();
         collect(&mut rows, parent, &mut Vec::new(), &mut slots, false);
-        let mut out: Vec<ChildInfo> = slots.into_iter().map(|slot| hydrate(&read, slot)).collect();
+        let read_index =
+            |id| read(Key::Index(id)).and_then(|bytes| EntityIndex::try_from_slice(&bytes).ok());
+        let mut out: Vec<ChildInfo> = slots
+            .into_iter()
+            .map(|slot| hydrate(read_index, slot))
+            .collect();
         out.sort();
         out
     }

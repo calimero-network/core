@@ -135,7 +135,7 @@ pub(crate) fn mount_runtime_services(
     }
 }
 
-fn with_optional_auth<R>(
+pub(crate) fn with_optional_auth<R>(
     router: R,
     auth_service: Option<Arc<mero_auth::AuthService>>,
     proof_policy: Option<crate::proof_auth::ProofPolicy>,
@@ -161,7 +161,7 @@ where
     router.with_auth_guard(service, proof_policy)
 }
 
-trait AuthLayerExt: Sized {
+pub(crate) trait AuthLayerExt: Sized {
     fn with_auth_guard(
         self,
         service: Arc<mero_auth::AuthService>,

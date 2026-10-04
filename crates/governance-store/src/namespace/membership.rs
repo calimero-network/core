@@ -408,7 +408,7 @@ impl<'a> NamespaceMembershipService<'a> {
             }
         }
 
-        for account in crate::tee::tee_admission_records(store, group_id)?.into_keys() {
+        for account in crate::tee::tee_admitted_accounts(store, group_id)? {
             let _ = out.insert(account);
         }
 

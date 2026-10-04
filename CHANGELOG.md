@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A namespace ownership proof says who founded the namespace.**
+  `issue-namespace-ownership-proof` now answers `founding` (founder account and
+  salt) and `credential` (this node's `AccountProof<DeviceCert>` over the
+  signing key) beside the signed proof. Neither is signed and neither needs to
+  be: the root certifies the key, and the account and salt derive the
+  namespace id. mdma needs both to accept a claim, since it cannot check the
+  signer against governance; it refuses a proof from a node without them.
+  Nothing is minted to produce them, and the signed payload is unchanged.
+
 - **A relay writes an account's signed storage on its behalf.** A delegated
   run's `User`, `Shared` and `SharedMember` entries were signed by the relay
   but named the author's device, so every peer refused them. `SignatureData`
@@ -394,6 +403,307 @@
 
 ### Fixed
 
+- **A pending sweep no longer leaves the root hash ahead of the DAG heads.**
+  When a delta's parent arrived by a path other than an inbound apply (a
+  local execute, a parent restored from the database, snapshot checkpoints, or
+  the startup load), the deltas waiting on it were applied without holding the
+  context's execution lock through the `dag_heads` commit, so a heartbeat or
+  handshake could pair their new root with the old heads. The snapshot and
+  startup sweeps never committed the cascaded heads at all, leaving that pair
+  torn until an unrelated delta arrived. Every sweep now holds the lock from
+  its first apply through the heads commit, as an inbound apply does.
+
+- **Sync cost, live data and execution errors are measured.**
+  `sync_round_trips`, `sync_comparisons` and `sync_entities_transferred`
+  (by `protocol`) are recorded once per completed initiator session from the
+  totals HashComparison, LevelWise, Snapshot and DeltaSync already keep, and
+  `sync_messages_sent` / `sync_bytes_sent` count every sync message at the
+  transport. `storage_datastore_table_bytes{kind}` reports RocksDB's live-data
+  estimate beside its live and total table-file bytes, so garbage waiting for
+  compaction is visible. An execution the node could not run to completion
+  is now counted in `context_runtime_execution_count_total` and
+  `context_runtime_execution_duration_seconds` with `status="error"`; it used
+  to skip both.
+
+- **Heartbeats no longer advertise a root hash the node does not hold.** A
+  heartbeat could pair a delta's new root with the old DAG heads (it read the
+  two between the apply's two writes), and after a HashComparison responder
+  or a LevelWise session the node kept advertising its pre-session root, since
+  those merges bypass the executor that updates it. Both made peers count a
+  same-heads / different-root divergence for a state no node was in. The
+  heartbeat now reads under the context's execution lock, and every such
+  session re-anchors the cached root to storage.
+
+- **`fleet-join` on a node that is already a member answers at once.** The
+  relay a namespace was founded through is its first TEE member, and when it
+  was handed its own addresses as admitters `fleet-join` asked itself for
+  admission and never returned; the request also held the sync loop, so
+  periodic sync, namespace pulls and outbound joins stopped with it. A node
+  that is already a member and holds the namespace key now answers
+  `admitted=true` without attesting or asking anyone. Admitter addresses
+  naming this node are dropped, opening a stream for an admission or a
+  namespace pull gives up after `open_stream_timeout`, a direct admission
+  runs beside the sync loop instead of inside it and is answered as refused
+  after 30 s, and meroctl requests are bounded by the 30 s default request
+  timeout (longer for fleet-join, joins, syncs, upgrades, installs, context
+  creation, JSON-RPC calls and blob transfers). No wire change.
+
+- **Sync safety counters count.** `sync_snapshot_blocked_total`,
+  `sync_verification_failures_total`, `sync_buffer_drops_total` and
+  `sync_protocol_selections_total` were registered but never incremented
+  outside tests, so they read 0 whatever happened; they are now recorded where
+  the event occurs. Failed syncs are recorded in `sync_duration_seconds`
+  under `outcome="failure"`, so timeouts show in its tail. Eight sync families
+  with no production writer (`sync_messages_sent`, `sync_bytes_sent`,
+  `sync_round_trips`, `sync_entities_transferred`, `sync_merges`,
+  `sync_comparisons`, `sync_phase_duration_seconds`, `sync_lww_fallback`) are
+  no longer exported. (breaking for dashboards that query them)
+
+- **`context_runtime_execution_count` is a counter.** It was a gauge that was
+  only incremented, so restarts read as drops and `rate()` did not apply. It
+  is now exposed as `context_runtime_execution_count_total`. (breaking for
+  dashboards that query the old name)
+
+- **The datastore's size is split by file kind.** `storage_datastore_file_bytes{kind}`
+  reports SST, WAL and other RocksDB file lengths. `storage_disk_usage_bytes`
+  counts allocated blocks, so on a small node it is mostly preallocated WAL
+  and does not move with the data.
+
+- **Execution latency percentiles are real numbers.** The
+  `execution_duration_seconds` histogram's lowest bucket was 1s, so every
+  execution landed in it and `histogram_quantile` reported a constant p95 of
+  950ms whatever the latency was. Buckets now run from 0.5ms to about 16s.
+
+- **A stuck root-hash divergence has its own counter.**
+  `sync_root_hash_divergence_detected_total_total` counts every same-DAG /
+  different-root heartbeat observation, transient ones included, so it climbs
+  into the thousands under write load with nothing wrong.
+  `sync_root_hash_divergence_escalated_total` counts only divergences that
+  persisted past the heartbeat window (the ones logged as
+  `DIVERGENCE DETECTED`), once per stuck hash pair; alert on that one. The
+  kv-store fuzzy load test now fails if any node logs `DIVERGENCE DETECTED`.
+
+- **A member who left or was removed from an Open group inherits nothing
+  below it.** Inheritance anchored on any ancestor's row and checked the deny
+  list and re-entry block of the target group only, so a member kicked from an
+  Open group stayed a member of its Open children and grandchildren: it could
+  join them, write in their contexts and be served their keys. A deny-list
+  entry or a removal block on an Open ancestor now ends inheritance below it
+  for joins, writes, key pulls, delegated standing and member lists; only an
+  admin of a group above it still reaches below. An honest inherited member
+  and a member an admin re-added below the removal are unaffected. The groups
+  a namespace leave or a root TEE eviction closed stay closed after a root
+  re-admission, until an admin re-adds the member there or it accepts a fresh
+  invitation. No wire change. (breaking for mixed-version namespaces: peers on
+  an older build still admit such a member's joins and writes) (#4424)
+
+- **A member's concurrent ops that relied on a revoked capability have no
+  effect.** Taking a capability away with `MemberCapabilitySet` did not void
+  the member's ops that cited a cut from before the revoke, so a member could
+  keep using a revoked `MANAGE_MEMBERS`, `CAN_MANAGE_METADATA`,
+  `MANAGE_APPLICATION` or similar bit. An admin's revoke now voids the
+  member's ops in that group that are concurrent with it and needed a revoked
+  bit, and a revoke that arrives after such an op takes back the rows it
+  wrote, as a removal does. Ops that needed no revoked bit, ops by a member
+  who was an admin at its cut, and grants are unaffected, and the revoke
+  reaches only the group it names. A metadata or application-target write a
+  voided op made before the node heard of the revoke is not undone. Nothing
+  signed or on the wire changes. (breaking for mixed-version namespaces: a
+  node on an older build applies an op a new node voids) (#4453)
+
+- **A nested wrapper op is refused while it is decoded.** The op inside an
+  `OnBehalf` or `RootGuarded` wrapper is never itself a wrapper, and apply
+  already refused one, but decoding recursed once per wrapper before any
+  authentication, so a malformed payload from any peer on a namespace topic
+  could abort the node. The decoder now refuses a wrapper inside a wrapper,
+  for gossip, backfill, decrypted group and sealed root ops and storage reads
+  alike. Encoding is unchanged and no valid op is refused. (#4446)
+
+- **An app opens only blobs held for its running context.** `blob_open`
+  returned a handle for any blob id, so an app could read bytes this node held
+  for another context by naming their id. It now opens a blob only if the app
+  wrote it, it was uploaded with that `context_id` on a member node, it was
+  fetched from the context's peers, or it is the context's own application;
+  any other blob, including one the node does not have, traps with
+  `BlobNotHeldForContext`. `blob_open_in_context` still reads a blob by
+  fetching it from the context's peers. The SDK's test host follows the same
+  rule, so app unit tests that announce made-up blob ids now see `false`.
+  (breaking: a blob written or uploaded on a node older than rc.74 is held for
+  no context, so plain `blob_open` traps on it; read it with
+  `blob_open_in_context`) (#4389)
+
+- **A stub application row no longer overwrites an install.** The
+  `ContextRegistered` stub, the upgrade-target stub (`TargetApplicationSet`,
+  `CascadeUpgrade`) and the join bootstrap stub checked for an application row
+  and wrote a size-0 stub outside the lock the install paths took, so an
+  install landing in between was replaced by the stub. All of them now take
+  one process-wide row lock: a stub write waits for an install of the same
+  application and then leaves its row alone. (#4414)
+
+- **A link that pushes an entity's existing subtree past the depth limit is
+  refused.** The ancestor check bounded only the links an action carried, so
+  moving a stored entity under a deeper parent could leave its descendants
+  past 256 ancestors, and every later walk over them failed with
+  `ParentChainTooLong`. An Add or Update that would do so, including a re-add
+  of a deleted entity or the recreation of a deleted ancestor, is now refused
+  with `ActionNotAllowed`, and sync drops it like other refused links. A
+  delete also keeps listing the children that outlive it (newer than the
+  delete, or `Frozen`). Honest writes never make such a move. (#4397)
+
+- **Inbound sync streams are bounded per peer and in total.** A peer could
+  open sync streams faster than they timed out and hold an unbounded number
+  of them and their waiting responders. A node now holds at most 256 inbound
+  sync streams, 60 from one peer, and closes a stream past either limit at
+  once; the dialer's request fails and periodic sync reconciles. Blob stream
+  limits are unchanged. (#4451)
+
+- **A re-delivered gossip delta no longer replaces the copy already parked.**
+  A delta that cannot be applied yet (its application is not runnable, or the
+  HLC fence buffers it) is parked before its payload is checked, and the
+  envelope signature does not cover the payload, so a re-delivery with
+  another payload replaced the honest copy and the honest delta was lost
+  until a later sync. Both parking sites now keep the first copy. A lost
+  delta is still recovered by parent fetch or sync. (#4450)
+
+- **An account that is not a member of a group cannot name a device in it.**
+  An `AccountDeviceLabelled` op was checked only against a root statement or
+  the device's own binding, and an account's bindings outlive its removal, so
+  a removed account could keep writing device names. The named account must
+  now be a member of the group at the op's causal cut; otherwise the label
+  records nothing and the op still takes its place in the DAG. Labels in the
+  account namespace and by current members are unaffected, and a removed
+  account's descope still narrows its own device. (breaking for
+  mixed-version namespaces: peers on an older build still record such a
+  label) (#4425)
+
+- **HA works for a namespace founded through a relay.** A TEE fleet node
+  admitted into such a namespace never got its group key: the founding relay
+  is attested in an op sealed under the namespace key, so to a node admitted
+  later it was a plain member, not a trusted anchor, and the fleet node
+  refused its key and `fleet-join` reported `admitted=false`. A namespace's
+  founding relay is now a trusted anchor of the namespace root while it still
+  holds a row there. Default invitation admitters and the invitation address
+  resolver now count the founding relay as a TEE. A direct admission request
+  refused as a replay because the broadcast already admitted the node now
+  answers `admitted=true`. No wire change. (#4434)
+
+- **The sealed-root replay no longer re-applies a group creation or re-stores
+  a key it already applied.** Each key arrival re-fed every sealed root op in
+  the log. A replayed `GroupCreated` for a group since moved was refused on
+  every pass, and for one not moved it re-seated the creator as admin after a
+  later removal. A replayed `KeyDelivery` stored its key again at a newer
+  epoch, which could put it above a key a later rotation installed. Each
+  replay also started another retry pass, so a late-joining node could spend
+  tens of seconds re-walking the log and hold up governance intents. The
+  replay now skips a `GroupCreated` whose group is already folded, and a
+  replayed delivery of a key the node already holds is a no-op. (#4435)
+
+- **A compacted delta's events hash and TEE trigger go with it.** DAG
+  compaction deleted a delta's row but left the rows kept beside it, so disk
+  still grew with delta history. They are now deleted in the same transaction
+  as the row, those earlier compactions left behind are swept, and the space
+  is given back. A peer asking for a compacted delta still gets "not found".
+
+- **The gossip parent walk asks a peer for each missing ancestor once.** It
+  checked each parent with linear scans, quadratic in the walk length, and
+  re-requested a parent queued later in the same batch, so a DAG with merge
+  edges asked for the same delta several times (79 requests for 40 ids in the
+  test). The walk now keeps one set of queued ids, as the sync-manager parent
+  pull already did. An id that failed once in a walk is retried on the next
+  sync round. (#4421)
+
+- **A namespace's group list shows a Restricted subgroup only to those who may
+  see it.** `GET /admin-api/namespaces/{id}/groups` listed every child to any
+  caller in scope, so a member learned the id and name of a Restricted
+  subgroup it was not in. It now applies the filter
+  `GET /groups/{id}/subgroups` already used: every Open child, and a
+  Restricted child only to a namespace admin or a member of that child.
+  Response shapes are unchanged. (#4374)
+
+- **A run's unflushed storage actions no longer ship in a later run's delta.**
+  JS-SDK host functions record sync actions on the host thread, and nothing
+  cleared them when a run trapped, panicked or ran out of gas, so they shipped
+  in the next run's delta on that thread, for whichever context ran next.
+  Every execution now clears the thread's pending delta on entry and on exit.
+  Rust-SDK apps were not affected, and the JS SDK's normal persist-then-flush
+  path is unchanged. (#4416)
+
+- **A member removed from an inherited Open subgroup cannot list its devices
+  or seal to its members.** `GET /groups/:group_id/member-devices` and
+  `POST /groups/:group_id/accounts/:account/seal` judged membership without the
+  deny-list, which is where such a removal is recorded. Both now use the
+  deny-list-aware check: a removed caller gets `403 NotAGroupMember`, and a
+  removed target reads as absent (404) on the seal route. (#4405)
+
+- **A key rotation that arrives before the key it is sealed under is
+  applied.** Such an op was buffered, and the replay once the key arrived
+  applied only the inner op, so the rotation was lost and the node kept
+  sealing under the pre-rotation key, which the removed member still holds.
+  The node now records the buffered rotation and applies it when the key
+  arrives (by delivery, pull or the startup re-drive), including a second
+  rotation sealed under the first one's key. Ops buffered by an older build
+  stay as before. (#4410)
+
+- **A join signed with a device key rotated out at the op's cut is refused.**
+  The join ownership check accepted a certificate whose device had since been
+  re-keyed to a later epoch, and the join applied for the account under the
+  retired key. It now refuses a certificate whose device is bound to the same
+  account at a later epoch at the join's cut. A join with the device's current
+  certificate is unchanged. No schema version bump: an older node still
+  admits such a join. (#4411)
+
+- **Maps and sets leave out an entry filed under an id its key does not
+  derive.** A peer delta can file a map or set entry at an id its key does not
+  derive, which apply cannot refuse. Iteration listed it, `get`, `contains`
+  and `remove` at that id returned it, and honest code could not remove it.
+  `UnorderedMap`, `SortedMap`, `IndexedMap`, `UnorderedSet` and `SortedSet` now
+  leave it out of every read, merge and re-key; an insert at its key refiles it
+  and a remove of its key deletes it. `len` still counts it. Node-local sorted
+  and indexed indexes rebuild once on first ordered read. (breaking: iteration,
+  `Debug`, `PartialEq`, `Ord` and `Serialize` of these collections now need
+  `K: AsRef<[u8]>`, or `V` for sets) (#4403)
+
+- **An execution's host calls and the bytes they move are capped.** Gas meters
+  wasm operators but not host calls, so a guest could loop a cheap host call,
+  or one copying a large buffer, far past any honest workload. Each execution
+  now allows at most 1,000,000 host calls (`max_host_calls`) and 6720 MiB of
+  copied bytes (`max_host_bytes`), and traps with `HostCallLimitExceeded` or
+  `HostBytesLimitExceeded` past them. The heaviest honest app measured made
+  98,949 calls. The caps are deterministic and not tunable through
+  `[runtime.limits]`; a deployment that raises `max_gas` more than about 10x
+  could reach the call cap with an honest app. (#4408)
+
+- **A device narrowed out of a namespace cannot keep writing state deltas.**
+  Narrowing a device's scope dropped its binding but, unlike a revocation,
+  recorded nothing about its signing key, so a narrowed device that had not
+  folded its own narrowing could keep writing by citing older governance heads.
+  The narrowing, and a link refused because the device was already revoked or
+  narrowed out, now deny the key at the receive filter and on the heads path
+  while no live binding speaks for it; a later widening lets it through
+  again. (#4412)
+
+- **A proxy-identity tenant subscribes only to what it is a member of.** In
+  proxy auth mode with `server.proxy_identity`, the subscribe gate allowed
+  every caller because no embedded guard runs, so every tenant could subscribe
+  to every context and group over WS and SSE, and a membership removal never
+  revoked it. A caller with an identity is now held to its membership in every
+  auth mode: subscribes are filtered to its contexts and groups, admin-only
+  group payloads go only to admins, and removal revokes live subscriptions.
+  An identity-less caller on a no-auth node is still allowed. (#4406)
+
+- **A remote install accepts only signed bundles, and raw wasm never runs.**
+  Raw wasm derives no application id, so the join bootstrap, lazy upgrade,
+  sync, blob-share and resync installs, and the relay's release resolution
+  bound it under whatever id a group named, and a group target could name a
+  raw blob the node held for another reason and run it. These paths now
+  accept only signed bundles, every compile, ABI and migration read refuses a
+  non-bundle, and `GET /admin-api/applications/{id}/abi` answers 400 for a raw
+  row instead of 500. Operator installs already required a signed `.mpk`.
+  (breaking: a context whose application row holds raw wasm now fails with
+  "raw wasm, which never runs"; rebuild it as a signed bundle with
+  `cargo mero bundle`, install it with `meroctl app install --path app.mpk`
+  and upgrade the group to it) (#4413)
+
 - **A group context runs only a release its own group named.** A node keeps one
   application row per `ApplicationId`, shared by every group on it, and any
   group admin could point that row at their own blob; a context in another
@@ -425,6 +735,29 @@
   the node's account for a node session, the delegated account for an account
   session. A plain member is refused with the same not-admin error on both
   paths. (#4400)
+
+- **A peer's row at the id of the next mark no longer stops a replica
+  formatting.** A row a peer stored where this replica's next `RichText` mark
+  would go, one that does not decode or is filed under another parent, made
+  `mark` fail with a deserialization error, and a left-out row refused the
+  mark outright. The mark now keeps its lamport and moves to a random replica
+  (one derived from the mark itself during a migration), so it is still read
+  and still wins; it fails only after `MAX_MARK_ID_ATTEMPTS` taken ids. Found
+  by the `crdt_sync` fuzz target.
+
+- **A collection no longer reads another parent's entity as its own.** A peer's
+  delta could store an entity at the id one of this node's map keys derives,
+  under another parent or as an orphan; `get` then returned that entity's value
+  as the key's, or failed decoding it, and so did the insert that followed.
+  Every collection read now treats an entity whose index names another parent
+  as absent, before decoding it.
+
+- **A peer can no longer stop a node by storing an unreadable app root.** A
+  delta whose `Add` or `Update` at the root id carried bytes that do not decode
+  as the app's root was stored as is, and every later call on that node
+  panicked in `Root::fetch`. `Root::sync` now reads the root and its entry back
+  through the decoders every call uses and refuses the delta when either fails,
+  so none of its writes are stored. Found by the `crdt_sync` fuzz target.
 
 - **The delegated routes take the intent permission, and an account reads its
   groups' upgrade state.** With `delegated_access` off, `presence-intents`,
@@ -991,6 +1324,60 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **Tombstone GC sweeps every 10 minutes, and the interval is configurable.**
+  The new `[gc] check_interval` (seconds, default `600`) replaces the fixed
+  one-hour cadence, so a tombstone every member has applied goes within about
+  one to two intervals instead of up to two hours. When a tombstone may go is
+  unchanged: only after every member device has applied the delete. A sweep
+  reads every state row, so `gc_sweep_duration_seconds`, `gc_rows_scanned`,
+  `gc_tombstones_collected` and `gc_sweeps` now show what it costs; lengthen
+  the interval on a node where sweeps take a meaningful share of it.
+
+- **Per-message signer and membership checks are point reads.** Every
+  readiness beacon, ack, migration heartbeat and blob announce resolved its
+  signing key to an account by building the namespace's live bindings, even
+  for a stranger's freshly signed message, and checked membership by listing
+  every member. A new `GroupSignerDevice` index (store prefix `0x58`; the
+  ledger pointer moves to `0x59`), kept in step with every binding write,
+  rotation, revocation, narrowing and teardown, and point membership reads
+  make each check flat in namespace size: a key lookup at 1,000 devices takes
+  about 21 µs instead of 18 ms. (breaking: there is no backfill, so in a store
+  written before this release a signing key resolves to no account until its
+  device is relinked) (#4447)
+
+- **A storage write re-reads fewer rows.** A local write now hands along the
+  rows it has just read or written instead of reading them again, and a link
+  descends the parent's trie once instead of three times. An `UnorderedMap`
+  insert at 1,000 entries reads 11 rows instead of 21, and an update 9
+  instead of 13. Rows written, stored bytes and root hashes are unchanged;
+  host-call counts drop, identically on every node. The storage index lock
+  now spans from the read to the write. (#4432)
+
+- **The DAG's pending set no longer scans once per delta.** Cleaning up or
+  evicting pending deltas that wait on one missing parent, and evicting an
+  origin's oldest pending delta at its cap, each scanned the pending set once
+  per delta, which a peer could drive to quadratic time. Both are now indexed:
+  an insert from an origin at its cap behind 8,000 older deltas takes 1.8 µs
+  instead of 762 µs. Waiters one apply unblocks on the same parent now
+  cascade in id order rather than arrival order. (#4439)
+
+- **Storage writes and delta applies read and write fewer rows.** A write
+  walked its ancestors twice and rewrote every level above even when the hash
+  had not moved; the walk now runs once and stops at the first parent that
+  already holds the hash. Applying a peer's delta walked once per action, so a
+  shared ancestor was rewritten once per entity beneath it; a delta's walks now
+  run as one pass that writes each ancestor once. A map insert reads 41% and
+  writes 18% fewer rows, and a delta updating one map writes 84% fewer (kv set
+  139 µs instead of 199). Stored bytes and root hashes are unchanged; host-call
+  counts drop, identically on every node. (#4401)
+
+- **Storage: about 27% less CPU per call.** The row codec hashes each row's data
+  once per read and hands index records to callers decoded instead of through a
+  borsh round trip, and a data-only read skips the hash checks it does not
+  need. A kv set takes 146 µs instead of 201, and a chat send 165 µs instead of
+  227 (`tools/storage-compare/RESULTS.md`). No format, row-count or host-call
+  change.
 
 - **A tombstone is collected only once every member device has applied the
   delete.** The 24-hour retention is gone: on every heartbeat each node sends

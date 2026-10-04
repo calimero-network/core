@@ -162,8 +162,25 @@ pub(crate) fn record<S: StorageAdaptor>(
 /// Read first, so a collection that has never been counted pays for none of
 /// this: no row, no root read, no classification.
 pub(crate) fn before_change<S: StorageAdaptor>(parent: Id) -> Option<Pending> {
+    before_change_with::<S>(parent, || ChildTrie::<S>::new(parent).root())
+}
+
+/// [`before_change`] for a caller holding the trie's root row already, from a
+/// descent on its way to the change: `root` gives the root as it stands, and is
+/// asked only when the row is there to compare.
+pub(crate) fn before_change_with<S: StorageAdaptor>(
+    parent: Id,
+    root: impl FnOnce() -> [u8; 32],
+) -> Option<Pending> {
     let tally = read::<S>(parent)?;
-    (ChildTrie::<S>::new(parent).root() == tally.root).then_some(Pending { parent, tally })
+    (root() == tally.root).then_some(Pending { parent, tally })
+}
+
+/// [`before_change`] for a caller that read the trie's root, as it stood before
+/// the change, on its way to making it, so the root row is not read again.
+pub(crate) fn before_change_at<S: StorageAdaptor>(parent: Id, root: [u8; 32]) -> Option<Pending> {
+    let tally = read::<S>(parent)?;
+    (root == tally.root).then_some(Pending { parent, tally })
 }
 
 /// A current row, waiting for the change it was read before.

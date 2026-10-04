@@ -21,6 +21,8 @@ pub mod client;
 pub use client::{BlobManager, SyncClient};
 pub mod dag_compaction;
 pub use dag_compaction::DagCompactionConfig;
+pub mod tombstone_gc;
+pub use tombstone_gc::GcConfig;
 pub mod delta_buffer;
 pub mod join_bundle;
 pub use join_bundle::JoinBundle;

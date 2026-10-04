@@ -1356,6 +1356,37 @@ pub const MAX_ENTITIES_PER_PUSH: usize = 500;
 /// Shared by the HashComparison and LevelWise initiators: both repair a peer
 /// through the same wire item, and a second copy of the batching would be a
 /// second place for the request budget to drift.
+/// Publish the storage merkle root as `ContextMeta.root_hash` after a sync
+/// session that merged entities straight into storage.
+///
+/// HashComparison and LevelWise merge pushed or pulled entities on the host,
+/// bypassing the executor that normally writes `root_hash`. Without this the
+/// node keeps advertising its pre-session root in every heartbeat and
+/// handshake: peers count a same-heads / different-root divergence against a
+/// state this node has already left, and protocol selection works from the
+/// stale value. `side` names the session for the log.
+pub(crate) async fn reanchor_after_entity_merge(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    side: &'static str,
+) {
+    match context_client.reanchor_root_hash(&context_id).await {
+        Ok(Some(live_root)) => tracing::debug!(
+            %context_id,
+            side,
+            %live_root,
+            "re-anchored context root_hash to the storage merkle after an entity merge"
+        ),
+        Ok(None) => {}
+        Err(err) => tracing::warn!(
+            %context_id,
+            side,
+            %err,
+            "failed to re-anchor context root_hash after an entity merge"
+        ),
+    }
+}
+
 pub(crate) async fn push_entities<T: SyncTransport>(
     transport: &mut T,
     context_id: ContextId,
@@ -3063,5 +3094,115 @@ mod on_behalf_resolution_tests {
             !repaired(&w, owned(ALICE, w.relay_pk, Some(ALICE))),
             "while repair, which asks about now, drops it"
         );
+    }
+}
+
+#[cfg(test)]
+mod reanchor_tests {
+    use std::time::Duration;
+
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::hash::Hash;
+    use calimero_storage::address::Id;
+    use calimero_storage::index::EntityIndex;
+    use calimero_store::key::{
+        ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
+        ContextState as ContextStateKey,
+    };
+    use calimero_store::slice::Slice;
+    use calimero_store::types::{ContextMeta as ContextMetaValue, ContextState};
+    use calimero_store::Store;
+    use serial_test::serial;
+
+    use super::reanchor_after_entity_merge;
+    use crate::test_node_harness::boot_test_node;
+
+    /// A context whose cached `ContextMeta.root_hash` is `cached` while its
+    /// storage merkle (the ROOT index's `full_hash`) is `stored`: the state a
+    /// HashComparison / LevelWise merge leaves behind.
+    fn seed(store: &Store, ctx: ContextId, cached: [u8; 32], stored: [u8; 32]) {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &ContextMetaKey::new(ctx),
+                &ContextMetaValue::new(
+                    ApplicationMetaKey::new(ApplicationId::from([9u8; 32])),
+                    cached,
+                    vec![[5u8; 32]],
+                    None,
+                ),
+            )
+            .unwrap();
+        let root = Id::new(*ctx);
+        let row = calimero_storage::row::encode(
+            root,
+            &calimero_storage::row::Row {
+                index: Some(
+                    borsh::to_vec(&EntityIndex::minimal_for_test_with_full_hash(root, stored))
+                        .unwrap(),
+                ),
+                data: None,
+            },
+        );
+        handle
+            .put(
+                &ContextStateKey::new(ctx, calimero_storage::store::Key::Index(root).to_bytes()),
+                &ContextState::from(Slice::from(row)),
+            )
+            .unwrap();
+    }
+
+    /// After an entity merge the node must advertise the root its storage
+    /// holds, not the one its last execute cached: a stale cache is a
+    /// same-heads / different-root divergence every peer counts against it.
+    #[tokio::test]
+    #[serial(boot_test_node)]
+    async fn an_entity_merge_publishes_the_storage_root() {
+        let node = boot_test_node().await;
+        let ctx = ContextId::from([0x51u8; 32]);
+        seed(&node.store, ctx, [1u8; 32], [2u8; 32]);
+
+        reanchor_after_entity_merge(&node.context_client, ctx, "test").await;
+
+        let context = node.context_client.get_context(&ctx).unwrap().unwrap();
+        assert_eq!(context.root_hash, Hash::from([2u8; 32]));
+        assert_eq!(context.dag_heads, vec![[5u8; 32]], "heads are left alone");
+
+        // Already current: nothing to write.
+        assert_eq!(
+            node.context_client.reanchor_root_hash(&ctx).await.unwrap(),
+            None
+        );
+    }
+
+    /// The heartbeat's read waits for the execution lock, so it cannot land
+    /// between a delta apply's root write and its heads write.
+    #[tokio::test]
+    #[serial(boot_test_node)]
+    async fn a_consistent_read_waits_for_the_execution_lock() {
+        let node = boot_test_node().await;
+        let ctx = ContextId::from([0x52u8; 32]);
+        seed(&node.store, ctx, [1u8; 32], [1u8; 32]);
+
+        let guard = node
+            .context_client
+            .acquire_lock(&ctx)
+            .await
+            .expect("lock for a known context");
+        let client = node.context_client.clone();
+        let read = tokio::spawn(async move { client.get_context_consistent(&ctx).await });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!read.is_finished(), "read did not wait for the held lock");
+
+        drop(guard);
+        let context = tokio::time::timeout(Duration::from_secs(5), read)
+            .await
+            .expect("read finishes once the lock is released")
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(context.root_hash, Hash::from([1u8; 32]));
     }
 }

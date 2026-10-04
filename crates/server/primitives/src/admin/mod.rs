@@ -3408,6 +3408,22 @@ pub struct IssueOwnershipProofApiResponse {
     pub signed_payload: String,
     /// Base64-encoded 64-byte ed25519 signature over the signature input.
     pub signature: String,
+    /// Namespace proofs only: what the namespace id was derived from.
+    ///
+    /// With [`Self::credential`] this lets a verifier that holds no governance
+    /// state check the signer itself rather than take `issuer_identity` on
+    /// trust: the credential's account root certifies `signer_public_key`, and
+    /// that account with this salt derives the namespace id — so the signer is
+    /// a node of the account that FOUNDED the namespace. Neither field is
+    /// signed, and neither needs to be: each is checked against something the
+    /// verifier already trusts. Absent where the node cannot produce it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub founding: Option<NamespaceFoundingApi>,
+    /// Namespace proofs only: hex of the borsh `AccountProof<DeviceCert>` this
+    /// node presents for `signer_public_key` (its join credential). See
+    /// [`Self::founding`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
 }
 
 impl Validate for IssueOwnershipProofApiRequest {

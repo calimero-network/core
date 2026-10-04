@@ -211,10 +211,11 @@ impl<'a> DenyListRepository<'a> {
     /// Check whether `author_key` is denied for the group that owns `context_id` —
     /// by a direct deny entry on that group, OR a namespace-root inherited-deny
     /// (an evicted/left member who reached the owning subgroup only by
-    /// inheritance from the root), OR because the key signed for a device the
-    /// namespace has revoked or narrowed out and no live binding speaks for it
-    /// now. Returns `Ok(false)` when the context isn't registered to any group
-    /// (nothing to deny on). Encapsulates the
+    /// inheritance from the root), OR a removal from a group its inheritance
+    /// passes through ([`MembershipRepository::exited_ancestor`]), OR because the
+    /// key signed for a device the namespace has revoked or narrowed out and no
+    /// live binding speaks for it now. Returns `Ok(false)` when the context isn't
+    /// registered to any group (nothing to deny on). Encapsulates the
     /// `get_group_for_context` → deny lookups so callers (e.g. the state-delta
     /// handler) don't reach into group-id resolution. The direct check is O(1);
     /// the inherited check resolves the group's namespace root (a bounded
@@ -252,10 +253,12 @@ impl<'a> DenyListRepository<'a> {
         // covers the subgroups they only *inherit* still stands. Skip the
         // inherited check for them — otherwise the namespace-wide root entry would
         // wrongly drop traffic to the very group they were just admitted to.
-        if MembershipRepository::new(self.store).has_direct_member(&group_id, &author)? {
+        let membership = MembershipRepository::new(self.store);
+        if membership.has_direct_member(&group_id, &author)? {
             return Ok(false);
         }
-        self.is_inherited_denied(&namespace, &author)
+        Ok(self.is_inherited_denied(&namespace, &author)?
+            || membership.exited_ancestor(&group_id, &author)?.is_some())
     }
 
     /// Whether `author_key` signed for a device the namespace owning

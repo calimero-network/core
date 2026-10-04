@@ -151,12 +151,12 @@ fn an_op_is_judged_void_before_it_is_stored() {
     let proj = fed(&[&l.genesis[0], &l.genesis[1], &l.removal]);
 
     assert_eq!(
-        proj.op_is_void(&scope(), base(), &l.by_sam, Some(group())),
+        proj.op_is_void(&scope(), base(), &l.by_sam, Some(group().into())),
         Some(true),
         "Sam's op cites a cut from before his removal"
     );
     assert_eq!(
-        proj.op_is_void(&scope(), base(), &l.by_alice, Some(group())),
+        proj.op_is_void(&scope(), base(), &l.by_alice, Some(group().into())),
         Some(false)
     );
 }
@@ -166,7 +166,7 @@ fn an_op_whose_cut_is_not_held_is_not_judged() {
     let l = log();
     let proj = fed(&[&l.genesis[0], &l.removal]);
     assert_eq!(
-        proj.op_is_void(&scope(), base(), &l.by_sam, Some(group())),
+        proj.op_is_void(&scope(), base(), &l.by_sam, Some(group().into())),
         None,
         "the cut cited here has a gap; the answer would depend on what this node holds"
     );
