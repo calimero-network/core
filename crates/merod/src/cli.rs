@@ -28,12 +28,12 @@ use tee::TeeCommand;
 
 pub const EXAMPLES: &str = concat!(
     r"
-  # Initialize node
-  $ merod --node node1 init --server-port 2428 --swarm-port 2528
+  # Initialize node (embedded auth: the admin password is read from stdin)
+  $ merod --node node1 init --admin-user admin --admin-password-stdin --server-port 2428 --swarm-port 2528
 
   # Initialize node with a custom home directory data
   $ mkdir data
-  $ merod --home data/ --node node1 init
+  $ merod --home data/ --node node1 init --admin-user admin --admin-password-stdin
 
   # Configure an existing node (key=value; use TOML paths).
   # Quote the argument in zsh so [ ] are not globbed:
