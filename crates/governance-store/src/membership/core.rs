@@ -1,5 +1,5 @@
 use crate::{CapabilitiesRepository, MetadataRepository};
-use crate::{DenyListRepository, MetaRepository, NamespaceRepository};
+use crate::{DenyListRepository, MetaRepository, NamespaceRepository, ReentryRepository};
 use calimero_account::AccountId;
 use calimero_governance_types::NamespaceId;
 use std::collections::BTreeSet;
@@ -8,8 +8,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::{
-    AutoFollowFlags, GroupMember, GroupMemberByAccount, GroupMemberIndexBackfilled,
-    GroupMemberValue, GROUP_MEMBER_BY_ACCOUNT_PREFIX, GROUP_MEMBER_PREFIX,
+    AutoFollowFlags, GroupExitReason, GroupMember, GroupMemberByAccount,
+    GroupMemberIndexBackfilled, GroupMemberValue, GROUP_MEMBER_BY_ACCOUNT_PREFIX,
+    GROUP_MEMBER_PREFIX,
 };
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -284,7 +285,8 @@ impl<'a> MembershipRepository<'a> {
     ///
     /// Walk semantics and architectural caveats are documented at length
     /// on [`MembershipPath`] — same wording as the pre-#2303 free
-    /// function this method replaces.
+    /// function this method replaces. A removal or leave from an ancestor ends inheritance
+    /// through it, except from an admin above it; the target's own deny-list is the caller's.
     pub fn check_path(
         &self,
         group_id: &ContextGroupId,
@@ -295,6 +297,7 @@ impl<'a> MembershipRepository<'a> {
         }
 
         let mut anchor_decision: Option<MembershipPath> = None;
+        let mut walled = false;
         let mut current = *group_id;
         for _ in 0..=MAX_NAMESPACE_DEPTH {
             if CapabilitiesRepository::new(self.store).subgroup_visibility(&current)?
@@ -311,7 +314,10 @@ impl<'a> MembershipRepository<'a> {
                     via_admin: true,
                 });
             }
-            if has_direct_member(self.store, &parent, identity)? && anchor_decision.is_none() {
+            if !walled
+                && anchor_decision.is_none()
+                && has_direct_member(self.store, &parent, identity)?
+            {
                 let caps = CapabilitiesRepository::new(self.store)
                     .member_capability(&parent, identity)?
                     .unwrap_or(0);
@@ -325,6 +331,9 @@ impl<'a> MembershipRepository<'a> {
                         MembershipPath::None
                     },
                 );
+            }
+            if !walled && anchor_decision.is_none() && self.exited(&parent, identity)? {
+                walled = true;
             }
             current = parent;
         }
@@ -354,7 +363,7 @@ impl<'a> MembershipRepository<'a> {
     ///   [`Self::enumerate_inherited`] does. A member kicked from an Open
     ///   subgroup keeps their ancestor-level inheritance but is deny-listed on
     ///   the subgroup, and that deny entry *is* the removal — there is no direct
-    ///   row to delete. [`Self::check_path`] deliberately skips the deny-list
+    ///   row to delete. [`Self::check_path`] deliberately skips the target's deny-list
     ///   (it is also run by `MemberJoinedOpen` apply mid-rejoin, while the
     ///   rejoiner is still denied), so without this arm a kicked inherited
     ///   member would resolve to `Some(0)` here while the list endpoint omits
@@ -447,32 +456,9 @@ impl<'a> MembershipRepository<'a> {
             .collect();
         let mut result = Vec::new();
 
-        // Walk the Open-reachable ancestor chain ONCE (parent-of `group_id`
-        // first, up to the first non-Open level / the root). Previously
-        // `check_path` re-derived this same chain — re-reading every level's
-        // visibility + parent — for *every* candidate, making the auth path
-        // O(candidates x depth) in store reads. We build it here and evaluate
-        // each candidate against the in-memory chain via `check_path_in_chain`.
-        let mut chain: Vec<ContextGroupId> = Vec::new();
-        let mut current = *group_id;
-        let mut terminated = false;
-        for _ in 0..=MAX_NAMESPACE_DEPTH {
-            if CapabilitiesRepository::new(self.store).subgroup_visibility(&current)?
-                != VisibilityMode::Open
-            {
-                terminated = true;
-                break;
-            }
-            let Some(parent) = NamespaceRepository::new(self.store).parent(&current)? else {
-                terminated = true;
-                break;
-            };
-            chain.push(parent);
-            current = parent;
-        }
-        if !terminated {
-            bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH));
-        }
+        // Walk the Open-reachable ancestor chain ONCE and evaluate each
+        // candidate against it, rather than re-reading it per candidate.
+        let chain = self.open_ancestors(group_id)?;
 
         for parent in &chain {
             let mut candidates: Vec<AccountId> = self
@@ -519,7 +505,7 @@ impl<'a> MembershipRepository<'a> {
     /// but it does not re-read each level's visibility + parent from the store,
     /// so callers that resolve many identities against the same chain (see
     /// [`Self::enumerate_inherited`]) pay the O(depth) structure walk once
-    /// rather than once per identity.
+    /// rather than once per identity. Walls an exit as [`Self::exited_ancestor_in`] does.
     fn check_path_in_chain(
         &self,
         group_id: &ContextGroupId,
@@ -531,6 +517,7 @@ impl<'a> MembershipRepository<'a> {
         }
 
         let mut anchor_decision: Option<MembershipPath> = None;
+        let mut walled = false;
         for parent in chain {
             if self.is_admin(parent, identity)? {
                 return Ok(MembershipPath::Inherited {
@@ -538,7 +525,10 @@ impl<'a> MembershipRepository<'a> {
                     via_admin: true,
                 });
             }
-            if has_direct_member(self.store, parent, identity)? && anchor_decision.is_none() {
+            if !walled
+                && anchor_decision.is_none()
+                && has_direct_member(self.store, parent, identity)?
+            {
                 let caps = CapabilitiesRepository::new(self.store)
                     .member_capability(parent, identity)?
                     .unwrap_or(0);
@@ -553,9 +543,92 @@ impl<'a> MembershipRepository<'a> {
                     },
                 );
             }
+            if !walled && anchor_decision.is_none() && self.exited(parent, identity)? {
+                walled = true;
+            }
         }
         Ok(anchor_decision.unwrap_or(MembershipPath::None))
     }
+
+    /// The Open ancestor `identity` left or was removed from, below any row it holds and
+    /// any group it administers. The live half of the wall for gates that read the fold.
+    pub fn exited_ancestor(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+    ) -> EyreResult<Option<ContextGroupId>> {
+        self.exited_ancestor_in(&self.open_ancestors(group_id)?, identity)
+    }
+
+    /// Every inheritor [`Self::exited_ancestor`] walls out of `group_id`, reading each
+    /// level's deny list and removals once for a caller filtering many identities.
+    pub fn walled_inheritors(&self, group_id: &ContextGroupId) -> EyreResult<BTreeSet<AccountId>> {
+        let chain = self.open_ancestors(group_id)?;
+        let mut exited = BTreeSet::new();
+        for level in &chain {
+            exited.extend(DenyListRepository::new(self.store).denied_members(level)?);
+            exited.extend(ReentryRepository::new(self.store).removed_members(level)?);
+        }
+        let mut walled = BTreeSet::new();
+        for identity in exited {
+            if self.exited_ancestor_in(&chain, &identity)?.is_some() {
+                let _ = walled.insert(identity);
+            }
+        }
+        Ok(walled)
+    }
+
+    fn exited_ancestor_in(
+        &self,
+        chain: &[ContextGroupId],
+        identity: &AccountId,
+    ) -> EyreResult<Option<ContextGroupId>> {
+        let mut exit = None;
+        for parent in chain {
+            if self.is_admin(parent, identity)? {
+                return Ok(None);
+            }
+            if exit.is_none() {
+                if has_direct_member(self.store, parent, identity)? {
+                    return Ok(None);
+                }
+                if self.exited(parent, identity)? {
+                    exit = Some(*parent);
+                }
+            }
+        }
+        Ok(exit)
+    }
+
+    /// Whether `identity`, holding no row in `group_id`, is deny-listed or was removed
+    /// there. A `Left` block alone is a leaver an attestation readmitted.
+    fn exited(&self, group_id: &ContextGroupId, identity: &AccountId) -> EyreResult<bool> {
+        Ok(
+            DenyListRepository::new(self.store).is_denied(group_id, identity)?
+                || ReentryRepository::new(self.store).block_of(group_id, identity)?
+                    == Some(GroupExitReason::Removed),
+        )
+    }
+
+    /// The ancestors of `group_id` reachable over Open edges, parent first.
+    fn open_ancestors(&self, group_id: &ContextGroupId) -> EyreResult<Vec<ContextGroupId>> {
+        let mut chain = Vec::new();
+        let mut current = *group_id;
+        for _ in 0..=MAX_NAMESPACE_DEPTH {
+            if CapabilitiesRepository::new(self.store).subgroup_visibility(&current)?
+                != VisibilityMode::Open
+            {
+                return Ok(chain);
+            }
+            let Some(parent) = NamespaceRepository::new(self.store).parent(&current)? else {
+                return Ok(chain);
+            };
+            chain.push(parent);
+            current = parent;
+        }
+        bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
+    }
+
     /// Returns `true` if `identity` is a direct admin of this specific group
     /// (no ancestor walk).
     pub fn is_direct_admin(
@@ -807,6 +880,43 @@ impl<'a> MembershipRepository<'a> {
             }
         }
         Ok(accounts)
+    }
+
+    /// Whether `account` is in [`namespace_accounts`](Self::namespace_accounts),
+    /// answered from point reads.
+    ///
+    /// For a caller asking about ONE account, which is every per-message gossip
+    /// verifier. Building the whole set to test one entry listed every member row
+    /// and then searched the list, on each readiness beacon, ack and heartbeat;
+    /// this reads the account's member row, the meta, and at cold start the
+    /// inviter hint. The membership rules are those of `namespace_accounts`, and
+    /// `is_namespace_account_agrees_with_namespace_accounts` holds the two
+    /// together.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn is_namespace_account(
+        &self,
+        namespace_id: NamespaceId,
+        account: &AccountId,
+    ) -> EyreResult<bool> {
+        let group_id = ContextGroupId::from(namespace_id.to_bytes());
+        if self.member_value(&group_id, account)?.is_some() {
+            return Ok(true);
+        }
+        let admin = MetaRepository::new(self.store)
+            .load(&group_id)?
+            .map(|meta| meta.admin_identity);
+        if admin == Some(*account) {
+            return Ok(true);
+        }
+        // The cold-start hint, under the same placeholder gate as
+        // `namespace_accounts`; see the comment there for why the gate is the
+        // whole safety argument.
+        if admin.is_none_or(|admin| admin == crate::placeholder_admin_identity()) {
+            return Ok(self.bootstrap_inviter(namespace_id)? == Some(*account));
+        }
+        Ok(false)
     }
 
     /// The unverified inviter hint recorded at join, if this node kept one.

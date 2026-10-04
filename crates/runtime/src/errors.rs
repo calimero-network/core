@@ -204,6 +204,8 @@ pub enum HostError {
     BlobWriteFailed,
     #[error("a blob call may only name the executing context")]
     BlobContextMismatch,
+    #[error("a blob may be opened only if it is held for the executing context")]
+    BlobNotHeldForContext,
     #[error("too many blob handles open")]
     BlobHandleLimitExceeded,
     #[error("total blob memory usage exceeds limit")]

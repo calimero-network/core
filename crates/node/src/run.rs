@@ -151,7 +151,7 @@ pub struct NodeConfig {
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
     pub server: ServerConfig,
-    pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 1 hour)
+    pub gc: calimero_node_primitives::GcConfig,
     /// DAG compaction settings (issue #2026). Enabled by default.
     pub dag_compaction: calimero_node_primitives::DagCompactionConfig,
     pub mode: NodeMode,
@@ -528,14 +528,23 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     );
     sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
 
-    // #2319: divergence counter — the hash-heartbeat handler bumps this
-    // whenever it sees a peer with the same DAG heads but a different
-    // storage root hash. Exposed as `sync_root_hash_divergence_detected_total`.
-    let divergence_detected = prometheus_client::metrics::counter::Counter::default();
-    registry.sub_registry_with_prefix("sync").register(
+    // #2319: divergence counters, bumped by the hash-heartbeat handler when it
+    // sees a peer with the same DAG heads but a different storage root hash.
+    // prometheus-client appends `_total` to every counter, so the first is
+    // exposed as `sync_root_hash_divergence_detected_total_total`; its name is
+    // left as is so existing dashboards keep their series. The second is
+    // exposed as `sync_root_hash_divergence_escalated_total`.
+    let divergence_metrics = crate::manager::DivergenceMetrics::default();
+    let sync_registry = registry.sub_registry_with_prefix("sync");
+    sync_registry.register(
         "root_hash_divergence_detected_total",
-        "Times the hash-heartbeat observed a peer with the same DAG heads but a different storage root hash (#2319)",
-        divergence_detected.clone(),
+        "Every hash-heartbeat observation of a peer with the same DAG heads but a different storage root hash, transient ones included; rises with write load (#2319)",
+        divergence_metrics.detected.clone(),
+    );
+    sync_registry.register(
+        "root_hash_divergence_escalated",
+        "Same-DAG / different-root divergences that persisted unchanged past the heartbeat persistence window, counted once per stuck hash pair (#2319)",
+        divergence_metrics.escalated.clone(),
     );
 
     let node_manager = NodeManager::new(
@@ -547,7 +556,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         node_state.clone(),
         state_delta_tx,
         sync_session_tx,
-        divergence_detected,
+        divergence_metrics,
     );
 
     // Start NodeManager actor and get its address
@@ -590,14 +599,15 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
     // Start garbage collection actor
     // A tombstone goes on the first sweep after every member has caught up
     // past it, so the interval is roughly how long it outlives that.
-    let gc_interval = Duration::from_secs(
-        config.gc_interval_secs.unwrap_or(3600), // Default: 1 hour
+    eyre::ensure!(
+        config.gc.is_valid(),
+        "invalid [gc] config: check_interval must be non-zero"
     );
     let gc = GarbageCollector::new(
         datastore.clone(),
         context_client.clone(),
         Arc::clone(&node_state.tombstone_stability),
-        gc_interval,
+        config.gc.check_interval,
     );
 
     // Held until shutdown, here and for the compactor: restarting an actor needs a live sender.

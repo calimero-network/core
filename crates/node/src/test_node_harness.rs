@@ -388,7 +388,7 @@ pub(crate) async fn boot_test_node() -> TestNode {
         node_state,
         state_delta_tx,
         sync_session_tx,
-        prometheus_client::metrics::counter::Counter::default(),
+        crate::manager::DivergenceMetrics::default(),
     );
 
     let publishes: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));

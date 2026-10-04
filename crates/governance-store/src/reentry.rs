@@ -147,6 +147,24 @@ impl<'a> ReentryRepository<'a> {
             .map(|v: GroupReentryBlockValue| v.reason))
     }
 
+    /// Every identity removed from `group_id`, as opposed to having left it.
+    pub fn removed_members(&self, group_id: &ContextGroupId) -> EyreResult<Vec<AccountId>> {
+        let gid = group_id.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupReentryBlock::new(gid, AccountId::from([0u8; 32])),
+            GROUP_REENTRY_BLOCK_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let mut removed = Vec::new();
+        for key in keys {
+            if self.block_of(group_id, &key.account())? == Some(GroupExitReason::Removed) {
+                removed.push(key.account());
+            }
+        }
+        Ok(removed)
+    }
+
     /// Record that `identity` has used the invitation identified by
     /// `invitation_nonce` to join `group_id`. Idempotent.
     pub fn mark_invitation_consumed(
@@ -396,6 +414,19 @@ mod tests {
         assert!(repo
             .require_invitation_admits(&gid, &bob(), NONCE_B)
             .is_err());
+    }
+
+    #[test]
+    fn removed_members_lists_removals_and_not_leaves() {
+        let store = test_store();
+        let repo = ReentryRepository::new(&store);
+        let gid = test_group_id();
+        let carol = AccountId::from([0x03; 32]);
+
+        repo.block(&gid, &bob(), GroupExitReason::Removed).unwrap();
+        repo.block(&gid, &carol, GroupExitReason::Left).unwrap();
+
+        assert_eq!(repo.removed_members(&gid).unwrap(), vec![bob()]);
     }
 
     #[test]

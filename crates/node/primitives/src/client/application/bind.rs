@@ -2,7 +2,7 @@
 //! fails - there is no content-addressed GC to reclaim a rejected artifact.
 
 use std::cmp::Ordering;
-use std::sync::PoisonError;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
@@ -13,6 +13,16 @@ use semver::Version;
 use tracing::warn;
 
 use crate::client::NodeClient;
+
+static APPLICATION_ROWS: Mutex<()> = Mutex::new(()); // rows are keyed by id, not by client
+
+/// Serialize a check-then-write of an application row with every other writer
+/// in the process, governance's stub writer included.
+pub fn lock_application_rows() -> MutexGuard<'static, ()> {
+    APPLICATION_ROWS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Who asked for an install. Any group can name any application id, so only an
 /// operator may move the row to an older release.
@@ -72,10 +82,7 @@ impl NodeClient {
         row: &types::ApplicationMeta,
         origin: InstallOrigin,
     ) -> eyre::Result<bool> {
-        let _rows = self
-            .row_writes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _rows = lock_application_rows();
         if !self.bundle_may_replace(application_id, &row.version, origin)? {
             return Ok(false);
         }

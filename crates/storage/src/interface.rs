@@ -1853,7 +1853,10 @@ impl<S: StorageAdaptor> Interface<S> {
 
     /// Refuses an upsert whose links would put an entity under itself or more than
     /// `MAX_PARENT_CHAIN` deep, before apply writes anything.
-    fn refuse_ancestor_loop(id: Id, ancestors: &[ChildInfo]) -> Result<(), StorageError> {
+    fn refuse_ancestor_loop(
+        id: Id,
+        ancestors: &[ChildInfo],
+    ) -> Result<Vec<(Id, Id, usize)>, StorageError> {
         let refuse = || {
             Err(StorageError::ActionNotAllowed(format!(
                 "the links {id} makes would loop or exceed {MAX_PARENT_CHAIN} ancestors"
@@ -1907,6 +1910,31 @@ impl<S: StorageAdaptor> Interface<S> {
                     return refuse();
                 }
                 let _previous = depths.insert(entity, depth);
+            }
+        }
+        Ok(links
+            .into_iter()
+            .filter_map(|(child, parent)| Some((child, parent, *depths.get(&child)?)))
+            .collect())
+    }
+
+    /// Refuses a link that deepens an entity so what is under it would pass `MAX_PARENT_CHAIN`.
+    /// Runs after the writer checks, since it may walk the subtree.
+    fn refuse_deepened_subtrees(links: &[(Id, Id, usize)]) -> Result<(), StorageError> {
+        for &(entity, parent, depth) in links {
+            if let Some(stored) = <Index<S>>::get_index(entity)? {
+                if stored.parent_id() == Some(parent) {
+                    continue;
+                }
+                if <Index<S>>::depth_within_limit(entity)?.is_some_and(|before| depth <= before) {
+                    continue;
+                }
+            }
+            if <Index<S>>::has_descendant_deeper_than(entity, MAX_PARENT_CHAIN - depth)? {
+                return Err(StorageError::ActionNotAllowed(format!(
+                    "linking {entity} there would put what is under it more than \
+                     {MAX_PARENT_CHAIN} ancestors deep"
+                )));
             }
         }
         Ok(())
@@ -1991,8 +2019,9 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
         }
+        let mut links = Vec::new();
         if let Action::Add { id, ancestors, .. } | Action::Update { id, ancestors, .. } = &action {
-            Self::refuse_ancestor_loop(*id, ancestors)?;
+            links = Self::refuse_ancestor_loop(*id, ancestors)?;
         }
         // An owned entry answers to the parent it is linked under, which its
         // id is bound to in a cell and whose kind of id it must take, and a
@@ -2980,6 +3009,8 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
         }
+
+        Self::refuse_deepened_subtrees(&links)?;
 
         match action {
             Action::Add {

@@ -16,7 +16,7 @@ use tracing::debug;
 
 use super::NodeClient;
 
-pub use bind::InstallOrigin;
+pub use bind::{lock_application_rows, InstallOrigin};
 pub use install::NotABundle;
 pub use query::compare_versions;
 

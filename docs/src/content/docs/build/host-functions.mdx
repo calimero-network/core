@@ -192,17 +192,19 @@ See [`xcall`](/protocol/xcall/) for the dispatch and namespace model, and
 ## Blobs
 
 Streaming large binary objects. You write through a handle, finalize to get a
-content-addressed 32-byte ID, then anyone can open that ID for reading.
+content-addressed 32-byte ID, then the context's app can open that ID for reading.
+On other nodes, use `blob_open_in_context`, which fetches the bytes from the
+context's peers.
 
 | Function | What it does | Gotcha |
 |----------|--------------|--------|
 | `env::blob_create() -> u64` | Opens a new write handle; returns a file descriptor. | The descriptor is only valid for this execution. |
 | `env::blob_write(fd: u64, data: &[u8]) -> u64` | Appends `data` to the write handle; returns bytes written. | Stream in chunks for large payloads rather than one huge buffer. |
 | `env::blob_close(fd: u64) -> [u8; 32]` | Finalizes a write handle and returns the blob's 32-byte ID (or, for a read handle, returns its ID and cleans up). | Panics if finalization fails. The ID is content-addressed — identical bytes yield the same ID. |
-| `env::blob_open(blob_id: &[u8; 32]) -> u64` | Opens an existing blob for reading; returns a file descriptor. | Returns `0` if the blob is not found — check before reading. |
+| `env::blob_open(blob_id: &[u8; 32]) -> u64` | Opens an existing blob for reading; returns a file descriptor. | The blob must be held for the current context: the app wrote it, it was uploaded with that `context_id` on a member node, it was fetched from the context's peers, or it is the context's own application. Any other blob traps with `BlobNotHeldForContext`; on other nodes, use `blob_open_in_context`. |
 | `env::blob_open_in_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64` | Opens a blob, fetching it from the current context's peers when this node does not hold it for that context. | `context_id` must be `env::context_id()`; any other traps with `BlobContextMismatch`. Returns `0` if it is not held for the context and no peer serves it. |
 | `env::blob_read(fd: u64, buffer: &mut [u8]) -> u64` | Reads into `buffer`; returns bytes read. | Returns `0` at end of blob — loop until it does. |
-| `env::blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool` | Announces a blob to a context for network discovery. | A context may only announce blobs **to itself**: the SDK returns `false` for any other `target_context_id`, and the host traps with `BlobContextMismatch`. Returns `false` unless the blob is held for the context, meaning the app wrote it, it was uploaded with that `context_id` on a member node, or it was fetched from the context's peers. |
+| `env::blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool` | Announces a blob to a context for network discovery. | A context may only announce blobs **to itself**: the SDK returns `false` for any other `target_context_id`, and the host traps with `BlobContextMismatch`. Returns `false` unless the blob is held for the context, meaning the app wrote it, it was uploaded with that `context_id` on a member node, it was fetched from the context's peers, or it is the context's own application. |
 
 See [`blobs`](/protocol/blobs/) for replication and discovery.
 

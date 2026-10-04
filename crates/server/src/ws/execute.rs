@@ -18,7 +18,7 @@ use tracing::{error, field, info, warn, Span};
 
 use crate::auth::GrantedPermissions;
 use crate::caller_account::EventCaller;
-use crate::execute::{execute_request, CallerIdentity};
+use crate::execute::{execute_request, CallerIdentity, ACCOUNT_SESSION_REFUSAL};
 use crate::ws::ServiceState;
 
 /// Validate and run an `execute` request, producing the response body to send
@@ -62,9 +62,8 @@ pub(crate) async fn handle(
 
     let caller_identity = match caller.as_ref() {
         Some(EventCaller::Key(key)) => CallerIdentity::Key(key),
-        // An account-anchored session can now hold a WebSocket (#3942), which it
-        // could not before, so this arm is reachable where it was not. It is
-        // refused rather than served: `execute` runs as a context identity, and
+        // An account-anchored session can hold a WebSocket. It is refused rather
+        // than served: `execute` runs as a context identity, and
         // an account that runs no node holds none. A delegated device's write
         // goes through `POST /admin-api/contexts/:id/intents` with a warrant,
         // which is what carries the author's consent; a session alone is not
@@ -76,11 +75,7 @@ pub(crate) async fn handle(
                  needs a warrant via POST /admin-api/contexts/:id/intents"
             );
             return ResponseBody::Error(ResponseBodyError::ServerError(
-                ServerResponseError::ParseError(
-                    "an account-authenticated session cannot execute directly; \
-                     submit a warranted intent instead"
-                        .to_owned(),
-                ),
+                ServerResponseError::ParseError(ACCOUNT_SESSION_REFUSAL.to_owned()),
             ));
         }
         None => {

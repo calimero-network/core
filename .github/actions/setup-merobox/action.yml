@@ -19,9 +19,15 @@ runs:
         # >= 0.6.81 so a fuzzy_test assertion fails when the call it checks
         # failed; before it, `is_set({{out}})` passed on a failed call's literal
         # placeholder name (calimero-network/merobox#431).
-        # >= 0.6.82 so its nodes install `cargo mero bundle --dev` apps: merod
-        # refuses the public development key unless its config sets `dev`.
-        MEROBOX_VERSION="0.6.82"
+        # >= 0.6.83 for calimero-client-py 0.8.1, built on this repo's
+        # 0.11.0-rc.79: before it merobox drove nodes through a client compiled
+        # against a pre-rc.38 core, so these lanes never exercised the client's
+        # request timeouts (#4455). Also: TEE admission policies default RTMR1/2
+        # to the mock measurement (required since rc.45), and tee_fleet_join
+        # waits 180 s and can name its admitters (calimero-network/merobox#433,
+        # #434). It also installs `cargo mero bundle --dev` apps: merod refuses
+        # the public development key unless its config sets `dev`.
+        MEROBOX_VERSION="0.6.83"
 
         MEROBOX_ARCH=""
         if [ "${RUNNER_OS}" != "Windows" ]; then
