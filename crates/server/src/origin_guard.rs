@@ -213,6 +213,13 @@ mod tests {
 
     use super::{refuse_foreign_origins, OriginGuard};
 
+    const CROSS_SITE_IMAGE: [(&str, &str); 4] = [
+        ("host", "127.0.0.1:2528"),
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "no-cors"),
+        ("sec-fetch-dest", "image"),
+    ];
+
     fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
         let mut map = HeaderMap::new();
         for (name, value) in pairs {
@@ -422,6 +429,58 @@ mod tests {
         assert!(!guard.admits(&forwarded("https://site.example"), None));
     }
 
+    fn fetched(site: &'static str, mode: &'static str, dest: &'static str) -> HeaderMap {
+        headers(&[
+            ("host", "127.0.0.1:2528"),
+            ("sec-fetch-site", site),
+            ("sec-fetch-mode", mode),
+            ("sec-fetch-dest", dest),
+        ])
+    }
+
+    /// An `<img>`, script or frame on another page sends no Origin and names
+    /// the node by its own host, so only its fetch metadata tells it apart.
+    #[test]
+    fn a_proxy_node_refuses_another_sites_subresource_that_sends_no_origin() {
+        let guard = OriginGuard::new(false, None);
+
+        for (headers, case) in [
+            (fetched("cross-site", "no-cors", "image"), "an <img>"),
+            (fetched("cross-site", "no-cors", "script"), "a <script>"),
+            (fetched("cross-site", "navigate", "iframe"), "a frame"),
+            (
+                fetched("same-site", "no-cors", "image"),
+                "a sibling's <img>",
+            ),
+            (
+                fetched("same-site", "navigate", "iframe"),
+                "a sibling's frame",
+            ),
+            (
+                fetched("cross-origin", "no-cors", "image"),
+                "an unknown site",
+            ),
+        ] {
+            assert!(!guard.admits(&headers, None), "{case}");
+        }
+        for (headers, case) in [
+            (fetched("cross-site", "navigate", "document"), "a link"),
+            (
+                fetched("same-site", "navigate", "document"),
+                "a sibling's link",
+            ),
+            (fetched("none", "navigate", "document"), "a typed address"),
+            (
+                fetched("none", "no-cors", "image"),
+                "an image opened directly",
+            ),
+            (fetched("same-origin", "no-cors", "image"), "its own <img>"),
+            (fetched("same-origin", "cors", "empty"), "its own fetch"),
+        ] {
+            assert!(guard.admits(&headers, None), "{case}");
+        }
+    }
+
     fn app(guard: OriginGuard) -> Router {
         Router::new()
             .route(
@@ -504,6 +563,64 @@ mod tests {
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
         let served = guarded.oneshot(get(false)).await.unwrap();
         assert_eq!(served.status(), StatusCode::OK);
+    }
+
+    async fn get_health(app: Router, pairs: &[(&'static str, &'static str)]) -> StatusCode {
+        let mut request = Request::builder().method("GET").uri("/admin-api/health");
+        for (name, value) in pairs {
+            request = request.header(*name, *value);
+        }
+        app.oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn another_sites_image_request_is_refused_before_the_handler_runs() {
+        let guarded = app(OriginGuard::new(false, None));
+
+        assert_eq!(
+            get_health(guarded, &CROSS_SITE_IMAGE).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn a_link_to_the_node_from_another_site_is_served() {
+        let guarded = app(OriginGuard::new(false, None));
+        let link = [
+            ("host", "127.0.0.1:2528"),
+            ("sec-fetch-site", "cross-site"),
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+        ];
+
+        assert_eq!(get_health(guarded, &link).await, StatusCode::OK);
+    }
+
+    /// Without `Sec-Fetch-Site` no browser sent it, whatever else it carries.
+    #[tokio::test]
+    async fn a_client_without_fetch_site_is_served_whatever_it_fetches() {
+        let guarded = app(OriginGuard::new(false, None));
+        let client = [
+            ("host", "127.0.0.1:2528"),
+            ("sec-fetch-mode", "no-cors"),
+            ("sec-fetch-dest", "image"),
+        ];
+
+        assert_eq!(get_health(guarded.clone(), &client).await, StatusCode::OK);
+        assert_eq!(
+            get_health(guarded, &[("host", "127.0.0.1:2528")]).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_that_authenticates_callers_serves_another_sites_image_request() {
+        let open = app(OriginGuard::new(true, None));
+
+        assert_eq!(get_health(open, &CROSS_SITE_IMAGE).await, StatusCode::OK);
     }
 
     #[tokio::test]
