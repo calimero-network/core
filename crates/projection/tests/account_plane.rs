@@ -2363,6 +2363,36 @@ fn a_tee_admission_still_converts_a_standing_tee_role() {
     assert_eq!(resolved_role(&fx, &tee.id), Some(GroupMemberRole::RelayTee));
 }
 
+/// Not matched to the apply, which leaves a non-TEE row an admin wrote alone:
+/// the fold lets the admission's plain write replace that row.
+#[test]
+fn a_tee_admission_replaces_a_role_an_admin_set_where_the_apply_keeps_it() {
+    let mut fx = Fixture::new();
+    let tee = Account::new(0x5A);
+    let device = tee.enroll(0x5B, 0);
+    let made_admin = grant_role(
+        &fx.admin,
+        tee.id,
+        GroupMemberRole::Admin,
+        30,
+        fx.head.clone(),
+    );
+    fx.push(made_admin);
+    let admitted = join_op(
+        &tee,
+        &device,
+        GroupMemberRole::ReadOnlyTee,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(admitted);
+
+    assert_eq!(
+        resolved_role(&fx, &tee.id),
+        Some(GroupMemberRole::ReadOnlyTee)
+    );
+}
+
 /// The membership a join history resolves to feeds `governance_hash`, so it
 /// must be the same in every arrival order, and it must be the right one.
 #[test]
