@@ -182,6 +182,33 @@ pub enum NetworkMessage {
         request: SetPeerScore,
         outcome: oneshot::Sender<<SetPeerScore as actix::Message>::Result>,
     },
+    /// Close every peer connection and refuse new ones, for shutdown.
+    CloseAllConnections {
+        request: CloseAllConnections,
+        outcome: oneshot::Sender<<CloseAllConnections as actix::Message>::Result>,
+    },
+}
+
+/// Close every peer connection and refuse new ones, answering once none is
+/// left.
+///
+/// Sent once, while the node shuts down, before the runtime that drives the
+/// connections is stopped. A QUIC connection is only closed on the peer's side
+/// if this node sends it a close, and that packet can only go out while the
+/// runtime is still running. A connection dropped without one stays open on
+/// the peer until its idle timeout. If this node restarts within that time,
+/// the peer sees the new connection as a second one and does not send it its
+/// gossip subscriptions, so the restarted node does not know what that peer
+/// follows.
+///
+/// From the moment this is handled the node accepts and dials nothing, so a
+/// peer reconnecting as its connection closes cannot leave a new stale
+/// connection behind.
+#[derive(Clone, Copy, Debug)]
+pub struct CloseAllConnections;
+
+impl actix::Message for CloseAllConnections {
+    type Result = ();
 }
 
 /// Request to bootstrap the Kademlia DHT.

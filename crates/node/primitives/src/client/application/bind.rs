@@ -2,10 +2,9 @@
 //! fails - there is no content-addressed GC to reclaim a rejected artifact.
 
 use std::cmp::Ordering;
-use std::sync::PoisonError;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use calimero_app_downloader::registry::RegistryCoords;
-use calimero_primitives::application::{ApplicationId, ApplicationSource};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_store::key;
 use calimero_store::types;
@@ -14,6 +13,16 @@ use semver::Version;
 use tracing::warn;
 
 use crate::client::NodeClient;
+
+static APPLICATION_ROWS: Mutex<()> = Mutex::new(()); // rows are keyed by id, not by client
+
+/// Serialize a check-then-write of an application row with every other writer
+/// in the process, governance's stub writer included.
+pub fn lock_application_rows() -> MutexGuard<'static, ()> {
+    APPLICATION_ROWS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Who asked for an install. Any group can name any application id, so only an
 /// operator may move the row to an older release.
@@ -73,10 +82,7 @@ impl NodeClient {
         row: &types::ApplicationMeta,
         origin: InstallOrigin,
     ) -> eyre::Result<bool> {
-        let _rows = self
-            .row_writes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _rows = lock_application_rows();
         if !self.bundle_may_replace(application_id, &row.version, origin)? {
             return Ok(false);
         }
@@ -120,45 +126,28 @@ impl NodeClient {
         outcome
     }
 
-    /// Write a raw-wasm row under a caller-named id, for ids that would vary
-    /// per node. It only fills a missing row or a stub that holds no bytes yet.
+    /// A row under `application_id` naming `blob_id`, for tests. Nothing in a
+    /// node writes a raw-wasm row, and the execution read refuses one.
+    #[cfg(any(test, feature = "testing"))]
     pub fn write_application_row(
         &self,
         application_id: &ApplicationId,
         blob_id: &BlobId,
         size: u64,
-        source: &ApplicationSource,
-        coords: Option<RegistryCoords<'_>>,
+        source: &calimero_primitives::application::ApplicationSource,
     ) -> eyre::Result<()> {
-        // Absent coordinates stay empty, never a guessed placeholder.
-        let (package, version) = coords.map_or(("", ""), |c| (c.package, c.version));
-        let blob_meta = key::BlobMeta::new(*blob_id);
-        let _rows = self
-            .row_writes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(row) = self.application_row(application_id)? {
-            if row.size != 0 && row.bytecode.blob_id() != *blob_id {
-                bail!(
-                    "application {application_id} already holds {}@{}; raw wasm only fills a missing or stub row",
-                    row.package,
-                    row.version
-                );
-            }
-        }
-        let mut handle = self.datastore.handle();
-        handle.put(
+        self.datastore.handle().put(
             &key::ApplicationMeta::new(*application_id),
             &types::ApplicationMeta::new(
-                blob_meta,
+                key::BlobMeta::new(*blob_id),
                 size,
                 source.to_string().into_boxed_str(),
                 Box::default(),
                 key::BlobMeta::new(BlobId::from([0_u8; 32])),
                 types::PackageInfo {
-                    package: package.into(),
-                    version: version.into(),
-                    signer_id: String::new().into_boxed_str(),
+                    package: Box::default(),
+                    version: Box::default(),
+                    signer_id: Box::default(),
                     state_version: 0,
                 },
             ),

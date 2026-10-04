@@ -39,7 +39,7 @@ use super::config::SyncConfig;
 // to `super::protocol_selector` (Phase 4). The run-loop + select! body
 // moved to `super::driver` (Phase 5). `SyncProtocol` from primitives is
 // still referenced here for protocol-selection types.
-use calimero_node_primitives::sync::{select_protocol, SyncProtocol};
+use calimero_node_primitives::sync::{calculate_divergence, select_protocol, SyncProtocol};
 
 /// Typed marker returned by [`SyncManager::recv`] when the responder
 /// indicates the context is not materialised locally on the receiving
@@ -1252,6 +1252,7 @@ impl SyncManager {
                 self.metrics().record_sync_failure(
                     &context_id.to_string(),
                     "unknown",
+                    start.elapsed(),
                     err.to_string().as_str(),
                 );
                 return Err(err);
@@ -1283,6 +1284,21 @@ impl SyncManager {
         );
 
         Ok((peer_id, protocol))
+    }
+
+    /// Open a stream to `peer`, giving up after `open_stream_timeout`.
+    ///
+    /// `open_stream` itself has no deadline. A dial that libp2p refuses without
+    /// ever establishing a connection — a dial to this node's own peer id ends
+    /// in `DialError::LocalPeerId` — leaves the pending open unanswered, so an
+    /// unbounded await there never returns. Every open on a path a caller
+    /// waits on goes through this instead.
+    pub(super) async fn open_stream_bounded(&self, peer: PeerId) -> eyre::Result<Stream> {
+        let budget = self.sync_config.open_stream_timeout;
+        match time::timeout(budget, self.sync_network.open_stream(peer)).await {
+            Ok(opened) => opened,
+            Err(_elapsed) => eyre::bail!("opening a stream to {peer} timed out after {budget:?}"),
+        }
     }
 
     /// This node's own libp2p `PeerId`, fetched once and memoized.
@@ -1745,6 +1761,11 @@ impl SyncManager {
                 local_entities = local_hs.entity_count,
                 remote_entities = remote_hs.entity_count,
                 "Protocol selected"
+            );
+            self.metrics().record_protocol_selected(
+                &format!("{:?}", selection.protocol.kind()),
+                selection.reason,
+                calculate_divergence(&local_hs, &remote_hs),
             );
 
             let exec_result = self
@@ -2561,8 +2582,8 @@ impl SyncManager {
                                 continue;
                             }
 
-                            // A revoked device passes the cut check below by
-                            // citing heads from before its revocation, and a head
+                            // A revoked or narrowed-out device passes the cut
+                            // check below by citing heads from before it, and a head
                             // has nothing built on it to vouch that anyone
                             // accepted it earlier (core#4070). Dropped, not
                             // remembered: if an authorized author later builds on
@@ -3985,15 +4006,26 @@ impl SyncManager {
                 // Handle tree node request from peer (HashComparison sync)
                 // Wrap stream in transport abstraction
                 let mut transport = super::stream::StreamTransport::new(stream);
-                self.handle_tree_node_request(
+                let outcome = self
+                    .handle_tree_node_request(
+                        context_id,
+                        node_id,
+                        max_depth,
+                        &mut transport,
+                        nonce,
+                        Some(their_identity),
+                    )
+                    .await;
+                // The responder merges the initiator's `EntityPush` leaves
+                // into storage without writing `root_hash`; re-anchor even
+                // when the session errored, since earlier pushes landed.
+                super::helpers::reanchor_after_entity_merge(
+                    &self.context_client,
                     context_id,
-                    node_id,
-                    max_depth,
-                    &mut transport,
-                    nonce,
-                    Some(their_identity),
+                    "hash-comparison responder",
                 )
-                .await?
+                .await;
+                outcome?
             }
             InitPayload::LevelWiseRequest {
                 level: first_level,
@@ -4020,14 +4052,22 @@ impl SyncManager {
 
                 // Run the LevelWise responder via the trait method
                 use calimero_node_primitives::sync::SyncProtocolExecutor;
-                super::level_sync::LevelWiseProtocol::run_responder(
+                let outcome = super::level_sync::LevelWiseProtocol::run_responder(
                     &mut transport,
                     &store,
                     context_id,
                     our_identity,
                     first_request,
                 )
-                .await?
+                .await;
+                // Same as the HashComparison responder above.
+                super::helpers::reanchor_after_entity_merge(
+                    &self.context_client,
+                    context_id,
+                    "level-wise responder",
+                )
+                .await;
+                outcome?
             }
             InitPayload::EntityPush { .. } => {
                 // EntityPush is handled within the HashComparison and LevelWise
@@ -4148,6 +4188,10 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
         party_id: PublicKey,
     ) -> Option<InitProof> {
         SyncManager::build_init_pop(self, context_id, party_id).await
+    }
+
+    fn metrics(&self) -> &dyn super::metrics::SyncMetricsCollector {
+        SyncManager::metrics(self)
     }
 }
 

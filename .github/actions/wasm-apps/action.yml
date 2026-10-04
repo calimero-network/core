@@ -1,0 +1,160 @@
+name: WASM apps
+description: >
+  Restore an app set that a build of exactly these inputs already produced on
+  master, or set up Rust and cargo-mero so the caller's next step can build it.
+  The caller runs the build itself when `hit` is not true (so the step stays
+  visible to check-like-ci.py and the bundle-coverage lint), then saves with
+  actions/cache/save, its `paths` and `key`, when `save` is true. A hit stands in
+  for the build and for every check the script runs, so the key covers
+  everything that decides the bytes; callers passing the same inputs share one
+  cache entry.
+
+inputs:
+  root:
+    description: >
+      The apps directory the set is built from (`apps`, `apps/migrations`). Every
+      package under it, with its path-dependency closure, is part of the key; the
+      outputs are its `res/` directories and the top-level `dist/`.
+    required: true
+  script:
+    description: The script the caller builds the set with, on a miss.
+    required: true
+  workflows:
+    description: >
+      Space-separated workflow files whose jobs build this set with `script`. They
+      are in the key, so a build step edited there (its env, its arguments) never
+      reuses bytes the old step made. Every caller of one set passes the same list,
+      and must be in it.
+    required: true
+  rust-cache-save:
+    description: Whether a miss saves the `wasm-apps` rust-cache group (its one saver passes true on master).
+    required: false
+    default: "false"
+
+outputs:
+  hit:
+    description: "'true' when the set was restored; the caller then skips its build."
+    value: ${{ steps.restore.outputs.cache-hit == 'true' }}
+  save:
+    description: "'true' when the caller should save what it built: a shareable miss, on master only."
+    value: ${{ steps.restore.outputs.cache-hit != 'true' && steps.key.outputs.share == 'true' && github.ref == 'refs/heads/master' }}
+  key:
+    description: The cache key.
+    value: ${{ steps.key.outputs.key }}
+  paths:
+    description: The cached paths, for actions/cache/save.
+    value: ${{ steps.key.outputs.paths }}
+
+runs:
+  using: composite
+  steps:
+    # Git tree ids, the merod-binaries / setup-cargo-mero pattern: a tar or an mtime
+    # changes on every checkout, a tree id only when the content does. The trees:
+    # every package under the root and every workspace dir they are built from
+    # (path-dep-closure.py, build-dependencies included); cargo-mero, which builds,
+    # ABI-embeds, bundles and dev-signs them (the dev key lives in tools/mero-sign,
+    # inside its closure); mero-abi, which check-embedded-abi.sh runs on them; the
+    # lockfile, the root manifest (profiles, workspace version), the toolchain pin;
+    # and the scripts, actions and workflows that drive the build.
+    - name: Key the app build on its source trees
+      id: key
+      shell: bash
+      env:
+        APPS_ROOT: ${{ inputs.root }}
+        SCRIPT: ${{ inputs.script }}
+        WORKFLOWS: ${{ inputs.workflows }}
+      run: |
+        set -euo pipefail
+        case "$APPS_ROOT" in
+          apps | apps/*) ;;
+          *) echo "::error::root '$APPS_ROOT' is not an apps directory"; exit 1 ;;
+        esac
+        [ -f "$SCRIPT" ] || { echo "::error::no build script $SCRIPT"; exit 1; }
+        # A caller outside the list would build with a step no key records.
+        caller=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}
+        caller=${caller%%@*}
+        [[ " $WORKFLOWS " == *" $caller "* ]] || {
+          echo "::error::$caller builds this set but is not in workflows ($WORKFLOWS)"; exit 1;
+        }
+        # Only the root's packages are keyed: an app the script names outside it
+        # would change without changing the key.
+        outside=$(grep -oE 'apps/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*' "$SCRIPT" \
+          | grep -vE "^${APPS_ROOT}(/|$)" | sort -u | tr '\n' ' ' || true)
+        [ -z "$outside" ] || { echo "::error::$SCRIPT builds outside $APPS_ROOT: $outside"; exit 1; }
+
+        # Assignments, not `< <(...)`: set -e never sees a process substitution
+        # fail, and a closure that silently came back short is a stale key.
+        manifests=$(git ls-files -- ":(glob)$APPS_ROOT/**/Cargo.toml")
+        [ -n "$manifests" ] || { echo "::error::no packages under $APPS_ROOT"; exit 1; }
+        package_dirs=$(xargs -n1 dirname <<<"$manifests")
+        mapfile -t packages <<<"$package_dirs"
+        closure=$(python3 scripts/path-dep-closure.py "${packages[@]}" tools/cargo-mero tools/calimero-abi)
+        mapfile -t dirs <<<"$closure"
+        [[ " ${dirs[*]} " == *" tools/cargo-mero "* ]] || { echo "::error::path-dep-closure.py came back without cargo-mero"; exit 1; }
+        read -ra workflow_files <<<"$WORKFLOWS"
+        paths=("${dirs[@]}" Cargo.lock Cargo.toml rust-toolchain.toml .cargo "$SCRIPT" "${workflow_files[@]}"
+          scripts/check-embedded-abi.sh scripts/setup-cargo-mero.sh scripts/path-dep-closure.py
+          .github/actions/wasm-apps .github/actions/setup-cargo-mero .github/actions/setup-rust-ci
+          .github/actions/rust-toolchain)
+
+        # Build settings no tree records. Any of them set: build, never share.
+        # cargo-mero builds with --profile app-release (inheriting release), so
+        # the dev profile (ci-checks' CARGO_PROFILE_DEV_DEBUG) cannot reach a wasm.
+        overrides=$(env | cut -d= -f1 | grep -E \
+          '^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTUP_TOOLCHAIN|CARGO_BUILD_.*|CARGO_PROFILE_.*|CARGO_TARGET_WASM32_.*|CARGO_UNSTABLE_.*|WASM_PROFILING|MERO_SIGN_KEY)$' \
+          | grep -vE '^CARGO_PROFILE_DEV_' || true)
+        # A tree with uncommitted edits is not the tree its id names: build, never share.
+        if [ -n "$(git status --porcelain -- "${paths[@]}")" ]; then
+          echo "::warning::app sources differ from HEAD; building without the shared cache"
+          share=false
+        elif [ -n "$overrides" ]; then
+          echo "::warning::build overrides are set ($(tr '\n' ' ' <<<"$overrides")); building without the shared cache"
+          share=false
+        else
+          share=true
+        fi
+        trees=$(for p in "${paths[@]}"; do printf '%s %s\n' "$p" "$(git rev-parse "HEAD:$p" 2>/dev/null || echo absent)"; done)
+        # The wasm keeps panic paths, remapped from $HOME to `~`: the checkout and
+        # target dirs below it are part of the bytes.
+        where="$RUNNER_OS-$RUNNER_ARCH home=$HOME pwd=$PWD target=${CARGO_TARGET_DIR:-target}"
+        hash=$(printf '%s\n%s\n' "$trees" "$where" | sha256sum | cut -c1-24)
+        name=$(tr '/' '-' <<<"$APPS_ROOT")
+        {
+          echo "share=$share"
+          echo "key=wasm-apps-v1-$name-$hash"
+          echo "paths<<PATHS"
+          echo "$APPS_ROOT/**/res"
+          echo "dist"
+          echo "PATHS"
+        } >> "$GITHUB_OUTPUT"
+        echo "$where"
+        echo "app trees:"; echo "$trees"
+
+    # Exact key only, no restore-keys: a partial match is a different build.
+    - name: Restore the apps
+      id: restore
+      if: steps.key.outputs.share == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.key.outputs.paths }}
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Check the restored apps
+      if: steps.restore.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        compgen -G "dist/*.mpk" >/dev/null || { echo "::error::the restored set has no bundles"; exit 1; }
+        ls -l dist/
+
+    - name: Setup Rust CI (to build)
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: ./.github/actions/setup-rust-ci
+      with:
+        targets: wasm32-unknown-unknown
+        shared-key: wasm-apps
+        save-if: ${{ inputs.rust-cache-save }}
+
+    - name: Setup cargo mero (to build)
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: ./.github/actions/setup-cargo-mero

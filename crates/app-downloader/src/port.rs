@@ -6,8 +6,6 @@ use async_trait::async_trait;
 use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 
-use crate::registry::RegistryCoords;
-
 /// What an installed application row says, for the two questions the
 /// downloader asks of it.
 #[derive(Clone, Debug)]
@@ -39,15 +37,14 @@ pub trait ApplicationStore {
     /// rejected artifact would otherwise sit on disk forever.
     async fn release_bytecode(&self, bytecode_id: BlobId) -> eyre::Result<()>;
 
-    /// Install `bytes` under `application_id`: a bundle must derive this id and
-    /// never rolls the row back; raw wasm adopts it and only fills a missing or stub row.
+    /// Install `bytes` under `application_id`: only a signed bundle deriving this
+    /// id binds, and it never rolls the row back. Raw wasm derives no id, so it is refused.
     async fn bind_application(
         &self,
         application_id: &ApplicationId,
         bytecode_id: BlobId,
         size: u64,
         source: &ApplicationSource,
-        coords: Option<RegistryCoords<'_>>,
         bytes: &[u8],
     ) -> eyre::Result<()>;
 }

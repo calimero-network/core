@@ -147,7 +147,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
 use calimero_primitives::identity::PublicKey;
-use sha2::{Digest, Sha256};
 
 use super::crdt_meta::{MergeError, MergeStrategy, Mergeable};
 use super::permissioned::{Op, SharedStorage, TeeAuthorityAcl, TeeOnly, WriterSetAcl};
@@ -155,6 +154,7 @@ use super::rekey::{field_child_id, RekeyTarget};
 use super::{Authored, PermissionedStorage, SortedMap, StorageKey, StoreError, UnorderedMap};
 use crate::address::Id;
 use crate::env;
+use crate::hash_meter::{Digest, Sha256};
 use crate::interface::StorageError;
 
 mod sealed {

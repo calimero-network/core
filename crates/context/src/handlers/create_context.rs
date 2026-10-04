@@ -119,19 +119,37 @@ impl Handler<CreateContextRequest> for ContextManager {
         // marker on success, so every new context is positioned on its
         // group's upgrade ladder from day one (a marker-less context can only
         // take the legacy single-jump lazy path).
-        let birth_blob: [u8; 32] = pinned_blob
-            .as_ref()
-            .map(|b| *b.as_ref())
-            .unwrap_or_else(|| *application.blob.bytecode.as_ref());
-        let module_task = match pinned_blob {
-            Some(blob) => self
-                .get_module_for_blob(blob, context_meta.service_name.clone())
-                .boxed_local(),
-            None => self
-                .get_module(application.id, context_meta.service_name.clone())
-                .map_ok(|(_blob, module), _act, _ctx| module)
-                .boxed_local(),
+        let birth_blob = match pinned_blob {
+            Some(blob) => blob,
+            None => match self
+                .datastore
+                .handle()
+                .get(&key::ApplicationMeta::new(application.id))
+            {
+                // Every group shares the row, so it may name another group's blob.
+                Ok(Some(row))
+                    if crate::activation::group_registers_bytecode(
+                        &self.datastore,
+                        &group_id,
+                        *row.bytecode.blob_id().digest(),
+                    ) =>
+                {
+                    row.bytecode.blob_id()
+                }
+                _ => {
+                    let _ignored = self.contexts.remove(&context_meta.id);
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "application {} on this node holds a release its group never named; \
+                         the group's own release must be fetched first",
+                        application.id
+                    )));
+                }
+            },
         };
+        let module_task = self
+            .get_module_for_blob(birth_blob, context_meta.service_name.clone())
+            .boxed_local();
+        let birth_blob = *birth_blob.digest();
 
         let context_meta_for_map_ok = context_meta.clone();
         let context_meta_for_map_err = context_meta.clone();
@@ -309,20 +327,6 @@ impl Prepared<'_> {
                     },
                     delegation,
                 )?;
-                // `init` writes for the member, signed by this node, and peers
-                // accept those entries only from a `RelayTee` writing for a
-                // member. The creation gate is wider (an `Admin` or `Member`
-                // holding `CAN_AUTHOR_ON_BEHALF` passes it), so refuse here,
-                // before anything runs or publishes.
-                let relay = calimero_governance_store::account_for_group(datastore, &group_id)?;
-                if let Err(refusal) = calimero_governance_store::on_behalf_standing_live(
-                    datastore,
-                    &group_id,
-                    relay,
-                    warrant.author_account,
-                )? {
-                    bail!(refusal);
-                }
             }
         }
 
@@ -459,6 +463,8 @@ async fn create_context(
         ),
     };
     let account = principal.account;
+    // Kept for the on-behalf check after `init`; private storage takes the store.
+    let on_behalf_store = delegation.is_some().then(|| datastore.clone());
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized). On a member's
     // behalf `init` gets a discarded one, as a delegated write does.
@@ -499,6 +505,26 @@ async fn create_context(
         bail!(ContextError::InitFailed {
             message: format!("init returned a value, but it must return nothing: {res:?}"),
         });
+    }
+
+    // An `init` that writes an entry for the member has it signed by this node,
+    // and peers accept such entries only from a `RelayTee` writing for a member.
+    // The creation gate is wider (an `Admin` or `Member` holding
+    // `CAN_AUTHOR_ON_BEHALF` passes it), so an `init` that signs one asks the
+    // narrower rule too, before anything commits or publishes. One that signs
+    // nothing writes nothing on the member's behalf and needs no relay.
+    if let (Some(d), Some(store)) = (delegation.as_deref(), on_behalf_store.as_ref()) {
+        if crate::handlers::execute::artifact_signs_entries(&outcome.artifact) {
+            let relay = calimero_governance_store::account_for_group(store, &group_id)?;
+            if let Err(refusal) = calimero_governance_store::on_behalf_standing_live(
+                store,
+                &group_id,
+                relay,
+                d.warrant.author_account,
+            )? {
+                bail!(refusal);
+            }
+        }
     }
 
     // Returns `(db-row, actions)` — actions are kept alongside the

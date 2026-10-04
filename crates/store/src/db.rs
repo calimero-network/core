@@ -189,17 +189,36 @@ pub enum Column {
     /// `delete_context`. Auto-created from `Column::iter()` (no DB migration).
     ContextBlob,
     /// Which context each blob is held for, keyed `context_id(32) ‖ blob_id(32)`
-    /// (see `key::BlobOwner`); the blob protocol serves a context's peers only
-    /// blobs with a row here. Node-local, not synchronized.
+    /// (see `key::BlobOwner`); the blob protocol serves a context's peers, and
+    /// the runtime's `blob_open` opens for its app, only blobs with a row here.
+    /// Node-local, not synchronized.
     ///
     /// Not [`Column::ContextBlob`]. That column answers a stricter question, the
     /// one an account-scoped caller of the blob admin API is held to: did these
     /// bytes demonstrably enter on this context's behalf. This one answers what
     /// this node may hand the context's own peers, and so also holds what the
-    /// context's own run created or announced, which names no more than the run
-    /// could already copy into its context. Reading one as the other would widen
+    /// context's own run created. Reading one as the other would widen
     /// either what an account-scoped caller reads or what peers are served.
     BlobOwner,
+}
+
+/// Table-file accounting for a whole store, summed over every column family
+/// (see [`Database::table_stats`]). Byte counts, all approximate.
+///
+/// `live_sst - live_data_estimate` is roughly the garbage compaction has not
+/// rewritten yet (overwritten versions and deleted keys); `total_sst -
+/// live_sst` is files compaction already replaced that an open iterator or
+/// snapshot still pins.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TableStats {
+    /// The backend's estimate of the bytes that still hold live data.
+    pub live_data_estimate: u64,
+    /// Table files the current version of the store uses.
+    pub live_sst: u64,
+    /// Every table file still on disk, obsolete ones included.
+    pub total_sst: u64,
+    /// Bytes buffered in memtables, not yet flushed to a table file.
+    pub memtable: u64,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {
@@ -361,6 +380,12 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     fn compact_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
         let _ = (col, lo, hi);
         Ok(())
+    }
+
+    /// Table-file accounting for the whole store. `None` for backends with no
+    /// table files (the in-memory DB); RocksDB reads it from its properties.
+    fn table_stats(&self) -> EyreResult<Option<TableStats>> {
+        Ok(None)
     }
 
     /// Best-effort estimate of on-disk bytes stored in `col` for keys in

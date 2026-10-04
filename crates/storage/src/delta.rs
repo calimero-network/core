@@ -9,12 +9,12 @@ use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::AccountId;
-use sha2::{Digest, Sha256};
 
 use crate::action::Action;
 use crate::address::Id;
 use crate::entities::{Metadata, OpMask, SignatureData, StorageType};
 use crate::env;
+use crate::hash_meter::{Digest, Sha256};
 use crate::logical_clock::HybridTimestamp;
 
 /// Domain separator for [`CausalDelta::hash_events`].

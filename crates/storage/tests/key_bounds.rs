@@ -1,12 +1,11 @@
 //! What generic code must bound a map's key by to use it.
 //!
-//! Reads of an owned collection check each entry's key against its slot
-//! (`Collection::key_fits`), from the same `AsRef<[u8]>` bytes `insert` derives
-//! the slot from. The policy owning the entries names those bytes, so a helper
-//! that iterates, or a type deriving `Debug`, `PartialEq`, `Ord` or `Serialize`
-//! over a map, bounds `K` by borsh alone, and `get` asks only that the borrowed
-//! key be bytes, as each did before the check. Nothing here runs: every item
-//! only has to compile, at each key type an app commonly uses.
+//! Iteration checks each entry's key against the id it is stored at, from the
+//! same `AsRef<[u8]>` bytes `insert` derives the id from. So a helper that
+//! iterates, or a type deriving `Debug`, `PartialEq`, `Ord` or `Serialize` over
+//! a map, bounds `K` by those bytes; `len` asks only borsh, and `get` only that
+//! the borrowed key be bytes. Nothing here runs: every item only has to
+//! compile, at each key type an app commonly uses.
 
 use core::borrow::Borrow;
 use core::fmt::Debug;
@@ -57,7 +56,7 @@ where
 
 fn unordered_entries<K, V>(map: &UnorderedMap<K, V>) -> Vec<(K, V)>
 where
-    K: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize,
 {
     map.entries().map(Iterator::collect).unwrap_or_default()
@@ -97,7 +96,7 @@ where
 
 fn sorted_reads<K, V>(map: &SortedMap<K, V>) -> (Vec<(K, V)>, Vec<K>, Vec<V>)
 where
-    K: BorshSerialize + BorshDeserialize + Ord,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Ord,
     V: BorshSerialize + BorshDeserialize,
 {
     (
@@ -125,7 +124,7 @@ where
 
 fn indexed_reads<K, V>(map: &IndexedMap<K, V>) -> (usize, Vec<(K, V)>)
 where
-    K: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize,
 {
     (
@@ -154,7 +153,7 @@ where
 #[derive(Debug, PartialEq, Serialize)]
 struct Board<K, V>
 where
-    K: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize,
 {
     posts: UnorderedMap<K, V>,
@@ -164,7 +163,7 @@ where
 #[derive(Debug, Serialize)]
 struct Catalog<K, V>
 where
-    K: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize,
 {
     posts: IndexedMap<K, V>,
@@ -174,7 +173,7 @@ where
 #[derive(Debug, PartialEq, Serialize)]
 struct Ranked<K, V>
 where
-    K: BorshSerialize + BorshDeserialize + Ord,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Ord,
     V: BorshSerialize + BorshDeserialize,
 {
     posts: SortedMap<K, V>,
@@ -184,7 +183,7 @@ where
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct Ordered<K, V>
 where
-    K: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
     V: BorshSerialize + BorshDeserialize,
 {
     posts: UnorderedMap<K, V>,
@@ -196,12 +195,19 @@ fn is_debug_serialize<T: Debug + Serialize>() {}
 
 fn is_ord<T: Ord>() {}
 
-/// Every read at key type `K`, whether or not `K` can be inserted.
-macro_rules! reads_at {
+/// Every count at key type `K`, whether or not `K` can be inserted.
+macro_rules! counts_at {
     ($key:ty) => {{
         let _: fn(&UnorderedMap<$key, u8>) -> usize = unordered_len::<$key, u8>;
-        let _: fn(&UnorderedMap<$key, u8>) -> Vec<($key, u8)> = unordered_entries::<$key, u8>;
         let _: fn(&SortedMap<$key, u8>) -> usize = sorted_len::<$key, u8>;
+    }};
+}
+
+/// Every read at key type `K`, which needs the key bytes to check each entry.
+macro_rules! reads_at {
+    ($key:ty) => {{
+        counts_at!($key);
+        let _: fn(&UnorderedMap<$key, u8>) -> Vec<($key, u8)> = unordered_entries::<$key, u8>;
         let _ = sorted_reads::<$key, u8>;
         let _ = indexed_reads::<$key, Post>;
         is_debug_eq::<UnorderedMap<$key, u8>>();
@@ -256,13 +262,11 @@ fn keys_borrowed_as_str_read() {
 }
 
 /// `Id`, `u64` and a newtype without a byte view were never insertable (the
-/// slot id derives from `AsRef<[u8]>`), but a map of them reads as empty. `Id`
-/// has no `Serialize`.
+/// slot id derives from `AsRef<[u8]>`), so a map of them holds only entries a
+/// peer filed, which iteration cannot check. It still counts them.
 #[test]
-fn keys_without_bytes_still_read() {
-    reads_at!(Id);
-    reads_at!(u64);
-    reads_at!(PostId);
-    serializes_at!(u64);
-    serializes_at!(PostId);
+fn keys_without_bytes_still_count() {
+    counts_at!(Id);
+    counts_at!(u64);
+    counts_at!(PostId);
 }

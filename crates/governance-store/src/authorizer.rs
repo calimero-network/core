@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::Op;
 use calimero_primitives::context::GroupMemberRole;
@@ -154,13 +154,29 @@ pub trait AtCutAuthorizer: Send + Sync {
         true
     }
 
+    /// Is `device` bound to `account` in `group`'s namespace at an epoch past
+    /// `device_epoch` at the cut, so that certificate names a retired key? `None` = defer.
+    fn device_epoch_superseded_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _account: &AccountId,
+        _device: &DeviceId,
+        _device_epoch: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
     /// Drop what this authorizer has folded: the store changed under it, as when a key
     /// arrives and ops parked unreadable can now be read.
     fn forget(&self) {}
 
-    /// Is `op`, about to be applied in `group`, void: is its signer's removal concurrent
-    /// with it? `None` without a log or a whole cut; the op is then applied as before.
-    fn op_is_void(&self, _group: &ContextGroupId, _op: &Op) -> Option<bool> {
+    /// Is `op`, about to be applied in `group`, void: is its signer's removal, or the
+    /// revocation of a capability it relies on, concurrent with it? `capability` is
+    /// the bits that admit a member who is no admin to the op, for a kind its payload
+    /// does not show. `None` without a log or a whole cut; the op is then applied as
+    /// before.
+    fn op_is_void(&self, _group: &ContextGroupId, _capability: u32, _op: &Op) -> Option<bool> {
         None
     }
 

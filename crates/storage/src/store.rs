@@ -1,14 +1,19 @@
 //! Storage operations.
 
+use std::io;
+
+use borsh::BorshDeserialize;
 use calimero_primitives::utils::prefix_upper_bound;
 
 use crate::address::Id;
 use crate::env::{
-    private_storage_read, private_storage_read_entity, private_storage_remove,
-    private_storage_write, private_storage_write_entity, storage_read, storage_read_entity,
-    storage_remove, storage_write, storage_write_entity,
+    private_storage_read, private_storage_read_entity, private_storage_read_index,
+    private_storage_remove, private_storage_write, private_storage_write_entity,
+    private_storage_write_index, storage_read, storage_read_entity, storage_read_index,
+    storage_remove, storage_write, storage_write_entity, storage_write_index,
 };
-use crate::row::Row;
+use crate::index::EntityIndex;
+use crate::row::EntityRow;
 
 /// A key for storage operations.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -81,6 +86,11 @@ impl Key {
     }
 }
 
+/// `index`'s borsh bytes: what `Key::Index` holds.
+fn borsh_of(index: &EntityIndex) -> Vec<u8> {
+    borsh::to_vec(index).expect("writing to a Vec cannot fail")
+}
+
 /// Core storage operations (read, write, remove).
 ///
 /// Base trait for all storage backends. Provides fundamental CRUD operations
@@ -105,27 +115,48 @@ pub trait StorageAdaptor: 'static {
     /// Writes data to persistent storage.
     fn storage_write(key: Key, value: &[u8]) -> bool;
 
-    /// Reads both logical keys of entity `id`, as if by two `storage_read`s.
+    /// Reads entity `id`'s index record, decoded: `storage_read(Key::Index(id))`
+    /// through `EntityIndex::try_from_slice`.
+    ///
+    /// The default is exactly that; an adaptor that stores the record slim
+    /// ([`crate::row`]) overrides it to hand over what it decoded instead of a
+    /// borsh round trip.
+    fn storage_read_index(id: Id) -> Option<io::Result<EntityIndex>> {
+        Self::storage_read(Key::Index(id)).map(|bytes| EntityIndex::try_from_slice(&bytes))
+    }
+
+    /// Writes `index` to `Key::Index(index.id())`, as if by `storage_write` of
+    /// its borsh bytes. Returns what that write returned.
+    ///
+    /// The default is exactly that write; a row-storing adaptor overrides it to
+    /// encode the record without parsing it back.
+    fn storage_write_index(index: &EntityIndex) -> bool {
+        Self::storage_write(Key::Index(index.id()), &borsh_of(index))
+    }
+
+    /// Reads both logical keys of entity `id`, the index decoded, as if by
+    /// `storage_read_index` and a `storage_read` of `Key::Entry(id)`.
     ///
     /// The default is exactly those two reads; an adaptor that stores them as
     /// one row ([`crate::row`]) overrides it to read that row once.
-    fn storage_read_entity(id: Id) -> Row {
-        Row {
-            index: Self::storage_read(Key::Index(id)),
+    fn storage_read_entity(id: Id) -> EntityRow {
+        EntityRow {
+            index: Self::storage_read(Key::Index(id))
+                .map(|bytes| EntityIndex::try_from_slice(&bytes)),
             data: Self::storage_read(Key::Entry(id)),
         }
     }
 
-    /// Writes both logical keys of entity `id` — `index` to `Key::Index(id)`
-    /// and `data` to `Key::Entry(id)` — as if by two `storage_write`s, data
-    /// first.
+    /// Writes both logical keys of entity `index.id()` — `index` to
+    /// `Key::Index` and `data` to `Key::Entry` — as if by two `storage_write`s,
+    /// data first.
     ///
     /// The default is exactly those two writes. An adaptor that stores the two
     /// keys as one row ([`crate::row`]) overrides it to compose that row and
     /// write it once, with no read of the row it replaces.
-    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
-        let _ignored = Self::storage_write(Key::Entry(id), data);
-        let _ignored = Self::storage_write(Key::Index(id), index);
+    fn storage_write_entity(index: &EntityIndex, data: &[u8]) {
+        let _ignored = Self::storage_write(Key::Entry(index.id()), data);
+        let _ignored = Self::storage_write(Key::Index(index.id()), &borsh_of(index));
     }
 
     /// Whether writes through this adaptor participate in the synced
@@ -342,12 +373,20 @@ impl StorageAdaptor for MainStorage {
         storage_write(key, value)
     }
 
-    fn storage_read_entity(id: Id) -> Row {
+    fn storage_read_index(id: Id) -> Option<io::Result<EntityIndex>> {
+        storage_read_index(id)
+    }
+
+    fn storage_write_index(index: &EntityIndex) -> bool {
+        storage_write_index(index)
+    }
+
+    fn storage_read_entity(id: Id) -> EntityRow {
         storage_read_entity(id)
     }
 
-    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
-        let _ignored = storage_write_entity(id, index, data);
+    fn storage_write_entity(index: &EntityIndex, data: &[u8]) {
+        let _ignored = storage_write_entity(index, data);
     }
 
     // Ordered index, routed to the env layer (host functions in wasm reaching
@@ -579,12 +618,20 @@ impl StorageAdaptor for PrivateStorage {
         private_storage_write(key, value)
     }
 
-    fn storage_read_entity(id: Id) -> Row {
+    fn storage_read_index(id: Id) -> Option<io::Result<EntityIndex>> {
+        private_storage_read_index(id)
+    }
+
+    fn storage_write_index(index: &EntityIndex) -> bool {
+        private_storage_write_index(index)
+    }
+
+    fn storage_read_entity(id: Id) -> EntityRow {
         private_storage_read_entity(id)
     }
 
-    fn storage_write_entity(id: Id, index: &[u8], data: &[u8]) {
-        let _ignored = private_storage_write_entity(id, index, data);
+    fn storage_write_entity(index: &EntityIndex, data: &[u8]) {
+        let _ignored = private_storage_write_entity(index, data);
     }
 
     /// Private writes never participate in the synced delta stream.

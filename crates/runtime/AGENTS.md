@@ -304,6 +304,7 @@ cargo test -p calimero-runtime test_storage -- --nocapture
 9. **Host work can be charged gas** - A host function calls `VMLogic::owe_gas(points)`; the import wrapper (`imports.rs`) settles it against the instance's metering globals (`metering::GasMeter`) as the call returns, trapping with `HostError::HostGasExhausted` (reported as `GasExhausted`) when the budget cannot cover it. Only `search_query` owes gas today: `search_gas` = `SEARCH_BASE_GAS` + per matched document + per hit + per response byte (`host_functions/search.rs`, constants derived in `tools/search-bench`). It is safe only because views never replicate — a write's gas must be identical on every node, so never charge a write for node-local work
 10. **`search_query` is views-only** - `VMContext::search` is `Some` only for a read-only run, and the host binds each call to `VMContext::context_id` (the request names no context). At most `MAX_SEARCH_CALLS` (32) per execution
 11. **Memory and table maxima come from the tunables** - `max_memory_pages` and `max_table_elements` cap what a module declares (or omits); the threads feature is off in `create_engine` and shared memories are refused at instantiation
+12. **Host calls and the bytes they move are capped** - the import wrapper charges every call against `max_host_calls` before it runs, and `Registers::set`, `read_guest_memory` and `write_guest_memory_slice` charge `max_host_bytes`; copy guest bytes only through them
 
 ## Related Crates
 

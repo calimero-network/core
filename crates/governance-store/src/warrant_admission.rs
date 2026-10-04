@@ -413,8 +413,8 @@ pub fn device_withdrawn(
 ///   so a replica that has folded one and not the other judges a delta
 ///   differently until it catches up, and a delta written before the narrowing
 ///   is refused once it has been folded. The self-authored receive path reads
-///   revocation live too (its revoked-signer filter and
-///   `rejects_state_writes_from`), but does not see a narrowing.
+///   both live too (its revoked-signer filter, and `rejects_state_writes_from`
+///   for revocation).
 ///
 /// # Errors
 /// `R` for a statement that must not be admitted,

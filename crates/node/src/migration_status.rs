@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use actix::{Actor, AsyncContext, Context, Handler, Message};
+use actix::{Actor, AsyncContext, Context, Handler, Message, Supervised};
 use calimero_context_client::group::MigrationFailureKind;
 use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedMigrationHeartbeat};
 use calimero_governance_store::NamespaceRepository;
@@ -416,6 +416,17 @@ fn migrated_context_version(
         .ok()
         .flatten()?;
     let app_meta = handle.get(&ctx_meta.application).ok().flatten()?;
+    // The row is shared by every group naming the id: its version is this
+    // context's only when it names the blob the context runs.
+    let own_blob = calimero_context::hlc_fence::loaded_reader_bytecode_id(datastore, context_id)
+        .ok()
+        .flatten();
+    let row_version = if own_blob == Some(*app_meta.bytecode.blob_id().as_ref()) {
+        app_meta.state_version
+    } else {
+        calimero_context::activation::activated_state_version(datastore, context_id)
+            .unwrap_or_default()
+    };
 
     if crate::sync::pending_upgrade_target_in(datastore, context_id).is_some() {
         return Some(0);
@@ -432,9 +443,9 @@ fn migrated_context_version(
         let activated =
             calimero_context::activation::activated_state_version(datastore, context_id)
                 .unwrap_or_default();
-        return Some(app_meta.state_version.max(target).max(activated));
+        return Some(row_version.max(target).max(activated));
     }
-    Some(app_meta.state_version)
+    Some(row_version)
 }
 
 /// Every group in a namespace's tree: the namespace-root group plus every
@@ -980,6 +991,8 @@ pub struct MigrationEmitter {
     /// periodic tick.
     pub last_emitted: HashMap<[u8; 32], MigrationFacts>,
 }
+
+impl Supervised for MigrationEmitter {}
 
 impl Actor for MigrationEmitter {
     type Context = Context<Self>;
@@ -2066,6 +2079,45 @@ mod tests {
         assert_eq!(
             facts.residue_auto, 0,
             "a migrated context is not outstanding residue"
+        );
+    }
+
+    /// A node in two groups for one bundle id installs the newer group's release
+    /// over the shared row. A context of the group still on v1 is at v1: the row's
+    /// version, set for the other group, must not be reported as its own.
+    #[test]
+    fn facts_never_report_another_groups_release_as_a_contexts_version() {
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_store::db::InMemoryDB;
+        use std::sync::Arc;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = [0xB5u8; 32];
+        let ctx = [0xC9u8; 32];
+
+        seed_bundle_group_meta(&store, &ContextGroupId::from(ns), ctx, V1_BLOB);
+        let mut meta = calimero_governance_store::MetaRepository::new(&store)
+            .load(&ContextGroupId::from(ns))
+            .unwrap()
+            .expect("group meta");
+        meta.migration = None;
+        calimero_governance_store::MetaRepository::new(&store)
+            .save(&ContextGroupId::from(ns), &meta)
+            .unwrap();
+        install_loaded_context(&store, ns, ctx, "1.0.0", 1);
+        // Another group's v3 release, installed under the shared id.
+        install_bundle_over_context(&store, ctx, [0xA3u8; 32], 3);
+
+        // Marker-less: nothing on this node knows the context's version yet.
+        let marker_less = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(marker_less.schema_version, 0, "not the other group's v3");
+        // What activating its group's v1 records.
+        calimero_context::activation::record_activation(&store, &ctx.into(), V1_BLOB);
+        calimero_context::activation::record_activated_state_version(&store, &ctx.into(), 1);
+        let activated = compute_namespace_migration_facts(&store, ns);
+        assert_eq!(
+            activated.schema_version, 1,
+            "its own v1, not the other group's v3"
         );
     }
 
