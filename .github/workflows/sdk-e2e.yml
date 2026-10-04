@@ -209,7 +209,7 @@ jobs:
         run: |
           BIN="$MEROD_BIN"
           "$BIN" --node ci-tee-relay init --server-port "$TEE_RELAY_SERVER_PORT" --swarm-port 2568 \
-            --delegated-access
+            --auth-mode proxy --delegated-access
           "$BIN" --node ci-tee-relay run --mock-tee &
           echo "MEROD_TEE_RELAY_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
