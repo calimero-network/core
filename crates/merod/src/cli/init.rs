@@ -1060,6 +1060,52 @@ mod tests {
         );
     }
 
+    /// `--proxy-identity` is a proxy-mode flag: with explicit embedded auth it is
+    /// refused, and refused before anything is written.
+    #[tokio::test]
+    async fn proxy_identity_with_embedded_auth_is_refused_before_any_write() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let home = camino::Utf8PathBuf::from_path_buf(home.path().to_path_buf())
+            .expect("utf8 tempdir path");
+        let root_args = |name: &str| crate::cli::RootArgs {
+            home: home.clone(),
+            node_name: Some(camino::Utf8PathBuf::from(name)),
+        };
+
+        let refused = InitCommand::try_parse_from([
+            "merod",
+            "--auth-mode",
+            "embedded",
+            "--no-admin",
+            "--proxy-identity",
+        ])
+        .expect("flags parse");
+        let err = refused
+            .run(root_args("refused"))
+            .await
+            .expect_err("a proxy identity cannot be honoured by an embedded node");
+        assert!(
+            format!("{err:#}").contains("--proxy-identity needs proxy auth"),
+            "the refusal must name the flag; got: {err:#}"
+        );
+        assert!(
+            !home.join("refused").exists(),
+            "a refused init must not create the node home"
+        );
+
+        for (name, extra) in [("explicit", Some("proxy")), ("default", None)] {
+            let mut args = vec!["merod", "--proxy-identity"];
+            if let Some(mode) = extra {
+                args.extend(["--auth-mode", mode]);
+            }
+            InitCommand::try_parse_from(args)
+                .expect("flags parse")
+                .run(root_args(name))
+                .await
+                .unwrap_or_else(|err| panic!("{name} proxy auth must accept the flag: {err:#}"));
+        }
+    }
+
     /// `init` must leave the node holding an account root.
     ///
     /// Nothing mints lazily any more, so this is the only way a default node gets
