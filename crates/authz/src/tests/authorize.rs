@@ -16,7 +16,7 @@ use super::support::{
 };
 use crate::authorize::{authorize, required_mask_for};
 use crate::error::Rejected;
-use crate::view::{AccountBinding, AclView};
+use crate::view::{AccountBinding, AclView, DeviceBinding};
 
 #[test]
 fn put_requires_write_capability() {
@@ -395,6 +395,42 @@ fn a_join_replayed_by_another_device_is_refused() {
         authorize(&honest, &view).is_ok(),
         "the honest join must still pass, or the check above proves nothing"
     );
+}
+
+/// A safety path: a minted id verifies for one account only, so the conflicting
+/// binding is seeded into the view directly rather than folded from a link.
+#[test]
+fn a_bound_device_is_not_reassigned_to_another_account() {
+    let root_sk = calimero_primitives::identity::PrivateKey::from([0x31u8; 32]);
+    let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    let device = DeviceId::mint(genesis.account_id(), [0x32; 16]);
+    let sign_pk = calimero_primitives::identity::PrivateKey::from([0x33u8; 32]).public_key();
+    let cert = calimero_account::DeviceCert::sign(
+        &root_sk,
+        genesis.account_id(),
+        device,
+        &sign_pk,
+        &KemPublicKey::from([0x34; 32]),
+        0,
+        0,
+    )
+    .expect("sign the device cert");
+    let mut view = AclView::default();
+    let _ = view.devices.insert(
+        device,
+        DeviceBinding {
+            account: AccountId::from([0x35u8; 32]),
+            sign_pk,
+            kem_pk: KemPublicKey::from([0x34; 32]),
+            device_epoch: 0,
+            key_epoch: 0,
+        },
+    );
+
+    assert!(matches!(
+        view.admit_device_link(&genesis, &[], &cert),
+        Err(Rejected::DeviceAccountReassignment)
+    ));
 }
 
 // ---- the mask mapping, and the rotation refusals ----

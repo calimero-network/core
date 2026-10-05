@@ -2087,6 +2087,35 @@ mod tests {
         );
     }
 
+    /// A safety path: a minted id verifies for one account only, so the
+    /// conflicting binding is seeded directly rather than linked.
+    #[test]
+    fn a_device_bound_to_another_account_is_not_reassigned() {
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let g = genesis_for(1);
+        let cert = cert_for(&g, &key(1), 5, 0, 0);
+        repo.put_binding(
+            &gid,
+            cert.device,
+            &GroupDeviceBindingValue {
+                account: *genesis_for(2).account_id().as_bytes(),
+                sign_pk: *AsRef::<[u8; 32]>::as_ref(&key(9).public_key()),
+                kem_pk: [9; 32],
+                device_epoch: 0,
+                key_epoch: 0,
+                scope_epoch: 0,
+            },
+        )
+        .expect("store");
+
+        assert_eq!(
+            repo.apply_link(&gid, &g, &[], &cert, 0).expect("store"),
+            Err(BindingRejected::AccountReassignment)
+        );
+    }
+
     #[test]
     fn the_sign_pk_map_answers_every_lookup_the_single_search_does() {
         // The substitutability the batch form exists for. It replaces
