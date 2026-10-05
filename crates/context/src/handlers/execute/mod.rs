@@ -2469,7 +2469,16 @@ async fn internal_execute(
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Kept for the on-behalf gate after the run; private storage takes the store.
     let on_behalf_store = delegation.is_some().then(|| datastore.clone());
-    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    // Private storage is node-local and keyed by context alone, so on a node
+    // executing for accounts — a warranted write, or a read as an account —
+    // every account using this context would share ONE bucket, and B could
+    // read, delete or promote what A kept private. A run on an account's
+    // behalf therefore gets no private store at all; a method that touches one
+    // is refused after the run (`PrivateStorageUnavailable`) rather than
+    // handed an empty default. The account's private data lives on its own
+    // device. This node's own runs keep the per-context store as before.
+    let on_behalf = delegation.is_some() || read_as.is_some();
+    let private_storage = (!on_behalf).then(|| ContextPrivateStorage::from(datastore, context.id));
 
     // Search: only for an app that declares an index; any other app pays one
     // export lookup. A view gets the query host function, and tells the
@@ -2528,6 +2537,24 @@ async fn internal_execute(
     );
 
     if let Err(err) = &outcome.returns {
+        // The run had no private store because it was on an account's behalf,
+        // and the method needed one. Typed, so the client is told what to do
+        // (keep that data on the device) rather than shown a method failure;
+        // and `bail!` rather than a method error, so nothing of this run is
+        // committed or published. On this node's own runs the store is always
+        // present, so this arm never fires for them.
+        if on_behalf
+            && matches!(
+                err,
+                calimero_runtime::errors::FunctionCallError::HostError(
+                    calimero_runtime::errors::HostError::PrivateStorageUnavailable
+                )
+            )
+        {
+            bail!(ExecuteError::PrivateStorageUnavailable {
+                context_id: context.id
+            });
+        }
         // Redacted at `warn`: the app's own error bytes and panic text can hold
         // its state, and this line is shipped off the node. See
         // `FunctionCallError::redacted`.
@@ -2703,8 +2730,11 @@ async fn internal_execute(
             search.notify(*context.id.as_ref());
         }
         // Commit private storage (node-local, NOT synchronized)
-        // Private storage changes are not included in sync deltas
-        let _private_store = private_storage.commit()?;
+        // Private storage changes are not included in sync deltas. A run on an
+        // account's behalf opened none, so there is nothing to commit for it.
+        if let Some(private_storage) = private_storage {
+            let _private_store = private_storage.commit()?;
+        }
 
         // Create causal delta for non-state ops with non-empty artifacts
         if !is_state_op && !outcome.artifact.is_empty() {
@@ -3288,7 +3318,9 @@ pub(crate) async fn execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     mut storage: ContextStorage,
-    mut private_storage: ContextPrivateStorage,
+    // `None` for a run on an account's behalf, which has no private store
+    // (see `internal_execute`); the runtime then refuses a private host call.
+    mut private_storage: Option<ContextPrivateStorage>,
     node_client: NodeClient,
     is_read_only_call: bool,
     xcall_origin: Option<ContextId>,
@@ -3296,11 +3328,14 @@ pub(crate) async fn execute(
     sealing: calimero_runtime::logic::SealingContext,
     // Only ever `Some` for a read-only run (see `internal_execute`).
     search: Option<std::sync::Arc<dyn calimero_runtime::logic::SearchHost>>,
-) -> eyre::Result<(Outcome, ContextStorage, ContextPrivateStorage)> {
+) -> eyre::Result<(Outcome, ContextStorage, Option<ContextPrivateStorage>)> {
     let context_id = **context;
 
     global_runtime()
         .spawn_blocking(move || {
+            let private = private_storage
+                .as_mut()
+                .map(|p| p as &mut dyn calimero_runtime::store::Storage);
             let outcome = if is_read_only_call {
                 // Wrap shared storage in a read-only view: `set`/`remove` host
                 // calls are silenced so a method holding a shared read guard
@@ -3328,7 +3363,7 @@ pub(crate) async fn execute(
                     &method,
                     &input,
                     &mut ro_storage,
-                    Some(&mut private_storage),
+                    private,
                     Some(node_client),
                     xcall_origin,
                     tee_trigger,
@@ -3343,7 +3378,7 @@ pub(crate) async fn execute(
                     &method,
                     &input,
                     &mut storage,
-                    Some(&mut private_storage),
+                    private,
                     Some(node_client),
                     xcall_origin,
                     tee_trigger,

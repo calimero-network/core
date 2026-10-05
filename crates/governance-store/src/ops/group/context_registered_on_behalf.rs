@@ -49,6 +49,7 @@ pub(crate) fn apply(
             .map_err(|e| eyre::eyre!(e))?;
     }
 
+    super::shared_writers_rotated::refuse_moving_rotated_context(ctx, context_id, Some(group_id))?;
     ctx.context_registration()
         .register_authorized(context_id, application_id, blob_id)?;
     if let Some(service) = service_name {

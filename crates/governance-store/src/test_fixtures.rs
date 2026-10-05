@@ -483,6 +483,24 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         None
     }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
 }
 
 /// A non-empty causal cut for apply-auth tests. Value is irrelevant — only
@@ -549,6 +567,24 @@ impl crate::authorizer::AtCutAuthorizer for NotMemberAtCut {
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         Some(crate::authorizer::AtCutMembershipPath::None)
     }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        Some(None)
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
 }
 
 /// A projection that folds every member in as an inheritor, as the fold does for
@@ -610,6 +646,24 @@ impl crate::authorizer::AtCutAuthorizer for InheritsAtCut {
         _parents: &[[u8; 32]],
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         Some(crate::authorizer::AtCutMembershipPath::Inherited)
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
     }
 }
 
@@ -761,6 +815,24 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
         _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
         None
     }
 

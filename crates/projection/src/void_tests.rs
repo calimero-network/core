@@ -604,6 +604,51 @@ fn an_op_the_projection_models_nothing_about_is_judged_by_the_group_it_acted_in(
     );
 }
 
+/// A rotation names the group it acts in, so the log alone voids one its signer's
+/// removal is concurrent with, and no capability revoke reaches it.
+#[test]
+fn a_shared_writers_rotation_concurrent_with_its_signers_removal_is_void() {
+    let rotation = |author: u8, parents: &[&Op]| {
+        gov(
+            author,
+            parents,
+            OpPayload::SharedWritersRotated {
+                group: group(),
+                context: calimero_primitives::context::ContextId::from([0x44; 32]),
+                cell: calimero_storage::address::Id::new([0x11; 32]),
+                prior: [(acct(author), calimero_storage::entities::OpMask::FULL)].into(),
+                nonce: 1,
+                new: [(acct(author), calimero_storage::entities::OpMask::WRITE)].into(),
+            },
+        )
+    };
+    let ad = admins();
+    let head = &ad[2];
+    let mut log = ad.clone();
+    let removal = remove(ALICE, &[head], SAM);
+    let by_sam = rotation(SAM, &[head]);
+    let by_bob = rotation(BOB, &[head]);
+    log.extend([removal, by_sam.clone(), by_bob.clone()]);
+    let void = void(&log);
+    assert!(void.contains(&by_sam.id()));
+    assert!(!void.contains(&by_bob.id()), "Bob was not removed");
+
+    let mut log = yara_holding(
+        MemberCapabilities::MANAGE_MEMBERS
+            | MemberCapabilities::CAN_MANAGE_METADATA
+            | MemberCapabilities::MANAGE_APPLICATION
+            | MemberCapabilities::CAN_CREATE_CONTEXT,
+    );
+    let head = log[log.len() - 1].clone();
+    log.push(grant(ALICE, &[&head], YARA, MemberCapabilities::empty()));
+    let by_yara = rotation(YARA, &[&head]);
+    log.push(by_yara.clone());
+    assert!(
+        !ScopeState::void_ops(&log, base()).contains(&by_yara.id()),
+        "a rotation needs no member capability"
+    );
+}
+
 #[test]
 fn a_tee_policy_a_removed_admin_set_concurrently_is_void() {
     let ad = admins();
@@ -735,6 +780,14 @@ fn a_payload_the_void_rule_reads_outlives_the_bytes_of_its_op() {
         OpPayload::TeeAuthoringPolicySet {
             group: group(),
             allowed_mrtd: Vec::new(),
+        },
+        OpPayload::SharedWritersRotated {
+            group: group(),
+            context: calimero_primitives::context::ContextId::from([0x44; 32]),
+            cell: calimero_storage::address::Id::new([0x11; 32]),
+            prior: [(acct(ALICE), calimero_storage::entities::OpMask::FULL)].into(),
+            nonce: 1,
+            new: [(acct(ALICE), calimero_storage::entities::OpMask::FULL)].into(),
         },
     ];
     for payload in payloads {
