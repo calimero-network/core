@@ -195,3 +195,43 @@ fn redacted_elides_what_the_guest_wrote() {
     });
     assert_eq!(host_panic.redacted(), host_panic.to_string());
 }
+
+/// The guest's `app::bail!` text reaches clients through this `Display`, on
+/// `/jsonrpc` and `/intents` alike. It used to be the `Vec<u8>` Debug form
+/// (`[34, 118, 105, ...]`), which no client could read.
+#[test]
+fn execution_error_renders_utf8_bytes_as_text() {
+    let error = FunctionCallError::ExecutionError(b"\"viewer may not comment\"".to_vec());
+    assert_eq!(
+        error.to_string(),
+        "the method call returned an error: \"viewer may not comment\""
+    );
+    // The wire shape is unchanged: `data` stays the raw bytes.
+    assert_json_eq!(
+        json!(error),
+        json!({ "type": "ExecutionError", "data": b"\"viewer may not comment\"".to_vec() })
+    );
+}
+
+/// Bytes that are not UTF-8 keep the byte-list form rather than being mangled.
+#[test]
+fn execution_error_keeps_the_byte_list_for_non_utf8() {
+    let error = FunctionCallError::ExecutionError(vec![0xff, 0xfe]);
+    assert_eq!(
+        error.to_string(),
+        "the method call returned an error: [255, 254]"
+    );
+}
+
+#[test]
+fn private_storage_unavailable_is_a_host_error() {
+    let error = FunctionCallError::HostError(HostError::PrivateStorageUnavailable);
+    assert_eq!(
+        error.to_string(),
+        "private storage is not available in this execution"
+    );
+    assert_json_eq!(
+        json!(error),
+        json!({ "type": "HostError", "data": { "type": "PrivateStorageUnavailable" } })
+    );
+}

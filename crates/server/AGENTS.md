@@ -111,7 +111,11 @@ primitives/                   # calimero-server-primitives
 Several admin reads are **caller-scoped** (#3941): `GET /admin-api/contexts`,
 `GET /admin-api/namespaces`, the single-context `GET /admin-api/contexts/{id}`
 and its four read sub-resources (`/identities`, `/identities-owned`, `/storage`,
-`/group`), plus `/namespaces/:id{,/groups}` and `/groups/:id{,/contexts}`,
+`/group`), plus `/namespaces/:id{,/groups}` and the group reads
+`/groups/:id{,/contexts,/members,/subgroups,/metadata}`,
+`/groups/:id/members/:account/{capabilities,metadata}`,
+`/groups/:id/contexts/:ctx/metadata` and the
+upgrade/cascade/migration status reads,
 return only what the caller's groups reach, resolved per request
 through `admin/caller_scope.rs`. Every one that names a context applies the same
 `ListScope::admits` predicate the listing does, through the shared
