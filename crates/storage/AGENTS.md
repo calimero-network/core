@@ -885,6 +885,15 @@ struct MyType {
 - Hash with `crate::hash_meter::{Digest, Sha256}`, never `sha2` directly. It is `sha2::Sha256` unless the `cost-meter` feature (enabled only by `tools/storage-cost`) swaps in a counting wrapper with the same digest, and the counts are the storage-cost CPU gate; a module naming `sha2` is invisible to it, which `production_code_hashes_through_the_meter` refuses.
 
 - Use #[app::state] macro attribute - it auto-generates Mergeable impl
+- **A served signed write is dated by its signature, not by `updated_at`.** Only
+  the nonce is in `payload_for_signing`, so a peer serving an entity by
+  HashComparison, LevelWise or a snapshot could re-date it (a delta cannot: its
+  `delta_id` hashes the metadata). `apply_action` and the node's snapshot install
+  call `Metadata::date_by_signature`: a `User`/`SharedMember` write takes its
+  nonce; a `Shared` anchor or a `Custom`/`FugueTextBlock` entry is dated no
+  earlier than its nonce, because an honest row of either can hold one write's
+  signature beside a later date. Those keep the served date up to the drift
+  bound, which the snapshot install and `write_pre_merged_root_state` enforce.
 - **An ancestor walk starts only where a full hash moved, and stops at the first
   parent whose trie slot already holds the child's hash** (`Index::write_value_for`,
   `add_child_with_value_to`, `recalculate_ancestor_hashes_for_now`,

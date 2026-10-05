@@ -1780,12 +1780,18 @@ impl<S: StorageAdaptor> Interface<S> {
     /// writer set (v2 semantics). Nothing is logged for a writer-set change:
     /// writer sets change by governance op alone.
     ///
+    /// A signed upsert is dated by its signed nonce rather than by the
+    /// `updated_at` it arrives with ([`Metadata::date_by_signature`]).
+    ///
     /// # Errors
     /// - `DeserializationError` if action data is invalid
     /// - `ActionNotAllowed` if the action violates storage-type access rules
     ///   (e.g. deleting `Frozen` data, or an unauthorized `Shared`/`User` write)
     ///
-    pub fn apply_action(action: Action, ctx: &ApplyContext) -> Result<(), StorageError> {
+    pub fn apply_action(mut action: Action, ctx: &ApplyContext) -> Result<(), StorageError> {
+        if let Action::Add { metadata, .. } | Action::Update { metadata, .. } = &mut action {
+            metadata.date_by_signature();
+        }
         // Verify that the action timestamp is not too far in the future
         // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
@@ -2035,8 +2041,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         if rules.immutable {
                             Self::refuse_deleted_written_once(stored_index.as_ref(), *id, rules)?;
                             if let Some(stored) = S::storage_read(Key::Entry(*id)) {
-                                let stored_nonce =
-                                    stored_metadata.map_or(last_nonce, signed_nonce_of);
+                                let stored_nonce = stored_metadata
+                                    .and_then(|m| m.storage_type.signature_data())
+                                    .map_or(last_nonce, |sig| sig.nonce);
                                 match written_once_order((new_nonce, data), (stored_nonce, &stored))
                                 {
                                     core::cmp::Ordering::Less => replaces_written_once = true,
@@ -4004,6 +4011,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Returns `StorageError` if the index update fails or the storage
     /// write fails. Does NOT enforce I5 — the caller IS the source of
     /// the merged bytes and is responsible for I5 compliance.
+    /// `InvalidTimestamp` if `metadata.updated_at` is past the drift bound: the
+    /// sync paths write a merge with the peer's unsigned stamp.
     pub fn write_pre_merged_root_state(
         id: Id,
         merged: &[u8],
@@ -4034,6 +4043,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // if it regresses write throughput.
         let _mutation_guard = crate::index::index_mutation_guard();
 
+        verify_remote_timestamp(*metadata.updated_at)?;
         let last_metadata = <Index<S>>::get_metadata(id)?;
 
         // LWW guard — same shape as `save_internal`'s LWW-by-HLC
@@ -5260,18 +5270,6 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
 
     // If this check passes, the data is verified.
     Ok(())
-}
-
-/// The nonce the stored write of an owned entry was signed with, which the
-/// signature commits to (`updated_at` is not signed).
-fn signed_nonce_of(metadata: &Metadata) -> u64 {
-    match &metadata.storage_type {
-        StorageType::User {
-            signature_data: Some(sig),
-            ..
-        } => sig.nonce,
-        _ => *metadata.updated_at,
-    }
 }
 
 /// How two authentic writes of one written-once entry order: by signed nonce,

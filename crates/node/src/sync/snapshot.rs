@@ -863,7 +863,13 @@ impl SyncManager {
                                                 &format!("fails signature verification: {e}"),
                                             ));
                                         }
-                                        stage.put_entity(Id::new(*id), entry, index)?;
+                                        stage_signed_dated(
+                                            &stage,
+                                            context_id,
+                                            Id::new(*id),
+                                            entry,
+                                            &named,
+                                        )?;
                                         let _previous = declined.insert(
                                             Id::new(*id),
                                             schema_bytecode_id
@@ -975,7 +981,13 @@ impl SyncManager {
                                     }
 
                                     // Verified: staged, and installed with the rest of the snapshot.
-                                    stage.put_entity(id_obj, entry, index)?;
+                                    stage_signed_dated(
+                                        &stage,
+                                        context_id,
+                                        id_obj,
+                                        entry,
+                                        &index_entity,
+                                    )?;
                                     applied += 1;
                                     if let Some(k) = schema_bytecode_id {
                                         observed_schema = Some(*k);
@@ -1082,12 +1094,12 @@ impl SyncManager {
                                         for (id_obj, entry, index, member_schema) in
                                             deferred_members.drain(..)
                                         {
-                                            let metadata = match borsh::from_slice::<
+                                            let index_entity = match borsh::from_slice::<
                                                 calimero_storage::index::EntityIndex,
                                             >(
                                                 &index
                                             ) {
-                                                Ok(idx) => idx.metadata,
+                                                Ok(idx) => idx,
                                                 Err(e) => {
                                                     return Err(refused_snapshot_entity(
                                                         context_id,
@@ -1096,6 +1108,7 @@ impl SyncManager {
                                                     ));
                                                 }
                                             };
+                                            let metadata = &index_entity.metadata;
                                             let anchor = match &metadata.storage_type {
                                                 calimero_storage::entities::StorageType::SharedMember {
                                                     anchor,
@@ -1114,7 +1127,7 @@ impl SyncManager {
                                             };
                                             if let Err(e) =
                                                 Interface::<MainStorage>::verify_snapshot_member_signature(
-                                                    id_obj, &entry, &metadata,
+                                                    id_obj, &entry, metadata,
                                                 )
                                             {
                                                 return Err(refused_snapshot_entity(
@@ -1141,7 +1154,7 @@ impl SyncManager {
                                                 &self.node_state.folded_tee(),
                                                 &context_id,
                                                 id_obj,
-                                                &metadata,
+                                                metadata,
                                                 Some(writers),
                                                 &ever_writers,
                                             ) {
@@ -1159,7 +1172,13 @@ impl SyncManager {
                                                     ));
                                                 }
                                             }
-                                            stage.put_entity(id_obj, &entry, &index)?;
+                                            stage_signed_dated(
+                                                &stage,
+                                                context_id,
+                                                id_obj,
+                                                &entry,
+                                                &index_entity,
+                                            )?;
                                             total_applied += 1;
                                             // Bind observed_schema from members too,
                                             // so a SharedMember-only context settles
@@ -1608,8 +1627,12 @@ pub(crate) fn persist_buffered_snapshot_entity(
         }
     }
 
+    let Some(dated) = signed_dated(&index_entity) else {
+        warn!(%context_id, id = ?id, "absorb entity drain: refusing an entity dated ahead of the clock");
+        return Ok(SnapshotEntityDrainOutcome::Refused);
+    };
     let mut handle = store.handle();
-    let _row_state_key = put_entity_row(&mut handle, context_id, id_obj, entry, index)?;
+    let _row_state_key = put_entity_row(&mut handle, context_id, id_obj, entry, &dated)?;
 
     // Link into the parent's child trie HERE, not only in the one-shot rebuild
     // after the snapshot pages land.
@@ -1690,21 +1713,47 @@ pub(crate) fn drain_buffered_snapshot_entity(
     Ok(SnapshotEntityDrainOutcome::Pending)
 }
 
-/// Writes an entity received in a snapshot: its index record and its data, as
-/// the one entity row the storage layer keeps for them (`calimero_storage::row`).
+/// `index` dated by its signature rather than by the date the server sent, or
+/// `None` when that date is further ahead of the clock than the drift tolerance.
+fn signed_dated(
+    index: &calimero_storage::index::EntityIndex,
+) -> Option<calimero_storage::index::EntityIndex> {
+    let mut index = index.clone();
+    index.metadata.date_by_signature();
+    let bound = time_now().saturating_add(calimero_storage::constants::DRIFT_TOLERANCE_NANOS);
+    (index.metadata.updated_at() <= bound).then_some(index)
+}
+
+/// Stages a verified entity as [`signed_dated`] returns it, refusing the
+/// snapshot when it returns `None`: the entity's parent hash counts it.
+fn stage_signed_dated(
+    stage: &Stage,
+    context_id: ContextId,
+    id: Id,
+    entry: &[u8],
+    index: &calimero_storage::index::EntityIndex,
+) -> Result<()> {
+    let dated = signed_dated(index).ok_or_else(|| {
+        refused_snapshot_entity(context_id, id, "its signed time is ahead of the clock")
+    })?;
+    stage.put_entity(id, entry, &borsh::to_vec(&dated)?)
+}
+
+/// Writes an entity received in a snapshot: its dated index record and its data,
+/// as the one entity row the storage layer keeps for them (`calimero_storage::row`).
 /// Returns the row's state key, which the install keeps across stale-key cleanup.
 fn put_entity_row(
     handle: &mut calimero_store::Handle<Store>,
     context_id: ContextId,
     id: Id,
     entry: &[u8],
-    index: &[u8],
+    index: &calimero_storage::index::EntityIndex,
 ) -> Result<[u8; calimero_store::key::STATE_KEY_LEN]> {
     let row_state_key = StorageKey::Index(id).to_bytes();
     let row = calimero_storage::row::encode(
         id,
         &calimero_storage::row::Row {
-            index: Some(index.to_vec()),
+            index: Some(borsh::to_vec(index)?),
             data: Some(entry.to_vec()),
         },
     );
