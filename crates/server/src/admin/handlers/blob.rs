@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::{Path, Query};
 use axum::http::response::Builder;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use calimero_node_primitives::client::{BlobPresence, BlobRejected};
@@ -505,6 +505,7 @@ pub async fn download_handler(
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
+    _headers: HeaderMap,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
@@ -781,6 +782,7 @@ pub async fn info_handler(
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
+    _headers: HeaderMap,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
@@ -1189,7 +1191,7 @@ mod account_scope_tests {
 
     use axum::body::{to_bytes, Body};
     use axum::extract::{Path, Query};
-    use axum::http::StatusCode;
+    use axum::http::{HeaderMap, StatusCode};
     use axum::response::{IntoResponse, Response};
     use axum::Extension;
     use calimero_account::AccountId;
@@ -1350,6 +1352,7 @@ mod account_scope_tests {
             caller.owner(),
             caller.account(),
             None,
+            HeaderMap::new(),
         )
         .await
         .into_response()
@@ -1368,6 +1371,7 @@ mod account_scope_tests {
             caller.owner(),
             caller.account(),
             None,
+            HeaderMap::new(),
         )
         .await
         .into_response()
@@ -1573,6 +1577,7 @@ mod account_scope_tests {
             Some(Extension(AuthenticatedNodeOwner)),
             Some(Extension(AuthenticatedAccount(AccountId::from(ME)))),
             None,
+            HeaderMap::new(),
         )
         .await
         .into_response();
@@ -1602,5 +1607,171 @@ mod account_scope_tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod passive_cross_site_tests {
+    use std::sync::Arc;
+
+    use axum::extract::{Path, Query};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::Extension;
+    use calimero_context_client::client::ContextClient;
+    use calimero_node_primitives::test_fixtures;
+    use calimero_primitives::blobs::BlobId;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+
+    use super::{download_handler, info_handler};
+    use crate::origin_guard::OriginGuard;
+    use crate::{AdminState, NodeReadiness};
+
+    const BLOB: &[u8] = b"held by a context peer";
+    const NAVIGATION: [(&str, &str); 2] = [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "navigate"),
+    ];
+    const IMAGE: [(&str, &str); 2] = [
+        ("sec-fetch-site", "cross-site"),
+        ("sec-fetch-mode", "no-cors"),
+    ];
+
+    /// A proxy-mode node that holds nothing, in a context whose one peer holds `BLOB`.
+    struct Node {
+        state: Arc<AdminState>,
+        blob_id: BlobId,
+        _dirs: [tempfile::TempDir; 4],
+    }
+
+    async fn node() -> Node {
+        let (holder, _store, holder_data, holder_blobs) = test_fixtures::node_client().await;
+        let (blob_id, _size) = holder.add_blob(BLOB, None, None).await.unwrap();
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (client, data, blobs) = test_fixtures::node_client_over(
+            store.clone(),
+            test_fixtures::network_of_one_peer(Some(BLOB.to_vec())),
+        )
+        .await;
+        let state = Arc::new(AdminState::new(
+            store.clone(),
+            ContextClient::new(store, client.clone(), LazyRecipient::new()),
+            client,
+            Arc::new(NodeReadiness::new()),
+            [0; 32],
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+
+        Node {
+            state,
+            blob_id,
+            _dirs: [holder_data, holder_blobs, data, blobs],
+        }
+    }
+
+    /// The answer to a request the origin guard admits on a node named by its
+    /// own address, and whether the node holds the blob afterwards.
+    async fn request(
+        node: &Node,
+        head: bool,
+        headers: &[(&'static str, &'static str)],
+    ) -> (StatusCode, bool) {
+        let mut sent = HeaderMap::new();
+        let _ = sent.insert("host", HeaderValue::from_static("127.0.0.1:2528"));
+        for (name, value) in headers {
+            let _ = sent.insert(*name, HeaderValue::from_static(value));
+        }
+        assert!(
+            OriginGuard::new(false, None).admits(&sent, None),
+            "{sent:?}"
+        );
+
+        let path = Path(node.blob_id.to_string());
+        let query = Query(
+            [(
+                "context_id".to_owned(),
+                ContextId::from([0xA1; 32]).to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let state = Extension(Arc::clone(&node.state));
+        let response = if head {
+            info_handler(path, query, state, None, None, None, sent)
+                .await
+                .into_response()
+        } else {
+            download_handler(path, query, state, None, None, None, sent)
+                .await
+                .into_response()
+        };
+        (
+            response.status(),
+            node.state.node_client.has_blob(&node.blob_id).unwrap(),
+        )
+    }
+
+    /// A page on another site can make the operator's browser navigate to a blob
+    /// URL or load it as an image; neither may make the node ask its peers.
+    #[tokio::test]
+    async fn a_passive_request_from_another_site_fetches_nothing_from_peers() {
+        let node = node().await;
+
+        for headers in [NAVIGATION, IMAGE] {
+            assert_eq!(
+                request(&node, false, &headers).await,
+                (StatusCode::NOT_FOUND, false),
+                "GET {headers:?}"
+            );
+            assert_eq!(
+                request(&node, true, &headers).await,
+                (StatusCode::NOT_FOUND, false),
+                "HEAD {headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_script_and_a_client_that_is_no_browser_still_fetch_from_peers() {
+        let app_fetch = [
+            ("origin", "http://localhost:5173"),
+            ("sec-fetch-site", "cross-site"),
+            ("sec-fetch-mode", "cors"),
+        ];
+        let own_page_link = [
+            ("sec-fetch-site", "same-origin"),
+            ("sec-fetch-mode", "navigate"),
+        ];
+        let address_bar = [("sec-fetch-site", "none"), ("sec-fetch-mode", "navigate")];
+
+        for headers in [&app_fetch[..], &own_page_link, &address_bar, &[]] {
+            let node = node().await;
+            assert_eq!(
+                request(&node, true, headers).await,
+                (StatusCode::OK, false),
+                "HEAD {headers:?}"
+            );
+            assert_eq!(
+                request(&node, false, headers).await,
+                (StatusCode::OK, true),
+                "GET {headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_blob_already_held_is_served_to_a_passive_request_from_another_site() {
+        let node = node().await;
+        let _fetched = request(&node, false, &[]).await;
+
+        assert_eq!(
+            request(&node, false, &NAVIGATION).await,
+            (StatusCode::OK, true)
+        );
     }
 }
