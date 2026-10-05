@@ -45,7 +45,17 @@ pub enum FunctionCallError {
     WasmTrap(WasmTrap),
     #[error(transparent)]
     HostError(HostError),
-    #[error("the method call returned an error: {0:?}")]
+    /// The bytes are the guest's own message (`app::bail!`), almost always
+    /// UTF-8, and they reach API clients through this `Display`: rendered as
+    /// text when they are, and only as a byte list when they are not, rather
+    /// than `[34, 118, ...]` for every refusal an app ever writes.
+    #[error(
+        "the method call returned an error: {}",
+        match core::str::from_utf8(.0) {
+            Ok(text) => text.to_owned(),
+            Err(_) => format!("{:?}", .0),
+        }
+    )]
     ExecutionError(Vec<u8>),
     #[error("module size limit (max_module_size) exceeded: {size} bytes > {max} bytes limit")]
     ModuleSizeLimitExceeded { size: u64, max: u64 },
