@@ -60,7 +60,9 @@ ed25519 identity keypair, writes `config.toml`, opens the datastore, and
 | `--mode <MODE>`                     | `standard`, `read-only`  | `standard`         | Node operation mode (read-only disables JSON-RPC execution).            |
 
 ```sh
-# Initialize with the default network and ports
+# Initialize with the default network and ports. The default proxy auth mode
+# lets any page served from localhost reach the admin API, so use it only on a
+# development machine.
 merod --node node1 init
 
 # Initialize with custom ports

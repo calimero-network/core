@@ -101,6 +101,9 @@ daemon, then point `meroctl` at it.
    merod --node node1 init
    ```
 
+   `init` defaults to `--auth-mode proxy`, which authenticates no caller.
+   Any page served from localhost can then reach the admin API, so use it only on a development machine.
+
    It prints a single confirmation line naming the node home it created:
 
    ```text
