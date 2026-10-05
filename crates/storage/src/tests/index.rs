@@ -731,7 +731,10 @@ mod index__private_methods {
 
 #[cfg(test)]
 mod subtree_tombstoning {
+    use calimero_account::AccountId;
+
     use super::*;
+    use crate::entities::OpMask;
     use crate::env::time_now;
     use crate::store::MockedStorage;
 
@@ -951,6 +954,71 @@ mod subtree_tombstoning {
         assert!(
             !<Index<S>>::is_deleted(fleaf).unwrap(),
             "Frozen leaf (no children) survives"
+        );
+    }
+
+    /// A delete of a `Public` entity carries no signature, so its cascade leaves
+    /// every owned or writer-set descendant, and what sits under it, in place.
+    #[test]
+    fn a_public_subtree_delete_leaves_owned_and_shared_descendants() {
+        type S = MockedStorage<2107>;
+
+        let owned = Metadata {
+            storage_type: StorageType::User {
+                owner: AccountId::from([0xA1; 32]),
+                signature_data: None,
+                rules: EntryRules::OWNED,
+            },
+            ..Metadata::default()
+        };
+        let shared = Metadata {
+            storage_type: StorageType::Shared {
+                writers: BTreeMap::from([(AccountId::from([0xB0; 32]), OpMask::WRITE)]),
+                signature_data: None,
+            },
+            ..Metadata::default()
+        };
+
+        let root = Id::random();
+        let a = Id::random(); // public container being deleted
+        let b = Id::random(); // public entry -> tombstoned
+        let u = Id::random(); // owned entry -> survives
+        let under_u = Id::random(); // public collection inside it -> survives
+        let s = Id::random(); // writer-set entry -> survives
+
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(u, [4; 32], owned.clone())).unwrap();
+        <Index<S>>::add_child_to(u, ChildInfo::new(under_u, [5; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(s, [6; 32], shared)).unwrap();
+
+        <Index<S>>::remove_child_from(root, a, time_now()).unwrap();
+
+        assert!(<Index<S>>::is_deleted(a).unwrap(), "container tombstoned");
+        assert!(
+            <Index<S>>::is_deleted(b).unwrap(),
+            "public entry tombstoned"
+        );
+        assert!(!<Index<S>>::is_deleted(u).unwrap(), "owned entry survives");
+        assert!(
+            !<Index<S>>::is_deleted(under_u).unwrap(),
+            "what an owned entry holds survives with it"
+        );
+        assert!(
+            !<Index<S>>::is_deleted(s).unwrap(),
+            "writer-set entry survives"
+        );
+
+        // A signed delete of an owned entry still takes its subtree with it.
+        let o = Id::random();
+        let under_o = Id::random();
+        <Index<S>>::add_child_to(root, ChildInfo::new(o, [7; 32], owned.clone())).unwrap();
+        <Index<S>>::add_child_to(o, ChildInfo::new(under_o, [8; 32], owned)).unwrap();
+        <Index<S>>::remove_child_from(root, o, time_now()).unwrap();
+        assert!(
+            <Index<S>>::is_deleted(under_o).unwrap(),
+            "owned subtree tombstoned"
         );
     }
 
