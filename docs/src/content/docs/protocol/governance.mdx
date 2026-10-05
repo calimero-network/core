@@ -67,6 +67,10 @@ A member promoted to admin who presents another invitation stays an admin, and a
 The join is still recorded, and it still links the device it was made from.
 The [projection](/protocol/projection/#the-one-slot-that-is-not-a-plain-register-joins) folds it the same way at the operation's causal cut, in any arrival order.
 The streaming state behind the scope root is order-independent too, but it orders clockless operations by id, so between two joins of one member it may keep the later one's role.
+Repeating a join changes nothing however often it happens: while no removal or leave follows a member's first join, that join's role stands.
+The projection keeps a bounded number of joins per member, and resolves one situation with a fixed rule instead of the exact answer.
+When a member's latest membership write in a group is a removal or a leave above its first join there, and more than 64 of its joins are above that write, the member holds the least role any of its joins of that group ever carried (`ReadOnly` below `Member` below `Admin`).
+That is the same in every arrival order, it is the exact role whenever all those joins carried one role, and it can lower a member's authority but never raise it.
 This rule is part of `SignedNamespaceOp` version 22: a node on an older version folds a different role, so nodes of one namespace must be upgraded together.
 
 ### Which group an invitation may target

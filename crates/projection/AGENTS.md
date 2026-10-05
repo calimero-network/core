@@ -79,10 +79,19 @@ Two ways to fold, for two different purposes:
 - **A join is not a role write.**
   An invitation join (`MemberJoinedWithDevice` with a non-TEE role) never replaces a standing membership, because the apply skips a join by an account that already holds a row.
   `member_clock` is stamped only by adds, role changes and removals; a join takes effect only when no add stands, that is when the member is absent or its latest write is a removal the join beats, and among several such joins the earliest stamp wins.
-  The fold keeps the joins that beat `member_clock` in `member_joins` so the result is a function of the op set: a removal that arrives late still finds the join that follows it.
-  No fixed-size summary does that, since any kept join may become the earliest one above a later removal, so the map is bounded instead: it keeps the latest `MAX_STANDING_JOINS + 1` joins of a member.
-  The latest, because a removal only ever spends joins from the earliest end, which makes "the latest N above the clock" the same set in every arrival order; the earliest N is not.
-  While more than `MAX_STANDING_JOINS` joins stand above the clock the earliest is unknown, and the member stands as `ReadOnly`, the least role an invitation grants, so a flood of re-signed joins can lower its signer's role in the fold and never raise it.
+  The fold keeps the joins that beat `member_clock` so the result is a function of the op set: a removal that arrives late still finds the join that follows it.
+  No fixed-size summary does that for every history, since any join may become the earliest one above a later removal, so `member_joins` keeps three things per `(group, member)` (`MemberJoins`), each a function of the op set alone.
+  `standing` is the latest `MAX_STANDING_JOINS + 1` joins above the clock: the latest, because a removal only ever spends joins from the earliest end, which makes "the latest N above the clock" the same set in every arrival order; the earliest N is not.
+  `first` is the earliest join ever folded for the slot and `least` is the least role any join of the slot ever carried (`invited_rank`: `ReadOnly` below `Member` below `Admin`); both cover joins the clock already beats, and no add, removal or leave clears them.
+  They cannot be "the earliest join above the clock": a removal that folds before the joins and one that folds after them would then keep different joins, and the root would split by arrival order.
+  For the same reason `first` survives an add that beats it; it stops mattering then, because the clock never drops back below it.
+  While no add stands the role is: `first`'s, if the clock is below it (no removal has spent the first join, so repeat joins alone never change a role, however many); else the earliest standing join's, if at most `MAX_STANDING_JOINS` stand (or absent if none does); else `least`.
+  That last case is the only inexact one, and its condition is order-free: the member's latest add, role change, removal or leave in the group is a removal or a leave (a namespace leave included), its stamp is above the member's first join of the group, and more than `MAX_STANDING_JOINS` of the member's joins of the group are above it.
+  `least` is at most the role of the true earliest join above the removal, so the fold can lower a role there and never raise it, and it is exact whenever every join of the member in the group carried one role.
+  A join that arrives below the clock still updates `first` and `least`, so the fold reads the role again after it.
+  A TEE admission folds as an add and enters neither.
+  The history that stays inexact: a member who left after its first join, came back, repeated the join more than `MAX_STANDING_JOINS` times with no admin write since, and at some point joined with a lower role than the one it came back with.
+  No bounded fold avoids such a case: joins folded before a leave that may land between any two of them would need every join's role kept.
   "Earliest" is causal only in `acl_view_at`, whose stamps carry causal depth; in the streaming fold clockless joins are ordered by op id, so `from_ops` can resolve the later of two chained joins (`without_a_clock_the_cut_keeps_the_first_join_and_the_stream_the_lower_id`).
   The streaming state is what `ScopeProjections::scope_root_for` hashes, and sync compares that root between peers: it agrees across nodes holding the same ops, and it is not the membership authorization reads.
   The device half of a repeat join links its device as before.
