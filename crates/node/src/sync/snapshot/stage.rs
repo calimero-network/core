@@ -178,11 +178,12 @@ impl Stage {
             if folded != index.full_hash() {
                 warn!(
                     context_id = %self.context_id,
-                    id = ?id.as_bytes(),
+                    entity = %id,
                     parent = ?index.parent_id().map(|parent| *parent.as_bytes()),
                     computed = %Hash::from(folded),
                     shipped = %Hash::from(index.full_hash()),
-                    "snapshot entity does not fold to the hash it ships"
+                    "snapshot refused: the serving peer's state tree is inconsistent at this \
+                     entity, whose children do not fold to the hash it ships"
                 );
                 eyre::bail!(
                     "snapshot entity {:?}: its children do not fold to the hash it ships",

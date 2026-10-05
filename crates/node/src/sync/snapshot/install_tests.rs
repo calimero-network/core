@@ -2,7 +2,9 @@
 //! stream, and the store ends up holding the source's tree or, when the tree
 //! does not hold together, exactly what it held before.
 
+use std::cell::Cell;
 use std::num::NonZeroU64;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,7 +31,7 @@ use calimero_storage::action::Action;
 use calimero_storage::child_trie::ChildTrie;
 use calimero_storage::collections::{Root, UnorderedMap, Vector};
 use calimero_storage::entities::{ChildInfo, EntryRules, Metadata, SignatureData, StorageType};
-use calimero_storage::env::with_runtime_env;
+use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
 use calimero_storage::interface::ApplyContext;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
@@ -806,14 +808,19 @@ async fn an_entry_written_through_a_relay_removed_since_is_installed() {
     );
 }
 
-/// A key certified in the namespace that no folded op ever seated as a relay
-/// signs for nobody: the entry is the source's lie, and fails the snapshot.
+/// A key of a member no folded op ever seated as a relay signs for nobody: the
+/// entry is the source's lie, and fails the snapshot.
 #[tokio::test]
 async fn an_entry_written_through_a_key_that_was_never_a_relay_fails_the_snapshot() {
     let (owner, relay) = (AccountId::from([0xA1; 32]), PrivateKey::from([0x62; 32]));
     let entry = owned_entry_id(Id::new([0x85; 32]), &owner);
     let joiner = joiner().await;
-    let _account = joiner.knows_the_account_of(&relay.public_key());
+    let account = joiner.knows_the_account_of(&relay.public_key());
+    let seat = GroupOp::MemberAdded {
+        member: account,
+        role: GroupMemberRole::Member,
+    };
+    joiner.folds(&seat, RELAY_SEATED, &[]);
     let through = written_through_a_relay(entry, b"forged", &relay, owner);
     let (records, claimed) = tree_over(&[child(entry, b"forged", b"forged", through)]);
 
@@ -1061,4 +1068,94 @@ async fn rows_a_crashed_install_left_staged_are_not_installed() {
 
     assert!(!joiner.holds(left));
     assert!(joiner.stages_nothing());
+}
+
+/// [`source`] after a process applying one more entry row by row, as repair does,
+/// was killed once `survived` writes had landed. Returns how many it attempted.
+fn source_killed_mid_apply(survived: usize) -> (Store, Hash, usize) {
+    let (store, _) = source();
+    let attempted = Rc::new(Cell::new(0_usize));
+    let lands = {
+        let attempted = Rc::clone(&attempted);
+        move || {
+            attempted.set(attempted.get() + 1);
+            attempted.get() <= survived
+        }
+    };
+    let state_key = |key: &StorageKey| ContextStateKey::new(context(), key.to_bytes());
+    let read = {
+        let handle = store.handle();
+        Rc::new(move |key: &StorageKey| {
+            let row = handle.get(&state_key(key)).unwrap();
+            row.map(|row| row.value.as_ref().to_vec())
+        })
+    };
+    let write = {
+        let (store, lands) = (store.clone(), lands.clone());
+        Rc::new(move |key: StorageKey, value: &[u8]| {
+            if lands() {
+                let value = ContextStateValue::from(Slice::from(value.to_vec()));
+                store.handle().put(&state_key(&key), &value).unwrap();
+            }
+            true
+        })
+    };
+    let remove = {
+        let store = store.clone();
+        Rc::new(move |key: &StorageKey| {
+            if lands() {
+                store.handle().delete(&state_key(key)).unwrap();
+            }
+            true
+        })
+    };
+    let env = RuntimeEnv::new(read, write, remove, CONTEXT, [2; 32], [0xAC; 32]);
+    with_runtime_env(env, || {
+        let ancestors = [Id::new([2; 32]), root()]
+            .map(|parent| ChildInfo::new(parent, [0; 32], Metadata::default()))
+            .to_vec();
+        let add = Action::Add {
+            id: Id::new([0x24; 32]),
+            data: vec![0x24; 17],
+            ancestors,
+            metadata: Metadata::new(2, 2),
+        };
+        // What the apply returns once its writes stop landing is what a dead
+        // process would have seen: only the rows left behind matter.
+        let _killed = Interface::<MainStorage>::apply_action(add, &ApplyContext::empty());
+    });
+    let hash = served_state_root(&store, context()).unwrap();
+    (store, hash, attempted.get())
+}
+
+/// An honest node killed part way through one apply holds a tree whose hashes
+/// no longer agree. A joiner refuses it, and the source can name the entity.
+#[tokio::test]
+async fn a_source_killed_part_way_through_an_apply_is_refused_and_can_say_where() {
+    let (_, _, attempted) = source_killed_mid_apply(usize::MAX);
+    let mut refused = Vec::new();
+    for survived in 0..=attempted {
+        let (source, claimed, _) = source_killed_mid_apply(survived);
+        let defect = first_unfolding_entity(&source.handle(), context()).unwrap();
+        let outcome = joiner().await.installs(claimed, shipped(&source)).await;
+        match (outcome, defect) {
+            (Ok(_), None) => {}
+            (Err(error), Some((entity, _))) => {
+                let named = format!("{:?}", entity.as_bytes());
+                assert!(error.to_string().contains(&named), "{error}");
+                refused.push(survived);
+            }
+            (outcome, defect) => panic!("after {survived} writes: {outcome:?}, {defect:?}"),
+        }
+    }
+    assert_eq!((attempted, refused), (6, vec![1, 2, 3, 4]));
+}
+
+/// A tree written to completion, deletions included, has nothing to report.
+#[test]
+fn a_tree_written_to_completion_folds() {
+    for store in [source().0, app_source().0] {
+        let defect = first_unfolding_entity(&store.handle(), context()).unwrap();
+        assert_eq!(defect, None);
+    }
 }

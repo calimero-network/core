@@ -18,7 +18,9 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_storage::address::Id;
+use calimero_storage::child_trie::ChildTrie;
 use calimero_storage::env::time_now;
+use calimero_storage::index::Index;
 use calimero_storage::interface::Interface;
 use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_store::key::ContextState as ContextStateKey;
@@ -297,6 +299,9 @@ impl SyncManager {
         }
 
         info!(%context_id, pages = pages.len(), total_entries, "Streaming snapshot");
+        if start_cursor.is_none() {
+            warn_if_the_tree_does_not_fold(&handle, context_id);
+        }
 
         // Handle empty snapshot case - send an empty page to signal completion
         if pages.is_empty() {
@@ -2245,6 +2250,78 @@ fn verified_snapshot_root(store: &Store, context_id: ContextId, claimed: Hash) -
 
     info!(%context_id, root_hash = %computed, "Snapshot root hash verified successfully");
     Ok(computed)
+}
+
+/// Tell the operator of a serving node that joiners will refuse its snapshot of
+/// `context_id`, and at which entity. The snapshot is still served.
+fn warn_if_the_tree_does_not_fold<L: calimero_store::layer::ReadLayer>(
+    handle: &calimero_store::Handle<L>,
+    context_id: ContextId,
+) {
+    match first_unfolding_entity(handle, context_id) {
+        Ok(None) => {}
+        Ok(Some((id, defect))) => warn!(
+            %context_id,
+            entity = %id,
+            defect,
+            "this node's state tree is inconsistent, so joiners will refuse its snapshot \
+             of this context and bootstrap from another peer"
+        ),
+        Err(error) => {
+            warn!(%context_id, %error, "could not check the state tree served as a snapshot")
+        }
+    }
+}
+
+/// The first entity of `context_id` a joiner's tree check would refuse, and why:
+/// its stored hash or child trie disagrees with the rows a snapshot ships.
+fn first_unfolding_entity<L: calimero_store::layer::ReadLayer>(
+    handle: &calimero_store::Handle<L>,
+    context_id: ContextId,
+) -> Result<Option<(Id, &'static str)>> {
+    let read = |key: StorageKey| {
+        let row = handle.get(&ContextStateKey::new(context_id, key.to_bytes()));
+        row.ok().flatten().map(|row| row.value.as_ref().to_vec())
+    };
+    let shipped = |id: Id| {
+        calimero_storage::row::decode(id, &read(StorageKey::Index(id))?)
+            .filter(|row| row.data.is_some())?
+            .entity_index()
+    };
+    // Children that name each parent, and children each entity's trie lists.
+    let mut named: HashMap<Id, usize> = HashMap::new();
+    let mut listed: HashMap<Id, usize> = HashMap::new();
+    for key in collect_context_state_keys(handle, context_id)? {
+        let Some((id, index)) = entity_id_of(&key).and_then(|id| Some((id, shipped(id)?))) else {
+            continue;
+        };
+        if let Some(parent) = index.parent_id() {
+            *named.entry(parent).or_default() += 1;
+        }
+        let folded = Index::<MainStorage>::full_hash_with(id, index.own_hash(), read);
+        if folded != Some(index.full_hash()) {
+            return Ok(Some((id, "its hash is not the fold of its child trie")));
+        }
+        let children = ChildTrie::<MainStorage>::children_with(id, read);
+        for child in &children {
+            let defect = match shipped(child.id()) {
+                None => "its child trie lists a child that has no entity row",
+                Some(row) if row.parent_id() != Some(id) => {
+                    "its child trie lists a child that names another parent"
+                }
+                Some(row) if row.full_hash() != child.merkle_hash() => {
+                    "its child trie holds a hash its child no longer has"
+                }
+                Some(_) => continue,
+            };
+            return Ok(Some((id, defect)));
+        }
+        let _previous = listed.insert(id, children.len());
+    }
+    Ok(named
+        .into_iter()
+        .find(|(parent, count)| listed.get(parent).is_some_and(|listed| listed != count))
+        .map(|(parent, _)| (parent, "a child names it that its child trie does not list")))
 }
 
 /// The hash a snapshot boundary is validated against: the root of the state
