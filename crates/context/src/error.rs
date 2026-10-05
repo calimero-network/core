@@ -159,6 +159,62 @@ pub enum ContextError {
         target: String,
     },
 
+    /// A creation named no service, but the application is a multi-service
+    /// bundle, so there is no wasm to run without one.
+    ///
+    /// Caught against the application row before `init`, where it used to
+    /// surface from the bundle reader as an untyped "declares no top-level
+    /// wasm" and reach the caller as a `500`. The caller's request is what is
+    /// incomplete, so it is a `400`, and the message carries the names the
+    /// caller may pick from — the one thing it needs to fix the request.
+    #[error(
+        "application {application_id} is a multi-service bundle; name one of its services \
+         in `service_name`: {}",
+        services.join(", ")
+    )]
+    ServiceNameRequired {
+        /// Rendering of the application (for the message only).
+        application_id: String,
+        /// Every service the bundle declares, in manifest order.
+        services: Vec<String>,
+    },
+
+    /// A creation named a service the application does not declare. A `400`
+    /// for the same reason as [`Self::ServiceNameRequired`]; `services` is
+    /// empty for a single-service application, which takes no name at all.
+    #[error(
+        "application {application_id} declares no service '{service}'; {}",
+        if services.is_empty() {
+            "it is single-service, so leave `service_name` unset".to_owned()
+        } else {
+            format!("its services are: {}", services.join(", "))
+        }
+    )]
+    ServiceNotInBundle {
+        /// Rendering of the application (for the message only).
+        application_id: String,
+        /// The service the caller named.
+        service: String,
+        /// Every service the bundle declares, in manifest order.
+        services: Vec<String>,
+    },
+
+    /// A `403`: the identity creating a context for itself is a member of the
+    /// group but neither an admin nor granted `CAN_CREATE_CONTEXT`. About
+    /// standing, like [`Self::IdentityNotAGroupMember`]; being granted the
+    /// capability is the only thing that helps. As an untyped `bail!` it was a
+    /// `500`, which told the caller to retry a refusal that will never change.
+    #[error(
+        "identity '{identity}' may not create a context in group '{group_id}': \
+         not an admin and CAN_CREATE_CONTEXT is not set"
+    )]
+    CreateContextNotPermitted {
+        /// Hex rendering of the group (for the message only).
+        group_id: String,
+        /// Rendering of the identity that was checked (for the message only).
+        identity: String,
+    },
+
     /// The named group has no meta row on this node.
     ///
     /// Typed so it can answer `404`. As an untyped `bail!` it fell through to

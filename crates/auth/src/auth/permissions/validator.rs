@@ -73,9 +73,10 @@ static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// The group reads whose handlers narrow to the caller, and ONLY those: the
-/// group itself, its contexts, members, subgroups, metadata, and one member's
-/// capabilities. Each handler refuses a group outside the caller's scope
-/// (`caller_scope::refuse_unless_group_in_scope`) before it reads anything.
+/// group itself, its contexts, members, subgroups, metadata, one member's
+/// capabilities and metadata, and one context's metadata. Each handler refuses a group outside the
+/// caller's scope (`caller_scope::refuse_unless_group_in_scope`) before it
+/// reads anything.
 ///
 /// Separate from [`GROUP_REGEX`] and matched before it, because that one is a
 /// catch-all over `/groups/:id` and everything nested below — members,
@@ -85,7 +86,7 @@ static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 /// time, never the regex that happens to group them.
 static GROUP_OWN_READ_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-            r"^/admin-api/groups/([^/]+)(/contexts|/members|/subgroups|/metadata|/members/[^/]+/capabilities|/upgrade/status|/cascade-status|/migration-status)?$",
+            r"^/admin-api/groups/([^/]+)(/contexts|/members|/subgroups|/metadata|/members/[^/]+/capabilities|/members/[^/]+/metadata|/contexts/[^/]+/metadata|/upgrade/status|/cascade-status|/migration-status)?$",
         )
         .unwrap()
 });
@@ -1696,6 +1697,8 @@ mod tests {
             "/admin-api/groups/grp-1/subgroups",
             "/admin-api/groups/grp-1/metadata",
             "/admin-api/groups/grp-1/members/acct-1/capabilities",
+            "/admin-api/groups/grp-1/members/acct-1/metadata",
+            "/admin-api/groups/grp-1/contexts/ctx-1/metadata",
         ] {
             let req = Request::builder()
                 .method(Method::GET)
@@ -1727,7 +1730,9 @@ mod tests {
         for path in [
             "/admin-api/groups/grp-1/member-devices",
             "/admin-api/groups/grp-1/settings/default-capabilities",
-            "/admin-api/groups/grp-1/members/acct-1/metadata",
+            "/admin-api/groups/grp-1/members/acct-1/metadata/extra",
+            "/admin-api/groups/grp-1/contexts/ctx-1/metadata/extra",
+            "/admin-api/groups/grp-1/contexts/ctx-1",
             "/admin-api/groups/grp-1/members/acct-1/capabilities/extra",
             "/admin-api/groups/grp-1/metadata/extra",
             "/admin-api/groups/grp-1/sync",
@@ -1757,6 +1762,14 @@ mod tests {
             (
                 Method::PUT,
                 "/admin-api/groups/grp-1/members/acct-1/capabilities",
+            ),
+            (
+                Method::PUT,
+                "/admin-api/groups/grp-1/members/acct-1/metadata",
+            ),
+            (
+                Method::PUT,
+                "/admin-api/groups/grp-1/contexts/ctx-1/metadata",
             ),
             (Method::POST, "/admin-api/groups/grp-1/subgroups"),
         ] {
@@ -2223,6 +2236,105 @@ mod tests {
                 "a delegated session must not POST {path}",
             );
         }
+    }
+
+    /// An account reads its own member metadata on the token it already holds.
+    ///
+    /// `GET /groups/:g/members/:account/metadata` fell to the `GROUP_REGEX`
+    /// catch-all and so asked for `group:list[<g>]`, which a delegated session
+    /// does not carry: the account that had just set its display name was told
+    /// `403` when it read it back. The handler now narrows to the caller's
+    /// groups like its siblings, so the route takes the narrow verb — and
+    /// nothing more: the delegated session carries `group:list-own` only, so a
+    /// pass here proves that is all the route asks. Setting metadata stays
+    /// `group:manage`.
+    #[test]
+    fn a_delegated_session_reads_a_members_metadata_but_does_not_set_it() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+        let path = "/admin-api/groups/grp-1/members/acct-1/metadata";
+        let required = |method: Method| {
+            validator.determine_required_permissions(
+                &Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+
+        let read = required(Method::GET);
+        assert!(
+            matches!(
+                read.as_slice(),
+                [Permission::Group(GroupPermission::ListOwn(ResourceScope::Specific(ids)))]
+                    if ids == &["grp-1".to_owned()]
+            ),
+            "GET {path} must need exactly group:list-own[grp-1], got {read:?}",
+        );
+        assert!(
+            validator.validate_permissions(&session, &read),
+            "a delegated session must read GET {path}",
+        );
+        assert!(
+            validator.validate_permissions(&["group:list-own[grp-1]".to_owned()], &read),
+            "group:list-own scoped to the group alone must suffice",
+        );
+        assert!(
+            !validator.validate_permissions(&["group:list-own[grp-2]".to_owned()], &read),
+            "a session scoped to another group must not read it",
+        );
+        assert!(
+            !validator.validate_permissions(&session, &required(Method::PUT)),
+            "a delegated session must not PUT {path}",
+        );
+    }
+
+    /// An account reads the metadata of a context in its own group.
+    ///
+    /// Same shape as the member-metadata read above: an account sets a
+    /// context's label through a governance op it is allowed to sign, and
+    /// then could not read the record back — `GET
+    /// /groups/:g/contexts/:ctx/metadata` fell to the catch-all and asked for
+    /// `group:list[<g>]`. Apps fell back to the relay-local context label.
+    /// Narrow verb for the read, scoped to the group; the write stays
+    /// `group:manage`.
+    #[test]
+    fn a_delegated_session_reads_its_groups_context_metadata_but_does_not_set_it() {
+        let validator = PermissionValidator::new();
+        let session = delegated_session();
+        let path = "/admin-api/groups/grp-1/contexts/ctx-1/metadata";
+        let required = |method: Method| {
+            validator.determine_required_permissions(
+                &Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+
+        let read = required(Method::GET);
+        assert!(
+            matches!(
+                read.as_slice(),
+                [Permission::Group(GroupPermission::ListOwn(ResourceScope::Specific(ids)))]
+                    if ids == &["grp-1".to_owned()]
+            ),
+            "GET {path} must need exactly group:list-own[grp-1], got {read:?}",
+        );
+        assert!(
+            validator.validate_permissions(&session, &read),
+            "a delegated session must read GET {path}",
+        );
+        assert!(
+            !validator.validate_permissions(&["group:list-own[grp-2]".to_owned()], &read),
+            "a session scoped to another group must not read it",
+        );
+        assert!(
+            !validator.validate_permissions(&session, &required(Method::PUT)),
+            "a delegated session must not PUT {path}",
+        );
     }
 
     /// A token scoped to one context publishes presence there and nowhere

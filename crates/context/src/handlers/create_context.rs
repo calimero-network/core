@@ -277,10 +277,10 @@ impl Prepared<'_> {
                     &identity_account,
                     MemberCapabilities::CAN_CREATE_CONTEXT.bits(),
                 )? {
-                    bail!(
-                        "identity lacks permission to create a context in group '{group_id:?}' \
-                         (not an admin and CAN_CREATE_CONTEXT is not set)"
-                    );
+                    bail!(crate::error::ContextError::CreateContextNotPermitted {
+                        group_id: group_id.to_string(),
+                        identity: identity_pk.to_string(),
+                    });
                 }
             }
             // On a member's behalf: the AUTHOR's authority decides, and this
@@ -359,6 +359,11 @@ impl Prepared<'_> {
                 applications.insert_new(effective_app_id, fetched).clone()
             }
         };
+
+        // Before `init`: a service the bundle cannot resolve used to fail
+        // inside the compile step as an untyped bundle-reader error, which the
+        // API flattened to a `500` and the caller could not act on.
+        require_service_selection(&application, service_name)?;
 
         // The derivation loop below inserts via the raw `entry()` escape hatch
         // (the VacantEntry transmute); `entry()` caps the cache itself, evicting
@@ -466,8 +471,13 @@ async fn create_context(
     // Kept for the on-behalf check after `init`; private storage takes the store.
     let on_behalf_store = delegation.is_some().then(|| datastore.clone());
     let storage = ContextStorage::from(datastore.clone(), context.id);
-    // Create private storage (node-local, NOT synchronized)
-    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    // Create private storage (node-local, NOT synchronized). None on a member's
+    // behalf, as for every delegated run (`internal_execute`): the relay has no
+    // private store for the accounts it executes for, and an `init` that needs
+    // one is refused as `InitFailed` carrying the runtime's message.
+    let private_storage = delegation
+        .is_none()
+        .then(|| ContextPrivateStorage::from(datastore, context.id));
 
     let (outcome, storage, private_storage) = execute(
         &guard,
@@ -540,7 +550,9 @@ async fn create_context(
     // per-entity Snapshot verification (#2387) — would reject them
     // on every peer that tries to apply the snapshot.
     let datastore = storage.commit()?;
-    let _private_datastore = private_storage.commit()?;
+    if let Some(private_storage) = private_storage {
+        let _private_datastore = private_storage.commit()?;
+    }
 
     let init_delta = if let Some(root_hash) = outcome.root_hash {
         context.root_hash = root_hash.into();
@@ -828,5 +840,118 @@ async fn create_context(
     Ok(context.root_hash)
 }
 
+/// Whether `service_name` picks a wasm the application row can resolve.
+///
+/// The row is what the install wrote from the verified manifest: `services`
+/// is empty for a single-service application (raw wasm, or a bundle with only
+/// a top-level `wasm`) and names every service otherwise — and a manifest's
+/// top-level `wasm` is ignored once it declares services, so there is no
+/// nameless wasm to run in a multi-service bundle. The runtime applies the
+/// same rule when it opens the bundle; checking it here, against the row, is
+/// what lets the refusal be typed and happen before `init`.
+fn require_service_selection(
+    application: &Application,
+    service_name: &Option<String>,
+) -> Result<(), ContextError> {
+    let services = || application.services.keys().cloned().collect::<Vec<_>>();
+    match service_name {
+        None if application.services.is_empty() => Ok(()),
+        None => Err(ContextError::ServiceNameRequired {
+            application_id: application.id.to_string(),
+            services: services(),
+        }),
+        Some(service) if application.services.contains_key(service) => Ok(()),
+        Some(service) => Err(ContextError::ServiceNotInBundle {
+            application_id: application.id.to_string(),
+            service: service.clone(),
+            services: services(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod on_behalf_tests;
+
+#[cfg(test)]
+mod service_selection_tests {
+    use calimero_primitives::application::{ApplicationBlob, ApplicationSource};
+    use calimero_primitives::blobs::BlobId;
+
+    use super::*;
+
+    fn application(services: &[&str]) -> Application {
+        let blob = ApplicationBlob {
+            bytecode: BlobId::from([0xBB; 32]),
+            compiled: BlobId::from([0; 32]),
+        };
+        let mut app = Application::new(
+            ApplicationId::from([0xAA; 32]),
+            blob,
+            0,
+            "file:///bundle.mpk"
+                .parse::<ApplicationSource>()
+                .expect("a valid source url"),
+            vec![],
+        );
+        for name in services {
+            let _ = app.services.insert((*name).to_owned(), blob);
+        }
+        app
+    }
+
+    /// A single-service application takes no name, and refuses one it does
+    /// not declare rather than failing inside the bundle reader later.
+    #[test]
+    fn a_single_service_application_runs_unnamed_and_refuses_a_name() {
+        let app = application(&[]);
+        require_service_selection(&app, &None).expect("unnamed is the only form");
+
+        let err = require_service_selection(&app, &Some("docs".to_owned()))
+            .expect_err("a name it does not declare");
+        assert!(
+            matches!(
+                &err,
+                ContextError::ServiceNotInBundle { service, services, .. }
+                    if service == "docs" && services.is_empty()
+            ),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("single-service"), "{err}");
+    }
+
+    /// The prod reproduction: `com.calimero.mero-drive-docs` declares `docs`
+    /// and `registry`, and an account's creation intent carried no
+    /// `service_name`. The refusal must name both so the caller can choose.
+    #[test]
+    fn a_multi_service_bundle_requires_a_name_and_lists_its_services() {
+        let app = application(&["docs", "registry"]);
+
+        let err = require_service_selection(&app, &None).expect_err("no service named");
+        assert!(
+            matches!(
+                &err,
+                ContextError::ServiceNameRequired { services, .. }
+                    if services == &["docs".to_owned(), "registry".to_owned()]
+            ),
+            "got {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("docs, registry"), "{message}");
+
+        require_service_selection(&app, &Some("docs".to_owned())).expect("docs is declared");
+        require_service_selection(&app, &Some("registry".to_owned()))
+            .expect("registry is declared");
+
+        let err = require_service_selection(&app, &Some("chat".to_owned()))
+            .expect_err("chat is not declared");
+        assert!(
+            matches!(
+                &err,
+                ContextError::ServiceNotInBundle { service, services, .. }
+                    if service == "chat" && services.len() == 2
+            ),
+            "got {err:?}"
+        );
+        assert!(err.to_string().contains("docs, registry"), "{}", err);
+    }
+}
