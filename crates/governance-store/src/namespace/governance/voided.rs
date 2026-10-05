@@ -55,6 +55,10 @@ fn capability_beyond_payload(op: &GroupOp, author: &AccountId) -> u32 {
         GroupOp::ContextCapabilityGranted { .. } | GroupOp::ContextCapabilityRevoked { .. } => {
             MemberCapabilities::MANAGE_MEMBERS
         }
+        // Its apply asks for a member in standing who holds `ADMIN` in the cell's
+        // `prior` set, never a member capability, so no capability set voids it. A
+        // concurrent removal or demotion of its signer still does.
+        GroupOp::SharedWritersRotated { .. } => return 0,
         _ => return 0,
     };
     bits.bits()

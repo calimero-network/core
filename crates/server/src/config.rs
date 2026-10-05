@@ -46,9 +46,9 @@ const fn default_allow_private_network() -> bool {
 pub struct CorsConfig {
     /// Exact origins permitted to make cross-origin requests. `None` (the
     /// default) allows **any** origin. `Some(list)` restricts to that list.
-    /// In [`AuthMode::Proxy`] the node's own origin and loopback pages are
-    /// admitted too, and every other origin is refused whether or not this
-    /// is set.
+    /// In [`AuthMode::Proxy`] without `server.proxy_identity` the node's own
+    /// origin and loopback pages are admitted too, and every other origin is
+    /// refused whether or not this is set.
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
 
@@ -57,8 +57,8 @@ pub struct CorsConfig {
     /// preserve the historical behavior; set to `false` (together with an
     /// `allowed_origins` list) to remove the wildcard-origin + private-network
     /// combination that lets any website drive authenticated requests.
-    /// In [`AuthMode::Proxy`] it is advertised only to origins listed in
-    /// `allowed_origins`.
+    /// In [`AuthMode::Proxy`] without `server.proxy_identity` it is advertised
+    /// only to origins listed in `allowed_origins`.
     #[serde(default = "default_allow_private_network")]
     pub allow_private_network: bool,
 }
@@ -256,6 +256,16 @@ impl ServerConfig {
         self.proxy_identity && matches!(self.auth_mode, AuthMode::Proxy)
     }
 
+    /// Whether every caller of this node is authenticated before a handler
+    /// sees it: by this process in [`AuthMode::Embedded`], or by the reverse
+    /// proxy in front of it when its identity headers are taken
+    /// (`server.proxy_identity`). False in plain proxy mode, where callers
+    /// are anonymous to this process.
+    #[must_use]
+    pub fn authenticates_callers(&self) -> bool {
+        self.use_embedded_auth() || self.use_proxy_identity()
+    }
+
     #[must_use]
     pub fn embedded_auth_config(&self) -> Option<&AuthConfig> {
         self.embedded_auth.as_ref()
@@ -309,5 +319,15 @@ mod proxy_identity_tests {
         assert!(!config(AuthMode::Proxy, false).use_proxy_identity());
         assert!(config(AuthMode::Proxy, true).use_proxy_identity());
         assert!(!config(AuthMode::Embedded, true).use_proxy_identity());
+    }
+
+    /// Someone names the caller in embedded mode (this process) and in proxy
+    /// mode with proxy identity on (the proxy in front). Proxy mode on its own
+    /// leaves every caller anonymous.
+    #[test]
+    fn callers_are_authenticated_by_this_process_or_by_its_proxy() {
+        assert!(config(AuthMode::Embedded, false).authenticates_callers());
+        assert!(!config(AuthMode::Proxy, false).authenticates_callers());
+        assert!(config(AuthMode::Proxy, true).authenticates_callers());
     }
 }

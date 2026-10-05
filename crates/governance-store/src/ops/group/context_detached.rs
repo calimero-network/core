@@ -6,6 +6,7 @@ use calimero_primitives::context::ContextId;
 use eyre::Result as EyreResult;
 
 pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, context_id: &ContextId) -> EyreResult<()> {
+    super::shared_writers_rotated::refuse_moving_rotated_context(ctx, context_id, None)?;
     let signer = ctx.signer();
     let permissions = ctx.permissions();
     ctx.context_registration()

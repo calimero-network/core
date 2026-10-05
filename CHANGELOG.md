@@ -4,6 +4,23 @@
 
 ### Added
 
+- **A shared cell's writers rotate by a governance op.** A `SharedStorage`
+  cell's writer list is changed by `GroupOp::SharedWritersRotated
+  { context_id, cell, prior, nonce, new }`, published encrypted in the group
+  that owns the context. The apply refuses a rotation that is not a cell id,
+  has an empty or over-256-account `prior` or `new`, is signed by a non-member,
+  a read-only member or a TEE, or whose signer does not hold `ADMIN` in
+  `prior`. The per-cell fold starts from the set the cell id commits to; a
+  step counts only when its `prior` is the set in effect in its causal past
+  and its signer holds `ADMIN` there, a step is void when a concurrent step by
+  another account removes its signer's `ADMIN`, and a cell folds at most 256
+  steps. `ScopeProjections::shared_writers_at_cut` answers for a governance
+  cut; a context whose cells have rotated cannot be detached or deleted.
+  Execution does not read the fold yet. (breaking: `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`
+  moves to 22 and an older node cannot decode the op, so every peer of a
+  namespace upgrades together; the SDK signs at 22 from mero-js 23.8.2,
+  mero-js#244) (#4263)
+
 - **A namespace ownership proof says who founded the namespace.**
   `issue-namespace-ownership-proof` now answers `founding` (founder account and
   salt) and `credential` (this node's `AccountProof<DeviceCert>` over the
@@ -402,6 +419,83 @@
   [#3528])
 
 ### Fixed
+
+- **An account reads its own member metadata and its groups' context
+  metadata.** `GET /admin-api/groups/{g}/members/{account}/metadata` and
+  `GET /admin-api/groups/{g}/contexts/{ctx}/metadata` fell to the group
+  catch-all and asked for `group:list[<g>]`, which a delegated session does
+  not carry, so an account that had just set its display name or a context's
+  label got `403 Token does not carry the permissions this route requires`
+  reading it back. Both routes now take `group:list-own[<g>]` on GET and the
+  handlers narrow to the caller's own groups, as the other own-read routes
+  do; PUT still needs `group:manage`. (#4483)
+
+- **A delegated context creation is refused with a reason, not a `500`.** An
+  account's `POST /admin-api/groups/{ns}/context-intents` answered
+  `500 Internal server error` for a multi-service bundle with no
+  `service_name` (the compile step failed on "bundle manifest declares no
+  top-level wasm") and for a member without `CAN_CREATE_CONTEXT` (a bare
+  `bail!`). A creation now names one of the bundle's services or is refused
+  with `400` listing them, and a member the group does not let create
+  contexts is refused with `403`. A bundle declaring both `services` and a
+  top-level `wasm` no longer accepts an unnamed creation. (#4483)
+
+- **A run on an account's behalf has no private storage, and a method that
+  needs one is refused.** `#[app::private]` storage is node-local and keyed
+  by context alone, so a relay executing one context for many accounts
+  handed every delegated run the same bucket: account B could read, delete or
+  promote what account A kept private. A delegated run (a warranted write, a
+  read as an account, or an `init` on a member's behalf) now opens no private
+  store, and a method that touches one fails with `ExecuteError::PrivateStorageUnavailable`
+  (`400`) before anything is committed, telling the client to keep that data
+  on the device. A node's own runs are unchanged. (#4483)
+
+- **A method's `app::bail!` text reaches the client as text.**
+  `FunctionCallError::ExecutionError` rendered its bytes with `{:?}`, so
+  `/jsonrpc` and `/intents` showed `the method call returned an error:
+  [34, 118, ...]` for every refusal an app writes. UTF-8 bytes are now shown
+  as text; the JSON wire shape (`data` as raw bytes) is unchanged. (#4483)
+
+- **A node whose proxy authenticates callers serves browser pages from any
+  origin.** The origin guard stands in for an authenticating layer on a node
+  that has none, but it was enforced whenever auth mode is proxy, even with
+  `server.proxy_identity` on, where the proxy in front already authenticates
+  every caller. Since rc.79 tightened the guard, a fleet relay, whose
+  `allowed_origins` lists only its own hostname, answered every hosted
+  app's browser request with `403 cross-origin request refused`, so
+  delegated sign-in failed at "could not learn the relay node key". A node
+  that takes its callers' identity from its proxy is now left to CORS, as
+  an embedded-auth node is; proxy mode without `proxy_identity` keeps the
+  guard. mero-tee drops the `allowed_origins` pin it carried for the guard
+  when it bumps merod (Companion PR: mero-tee#442). (#4478)
+
+- **A browser request is judged by the host it names, not by its origin
+  alone.** In proxy auth mode the origin guard admitted any request whose
+  `Origin` matched its `Host` and judged nothing that carried no `Origin`,
+  so a page that rebound its DNS name to the node could read the admin API
+  and drive `/jsonrpc` as the node owner. A request carrying `Origin` or
+  `Sec-Fetch-Site` now counts as a browser's and is admitted only if its
+  origin is listed in `allowed_origins`, is a loopback page, or every host it
+  names (`Host`, each `X-Forwarded-Host`, the HTTP/2 authority) is one of the
+  node's own (a loopback name, an IP address, or the host of an
+  `allowed_origins` entry) and its origin matches or is absent; CORS and the
+  guard share the one check. meroctl, curl, Node clients and loopback pages
+  are unaffected. (breaking for proxy-mode nodes: a page served under a DNS
+  name the node does not know, such as a dashboard opened as
+  `http://mynode.lan:2428` or behind a reverse proxy, is refused until that
+  origin is listed in `allowed_origins`) (#4375)
+
+- **An account session on `/jsonrpc` is held to its own authority.** The
+  caller resolution looked only at key and node-owner markers, so under
+  `server.proxy_identity` a session the proxy forwarded as an account fell
+  through to the node-owner arm: `execute` ran on any context with no
+  membership check and `set_ephemeral` published presence as this node. An
+  account-anchored session is now refused with the method's typed error
+  (`FunctionCallError` naming the warranted-intent route for `execute`,
+  `Unauthorized` for `set_ephemeral`), under embedded and proxy auth alike,
+  as WS `execute` already did. Writes go through `/intents` with a warrant
+  and presence through `/presence-intents`; key callers, node-owner sessions
+  and proxy requests naming no account are unchanged. (#4454)
 
 - **A pending sweep no longer leaves the root hash ahead of the DAG heads.**
   When a delta's parent arrived by a path other than an inbound apply (a
@@ -1333,6 +1427,14 @@
   reads every state row, so `gc_sweep_duration_seconds`, `gc_rows_scanned`,
   `gc_tombstones_collected` and `gc_sweeps` now show what it costs; lengthen
   the interval on a node where sweeps take a meaningful share of it.
+
+- **In-memory store iterators no longer copy the column.** `InMemoryDB::iter`
+  cloned the whole column so the iterator could read a snapshot, so every
+  scan cost as much as the column held. Columns are now shared copy-on-write:
+  an iterator takes an O(1) reference and a write during the iteration copies
+  the map once. Snapshot reads and arena reclamation are unchanged. At 32,000
+  rows an iterator costs about 1.8 µs instead of 13.5 ms. Test-only: nodes
+  use RocksDB. (#4458)
 
 - **Per-message signer and membership checks are point reads.** Every
   readiness beacon, ack, migration heartbeat and blob announce resolved its

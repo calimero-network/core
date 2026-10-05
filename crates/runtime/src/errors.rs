@@ -45,7 +45,17 @@ pub enum FunctionCallError {
     WasmTrap(WasmTrap),
     #[error(transparent)]
     HostError(HostError),
-    #[error("the method call returned an error: {0:?}")]
+    /// The bytes are the guest's own message (`app::bail!`), almost always
+    /// UTF-8, and they reach API clients through this `Display`: rendered as
+    /// text when they are, and only as a byte list when they are not, rather
+    /// than `[34, 118, ...]` for every refusal an app ever writes.
+    #[error(
+        "the method call returned an error: {}",
+        match core::str::from_utf8(.0) {
+            Ok(text) => text.to_owned(),
+            Err(_) => format!("{:?}", .0),
+        }
+    )]
     ExecutionError(Vec<u8>),
     #[error("module size limit (max_module_size) exceeded: {size} bytes > {max} bytes limit")]
     ModuleSizeLimitExceeded { size: u64, max: u64 },
@@ -150,6 +160,14 @@ pub enum HostError {
         #[serde(skip_serializing_if = "Location::is_unknown")]
         location: Location,
     },
+    /// The guest touched `#[app::private]` storage in an execution that has
+    /// none. A relay executing on an account's behalf opens no private store:
+    /// an account's private data lives on its own device, and a per-context
+    /// bucket on the relay would be shared by every account it executes for.
+    /// An error rather than a silent miss, so the guest does not read an empty
+    /// default, write into nothing, and report success.
+    #[error("private storage is not available in this execution")]
+    PrivateStorageUnavailable,
     #[error("invalid UTF-8 string")]
     BadUTF8,
     #[error("deserialization error")]

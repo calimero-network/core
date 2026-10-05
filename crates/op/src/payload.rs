@@ -13,7 +13,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
@@ -352,6 +352,25 @@ pub enum OpPayload {
         chain: Vec<RootKeyHandoff>,
     },
 
+    // ---- shared-storage writer plane ----
+    /// One step of a `SharedStorage` cell's writer set, from `prior` to `new`.
+    ///
+    /// The author must hold `ADMIN` in `prior`; `shared_writers::fold` decides which steps apply.
+    SharedWritersRotated {
+        /// The group the op was published in, which owns the context.
+        group: ContextGroupId,
+        /// The context whose state holds the cell.
+        context: ContextId,
+        /// The cell's anchor id, which commits to its genesis writer set.
+        cell: Id,
+        /// The set the step is from.
+        prior: BTreeMap<AccountId, OpMask>,
+        /// Breaks ties between the cell's concurrent steps.
+        nonce: u64,
+        /// The set after the step.
+        new: BTreeMap<AccountId, OpMask>,
+    },
+
     /// `member` leaves `group` of its own accord (`GroupOp::MemberLeft`).
     ///
     /// A removal of the member from `group`, and, when `group` is the scope's
@@ -388,6 +407,7 @@ impl OpPayload {
             | Self::TeeAuthorityEvidence { .. }
             | Self::RelaySeated { .. }
             | Self::RootGuarded { .. }
+            | Self::SharedWritersRotated { .. }
             | Self::MemberLeft { .. } => true,
             Self::Put { .. }
             | Self::Delete { .. }

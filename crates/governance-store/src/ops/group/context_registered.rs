@@ -18,6 +18,7 @@ pub(crate) fn apply(
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
+    super::shared_writers_rotated::refuse_moving_rotated_context(ctx, context_id, Some(group_id))?;
 
     let permissions = ctx.permissions();
     ctx.context_registration().register(
