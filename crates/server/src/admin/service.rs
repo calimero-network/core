@@ -1212,6 +1212,9 @@ pub fn parse_api_error(err: Report) -> ApiError {
         // acting AS this identity, so the refusal is about standing rather
         // than about something being absent.
         | calimero_context::error::ContextError::IdentityNotAGroupMember { .. }
+        // A member without the capability to create. The same shape of "no"
+        // as the admin check: only being granted the role helps.
+        | calimero_context::error::ContextError::CreateContextNotPermitted { .. }
         | calimero_context::error::ContextError::NotAGroupAdmin { .. }
         | calimero_context::error::ContextError::SubgroupCreationNeedsNamespaceAdmin { .. }
         | calimero_context::error::ContextError::CallerNotPermitted
@@ -1346,8 +1349,15 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // says what was wrong. Without this arm it falls through to the generic 500
     // below and the reason exists nowhere but the node's log, which is not
     // something an API client can read.
-    if let Some(calimero_context::error::ContextError::InitFailed { .. }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    // A creation that named no service of a multi-service bundle, or one the
+    // bundle does not declare: the request is what is incomplete, and the
+    // message lists the names the caller may pick from. Before this arm the
+    // bundle reader's untyped error fell through to the generic 500 below.
+    if let Some(
+        calimero_context::error::ContextError::InitFailed { .. }
+        | calimero_context::error::ContextError::ServiceNameRequired { .. }
+        | calimero_context::error::ContextError::ServiceNotInBundle { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
             status_code: StatusCode::BAD_REQUEST,
@@ -1747,6 +1757,60 @@ mod parse_api_error_tests {
         assert!(
             api.message.contains("missing field `name`"),
             "the guest's own diagnosis is the only useful part; got: {}",
+            api.message
+        );
+    }
+
+    /// An account creating a context in a two-service bundle without naming a
+    /// service was answered `500 {"error":"Internal server error"}` from the
+    /// bundle reader; on prod relays that is what every mero-drive creation
+    /// intent saw. The request is incomplete, so `400`, and the body names
+    /// the services the caller may choose from.
+    #[test]
+    fn a_creation_naming_no_service_of_a_bundle_maps_to_400_listing_them() {
+        let api = parse_api_error(
+            calimero_context::error::ContextError::ServiceNameRequired {
+                application_id: "app-1".to_owned(),
+                services: vec!["docs".to_owned(), "registry".to_owned()],
+            }
+            .into(),
+        );
+        assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        assert!(
+            api.message.contains("docs, registry"),
+            "the services are what the caller needs; got: {}",
+            api.message
+        );
+
+        let api = parse_api_error(
+            calimero_context::error::ContextError::ServiceNotInBundle {
+                application_id: "app-1".to_owned(),
+                service: "chat".to_owned(),
+                services: vec!["docs".to_owned(), "registry".to_owned()],
+            }
+            .into(),
+        );
+        assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        assert!(api.message.contains("'chat'"), "{}", api.message);
+        assert!(api.message.contains("docs, registry"), "{}", api.message);
+    }
+
+    /// A member without `CAN_CREATE_CONTEXT` was told `500` by a bare `bail!`,
+    /// which reads as "retry" for a refusal that never changes. `403`, with its
+    /// neighbours about standing.
+    #[test]
+    fn a_member_without_create_capability_maps_to_403() {
+        let api = parse_api_error(
+            calimero_context::error::ContextError::CreateContextNotPermitted {
+                group_id: "grp-1".to_owned(),
+                identity: "id-1".to_owned(),
+            }
+            .into(),
+        );
+        assert_eq!(api.status_code, StatusCode::FORBIDDEN);
+        assert!(
+            api.message.contains("CAN_CREATE_CONTEXT"),
+            "{}",
             api.message
         );
     }
