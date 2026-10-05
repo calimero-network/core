@@ -397,6 +397,23 @@ pub enum ExecuteError {
         context_id: ContextId,
         reason: SharedRotationRefusal,
     },
+    /// A method run on an account's behalf touched `#[app::private]` storage,
+    /// which a node executing for accounts does not have.
+    ///
+    /// Private storage is node-local: on a member's own node it is that
+    /// member's. A relay executes one context for many accounts, so the only
+    /// bucket it could offer is one shared by all of them — account B reading,
+    /// deleting or promoting what account A kept "private". So a delegated run
+    /// (a warranted write, or a read as an account) opens no private store at
+    /// all, and a method that needs one is refused with this rather than
+    /// handed an empty default. An account's private data belongs on its own
+    /// device; the client is what holds it.
+    #[error(
+        "method on context '{context_id}' uses private storage, which an execution on an \
+         account's behalf does not have: an account's private data lives on its own device, \
+         not on the node that executes for it"
+    )]
+    PrivateStorageUnavailable { context_id: ContextId },
 }
 
 /// Why [`ExecuteError::SharedRotationRefused`] refused a rotation.
