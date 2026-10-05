@@ -1394,7 +1394,7 @@ mod tests {
     /// has to hand back byte for byte.
     fn certified(
         root_sk: &PrivateKey,
-        device: [u8; 32],
+        device_nonce: [u8; 16],
         kem: [u8; 32],
     ) -> AccountProof<DeviceCert> {
         let genesis = AccountGenesis::new(root_sk.public_key());
@@ -1402,7 +1402,7 @@ mod tests {
         let cert = DeviceCert::sign(
             root_sk,
             account,
-            DeviceId::from(device),
+            DeviceId::mint(account, device_nonce),
             &root(0x77),
             &KemPublicKey::from(kem),
             0,
@@ -1422,7 +1422,7 @@ mod tests {
     fn an_empty_scope_covers_every_application_and_a_named_one_covers_its_own() {
         let one = ApplicationId::from([0x71; 32]);
         let two = ApplicationId::from([0x72; 32]);
-        let proof = certified(&PrivateKey::from([0x34; 32]), [0x44; 32], [0x54; 32]);
+        let proof = certified(&PrivateKey::from([0x34; 32]), [0x44; 16], [0x54; 32]);
 
         let root = PrivateKey::from([0x34; 32]);
         let everything = KnownDeviceCert {
@@ -3599,7 +3599,7 @@ mod tests {
         let _ = repo
             .adopt_account(AccountGenesis::new(root_sk.public_key()))
             .expect("adopt");
-        let sibling = certified(&root_sk, [0x42; 32], [0x52; 32]);
+        let sibling = certified(&root_sk, [0x42; 16], [0x52; 32]);
 
         repo.remember_own_link(&sibling).expect("ignore");
 
