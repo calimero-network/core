@@ -66,6 +66,24 @@ const MAX_BLOB_UPLOAD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 /// questions on quotas.
 const MAX_ACCOUNT_BLOB_UPLOAD_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
 
+const FETCH_SITE: &str = "sec-fetch-site"; // a browser sets both; a page can neither set nor drop them
+const FETCH_MODE: &str = "sec-fetch-mode";
+
+/// Whether a page on another site caused this request without a script's CORS request.
+/// A navigation or a subresource load carries no `Origin`, so any site can issue one.
+fn passive_from_another_site(headers: &HeaderMap) -> bool {
+    headers
+        .get(FETCH_SITE)
+        .is_some_and(|site| site == "cross-site")
+        && headers.get(FETCH_MODE).is_none_or(|mode| mode != "cors")
+}
+
+/// The context whose peers may be asked for a blob this node does not hold:
+/// none for a request that must not cause network work or a store write.
+fn peers_of(context_id: Option<ContextId>, headers: &HeaderMap) -> Option<ContextId> {
+    context_id.filter(|_| !passive_from_another_site(headers))
+}
+
 /// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader.
 /// This allows streaming large files without loading them entirely into memory.
 ///
@@ -505,7 +523,7 @@ pub async fn download_handler(
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
@@ -571,7 +589,7 @@ pub async fn download_handler(
 
     let blob_result = state
         .node_client
-        .get_blob(&blob_id, context_id.as_ref())
+        .get_blob(&blob_id, peers_of(context_id, &headers).as_ref())
         .await;
 
     // `get_blob` answers from the local store first, so a copy that landed
@@ -782,7 +800,7 @@ pub async fn info_handler(
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
@@ -835,7 +853,7 @@ pub async fn info_handler(
 
     let presence = state
         .node_client
-        .get_blob_presence(blob_id, context_id.as_ref())
+        .get_blob_presence(blob_id, peers_of(context_id, &headers).as_ref())
         .await;
 
     let headers = match presence {
