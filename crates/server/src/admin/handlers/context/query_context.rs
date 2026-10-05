@@ -204,6 +204,9 @@ async fn query(
     account: calimero_account::AccountId,
     req: &QueryContextApiRequest,
 ) -> eyre::Result<Option<serde_json::Value>> {
+    // A context this node does not hold is a typed `404` here as on `/intents`;
+    // past this point every failure would read as this node's own fault.
+    super::perform_intent::held_context_group(ctx_client, &context_id)?;
     let executor = local_signer(ctx_client, &context_id).await?;
     let payload = serde_json::to_vec(&req.args_json)?;
 
@@ -327,5 +330,51 @@ mod tests {
         let mapped = refusal_status(eyre::eyre!("the datastore is on fire"), "get");
         assert_ne!(mapped.status_code, StatusCode::FORBIDDEN);
         assert_ne!(mapped.status_code, StatusCode::CONFLICT);
+    }
+    /// The same path as `/intents`: a session reading a context this node does
+    /// not hold is told `404` naming the context, not that the node is broken.
+    #[actix::test]
+    async fn a_query_on_a_context_this_node_does_not_hold_is_a_404_not_a_500() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::post;
+        use axum::{Extension, Router};
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+        use tower::ServiceExt as _;
+
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = crate::test_support::admin_state(&store).await;
+        let account = calimero_account::AccountGenesis::new(
+            calimero_primitives::identity::PrivateKey::from([7u8; 32]).public_key(),
+        )
+        .account_id();
+        let app = Router::new()
+            .route("/contexts/{context_id}/query", post(super::handler))
+            .layer(Extension(state))
+            .layer(Extension(AuthenticatedAccount(account)));
+
+        let context = ctx();
+        let body = serde_json::json!({ "method": "get", "argsJson": {} });
+        let response = app
+            .oneshot(
+                Request::post(format!("/contexts/{context}/query"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("a request"),
+            )
+            .await
+            .expect("the query route answers");
+
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read the response");
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(
+            body.contains(&context.to_string()) && body.contains("not held by this node"),
+            "{body}"
+        );
     }
 }
