@@ -34,7 +34,7 @@
 //! - Best for real-time notifications where missing some is acceptable
 
 use axum::extract::{Path, Request as AxumRequest};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::Extension;
@@ -80,6 +80,16 @@ const NODE_OWNER_PRINCIPAL: &str = "node-owner";
 /// authenticated principal. Never equal to a real owner, so ownership checks
 /// fail closed instead of granting the single-tenant allowance.
 const UNAUTHENTICATED_PRINCIPAL: &str = "<unauthenticated>";
+
+const FETCH_MODE: &str = "sec-fetch-mode"; // a browser sets it; a page can neither set nor drop it
+
+/// Whether a script opened this stream (`EventSource`, `fetch`) or the client is no browser.
+/// A navigation or a subresource load carries no `Origin`, so a page on any site can issue one.
+fn opened_by_a_script(headers: &HeaderMap) -> bool {
+    headers
+        .get(FETCH_MODE)
+        .is_none_or(|mode| mode == "cors" || mode == "same-origin")
+}
 
 /// Resolve the principal that owns (or is requesting) a session from the auth
 /// guard's injected extensions.
@@ -563,6 +573,14 @@ pub async fn sse_handler(
     request: AxumRequest,
 ) -> impl IntoResponse {
     let headers = request.headers();
+
+    if !opened_by_a_script(headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            "the event stream is opened with EventSource or fetch, not by navigating to it",
+        )
+            .into_response();
+    }
 
     // Check for Last-Event-ID header for reconnection
     // Format: "{session_id}-{event_number}"
