@@ -152,7 +152,8 @@ pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
         | OpPayload::MemberCapabilitySet { group, .. }
         | OpPayload::DefaultCapabilitiesSet { group, .. }
         | OpPayload::TeeAuthoringPolicySet { group, .. }
-        | OpPayload::TeeAuthorityEvidence { group, .. } => Some(*group),
+        | OpPayload::TeeAuthorityEvidence { group, .. }
+        | OpPayload::SharedWritersRotated { group, .. } => Some(*group),
         OpPayload::SubgroupVisibilitySet { scope, .. } => {
             Some(ContextGroupId::from(*scope.as_bytes()))
         }

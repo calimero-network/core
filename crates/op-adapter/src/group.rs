@@ -30,6 +30,9 @@ use calimero_op::{OpPayload, ScopeId};
 /// - visibility: `SubgroupVisibilitySet` → the Open/Restricted wall that gates
 ///   the inheritance parent-walk.
 ///
+/// **Shared-storage writer plane:** `SharedWritersRotated` → the step it names,
+/// which the projection folds into a cell's writer set.
+///
 /// **Out-of-model (`None`, by design — not gaps).** Ops that never enter the
 /// authorization decision:
 /// - app / upgrade / migration config (`TargetApplicationSet`,
@@ -150,6 +153,21 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         GroupOp::SubgroupVisibilitySet { mode } => Some(OpPayload::SubgroupVisibilitySet {
             scope: ScopeId::from(group.to_bytes()),
             restricted: matches!(mode, VisibilityMode::Restricted),
+        }),
+        // The fold checks the author against the step's own prior set.
+        GroupOp::SharedWritersRotated {
+            context_id,
+            cell,
+            prior,
+            nonce,
+            new,
+        } => Some(OpPayload::SharedWritersRotated {
+            group,
+            context: *context_id,
+            cell: *cell,
+            prior: prior.clone(),
+            nonce: *nonce,
+            new: new.clone(),
         }),
         // TEE authorship plane, folded so the TEE authority resolves at a cut.
         // `TeeAuthorityEvidence` is not mapped here: its payload is what the

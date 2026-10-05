@@ -744,6 +744,13 @@ mod tests {
             },
             GroupOp::GroupMigrationSet { migration: None },
             GroupOp::Noop,
+            GroupOp::SharedWritersRotated {
+                context_id: [0x44; 32].into(),
+                cell: calimero_storage::address::Id::new([0x11; 32]),
+                prior: [(w.author, calimero_storage::entities::OpMask::FULL)].into(),
+                nonce: 1,
+                new: [(w.relay, calimero_storage::entities::OpMask::FULL)].into(),
+            },
         ] {
             let bytes = borsh::to_vec(&inner).expect("encode");
             let op = GroupOp::OnBehalf {
@@ -1203,6 +1210,22 @@ mod tests {
             _: &AccountId,
             _: &[[u8; 32]],
         ) -> Option<crate::authorizer::AtCutMembershipPath> {
+            None
+        }
+        fn effective_role_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<GroupMemberRole>> {
+            None
+        }
+        fn context_rotation_group_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &calimero_primitives::context::ContextId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<ContextGroupId>> {
             None
         }
     }
