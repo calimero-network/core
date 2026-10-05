@@ -471,8 +471,13 @@ async fn create_context(
     // Kept for the on-behalf check after `init`; private storage takes the store.
     let on_behalf_store = delegation.is_some().then(|| datastore.clone());
     let storage = ContextStorage::from(datastore.clone(), context.id);
-    // Create private storage (node-local, NOT synchronized)
-    let private_storage = ContextPrivateStorage::from(datastore, context.id);
+    // Create private storage (node-local, NOT synchronized). None on a member's
+    // behalf, as for every delegated run (`internal_execute`): the relay has no
+    // private store for the accounts it executes for, and an `init` that needs
+    // one is refused as `InitFailed` carrying the runtime's message.
+    let private_storage = delegation
+        .is_none()
+        .then(|| ContextPrivateStorage::from(datastore, context.id));
 
     let (outcome, storage, private_storage) = execute(
         &guard,
@@ -545,7 +550,9 @@ async fn create_context(
     // per-entity Snapshot verification (#2387) — would reject them
     // on every peer that tries to apply the snapshot.
     let datastore = storage.commit()?;
-    let _private_datastore = private_storage.commit()?;
+    if let Some(private_storage) = private_storage {
+        let _private_datastore = private_storage.commit()?;
+    }
 
     let init_delta = if let Some(root_hash) = outcome.root_hash {
         context.root_hash = root_hash.into();

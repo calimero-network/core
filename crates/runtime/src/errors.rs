@@ -150,6 +150,14 @@ pub enum HostError {
         #[serde(skip_serializing_if = "Location::is_unknown")]
         location: Location,
     },
+    /// The guest touched `#[app::private]` storage in an execution that has
+    /// none. A relay executing on an account's behalf opens no private store:
+    /// an account's private data lives on its own device, and a per-context
+    /// bucket on the relay would be shared by every account it executes for.
+    /// An error rather than a silent miss, so the guest does not read an empty
+    /// default, write into nothing, and report success.
+    #[error("private storage is not available in this execution")]
+    PrivateStorageUnavailable,
     #[error("invalid UTF-8 string")]
     BadUTF8,
     #[error("deserialization error")]

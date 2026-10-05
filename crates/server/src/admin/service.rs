@@ -1146,6 +1146,11 @@ fn execute_refusal_status(err: &ExecuteError) -> Option<StatusCode> {
         ExecuteError::UpgradeInProgress { .. } | ExecuteError::NotReadOnly { .. } => {
             StatusCode::CONFLICT
         }
+        // A method that needs private storage, run on an account's behalf: no
+        // node executing for accounts has one. The request cannot be fixed by
+        // retrying or by authority — the client has to keep that data itself —
+        // so `400` rather than the generic 500 that reads as a node fault.
+        ExecuteError::PrivateStorageUnavailable { .. } => StatusCode::BAD_REQUEST,
         // The node is still catching up: state sync, the group key, or the
         // application bytecode. The identical call succeeds later.
         ExecuteError::Uninitialized
@@ -1810,6 +1815,31 @@ mod parse_api_error_tests {
         assert_eq!(api.status_code, StatusCode::FORBIDDEN);
         assert!(
             api.message.contains("CAN_CREATE_CONTEXT"),
+            "{}",
+            api.message
+        );
+    }
+
+    /// A method that touches `#[app::private]` storage, run on an account's
+    /// behalf: the relay has no private store for it, and the refusal is the
+    /// caller's to act on (keep that data on the device), so `400` with the
+    /// message as text — on `/intents` and on the account `/query` alike, both
+    /// of which reach `parse_api_error` with the typed `ExecuteError`.
+    #[test]
+    fn a_delegated_run_needing_private_storage_maps_to_400() {
+        let context_id = calimero_primitives::context::ContextId::from([7u8; 32]);
+        let api = parse_api_error(
+            eyre::Report::new(
+                calimero_context_client::messages::ExecuteError::PrivateStorageUnavailable {
+                    context_id,
+                },
+            )
+            .wrap_err("execution failed"),
+        );
+        assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        assert!(
+            api.message.contains("private storage")
+                && api.message.contains("lives on its own device"),
             "{}",
             api.message
         );

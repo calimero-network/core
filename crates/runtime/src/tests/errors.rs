@@ -195,3 +195,16 @@ fn redacted_elides_what_the_guest_wrote() {
     });
     assert_eq!(host_panic.redacted(), host_panic.to_string());
 }
+
+#[test]
+fn private_storage_unavailable_is_a_host_error() {
+    let error = FunctionCallError::HostError(HostError::PrivateStorageUnavailable);
+    assert_eq!(
+        error.to_string(),
+        "private storage is not available in this execution"
+    );
+    assert_json_eq!(
+        json!(error),
+        json!({ "type": "HostError", "data": { "type": "PrivateStorageUnavailable" } })
+    );
+}
