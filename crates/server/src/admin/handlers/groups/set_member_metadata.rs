@@ -60,11 +60,28 @@ pub async fn handler(
 pub async fn get_handler(
     Path((group_id_str, account_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
+    node_owner: Option<Extension<crate::auth::AuthenticatedNodeOwner>>,
+    account: Option<Extension<crate::auth::AuthenticatedAccount>>,
+    device: Option<Extension<crate::auth::AuthenticatedDevice>>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
+
+    // Before any read: a delegated session reaches this route on the narrow
+    // `group:list-own` (an account reads its own display name through it), so
+    // it must be confined to its own groups here, as the capabilities read is.
+    if let Some(refusal) = crate::admin::caller_scope::refuse_group_outside_caller_scope(
+        &state.ctx_client,
+        node_owner,
+        account,
+        device,
+        &group_id,
+    ) {
+        return refusal;
+    }
+
     let member = match parse_account(&account_str) {
         Ok(account) => account,
         Err(err) => return err.into_response(),

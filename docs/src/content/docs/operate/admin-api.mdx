@@ -97,6 +97,11 @@ built-in `fetch` sends it on every request.) Such a request is served when:
   the node's own, and the origin is the node's own origin (it matches one of
   those hosts) or absent.
 
+The loopback rule means that in proxy mode any page served from localhost can
+reach the admin API, whatever port it is on.
+Use proxy mode only on a development machine or behind a proxy that checks every
+caller.
+
 A host is the node's own when it is a loopback name, an IP address, or the host
 of an `allowed_origins` entry. A browser's `Host` is whatever name it resolved,
 so on its own it proves nothing: under DNS rebinding a page on

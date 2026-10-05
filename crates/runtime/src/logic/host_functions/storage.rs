@@ -316,7 +316,7 @@ impl VMHostFunctions<'_> {
                 target: "runtime::host::private_storage",
                 "private_storage_read: no private storage available"
             );
-            return Ok(0);
+            return Err(HostError::PrivateStorageUnavailable.into());
         };
 
         if let Some(value) = private_storage.get(&key) {
@@ -389,10 +389,12 @@ impl VMHostFunctions<'_> {
         );
 
         // Access private storage
-        let value = self.with_logic_mut(|logic| {
-            let private_storage = logic.private_storage.as_mut()?;
-            private_storage.remove(&key)
-        });
+        let value = self.with_logic_mut(|logic| -> VMLogicResult<Option<Vec<u8>>> {
+            let Some(private_storage) = logic.private_storage.as_mut() else {
+                return Err(HostError::PrivateStorageUnavailable.into());
+            };
+            Ok(private_storage.remove(&key))
+        })?;
 
         if let Some(value) = value {
             let value_len = value.len();
@@ -477,10 +479,10 @@ impl VMHostFunctions<'_> {
 
         // Private storage draws from the same per-execution write budget as the
         // main store, so a guest can't double its write allowance by splitting
-        // work across the two backends. Only charge when there is a backing
-        // store to write to.
-        let written = self.with_logic_mut(|logic| -> VMLogicResult<bool> {
-            // No private store → nothing to write and nothing to charge.
+        // work across the two backends. An execution without a private store
+        // (a relay running on an account's behalf) refuses the write outright
+        // rather than charging for nothing and reporting a miss.
+        self.with_logic_mut(|logic| -> VMLogicResult<()> {
             // Charge and write in a single arm on the live borrow. The budget
             // counters and limits are disjoint fields from `private_storage`, so
             // `charge_write_counters` can update them while `private_storage` is
@@ -491,7 +493,7 @@ impl VMHostFunctions<'_> {
             let max_writes = logic.limits.max_storage_writes;
             let max_bytes = logic.limits.max_storage_write_bytes;
             let Some(private_storage) = logic.private_storage.as_mut() else {
-                return Ok(false);
+                return Err(HostError::PrivateStorageUnavailable.into());
             };
             crate::logic::charge_write_counters(
                 &mut logic.storage_writes,
@@ -501,26 +503,17 @@ impl VMHostFunctions<'_> {
                 write_bytes,
             )?;
             let _evicted = private_storage.set(key, value);
-            Ok(true)
+            Ok(())
         })?;
-
-        if written {
-            trace!(
-                target: "runtime::host::private_storage",
-                op = "write",
-                key_len,
-                value_len,
-                "private_storage_write success"
-            );
-            return Ok(1);
-        }
 
         trace!(
             target: "runtime::host::private_storage",
-            "private_storage_write: no private storage available"
+            op = "write",
+            key_len,
+            value_len,
+            "private_storage_write success"
         );
-
-        Ok(0)
+        Ok(1)
     }
 
     // === Ordered secondary index host functions (SortedMap, core#2559) ===
@@ -817,6 +810,55 @@ mod tests {
         Cow, VMContext, VMLimits, VMLogic, DIGEST_SIZE,
     };
     use wasmer::{AsStoreMut, Store};
+
+    /// An execution with no private store refuses every private host call.
+    ///
+    /// A relay running on an account's behalf opens no private storage (the
+    /// account's private data lives on its device, and a per-context bucket on
+    /// the relay would be one bucket for every account it executes for). The
+    /// three calls used to answer `0` — a miss — so the guest read an empty
+    /// default, wrote into nothing, and told the caller it had succeeded.
+    #[test]
+    fn private_storage_without_a_store_is_an_error_not_a_miss() {
+        use crate::errors::HostError;
+        use crate::logic::errors::VMLogicError;
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        // `setup_vm!` passes `None` for the private store.
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let key_ptr = 200u64;
+        write_str(&host, key_ptr, "key");
+        let key_buf_ptr = 10u64;
+        prepare_guest_buf_descriptor(&host, key_buf_ptr, key_ptr, 3);
+        let value_ptr = 300u64;
+        write_str(&host, value_ptr, "value");
+        let value_buf_ptr = 32u64;
+        prepare_guest_buf_descriptor(&host, value_buf_ptr, value_ptr, 5);
+
+        let unavailable = |result: Result<u32, VMLogicError>| {
+            matches!(
+                result,
+                Err(VMLogicError::HostError(
+                    HostError::PrivateStorageUnavailable
+                ))
+            )
+        };
+        assert!(
+            unavailable(host.private_storage_read(key_buf_ptr, 1)),
+            "a read must refuse, not miss"
+        );
+        assert!(
+            unavailable(host.private_storage_write(key_buf_ptr, value_buf_ptr)),
+            "a write must refuse, not report a miss"
+        );
+        assert!(
+            unavailable(host.private_storage_remove(key_buf_ptr, 1)),
+            "a remove must refuse, not miss"
+        );
+    }
 
     /// Tests the basic `storage_write` and `storage_read` host functions.
     #[test]
