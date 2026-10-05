@@ -45,7 +45,8 @@ fn rotation_for(account: AccountId, field: u8) -> SharedRotation {
 /// A module whose `rotate` records `rotation` and commits [`COMMITTED_ROOT`], laid out like
 /// the gate tests' module with the rotation's descriptor at 96 and its bytes at 128.
 fn module_rotating(rotation: &SharedRotation) -> String {
-    module_with_artifact(rotation, &[1])
+    let no_writes = borsh::to_vec(&StorageDelta::Actions(Vec::new())).expect("encodes");
+    module_with_artifact(rotation, &no_writes)
 }
 
 /// [`module_rotating`] committing `artifact`, which it holds at 512.
@@ -570,9 +571,7 @@ async fn refreshing_folds_a_locally_published_op_and_a_fresh_cell_is_at_genesis(
 mod rights_kept {
     use std::sync::{Arc, RwLock};
 
-    use calimero_storage::action::Action;
-    use calimero_storage::delta::StorageDelta;
-    use calimero_storage::entities::{ChildInfo, EntryRules, Metadata, StorageType};
+    use calimero_storage::entities::{ChildInfo, EntryRules};
     use calimero_storage::tests::common::{collection_at, member_at, owned_entry_id};
 
     use super::*;
@@ -643,10 +642,6 @@ mod rights_kept {
         }
     }
 
-    fn artifact(actions: Vec<Action>) -> Vec<u8> {
-        borsh::to_vec(&StorageDelta::Actions(actions)).expect("encodes")
-    }
-
     /// `rotation` leaves the local account with `mask` and adds a second writer.
     fn leaving(fx: &Fixture, mask: OpMask) -> SharedRotation {
         let mut rotation = rotation_for(fx.account, 0xA1);
@@ -679,7 +674,7 @@ mod rights_kept {
         .publish(
             RUN,
             std::slice::from_ref(rotation),
-            &artifact(actions),
+            &actions,
             &pinned.writers,
         )
         .await
@@ -773,7 +768,7 @@ mod rights_kept {
                 group_id: self.pinned.group_id,
                 author: self.fx.account,
             }
-            .verify_signing_cut(&self.pinned, position, &[], &artifact(actions))
+            .verify_signing_cut(&self.pinned, position, &[], &actions)
         }
     }
 

@@ -16,7 +16,7 @@ use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_storage::delta::{CausalDelta, StorageDelta};
+use calimero_storage::delta::CausalDelta;
 use calimero_store::{key, types, Store};
 use either::Either;
 use eyre::{bail, OptionExt};
@@ -518,6 +518,9 @@ async fn create_context(
         });
     }
 
+    // Read before anything commits, so an artifact that is not the run's actions fails it.
+    let init_actions = crate::handlers::execute::run_actions(&outcome.artifact)?;
+
     // An `init` that writes an entry for the member has it signed by this node,
     // and peers accept such entries only from a `RelayTee` writing for a member.
     // The creation gate is wider (an `Admin` or `Member` holding
@@ -525,7 +528,7 @@ async fn create_context(
     // narrower rule too, before anything commits or publishes. One that signs
     // nothing writes nothing on the member's behalf and needs no relay.
     if let (Some(d), Some(store)) = (delegation.as_deref(), on_behalf_store.as_ref()) {
-        if crate::handlers::execute::artifact_signs_entries(&outcome.artifact) {
+        if crate::handlers::execute::signs_entries(&init_actions) {
             let relay = calimero_governance_store::account_for_group(store, &group_id)?;
             if let Err(refusal) = calimero_governance_store::on_behalf_standing_live(
                 store,
@@ -562,22 +565,7 @@ async fn create_context(
 
         // CRITICAL: Create delta and set dag_heads for init()
         // This ensures newly joined nodes can sync via delta protocol
-        let mut actions = if !outcome.artifact.is_empty() {
-            // Extract actions from init artifact
-            match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
-                Ok(StorageDelta::Actions(actions)) => actions,
-                Ok(_) => {
-                    warn!("Unexpected StorageDelta variant during init");
-                    vec![]
-                }
-                Err(e) => {
-                    warn!(?e, "Failed to deserialize init artifact");
-                    vec![]
-                }
-            }
-        } else {
-            vec![]
-        };
+        let mut actions = init_actions;
 
         // Sign the bootstrap actions and persist the signed
         // `signature_data` to local storage — same flow
