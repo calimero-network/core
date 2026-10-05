@@ -13,7 +13,7 @@
 //! names the same root key.
 //!
 //! The `DeviceId` is stored alongside the secret instead of being recomputed
-//! because it cannot be recomputed: it is `H(account ‖ nonce)` over a nonce
+//! because it cannot be recomputed: it is minted from the account and a nonce
 //! drawn once at enrollment. Losing it would orphan the device's replica
 //! lineage — its counter slots and HLC seed — even though the machine and its
 //! keys were unchanged.
@@ -1010,7 +1010,7 @@ impl<'a> NodeDeviceRepository<'a> {
     ///
     /// The pairing counterpart of [`ensure_enrolled`](Self::ensure_enrolled). The
     /// genesis arrives from the device that already holds the account, and it has
-    /// to: `DeviceId` is `H(account ‖ nonce)`, so this node cannot mint its own id
+    /// to: a `DeviceId` is minted for an account, so this node cannot mint its own id
     /// until it knows the account, while the account holder cannot sign this
     /// device's certificate until it knows the id and KEM key. Pairing is therefore
     /// a two-way exchange, and this is its first half - the half that produces the

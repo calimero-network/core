@@ -2440,7 +2440,7 @@ fn an_oversized_device_scope_application_list_is_refused() {
     let root = PrivateKey::from([0x22; 32]);
     let genesis = AccountGenesis::new(root.public_key());
     let account = genesis.account_id();
-    let device = DeviceId::from([0x23; 32]);
+    let device = DeviceId::mint(account, [0x23; 16]);
     let cert = DeviceCert::sign(
         &root,
         account,

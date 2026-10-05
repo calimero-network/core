@@ -6922,7 +6922,7 @@ fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
         "precondition: a bound key is not a revoked signer"
     );
 
-    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    let laptop = real_join_account(&laptop_pk).statement.device;
     bindings.apply_revocation(&ns_gid, laptop).unwrap();
     assert!(
         denied(),
@@ -6993,7 +6993,7 @@ fn narrowed_device_key_is_denied_until_a_newer_scope_binds_it_again() {
         "precondition: the bound device writes"
     );
 
-    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    let laptop = real_join_account(&laptop_pk).statement.device;
     assert!(bindings.narrow(&ns_gid, account, laptop, 1).unwrap());
     assert!(
         denied(),
@@ -7085,7 +7085,7 @@ fn a_link_refused_by_an_earlier_withdrawal_denies_its_key() {
     };
 
     let laptop_pk = PublicKey::from([0xEA; 32]);
-    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    let laptop = real_join_account(&laptop_pk).statement.device;
     assert!(!bindings
         .narrow(&ns_gid, account_for(&laptop_pk), laptop, 1)
         .unwrap());
@@ -7104,7 +7104,7 @@ fn a_link_refused_by_an_earlier_withdrawal_denies_its_key() {
     );
 
     let phone_pk = PublicKey::from([0xEB; 32]);
-    let phone = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&phone_pk));
+    let phone = real_join_account(&phone_pk).statement.device;
     bindings.apply_revocation(&ns_gid, phone).unwrap();
     assert!(matches!(
         link(&phone_pk, 0),
@@ -7154,7 +7154,7 @@ fn admission_ignores_role_but_not_revocation_or_membership() {
         "a key the namespace has no binding for is not"
     );
 
-    let reader_device = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&reader_pk));
+    let reader_device = real_join_account(&reader_pk).statement.device;
     AccountBindingRepository::new(&store)
         .apply_revocation(&ns_gid, reader_device)
         .unwrap();
@@ -13289,7 +13289,7 @@ mod account_plane_apply {
         crate::contexts::register_context_in_group(&store, &group, &context).unwrap();
 
         // The second device: certified by the account's root, linked nowhere.
-        let device = DeviceId::from([0x5D; 32]);
+        let device = DeviceId::mint(account, [0x5D; 16]);
         let second_sk = key(0x5E);
         let cert = DeviceCert::sign(
             &root,
@@ -14022,7 +14022,7 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x71; 32]);
+        let device = DeviceId::mint(root.account(), [0x71; 16]);
         let app = ApplicationId::from([0x33; 32]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![app], 0);
 
@@ -14074,7 +14074,7 @@ mod account_plane_apply {
             .add_member(&gid, &stranger, GroupMemberRole::Admin)
             .unwrap();
 
-        let device = DeviceId::from([0x72; 32]);
+        let device = DeviceId::mint(root.account(), [0x72; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         sign_apply_local_group_op_borsh(
@@ -14109,7 +14109,7 @@ mod account_plane_apply {
             .add_member(&gid, &root.account(), GroupMemberRole::Member)
             .unwrap();
 
-        let device = DeviceId::from([0x77; 32]);
+        let device = DeviceId::mint(root.account(), [0x77; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         sign_apply_local_group_op_borsh(
@@ -14141,7 +14141,7 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x78; 32]);
+        let device = DeviceId::mint(root.account(), [0x78; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         let (_handled, _divergence, events) = crate::apply_group_op_mutations(
@@ -14181,7 +14181,7 @@ mod account_plane_apply {
             .add_member(&gid, &root.account(), GroupMemberRole::Member)
             .unwrap();
 
-        let device = DeviceId::from([0x79; 32]);
+        let device = DeviceId::mint(root.account(), [0x79; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         let (handled, _divergence, events) = crate::apply_group_op_mutations(
@@ -14220,7 +14220,10 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x73; 32]);
+        let device = DeviceId::mint(
+            AccountGenesis::new(key(6).public_key()).account_id(),
+            [0x73; 16],
+        );
         let (certificate, scope) = certified(&key(6), device, vec![], 0);
 
         sign_apply_local_group_op_borsh(
@@ -14250,7 +14253,7 @@ mod account_plane_apply {
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
         let owner = root.account();
 
-        let device = DeviceId::from([0x76; 32]);
+        let device = DeviceId::mint(owner, [0x76; 16]);
         let stranger_sk = key(6);
         let certificate = AccountProof {
             genesis: AccountGenesis::new(stranger_sk.public_key()),
@@ -14301,7 +14304,7 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x74; 32]);
+        let device = DeviceId::mint(root.account(), [0x74; 16]);
         let app_one = ApplicationId::from([0x11; 32]);
         let app_two = ApplicationId::from([0x22; 32]);
         let (certificate, widened) =
@@ -14347,7 +14350,7 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x75; 32]);
+        let device = DeviceId::mint(root.account(), [0x75; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         let err = crate::apply_group_op_mutations(

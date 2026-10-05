@@ -33,7 +33,7 @@ fn the_shared_predicate_refuses_an_unverifiable_credential() {
     let cert = DeviceCert::sign(
         &root_sk,
         account,
-        DeviceId::from([0x3E; 32]),
+        DeviceId::mint(account, [0x3E; 16]),
         &sign_pk,
         &KemPublicKey::from([0x2B; 32]),
         0,

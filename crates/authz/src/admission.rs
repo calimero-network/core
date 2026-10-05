@@ -148,27 +148,15 @@ pub fn fold_device_link(
         });
     }
 
-    match devices.get(&verified.device) {
-        Some(existing) => {
-            if existing.account != verified.account {
-                return Err(Rejected::DeviceAccountReassignment);
-            }
-            if verified.device_epoch <= existing.device_epoch {
-                return Err(Rejected::DeviceEpochNotAdvanced {
-                    offered: verified.device_epoch,
-                    folded: existing.device_epoch,
-                });
-            }
+    if let Some(existing) = devices.get(&verified.device) {
+        if existing.account != verified.account {
+            return Err(Rejected::DeviceAccountReassignment);
         }
-        None => {
-            // No seed-collision check here. On a prefix collision the LOWER
-            // device id wins, but *which* device that is cannot be decided as
-            // each link folds: rejecting the newcomer only when an already-folded
-            // device compares lower is order-dependent in the direction it does
-            // not check, so low-then-high left one device live while
-            // high-then-low left both. `ScopeState::live_devices` applies the
-            // rule over the folded set instead, where it is a function of the op
-            // set and every replica reaches the same view.
+        if verified.device_epoch <= existing.device_epoch {
+            return Err(Rejected::DeviceEpochNotAdvanced {
+                offered: verified.device_epoch,
+                folded: existing.device_epoch,
+            });
         }
     }
 

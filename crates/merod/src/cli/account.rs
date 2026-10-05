@@ -157,8 +157,8 @@ impl AccountCommand {
 /// therefore does not matter who publishes or presents it, and with `--from` the
 /// root never has to reach a node at all — no home, no store, no init.
 ///
-/// **It cannot check that the device id matches the keys.** `DeviceId` is
-/// `H(account ‖ nonce)` and deliberately excludes the keys, so a device survives
+/// **It cannot check that the device id matches the keys.** A `DeviceId` is
+/// minted from the account and a nonce and excludes the keys, so a device survives
 /// a re-key. Nothing here can tell a mistyped id from a real one; a certificate
 /// naming a device the holder does not have is inert rather than dangerous.
 ///

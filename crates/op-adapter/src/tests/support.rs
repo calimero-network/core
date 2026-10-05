@@ -38,7 +38,7 @@ pub(crate) fn real_join_account_for(sign_pk: PublicKey, seed: u8) -> Box<JoinAcc
     let cert = DeviceCert::sign(
         &root_sk,
         genesis.account_id(),
-        DeviceId::from([0x3E; 32]),
+        DeviceId::mint(genesis.account_id(), [0x3E; 16]),
         &sign_pk,
         &KemPublicKey::from([0x2B; 32]),
         0,
@@ -61,7 +61,7 @@ pub(crate) fn test_join_account_for(sign_pk: PublicKey) -> Box<JoinAccountCreden
     Box::new(JoinAccountCredential {
         statement: DeviceCert {
             account: genesis.account_id(),
-            device: DeviceId::from([0x3E; 32]),
+            device: DeviceId::mint(genesis.account_id(), [0x3E; 16]),
             sign_pk,
             kem_pk: KemPublicKey::from([0x2B; 32]),
             key_epoch: 0,

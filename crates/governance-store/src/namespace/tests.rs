@@ -9406,31 +9406,26 @@ fn a_refused_credential_leaves_the_membership_intact() {
 
     // A credential that is genuinely the joiner's — it certifies the joiner's
     // key and names the joiner's account, so the op itself is well formed — but
-    // whose DEVICE some other account already claimed here. `apply_link` refuses
-    // it as a reassignment: one device cannot speak for two accounts.
+    // at a device epoch this group already spent on another key of the same
+    // device. `apply_link` refuses it as not advancing the epoch.
     //
-    // This is the only way a credential gets refused now. A credential for
-    // somebody ELSE is rejected outright a step earlier (see
+    // A credential for somebody ELSE is rejected outright a step earlier (see
     // `a_credential_certified_for_another_key_is_refused`), because naming an
     // account means claiming to BE it.
-    let squatter_root = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
-    let squatter_genesis = calimero_account::AccountGenesis::new(squatter_root.public_key());
-    let squatter = crate::test_fixtures::join_account_for(
-        &squatter_root,
-        squatter_genesis,
+    let credential = crate::test_fixtures::real_join_account(&joiner);
+    let fork = calimero_account::DeviceCert::sign(
+        &PrivateKey::from(*joiner),
+        credential.statement.account,
+        credential.statement.device,
         &PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key(),
-        *joiner.as_ref(),
+        &credential.statement.kem_pk,
         0,
-    );
+        0,
+    )
+    .expect("sign the fork");
     let _ = crate::AccountBindingRepository::new(&store)
-        .apply_link(
-            &ns_gid,
-            &squatter.genesis,
-            &squatter.chain,
-            &squatter.statement,
-            0,
-        )
-        .expect("seed the conflicting device claim");
+        .apply_link(&ns_gid, &credential.genesis, &[], &fork, 0)
+        .expect("seed the conflicting key at the same epoch");
 
     apply_open_join_with(
         &store,
@@ -9550,7 +9545,10 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
         "a rejoin must reuse its device, not mint a second replica id and strand \
          the CRDT state held under the first"
     );
-    assert_eq!(live[0].device, calimero_account::DeviceId::from(device));
+    assert_eq!(
+        live[0].device,
+        crate::test_fixtures::device_for(account_id, device)
+    );
     assert_eq!(live[0].account, account_id);
 }
 

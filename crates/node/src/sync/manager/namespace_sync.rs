@@ -3299,7 +3299,7 @@ mod joiner_credential_tests {
         let cert = DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
-            DeviceId::from([0xD1; 32]),
+            DeviceId::mint(genesis.account_id(), [0xD1; 16]),
             sign_pk,
             &KemPublicKey::from([0x2B; 32]),
             0,
@@ -4591,7 +4591,6 @@ mod namespace_join_device_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use calimero_account::DeviceId;
     use calimero_context_client::local_governance::JoinAccountCredential;
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
@@ -4769,13 +4768,20 @@ mod namespace_join_device_tests {
             .narrow(
                 &ns,
                 *descoped_account,
-                DeviceId::from(*descoped_sk.public_key()),
+                calimero_context::test_support::credential(&descoped_sk.public_key())
+                    .statement
+                    .device,
                 1,
             )
             .expect("narrow the device out");
         let revoked_sk = &members[2].0;
         AccountBindingRepository::new(&store)
-            .apply_revocation(&ns, DeviceId::from(*revoked_sk.public_key()))
+            .apply_revocation(
+                &ns,
+                calimero_context::test_support::credential(&revoked_sk.public_key())
+                    .statement
+                    .device,
+            )
             .expect("revoke the device");
 
         let served = |reply: Result<Vec<u8>, String>| reply.is_ok_and(|key| !key.is_empty());

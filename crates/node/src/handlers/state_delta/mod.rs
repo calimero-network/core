@@ -2803,7 +2803,7 @@ mod tests {
             let cert = DeviceCert::sign(
                 root,
                 account,
-                DeviceId::from([seed ^ 0x0F; 32]),
+                DeviceId::mint(account, [seed ^ 0x0F; 16]),
                 &device_sk.public_key(),
                 &KemPublicKey::from([seed ^ 0xF0; 32]),
                 0,

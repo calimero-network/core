@@ -7,7 +7,7 @@
 //! materialized rows rather than a fold, because that is how the shipping
 //! governance wire works.
 //!
-//! Four rules earn their place here, and each one is a bug that
+//! Three rules earn their place here, and each one is a bug that
 //! `crates/projection/tests/account_plane.rs` caught before this existed:
 //!
 //! 1. **Revocation is its own row family, and it is terminal.** A revocation
@@ -22,11 +22,6 @@
 //!    root key been rotated past" reads only the rotations seen so far, which
 //!    makes admission depend on delivery order. The signing epoch is stored and
 //!    the question is answered once the account's current epoch is known.
-//! 4. **Replica-seed uniqueness is decided on read too**, and for the same
-//!    reason. Rejecting a link because an already-stored device with the same
-//!    HLC seed had a lower id is order-dependent in the direction it does not
-//!    check: high-then-low left both devices live. The rule is a filter over the
-//!    stored set instead.
 
 use calimero_account::{
     verify_device_cert, AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff,
@@ -524,32 +519,7 @@ impl<'a> AccountBindingRepository<'a> {
                 device_epoch: value.device_epoch,
             });
         }
-
-        // Replica-seed uniqueness, resolved HERE rather than at apply time, for
-        // the same reason supersession is (rule 3 in the module docs). Two
-        // devices sharing an HLC seed mint colliding RGA ids and lose characters
-        // silently, so at most one of a colliding pair may be live — and which
-        // one cannot be decided as each link arrives.
-        //
-        // The apply-time version rejected an incoming device only when an
-        // already-stored one had a *lower* id, which is order-dependent in the
-        // direction it does not check: low-then-high left one device live, but
-        // high-then-low left BOTH, because the stored high id does not compare
-        // lower than the incoming low one. As a filter over the stored set the
-        // rule is a function of the set, so every replica reaches the same live
-        // view no matter what order the links arrived in.
-        let mut by_seed: BTreeMap<[u8; 16], DeviceBinding> = BTreeMap::new();
-        for binding in out {
-            by_seed
-                .entry(binding.device.hlc_seed())
-                .and_modify(|kept| {
-                    if binding.device < kept.device {
-                        *kept = binding;
-                    }
-                })
-                .or_insert(binding);
-        }
-        Ok(by_seed.into_values().collect())
+        Ok(out)
     }
 
     /// Record that `member` vouched for `account` in this group.
@@ -665,14 +635,7 @@ impl<'a> AccountBindingRepository<'a> {
     }
 
     /// `device`'s binding, if it is in force: the rules of
-    /// [`Self::live_bindings`] for one device, from point reads and a scan of
-    /// only the bindings that share its replica seed.
-    ///
-    /// Stored, not revoked, not signed by a root key the account has rotated
-    /// past, and not losing a replica-seed collision: no other device with the
-    /// same seed that passes the first three checks has a lower id. Bindings are
-    /// keyed by device id and the seed is its first 16 bytes, so the colliding
-    /// devices are one contiguous run of keys.
+    /// [`Self::live_bindings`] for one device, from point reads.
     ///
     /// # Errors
     /// Propagates the store read failure.
@@ -686,30 +649,6 @@ impl<'a> AccountBindingRepository<'a> {
         };
         if !self.in_force(group, device, &value)? {
             return Ok(None);
-        }
-
-        let gid = group.to_bytes();
-        let seed = device.hlc_seed();
-        let mut first = [0u8; 32];
-        first[..16].copy_from_slice(&seed);
-        let same_seed = collect_keys_with_prefix(
-            self.store,
-            GroupDeviceBinding::new(gid, first),
-            calimero_store::key::GROUP_DEVICE_BINDING_PREFIX,
-            |k| k.group_id() == gid && k.device_id()[..16] == seed,
-        )?;
-        let handle = self.store.handle();
-        for key in same_seed {
-            let other = DeviceId::from(key.device_id());
-            if other >= device {
-                break;
-            }
-            let Some(other_value) = handle.get(&key)? else {
-                continue;
-            };
-            if self.in_force(group, other, &other_value)? {
-                return Ok(None);
-            }
         }
 
         Ok(Some(DeviceBinding {
@@ -805,11 +744,8 @@ impl<'a> AccountBindingRepository<'a> {
     /// answer questions that share a single answer set.
     ///
     /// Built from the filtered list rather than from the raw rows, so the
-    /// read-time rules — revocation, root-key supersession, and the replica-seed
-    /// reduction that is a function of the whole set — hold exactly as they do for
-    /// a single lookup. This is also why there is no reverse *key family* here: a
-    /// point index from `sign_pk` could not answer whether the device it names
-    /// survives a seed collision without reading the devices it collides with.
+    /// read-time rules — revocation and root-key supersession — hold exactly as
+    /// they do for a single lookup.
     ///
     /// Nothing constrains two devices to distinct signing keys, so a duplicate
     /// resolves to the **first** binding in scan order — the same one
@@ -970,68 +906,54 @@ impl<'a> AccountBindingRepository<'a> {
             }
         }
 
-        match self.raw_binding(group, verified.device)? {
-            Some(existing) => {
-                if existing.account != *verified.account.as_bytes() {
-                    return Ok(Err(BindingRejected::AccountReassignment));
-                }
-                // A credential that re-states EXACTLY what is already stored is a
-                // replay, not a stale offer, and re-applying it must succeed.
-                // Every apply handler re-runs its mutation before the op-log
-                // dedup fires, so an op reaching this code a second time is
-                // ordinary — re-gossip, DAG replay, a crash between the nonce
-                // write and the log append. Answering `EpochNotAdvanced` there
-                // reports a refusal for a binding this group holds and agrees
-                // with, which is how a join came to log a rejection on every
-                // replica on every replay.
-                //
-                // Narrow on purpose: same device, same account, same keys, same
-                // epochs. Anything else at an unadvanced epoch — a different
-                // signing key, a different KEM key — is a fork of a spent epoch
-                // and still refused.
-                if existing.sign_pk == *AsRef::<[u8; 32]>::as_ref(&verified.sign_pk)
-                    && existing.kem_pk == *verified.kem_pk.as_bytes()
-                    && existing.device_epoch == verified.device_epoch
-                    && existing.key_epoch == verified.key_epoch
-                {
-                    // The scope stamp still moves: a re-link under a newer scope
-                    // is what retires the descopes signed before it.
-                    if scope_epoch > existing.scope_epoch {
-                        self.put_binding(
-                            group,
-                            verified.device,
-                            &GroupDeviceBindingValue {
-                                scope_epoch,
-                                ..existing
-                            },
-                        )?;
-                    }
-                    return Ok(Ok(DeviceBinding {
-                        device: verified.device,
-                        account: verified.account,
-                        sign_pk: verified.sign_pk,
-                        kem_pk: *verified.kem_pk.as_bytes(),
-                        device_epoch: verified.device_epoch,
-                    }));
-                }
-                if verified.device_epoch <= existing.device_epoch {
-                    return Ok(Err(BindingRejected::EpochNotAdvanced {
-                        offered: verified.device_epoch,
-                        stored: existing.device_epoch,
-                    }));
-                }
+        if let Some(existing) = self.raw_binding(group, verified.device)? {
+            if existing.account != *verified.account.as_bytes() {
+                return Ok(Err(BindingRejected::AccountReassignment));
             }
-            None => {
-                // No first-link check. Replica-seed uniqueness is decided by
-                // `live_bindings` over the stored set, because "which of two
-                // colliding devices is live" cannot be answered as each link
-                // arrives — see the comment there. Storing the loser costs one
-                // row and keeps the verdict a function of the op set; rejecting
-                // it here made the live view depend on arrival order.
-                //
-                // Dropping the check also removes a full `live_bindings` scan
-                // from every link apply, which was O(devices) store reads on a
-                // path any member can drive.
+            // A credential that re-states EXACTLY what is already stored is a
+            // replay, not a stale offer, and re-applying it must succeed.
+            // Every apply handler re-runs its mutation before the op-log
+            // dedup fires, so an op reaching this code a second time is
+            // ordinary — re-gossip, DAG replay, a crash between the nonce
+            // write and the log append. Answering `EpochNotAdvanced` there
+            // reports a refusal for a binding this group holds and agrees
+            // with, which is how a join came to log a rejection on every
+            // replica on every replay.
+            //
+            // Narrow on purpose: same device, same account, same keys, same
+            // epochs. Anything else at an unadvanced epoch — a different
+            // signing key, a different KEM key — is a fork of a spent epoch
+            // and still refused.
+            if existing.sign_pk == *AsRef::<[u8; 32]>::as_ref(&verified.sign_pk)
+                && existing.kem_pk == *verified.kem_pk.as_bytes()
+                && existing.device_epoch == verified.device_epoch
+                && existing.key_epoch == verified.key_epoch
+            {
+                // The scope stamp still moves: a re-link under a newer scope
+                // is what retires the descopes signed before it.
+                if scope_epoch > existing.scope_epoch {
+                    self.put_binding(
+                        group,
+                        verified.device,
+                        &GroupDeviceBindingValue {
+                            scope_epoch,
+                            ..existing
+                        },
+                    )?;
+                }
+                return Ok(Ok(DeviceBinding {
+                    device: verified.device,
+                    account: verified.account,
+                    sign_pk: verified.sign_pk,
+                    kem_pk: *verified.kem_pk.as_bytes(),
+                    device_epoch: verified.device_epoch,
+                }));
+            }
+            if verified.device_epoch <= existing.device_epoch {
+                return Ok(Err(BindingRejected::EpochNotAdvanced {
+                    offered: verified.device_epoch,
+                    stored: existing.device_epoch,
+                }));
             }
         }
 
@@ -1740,94 +1662,23 @@ mod tests {
     }
 
     #[test]
-    fn two_devices_sharing_a_replica_seed_converge_on_the_lower_id_either_order() {
-        // The seed rule has to be a function of the stored SET, not of arrival
-        // order. Rejecting the newcomer only when an existing device has a lower
-        // id is order-dependent: low-then-high leaves one device live, but
-        // high-then-low leaves BOTH live, because the existing high id does not
-        // compare lower than the incoming low one. Two replicas sharing an HLC
-        // seed mint colliding RGA ids and lose characters silently, which is the
-        // whole reason the rule exists.
-        let g = genesis_for(1);
-        let account = g.account_id();
-
-        // Two certs whose device ids share an hlc_seed. The seed is the id's
-        // first 16 bytes, so forge the ids directly rather than hunting for a
-        // `mint` nonce collision.
-        let mut low = [0u8; 32];
-        low[..16].copy_from_slice(&[0xAA; 16]);
-        let mut high = low;
-        high[31] = 0xFF;
-        let (low, high) = (DeviceId::from(low), DeviceId::from(high));
-        assert_eq!(low.hlc_seed(), high.hlc_seed());
-        assert!(low < high);
-
-        let cert_for_device = |device: DeviceId, seed: u8| {
-            DeviceCert::sign(
-                &key(1),
-                account,
-                device,
-                &key(seed).public_key(),
-                &KemPublicKey::from([seed; 32]),
-                0,
-                0,
-            )
-            .expect("sign")
-        };
-        let low_cert = cert_for_device(low, 5);
-        let high_cert = cert_for_device(high, 6);
-
-        let live_after = |order: [&DeviceCert; 2]| {
-            let store = test_store();
-            let gid = test_group_id();
-            let repo = AccountBindingRepository::new(&store);
-            for cert in order {
-                let _ = repo.apply_link(&gid, &g, &[], cert, 0).expect("store");
-            }
-            assert_point_reads_agree(&repo, &gid, &[5, 6], &[low, high]);
-            let mut live: Vec<DeviceId> = repo
-                .live_bindings(&gid)
-                .expect("read")
-                .into_iter()
-                .map(|b| b.device)
-                .collect();
-            live.sort_unstable();
-            live
-        };
-
-        let low_first = live_after([&low_cert, &high_cert]);
-        let high_first = live_after([&high_cert, &low_cert]);
-
-        assert_eq!(
-            low_first, high_first,
-            "the live set must not depend on which link applied first"
-        );
-        assert_eq!(
-            low_first,
-            vec![low],
-            "the lower device id must be the one left live"
-        );
-    }
-
-    #[test]
     fn the_adversarial_workload_reaches_the_same_state_in_every_order() {
         // The governance plane's counterpart to
         // `the_adversarial_account_workload_converges` in the projection. Same
         // reasoning: every order-dependence bug here came from a rule that read
         // "whatever has been applied so far", and a workload of mutually
         // consistent ops cannot expose one. So this applies the shapes that broke
-        // — a seed-colliding pair, a revocation, and a rotation that supersedes —
-        // in all 24 orders and requires identical materialized state.
+        // — a pair of devices, a revocation, and a rotation that supersedes — in
+        // all 24 orders and requires identical materialized state.
         //
         // When a new order-dependence bug is found, add its shape here.
         let g = genesis_for(1);
         let account = g.account_id();
 
-        let mut low = [0u8; 32];
-        low[..16].copy_from_slice(&[0xAA; 16]);
-        let mut high = low;
-        high[31] = 0xFF;
-        let (low, high) = (DeviceId::from(low), DeviceId::from(high));
+        let (low, high) = (
+            DeviceId::mint(account, [0xAA; 16]),
+            DeviceId::mint(account, [0xAB; 16]),
+        );
 
         let cert_at = |device: DeviceId, seed: u8, key_epoch: u32| {
             DeviceCert::sign(
@@ -1844,8 +1695,7 @@ mod tests {
         let handoff =
             RootKeyHandoff::sign(&key(1), account, 0, &key(2).public_key()).expect("sign");
 
-        // Certified at epoch 1 so the rotation does not supersede them and mask
-        // the collision property.
+        // Certified at epoch 1 so the rotation does not supersede them.
         let low_cert = cert_at(low, 5, 1);
         let high_cert = cert_at(high, 6, 1);
         let doomed = cert_at(DeviceId::mint(account, [7u8; 16]), 7, 1);
@@ -1936,7 +1786,7 @@ mod tests {
 
         // Convergence alone would also hold if everything were dropped.
         let (live, key_state) = expected;
-        assert_eq!(live, vec![low], "only the lower colliding id may be live");
+        assert_eq!(live, vec![low, high], "both unrevoked devices stay live");
         assert_eq!(key_state.map(|r| r.0), Some(1), "the rotation took effect");
     }
 
@@ -2214,7 +2064,8 @@ mod tests {
         let cert = cert_for(&alice, &key(1), 5, 0, 0);
         let _ = repo.apply_link(&gid, &alice, &[], &cert, 0).expect("store");
 
-        // Mallory certifies the same device id under his own account.
+        // Mallory certifies the same device id under his own account, which it
+        // was not minted for.
         let hijack = DeviceCert::sign(
             &key(2),
             mallory.account_id(),
@@ -2228,7 +2079,11 @@ mod tests {
         assert_eq!(
             repo.apply_link(&gid, &mallory, &[], &hijack, 0)
                 .expect("store"),
-            Err(BindingRejected::AccountReassignment)
+            Err(BindingRejected::CredentialInvalid(
+                calimero_account::AccountError::CertDeviceNotMinted {
+                    device: cert.device
+                }
+            ))
         );
     }
 
@@ -2286,69 +2141,5 @@ mod tests {
         }
         // Live: the two unrevoked, unsuperseded devices — not the other three keys.
         assert_eq!(map.len(), 2);
-    }
-
-    #[test]
-    fn a_device_dropped_by_the_seed_reduction_is_absent_from_the_sign_pk_map() {
-        // Why the batch form is a map built over the filtered list and NOT a
-        // reverse `sign_pk -> device` key family. The seed rule is a function of
-        // the whole stored set: whether this device is live depends on the OTHER
-        // devices sharing its HLC seed. A point index could return the loser's
-        // row without ever reading the row that beats it, so it would hand
-        // authorship to a device the live view excludes.
-        let g = genesis_for(1);
-        let account = g.account_id();
-
-        // Forge two ids sharing a seed, as
-        // `two_devices_sharing_a_replica_seed_converge_on_the_lower_id_either_order`
-        // does — the seed is the id's first 16 bytes.
-        let mut low = [0u8; 32];
-        low[..16].copy_from_slice(&[0xAA; 16]);
-        let mut high = low;
-        high[31] = 0xFF;
-        let (low, high) = (DeviceId::from(low), DeviceId::from(high));
-        assert!(low < high);
-
-        let cert_for_device = |device: DeviceId, seed: u8| {
-            DeviceCert::sign(
-                &key(1),
-                account,
-                device,
-                &key(seed).public_key(),
-                &KemPublicKey::from([seed; 32]),
-                0,
-                0,
-            )
-            .expect("sign")
-        };
-
-        let store = test_store();
-        let gid = test_group_id();
-        let repo = AccountBindingRepository::new(&store);
-        let _ = repo
-            .apply_link(&gid, &g, &[], &cert_for_device(low, 5), 0)
-            .expect("store");
-        let _ = repo
-            .apply_link(&gid, &g, &[], &cert_for_device(high, 6), 0)
-            .expect("store");
-
-        let map = repo.live_bindings_by_sign_pk(&gid).expect("map");
-        let (winner, loser) = (key(5).public_key(), key(6).public_key());
-        assert_eq!(
-            map.get(&winner).map(|b| b.device),
-            Some(low),
-            "the surviving device must be reachable by its signing key"
-        );
-        assert_eq!(
-            map.get(&loser),
-            None,
-            "the device the seed reduction dropped must not be reachable at all"
-        );
-        // And the single-lookup form says the same, which is the invariant the
-        // hoisted call sites depend on.
-        assert_eq!(
-            repo.binding_for_sign_pk(&gid, &loser).expect("search"),
-            None
-        );
     }
 }

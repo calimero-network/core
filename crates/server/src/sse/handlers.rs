@@ -2508,7 +2508,9 @@ mod tests {
                 sub,
                 context,
                 account,
-                device: DeviceId::from(*device_key),
+                device: calimero_context::test_support::credential(&device_key)
+                    .statement
+                    .device,
             }
         }
 

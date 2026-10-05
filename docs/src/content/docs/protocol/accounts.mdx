@@ -43,10 +43,11 @@ Neither is a public key. Both are content addresses:
 
 ```
 AccountId = H( genesis(root_pk) )
-DeviceId  = H( account ‖ nonce )
+DeviceId  = nonce ‖ H( account ‖ nonce )[..16]
 ```
 
-Because the id is a hash rather than a key, the keys underneath can rotate without the identity moving.
+Because neither id is a key, the keys underneath can rotate without the identity moving.
+The second half of a `DeviceId` binds it to its account, so a certificate naming an id minted for another account is refused, and no account can claim another's device.
 
 **The non-goal is as important as the goal.** Accounts never reach below authorization. Nothing that needs per-writer uniqueness (counter slots, HLC seeds), per-key revocability (KEM recipients), or cryptographic attribution (operation signatures) may be re-keyed onto `AccountId`. The test for any future change: *if two devices of the same account did this concurrently, is the result still correct?* If correctness depends on them being distinct, it stays device-keyed, and per-user aggregation happens **above** storage.
 

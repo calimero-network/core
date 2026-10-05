@@ -1,7 +1,5 @@
 //! The device id's stability, and every field a certificate has to commit to.
 
-use std::collections::HashSet;
-
 use calimero_primitives::identity::DeviceId;
 
 use super::support::{genesis_for, key, sign_cert, sign_handoff};
@@ -29,24 +27,6 @@ fn device_ids_differ_by_account_and_by_nonce() {
     let b = genesis_for(&key(2)).account_id();
     assert_ne!(DeviceId::mint(a, [1u8; 16]), DeviceId::mint(a, [2u8; 16]));
     assert_ne!(DeviceId::mint(a, [1u8; 16]), DeviceId::mint(b, [1u8; 16]));
-}
-
-#[test]
-fn hlc_seed_is_the_device_id_prefix() {
-    let account = genesis_for(&key(1)).account_id();
-    let device = DeviceId::mint(account, [4u8; 16]);
-    assert_eq!(&device.hlc_seed()[..], &device.as_bytes()[..16]);
-}
-
-#[test]
-fn distinct_devices_get_distinct_hlc_seeds() {
-    // Not a proof of uniqueness — that is enforced at link time by the
-    // projection. This only guards against a derivation that collapses.
-    let account = genesis_for(&key(1)).account_id();
-    let seeds: HashSet<[u8; 16]> = (0..64u8)
-        .map(|n| DeviceId::mint(account, [n; 16]).hlc_seed())
-        .collect();
-    assert_eq!(seeds.len(), 64);
 }
 
 // ---- certificates ----

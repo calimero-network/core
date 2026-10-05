@@ -3444,7 +3444,7 @@ mod tests {
         let cert = calimero_account::DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
-            calimero_account::DeviceId::from([0x3E; 32]),
+            calimero_account::DeviceId::mint(genesis.account_id(), [0x3E; 16]),
             &sign_pk,
             &calimero_account::KemPublicKey::from([0x2B; 32]),
             0,
@@ -5284,7 +5284,7 @@ mod tests {
                 // What the live apply attributes the op to.
                 Some((
                     self.accounts[&signer],
-                    calimero_account::DeviceId::from([0x3E; 32]),
+                    calimero_account::DeviceId::mint(self.accounts[&signer], [0x3E; 16]),
                 )),
                 id,
                 hlc(0),
