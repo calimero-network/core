@@ -56,7 +56,7 @@ use crate::messages::{
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
     DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, InternalErrorKind,
     MethodNotExported, MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest,
-    UpdateApplicationRequest, WriteSource,
+    ReadAs, UpdateApplicationRequest, WriteSource,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -1441,10 +1441,10 @@ impl ContextClient {
     /// merely unset.
     ///
     /// `executor` is this node's own key: it identifies the replica, and a read
-    /// writes nothing for a replica to own. The account is what the run observes
-    /// and what membership is checked against — see
-    /// [`ExecuteRequest::read_as`] for why supplying it here is not a caller
-    /// asserting its own identity.
+    /// writes nothing for a replica to own. `read_as` is what the run observes
+    /// — the account membership is checked against, and the device the method
+    /// sees as `env::device_id()` — see [`ExecuteRequest::read_as`] for why
+    /// supplying it here is not a caller asserting its own identity.
     ///
     /// # Errors
     /// [`ExecuteError`] for a method that is not read-only, a caller that is not
@@ -1452,7 +1452,7 @@ impl ContextClient {
     pub async fn query_as(
         &self,
         context_id: &ContextId,
-        account: calimero_account::AccountId,
+        read_as: ReadAs,
         executor: &PublicKey,
         method: String,
         payload: Vec<u8>,
@@ -1467,7 +1467,7 @@ impl ContextClient {
                 xcall_origin: None,
                 xcall_depth: 0,
                 delegation: None,
-                read_as: Some(account),
+                read_as: Some(read_as),
                 tee_trigger: None,
                 event_handler: false,
                 write_source: WriteSource::Local,

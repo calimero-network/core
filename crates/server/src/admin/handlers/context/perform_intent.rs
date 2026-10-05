@@ -73,6 +73,9 @@ pub(crate) fn now_secs() -> u64 {
 /// * `403` — the request is well-formed and genuinely signed, but authority is
 ///   missing. Someone else (an admin granting the capability) or something else
 ///   (a fresh warrant) has to change, not the bytes.
+/// * `404` — the request names a context this node does not hold. The bytes
+///   and the authority may both be fine; the client sent them to the wrong
+///   node, and only sending them to one that holds the context helps.
 #[derive(Debug)]
 pub enum IntentRefusal {
     /// The warrant, proof, or arguments could not be made sense of, or the
@@ -89,6 +92,11 @@ pub enum IntentRefusal {
     /// The member the write would be attributed to is read-only in the
     /// context, so no relay may write for them.
     AuthorIsReadOnly,
+    /// This node holds no row for the context named in the path. The common
+    /// way to get here is an account on one relay naming a context that lives
+    /// on another; the admin reads answer that with a `404`, and so does this,
+    /// before anything runs or a nonce is spent.
+    ContextNotHeld(ContextId),
 }
 
 impl core::fmt::Display for IntentRefusal {
@@ -104,6 +112,11 @@ impl core::fmt::Display for IntentRefusal {
                  writes",
             ),
             Self::AuthorIsReadOnly => f.write_str("the author's role in this context is read-only"),
+            Self::ContextNotHeld(context_id) => write!(
+                f,
+                "context '{context_id}' is not held by this node; send the request to a node \
+                 that holds it"
+            ),
         }
     }
 }
@@ -119,6 +132,7 @@ impl IntentRefusal {
             | Self::ExecutorIsTeeReplica
             | Self::ExecutorIsReadOnly
             | Self::AuthorIsReadOnly => StatusCode::FORBIDDEN,
+            Self::ContextNotHeld(_) => StatusCode::NOT_FOUND,
         }
     }
 
@@ -219,6 +233,22 @@ pub async fn handler(
     }
 }
 
+/// The group owning `context_id` on this node, or [`IntentRefusal::ContextNotHeld`].
+///
+/// Every held context is owned by exactly one group, so an absent row is the
+/// node not holding the context at all — the request reached the wrong node.
+/// It used to be a bare `eyre!`, which `parse_api_error` could only answer as a
+/// `500`: on prod, an account on one relay naming a context that lives on
+/// another was told the relay was broken, while the admin reads for the same
+/// context answered a clean `404`.
+pub(crate) fn held_context_group(
+    ctx_client: &ContextClient,
+    context_id: &ContextId,
+) -> eyre::Result<calimero_context_config::types::ContextGroupId> {
+    calimero_governance_store::get_group_for_context(ctx_client.datastore(), context_id)?
+        .ok_or_else(|| eyre::eyre!(IntentRefusal::ContextNotHeld(*context_id)))
+}
+
 /// This node's own signing identity in the context.
 async fn local_signer(
     ctx_client: &ContextClient,
@@ -247,9 +277,7 @@ async fn perform(
     // and never has to learn which of its processes runs the intent — that is
     // what `Warrant::executor` being an account buys, and asking a client for
     // this node's process key would give it back.
-    let group_id =
-        calimero_governance_store::get_group_for_context(ctx_client.datastore(), &context_id)?
-            .ok_or_else(|| eyre::eyre!("this context belongs to no group"))?;
+    let group_id = held_context_group(ctx_client, &context_id)?;
     let signer = local_signer(ctx_client, &context_id).await?;
     let executor_proof =
         calimero_context::join_credential::build(ctx_client.datastore(), &group_id, &signer)
@@ -753,6 +781,82 @@ mod tests {
                 Some(IntentRefusal::Malformed(_))
             ),
             "{err}"
+        );
+    }
+    /// A decodable author proof: a genuinely root-signed device certificate.
+    fn author_proof_hex() -> String {
+        use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
+
+        let root = PrivateKey::from([1; 32]);
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let statement = DeviceCert::sign(
+            &root,
+            account,
+            DeviceId::mint(account, [0x22; 16]),
+            &PrivateKey::from([8; 32]).public_key(),
+            &KemPublicKey::from([9; 32]),
+            0,
+            0,
+        )
+        .expect("cert");
+        hex::encode(
+            borsh::to_vec(&AccountProof {
+                genesis,
+                chain: vec![],
+                statement,
+            })
+            .expect("borsh"),
+        )
+    }
+
+    /// The prod repro: an account on relay X sends a well-formed intent for a
+    /// context that lives on relay Y. Relay X holds no row for it, so the only
+    /// honest answer is `404` naming the context, as the admin reads already
+    /// give — never a `500`, which told the client the relay was broken, and
+    /// never a spent nonce: nothing runs.
+    #[actix::test]
+    async fn an_intent_on_a_context_this_node_does_not_hold_is_a_404_not_a_500() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::post;
+        use axum::{Extension, Router};
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+        use tower::ServiceExt as _;
+
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = crate::test_support::admin_state(&store).await;
+        let app = Router::new()
+            .route("/contexts/{context_id}/intents", post(super::handler))
+            .layer(Extension(state));
+
+        let context = ContextId::from([0xAB; 32]);
+        let body = serde_json::json!({
+            "method": METHOD,
+            "argsJson": serde_json::from_slice::<serde_json::Value>(ARGS).expect("json args"),
+            "warrant": hex::encode(borsh::to_vec(&warrant(context, NOW + 60)).expect("borsh")),
+            "authorProof": author_proof_hex(),
+        });
+        let response = app
+            .oneshot(
+                Request::post(format!("/contexts/{context}/intents"))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("a request"),
+            )
+            .await
+            .expect("the intents route answers");
+
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read the response");
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND, "{body}");
+        assert!(
+            body.contains(&context.to_string()) && body.contains("not held by this node"),
+            "{body}"
         );
     }
 }
