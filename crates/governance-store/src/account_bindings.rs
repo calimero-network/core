@@ -200,18 +200,19 @@ pub fn member_account_in_namespace(
 /// It is not an authorization: a revoked key still resolves here. Whether the key
 /// may act *now* is [`member_account_in_namespace`]'s question.
 ///
-/// `None` means no certificate for the key has verified here, either because the
-/// key was never bound or because the link has not been folded yet.
+/// Every account whose certificate for the key has verified here: a certificate
+/// does not prove its account holds the key, so no one of them can be picked.
+/// Empty means the key was never bound or its link has not been folded yet.
 ///
 /// # Errors
 /// Propagates the namespace resolution or the store read.
-pub fn signer_account_in_namespace(
+pub fn signer_accounts_in_namespace(
     store: &Store,
     group: &ContextGroupId,
     sign_pk: &PublicKey,
-) -> EyreResult<Option<AccountId>> {
+) -> EyreResult<Vec<AccountId>> {
     let namespace = crate::NamespaceRepository::new(store).resolve(group)?;
-    AccountBindingRepository::new(store).signer_account(&namespace, sign_pk)
+    AccountBindingRepository::new(store).signer_accounts(&namespace, sign_pk)
 }
 
 /// A device binding that is currently in force.
@@ -396,38 +397,43 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(self.store.handle().put(&key, &())?)
     }
 
-    /// The account `sign_pk` was certified for in `group`, if any certificate for
-    /// it has verified here. See [`signer_account_in_namespace`].
+    /// Every account `sign_pk` was certified for in `group`, in account order.
+    /// See [`signer_accounts_in_namespace`].
     ///
     /// # Errors
     /// Propagates the store read failure.
-    pub fn signer_account(
+    pub fn signer_accounts(
         &self,
         group: &ContextGroupId,
         sign_pk: &PublicKey,
-    ) -> EyreResult<Option<AccountId>> {
-        let key = GroupSignerAccount::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
-        Ok(self.store.handle().get(&key)?.map(AccountId::from))
+    ) -> EyreResult<Vec<AccountId>> {
+        let gid = group.to_bytes();
+        let pk = *AsRef::<[u8; 32]>::as_ref(sign_pk);
+        Ok(collect_keys_with_prefix(
+            self.store,
+            GroupSignerAccount::new(gid, pk, [0u8; 32]),
+            calimero_store::key::GROUP_SIGNER_ACCOUNT_PREFIX,
+            |k| k.group_id() == gid && k.sign_pk() == pk,
+        )?
+        .into_iter()
+        .map(|k| AccountId::from(k.account_id()))
+        .collect())
     }
 
-    /// Record that `account` certified `sign_pk`, unless the key already has a row.
-    ///
-    /// The first certificate wins. A key is one node's namespace identity, which a
-    /// re-paired node keeps under a fresh device of the same account, so a second
-    /// account for the same key is not an expected state; keeping the first
-    /// avoids letting a later certificate re-attribute state already signed.
+    /// Record that `account` certified `sign_pk`. A set, so the rows are the same
+    /// whatever order the certificates arrive in.
     fn record_signer_account(
         &self,
         group: &ContextGroupId,
         sign_pk: &PublicKey,
         account: AccountId,
     ) -> EyreResult<()> {
-        let key = GroupSignerAccount::new(group.to_bytes(), *AsRef::<[u8; 32]>::as_ref(sign_pk));
-        let mut handle = self.store.handle();
-        if !handle.has(&key)? {
-            handle.put(&key, account.as_bytes())?;
-        }
-        Ok(())
+        let key = GroupSignerAccount::new(
+            group.to_bytes(),
+            *AsRef::<[u8; 32]>::as_ref(sign_pk),
+            *account.as_bytes(),
+        );
+        Ok(self.store.handle().put(&key, &())?)
     }
 
     /// The raw stored binding for `device`, superseded or not.
@@ -1030,7 +1036,7 @@ impl<'a> AccountBindingRepository<'a> {
         )?;
         let signer_accounts = collect_keys_with_prefix(
             self.store,
-            GroupSignerAccount::new(gid, [0u8; 32]),
+            GroupSignerAccount::new(gid, [0u8; 32], [0u8; 32]),
             calimero_store::key::GROUP_SIGNER_ACCOUNT_PREFIX,
             |k| k.group_id() == gid,
         )?;
@@ -1607,8 +1613,8 @@ mod tests {
                 .expect("read")
                 .is_none());
             assert_eq!(
-                repo.signer_account(&gid, &sign_pk).expect("read"),
-                Some(g.account_id()),
+                repo.signer_accounts(&gid, &sign_pk).expect("read"),
+                vec![g.account_id()],
                 "revoke_first = {revoke_first}"
             );
         }
@@ -1620,9 +1626,9 @@ mod tests {
         let gid = test_group_id();
         let repo = AccountBindingRepository::new(&store);
         assert_eq!(
-            repo.signer_account(&gid, &key(9).public_key())
+            repo.signer_accounts(&gid, &key(9).public_key())
                 .expect("read"),
-            None
+            Vec::new()
         );
     }
 
