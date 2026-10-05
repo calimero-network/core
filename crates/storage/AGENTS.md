@@ -1022,6 +1022,11 @@ struct MyType {
   after `MAX_PARENT_CHAIN` steps with `StorageError::ParentChainTooLong`, a hard error,
   and the other walks down a subtree visit each entity once, so a loop or an over-deep
   chain fails the call instead of spinning it. `tests/index.rs` `parent_loops`.
+- **A `Public` delete takes nothing owned with it.**
+  A `DeleteRef` of a `Public` entity carries no signature, so its cascade (`Index::tombstone_descendants_of`) skips every descendant that is not `Public`, and its subtree, as it skips `Frozen` data (`kept_by_subtree_delete`); those entries stay listed under the tombstoned entity.
+  The local delete refuses such a subtree instead (`find_kept_descendant`), so the deleter never tombstones what its peers keep.
+  Nested collections link under the root, so only a collection's own container holds such entries.
+  `tests/owned_rules.rs` and `tests/index.rs` `subtree_tombstoning` pin it.
 
 - **A cell's writer set is the fold of its governance rotation steps** (`shared_writers::fold`, the rules are in the governance chapter of the docs). It takes the steps and their causal pasts and nothing else, so its answer cannot depend on arrival order or on this node's store. It takes at most `MAX_STEPS_PER_CELL` steps and has no answer past that, which bounds its cost without dropping history, and treats two identical concurrent rotations as one so a step built on either still counts. Its `Ok(None)` means no step took effect and `Err(OverBudget)` that there is no answer; the reader, not this crate, knows whether the cut could be read at all.
 

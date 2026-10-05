@@ -348,6 +348,13 @@ pub struct EntityIndex {
     pub deleted_children: Vec<Id>,
 }
 
+/// Whether a subtree delete keeps a descendant of this type and all below it: `Frozen` is
+/// never deleted, and a `Public` delete is unsigned, so it takes nothing owned or writer-guarded.
+fn kept_by_subtree_delete(public_root: bool, descendant: &StorageType) -> bool {
+    matches!(descendant, StorageType::Frozen)
+        || (public_root && !matches!(descendant, StorageType::Public))
+}
+
 /// The full hash of an entity with no children: the fold over an empty trie,
 /// as `Index::full_hash_from_root` computes it.
 fn childless_full_hash(own_hash: &[u8; 32]) -> [u8; 32] {
@@ -1715,13 +1722,13 @@ impl<S: StorageAdaptor> Index<S> {
     /// single-level concurrent add/update-vs-delete semantics applied
     /// transitively.
     ///
-    /// `Frozen` descendants are the one exception: they are immutable and never
-    /// deleted, so the walk skips a `Frozen` node and its whole subtree rather
-    /// than tombstoning it. A local delete never reaches this state — it is
-    /// rejected up front by `remove_child_from`'s `find_frozen_descendant` scan.
-    /// The skip here is the replay-side fallback: on `apply_delete_ref_action`
-    /// this replica can't reject a peer's `DeleteRef` without diverging, so it
-    /// preserves the frozen data (leaving it a detached orphan) and converges.
+    /// A descendant [`kept_by_subtree_delete`] is skipped with its whole
+    /// subtree: `Frozen` data, and under a `Public` root anything not `Public`.
+    /// A local delete is refused up front by `remove_child_from`'s
+    /// `find_kept_descendant` scan. The skip here is the replay-side fallback:
+    /// on `apply_delete_ref_action` this replica can't reject a peer's
+    /// `DeleteRef` without diverging, so it keeps that data (still listed under
+    /// its tombstoned parent) and converges.
     ///
     /// Internal subtree parent-lists and hashes are intentionally NOT
     /// recomputed: the whole subtree is detached at the root, so none of it
@@ -1747,6 +1754,7 @@ impl<S: StorageAdaptor> Index<S> {
         let mut doomed = Vec::new();
         let mut stack = vec![root_id];
         let mut seen = BTreeSet::new();
+        let mut public_root = false;
         while let Some(id) = stack.pop() {
             // A child trie that lists an ancestor would otherwise be walked forever.
             if !seen.insert(id) {
@@ -1755,25 +1763,14 @@ impl<S: StorageAdaptor> Index<S> {
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
-            // Frozen data is immutable and never deleted: skip a Frozen node AND
-            // its subtree (don't recurse) so deleting a non-frozen parent leaves
-            // the frozen descendant as a surviving orphan. Mirrors the
-            // `RemoveMode::Delete` Frozen guard in `Interface`. Scoped to
-            // descendants (`id != root_id`): both callers (`remove_child_from`,
-            // `apply_delete_ref_action`) reject deleting Frozen data upstream, so
-            // the root is never Frozen here; the caller tombstones it regardless.
-            if id != root_id
-                && matches!(
-                    index.metadata.storage_type,
-                    crate::entities::StorageType::Frozen
-                )
-            {
+            // The root is popped first, so its type is known before any descendant's.
+            if id == root_id {
+                public_root = matches!(index.metadata.storage_type, StorageType::Public);
+            } else if kept_by_subtree_delete(public_root, &index.metadata.storage_type) {
                 continue;
             }
-            {
-                for child in <ChildTrie<S>>::new(id).children() {
-                    stack.push(child.id());
-                }
+            for child in <ChildTrie<S>>::new(id).children() {
+                stack.push(child.id());
             }
             // The root is tombstoned by the caller; only its descendants here.
             if id == root_id {
@@ -1797,21 +1794,15 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(())
     }
 
-    /// Returns the id of the first `Frozen` entity in `root_id`'s subtree
-    /// (excluding `root_id` itself), or `None` if the subtree holds no frozen
-    /// data.
-    ///
-    /// Read-only pre-check for the local delete guard in
-    /// [`remove_child_from`](crate::interface::Interface::remove_child_from): a
-    /// genuine subtree delete must refuse to strand `Frozen` data, so the
-    /// caller rejects the delete and asks the operator to relocate the frozen
-    /// entity out of the subtree first. Kept separate from
-    /// [`tombstone_descendants_of`](Self::tombstone_descendants_of) because the
-    /// check must complete and reject BEFORE any state is mutated.
-    pub(crate) fn find_frozen_descendant(root_id: Id) -> Result<Option<Id>, StorageError> {
+    /// The first descendant a delete of `root_id` keeps, with its storage type's name: the local
+    /// delete refuses on it, since every peer replaying the delete would keep it.
+    pub(crate) fn find_kept_descendant(
+        root_id: Id,
+    ) -> Result<Option<(Id, &'static str)>, StorageError> {
         let _mutation_guard = index_mutation_guard();
         let mut stack = vec![root_id];
         let mut seen = BTreeSet::new();
+        let mut public_root = false;
         while let Some(id) = stack.pop() {
             if !seen.insert(id) {
                 continue;
@@ -1819,18 +1810,14 @@ impl<S: StorageAdaptor> Index<S> {
             let Some(index) = Self::get_index(id)? else {
                 continue;
             };
-            if id != root_id
-                && matches!(
-                    index.metadata.storage_type,
-                    crate::entities::StorageType::Frozen
-                )
-            {
-                return Ok(Some(id));
+            let storage_type = &index.metadata.storage_type;
+            if id == root_id {
+                public_root = matches!(storage_type, StorageType::Public);
+            } else if kept_by_subtree_delete(public_root, storage_type) {
+                return Ok(Some((id, crate::entities::storage_type_name(storage_type))));
             }
-            {
-                for child in <ChildTrie<S>>::new(id).children() {
-                    stack.push(child.id());
-                }
+            for child in <ChildTrie<S>>::new(id).children() {
+                stack.push(child.id());
             }
         }
         Ok(None)
