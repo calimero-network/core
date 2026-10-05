@@ -416,6 +416,7 @@ impl Publisher<'_> {
 #[cfg(test)]
 mod tests {
     use calimero_account::AccountId;
+    use calimero_context_client::messages::InternalErrorKind;
     use calimero_storage::collections::cell_id;
     use calimero_storage::entities::OpMask;
     use calimero_store::db::InMemoryDB;
@@ -724,9 +725,30 @@ mod tests {
         let cell = cell_of(&[1], 7);
         let actions = vec![update_member(cell)];
         let artifact = borsh::to_vec(&StorageDelta::Actions(actions.clone())).expect("encodes");
-        assert_eq!(run_actions(&artifact), actions);
-        assert_eq!(run_actions(&[]), vec![]);
-        assert_eq!(run_actions(&[0xFF; 3]), vec![]);
+        assert_eq!(run_actions(&artifact).expect("decodes"), actions);
+        assert_eq!(run_actions(&[]).expect("a run that wrote nothing"), vec![]);
+    }
+
+    #[test]
+    fn an_artifact_that_is_not_actions_fails_the_run_rather_than_reading_as_empty() {
+        let causal = borsh::to_vec(&StorageDelta::CausalActions {
+            actions: vec![update_member(cell_of(&[1], 7))],
+            delta_id: [0; 32],
+            delta_hlc: Default::default(),
+            effective_writers: BTreeMap::new(),
+            signer_account: None,
+            on_behalf_accounts: BTreeMap::new(),
+        })
+        .expect("encodes");
+        for artifact in [vec![0xFF; 3], causal] {
+            let error = run_actions(&artifact).expect_err("not a run's actions");
+            assert!(matches!(
+                error.downcast_ref::<ExecuteError>(),
+                Some(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Runtime
+                })
+            ));
+        }
     }
 
     #[test]
