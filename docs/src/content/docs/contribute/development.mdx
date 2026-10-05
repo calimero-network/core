@@ -58,7 +58,9 @@ two nodes that talk to each other:
 
 <Steps>
 
-1. Initialize and run the first node:
+1. Initialize and run the first node.
+   `init` defaults to `--auth-mode proxy`, which authenticates no caller, so any page served from localhost can reach the admin API.
+   Use it only on a development machine:
 
    ```sh
    merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns

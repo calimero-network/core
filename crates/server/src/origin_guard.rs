@@ -32,7 +32,7 @@ pub(crate) struct OriginGuard {
 }
 
 impl OriginGuard {
-    pub(crate) fn new(auth_enforced: bool, allowed_origins: Option<&[String]>) -> Self {
+    pub(crate) fn new(callers_authenticated: bool, allowed_origins: Option<&[String]>) -> Self {
         let allowed: Arc<[String]> = allowed_origins.unwrap_or_default().into();
         let allowed_hosts = allowed
             .iter()
@@ -40,7 +40,7 @@ impl OriginGuard {
             .map(|authority| authority.host().to_ascii_lowercase())
             .collect();
         Self {
-            enforce: !auth_enforced,
+            enforce: !callers_authenticated,
             allowed,
             allowed_hosts,
         }
@@ -209,9 +209,11 @@ mod tests {
     use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
     use axum::routing::{get, post};
     use axum::Router;
+    use libp2p::identity::Keypair;
     use tower::ServiceExt;
 
     use super::{refuse_foreign_origins, OriginGuard};
+    use crate::config::{AuthMode, ServerConfig, ServiceConfigs};
 
     fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
         let mut map = HeaderMap::new();
@@ -223,6 +225,38 @@ mod tests {
 
     fn admits(guard: &OriginGuard, origin: &'static str, host: &'static str) -> bool {
         guard.admits(&headers(&[("origin", origin), ("host", host)]), None)
+    }
+
+    fn guard_for(auth_mode: AuthMode, proxy_identity: bool) -> OriginGuard {
+        let mut config = ServerConfig::with_auth(
+            vec![],
+            Keypair::generate_ed25519(),
+            ServiceConfigs {
+                admin: None,
+                jsonrpc: None,
+                websocket: None,
+                sse: None,
+            },
+            auth_mode,
+            None,
+        );
+        config.proxy_identity = proxy_identity;
+        OriginGuard::new(
+            config.authenticates_callers(),
+            config.cors.allowed_origins.as_deref(),
+        )
+    }
+
+    /// The guard stands in for an authenticating layer only where there is
+    /// none. A node that takes callers' identity from its proxy is reachable
+    /// only through that proxy, which authenticates every caller, and a relay
+    /// serves apps from any origin: there the guard steps aside, as it does
+    /// under embedded auth. Plain proxy mode keeps it.
+    #[test]
+    fn a_node_whose_proxy_names_callers_is_not_guarded() {
+        assert!(!guard_for(AuthMode::Embedded, false).enforced());
+        assert!(!guard_for(AuthMode::Proxy, true).enforced());
+        assert!(guard_for(AuthMode::Proxy, false).enforced());
     }
 
     #[test]
