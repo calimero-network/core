@@ -4,6 +4,23 @@
 
 ### Added
 
+- **A shared cell's writers rotate by a governance op.** A `SharedStorage`
+  cell's writer list is changed by `GroupOp::SharedWritersRotated
+  { context_id, cell, prior, nonce, new }`, published encrypted in the group
+  that owns the context. The apply refuses a rotation that is not a cell id,
+  has an empty or over-256-account `prior` or `new`, is signed by a non-member,
+  a read-only member or a TEE, or whose signer does not hold `ADMIN` in
+  `prior`. The per-cell fold starts from the set the cell id commits to; a
+  step counts only when its `prior` is the set in effect in its causal past
+  and its signer holds `ADMIN` there, a step is void when a concurrent step by
+  another account removes its signer's `ADMIN`, and a cell folds at most 256
+  steps. `ScopeProjections::shared_writers_at_cut` answers for a governance
+  cut; a context whose cells have rotated cannot be detached or deleted.
+  Execution does not read the fold yet. (breaking: `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`
+  moves to 22 and an older node cannot decode the op, so every peer of a
+  namespace upgrades together; the SDK signs at 22 from mero-js 23.8.2,
+  mero-js#244) (#4263)
+
 - **A namespace ownership proof says who founded the namespace.**
   `issue-namespace-ownership-proof` now answers `founding` (founder account and
   salt) and `credential` (this node's `AccountProof<DeviceCert>` over the
@@ -402,6 +419,42 @@
   [#3528])
 
 ### Fixed
+
+- **An account reads its own member metadata and its groups' context
+  metadata.** `GET /admin-api/groups/{g}/members/{account}/metadata` and
+  `GET /admin-api/groups/{g}/contexts/{ctx}/metadata` fell to the group
+  catch-all and asked for `group:list[<g>]`, which a delegated session does
+  not carry, so an account that had just set its display name or a context's
+  label got `403 Token does not carry the permissions this route requires`
+  reading it back. Both routes now take `group:list-own[<g>]` on GET and the
+  handlers narrow to the caller's own groups, as the other own-read routes
+  do; PUT still needs `group:manage`. (#4483)
+
+- **A delegated context creation is refused with a reason, not a `500`.** An
+  account's `POST /admin-api/groups/{ns}/context-intents` answered
+  `500 Internal server error` for a multi-service bundle with no
+  `service_name` (the compile step failed on "bundle manifest declares no
+  top-level wasm") and for a member without `CAN_CREATE_CONTEXT` (a bare
+  `bail!`). A creation now names one of the bundle's services or is refused
+  with `400` listing them, and a member the group does not let create
+  contexts is refused with `403`. A bundle declaring both `services` and a
+  top-level `wasm` no longer accepts an unnamed creation. (#4483)
+
+- **A run on an account's behalf has no private storage, and a method that
+  needs one is refused.** `#[app::private]` storage is node-local and keyed
+  by context alone, so a relay executing one context for many accounts
+  handed every delegated run the same bucket: account B could read, delete or
+  promote what account A kept private. A delegated run (a warranted write, a
+  read as an account, or an `init` on a member's behalf) now opens no private
+  store, and a method that touches one fails with `ExecuteError::PrivateStorageUnavailable`
+  (`400`) before anything is committed, telling the client to keep that data
+  on the device. A node's own runs are unchanged. (#4483)
+
+- **A method's `app::bail!` text reaches the client as text.**
+  `FunctionCallError::ExecutionError` rendered its bytes with `{:?}`, so
+  `/jsonrpc` and `/intents` showed `the method call returned an error:
+  [34, 118, ...]` for every refusal an app writes. UTF-8 bytes are now shown
+  as text; the JSON wire shape (`data` as raw bytes) is unchanged. (#4483)
 
 - **A node whose proxy authenticates callers serves browser pages from any
   origin.** The origin guard stands in for an authenticating layer on a node
