@@ -465,6 +465,9 @@ pub struct ScopeProjections {
     /// Each scope's void set, and the state its log leaves without those ops,
     /// valid until the scope's log next changes.
     voided: Mutex<HashMap<ScopeId, Voided>>,
+    /// The cut that last showed an account seated as a relay for a group. Only a
+    /// hint of where to look first: the cut is asked again on every read.
+    relay_seats: Mutex<HashMap<(ContextGroupId, AccountId), [u8; 32]>>,
 }
 
 /// What a scope's log holds that carries no authority (see
@@ -2792,6 +2795,42 @@ impl ScopeProjections {
         })
     }
 
+    /// Whether `relay` was a `RelayTee` for `group` at the cut of some op folded
+    /// for its namespace: the question a leaf with no cut of its own can be asked.
+    #[must_use]
+    pub fn relay_was_seated(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        relay: &AccountId,
+    ) -> bool {
+        let seated_at = |cut: &[u8; 32]| {
+            self.standing_reads_at_cut(store, group, &[*cut])
+                .is_some_and(|reads| {
+                    calimero_governance_store::seated_as_relay(store, &reads, &group, relay)
+                        .unwrap_or(false)
+                })
+        };
+        let Ok(namespace) = NamespaceRepository::new(store).resolve(&group) else {
+            return false;
+        };
+        let Some(log) = self.logs.get(&ScopeId::from(namespace.to_bytes())) else {
+            return false;
+        };
+        let mut seats = self
+            .relay_seats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if seats.get(&(group, *relay)).is_some_and(seated_at) {
+            return true;
+        }
+        let Some(cut) = log.iter().map(Op::id).find(seated_at) else {
+            return false;
+        };
+        let _previous = seats.insert((group, *relay), cut);
+        true
+    }
+
     /// Does the cut `heads` reach every op in `floor`, in `group`'s namespace?
     ///
     /// `Some(true)` when every floor op is in the cut's ancestry (on the
@@ -3103,6 +3142,13 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
         let heads = ScopeProjections::namespace_current_heads(store, *root)?;
         // A poisoned lock only means a panic elsewhere; the op log still answers.
         self.0.read().ok()?.folded_tee(store, *root, &heads)
+    }
+
+    fn relay_was_seated(&self, store: &Store, group: &ContextGroupId, relay: &AccountId) -> bool {
+        // A poisoned lock only means a panic elsewhere; not answering refuses.
+        self.0
+            .read()
+            .is_ok_and(|folded| folded.relay_was_seated(store, *group, relay))
     }
 }
 

@@ -703,25 +703,15 @@ pub(crate) fn snapshot_leaf_authorship(
             calimero_governance_store::writer_account(store, folded, &group_id, signer, account)
                 .unwrap_or(account)
         },
-        |relay, on_behalf| snapshot_relay_may_write_for(store, &group_id, relay, on_behalf),
+        |relay, on_behalf| snapshot_relay_may_write_for(store, folded, &group_id, relay, on_behalf),
     )
 }
 
-/// Whether a snapshot leaf written on `on_behalf`'s behalf was signed by a party
-/// that may write for it, `None` on a lookup error.
-///
-/// Only the signer half of the on-behalf rule decides here: its account must be
-/// a `RelayTee` (live, there being no cut). Whether the account written for may
-/// write *now* does not, for the reason [`snapshot_leaf_authorship`] gives for
-/// any author: a member who has since left keeps the state written for them.
-///
-/// The relay half is live because the snapshot carries no cut and the projection
-/// keeps no history of roles. So the state a relay wrote is dropped from a cold
-/// joiner once that relay stops being a `RelayTee` (removed, or switched back to
-/// a replica); the relay that wrote it vouched for it, and a forger signing as a
-/// member could otherwise serve anyone's entries.
+/// Whether a relay may have written a snapshot leaf for `on_behalf`: its account is
+/// a `RelayTee` now or was at some folded cut, a leaf carrying no cut of its own.
 fn snapshot_relay_may_write_for(
     store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     group_id: &calimero_context_config::types::ContextGroupId,
     relay: calimero_account::AccountId,
     on_behalf: calimero_account::AccountId,
@@ -732,7 +722,9 @@ fn snapshot_relay_may_write_for(
         Ok(
             Ok(()) | Err(OnBehalfRefusal::AccountNotAMember | OnBehalfRefusal::AccountIsReadOnly),
         ) => Some(true),
-        Ok(Err(OnBehalfRefusal::SignerNotARelay)) => Some(false),
+        Ok(Err(OnBehalfRefusal::SignerNotARelay)) => {
+            Some(folded.relay_was_seated(store, group_id, &relay))
+        }
         Err(_) => None,
     }
 }
@@ -840,7 +832,7 @@ fn snapshot_signer_accounts(
     // Written on an account's behalf by a relay that may write for it: the leaf
     // is that account's, as `snapshot_leaf_authorship` decides it.
     if let Some(on_behalf) = on_behalf_of_leaf(Some(&metadata.storage_type)) {
-        return snapshot_relay_may_write_for(store, &group_id, account, on_behalf)
+        return snapshot_relay_may_write_for(store, folded, &group_id, account, on_behalf)
             .filter(|may| *may)
             .map(|_| (signer, on_behalf, on_behalf));
     }
