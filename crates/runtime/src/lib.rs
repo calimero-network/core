@@ -1218,6 +1218,77 @@ mod wasm_integration_tests {
     /// host function so we can exercise the runtime's per-host-call
     /// `catch_unwind` recovery (the path that replaced the process-global
     /// `set_hook` machinery in `logic/imports.rs`).
+    /// A guest that reads `#[app::private]` storage in an execution given no
+    /// private store — what every run on an account's behalf is — gets the
+    /// typed host error, and the same guest with a store gets its miss. The
+    /// node maps the first to `ExecuteError::PrivateStorageUnavailable`; it
+    /// used to be a silent `0`, so the guest read an empty default and the
+    /// relay's single per-context bucket was shared by every account.
+    #[test]
+    fn private_read_without_a_private_store_is_the_typed_host_error() {
+        let wat = r#"
+            (module
+                (import "env" "private_storage_read" (func $private_read (param i64 i64) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "read_private")
+                    (i64.store (i32.const 16) (i64.const 100))
+                    (i64.store (i32.const 24) (i64.const 3))
+                    (i32.store8 (i32.const 100) (i32.const 97))
+                    (i32.store8 (i32.const 101) (i32.const 98))
+                    (i32.store8 (i32.const 102) (i32.const 99))
+                    (drop (call $private_read (i64.const 16) (i64.const 0)))
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let mut storage = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                AccountId::from([0; 32]),
+                [0; 32].into(),
+                "read_private",
+                &[],
+                &mut storage,
+                None, // on an account's behalf: no private store
+                None,
+            )
+            .expect("run must return an Outcome");
+        assert!(
+            matches!(
+                outcome.returns,
+                Err(FunctionCallError::HostError(
+                    HostError::PrivateStorageUnavailable
+                ))
+            ),
+            "got {:?}",
+            outcome.returns
+        );
+
+        let mut storage = InMemoryStorage::default();
+        let mut private = InMemoryStorage::default();
+        let outcome = module
+            .run(
+                [0; 32].into(),
+                AccountId::from([0; 32]),
+                [0; 32].into(),
+                "read_private",
+                &[],
+                &mut storage,
+                Some(&mut private), // this node's own run: unchanged
+                None,
+            )
+            .expect("run must return an Outcome");
+        assert!(
+            outcome.returns.is_ok(),
+            "a read with a store is a plain miss, got {:?}",
+            outcome.returns
+        );
+    }
+
     struct PanicStorage;
 
     impl Storage for PanicStorage {
