@@ -609,6 +609,9 @@ impl<'a> AccountBindingRepository<'a> {
     /// key's devices are live the lowest device id wins, which is the one a
     /// search of [`Self::live_bindings`] finds first.
     ///
+    /// A certificate names its signing key without proving it holds it, so a key
+    /// live under two accounts resolves to `None` rather than to whichever sorts first.
+    ///
     /// # Errors
     /// Propagates the store read failure.
     pub fn binding_for_sign_pk(
@@ -624,14 +627,20 @@ impl<'a> AccountBindingRepository<'a> {
             calimero_store::key::GROUP_SIGNER_DEVICE_PREFIX,
             |k| k.group_id() == gid && k.sign_pk() == pk,
         )?;
+        let mut found: Option<DeviceBinding> = None;
         for key in devices {
             if let Some(binding) = self.live_binding(group, DeviceId::from(key.device_id()))? {
-                if binding.sign_pk == *sign_pk {
-                    return Ok(Some(binding));
+                if binding.sign_pk != *sign_pk {
+                    continue;
+                }
+                match found {
+                    Some(first) if first.account != binding.account => return Ok(None),
+                    Some(_) => {}
+                    None => found = Some(binding),
                 }
             }
         }
-        Ok(None)
+        Ok(found)
     }
 
     /// `device`'s binding, if it is in force: the rules of
@@ -750,7 +759,7 @@ impl<'a> AccountBindingRepository<'a> {
     /// Nothing constrains two devices to distinct signing keys, so a duplicate
     /// resolves to the **first** binding in scan order — the same one
     /// `binding_for_sign_pk`'s search returns, which is what makes this
-    /// substitutable for it.
+    /// substitutable for it. A key live under two accounts is left out, as there.
     ///
     /// # Errors
     /// Propagates the store scan failure.
@@ -759,8 +768,15 @@ impl<'a> AccountBindingRepository<'a> {
         group: &ContextGroupId,
     ) -> EyreResult<BTreeMap<PublicKey, DeviceBinding>> {
         let mut out: BTreeMap<PublicKey, DeviceBinding> = BTreeMap::new();
+        let mut ambiguous = BTreeSet::new();
         for binding in self.live_bindings(group)? {
-            let _ = out.entry(binding.sign_pk).or_insert(binding);
+            let kept = out.entry(binding.sign_pk).or_insert(binding);
+            if kept.account != binding.account {
+                let _ = ambiguous.insert(binding.sign_pk);
+            }
+        }
+        for sign_pk in ambiguous {
+            let _ = out.remove(&sign_pk);
         }
         Ok(out)
     }

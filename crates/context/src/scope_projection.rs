@@ -125,10 +125,7 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
     // account-keyed, and every caller below turned it into "not authorized" one
     // step later. Returning `None` says that directly instead of routing it
     // through an account nobody has heard of.
-    view.devices
-        .values()
-        .find(|binding| binding.sign_pk == *key)
-        .map(|binding| binding.account)
+    bound_account(view, key)
 }
 
 /// The two immutable bases every at-cut membership walk in a namespace takes:
@@ -3347,11 +3344,16 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
     }
 }
 
+/// The account `key` signs for at this view. A certificate names its signing key
+/// without proving it holds it, so a key bound under two accounts names neither.
 fn bound_account(view: &calimero_authz::AclView, key: &PublicKey) -> Option<AccountId> {
-    view.devices
+    let mut accounts = view
+        .devices
         .values()
-        .find(|binding| binding.sign_pk == *key)
-        .map(|binding| binding.account)
+        .filter(|binding| binding.sign_pk == *key)
+        .map(|binding| binding.account);
+    let first = accounts.next()?;
+    accounts.all(|account| account == first).then_some(first)
 }
 
 /// The attested key of `account`'s evidence, when `view` makes `account` a TEE
