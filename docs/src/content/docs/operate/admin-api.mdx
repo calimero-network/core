@@ -207,9 +207,18 @@ in this order:
 If the `Authorization` header is present, the `?token=` query parameter is
 ignored entirely.
 
-Because the token may travel in the query, a browser's upgrade is also judged by its origin in every auth mode, by the same rule that proxy auth mode applies to every route (see [CORS and browser / Tauri clients](#cors-and-browser--tauri-clients)).
-A page that rule does not admit gets `403`, so an app hosted on another origin must be listed in `[server.cors] allowed_origins` to open a socket.
+A WebSocket has no CORS, so the node judges a browser's upgrade by its origin itself, in every auth mode, by the same rule that proxy auth mode applies to every route (see [CORS and browser / Tauri clients](#cors-and-browser--tauri-clients)).
+With embedded auth the token is checked first: an upgrade without a valid token gets `401` whatever its origin, and a page the origin rule does not admit gets `403` only when it carries a valid token.
+So an app hosted on another origin must be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
+A `GET /ws` that is not a WebSocket upgrade gets `400`.
 A client that sends neither `Origin` nor `Sec-Fetch-Site` is not a browser and is unaffected.
+
+:::caution[Proxy auth mode: a loopback page always gets a socket]
+In proxy auth mode a page on a loopback origin (`http://localhost:<port>`, `tauri://localhost`) is admitted a socket, whatever proxy is in front of the node.
+If that proxy authenticates callers by something a browser attaches by itself (a cookie, HTTP Basic, a client certificate), any page on a loopback origin on the operator's machine gets an authenticated socket.
+A proxy that authenticates by a token the client must present, as mero-auth does, is not affected.
+If your proxy authenticates by ambient credentials, have it check `Origin` on `/ws` itself.
+:::
 
 The upgrade needs `context:subscribe`. Each `execute` message is then checked
 against the same token for `context:execute` on its context (and method, for a
