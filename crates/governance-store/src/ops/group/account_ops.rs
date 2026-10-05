@@ -399,6 +399,7 @@ pub(crate) fn apply_device_unlinked(
         if proof.authorises(*account, *device).is_ok() {
             AccountBindingRepository::new(ctx.store())
                 .withdraw_for_account(&group_id, *account, *device)?;
+            announce_withdrawal(ctx, account, device);
             tracing::debug!(
                 group_id = ?group_id,
                 account = %account,
@@ -505,6 +506,23 @@ pub(crate) fn apply_device_unlinked(
     Ok(())
 }
 
+/// Queue `DeviceWithdrawn` when `device` stands withdrawn after this op. Announced
+/// on every apply that reaches here: a parked op is retried, a logged one replays silently.
+fn announce_withdrawal(ctx: &mut GroupApplyCtx<'_>, account: &AccountId, device: &DeviceId) {
+    let group_id = *ctx.group_id();
+    // Observational: an unreadable row announces, so a listener re-checks rather than misses it.
+    let withdrawn = AccountBindingRepository::new(ctx.store())
+        .device_is_withdrawn(&group_id, *account, *device)
+        .unwrap_or(true);
+    if withdrawn {
+        ctx.queue_event(OpEvent::DeviceWithdrawn {
+            group_id: group_id.to_bytes(),
+            account: *account,
+            device: *device,
+        });
+    }
+}
+
 /// `GroupOp::AccountDeviceDescoped` - drop a device's binding because the
 /// account replaced its scope with one that no longer reaches this group.
 pub(crate) fn apply_device_descoped(
@@ -558,6 +576,7 @@ pub(crate) fn apply_device_descoped(
     // when nothing is bound, so the outcome does not depend on arrival order.
     let epoch = scope.statement.scope_epoch;
     if !AccountBindingRepository::new(ctx.store()).narrow(&group_id, *account, *device, epoch)? {
+        announce_withdrawal(ctx, account, device);
         return Ok(());
     }
     // The same debt a revocation leaves: the device stops writing at once but

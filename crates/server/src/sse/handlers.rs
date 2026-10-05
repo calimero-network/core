@@ -405,13 +405,24 @@ pub async fn handle_subscription(
                     inner.touch();
                     inner.to_persisted()
                 };
-                let subscribed_groups = groups.subscribed;
+                let mut subscribed = subscribed;
+                let mut subscribed_groups = groups.subscribed;
 
                 let mut store = state.store.clone();
                 if let Err(err) = save_session(&mut store, session_id, &persisted) {
                     error!(%session_id, %err, "Failed to persist session subscriptions");
                 }
                 drop(_persist);
+
+                // A withdrawal that committed after the gates above read the
+                // store found nothing here to drop yet, so ask again now the ids
+                // are in place.
+                super::events::re_derive(session_id, &state, &session).await;
+                {
+                    let inner = session.inner.read().await;
+                    subscribed.retain(|id| inner.subscriptions.contains(id));
+                    subscribed_groups.retain(|id| inner.group_subscriptions.contains(id));
+                }
 
                 // Seed this session's connection with each context's CURRENT
                 // presence, now that the subscription is live and deltas are

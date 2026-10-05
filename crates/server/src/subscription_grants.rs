@@ -49,15 +49,27 @@
 //! keeps the event path free of the store: a group's position in the tree is
 //! fixed, so the ancestors resolved at subscribe time stay correct for the life
 //! of the grant.
+//!
+//! # Device withdrawals
+//!
+//! A revoked, descoped or withdrawn device keeps its account's membership, so
+//! no membership event names it. The transports also listen for the governance
+//! op events through [`next_withdrawal`]; the namespace it names is an
+//! ancestor every grant in that namespace watches.
 
 use std::collections::HashSet;
 
+use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::op_events::OpEvent;
 use calimero_governance_store::NamespaceRepository;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_store::Store;
+use tokio::sync::broadcast;
 use tracing::warn;
+
+use crate::caller_account::EventCaller;
 
 /// Bound on the parent walk, so a malformed tree cannot hang the subscribe
 /// path. Namespaces nest far shallower than this in practice; hitting the bound
@@ -159,6 +171,21 @@ impl Grants {
         self.stale = !complete;
     }
 
+    /// [`Self::vouch`] for what a connection holds now, if all of it was among
+    /// the `checked` sets; an id added since has not passed that check, so stay stale.
+    pub(crate) fn vouch_if_checked(
+        &mut self,
+        store: &Store,
+        (subscriptions, group_subscriptions): (&HashSet<ContextId>, &HashSet<Hash>),
+        (checked, checked_groups): (&HashSet<ContextId>, &HashSet<Hash>),
+    ) {
+        if subscriptions.is_subset(checked) && group_subscriptions.is_subset(checked_groups) {
+            self.vouch(store, subscriptions, group_subscriptions);
+        } else {
+            self.stale = true;
+        }
+    }
+
     /// Walk `group` and its ancestors into `watched`; `false` if the walk could
     /// not be completed.
     fn collect_chain(&self, store: &Store, group: Hash, watched: &mut HashSet<Hash>) -> bool {
@@ -190,6 +217,67 @@ impl Grants {
             "group ancestry exceeds the depth bound; leaving the grant stale",
         );
         false
+    }
+}
+
+/// A device withdrawal applied on this node.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Withdrawal {
+    /// The namespace it was applied in, which every grant there watches.
+    pub(crate) namespace: Hash,
+    /// The account that lost the device, or `None` for a revocation: its
+    /// tombstone spends the device id whatever account the op names.
+    pub(crate) account: Option<AccountId>,
+}
+
+impl Withdrawal {
+    /// Whether it can move `caller`'s standing. A caller anchored on another
+    /// account cannot; a key names its account only through the store, so it may.
+    pub(crate) fn may_affect(&self, caller: Option<&EventCaller>) -> bool {
+        let Some(withdrawn) = self.account else {
+            return true;
+        };
+        !matches!(caller, Some(EventCaller::Account { account, .. }) if *account != withdrawn)
+    }
+}
+
+/// The next device withdrawal applied on this node, or `None` when events were
+/// missed and every grant has to be re-derived.
+pub(crate) async fn next_withdrawal(
+    events: &mut broadcast::Receiver<OpEvent>,
+) -> Option<Withdrawal> {
+    loop {
+        match events.recv().await {
+            Ok(OpEvent::DeviceRevoked { group_id, .. }) => {
+                return Some(Withdrawal {
+                    namespace: Hash::from(group_id),
+                    account: None,
+                })
+            }
+            Ok(
+                OpEvent::DeviceDescoped {
+                    group_id, account, ..
+                }
+                | OpEvent::DeviceWithdrawn {
+                    group_id, account, ..
+                },
+            ) => {
+                return Some(Withdrawal {
+                    namespace: Hash::from(group_id),
+                    account: Some(account),
+                })
+            }
+            Ok(_) => {}
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                warn!(
+                    skipped,
+                    "missed governance events; re-deriving every subscription"
+                );
+                return None;
+            }
+            // The process-wide sender is never dropped; stay quiet rather than spin.
+            Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+        }
     }
 }
 
@@ -322,6 +410,70 @@ mod tests {
         assert!(
             grants.is_stale() || grants.is_affected_by(&unknown),
             "an unresolved group must not yield a current grant that watches nothing",
+        );
+    }
+
+    /// A missed withdrawal could be any of them, so a lagging listener asks for
+    /// every grant to be re-derived rather than skipping ahead.
+    #[tokio::test]
+    async fn missed_governance_events_re_derive_every_grant() {
+        let (sender, mut events) = broadcast::channel(1);
+        for group_id in [[0x31u8; 32], [0x32u8; 32]] {
+            let _receivers = sender
+                .send(OpEvent::TeeAuthorityChanged { group_id })
+                .unwrap();
+        }
+        assert_eq!(next_withdrawal(&mut events).await, None);
+    }
+
+    /// A subscribe can add an id while a re-derivation is checking the rest; the
+    /// re-derivation must not vouch for what it never checked.
+    #[test]
+    fn a_grant_holding_an_id_the_check_did_not_cover_stays_stale() {
+        let store = store();
+        let (_namespace, subgroup, _member) =
+            crate::test_support::seed_namespace_with_restricted_subgroup(
+                &store,
+                PublicKey::from([0x25u8; 32]),
+                GroupMemberRole::Member,
+            );
+        let checked = groups(&[subgroup]);
+        let holds = groups(&[subgroup, Hash::from([0x26u8; 32])]);
+        let no_contexts = HashSet::new();
+
+        let mut grants = Grants::default();
+        grants.vouch_if_checked(&store, (&no_contexts, &holds), (&no_contexts, &checked));
+        assert!(
+            grants.is_stale(),
+            "an unchecked id must keep the grant stale"
+        );
+
+        grants.vouch_if_checked(&store, (&no_contexts, &checked), (&no_contexts, &checked));
+        assert!(!grants.is_stale(), "and a fully checked set is vouched for");
+    }
+
+    /// A withdrawal of one account's device cannot move another account's
+    /// standing, so its streams are not re-derived; a key caller always is.
+    #[test]
+    fn a_withdrawal_affects_its_own_account_and_key_callers_only() {
+        let withdrawal = Withdrawal {
+            namespace: Hash::from([0x27u8; 32]),
+            account: Some(AccountId::from([0x28u8; 32])),
+        };
+        let account = |bytes| EventCaller::Account {
+            account: AccountId::from(bytes),
+            device: None,
+        };
+        assert!(withdrawal.may_affect(Some(&account([0x28u8; 32]))));
+        assert!(!withdrawal.may_affect(Some(&account([0x29u8; 32]))));
+        assert!(withdrawal.may_affect(Some(&EventCaller::Key(PublicKey::from([0x2Au8; 32])))));
+        assert!(
+            Withdrawal {
+                account: None,
+                ..withdrawal
+            }
+            .may_affect(Some(&account([0x29u8; 32]))),
+            "a revocation spends the device id for whichever account it is bound to"
         );
     }
 

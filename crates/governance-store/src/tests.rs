@@ -14720,6 +14720,144 @@ mod account_plane_apply {
         assert_eq!(last.unwrap(), vec![], "the second run owes no wake-up");
     }
 
+    /// An account seated here through one bound key, which is no admin, and a
+    /// second device of it that is bound nowhere: a thin client's device.
+    struct BoundNowhere {
+        store: Store,
+        gid: ContextGroupId,
+        root: PrivateKey,
+        signer: PrivateKey,
+        account: AccountId,
+        device: DeviceId,
+    }
+
+    fn bound_nowhere(seed: u8) -> BoundNowhere {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let root = key(seed);
+        let signer = an_account_key_bound_here(&store, &gid, &admin_sk, &root, seed + 1);
+        let account = AccountGenesis::new(root.public_key()).account_id();
+        let device = DeviceId::mint(account, [seed + 2; 16]);
+        BoundNowhere {
+            store,
+            gid,
+            root,
+            signer,
+            account,
+            device,
+        }
+    }
+
+    /// The account's root-signed withdrawal of its own `device`.
+    fn own_withdrawal(root: &PrivateKey, account: AccountId, device: DeviceId) -> GroupOp {
+        GroupOp::AccountDeviceUnlinked {
+            account,
+            device,
+            proof: Some(SignedDeviceRevocation {
+                genesis: AccountGenesis::new(root.public_key()),
+                chain: vec![],
+                statement: calimero_account::DeviceRevocation::sign(root, account, device, 0)
+                    .unwrap(),
+            }),
+        }
+    }
+
+    /// How many `DeviceWithdrawn` for `device` reached `events` so far.
+    fn withdrawals_of(events: &mut broadcast::Receiver<OpEvent>, device: DeviceId) -> usize {
+        let mut seen = 0;
+        while let Ok(event) = events.try_recv() {
+            if matches!(event, OpEvent::DeviceWithdrawn { device: d, .. } if d == device) {
+                seen += 1;
+            }
+        }
+        seen
+    }
+
+    /// Apply `op` through the logged path, then replay the same signed op.
+    fn apply_then_replay(store: &Store, gid: &ContextGroupId, signer: &PrivateKey, op: GroupOp) {
+        let applied = sign_apply_local_group_op_borsh(store, gid, signer, op).unwrap();
+        let signed: calimero_context_client::local_governance::SignedGroupOp =
+            borsh::from_slice(&applied.bytes).unwrap();
+        crate::apply_local_signed_group_op(store, &signed).unwrap();
+    }
+
+    /// Only the raised floor withdraws a device bound nowhere here, so the event
+    /// is what tells open streams to re-check; it owes no rotation.
+    #[test]
+    #[serial_test::serial]
+    fn a_descope_of_a_device_bound_nowhere_announces_its_withdrawal_once() {
+        let mut events = op_events::subscribe();
+        let b = bound_nowhere(0x6A);
+
+        apply_then_replay(
+            &b.store,
+            &b.gid,
+            &b.signer,
+            descoped(&b.root, b.device, elsewhere(), 1),
+        );
+
+        assert_eq!(withdrawals_of(&mut events, b.device), 1);
+    }
+
+    /// Published by the account's own bound device, which is no admin: the floor
+    /// is raised and the op goes no further.
+    #[test]
+    #[serial_test::serial]
+    fn an_accounts_own_withdrawal_of_a_device_bound_nowhere_announces_it_once() {
+        let mut events = op_events::subscribe();
+        let b = bound_nowhere(0x6E);
+
+        apply_then_replay(
+            &b.store,
+            &b.gid,
+            &b.signer,
+            own_withdrawal(&b.root, b.account, b.device),
+        );
+
+        assert_eq!(withdrawals_of(&mut events, b.device), 1);
+    }
+
+    /// The floor is written before the admin gate, and an undecidable gate parks
+    /// the op with its events dropped: the retry must still announce.
+    #[test]
+    fn a_withdrawal_parked_after_its_floor_was_written_announces_on_retry() {
+        let b = bound_nowhere(0x72);
+        let op = own_withdrawal(&b.root, b.account, b.device);
+        let apply = |authorizer: &dyn crate::authorizer::AtCutAuthorizer| {
+            crate::apply_group_op_mutations(
+                &b.store,
+                &b.gid,
+                &b.signer.public_key(),
+                &op,
+                &CUT,
+                authorizer,
+            )
+        };
+
+        assert!(
+            apply(&crate::test_fixtures::UnresolvableAuthorizer).is_err(),
+            "precondition: the admin gate cannot decide at this cut"
+        );
+        assert!(
+            AccountBindingRepository::new(&b.store)
+                .is_withdrawn_for_account(&b.gid, b.account, b.device)
+                .unwrap(),
+            "precondition: the floor was written before the op parked"
+        );
+
+        let (_handled, _divergence, events) = apply(&FixedAuthorizer(false)).unwrap();
+        assert!(
+            events.contains(&OpEvent::DeviceWithdrawn {
+                group_id: b.gid.to_bytes(),
+                account: b.account,
+                device: b.device,
+            }),
+            "the retry is the apply that gets logged, so it must carry the event: {events:?}"
+        );
+    }
+
     /// What the rotation that rides on a descope actually excludes. The plan is
     /// `AllEntitled` and the recipient list is recomputed from live bindings after
     /// the apply, so the device that lost its binding drops out while the account
