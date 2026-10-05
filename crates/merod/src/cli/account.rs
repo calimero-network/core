@@ -159,8 +159,8 @@ impl AccountCommand {
 ///
 /// **It cannot check that the device id matches the keys.** A `DeviceId` is
 /// minted from the account and a nonce and excludes the keys, so a device survives
-/// a re-key. Nothing here can tell a mistyped id from a real one; a certificate
-/// naming a device the holder does not have is inert rather than dangerous.
+/// a re-key. It does refuse an id not minted for this account, which catches a
+/// mistyped one; a well-formed id nobody holds is inert rather than dangerous.
 ///
 /// **Epoch 0 only**, exactly as `revoke-proof` is: the certificate is signed at
 /// key epoch 0 with an empty handoff chain. An account whose root has rotated
@@ -776,6 +776,11 @@ impl SignCertCommand {
                 parse_key(self.kem_pk.as_deref().unwrap_or_default(), "kem-pk")?,
             )
         };
+        eyre::ensure!(
+            device.is_minted_for(account),
+            "device {device} was not minted for account {account}, so no verifier would \
+             accept a certificate for it. Check --device, or the account it was minted for"
+        );
 
         let cert = calimero_account::DeviceCert::sign(
             root.signing_key(),

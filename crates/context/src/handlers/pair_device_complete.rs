@@ -228,6 +228,18 @@ pub(crate) fn require_not_revoked(store: &Store, device: DeviceId) -> EyreResult
     .into())
 }
 
+/// Was `device` minted for `account`? A certificate for any other id verifies nowhere.
+fn require_minted_for(account: AccountId, device: DeviceId) -> EyreResult<()> {
+    if device.is_minted_for(account) {
+        return Ok(());
+    }
+    Err(ContextError::PairingDeviceNotMinted {
+        device: device.to_string(),
+        account: account.to_string(),
+    }
+    .into())
+}
+
 /// Does this node hold a current scope key in any of `namespaces`?
 ///
 /// One is enough. Pairing publishes an encrypted group op and delivers that same
@@ -324,6 +336,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
 
                 // Before signing: a revoked id is spent everywhere, not just where it was revoked.
                 require_not_revoked(&store, device)?;
+                require_minted_for(account, device)?;
 
                 // Both ops need a current key; one anywhere is enough, the fan-out skips the rest.
                 require_a_scope_key(&store, &targets)?;

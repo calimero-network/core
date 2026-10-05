@@ -299,7 +299,7 @@ intent` invocation that consumes it.
   The id deliberately **excludes the keys** so that a device survives a re-key, so it cannot be checked against `--sign-pk` / `--kem-pk`.
 
   What every verifier does check is that the id was minted for this account: a `DeviceId` is the 16-byte nonce followed by the first 16 bytes of `H(account ‖ nonce)`.
-  A mistyped `--device` almost surely fails that, and a certificate naming it is refused wherever it is presented.
+  `sign-cert` refuses a `--device` that fails it, which catches a mistyped id.
   A well-formed id nobody holds is **inert rather than dangerous**: there is no matching secret, so it authorises no one.
 
   <Aside type="note" title="Why the id carries its account">
