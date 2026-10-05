@@ -11877,6 +11877,167 @@ fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
     assert!(!subgroup_key_served(&f, requester));
 }
 
+/// A TEE that left an Open subgroup it also inherits into, then re-attested
+/// there, is a member again: its `Left` block outlives the readmission.
+#[test]
+fn an_inherited_tee_that_left_and_re_attested_is_a_live_member_again() {
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_store::key::GroupExitReason;
+
+    let store = test_store();
+    let namespace_id = [0x91u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let parent = ContextGroupId::from([0x92u8; 32]);
+    let subgroup = ContextGroupId::from([0x93u8; 32]);
+    let ((verifier_sk, verifier_pk), verifier) =
+        bootstrap_namespace_with_admin_account(&store, namespace_id);
+    for group in [parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(verifier))
+            .unwrap();
+    }
+    nest_for_test(&store, &ns_gid, &parent);
+    nest_for_test(&store, &parent, &subgroup);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&parent, &verifier, GroupMemberRole::Admin)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x94; 32])
+        .unwrap();
+
+    // The admission policy is read from the op log, so it is applied as a real op.
+    let ns_key = [0x95u8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&ns_key)
+        .unwrap();
+    let policy = GroupKeyring::encrypt_op(
+        &ns_key,
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_pk,
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
+    )
+    .unwrap();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let head = gov.read_head_record().unwrap();
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(
+            &verifier_sk,
+            namespace_id.into(),
+            head.parent_hashes.clone(),
+            head.next_nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: policy,
+                key_rotation: None,
+            },
+        )
+        .unwrap(),
+    )
+    .expect("the policy op applies");
+
+    // The TEE holds a direct row in the subgroup and inherits into it from the parent.
+    let tee_sk = PrivateKey::from([0x96u8; 32]);
+    let tee_pk = tee_sk.public_key();
+    let tee = enrol_member(&store, &ns_gid, &tee_pk);
+    MembershipRepository::new(&store)
+        .add_member(&parent, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &parent,
+            &tee,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+
+    let apply = |signer: &PrivateKey, op: GroupOp| {
+        let signed =
+            SignedGroupOp::sign(signer, subgroup.to_bytes().into(), vec![], 1, op).unwrap();
+        crate::apply_local_signed_group_op(&store, &signed)
+    };
+    apply(
+        &tee_sk,
+        GroupOp::MemberLeft {
+            member: tee,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("the TEE leaves the subgroup");
+    let membership = MembershipRepository::new(&store);
+    assert!(
+        !membership.is_live_member(&subgroup, &tee).unwrap(),
+        "precondition: a leaver is not a live member"
+    );
+
+    apply(
+        &verifier_sk,
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member: tee,
+            quote_hash: [0x97; 32],
+            mrtd: "m1".to_owned(),
+            rtmr0: String::new(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .expect("the TEE re-attests into the subgroup");
+    assert_eq!(
+        crate::ReentryRepository::new(&store)
+            .block_of(&subgroup, &tee)
+            .unwrap(),
+        Some(GroupExitReason::Left),
+        "precondition: the readmission leaves the Left block in place"
+    );
+    assert_eq!(
+        membership.role_of(&subgroup, &tee).unwrap(),
+        None,
+        "precondition: the readmission writes no row, the TEE is inherited"
+    );
+
+    assert!(
+        membership.is_live_member(&subgroup, &tee).unwrap(),
+        "a re-attested TEE is a live member of the subgroup"
+    );
+    let (bytes, _) = crate::build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        subgroup.to_bytes(),
+        crate::KeyRequester {
+            identity: tee_pk,
+            device: Some(crate::test_fixtures::device_secret_for(&tee_pk).device),
+        },
+        None,
+    )
+    .unwrap();
+    assert!(!bytes.is_empty(), "and is served the subgroup key");
+}
+
 /// A namespace, a parent and a subgroup below it, all owned by one account, and
 /// a plain member of the parent. Visibility is the test's to set.
 struct AnchoredTree {
