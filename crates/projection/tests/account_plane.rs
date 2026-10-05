@@ -602,7 +602,7 @@ fn a_forged_handoff_reusing_the_real_new_key_cannot_displace_it() {
 /// the answer to depend on. So this one is deliberately built from the shapes that
 /// broke:
 ///
-///   * device links of two accounts whose ids share a prefix — both stay live,
+///   * device links of two accounts whose ids share a prefix - both stay live,
 ///     whatever the arrival order;
 ///   * a revocation naming an account the device is NOT bound to — the mismatch
 ///     is what made the tombstone's hashed value order-dependent;
@@ -659,7 +659,7 @@ fn the_adversarial_account_workload_converges() {
     let honest = alice.enroll(13, 0);
 
     let ops = vec![
-        // Ids sharing a prefix across accounts — both must end up live.
+        // Ids sharing a prefix across accounts - both must end up live.
         alice.link_op(&alice_shared, 40, base.clone()),
         mallory.link_op(&mallory_shared, 41, base.clone()),
         // An honest device of the same account.

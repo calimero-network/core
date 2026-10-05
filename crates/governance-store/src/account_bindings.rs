@@ -744,7 +744,7 @@ impl<'a> AccountBindingRepository<'a> {
     /// answer questions that share a single answer set.
     ///
     /// Built from the filtered list rather than from the raw rows, so the
-    /// read-time rules — revocation and root-key supersession — hold exactly as
+    /// read-time rules - revocation and root-key supersession - hold exactly as
     /// they do for a single lookup.
     ///
     /// Nothing constrains two devices to distinct signing keys, so a duplicate
@@ -1668,7 +1668,7 @@ mod tests {
         // reasoning: every order-dependence bug here came from a rule that read
         // "whatever has been applied so far", and a workload of mutually
         // consistent ops cannot expose one. So this applies the shapes that broke
-        // — a pair of devices, a revocation, and a rotation that supersedes — in
+        // - a pair of devices, a revocation, and a rotation that supersedes - in
         // all 24 orders and requires identical materialized state.
         //
         // When a new order-dependence bug is found, add its shape here.

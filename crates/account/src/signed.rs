@@ -12,7 +12,7 @@
 //! that can drift, and a drift here is not a bug in one credential kind: it is one
 //! kind quietly accepting what the other refuses. [`RootSigned`] exists so the
 //! steps are written once and each statement kind supplies only what genuinely
-//! differs — its fields, which two [`AccountError`] variants it reports, and any
+//! differs - its fields, which two [`AccountError`] variants it reports, and any
 //! rule its fields owe each other ([`RootSigned::check_fields`]).
 //!
 //! Factoring the same body into a plain helper does not work: the parameters

@@ -10,7 +10,7 @@
 //! forge writes in this account's name. Keep it as you would any signing key.
 //!
 //! The account root is not needed and not accepted. A device id is minted from
-//! the account and a nonce, so minting one takes only the account — and the device
+//! the account and a nonce, so minting one takes only the account - and the device
 //! stays inert until the root certifies it, which is the separate, deliberate
 //! step that `sign-cert` performs. So this command can be run by anyone, for any
 //! account, and gains them nothing.

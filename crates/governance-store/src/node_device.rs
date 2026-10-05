@@ -12,11 +12,10 @@
 //! would have denied is available regardless: every genesis this node publishes
 //! names the same root key.
 //!
-//! The `DeviceId` is stored alongside the secret instead of being recomputed
-//! because it cannot be recomputed: it is minted from the account and a nonce
-//! drawn once at enrollment. Losing it would orphan the device's replica
-//! lineage — its counter slots and HLC seed — even though the machine and its
-//! keys were unchanged.
+//! The `DeviceId` is stored alongside the secret because nothing else records
+//! the nonce it was minted from, drawn once at enrollment. Losing it would
+//! orphan the device's replica lineage, its counter slots and HLC seed, even
+//! though the machine and its keys were unchanged.
 
 use calimero_account::{
     AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, DeviceScope, KemPublicKey,

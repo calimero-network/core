@@ -43,8 +43,9 @@ impl AclView {
     ///
     /// The checks, in order:
     /// 1. the credential is internally valid — the genesis addresses the claimed
-    ///    account and the handoff chain carries valid signatures up to the
-    ///    certificate's epoch (`calimero-account`);
+    ///    account, the device id was minted for that account, and the handoff
+    ///    chain carries valid signatures up to the certificate's epoch
+    ///    (`calimero-account`);
     /// 2. the signing epoch has not been superseded at this cut, so rotating the
     ///    root key actually withdraws the old key's authority instead of merely
     ///    adding a new key beside it;
@@ -52,10 +53,7 @@ impl AclView {
     ///    which is what makes a revocation that folds *before* its link still win;
     /// 4. a device is never reassigned to another account;
     /// 5. a re-link strictly advances the device's rotation epoch, so an old
-    ///    certificate cannot be replayed to reinstate a retired key;
-    /// 6. on first link, no other device in the scope already claims the same
-    ///    replica seed prefix — which turns RGA id uniqueness from a birthday
-    ///    argument into a checked invariant.
+    ///    certificate cannot be replayed to reinstate a retired key.
     ///
     /// Deliberately **not** checked here: whether the account is a member of the
     /// scope. That is policy rather than credential validity, it only bears on the

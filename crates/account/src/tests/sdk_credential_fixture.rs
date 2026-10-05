@@ -1,4 +1,4 @@
-//! A credential produced by the TypeScript SDK, verified here.
+//! The credential the TypeScript SDK must produce for the inputs below, verified here.
 //!
 //! This exists because its absence let a non-functional feature ship. mero-js
 //! grew an offline device-certification path whose own tests assert the
@@ -11,7 +11,8 @@
 //! The bytes below are checked in deliberately rather than generated. A fixture
 //! that regenerates from the current SDK would agree with whatever the SDK now
 //! does, which is the property that failed to hold; agreeing with a recorded
-//! artifact is the point.
+//! artifact is the point. The current bytes were regenerated outside the SDK when
+//! `DeviceId::mint` changed layout, so they pin what the SDK has to produce.
 //!
 //! Regenerating (only when the credential format changes on purpose, and the
 //! change is intended to be breaking):
