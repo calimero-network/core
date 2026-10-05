@@ -35,7 +35,7 @@ pub struct ReplicaView {
 
 /// Deterministic in-place Fisher–Yates shuffle (seeded xorshift64) — models a
 /// replica observing ops in an arbitrary order, reproducibly.
-fn shuffle<T>(seed: u64, items: &mut [T]) {
+pub(crate) fn shuffle<T>(seed: u64, items: &mut [T]) {
     let mut state = seed | 1;
     let mut next = || {
         state ^= state << 13;

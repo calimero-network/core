@@ -2345,6 +2345,86 @@ fn a_rejoin_after_a_leave_takes_the_rejoins_role() {
     );
 }
 
+/// `fx` after `count` more joins by `joiner`, on invitations of alternating roles
+/// that are not the one it first joined with.
+fn rejoined_repeatedly(mut fx: Fixture, joiner: &Account, device: &Device, count: u64) -> Fixture {
+    for n in 0..count {
+        let role = if n % 2 == 0 {
+            GroupMemberRole::Admin
+        } else {
+            GroupMemberRole::ReadOnly
+        };
+        let again = join_op(joiner, device, role, 100 + n, fx.head.clone());
+        fx.push(again);
+    }
+    fx
+}
+
+/// A node re-publishes its join on every retried join, and the apply skips each
+/// one, so no number of them may move the role the first join gave.
+#[test]
+fn any_number_of_repeat_joins_keeps_the_first_joins_role() {
+    let (fx, joiner, device) = joined_as_member();
+    let fx = rejoined_repeatedly(fx, &joiner, &device, 200);
+
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::Member)
+    );
+}
+
+#[test]
+fn a_leave_after_many_repeat_joins_ends_the_role_and_a_rejoin_takes_its_own() {
+    let (fx, joiner, device) = joined_as_member();
+    let mut fx = rejoined_repeatedly(fx, &joiner, &device, 200);
+    let leave = device.sign_op(
+        1000,
+        fx.head.clone(),
+        OpPayload::MemberLeft {
+            group: group(),
+            member: joiner.id,
+        },
+    );
+    fx.push(leave);
+    assert_eq!(resolved_role(&fx, &joiner.id), None);
+
+    let rejoin = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::ReadOnly,
+        1001,
+        fx.head.clone(),
+    );
+    fx.push(rejoin);
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::ReadOnly)
+    );
+}
+
+/// The same flood as clockless governance ops, where only causal depth orders
+/// the joins: the cut still names the first one.
+#[test]
+fn a_long_chain_of_repeat_joins_keeps_the_first_role_at_its_cut() {
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let mut payloads = vec![join_payload(
+        group(),
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+    )];
+    payloads.resize(
+        201,
+        join_payload(group(), &joiner, &device, GroupMemberRole::Admin),
+    );
+
+    assert_eq!(
+        role_after_chain(&device, &joiner.id, payloads),
+        Some(GroupMemberRole::Member)
+    );
+}
+
 /// The device half of a join is not the membership half: a repeat join from a
 /// second device changes no role and still binds that device.
 #[test]
