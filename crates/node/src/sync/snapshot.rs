@@ -4445,6 +4445,78 @@ mod snapshot_trust_tests {
         assert_eq!(drain(&alice), SnapshotEntityDrainOutcome::Persisted);
     }
 
+    /// Drains, as a buffered snapshot leaf, Alice's owned entry signed at `nonce`
+    /// and shipped dated `updated_at`. Returns the outcome and the stored date.
+    fn drain_alices_entry(
+        nonce: u64,
+        updated_at: u64,
+    ) -> (SnapshotEntityDrainOutcome, Option<u64>) {
+        let alice = PrivateKey::from([0x78; 32]);
+        let (group, alice_account) = Group::with_admin(&alice.public_key());
+        let id =
+            calimero_storage::tests::common::owned_entry_id(Id::new([0x79; 32]), &alice_account);
+        let data = b"alice's entry".to_vec();
+        let mut metadata = Metadata::new(1, nonce);
+        metadata.storage_type = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
+            owner: alice_account,
+            signature_data: signer(&alice, nonce),
+        };
+        let payload = Action::Add {
+            id,
+            data: data.clone(),
+            ancestors: vec![],
+            metadata: metadata.clone(),
+        }
+        .payload_for_signing();
+        if let StorageType::User {
+            signature_data: Some(sig),
+            ..
+        } = &mut metadata.storage_type
+        {
+            sig.signature = alice.sign(&payload).unwrap().to_bytes();
+        }
+        metadata.updated_at = updated_at.into();
+        let mut index = EntityIndex::minimal_for_test(id);
+        index.metadata = metadata;
+
+        let outcome = persist_buffered_snapshot_entity(
+            &group.store,
+            &calimero_governance_store::NotFolded,
+            group.context,
+            *id.as_bytes(),
+            &data,
+            &super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &data),
+            &|_| Ok(CellWriters::Genesis),
+        )
+        .unwrap();
+        let stored = crate::delta_store::read_entity_index_direct(&group.store, group.context, id)
+            .unwrap()
+            .map(|index| index.metadata.updated_at());
+        (outcome, stored)
+    }
+
+    /// `updated_at` is not signed, so a peer serving a snapshot can re-date an
+    /// entry. The joiner stores it under the date its signature commits to.
+    #[test]
+    fn a_snapshot_entry_is_stored_under_its_signed_date() {
+        assert_eq!(
+            drain_alices_entry(1, calimero_storage::env::time_now()),
+            (SnapshotEntityDrainOutcome::Persisted, Some(1))
+        );
+    }
+
+    /// A date past the drift tolerance would make every later write to the entry
+    /// look stale, and stamp this node's own writes past it, so it is refused.
+    #[test]
+    fn a_snapshot_entry_signed_ahead_of_the_clock_is_refused() {
+        let ahead = calimero_storage::env::time_now() + 60_000_000_000;
+        assert_eq!(
+            drain_alices_entry(ahead, 1),
+            (SnapshotEntityDrainOutcome::Refused, None)
+        );
+    }
+
     fn writer_set(accounts: &[AccountId]) -> BTreeMap<AccountId, OpMask> {
         accounts.iter().map(|a| (*a, OpMask::FULL)).collect()
     }

@@ -434,6 +434,58 @@ fn a_repaired_custom_entry_is_written_when_the_entry_did_not_move() {
     assert_eq!(app_value(), "merged");
 }
 
+/// The stamp a merge write-back takes is the peer's, so the write bounds it as the
+/// request does: a merged entry dated past it would outdate every later write.
+#[test]
+#[serial]
+fn a_custom_entry_written_back_with_a_far_future_stamp_is_refused() {
+    genesis();
+    let before = app_value();
+    let (request, stored_metadata) = <Interface<MainStorage>>::custom_entry_merge_request(
+        ROOT_ENTRY_ID,
+        CustomTypeId::of("app::Custom"),
+        app_state("peer"),
+        later(),
+    )
+    .expect("request")
+    .expect("an entry is stored");
+
+    let written = <Interface<MainStorage>>::write_custom_entry_merge(
+        ROOT_ENTRY_ID,
+        &request,
+        &stored_metadata,
+        &app_state("merged"),
+        u64::MAX,
+    );
+
+    assert!(
+        matches!(written, Err(StorageError::InvalidTimestamp(..))),
+        "got {written:?}"
+    );
+    assert_eq!(app_value(), before);
+}
+
+/// As for a custom entry: the app-state write-back bounds the peer stamp it carries.
+#[test]
+#[serial]
+fn an_app_state_entry_written_back_with_a_far_future_stamp_is_refused() {
+    genesis();
+    let before = app_value();
+    let mut request =
+        <Interface<MainStorage>>::root_entry_merge_request(app_state("peer"), later())
+            .expect("request");
+    request.incoming_ts = u64::MAX;
+
+    let written =
+        <Interface<MainStorage>>::write_root_entry_merge(&request, Some(&app_state("merged")), 0);
+
+    assert!(
+        matches!(written, Err(StorageError::InvalidTimestamp(..))),
+        "got {written:?}"
+    );
+    assert_eq!(app_value(), before);
+}
+
 // ---------------------------------------------------------------------------
 // A register's own stamp
 // ---------------------------------------------------------------------------
