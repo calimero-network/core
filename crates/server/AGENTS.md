@@ -113,7 +113,8 @@ Several admin reads are **caller-scoped** (#3941): `GET /admin-api/contexts`,
 and its four read sub-resources (`/identities`, `/identities-owned`, `/storage`,
 `/group`), plus `/namespaces/:id{,/groups}` and the group reads
 `/groups/:id{,/contexts,/members,/subgroups,/metadata}`,
-`/groups/:id/members/:account/{capabilities,metadata}` and the
+`/groups/:id/members/:account/{capabilities,metadata}`,
+`/groups/:id/contexts/:ctx/metadata` and the
 upgrade/cascade/migration status reads,
 return only what the caller's groups reach, resolved per request
 through `admin/caller_scope.rs`. Every one that names a context applies the same
