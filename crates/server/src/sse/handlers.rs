@@ -980,9 +980,13 @@ async fn create_new_session(
 
 #[cfg(test)]
 mod tests {
+    use axum::routing::get;
+    use axum::Router;
     use calimero_primitives::identity::PublicKey;
+    use tower::ServiceExt;
 
     use super::*;
+    use crate::origin_guard::{refuse_foreign_origins, OriginGuard};
 
     fn pk(b: u8) -> PublicKey {
         PublicKey::from([b; 32])
@@ -1212,6 +1216,82 @@ mod tests {
 
         let owner = connect(&state, Some(&bound_session), None).await;
         assert_ne!(owner, bound_session);
+    }
+
+    /// The answer of a proxy-mode node to `GET /sse` carrying `headers`, with the
+    /// sessions it left in memory and whether the one it issued was persisted.
+    async fn open_stream(headers: &[(&'static str, &'static str)]) -> (StatusCode, usize, bool) {
+        let (state, _events, _blob_dir) = sse_state_with_events(false).await;
+        let app = Router::new()
+            .route("/sse", get(sse_handler))
+            .layer(Extension(Arc::clone(&state)))
+            .layer(axum::middleware::from_fn_with_state(
+                OriginGuard::new(false, None),
+                refuse_foreign_origins,
+            ));
+        let mut request = AxumRequest::builder()
+            .uri("/sse")
+            .header("host", "127.0.0.1:2528");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+
+        let response = app
+            .oneshot(request.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let persisted = response
+            .headers()
+            .get("X-SSE-Session-ID")
+            .and_then(|id| id.to_str().ok()?.parse().ok())
+            .is_some_and(|id| load_session(&state.store, id).unwrap().is_some());
+        let sessions = state.sessions.read().await.len();
+        (response.status(), sessions, persisted)
+    }
+
+    /// A page on another site can make the operator's browser navigate to the
+    /// stream or load it as a subresource; neither may leave a session behind.
+    #[actix::test]
+    async fn a_request_no_script_opened_is_refused_before_a_session_exists() {
+        for (mode, dest) in [
+            ("navigate", "document"),
+            ("navigate", "iframe"),
+            ("no-cors", "image"),
+        ] {
+            let answer = open_stream(&[
+                ("sec-fetch-site", "cross-site"),
+                ("sec-fetch-mode", mode),
+                ("sec-fetch-dest", dest),
+            ])
+            .await;
+            assert_eq!(answer, (StatusCode::FORBIDDEN, 0, false), "{mode} {dest}");
+        }
+    }
+
+    #[actix::test]
+    async fn an_event_source_fetch_and_a_client_that_is_no_browser_still_open_a_stream() {
+        let event_source = [
+            ("origin", "http://localhost:5173"),
+            ("accept", "text/event-stream"),
+            ("sec-fetch-site", "same-site"),
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-dest", "empty"),
+        ];
+        let own_page = [
+            ("sec-fetch-site", "same-origin"),
+            ("sec-fetch-mode", "same-origin"),
+        ];
+        let node_fetch = [("accept", "text/event-stream"), ("sec-fetch-mode", "cors")];
+        let curl = [("accept", "*/*")];
+
+        for headers in [&event_source[..], &own_page, &node_fetch, &curl] {
+            assert_eq!(
+                open_stream(headers).await,
+                (StatusCode::OK, 1, true),
+                "{headers:?}"
+            );
+        }
     }
 
     // ----------------------------------------------------------------------
