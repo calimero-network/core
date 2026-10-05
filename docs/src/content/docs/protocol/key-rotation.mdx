@@ -240,7 +240,7 @@ The responder authorizes the request before serving anything (`build_group_key_d
 
 1. **Cross-namespace pin.** The requested `group_id` must resolve to the `namespace_id` the requester named — otherwise an attacker in namespace A could elicit a key for a group in namespace B.
 
-2. **Membership.** `requester_public_key` must be a live member of `group_id` (`is_live_member`): a direct member, or one that inherits into the group and has been neither deny-listed nor blocked from re-entering it. The open-subgroup join answers under the same rule. The namespace join keeps its re-entry gate and also refuses a device the namespace revoked, and inbound sync and the blob protocol apply the rule to a peer that inherits into the group.
+2. **Membership.** `requester_public_key` must be a live member of `group_id` (`is_live_member`): a direct member, or one that inherits into the group and has been neither deny-listed nor removed from it. The open-subgroup join answers under the same rule. The namespace join keeps its re-entry gate and also refuses a device the namespace revoked, and inbound sync and the blob protocol apply the rule to a peer that inherits into the group.
 
 </Steps>
 

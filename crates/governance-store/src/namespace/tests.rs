@@ -11793,7 +11793,7 @@ fn kicked_inherited_member_is_served_no_key_for_the_subgroup_it_was_removed_from
     );
 }
 
-/// The re-entry block alone is enough: an exit by any route ends inheritance.
+/// A leave ends inheritance too: it writes a deny-list entry beside its `Left` block.
 #[test]
 fn an_inherited_member_who_left_the_subgroup_is_served_no_key_for_it() {
     use calimero_store::key::GroupExitReason;
@@ -11802,6 +11802,9 @@ fn an_inherited_member_who_left_the_subgroup_is_served_no_key_for_it() {
     let (account, requester) = f.kicked;
     assert!(subgroup_key_served(&f, requester));
 
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
     ReentryRepository::new(&f.store)
         .block(&f.subgroup, &account, GroupExitReason::Left)
         .unwrap();
@@ -11818,7 +11821,7 @@ fn a_direct_member_with_an_older_exit_record_is_still_served_the_subgroup_key() 
     let f = inherited_subgroup_fixture();
     let (account, requester) = f.kicked;
     ReentryRepository::new(&f.store)
-        .block(&f.subgroup, &account, GroupExitReason::Left)
+        .block(&f.subgroup, &account, GroupExitReason::Removed)
         .unwrap();
     assert!(!subgroup_key_served(&f, requester));
 

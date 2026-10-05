@@ -350,7 +350,7 @@ impl<'a> MembershipRepository<'a> {
     }
 
     /// Whether `identity` is a member of `group_id` today: a direct row, or an
-    /// inheritance not ended by a deny-list entry or a re-entry block.
+    /// inheritance the member has not [exited](Self::exited).
     pub fn is_live_member(
         &self,
         group_id: &ContextGroupId,
@@ -359,11 +359,7 @@ impl<'a> MembershipRepository<'a> {
         match self.check_path(group_id, identity)? {
             MembershipPath::None => Ok(false),
             MembershipPath::Direct => Ok(true),
-            MembershipPath::Inherited { .. } => Ok(!DenyListRepository::new(self.store)
-                .is_denied(group_id, identity)?
-                && ReentryRepository::new(self.store)
-                    .block_of(group_id, identity)?
-                    .is_none()),
+            MembershipPath::Inherited { .. } => Ok(!self.exited(group_id, identity)?),
         }
     }
 
