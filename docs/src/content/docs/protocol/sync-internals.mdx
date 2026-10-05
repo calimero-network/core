@@ -246,7 +246,9 @@ A future-schema leaf is staged so the tree check counts it, and buffered in the 
 **A source whose tree does not fold cannot serve a snapshot.**
 Orphan index rows with no entry, dropped or declined entities on the source, or a stale parent trie entry all make a source's own hashes disagree with its rows, and the receiver refuses the snapshot, logging the entity, its parent and both hashes.
 A source that answers from a torn read is refused the same way.
-The caller counts the failure against the context, whose retries back off exponentially up to 5 minutes.
+An honest node can be such a source: repair writes an applied entry row by row straight to the store, so a process killed part way through one apply is left with hashes that disagree, and neither a redelivery of the same entry nor a later write elsewhere in the tree is sure to put them right.
+The serving node checks its own tree when it starts a stream and warns with the context and the first inconsistent entity (`first_unfolding_entity`); it still serves, and the receiver's refusal names the same entity.
+A refusal is specific to the peer, so the receiver goes on to the next peer in the same sync round, and only when every peer has failed does the context back off, exponentially up to 5 minutes.
 
 **It bypasses `apply_action`.** Each verified `Entity` record is staged after its signature checks out and installed as it was shipped — it does **not** go through `Interface::apply_action`, so there is no nonce-replay protection and no CRDT merge on this path. That is sound only because `request_snapshot_sync` refuses a snapshot when the local context is already initialized; the sole bypass is `force = true`, reserved for crash recovery where an on-disk marker confirms the local state was already mid-snapshot and is known-incomplete. In both cases the receiver holds no newer state that an older-nonce write could clobber. If that gate ever loosens, this path would need the nonce / CRDT-merge logic the incremental leaf-apply uses.
 
@@ -255,7 +257,10 @@ Before anything else, each entity's index row must name it, its update time may 
 A joiner whose clock runs more than 5 s behind its source therefore cannot bootstrap.
 An entity that then fails its signature, owner, TEE-only or anchor check, or whose index row does not decode, is not dropped: the snapshot fails.
 Its parent's shipped hash counts it, so a snapshot installed without it would publish the source's root over state that lacks it, and nothing would notice the hole.
-Two honest cases fail the same way: the joiner's governance lags the source's (retryable, as for an unknown signer), and the signer was a TEE authority that has since been removed.
+An entry a relay wrote on a member's behalf is taken when its signer is a `RelayTee` now or was one at the cut of some governance op the joiner has folded.
+A leaf carries no cut, so the joiner cannot ask whether the relay was seated when it wrote, only whether it ever was; every peer that applied the entry by delta did so at the delta's cut and still holds it, so a joiner that dropped or refused it could never hold their state.
+A signer the joiner's folded history never seats as a relay still fails the snapshot, as does one whose seat sits in history the joiner has not folded or no longer retains: the first is retried, the second needs a source for the governance history.
+Two honest cases still fail: the joiner's governance lags the source's (retryable, as for an unknown signer), and the signer was a TEE authority that has since been removed or whose evidence has lapsed.
 A leaf whose schema this node cannot read yet is set aside without failing, after its bytes and signature check out.
 The boundary root itself remains the serving peer's claim: the tree check proves the rows it served are consistent with that claim, and nothing signed by another member names a context's data root.
 
