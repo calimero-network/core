@@ -2935,9 +2935,13 @@ mod on_behalf_resolution_tests {
     use calimero_account::AccountId;
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
-    use calimero_governance_store::test_fixtures::{enrolled, sample_meta_with_admin, test_store};
+    use calimero_governance_store::test_fixtures::{
+        enrol_member, enrolled, join_account_for, sample_meta_with_admin, test_account_root,
+        test_store,
+    };
     use calimero_governance_store::{
-        CapabilitiesRepository, MembershipRepository, MetaRepository, NotFolded,
+        AccountBindingRepository, CapabilitiesRepository, MembershipRepository, MetaRepository,
+        NotFolded,
     };
     use calimero_node_primitives::sync::{LeafMetadata, TreeLeafData};
     use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -3036,6 +3040,27 @@ mod on_behalf_resolution_tests {
         let mut metadata = Metadata::new(1, 1);
         metadata.storage_type = storage_type;
         snapshot_leaf_authorship(&w.store, &NotFolded, &w.context, &metadata, None)
+    }
+
+    /// Another account certifying a member's signing key first must not make the
+    /// member's own entries look forged to a cold joiner.
+    #[test]
+    fn a_key_another_account_certified_first_still_authors_its_owners_entries() {
+        let w = world();
+        let victim_pk = PublicKey::from([0x4A; 32]);
+        let (attacker_root, attacker_genesis) = test_account_root();
+        let claim = join_account_for(&attacker_root, attacker_genesis, &victim_pk, [0; 32], 0);
+        let _attacker = AccountBindingRepository::new(&w.store)
+            .apply_link(&w.group, &claim.genesis, &claim.chain, &claim.statement, 0)
+            .expect("store the attacker's link")
+            .expect("the attacker's own device links");
+        let victim = enrol_member(&w.store, &w.group, &victim_pk);
+
+        assert_eq!(
+            snapshot(&w, owned(*victim.as_bytes(), victim_pk, None)),
+            SnapshotAuthorship::Authored,
+            "the victim's own entry was judged against the attacker's account"
+        );
     }
 
     /// A relay's entry for alice resolves to alice, so storage judges it as

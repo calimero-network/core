@@ -3395,6 +3395,38 @@ fn tee_evidence_key(
 
 #[cfg(test)]
 mod tests {
+    /// A certificate names a signing key without proof the account holds the
+    /// private key, so a key two accounts' devices share resolves to neither.
+    #[test]
+    fn a_signing_key_two_accounts_certified_resolves_to_neither() {
+        let key = PublicKey::from([0x61; 32]);
+        let (victim, attacker) = (AccountId::from([0x62; 32]), AccountId::from([0x63; 32]));
+        let view = |devices: [([u8; 32], AccountId); 2]| {
+            let mut view = calimero_authz::AclView::default();
+            for (device, account) in devices {
+                let _ = view.devices.insert(
+                    calimero_account::DeviceId::from(device),
+                    calimero_authz::DeviceBinding {
+                        account,
+                        sign_pk: key,
+                        kem_pk: calimero_account::KemPublicKey::from([0x64; 32]),
+                        device_epoch: 0,
+                        key_epoch: 0,
+                    },
+                );
+            }
+            view
+        };
+
+        let own = view([([0x70; 32], victim), ([0x00; 32], victim)]);
+        assert_eq!(account_for_author(&own, &key), Some(victim));
+        assert_eq!(bound_account(&own, &key), Some(victim));
+
+        let shared = view([([0x70; 32], victim), ([0x00; 32], attacker)]);
+        assert_eq!(account_for_author(&shared, &key), None);
+        assert_eq!(bound_account(&shared, &key), None);
+    }
+
     /// A joiner credential for projection tests. These assert what the projection
     /// FOLDS from an op, so the credential only has to be well-formed — except that
     /// the account it names is now the membership key, so it must be stable and

@@ -440,6 +440,69 @@ fn two_devices_sharing_a_replica_seed_converge_on_the_lower_id() {
 }
 
 #[test]
+fn another_accounts_device_cannot_shadow_a_members_device() {
+    let mut fx = Fixture::new();
+    let alice = Account::new(10);
+    let mallory = Account::new(20);
+    let phone = alice.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(grant_membership(&fx.admin, mallory.id, 31, fx.head.clone()));
+    fx.push(alice.link_op(&phone, 40, fx.head.clone()));
+
+    // Shares the phone's first 16 bytes and sorts below it.
+    let mut shadow = *phone.id.as_bytes();
+    shadow[16..].fill(0);
+    let sk = key(21);
+    let claim = Device {
+        id: DeviceId::from(shadow),
+        cert: DeviceCert::sign(
+            &mallory.root,
+            mallory.id,
+            DeviceId::from(shadow),
+            &sk.public_key(),
+            &KemPublicKey::from([21; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert"),
+        sk,
+        account: mallory.id,
+    };
+    fx.push(mallory.link_op(&claim, 50, fx.head.clone()));
+    // Minted from the same nonce as the phone, as any account may.
+    let sk = key(22);
+    let id = DeviceId::mint(mallory.id, [11; 16]);
+    let same_nonce = Device {
+        id,
+        cert: DeviceCert::sign(
+            &mallory.root,
+            mallory.id,
+            id,
+            &sk.public_key(),
+            &KemPublicKey::from([22; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert"),
+        sk,
+        account: mallory.id,
+    };
+    fx.push(mallory.link_op(&same_nonce, 60, fx.head.clone()));
+
+    let devices = ScopeState::from_ops(&fx.log).acl_view().devices;
+    assert_eq!(
+        devices.get(&phone.id).map(|bound| bound.account),
+        Some(alice.id),
+        "another account's device link took a member's device out of the live set"
+    );
+    assert_eq!(
+        devices.get(&same_nonce.id).map(|bound| bound.account),
+        Some(mallory.id),
+        "a validly minted device of another account must stay live too"
+    );
+}
+
+#[test]
 fn a_stranger_cannot_suppress_another_accounts_root_key_rotation() {
     // `absorb_handoff` keys by the HANDOFF's own account field and runs before
     // the credential is verified, gated only on `genesis.account_id() ==

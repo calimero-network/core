@@ -1317,6 +1317,50 @@ mod tests {
 
     use super::*;
 
+    /// `sign-cert` refuses a device id no verifier would accept for this root's
+    /// account, rather than printing a credential that can never be used.
+    #[tokio::test]
+    async fn sign_cert_refuses_a_device_not_minted_for_the_roots_account() {
+        use clap::Parser;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let phrase = camino::Utf8PathBuf::from_path_buf(dir.path().join("phrase"))
+            .expect("the temp path is utf-8");
+        std::fs::write(&phrase, PHRASE).expect("write the phrase");
+        let account = root().account();
+        let other =
+            calimero_account::AccountGenesis::new(PrivateKey::from([0x42; 32]).public_key())
+                .account_id();
+        let root_args = RootArgs::try_parse_from(["merod"]).expect("no flags needed");
+        let key = "44".repeat(32);
+        let sign_cert = |device: DeviceId| {
+            SignCertCommand::try_parse_from([
+                "sign-cert",
+                "--device",
+                &device.to_string(),
+                "--sign-pk",
+                &key,
+                "--kem-pk",
+                &key,
+                "--from",
+                phrase.as_str(),
+            ])
+            .expect("parse")
+        };
+
+        sign_cert(DeviceId::mint(account, [0x43; 16]))
+            .run(&root_args)
+            .await
+            .expect("a device minted for this account is certified");
+        assert!(
+            sign_cert(DeviceId::mint(other, [0x43; 16]))
+                .run(&root_args)
+                .await
+                .is_err(),
+            "a device minted for another account must not be certified"
+        );
+    }
+
     /// `--session` without `--credential` is refused at parse time.
     ///
     /// Alone it would be silently dropped: the proof is only assembled when a

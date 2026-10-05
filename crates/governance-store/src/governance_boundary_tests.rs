@@ -1,23 +1,23 @@
 //! Apply-level tests that a governance op cannot reach past its own group or namespace.
 
 use calimero_context_client::local_governance::{
-    GroupOp, RootOp, SignedGroupOp, SignedNamespaceOp,
+    GroupOp, JoinAccountCredential, RootOp, SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
 use crate::test_fixtures::{
-    bootstrap_namespace_with_admin, enrol_member, enrolled, nest_for_test, seal_for_test,
-    test_group_id, test_meta, test_store,
+    bootstrap_namespace_with_admin, enrol_member, enrolled, join_account_for, nest_for_test,
+    real_join_account, seal_for_test, test_account_root, test_group_id, test_meta, test_store,
 };
 use crate::{
-    apply_local_signed_group_op, get_group_for_context, register_context_in_group,
-    CapabilitiesRepository, MembershipRepository, MetaRepository, NamespaceGovernance,
-    NamespaceRepository,
+    apply_local_signed_group_op, get_group_for_context, member_account_in_namespace,
+    register_context_in_group, AccountBindingRepository, CapabilitiesRepository,
+    MembershipRepository, MetaRepository, NamespaceGovernance, NamespaceRepository,
 };
 
 #[test]
@@ -250,5 +250,136 @@ fn group_reparented_cannot_restructure_another_namespace() {
         "namespace-A GroupReparented of a namespace-B group: applied={} parent_still_root_b={}",
         res.is_ok(),
         parent == Some(root_b),
+    );
+}
+
+#[test]
+fn another_accounts_device_link_cannot_evict_a_members_device() {
+    let store = test_store();
+    let ns = test_group_id();
+    let victim_pk = PublicKey::from([0x44; 32]);
+    let victim = enrol_member(&store, &ns, &victim_pk);
+
+    // Shares the first 16 bytes of the victim's device id, the prefix devices
+    // were once de-duplicated on.
+    let mut device = *real_join_account(&victim_pk).statement.device.as_bytes();
+    device[16..].fill(0);
+    let attacker_pk = PublicKey::from([0x45; 32]);
+    let (attacker_root, attacker_genesis) = test_account_root();
+    let credential = join_account_for(&attacker_root, attacker_genesis, &attacker_pk, device, 0);
+    let _attacker = AccountBindingRepository::new(&store)
+        .apply_link(
+            &ns,
+            &credential.genesis,
+            &credential.chain,
+            &credential.statement,
+            0,
+        )
+        .expect("store the attacker's link")
+        .expect("the attacker's own device links");
+
+    assert_eq!(
+        member_account_in_namespace(&store, &ns, &victim_pk).unwrap(),
+        Some(victim),
+        "another account's device link evicted the victim's live binding",
+    );
+}
+
+#[test]
+fn another_account_cannot_claim_a_members_device_id_first() {
+    let store = test_store();
+    let ns = test_group_id();
+    let victim_pk = PublicKey::from([0x46; 32]);
+    let victim = real_join_account(&victim_pk);
+
+    // The victim's id is public wherever it already linked; the attacker links
+    // it here under its own account before the victim does.
+    let (attacker_root, attacker_genesis) = test_account_root();
+    let claim = calimero_account::DeviceCert::sign(
+        &attacker_root,
+        attacker_genesis.account_id(),
+        victim.statement.device,
+        &PublicKey::from([0x47; 32]),
+        &calimero_account::KemPublicKey::from([0x47; 32]),
+        0,
+        0,
+    )
+    .expect("the attacker's root signs anything");
+    let bindings = AccountBindingRepository::new(&store);
+    let _ = bindings
+        .apply_link(&ns, &attacker_genesis, &[], &claim, 0)
+        .expect("store the attacker's link");
+
+    let res = bindings
+        .apply_link(&ns, &victim.genesis, &victim.chain, &victim.statement, 0)
+        .expect("store the victim's link");
+    assert!(
+        res.is_ok(),
+        "another account claimed the victim's device id first: {res:?}"
+    );
+}
+
+#[test]
+fn another_accounts_device_cannot_take_over_a_members_signing_key() {
+    let store = test_store();
+    let ns = test_group_id();
+    let victim_pk = PublicKey::from([0x48; 32]);
+    let victim = enrol_member(&store, &ns, &victim_pk);
+    let bindings = AccountBindingRepository::new(&store);
+    let link = |credential: &JoinAccountCredential| {
+        let _bound = bindings
+            .apply_link(
+                &ns,
+                &credential.genesis,
+                &credential.chain,
+                &credential.statement,
+                0,
+            )
+            .expect("store the link")
+            .expect("the device links");
+    };
+
+    // Control: a second device of the victim's own account under the same key.
+    let victim_root = PrivateKey::from(*victim_pk);
+    let victim_genesis = calimero_account::AccountGenesis::new(victim_root.public_key());
+    link(&join_account_for(
+        &victim_root,
+        victim_genesis,
+        &victim_pk,
+        [0x01; 32],
+        0,
+    ));
+    assert_eq!(
+        member_account_in_namespace(&store, &ns, &victim_pk).unwrap(),
+        Some(victim),
+    );
+
+    // A certificate names a signing key without proof the account holds the
+    // private key, and the all-zero seed puts this device first in scan order.
+    let (attacker_root, attacker_genesis) = test_account_root();
+    let claim = join_account_for(&attacker_root, attacker_genesis, &victim_pk, [0; 32], 0);
+    link(&claim);
+    assert_eq!(
+        member_account_in_namespace(&store, &ns, &victim_pk).unwrap(),
+        None,
+        "a key two accounts certified must resolve to neither",
+    );
+    assert_eq!(
+        bindings
+            .live_bindings_by_sign_pk(&ns)
+            .unwrap()
+            .get(&victim_pk)
+            .map(|binding| binding.account),
+        None,
+        "the batch lookup must agree",
+    );
+
+    bindings
+        .apply_revocation(&ns, claim.statement.device)
+        .expect("revoke the attacker's device");
+    assert_eq!(
+        member_account_in_namespace(&store, &ns, &victim_pk).unwrap(),
+        Some(victim),
+        "revoking the other account's device restores the victim's resolution",
     );
 }

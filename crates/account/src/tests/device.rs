@@ -10,6 +10,7 @@ use crate::device::{verify_device_cert, DeviceCert, KemPublicKey};
 use crate::error::AccountError;
 use crate::revocation::{verify_device_revocation, DeviceRevocation};
 use crate::root_key::RootKeyHandoff;
+use crate::signed::AccountProof;
 
 // ---- device ids ----
 
@@ -120,6 +121,38 @@ fn cert_for_a_different_account_than_the_genesis_is_rejected() {
     assert_eq!(
         verify_device_cert(account, &g, &[], &cert),
         Err(AccountError::CertAccountMismatch)
+    );
+}
+
+#[test]
+fn cert_naming_a_device_not_minted_for_its_account_is_rejected() {
+    let (root, dev) = (key(1), key(5));
+    let g = genesis_for(&root);
+    let account = g.account_id();
+    let ours = sign_cert(
+        &root,
+        account,
+        DeviceId::mint(account, [3u8; 16]),
+        &dev,
+        0,
+        0,
+    );
+    assert!(verify_device_cert(account, &g, &[], &ours).is_ok());
+
+    let other = genesis_for(&key(2)).account_id();
+    let cert = sign_cert(&root, account, DeviceId::mint(other, [3u8; 16]), &dev, 0, 0);
+    assert!(
+        verify_device_cert(account, &g, &[], &cert).is_err(),
+        "a root certified a device id minted for another account"
+    );
+    let proof = AccountProof {
+        genesis: g,
+        chain: vec![],
+        statement: cert,
+    };
+    assert!(
+        proof.verify(account).is_err(),
+        "an account proof certified a device id minted for another account"
     );
 }
 

@@ -1382,6 +1382,44 @@ mod tests {
     }
 
     #[test]
+    fn devices_sharing_a_sixteen_byte_prefix_are_both_live() {
+        let store = test_store();
+        let gid = test_group_id();
+        let repo = AccountBindingRepository::new(&store);
+        let mut low = [0xAA; 32];
+        low[16..].fill(0);
+        let (low, high) = (DeviceId::from(low), DeviceId::from([0xAA; 32]));
+        for (device, seed) in [(low, 5), (high, 6)] {
+            repo.put_binding(
+                &gid,
+                device,
+                &GroupDeviceBindingValue {
+                    account: *genesis_for(seed).account_id().as_bytes(),
+                    sign_pk: *AsRef::<[u8; 32]>::as_ref(&key(seed).public_key()),
+                    kem_pk: [seed; 32],
+                    device_epoch: 0,
+                    key_epoch: 0,
+                    scope_epoch: 0,
+                },
+            )
+            .expect("store");
+        }
+
+        let live: Vec<DeviceId> = repo
+            .live_bindings(&gid)
+            .expect("read")
+            .into_iter()
+            .map(|b| b.device)
+            .collect();
+        assert_eq!(
+            live,
+            vec![low, high],
+            "a device must not shadow another that only shares its first 16 bytes"
+        );
+        assert_point_reads_agree(&repo, &gid, &[5, 6], &[low, high]);
+    }
+
+    #[test]
     fn is_device_linked_distinguishes_a_bound_device_from_a_merely_minted_one() {
         // Decides whether this node's stored device identity may be replaced. A
         // device that was never linked holds no replica state, so re-minting

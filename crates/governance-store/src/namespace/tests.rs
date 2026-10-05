@@ -6367,6 +6367,47 @@ fn ackable_members_fails_open_when_the_signer_is_unbound() {
     );
 }
 
+/// A key another account also certified names neither account, so the wait fails
+/// open rather than counting this node's own account as a peer.
+#[test]
+fn ackable_members_fails_open_when_another_account_certified_the_signer() {
+    let ns_id = [0xA8; 32];
+    let store = test_store();
+    let (admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let (attacker_root, attacker_genesis) = crate::test_fixtures::test_account_root();
+    let claim = crate::test_fixtures::join_account_for(
+        &attacker_root,
+        attacker_genesis,
+        &admin_sk.public_key(),
+        [0; 32],
+        0,
+    );
+    let _attacker = crate::AccountBindingRepository::new(&store)
+        .apply_link(
+            &gid,
+            &claim.genesis,
+            &claim.chain,
+            &claim.statement,
+            crate::JOIN_SCOPE_EPOCH,
+        )
+        .expect("store the attacker's link")
+        .expect("the attacker's own device links");
+    MembershipRepository::new(&store)
+        .add_member(
+            &gid,
+            &attacker_genesis.account_id(),
+            GroupMemberRole::Member,
+        )
+        .expect("seat the attacker");
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 3),
+        3,
+        "a key two accounts certified must not resolve to either"
+    );
+}
+
 /// An offline member is still a member; with nobody on the topic the publish
 /// would only reach `NoPeersSubscribed`, so it must not wait.
 #[test]
