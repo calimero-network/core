@@ -39,7 +39,7 @@ The account plane separates those jobs.
 | CRDT replica id  | never                        | yes                      |
 | KEM recipient    | no                           | yes                      |
 
-Neither is a public key. Both are content addresses:
+Neither is a public key:
 
 ```
 AccountId = H( genesis(root_pk) )
@@ -120,7 +120,7 @@ FROM THE ROOT KEY (deterministic, recomputable)
   AccountId  = H( genesis(root_pk) )
 
 RANDOM AT CREATION (generated once, stored, unrecoverable)
-  DeviceId   = H(account ‖ random 16 bytes)
+  DeviceId   = nonce ‖ H(account ‖ nonce)[..16], nonce = random 16 bytes
   KEM secret = X25519, random
   device signing keypair = Ed25519, random
 ```
@@ -255,7 +255,7 @@ Anything that records a binding must move **both** planes. "Does this change wha
   ]}
   steps={[
     { from: 0, to: 0, label: 'generate account root (once per node)' },
-    { from: 0, to: 0, label: 'account = H(root_pk); device = H(account, random)' },
+    { from: 0, to: 0, label: 'account = H(root_pk); device = nonce ‖ H(account, nonce)[..16]' },
     { from: 0, to: 0, label: 'cert signed by ACCOUNT ROOT; endorsement signed by MEMBER KEY' },
     { from: 0, to: 1, label: 'AccountDeviceLinked (encrypted GroupOp)', color: '#a5ff11' },
     { from: 1, to: 2, label: 'verify cert + endorsement; is endorser a member at the cut?' },

@@ -14,6 +14,9 @@
 //! artifact is the point. The current bytes were regenerated outside the SDK when
 //! `DeviceId::mint` changed layout, so they pin what the SDK has to produce.
 //!
+//! The recipe below reproduces them only with a mero-js whose `mintDeviceId`
+//! writes that layout; an older one writes an id core refuses.
+//!
 //! Regenerating (only when the credential format changes on purpose, and the
 //! change is intended to be breaking):
 //!
@@ -43,7 +46,7 @@ const SDK_ACCOUNT_HEX: &str = "ca999783990fd7f4ea0c192135f78c17ac77745bf580b2ed2
 const SDK_SIGN_PK_HEX: &str = "8b237d788e8eaaef550c6d125823fa45f1fd5fc29b2c88bdf871119471fc1312";
 
 #[test]
-fn a_credential_from_the_typescript_sdk_verifies() {
+fn the_credential_the_typescript_sdk_must_produce_verifies() {
     let bytes = hex::decode(SDK_CREDENTIAL_HEX).expect("fixture is hex");
     let credential: crate::AccountProof<crate::DeviceCert> =
         borsh::from_slice(&bytes).expect("fixture decodes as AccountProof<DeviceCert>");
@@ -62,7 +65,7 @@ fn a_credential_from_the_typescript_sdk_verifies() {
     // over the device certificate.
     credential
         .verify(account)
-        .expect("core must accept a credential the SDK produced");
+        .expect("core must accept the credential the SDK is pinned to produce");
 }
 
 #[test]
