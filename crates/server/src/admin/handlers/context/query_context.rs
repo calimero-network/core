@@ -45,7 +45,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_client::client::ContextClient;
-use calimero_context_client::messages::ExecuteError;
+use calimero_context_client::messages::{ExecuteError, ReadAs};
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     QueryContextApiRequest, QueryContextApiResponse, QueryContextApiResponseData,
@@ -94,7 +94,8 @@ pub async fn handler(
 
     // A device the namespace withdrew reads nothing in it. A session that names
     // no device is judged by its account alone.
-    if let Some(Extension(AuthenticatedDevice(device))) = device {
+    let device = device.map(|Extension(AuthenticatedDevice(device))| device);
+    if let Some(device) = device {
         if crate::caller_account::device_withdrawn_for_context(
             &state.ctx_client,
             &context_id,
@@ -114,7 +115,13 @@ pub async fn handler(
         context_id,
         account,
         &req.method,
-        query(&state.ctx_client, context_id, account, &req).await,
+        query(
+            &state.ctx_client,
+            context_id,
+            ReadAs { account, device },
+            &req,
+        )
+        .await,
     )
 }
 
@@ -180,10 +187,11 @@ fn refusal_status(err: eyre::Report, method: &str) -> ApiError {
 
 /// This node's own signing identity in the context.
 ///
-/// Used as the execution's device half. A read writes nothing for a replica to
-/// own, so which device runs it is not load-bearing — but the type demands one,
-/// and the node's own is the honest answer: it is the process actually running
-/// the call.
+/// The execution's EXECUTOR: the replica running the call, which the sealing
+/// context is derived from. Not the identity the method observes — that is the
+/// session's account and device (`ReadAs`), exactly as a warranted write
+/// observes the warrant's author while this node executes it. It used to be
+/// both, which made `env::device_id()` answer with the relay for every account.
 async fn local_signer(
     ctx_client: &ContextClient,
     context_id: &ContextId,
@@ -201,7 +209,7 @@ async fn local_signer(
 async fn query(
     ctx_client: &ContextClient,
     context_id: ContextId,
-    account: calimero_account::AccountId,
+    read_as: ReadAs,
     req: &QueryContextApiRequest,
 ) -> eyre::Result<Option<serde_json::Value>> {
     // A context this node does not hold is a typed `404` here as on `/intents`;
@@ -211,7 +219,7 @@ async fn query(
     let payload = serde_json::to_vec(&req.args_json)?;
 
     let response = ctx_client
-        .query_as(&context_id, account, &executor, req.method.clone(), payload)
+        .query_as(&context_id, read_as, &executor, req.method.clone(), payload)
         .await?;
 
     read_output(response.returns)
