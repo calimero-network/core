@@ -1505,15 +1505,24 @@ mod tests {
 
     /// The answer to a real upgrade that names the node by `host` on its port.
     async fn upgrade(addr: SocketAddr, host: &str, origin: Option<&str>) -> StatusCode {
-        let mut req = format!("ws://{addr}/ws").into_client_request().unwrap();
         let host = format!("{host}:{}", addr.port());
-        let _ = req.headers_mut().insert("host", host.parse().unwrap());
-        if let Some(origin) = origin {
-            let _ = req.headers_mut().insert("origin", origin.parse().unwrap());
+        let mut headers = vec![("host", &*host)];
+        headers.extend(origin.map(|origin| ("origin", origin)));
+        upgrade_with(&format!("ws://{addr}/ws"), &headers).await.0
+    }
+
+    /// The status and body of the answer to a real upgrade of `url` carrying `headers`.
+    async fn upgrade_with(url: &str, headers: &[(&'static str, &str)]) -> (StatusCode, String) {
+        let mut req = url.into_client_request().unwrap();
+        for (name, value) in headers {
+            let _ = req.headers_mut().insert(*name, value.parse().unwrap());
         }
         match connect_async(req).await {
-            Ok((_, response)) => response.status(),
-            Err(WsError::Http(response)) => response.status(),
+            Ok((_, response)) => (response.status(), String::new()),
+            Err(WsError::Http(response)) => (
+                response.status(),
+                String::from_utf8(response.into_body().unwrap_or_default()).unwrap(),
+            ),
             Err(err) => panic!("upgrade failed before a response: {err}"),
         }
     }
@@ -1573,6 +1582,67 @@ mod tests {
             }
         }
         assert!(refused.is_empty(), "{refused:#?}");
+    }
+
+    /// A forwarded host is judged like `Host`: every host named must be the node's own.
+    #[tokio::test]
+    async fn ws_upgrade_judges_a_forwarded_host() {
+        for embedded_auth in [false, true] {
+            let (addr, _blob_dir) = spawn_guarded_ws(embedded_auth).await;
+            let url = format!("ws://{addr}/ws");
+            for (origin, forwarded, status, case) in [
+                (
+                    "http://app.example",
+                    "app.example",
+                    StatusCode::SWITCHING_PROTOCOLS,
+                    "a proxy forwarding a listed host",
+                ),
+                (
+                    "https://node.example.com",
+                    "node.example.com",
+                    StatusCode::FORBIDDEN,
+                    "a proxy forwarding an unlisted host",
+                ),
+                (
+                    "https://evil.example",
+                    "127.0.0.1",
+                    StatusCode::FORBIDDEN,
+                    "a foreign page naming the node itself",
+                ),
+            ] {
+                let headers = [("origin", origin), ("x-forwarded-host", forwarded)];
+                assert_eq!(
+                    upgrade_with(&url, &headers).await.0,
+                    status,
+                    "{case}, embedded auth: {embedded_auth}"
+                );
+            }
+        }
+    }
+
+    /// A socket has no CORS, so a loopback page is admitted whatever host it names.
+    #[tokio::test]
+    async fn ws_upgrade_admits_a_loopback_page_naming_any_host() {
+        for embedded_auth in [false, true] {
+            let (addr, _blob_dir) = spawn_guarded_ws(embedded_auth).await;
+            for origin in ["http://localhost:5173", "tauri://localhost"] {
+                assert_eq!(
+                    upgrade(addr, "relay.example.com", Some(origin)).await,
+                    StatusCode::SWITCHING_PROTOCOLS,
+                    "{origin}, embedded auth: {embedded_auth}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_upgrade_says_how_to_be_admitted() {
+        let server = spawn_test_ws().await;
+
+        let (status, body) = upgrade_with(&server.url, &[("origin", "https://evil.example")]).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("allowed_origins"), "{body:?}");
     }
 
     // A group subscriber receives GroupMembership events for its group; a
@@ -3111,6 +3181,28 @@ mod tests {
                 "{permissions:?} must reach the handler (context not held): {resp}"
             );
         }
+    }
+
+    /// With embedded auth the guard answers first, so the origin check only ever
+    /// refuses a page that carries a valid token.
+    #[tokio::test]
+    async fn ws_upgrade_is_refused_for_its_token_before_its_origin() {
+        let server = spawn_test_ws_behind_guard(&["context:subscribe"]).await;
+        let anonymous = format!("ws://{}/ws", server.addr);
+        let foreign = [("origin", "https://evil.example")];
+
+        assert_eq!(
+            upgrade_with(&anonymous, &foreign).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            upgrade_with(&server.url, &foreign).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            upgrade_with(&server.url, &[]).await.0,
+            StatusCode::SWITCHING_PROTOCOLS
+        );
     }
 
     /// A proxy-mode node (no embedded guard) behind a proxy that forwards the
