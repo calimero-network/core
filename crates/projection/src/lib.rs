@@ -11,7 +11,6 @@
 //! order-independent.
 
 use std::borrow::Cow;
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use sha2::{Digest, Sha256};
@@ -77,13 +76,58 @@ struct SubgroupSlot {
     exists: Option<(Stamp, bool)>,
 }
 
-/// The role a member's standing joins seat it with: the earliest one's, or the
-/// least a join grants once more stand than are kept and the earliest is unknown.
-fn joined_role(joins: &BTreeMap<Stamp, GroupMemberRole>) -> Option<GroupMemberRole> {
-    if joins.len() > MAX_STANDING_JOINS {
-        return Some(GroupMemberRole::ReadOnly);
+/// What the fold keeps of one member's invitation joins of one group. `first`
+/// and `least` cover every join ever folded, so no add or removal clears them.
+#[derive(Clone, Debug)]
+struct MemberJoins {
+    first: (Stamp, GroupMemberRole),
+    least: GroupMemberRole,
+    /// The latest joins above the member's clock, which no join writes.
+    standing: BTreeMap<Stamp, GroupMemberRole>,
+}
+
+impl MemberJoins {
+    fn record(&mut self, stamp: Stamp, role: &GroupMemberRole, clock: Option<&Stamp>) {
+        if stamp < self.first.0 {
+            self.first = (stamp, role.clone());
+        }
+        if invited_rank(role) < invited_rank(&self.least) {
+            self.least = role.clone();
+        }
+        if !wins(stamp, clock) {
+            return;
+        }
+        let _ = self.standing.insert(stamp, role.clone());
+        // Keeping the latest ones is what stays a function of the op set: a
+        // later removal only ever spends joins from the earliest end.
+        if self.standing.len() > MAX_STANDING_JOINS + 1 {
+            let _ = self.standing.pop_first();
+        }
     }
-    joins.first_key_value().map(|(_, role)| role.clone())
+
+    /// The role these joins seat a member with whose latest add or removal is
+    /// the removal at `clock`: the earliest join's above it, or `least` if unknown.
+    fn role(&self, clock: Option<&Stamp>) -> Option<GroupMemberRole> {
+        if wins(self.first.0, clock) {
+            return Some(self.first.1.clone());
+        }
+        if self.standing.len() > MAX_STANDING_JOINS {
+            return Some(self.least.clone());
+        }
+        self.standing
+            .first_key_value()
+            .map(|(_, role)| role.clone())
+    }
+}
+
+/// An invited role's authority, least first. A TEE role never reaches a join,
+/// as its admission folds as an add, and ranks with the least.
+fn invited_rank(role: &GroupMemberRole) -> u8 {
+    match role {
+        GroupMemberRole::ReadOnly | GroupMemberRole::ReadOnlyTee | GroupMemberRole::RelayTee => 0,
+        GroupMemberRole::Member => 1,
+        GroupMemberRole::Admin => 2,
+    }
 }
 
 /// Candidate handoffs at one `(account, epoch)` slot, keyed by
@@ -102,7 +146,7 @@ type HandoffCandidates = BTreeMap<([u8; 32], [u8; 64]), RootKeyHandoff>;
 /// A slot only ever holds genuinely concurrent rotations from the same epoch by
 /// devices sharing one root key, so this is far above any legitimate need.
 const MAX_HANDOFF_CANDIDATES: usize = 8;
-const MAX_STANDING_JOINS: usize = 64; // most joins above one member's clock that resolve exactly
+const MAX_STANDING_JOINS: usize = 64; // most joins above one member's removal that always resolve exactly
 
 /// The deterministic projection of one scope's op-log: values + ACL + groups,
 /// each slot resolved last-writer-wins by `(hlc, op_id)`.
@@ -117,9 +161,9 @@ pub struct ScopeState {
     // --- membership plane ---
     groups: GroupMembers,
     member_clock: BTreeMap<(ContextGroupId, AccountId), Stamp>,
-    /// Each member's latest joins that beat its `member_clock`, which no join
-    /// writes: see [`joined_role`] for the membership while no add stands.
-    member_joins: BTreeMap<(ContextGroupId, AccountId), BTreeMap<Stamp, GroupMemberRole>>,
+    /// Each member's invitation joins: see [`MemberJoins::role`] for the
+    /// membership they give while no add stands.
+    member_joins: BTreeMap<(ContextGroupId, AccountId), MemberJoins>,
     /// Each member's latest leave of the scope's root group, which removes it
     /// from every other group too, as the apply cascades a namespace leave.
     namespace_left: BTreeMap<AccountId, Stamp>,
@@ -882,43 +926,33 @@ impl ScopeState {
         let key = (group, member);
         self.fold_namespace_leave_into(key);
         let clock = self.member_clock.get(&key);
-        if !wins(stamp, clock) {
-            return;
-        }
+        let joins = self.member_joins.entry(key).or_insert_with(|| MemberJoins {
+            first: (stamp, role.clone()),
+            least: role.clone(),
+            standing: BTreeMap::new(),
+        });
+        joins.record(stamp, role, clock);
         // The clock is the latest add or removal, so an add stands unless it
         // is the latest removal's (or nothing was ever written).
-        let add_stands = clock != self.member_removed_clock.get(&key);
-        let joins = self.member_joins.entry(key).or_default();
-        let _ = joins.insert(stamp, role.clone());
-        // Keeping the latest ones is what stays a function of the op set: a
-        // later removal only ever spends joins from the earliest end.
-        if joins.len() > MAX_STANDING_JOINS + 1 {
-            let _ = joins.pop_first();
-        }
-        if add_stands {
+        if clock != self.member_removed_clock.get(&key) {
             return;
         }
-        if let Some(role) = joined_role(joins) {
+        // Read again even below the clock: such a join can still lower `least`.
+        if let Some(role) = joins.role(clock) {
             let _ = self.groups.entry(group).or_default().insert(member, role);
         }
     }
 
-    /// Drop the joins of `key` that `stamp` beats, and return the role the ones
-    /// left seat the member with.
+    /// Drop the standing joins of `key` that a removal at `stamp` beats, and
+    /// return the role its joins seat the member with above it.
     fn joins_after(
         &mut self,
         key: (ContextGroupId, AccountId),
         stamp: Stamp,
     ) -> Option<GroupMemberRole> {
-        let Entry::Occupied(mut joins) = self.member_joins.entry(key) else {
-            return None;
-        };
-        joins.get_mut().retain(|at, _| *at > stamp);
-        let role = joined_role(joins.get());
-        if role.is_none() {
-            let _ = joins.remove();
-        }
-        role
+        let joins = self.member_joins.get_mut(&key)?;
+        joins.standing.retain(|at, _| *at > stamp);
+        joins.role(Some(&stamp))
     }
 
     /// Absorb a credential's account facts and bind its device, if admissible.
@@ -2914,7 +2948,9 @@ mod tests {
 
     /// The joins `state` keeps above the joiner's clock in [`JOINED_GROUP`].
     fn joins_standing(state: &ScopeState) -> usize {
-        state.member_joins[&(ContextGroupId::from(JOINED_GROUP), joiner())].len()
+        state.member_joins[&(ContextGroupId::from(JOINED_GROUP), joiner())]
+            .standing
+            .len()
     }
 
     const LIMIT: u64 = MAX_STANDING_JOINS as u64;
