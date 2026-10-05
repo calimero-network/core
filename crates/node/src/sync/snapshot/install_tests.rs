@@ -2,6 +2,7 @@
 //! stream, and the store ends up holding the source's tree or, when the tree
 //! does not hold together, exactly what it held before.
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,12 +11,19 @@ use calimero_account::AccountId;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context_client::client::ContextClient;
-use calimero_governance_store::{AbsorbRepository, NotFolded};
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::test_fixtures::{enrol_member, sample_meta_with_admin};
+use calimero_governance_store::unified_op_decode::op_from_namespace_op;
+use calimero_governance_store::{
+    register_context_in_group, AbsorbRepository, MetaRepository, NotFolded,
+};
+use calimero_governance_types::{EncryptedGroupOp, GroupOp, NamespaceOp, SignedNamespaceOp};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_node_primitives::messages::NodeMessage;
 use calimero_node_primitives::sync::storage_bridge::create_runtime_env;
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::action::Action;
 use calimero_storage::child_trie::ChildTrie;
@@ -24,6 +32,8 @@ use calimero_storage::entities::{ChildInfo, EntryRules, Metadata, SignatureData,
 use calimero_storage::env::with_runtime_env;
 use calimero_storage::index::Index;
 use calimero_storage::interface::ApplyContext;
+use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+use calimero_storage::tests::common::owned_entry_id;
 use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::key::STATE_KEY_LEN;
 use calimero_utils_actix::LazyRecipient;
@@ -38,6 +48,9 @@ use crate::NodeState;
 
 const CONTEXT: [u8; 32] = [0x33; 32];
 const STALE: [u8; STATE_KEY_LEN] = [0x77; STATE_KEY_LEN];
+const NAMESPACE: [u8; 32] = [0x4A; 32];
+const RELAY_SEATED: [u8; 32] = [0xE1; 32]; // id of the op that admits the relay
+const RELAY_REMOVED: [u8; 32] = [0xE2; 32]; // id of the op that removes it
 
 fn context() -> ContextId {
     ContextId::from(CONTEXT)
@@ -673,6 +686,140 @@ async fn a_member_whose_anchor_is_not_in_the_snapshot_fails_the_snapshot() {
     let message = refused(&joiner().await, claimed, records).await;
 
     assert!(message.contains("anchor"), "{message}");
+}
+
+/// A `User` entry of `owner`, holding `data`, signed by `relay` on the owner's behalf.
+fn written_through_a_relay(
+    id: Id,
+    data: &[u8],
+    relay: &PrivateKey,
+    owner: AccountId,
+) -> StorageType {
+    let signed = |signature| StorageType::User {
+        rules: EntryRules::OWNED,
+        owner,
+        signature_data: Some(SignatureData {
+            signature,
+            nonce: 1,
+            signer: Some(relay.public_key()),
+            on_behalf: Some(owner),
+        }),
+    };
+    let mut metadata = Metadata::new(1, 1);
+    metadata.storage_type = signed([0; 64]);
+    let payload = Action::Add {
+        id,
+        data: data.to_vec(),
+        ancestors: vec![],
+        metadata,
+    }
+    .payload_for_signing();
+    signed(relay.sign(&payload).unwrap().to_bytes())
+}
+
+impl Joiner {
+    /// Put the context in a namespace and certify `key` for an account there,
+    /// holding no role: what the rows say of a relay once it has been removed.
+    fn knows_the_account_of(&self, key: &PublicKey) -> AccountId {
+        let namespace = ContextGroupId::from(NAMESPACE);
+        MetaRepository::new(&self.store)
+            .save(
+                &namespace,
+                &sample_meta_with_admin(AccountId::from([0xEE; 32])),
+            )
+            .unwrap();
+        register_context_in_group(&self.store, &namespace, &context()).unwrap();
+        enrol_member(&self.store, &namespace, key)
+    }
+
+    /// Fold a governance op of the namespace group into the joiner's projection.
+    fn folds(&self, op: &GroupOp, id: [u8; 32], parents: &[[u8; 32]]) {
+        let signed = SignedNamespaceOp {
+            version: 1,
+            namespace_id: NAMESPACE.into(),
+            parent_op_hashes: Vec::new(),
+            signer: PublicKey::from([0xAD; 32]),
+            nonce: 0,
+            op: NamespaceOp::Group {
+                group_id: NAMESPACE.into(),
+                key_id: [0; 32].into(),
+                encrypted: EncryptedGroupOp {
+                    nonce: [0; 12],
+                    ciphertext: Vec::new(),
+                },
+                key_rotation: None,
+            },
+            signature: [0; 64],
+            admitter_endorsement: None,
+        };
+        let hlc = HybridTimestamp::new(Timestamp::new(
+            NTP64(1_700_000_000),
+            ID::from(NonZeroU64::new(1).unwrap()),
+        ));
+        self.manager
+            .node_state
+            .write_scope_projections()
+            .ingest_op(&op_from_namespace_op(&signed, Some(op), id, hlc, parents));
+    }
+
+    /// Fold the ops that admitted `relay` as a `RelayTee` and later removed it.
+    fn folded_a_relay_seated_then_removed(&self, relay: AccountId) {
+        self.folds(
+            &GroupOp::MemberAdded {
+                member: relay,
+                role: GroupMemberRole::RelayTee,
+            },
+            RELAY_SEATED,
+            &[],
+        );
+        self.folds(
+            &GroupOp::MemberRemoved {
+                member: relay,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+            RELAY_REMOVED,
+            &[RELAY_SEATED],
+        );
+    }
+}
+
+/// Every peer that was there applied the entry while the relay was seated and
+/// still holds it, so a joiner that can see the relay was seated takes it too.
+#[tokio::test]
+async fn an_entry_written_through_a_relay_removed_since_is_installed() {
+    let (owner, relay) = (AccountId::from([0xA1; 32]), PrivateKey::from([0x61; 32]));
+    let entry = owned_entry_id(Id::new([0x84; 32]), &owner);
+    let joiner = joiner().await;
+    let relay_account = joiner.knows_the_account_of(&relay.public_key());
+    joiner.folded_a_relay_seated_then_removed(relay_account);
+    let through = written_through_a_relay(entry, b"kept", &relay, owner);
+    let (records, claimed) = tree_over(&[child(entry, b"kept", b"kept", through)]);
+
+    let (applied, _) = joiner.installs(claimed, records).await.unwrap();
+
+    assert_eq!(applied, 2);
+    assert!(joiner.holds(entry));
+    assert_eq!(
+        served_state_root(&joiner.store, context()).unwrap(),
+        claimed
+    );
+}
+
+/// A key certified in the namespace that no folded op ever seated as a relay
+/// signs for nobody: the entry is the source's lie, and fails the snapshot.
+#[tokio::test]
+async fn an_entry_written_through_a_key_that_was_never_a_relay_fails_the_snapshot() {
+    let (owner, relay) = (AccountId::from([0xA1; 32]), PrivateKey::from([0x62; 32]));
+    let entry = owned_entry_id(Id::new([0x85; 32]), &owner);
+    let joiner = joiner().await;
+    let _account = joiner.knows_the_account_of(&relay.public_key());
+    let through = written_through_a_relay(entry, b"forged", &relay, owner);
+    let (records, claimed) = tree_over(&[child(entry, b"forged", b"forged", through)]);
+
+    let message = refused(&joiner, claimed, records).await;
+
+    assert!(message.contains("neither its owner"), "{message}");
 }
 
 fn nothing_stored(store: &Store) -> bool {
