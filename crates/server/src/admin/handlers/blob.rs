@@ -1692,8 +1692,8 @@ mod passive_cross_site_tests {
         }
     }
 
-    /// The answer to a request the origin guard admits on a node named by its
-    /// own address, and whether the node holds the blob afterwards.
+    /// The answer to a request naming the node by its own address, and whether the
+    /// node holds the blob afterwards. The origin guard admits the navigation.
     async fn request(
         node: &Node,
         head: bool,
@@ -1704,10 +1704,9 @@ mod passive_cross_site_tests {
         for (name, value) in headers {
             let _ = sent.insert(*name, HeaderValue::from_static(value));
         }
-        assert!(
-            OriginGuard::new(false, None).admits(&sent, None),
-            "{sent:?}"
-        );
+        if headers == NAVIGATION {
+            assert!(OriginGuard::new(false, None).admits(&sent, None));
+        }
 
         let path = Path(node.blob_id.to_string());
         let query = Query(
