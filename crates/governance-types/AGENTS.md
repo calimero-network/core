@@ -26,7 +26,7 @@ cargo test -p calimero-governance-types sign_and_verify_round_trip -- --nocaptur
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
-| `GroupOp` | enum, `#[non_exhaustive]` | Mutation of a single group's state (membership, roles, capabilities, metadata, TEE policy, cascades, key rotation, the account's device registry, device scope, device label and namespace set). Every `AccountDeviceLinked` carries the root-signed scope it was made under; its epoch is stamped on the binding and is what a later `AccountDeviceDescoped` orders itself against |
+| `GroupOp` | enum, `#[non_exhaustive]` | Mutation of a single group's state (membership, roles, capabilities, metadata, TEE policy, cascades, key rotation, the account's device registry, device scope, device label and namespace set, and a `SharedStorage` cell's writer-set step, `SharedWritersRotated`, which is not delegable). Every `AccountDeviceLinked` carries the root-signed scope it was made under; its epoch is stamped on the binding and is what a later `AccountDeviceDescoped` orders itself against |
 | `SignableGroupOp` / `SignedGroupOp` | struct | Unsigned/signed envelope around a `GroupOp`: `version`, `group_id`, `parent_op_hashes`, `signer`, `nonce`, `op`, (+`signature`) |
 | `RootOp` | enum (NOT `#[non_exhaustive]`) | Cleartext namespace-wide op: group create/reparent/delete, admin change, policy update, member join (invitation, open self-join, and hardware-attested fleet admission), key delivery, namespace genesis |
 | `NamespaceOp` | enum, `#[non_exhaustive]` | `Root(RootOp)` or `Group { group_id, key_id, encrypted: EncryptedGroupOp, key_rotation }` - the encrypted variant is how a `GroupOp` actually travels on the namespace DAG |

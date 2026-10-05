@@ -327,13 +327,14 @@ pub async fn start(
     // is routed afresh. CORS goes outside that, so the envelope's own response —
     // the only one a browser sees for a sealed call — carries the CORS headers.
     let origin_guard = origin_guard::OriginGuard::new(
-        config.use_embedded_auth(),
+        config.authenticates_callers(),
         config.cors.allowed_origins.as_deref(),
     );
     if origin_guard.enforced() {
         info!(
-            "Auth mode is proxy: browser requests from origins other than this node's own, \
-             loopback pages and [server.cors] allowed_origins are refused"
+            "Auth mode is proxy and no proxy identity is taken: browser requests from origins \
+             other than this node's own, loopback pages and [server.cors] allowed_origins are \
+             refused"
         );
     }
     let app = ServiceBuilder::new()
@@ -399,10 +400,10 @@ pub async fn start(
 /// `allow_private_network = false`) to remove the wildcard-origin +
 /// private-network combination.
 ///
-/// When this process authenticates nothing itself (auth mode proxy), the
-/// origin set is narrowed to what [`origin_guard::OriginGuard`] admits, and
-/// private-network access is advertised only alongside an explicit
-/// `allowed_origins` list.
+/// When neither this process nor its proxy authenticates callers (auth mode
+/// proxy without `server.proxy_identity`), the origin set is narrowed to what
+/// [`origin_guard::OriginGuard`] admits, and private-network access is
+/// advertised only alongside an explicit `allowed_origins` list.
 fn build_cors_layer(
     cors: &crate::config::CorsConfig,
     origin_guard: &origin_guard::OriginGuard,

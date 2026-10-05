@@ -346,6 +346,18 @@ const GOLDEN_GROUP_OP_CASCADE_UPGRADE: &[u8] = &[
     5, 0, 0, 0, b'1', b'.', b'0', b'.', b'0', // version = "1.0.0"
 ];
 
+/// GroupOp ordinal 43 - SharedWritersRotated (zero ids, empty sets, nonce 0)
+const GOLDEN_GROUP_OP_SHARED_WRITERS_ROTATED: &[u8] = &[
+    43, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // context_id
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // cell
+    0, 0, 0, 0, // prior: empty
+    0, 0, 0, 0, 0, 0, 0, 0, // nonce
+    0, 0, 0, 0, // new: empty
+];
+
 #[test]
 fn group_op_discriminants_are_golden() {
     // Ties the ordinals frozen below to the schema version they describe, so a
@@ -629,6 +641,21 @@ fn group_op_discriminants_are_golden() {
         GOLDEN_GROUP_OP_ACCOUNT_KEYS_ROTATED,
         GroupOp::AccountKeysRotated { ref handoff } if handoff.account == zero_account,
         26
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_SHARED_WRITERS_ROTATED,
+        GroupOp::SharedWritersRotated {
+            context_id,
+            cell,
+            ref prior,
+            nonce,
+            ref new,
+        } if context_id == ContextId::from([0u8; 32])
+            && cell == calimero_storage::address::Id::new([0u8; 32])
+            && prior.is_empty()
+            && nonce == 0
+            && new.is_empty(),
+        43
     );
 
     assert!(
@@ -1183,6 +1210,79 @@ fn tampered_op_fails() {
 
     op.nonce = 2;
     assert!(op.verify_signature().is_err());
+}
+
+/// A writer-set rotation's signature covers the step it names and nothing else.
+#[test]
+fn a_rotation_signature_does_not_verify_another_writer_set() {
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::OpMask;
+
+    let mut rng = UnwrapErr(SysRng);
+    let alice = PrivateKey::random(&mut rng);
+    let account = |sk: &PrivateKey| calimero_account::AccountId::from(*sk.public_key());
+    let bob = account(&PrivateKey::random(&mut rng));
+    let mallory = account(&PrivateKey::random(&mut rng));
+    let set = |who: &[calimero_account::AccountId]| -> BTreeMap<_, _> {
+        who.iter().map(|a| (*a, OpMask::FULL)).collect()
+    };
+    let rotation = |context_id, cell, prior, new| GroupOp::SharedWritersRotated {
+        context_id,
+        cell,
+        prior,
+        nonce: 7,
+        new,
+    };
+    let (context, cell) = (ContextId::from([0xC7; 32]), Id::new([0xC0; 32]));
+    let genuine = SignedGroupOp::sign(
+        &alice,
+        sample_group_id(),
+        vec![],
+        1,
+        rotation(
+            context,
+            cell,
+            set(&[account(&alice)]),
+            set(&[account(&alice), bob]),
+        ),
+    )
+    .expect("sign");
+    genuine.verify_signature().expect("control");
+
+    for (what, op) in [
+        (
+            "another writer set",
+            rotation(context, cell, set(&[account(&alice)]), set(&[mallory])),
+        ),
+        (
+            "the step from another set",
+            rotation(context, cell, set(&[mallory]), set(&[account(&alice), bob])),
+        ),
+        (
+            "another cell",
+            rotation(
+                context,
+                Id::new([0xC1; 32]),
+                set(&[account(&alice)]),
+                set(&[account(&alice), bob]),
+            ),
+        ),
+        (
+            "another context",
+            rotation(
+                ContextId::from([0xC8; 32]),
+                cell,
+                set(&[account(&alice)]),
+                set(&[account(&alice), bob]),
+            ),
+        ),
+    ] {
+        let forged = SignedGroupOp {
+            op,
+            ..genuine.clone()
+        };
+        assert!(forged.verify_signature().is_err(), "nor {what}");
+    }
 }
 
 #[test]
@@ -3705,6 +3805,68 @@ fn a_tee_admission_quote_is_bounded() {
     assert!(admission(vec![0; limit + 1])
         .validate_after_unsealing()
         .is_err());
+}
+
+#[test]
+fn a_shared_writers_rotation_bounds_its_writer_sets() {
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::OpMask;
+
+    let sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let writers = |n: usize| -> BTreeMap<calimero_account::AccountId, OpMask> {
+        (0..n)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                (calimero_account::AccountId::from(bytes), OpMask::FULL)
+            })
+            .collect()
+    };
+    let validate = |prior, new| {
+        SignedGroupOp::sign(
+            &sk,
+            sample_group_id(),
+            vec![],
+            1,
+            GroupOp::SharedWritersRotated {
+                context_id: ContextId::from([0xC7; 32]),
+                cell: Id::new([0xC0; 32]),
+                prior,
+                nonce: 1,
+                new,
+            },
+        )
+        .expect("sign")
+        .validate()
+    };
+    validate(writers(256), writers(256)).expect("at the bound");
+    assert!(matches!(
+        validate(writers(257), writers(1)),
+        Err(GovernanceError::Bounds(_))
+    ));
+    assert!(matches!(
+        validate(writers(1), writers(257)),
+        Err(GovernanceError::Bounds(_))
+    ));
+    assert!(matches!(
+        validate(writers(0), writers(1)),
+        Err(GovernanceError::Bounds(_))
+    ));
+}
+
+#[test]
+fn a_shared_writers_rotation_is_neither_delegable_nor_owner_level() {
+    let op = GroupOp::SharedWritersRotated {
+        context_id: ContextId::from([0xC7; 32]),
+        cell: calimero_storage::address::Id::new([0xC0; 32]),
+        prior: BTreeMap::new(),
+        nonce: 1,
+        new: BTreeMap::new(),
+    };
+    assert!(op.delegable_form().is_none(), "a relay cannot publish it");
+    assert_eq!(op.owner_op_kind(), None, "it needs no owner proof");
+    let bytes = borsh::to_vec(&op).expect("encode");
+    assert_eq!(bytes[0], 43, "it follows RootGuarded (42)");
 }
 
 /// Wrapper tags stacked by the nesting tests: about what one 64 KiB gossip

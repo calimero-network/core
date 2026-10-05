@@ -31,6 +31,9 @@ with `auth_mode = "proxy"` and a server bind reachable off-host exposes
 unauthenticated node administration. In `proxy` mode you are responsible for
 putting an authenticating proxy in front of the server bind; in `embedded` mode
 the node validates tokens but you still terminate TLS at the edge.
+
+The node's `Host` and `Origin` check admits every loopback page, so in `proxy` mode any page served from localhost can call the admin API.
+Use `proxy` mode only on a development machine or behind a proxy that checks every caller.
 :::
 
 You can set the mode at init (`merod init --auth-mode embedded`), in

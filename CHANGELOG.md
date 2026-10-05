@@ -423,6 +423,47 @@
 
 ### Fixed
 
+- **A node whose proxy authenticates callers serves browser pages from any
+  origin.** The origin guard stands in for an authenticating layer on a node
+  that has none, but it was enforced whenever auth mode is proxy, even with
+  `server.proxy_identity` on, where the proxy in front already authenticates
+  every caller. Since rc.79 tightened the guard, a fleet relay, whose
+  `allowed_origins` lists only its own hostname, answered every hosted
+  app's browser request with `403 cross-origin request refused`, so
+  delegated sign-in failed at "could not learn the relay node key". A node
+  that takes its callers' identity from its proxy is now left to CORS, as
+  an embedded-auth node is; proxy mode without `proxy_identity` keeps the
+  guard. mero-tee drops the `allowed_origins` pin it carried for the guard
+  when it bumps merod (Companion PR: mero-tee#442). (#4478)
+
+- **A browser request is judged by the host it names, not by its origin
+  alone.** In proxy auth mode the origin guard admitted any request whose
+  `Origin` matched its `Host` and judged nothing that carried no `Origin`,
+  so a page that rebound its DNS name to the node could read the admin API
+  and drive `/jsonrpc` as the node owner. A request carrying `Origin` or
+  `Sec-Fetch-Site` now counts as a browser's and is admitted only if its
+  origin is listed in `allowed_origins`, is a loopback page, or every host it
+  names (`Host`, each `X-Forwarded-Host`, the HTTP/2 authority) is one of the
+  node's own (a loopback name, an IP address, or the host of an
+  `allowed_origins` entry) and its origin matches or is absent; CORS and the
+  guard share the one check. meroctl, curl, Node clients and loopback pages
+  are unaffected. (breaking for proxy-mode nodes: a page served under a DNS
+  name the node does not know, such as a dashboard opened as
+  `http://mynode.lan:2428` or behind a reverse proxy, is refused until that
+  origin is listed in `allowed_origins`) (#4375)
+
+- **An account session on `/jsonrpc` is held to its own authority.** The
+  caller resolution looked only at key and node-owner markers, so under
+  `server.proxy_identity` a session the proxy forwarded as an account fell
+  through to the node-owner arm: `execute` ran on any context with no
+  membership check and `set_ephemeral` published presence as this node. An
+  account-anchored session is now refused with the method's typed error
+  (`FunctionCallError` naming the warranted-intent route for `execute`,
+  `Unauthorized` for `set_ephemeral`), under embedded and proxy auth alike,
+  as WS `execute` already did. Writes go through `/intents` with a warrant
+  and presence through `/presence-intents`; key callers, node-owner sessions
+  and proxy requests naming no account are unchanged. (#4454)
+
 - **A pending sweep no longer leaves the root hash ahead of the DAG heads.**
   When a delta's parent arrived by a path other than an inbound apply (a
   local execute, a parent restored from the database, snapshot checkpoints, or
@@ -1353,6 +1394,14 @@
   reads every state row, so `gc_sweep_duration_seconds`, `gc_rows_scanned`,
   `gc_tombstones_collected` and `gc_sweeps` now show what it costs; lengthen
   the interval on a node where sweeps take a meaningful share of it.
+
+- **In-memory store iterators no longer copy the column.** `InMemoryDB::iter`
+  cloned the whole column so the iterator could read a snapshot, so every
+  scan cost as much as the column held. Columns are now shared copy-on-write:
+  an iterator takes an O(1) reference and a write during the iteration copies
+  the map once. Snapshot reads and arena reclamation are unchanged. At 32,000
+  rows an iterator costs about 1.8 µs instead of 13.5 ms. Test-only: nodes
+  use RocksDB. (#4458)
 
 - **Per-message signer and membership checks are point reads.** Every
   readiness beacon, ack, migration heartbeat and blob announce resolved its
