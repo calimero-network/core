@@ -2115,6 +2115,107 @@ mod tests {
         );
     }
 
+    /// Connections authenticated as one device each, through the proxy
+    /// identity headers, the way a delegated device reaches a node.
+    #[actix::test]
+    async fn a_device_revoked_through_governance_loses_its_open_ws_subscription() {
+        use calimero_context_config::types::ContextGroupId;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let (event_sender, _) = broadcast::channel(256);
+        let server = spawn_test_ws_layered(
+            false,
+            |app| app.layer(axum::middleware::from_fn(crate::proxy_identity::inject)),
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+        let store = server.state.ctx_client.datastore();
+        let ns = ContextGroupId::from([0xB0; 32]);
+        let ctx = ContextId::from([0xB2; 32]);
+        let [revoked, live] = crate::test_support::seed_device_members(
+            store,
+            &ns,
+            &ContextGroupId::from([0xB1; 32]),
+            &ctx,
+            [PublicKey::from([0x4A; 32]), PublicKey::from([0x4B; 32])],
+        );
+
+        let mut reads = Vec::new();
+        let mut writes = Vec::new();
+        for (account, device) in [revoked, live] {
+            let mut request = server.url.as_str().into_client_request().unwrap();
+            let headers = request.headers_mut();
+            let _previous = headers.insert("x-auth-account", account.to_string().parse().unwrap());
+            let _previous = headers.insert(
+                "x-auth-device",
+                hex::encode(device.as_bytes()).parse().unwrap(),
+            );
+            let (mut write, mut read) = connect_async(request).await.unwrap().0.split();
+            write.send(subscribe_msg(1, ctx)).await.unwrap();
+            let resp = next_json(&mut read, Duration::from_secs(5))
+                .await
+                .expect("subscribe response");
+            assert_eq!(
+                resp["result"]["contextIds"],
+                json!([ctx]),
+                "precondition: a live device subscribes: {resp}"
+            );
+            reads.push(read);
+            writes.push(write);
+        }
+        wait_for_fanout(&server).await;
+
+        crate::test_support::revoke_through_governance(store, &ns, revoked.0, revoked.1);
+
+        let is_revoked_device = |caller: &Option<crate::caller_account::EventCaller>| {
+            matches!(
+                caller,
+                Some(crate::caller_account::EventCaller::Account { device: Some(device), .. })
+                    if *device == revoked.1
+            )
+        };
+        let dropped = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                for connection in server.state.connections.read().await.values() {
+                    let inner = connection.inner.read().await;
+                    if is_revoked_device(&inner.caller) && inner.subscriptions.is_empty() {
+                        return;
+                    }
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            dropped,
+            "an open connection must stop serving a device the namespace revoked"
+        );
+
+        let _receivers = server
+            .event_sender
+            .send(NodeEvent::Context(ContextEvent {
+                context_id: ctx,
+                payload: ContextEventPayload::StateMutation(
+                    StateMutationPayload::with_root_and_events(Hash::default(), vec![]),
+                ),
+            }))
+            .unwrap();
+        assert!(
+            next_json(&mut reads[1], Duration::from_secs(5))
+                .await
+                .is_some(),
+            "an unrelated live device keeps its subscription"
+        );
+        let leaked = next_json(&mut reads[0], Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "the revoked device must receive nothing further: {leaked:?}"
+        );
+    }
+
     // The other half of the gate: an admin of the namespace root does receive
     // the cascade frame. Re-keying the event to the Restricted subgroup would
     // fail here - `check_path` bails on visibility before its ancestor-admin
