@@ -611,12 +611,12 @@ impl<'a> AccountBindingRepository<'a> {
     /// Answered from the [`GroupSignerDevice`] index: the devices whose binding
     /// names `sign_pk`, each checked with [`Self::live_binding`]. It runs once
     /// per gossip message, for any validly signed message including a
-    /// stranger's, so it must not scan the group's bindings. When several of the
-    /// key's devices are live the lowest device id wins, which is the one a
-    /// search of [`Self::live_bindings`] finds first.
+    /// stranger's, so it must not scan the group's bindings. When several of one
+    /// account's devices carry the key the lowest device id wins, which is the one
+    /// a search of [`Self::live_bindings`] finds first.
     ///
-    /// A certificate names its signing key without proving it holds it, so a key
-    /// live under two accounts resolves to `None` rather than to whichever sorts first.
+    /// A certificate names its signing key without proof the account holds the
+    /// private key, so a key live under two accounts resolves to `None`.
     ///
     /// # Errors
     /// Propagates the store read failure.

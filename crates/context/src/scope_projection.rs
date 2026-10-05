@@ -3345,7 +3345,8 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
 }
 
 /// The account `key` signs for at this view. A certificate names its signing key
-/// without proving it holds it, so a key bound under two accounts names neither.
+/// without proof the account holds the private key, so a key bound under two
+/// accounts names neither.
 fn bound_account(view: &calimero_authz::AclView, key: &PublicKey) -> Option<AccountId> {
     let mut accounts = view
         .devices
