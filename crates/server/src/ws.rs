@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
@@ -199,8 +199,7 @@ pub(crate) struct ServiceState {
     /// first connection (so a WS service that never sees a client never holds
     /// a broadcast-receiver subscription).
     events_fanout: Once,
-    /// Always enforcing: the token travels in the query, so a socket's origin is
-    /// judged in every auth mode.
+    /// A socket has no CORS, so the handler asks this itself in every auth mode.
     origin_guard: OriginGuard,
 }
 
@@ -246,7 +245,7 @@ pub(crate) fn service(
         config: ws_config,
         auth_enabled,
         events_fanout: Once::new(),
-        origin_guard: OriginGuard::new(false, config.cors.allowed_origins.as_deref()),
+        origin_guard: OriginGuard::new(config.cors.allowed_origins.as_deref()),
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -257,7 +256,6 @@ pub(crate) fn service(
     reason = "axum extractors: one per auth extension the guard may inject"
 )]
 async fn ws_handler(
-    uri: Uri,
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     Extension(state): Extension<Arc<ServiceState>>,
@@ -281,9 +279,8 @@ async fn ws_handler(
         }
     };
 
-    if !state.origin_guard.admits(&headers, uri.authority()) {
-        debug!("WebSocket upgrade refused: foreign Origin");
-        return StatusCode::FORBIDDEN.into_response();
+    if !state.origin_guard.admits(&headers, None) {
+        return refusal(&headers, "/ws");
     }
 
     // Check for required upgrade headers
@@ -1150,7 +1147,7 @@ use crate::auth::{
 };
 use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
-use crate::origin_guard::OriginGuard;
+use crate::origin_guard::{refusal, OriginGuard};
 use crate::subscription_grants::{next_withdrawal, Withdrawal};
 
 /// WebSocket command channel buffer size
@@ -1324,7 +1321,7 @@ mod tests {
             config,
             auth_enabled,
             events_fanout: std::sync::Once::new(),
-            origin_guard: OriginGuard::new(false, None),
+            origin_guard: OriginGuard::new(None),
         });
 
         let app =
@@ -1492,7 +1489,7 @@ mod tests {
                 [7; 32],
             ))))
             .layer(axum::middleware::from_fn_with_state(
-                OriginGuard::new(embedded_auth, config.cors.allowed_origins.as_deref()),
+                (!embedded_auth).then(|| OriginGuard::new(config.cors.allowed_origins.as_deref())),
                 refuse_foreign_origins,
             ));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1527,7 +1524,7 @@ mod tests {
         }
     }
 
-    /// The token travels in the query, so the origin is judged with embedded auth too.
+    /// A socket has no CORS, so the origin is judged with embedded auth too.
     #[tokio::test]
     async fn ws_upgrade_refuses_foreign_origin() {
         for embedded_auth in [false, true] {
@@ -3087,7 +3084,7 @@ mod tests {
             config: WsConfig::new(true),
             auth_enabled: true,
             events_fanout: std::sync::Once::new(),
-            origin_guard: OriginGuard::new(false, None),
+            origin_guard: OriginGuard::new(None),
         });
         let app = Router::new()
             .route("/ws", get(ws_handler).layer(Extension(Arc::clone(&state))))
@@ -3218,7 +3215,7 @@ mod tests {
             config: WsConfig::new(true),
             auth_enabled: false,
             events_fanout: std::sync::Once::new(),
-            origin_guard: OriginGuard::new(false, None),
+            origin_guard: OriginGuard::new(None),
         });
         let app = Router::new()
             .route("/ws", get(ws_handler).layer(Extension(Arc::clone(&state))))
