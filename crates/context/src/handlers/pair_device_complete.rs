@@ -877,7 +877,7 @@ mod tests {
             .expect("this node's root")
             .account();
         let device_sk = PrivateKey::from([0x71; 32]);
-        let device = DeviceId::from([0x72; 32]);
+        let device = DeviceId::mint(account, [0x72; 16]);
         let kem_pk = calimero_account::KemPublicKey::from([0x73; 32]);
         let (offer, statement) = PairingOffer::signed(
             &device_sk,
@@ -964,7 +964,10 @@ mod tests {
             .expect_err("no peer would accept a certificate for this id");
 
         assert!(
-            refused.downcast_ref::<ContextError>().is_some(),
+            matches!(
+                refused.downcast_ref::<ContextError>(),
+                Some(ContextError::PairingDeviceNotMinted { .. })
+            ),
             "the refusal has to be typed, not a generic bail; got: {refused}"
         );
         let namespace = NodeDeviceRepository::new(&store)
