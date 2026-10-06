@@ -188,14 +188,17 @@ async fn every_ingest_entry_point_refuses_a_delta_naming_too_many_parents() {
     let in_batch = [0x03u8; 32];
     let honest = [0x01u8; 32];
     let result = delta_store
-        .add_deltas_batch(vec![
-            BatchDeltaInput {
-                delta: make_delta(in_batch, flood_parents),
-                events: Some(b"events".to_vec()),
-                ..pending_input(in_batch)
-            },
-            pending_input(honest),
-        ])
+        .add_deltas_batch(
+            vec![
+                BatchDeltaInput {
+                    delta: make_delta(in_batch, flood_parents),
+                    events: Some(b"events".to_vec()),
+                    ..pending_input(in_batch)
+                },
+                pending_input(honest),
+            ],
+            |_| {},
+        )
         .await
         .expect("the rest of the batch goes on");
     assert_eq!(result.failed, vec![in_batch]);
