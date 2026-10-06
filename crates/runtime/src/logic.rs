@@ -105,6 +105,9 @@ pub struct VMContext<'a> {
     /// supplies it only to a read-only (`#[app::view]`) run, so `search_query`
     /// is unreachable from anything that could write. `None` everywhere else.
     pub search: Option<std::sync::Arc<dyn SearchHost>>,
+    /// `true` when this run merge-applies a peer's delta, so `apply_storage_delta`
+    /// draws on a replay budget. Set by the node, never from guest memory.
+    pub remote_delta: bool,
 }
 
 /// The node's full-text search as a run sees it.
@@ -194,6 +197,7 @@ impl<'a> VMContext<'a> {
             tee_trigger: false,
             sealing: SealingContext::default(),
             search: None,
+            remote_delta: false,
         }
     }
 }
@@ -629,6 +633,10 @@ pub struct VMLogic<'a> {
     /// Cumulative `key + value` bytes written to storage so far (same shared
     /// budget as `storage_writes`).
     storage_write_bytes: u64,
+    /// Writes and bytes charged to peer-delta replays so far, apart from the
+    /// guest's own counters above.
+    replay_writes: u64,
+    replay_write_bytes: u64,
     /// Number of guest storage reads performed so far.
     ///
     /// Telemetry, NOT a budget — unlike `storage_writes` there is no limit to
@@ -761,6 +769,8 @@ impl<'a> VMLogic<'a> {
 
             storage_writes: 0,
             storage_write_bytes: 0,
+            replay_writes: 0,
+            replay_write_bytes: 0,
             storage_reads: 0,
             storage_read_bytes: 0,
             blob_bytes_written: 0,

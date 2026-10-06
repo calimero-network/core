@@ -10,6 +10,8 @@ use calimero_storage::store::Key;
 use crate::errors::HostError;
 use crate::logic::{charge_write_counters, VMLogic, VMLogicError, VMLogicResult};
 
+pub(super) const REPLAY_BUDGET_FACTOR: u64 = 2; // replay budget, times the default limits
+
 /// The execution's write budget while a metered environment is installed, and
 /// the first write it refused.
 struct Budget {
