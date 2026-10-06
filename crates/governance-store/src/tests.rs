@@ -4249,8 +4249,7 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 /// Replica-side TEE bootstrap regression guard (PR #2473, finding B).
 ///
 /// This is the REPLICA counterpart to the owner-side coverage in
-/// `crates/node/src/local_governance_node_e2e.rs::
-/// ns_announce_admits_announcer_as_read_only_tee_member`. It exercises the
+/// `crates/node/src/local_governance_node_e2e.rs::a_challenge_admits_once`. It exercises the
 /// exact apply path a freshly-admitted ReadOnlyTee fleet node (B) takes when
 /// its post-KeyDelivery retry batch replays the namespace's governance ops
 /// that it did NOT author: a `TeeAdmissionPolicySet` (nonce 1) followed by a

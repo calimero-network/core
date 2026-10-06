@@ -85,6 +85,8 @@ Two properties carry over from the library and matter more here, because the con
 | Item | Kind | Purpose |
 | --- | --- | --- |
 | `build_report_data(nonce, app_hash)` | fn | Packs `nonce[32] \|\| app_hash[32]` (zero-filled if `app_hash` is `None`) into the 64-byte TDX report data field |
+| `admission_binding(namespace, group, identity_pk, account, kem_pk, device)` / `admission_report_data(challenge, binding)` | fn | The report data of a fleet admission quote: `challenge[32] \|\| SHA-256("calimero.tee.admission.v1" \|\| namespace \|\| group \|\| identity_pk \|\| account \|\| kem_pk \|\| device)`. The challenge is the admitting member's; the binding commits the quote to one credential in one namespace. Domain-tagged like `attest_key_binding`, so it never equals a `/tee/attest` quote's second half. `calimero_op_adapter::tee_admission_binding` applies it to a credential |
+| `quote_report_data(quote_bytes)` | fn | The 64 report data bytes a quote carries, read **without verifying anything** (mock quotes under `mock-attestation`). What every peer can repeat at apply, where the signature is the admitting node's check |
 | `generate_attestation(report_data)` | fn | Linux+TDX: calls `configfs_tsm::create_tdx_quote`, parses with `tdx_quote::Quote`, converts to `Quote`. Non-Linux: falls back to `generate_mock_attestation` with a `warn!` **only under `mock-attestation`**; without the feature it returns `QuoteGenerationFailed` |
 | `generate_mock_attestation(report_data)` | fn | **`mock-attestation` only.** Builds a syntactically valid but cryptographically invalid quote on any platform; `is_mock: true` |
 | `is_mock_quote(quote_bytes)` | fn | **`mock-attestation` only.** Checks for the `MOCK_QUOTE_HEADER` magic prefix |
