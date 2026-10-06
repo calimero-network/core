@@ -23,9 +23,15 @@ impl Report for FleetJoinResponse {
             "Contexts Joined",
             &self.contexts_joined.len().to_string(),
         ]);
+        if let Some(admitter) = &self.admitted_by {
+            let _ = table.add_row(vec!["Admitted By", admitter]);
+        }
         println!("{table}");
         for (idx, ctx) in self.contexts_joined.iter().enumerate() {
             println!("  [{idx}] {ctx}");
+        }
+        for refusal in &self.refusals {
+            println!("  refused by {}: {}", refusal.peer, refusal.reason);
         }
     }
 }
