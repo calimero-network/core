@@ -26,8 +26,7 @@ const TABLES: &[OpTable] = &[
     OpTable {
         op: GatedOp::GroupKeyPull,
         allow: SUBJECT_MEMBERS,
-        // A removal from an Open subgroup leaves the inherited path standing.
-        gap: &[Kicked, Left],
+        gap: &[],
     },
     OpTable {
         op: GatedOp::NamespaceKeyPull,
@@ -36,10 +35,9 @@ const TABLES: &[OpTable] = &[
     },
     OpTable {
         op: GatedOp::OpenChainKeyPull,
+        // The namespace key covers an Open chain, so the group's own key row is never served.
         allow: &[],
-        // The group's own key row encrypts nothing while the namespace key covers
-        // it, and becomes its key if it turns Restricted.
-        gap: NAMESPACE_MEMBERS,
+        gap: &[],
     },
     OpTable {
         op: GatedOp::DeviceLink,
