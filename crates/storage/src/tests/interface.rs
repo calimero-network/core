@@ -5283,6 +5283,22 @@ mod stale_write_to_a_merging_entry {
         }
     }
 
+    /// A local migration dates the app root past every prior write on purpose,
+    /// so the trusted write keeps a stamp far past the drift bound.
+    #[test]
+    fn a_local_root_write_keeps_its_far_future_stamp() {
+        env::reset_for_testing();
+        let far = u64::MAX / 2;
+        let root = crate::collections::ROOT_ENTRY_ID;
+
+        let outcome =
+            MainInterface::write_pre_merged_root_state(root, b"v2", Metadata::new(1, far));
+
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let stored = <Index<MainStorage>>::get_metadata(root).unwrap().unwrap();
+        assert_eq!(*stored.updated_at, far);
+    }
+
     /// A merge for a peer's leaf is written back with its unsigned stamp; one past
     /// the drift bound would outdate every write the owner can still make.
     #[test]
