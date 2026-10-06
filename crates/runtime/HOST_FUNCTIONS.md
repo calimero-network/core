@@ -185,7 +185,7 @@ Node-local, per-context search (`calimero-search`); views only.
 | `commit` | `(root_hash_ptr: u64, artifact_ptr: u64)` | Commits execution state with 32-byte root hash and artifact. **Must be called exactly once.** |
 | `persist_root_state` | `(doc_ptr: u64, created_at: u64, updated_at: u64)` | Persists root state document through Merkle tree. Its writes are held to the `storage_write` limits and budget. |
 | `read_root_state` | `(register_id: u64) -> i32` | Reads persisted root state. Returns `1` if exists, `0` if not. |
-| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. Not held to the write limits, so a peer's JS delta is not refused by them; a guest can also call it with a delta of its own. |
+| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. Its writes are held to the `storage_write` caps and per-execution write budget; a peer's delta replayed by the node is held instead to the default per-entry caps and to a separate budget, a multiple of the default write count and byte limits, so every node judges it alike. |
 | `flush_delta` | `() -> i32` | Flushes pending CRDT actions as causal delta. Returns `1` if delta emitted, `0` if nothing to commit. |
 | `register_js_sdk_root_merge` | `()` | Opts the JS app root into the WASM `__calimero_merge_root_state` sync path (concurrent-writer convergence). `persist_root_state` then stamps the root with the `JsRoot` marker instead of `None`. |
 

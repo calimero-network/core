@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::cell::Cell;
 use tracing::{debug, error, info, trace, warn};
 
-use super::write_meter::metered;
+use super::write_meter::{metered, metered_replay};
 use crate::store::Storage as RuntimeStorage;
 use crate::{
     errors::{HostError, Location, PanicContext},
@@ -1264,8 +1264,7 @@ impl VMHostFunctions<'_> {
                 metadata.crdt_type = Some(calimero_primitives::crdt::CrdtType::js_root());
             }
 
-            // The app's own write, so held to the guest write limits; a replayed
-            // delta (`apply_storage_delta`) is not, so JS sync is not refused.
+            // Held to the guest write limits.
             let (env, meter) = metered(env, logic);
             let saved = with_runtime_env(env, move || {
                 // Store the root document as the ROOT_ENTRY_ID leaf (a child of
@@ -1370,7 +1369,14 @@ impl VMHostFunctions<'_> {
                 logic.context.account_id,
             );
 
-            with_runtime_env(env.clone(), || {
+            // A peer's delta draws on the replay budget, a guest's own call on
+            // the execution's write budget.
+            let (write_env, meter) = if logic.context.remote_delta {
+                metered_replay(env.clone(), logic)
+            } else {
+                metered(env.clone(), logic)
+            };
+            let applied = with_runtime_env(write_env, || {
                 // #2266: empty ctx is the TEMPLATE here. `payload` is a
                 // pre-built `StorageDelta` artifact — when its variant is
                 // `CausalActions`, `Root::sync` builds per-action ctxs
@@ -1381,8 +1387,9 @@ impl VMHostFunctions<'_> {
                 // safe for replicated state from a peer.
                 let sync_ctx = calimero_storage::interface::ApplyContext::empty();
                 calimero_storage::collections::Root::<Vec<u8>>::sync_opaque(&payload, &sync_ctx)
-            })
-            .map_err(|err| {
+            });
+            meter.settle(logic)?;
+            applied.map_err(|err| {
                 VMLogicError::from(HostError::Panic {
                     context: PanicContext::Host,
                     message: format!("apply_storage_delta failed: {err}"),

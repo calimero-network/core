@@ -1,5 +1,5 @@
-//! Holds the storage writes a host-side JS collection or root call makes to the
-//! limits `storage_write` and the `storage_index_*` writes enforce on a guest's own.
+//! Holds the storage writes a host-side JS collection, root or `apply_storage_delta`
+//! call makes to the limits a guest's own `storage_write` is held to.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,11 +8,11 @@ use calimero_storage::env::RuntimeEnv;
 use calimero_storage::store::Key;
 
 use crate::errors::HostError;
-use crate::logic::{charge_write_counters, VMLogic, VMLogicError, VMLogicResult};
+use crate::logic::{charge_write_counters, VMLimits, VMLogic, VMLogicError, VMLogicResult};
 
 pub(super) const REPLAY_BUDGET_FACTOR: u64 = 2; // replay budget, times the default limits
 
-/// The execution's write budget while a metered environment is installed, and
+/// The write budget being charged while a metered environment is installed, and
 /// the first write it refused.
 struct Budget {
     writes: u64,
@@ -20,23 +20,46 @@ struct Budget {
     refused: Option<VMLogicError>,
 }
 
-/// Settles a metered environment's writes back into the execution.
-pub(super) struct WriteMeter(Rc<RefCell<Budget>>);
+/// Settles a metered environment's writes back into the execution's counters
+/// (the replay counters for a [`metered_replay`] meter).
+pub(super) struct WriteMeter {
+    budget: Rc<RefCell<Budget>>,
+    replay: bool,
+}
 
 /// Wraps `env` so every write it makes is checked and charged like a guest
 /// write. A refused write is skipped and reported by [`WriteMeter::settle`].
 pub(super) fn metered(env: RuntimeEnv, logic: &VMLogic<'_>) -> (RuntimeEnv, WriteMeter) {
+    meter(env, logic, false)
+}
+
+/// Like [`metered`], for a peer's delta: judged by the default limits, never
+/// this node's own, so every honest node reaches the same verdict.
+pub(super) fn metered_replay(env: RuntimeEnv, logic: &VMLogic<'_>) -> (RuntimeEnv, WriteMeter) {
+    meter(env, logic, true)
+}
+
+fn meter(env: RuntimeEnv, logic: &VMLogic<'_>, replay: bool) -> (RuntimeEnv, WriteMeter) {
+    let defaults;
+    let (limits, factor, used) = if replay {
+        defaults = VMLimits::default();
+        let used = (logic.replay_writes, logic.replay_write_bytes);
+        (&defaults, REPLAY_BUDGET_FACTOR, used)
+    } else {
+        let used = (logic.storage_writes, logic.storage_write_bytes);
+        (logic.limits, 1, used)
+    };
     let budget = Rc::new(RefCell::new(Budget {
-        writes: logic.storage_writes,
-        bytes: logic.storage_write_bytes,
+        writes: used.0,
+        bytes: used.1,
         refused: None,
     }));
-    let limits = logic.limits;
     let (max_key, max_value) = (
         limits.max_storage_key_size.get(),
         limits.max_storage_value_size.get(),
     );
-    let (max_writes, max_bytes) = (limits.max_storage_writes, limits.max_storage_write_bytes);
+    let max_writes = limits.max_storage_writes.saturating_mul(factor);
+    let max_bytes = limits.max_storage_write_bytes.saturating_mul(factor);
 
     let charge = {
         let budget = Rc::clone(&budget);
@@ -85,19 +108,23 @@ pub(super) fn metered(env: RuntimeEnv, logic: &VMLogic<'_>) -> (RuntimeEnv, Writ
         index.meta_clear = Rc::new(move |key: &[u8]| charge(key.len(), 0) && meta_clear(key));
         metered = metered.with_index(index);
     }
-    (metered, WriteMeter(budget))
+    (metered, WriteMeter { budget, replay })
 }
 
 impl WriteMeter {
     /// Commits the charged writes to the execution's budget, or returns the
     /// refusal, which fails the host call and so the whole execution.
     pub(super) fn settle(self, logic: &mut VMLogic<'_>) -> VMLogicResult<()> {
-        let mut budget = self.0.borrow_mut();
+        let mut budget = self.budget.borrow_mut();
         if let Some(refused) = budget.refused.take() {
             return Err(refused);
         }
-        logic.storage_writes = budget.writes;
-        logic.storage_write_bytes = budget.bytes;
+        let (writes, bytes) = if self.replay {
+            (&mut logic.replay_writes, &mut logic.replay_write_bytes)
+        } else {
+            (&mut logic.storage_writes, &mut logic.storage_write_bytes)
+        };
+        (*writes, *bytes) = (budget.writes, budget.bytes);
         Ok(())
     }
 }
