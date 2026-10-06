@@ -328,10 +328,10 @@ async fn the_transport_key_alone_does_not_open_a_recorded_session() {
     let envelope = RequestEnvelope::parse(&recorded_request).unwrap();
     assert_eq!(envelope.request_id, id);
     assert!(
-        open_request(&replayed_keys, &envelope).is_err(),
+        open_request(&replayed_keys, &envelope, &mut recorded_request.clone()).is_err(),
         "the transport key and the recorded handshake do not rebuild the session keys"
     );
-    assert!(open_request(&client.keys, &envelope).is_ok());
+    assert!(open_request(&client.keys, &envelope, &mut recorded_request.clone()).is_ok());
 }
 
 /// A restarted node holds a new key. It must say so rather than fail opaquely,
