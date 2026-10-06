@@ -207,7 +207,7 @@ in this order:
 If the `Authorization` header is present, the `?token=` query parameter is
 ignored entirely.
 
-A WebSocket has no CORS, so the node judges a browser's upgrade by its origin itself, in every auth mode, by the same rule that proxy auth mode applies to every route (see [CORS and browser / Tauri clients](#cors-and-browser--tauri-clients)).
+A WebSocket has no CORS, so the node judges a browser's upgrade by its origin itself, in every auth mode except a proxy that names callers (`server.proxy_identity`), by the same rule that proxy auth mode applies to every route (see [CORS and browser / Tauri clients](#cors-and-browser--tauri-clients)).
 With embedded auth the token is checked first: an upgrade without a valid token gets `401` whatever its origin, and a page the origin rule does not admit gets `403` only when it carries a valid token.
 So an app hosted on another origin must be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
 A `GET /ws` that is not a WebSocket upgrade gets `400`.

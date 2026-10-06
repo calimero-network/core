@@ -200,7 +200,8 @@ pub(crate) struct ServiceState {
     /// a broadcast-receiver subscription).
     events_fanout: Once,
     /// A socket has no CORS, so the handler asks this itself in every auth mode.
-    origin_guard: OriginGuard,
+    /// `None` where the proxy in front names the caller.
+    origin_guard: Option<OriginGuard>,
 }
 
 /// Get current Unix timestamp in seconds
@@ -245,7 +246,8 @@ pub(crate) fn service(
         config: ws_config,
         auth_enabled,
         events_fanout: Once::new(),
-        origin_guard: OriginGuard::new(config.cors.allowed_origins.as_deref()),
+        origin_guard: (!config.use_proxy_identity())
+            .then(|| OriginGuard::new(config.cors.allowed_origins.as_deref())),
     });
 
     Some((path, get(ws_handler).layer(Extension(state))))
@@ -279,7 +281,11 @@ async fn ws_handler(
         }
     };
 
-    if !state.origin_guard.admits(&headers, None) {
+    if state
+        .origin_guard
+        .as_ref()
+        .is_some_and(|guard| !guard.admits(&headers, None))
+    {
         return refusal(&headers, "/ws");
     }
 
@@ -1321,7 +1327,7 @@ mod tests {
             config,
             auth_enabled,
             events_fanout: std::sync::Once::new(),
-            origin_guard: OriginGuard::new(None),
+            origin_guard: Some(OriginGuard::new(None)),
         });
 
         let app =
@@ -1469,6 +1475,10 @@ mod tests {
     /// A server as `start` builds it: the service from the server config behind
     /// the router-wide guard, with the caller a token would have proved.
     async fn spawn_guarded_ws(embedded_auth: bool) -> (SocketAddr, TempDir) {
+        spawn_ws_behind(embedded_auth, false).await
+    }
+
+    async fn spawn_ws_behind(embedded_auth: bool, proxy_identity: bool) -> (SocketAddr, TempDir) {
         let mut config = crate::config::ServerConfig::new(
             vec!["/ip4/127.0.0.1/tcp/2528".parse().unwrap()],
             libp2p::identity::Keypair::generate_ed25519(),
@@ -1478,6 +1488,7 @@ mod tests {
             None,
         );
         config.cors.allowed_origins = Some(vec!["https://app.example".to_owned()]);
+        config.proxy_identity = proxy_identity;
         let (event_sender, _) = broadcast::channel(16);
         let (node_client, ctx_client, blob_dir) =
             test_clients(LazyRecipient::new(), event_sender).await;
@@ -1489,7 +1500,8 @@ mod tests {
                 [7; 32],
             ))))
             .layer(axum::middleware::from_fn_with_state(
-                (!embedded_auth).then(|| OriginGuard::new(config.cors.allowed_origins.as_deref())),
+                (!embedded_auth && !proxy_identity)
+                    .then(|| OriginGuard::new(config.cors.allowed_origins.as_deref())),
                 refuse_foreign_origins,
             ));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1546,6 +1558,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The proxy in front names every caller, so the origin is not judged on HTTP or a socket.
+    #[tokio::test]
+    async fn ws_upgrade_admits_any_origin_behind_a_proxy_that_names_callers() {
+        let (addr, _blob_dir) = spawn_ws_behind(false, true).await;
+        for origin in ["https://evil.example", "null"] {
+            assert_eq!(
+                upgrade(addr, "127.0.0.1", Some(origin)).await,
+                StatusCode::SWITCHING_PROTOCOLS,
+                "{origin}"
+            );
+        }
+        let (addr, _blob_dir) = spawn_ws_behind(false, false).await;
+        assert_eq!(
+            upgrade(addr, "127.0.0.1", Some("https://evil.example")).await,
+            StatusCode::FORBIDDEN,
+            "plain proxy mode still judges the origin"
+        );
     }
 
     /// One rule for HTTP and sockets: what may call a route may open a socket.
@@ -3084,7 +3115,7 @@ mod tests {
             config: WsConfig::new(true),
             auth_enabled: true,
             events_fanout: std::sync::Once::new(),
-            origin_guard: OriginGuard::new(None),
+            origin_guard: Some(OriginGuard::new(None)),
         });
         let app = Router::new()
             .route("/ws", get(ws_handler).layer(Extension(Arc::clone(&state))))
@@ -3215,7 +3246,7 @@ mod tests {
             config: WsConfig::new(true),
             auth_enabled: false,
             events_fanout: std::sync::Once::new(),
-            origin_guard: OriginGuard::new(None),
+            origin_guard: Some(OriginGuard::new(None)),
         });
         let app = Router::new()
             .route("/ws", get(ws_handler).layer(Extension(Arc::clone(&state))))

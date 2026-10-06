@@ -464,7 +464,7 @@ request re-stamps it.
 - Admin API requires authentication
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
-- A WebSocket has no CORS, so `ws_handler` asks `OriginGuard::admits` itself, in every auth mode.
+- A WebSocket has no CORS, so `ws_handler` asks `OriginGuard::admits` itself, in every auth mode except a proxy that names callers (`server.proxy_identity`), which skips it as the HTTP routes do.
   There is one origin rule for the node; never give a transport its own.
   With embedded auth the auth layer answers first: an upgrade without a valid token (header, `?token=` or proof) gets `401` whatever its origin, so the origin check refuses (`403`) only a page that carries one.
   A hosted app must therefore be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
