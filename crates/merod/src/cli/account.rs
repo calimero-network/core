@@ -229,9 +229,10 @@ pub struct SignCertCommand {
 /// it.** A warrant naming another account or device is refused, and nothing here
 /// can check it: the relay's `GET .../intents` reports both.
 ///
-/// **`--nonce` is the caller's to manage.** Peers refuse a repeat, so reusing one
-/// means the write is silently dropped; a gap in the sequence is how a member
-/// learns the relay withheld a request.
+/// **`--nonce` is the caller's to manage.** The named relay refuses a nonce it
+/// already spent for this device with a `403`, before running anything; one
+/// nonce on warrants for two relays is two warrants, each spendable once. A gap
+/// in the sequence is how a member learns the relay withheld a request.
 #[derive(Debug, Parser)]
 pub struct WarrantCommand {
     /// The context the intent runs in, 64 hex chars.

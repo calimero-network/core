@@ -232,6 +232,7 @@ steps:
       - '{{context_id}}'
       - '{{warrant}}'
       - '{{author_credential}}'
+      - '{{relay_key}}'
 
   # The write has to be real, not merely accepted: a relay could answer 200 and
   # produce a delta the network drops.

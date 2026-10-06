@@ -96,7 +96,7 @@ pub trait WarrantStatement {
     fn executor(&self) -> AccountId;
     /// The one device of [`Self::executor`] that may spend this warrant.
     fn executor_key(&self) -> PublicKey;
-    /// Monotonic per author device; what the replay ledger spends.
+    /// Monotonic per author device; what the executor device's replay ledger spends.
     fn nonce(&self) -> u64;
     /// Wall-clock bound in seconds — checked by the executor, never at apply.
     fn not_after(&self) -> u64;

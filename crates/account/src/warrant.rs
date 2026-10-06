@@ -132,7 +132,7 @@ pub struct Warrant {
     /// the relay alone, this detects an honest relay's staleness and does not
     /// constrain a dishonest one.
     pub governance_floor: Vec<[u8; 32]>,
-    /// Monotonic per author **device**.
+    /// Monotonic per author **device**, spent in each executor device's ledger.
     ///
     /// Per device rather than per account because two devices of one account are
     /// independent replicas: they cannot coordinate on a shared counter, so an

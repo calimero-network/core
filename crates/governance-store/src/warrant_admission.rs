@@ -531,13 +531,13 @@ pub(crate) fn check_nonce<W: WarrantStatement, R: AdmissionRefusal>(
     Ok(())
 }
 
-/// The ledger row a warrant's nonce is spent in: per author device, under the
-/// scope the warrant authorizes.
+/// The ledger row a warrant's nonce is spent in: per author device and executor
+/// device, so each row has one producer, under the scope the warrant authorizes.
 ///
 /// * a delegated write — the context it writes to;
 /// * a delegated creation — the context its seed derives, so a creation
-///   warrant and a later write warrant from the same device share one window
-///   and can never share a nonce;
+///   warrant and a later write warrant from the same device to the same
+///   executor device share one window and can never share a nonce;
 /// * a delegated governance op — a scope hashed from its group under
 ///   [`GOVERNANCE_LEDGER_DOMAIN`], so it never shares a row with a context.
 fn ledger_key<W: WarrantStatement>(warrant: &W) -> key::ContextWarrantNonce {
@@ -548,7 +548,7 @@ fn ledger_key<W: WarrantStatement>(warrant: &W) -> key::ContextWarrantNonce {
             ContextId::from(domain_hash(GOVERNANCE_LEDGER_DOMAIN, &[&group]))
         }
     };
-    key::ContextWarrantNonce::new(scope, warrant.author_device_key())
+    key::ContextWarrantNonce::new(scope, warrant.author_device_key(), warrant.executor_key())
 }
 
 /// The ledger state that would result from accepting this warrant's nonce, or
@@ -757,10 +757,8 @@ pub(crate) fn signed_by_executor<W>(delegation: &Delegated<W>, signer: &PublicKe
 
 #[cfg(test)]
 mod tests {
-    //! The persisted ledger keys are part of every node's on-disk state: a node
-    //! upgraded to this code must find the nonces it spent before the upgrade
-    //! under exactly the keys it wrote them. So these pin the derivation to the
-    //! three gates' original formulas rather than to this module's.
+    //! The persisted ledger keys are part of every node's on-disk state, so these
+    //! pin the derivation to explicit formulas rather than to this module's.
 
     use super::*;
     use calimero_account::{ContextCreationWarrant, GovernanceOpKind, GovernanceWarrant, Warrant};
@@ -770,6 +768,10 @@ mod tests {
     // 32 bytes stand in for a device.
     fn device() -> PublicKey {
         PublicKey::from([0xD1; 32])
+    }
+
+    fn executor_device() -> PublicKey {
+        PublicKey::from([0xE1; 32])
     }
 
     fn account(byte: u8) -> AccountId {
@@ -785,7 +787,7 @@ mod tests {
             author_account: account(1),
             author_device_key: key,
             executor: account(2),
-            executor_key: key,
+            executor_key: executor_device(),
             app_version: ApplicationId::from([3; 32]),
             method: "m".to_owned(),
             intent_hash: [0; 32],
@@ -797,7 +799,7 @@ mod tests {
         };
         assert_eq!(
             ledger_key(&warrant),
-            key::ContextWarrantNonce::new(context, key)
+            key::ContextWarrantNonce::new(context, key, executor_device())
         );
     }
 
@@ -811,7 +813,7 @@ mod tests {
             author_account: account(1),
             author_device_key: key,
             executor: account(2),
-            executor_key: key,
+            executor_key: executor_device(),
             application_id: ApplicationId::from([3; 32]),
             service_name: None,
             name: None,
@@ -824,7 +826,7 @@ mod tests {
         };
         assert_eq!(
             ledger_key(&warrant),
-            key::ContextWarrantNonce::new(ContextId::from_seed(seed), key)
+            key::ContextWarrantNonce::new(ContextId::from_seed(seed), key, executor_device())
         );
     }
 
@@ -839,7 +841,7 @@ mod tests {
                 author_account: account(1),
                 author_device_key: key,
                 executor: account(2),
-                executor_key: key,
+                executor_key: executor_device(),
                 op_hash: [0; 32],
                 account_heads: vec![],
                 governance_floor: vec![],
@@ -855,7 +857,7 @@ mod tests {
             ));
             assert_eq!(
                 ledger_key(&warrant),
-                key::ContextWarrantNonce::new(scope, key),
+                key::ContextWarrantNonce::new(scope, key, executor_device()),
                 "{kind:?} ops share the group's one ledger, as before"
             );
         }

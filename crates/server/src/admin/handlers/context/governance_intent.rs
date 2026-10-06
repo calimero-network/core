@@ -34,7 +34,7 @@ use crate::admin::handlers::context::create_context_intent::{
     internal, node_signing_key, parse_group_id,
 };
 use crate::admin::handlers::context::perform_intent::{
-    decode_author_proof, now_secs, IntentRefusal,
+    decode_author_proof, now_secs, refuse_unless_named_executor_key, IntentRefusal,
 };
 use crate::admin::handlers::identity::get_node_identity::node_identity;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
@@ -267,14 +267,12 @@ fn refuse_unless_authentic_for_this_node(
     }
     let signer = calimero_governance_store::NamespaceRepository::new(store)
         .node_identity()?
-        .map(|identity| identity.public_key);
-    if signer != Some(warrant.executor_key) {
-        eyre::bail!(IntentRefusal::NotAuthorized(
-            "this governance warrant names an executor key other than this node's signing key"
-                .to_owned()
-        ));
-    }
-    Ok(())
+        .ok_or_else(|| {
+            eyre::eyre!(IntentRefusal::NotAuthorized(
+                "this node holds no signing key yet".to_owned()
+            ))
+        })?;
+    refuse_unless_named_executor_key(warrant.executor_key, signer.public_key)
 }
 
 /// The `bytecode_id` a member's first `TargetApplicationSet` leaves for the relay

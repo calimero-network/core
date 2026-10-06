@@ -227,13 +227,10 @@ POST /admin-api/contexts/{context_id}/intents
 }
 ```
 
-The client supplies only **its own half** of the proof. The executor's proof and
-signing key are attached by the node from its own credentials, and the node
-refuses the warrant unless its signing key is the `executor_key` the warrant
-names. Naming one device is what makes a warrant spendable once: each relay keeps
-its own nonce ledger, so a warrant any device of the operator could present
-would be spendable once per device. A relay that re-keys voids the warrants it
-has not spent yet.
+The client supplies only **its own half** of the proof.
+The executor's proof and signing key are attached by the node from its own credentials, and the node refuses the warrant with a `403` unless its signing key is the `executor_key` the warrant names.
+Naming one device is what makes a warrant spendable once: each relay keeps its own nonce ledger, so a warrant any device of the operator could present would be spendable once per device.
+A relay that re-keys voids the warrants it has not spent yet.
 
 ```jsonc
 // 200

@@ -97,6 +97,9 @@ pub enum IntentRefusal {
     /// on another; the admin reads answer that with a `404`, and so does this,
     /// before anything runs or a nonce is spent.
     ContextNotHeld(ContextId),
+    /// This node holds the context but owns no identity in it, so it has no
+    /// executor key a warrant could name here.
+    NoIdentityInContext,
 }
 
 impl core::fmt::Display for IntentRefusal {
@@ -112,6 +115,9 @@ impl core::fmt::Display for IntentRefusal {
                  writes",
             ),
             Self::AuthorIsReadOnly => f.write_str("the author's role in this context is read-only"),
+            Self::NoIdentityInContext => f.write_str(
+                "this node holds no identity in this context, so it can spend no warrant here",
+            ),
             Self::ContextNotHeld(context_id) => write!(
                 f,
                 "context '{context_id}' is not held by this node; send the request to a node \
@@ -132,7 +138,7 @@ impl IntentRefusal {
             | Self::ExecutorIsTeeReplica
             | Self::ExecutorIsReadOnly
             | Self::AuthorIsReadOnly => StatusCode::FORBIDDEN,
-            Self::ContextNotHeld(_) => StatusCode::NOT_FOUND,
+            Self::ContextNotHeld(_) | Self::NoIdentityInContext => StatusCode::NOT_FOUND,
         }
     }
 
@@ -155,10 +161,9 @@ impl IntentRefusal {
 /// arms are [`IntentRefusal::Malformed`], like the `authorProof` pair beside the
 /// call site — they used to be bare `eyre!` strings, which fell through to a 500.
 /// That was invisible while no real client sent an undecodable warrant, and it
-/// is the single most common refusal the moment one does: warrant v2 (#3933)
-/// changed the layout, so a signer still emitting v1 sends 240 bytes where 383+
-/// are expected, and "Internal server error" points it at the node rather than
-/// at its own encoder.
+/// is the single most common refusal the moment one does: a signer built for an
+/// older layout sends too few bytes, and "Internal server error" points it at
+/// the node rather than at its own encoder.
 fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> {
     let bytes = hex::decode(hex_warrant.trim()).map_err(|err| {
         eyre::eyre!(IntentRefusal::Malformed(format!(
@@ -168,10 +173,9 @@ fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> 
 
     borsh::from_slice(&bytes).map_err(|err| {
         eyre::eyre!(IntentRefusal::Malformed(format!(
-            "warrant is not a valid statement ({} bytes): {err}. A warrant signed \
-             under the v1 layout no longer decodes — the signing domain is now \
-             calimero.warrant.v2 and the encoding carries executor_key, app_version, a \
-             plaintext method and two cited-head lists",
+            "warrant is not a valid statement ({} bytes): {err}. A calimero.warrant.v2 \
+             warrant carries executor_key after executor; an older signer omits it and \
+             sends 32 bytes fewer",
             bytes.len()
         )))
     })
@@ -233,6 +237,21 @@ pub async fn handler(
     }
 }
 
+/// Refuses a warrant naming another executor device than `signer`, the one
+/// device of this node's account that may spend it here.
+pub(crate) fn refuse_unless_named_executor_key(
+    named: calimero_primitives::identity::PublicKey,
+    signer: calimero_primitives::identity::PublicKey,
+) -> eyre::Result<()> {
+    if named != signer {
+        eyre::bail!(IntentRefusal::NotAuthorized(format!(
+            "this warrant names executor key {named}, not this node's signing key {signer}; \
+             mint one for the executorKey this node's discovery route reports"
+        )));
+    }
+    Ok(())
+}
+
 /// The group owning `context_id` on this node, or [`IntentRefusal::ContextNotHeld`].
 ///
 /// Every held context is owned by exactly one group, so an absent row is the
@@ -269,12 +288,12 @@ async fn perform(
 
     let author_proof = decode_author_proof(&req.author_proof)?;
 
-    // The node attaches its OWN half; `Delegation::verify` refuses it unless
-    // this signer is the executor key the author named.
+    // The node attaches its OWN half, and only for a warrant naming its key.
     let group_id = held_context_group(ctx_client, &context_id)?;
     let signer = local_signer(ctx_client, &context_id)
         .await?
-        .ok_or_else(|| eyre::eyre!("this node owns no identity in this context"))?;
+        .ok_or_else(|| eyre::eyre!(IntentRefusal::NoIdentityInContext))?;
+    refuse_unless_named_executor_key(warrant.executor_key, signer)?;
     let executor_proof =
         calimero_context::join_credential::build(ctx_client.datastore(), &group_id, &signer)
             .wrap_err("this node could not present its own credential")?;
@@ -845,8 +864,11 @@ mod tests {
     }
 
     /// A warrant for `context` naming `executor_key` as the device that may spend it.
-    fn warrant_naming(context: ContextId, _executor_key: PublicKey) -> Warrant {
-        warrant(context, NOW + 60)
+    fn warrant_naming(context: ContextId, executor_key: PublicKey) -> Warrant {
+        Warrant {
+            executor_key,
+            ..warrant(context, NOW + 60)
+        }
     }
 
     /// The prod repro: an account on relay X sends a well-formed intent for a

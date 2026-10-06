@@ -42,7 +42,7 @@ use eyre::WrapErr as _;
 use tracing::{debug, error, warn};
 
 use crate::admin::handlers::context::perform_intent::{
-    decode_author_proof, now_secs, IntentRefusal,
+    decode_author_proof, now_secs, refuse_unless_named_executor_key, IntentRefusal,
 };
 use crate::admin::handlers::identity::get_node_identity::node_identity;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
@@ -154,6 +154,7 @@ async fn perform(
         .ok_or_else(|| calimero_context::error::ContextError::NotAGroupMember {
             group_id: group_id.to_string(),
         })?;
+    refuse_unless_named_executor_key(warrant.executor_key, signer)?;
     let executor_proof = calimero_context::join_credential::build(store, &group_id, &signer)
         .wrap_err("this node could not present its own credential")?;
 
@@ -163,7 +164,7 @@ async fn perform(
         executor_proof,
         executor_key: signer,
     };
-    // Authenticity before anything else, so a forged bundle is a 400 about the
+    // Authenticity before any capability, so a forged bundle is a 400 about the
     // bundle and never a 403 about a capability it could not have claimed.
     let verified = delegation.verify().map_err(|err| {
         eyre::eyre!(IntentRefusal::Malformed(format!(
@@ -398,8 +399,11 @@ mod tests {
 
     /// A creation warrant that never expires, naming `executor_key` as the
     /// device that may carry it out.
-    fn warrant_naming(_executor_key: PublicKey) -> ContextCreationWarrant {
-        warrant(u64::MAX)
+    fn warrant_naming(executor_key: PublicKey) -> ContextCreationWarrant {
+        ContextCreationWarrant {
+            executor_key,
+            ..warrant(u64::MAX)
+        }
     }
 
     /// A creation warrant naming another executor device is refused as not

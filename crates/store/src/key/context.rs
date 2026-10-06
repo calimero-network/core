@@ -717,44 +717,56 @@ impl FromKeyParts for ContextDagDelta {
     }
 }
 
-/// Highest warrant nonce accepted from one author device in one context:
-/// `context_id(32) ‖ author_device_key(32)`.
+/// Warrant nonces accepted from one author device for one executor device in
+/// one context: `context_id(32) ‖ author_device_key(32) ‖ executor_key(32)`.
 ///
 /// Keyed by the device's signing KEY, not by its account and not by `DeviceId`.
 /// Not by account, because two devices of one account are independent replicas
 /// that cannot coordinate on a counter. Not by `DeviceId`, because a device
 /// re-key would then have to continue a sequence the client must remember across
 /// the rotation; a fresh key starting a fresh sequence is safe, since a warrant
-/// names one key and is checked against that key's row.
+/// names one key and is checked against that key's row. Per executor device too,
+/// so each ledger has one producer and every replica reaches the same verdict.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct ContextWarrantNonce(Key<(ContextId, PublicKeyComponent)>);
+pub struct ContextWarrantNonce(Key<(ContextId, PublicKeyComponent, PublicKeyComponent)>);
 
 impl ContextWarrantNonce {
     #[must_use]
-    pub fn new(context_id: PrimitiveContextId, author_device_key: PrimitivePublicKey) -> Self {
-        Self(Key(
-            GenericArray::from(*context_id).concat(GenericArray::from(*author_device_key))
-        ))
+    pub fn new(
+        context_id: PrimitiveContextId,
+        author_device_key: PrimitivePublicKey,
+        executor_key: PrimitivePublicKey,
+    ) -> Self {
+        Self(Key(GenericArray::from(*context_id)
+            .concat(GenericArray::from(*author_device_key))
+            .concat(GenericArray::from(*executor_key))))
     }
 
     #[must_use]
     pub fn context_id(&self) -> PrimitiveContextId {
         let mut context_id = [0; 32];
-        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.copy_from_slice(&AsRef::<[_; 96]>::as_ref(&self.0)[..32]);
         context_id.into()
     }
 
     #[must_use]
     pub fn author_device_key(&self) -> PrimitivePublicKey {
         let mut key = [0; 32];
-        key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        key.copy_from_slice(&AsRef::<[_; 96]>::as_ref(&self.0)[32..64]);
+        key.into()
+    }
+
+    #[must_use]
+    pub fn executor_key(&self) -> PrimitivePublicKey {
+        let mut key = [0; 32];
+        key.copy_from_slice(&AsRef::<[_; 96]>::as_ref(&self.0)[64..]);
         key.into()
     }
 }
 
 impl AsKeyParts for ContextWarrantNonce {
-    type Components = (ContextId, PublicKeyComponent);
+    type Components = (ContextId, PublicKeyComponent, PublicKeyComponent);
 
     fn column() -> Column {
         Column::ContextWarrantNonce
@@ -778,6 +790,7 @@ impl Debug for ContextWarrantNonce {
         f.debug_struct("ContextWarrantNonce")
             .field("context_id", &self.context_id())
             .field("author_device_key", &self.author_device_key())
+            .field("executor_key", &self.executor_key())
             .finish()
     }
 }

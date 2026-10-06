@@ -14,7 +14,7 @@
 # node with the flag and 401 on the node without it proves the flag is what
 # opened the route.
 #
-# Usage: public-intents.sh <open_node> <closed_node> <context_id> <warrant> <credential>
+# Usage: public-intents.sh <open_node> <closed_node> <context_id> <warrant> <credential> <relay_key>
 #
 # Uses curl rather than meroctl for the same reason account-api.sh does: the
 # merod image ships no CLI, so a `target: local` script has none to call. It also
@@ -30,12 +30,14 @@ CLOSED_NODE="$2"
 CONTEXT="$3"
 WARRANT="$4"
 CREDENTIAL="$5"
+MINTED_KEY="$6"
 
-[ -n "${OPEN_NODE}" ] || fail "usage: public-intents.sh <open_node> <closed_node> <context> <warrant> <credential>"
+[ -n "${OPEN_NODE}" ] || fail "usage: public-intents.sh <open_node> <closed_node> <context> <warrant> <credential> <relay_key>"
 [ -n "${CLOSED_NODE}" ] || fail "no closed node given — the control is not optional here"
 [ -n "${CONTEXT}" ] || fail "no context id given"
 [ -n "${WARRANT}" ] || fail "no warrant given"
 [ -n "${CREDENTIAL}" ] || fail "no author credential given"
+[ -n "${MINTED_KEY}" ] || fail "no relay key given; the warrant was minted for one"
 
 OPEN_URL=$(node_url "${OPEN_NODE}") || fail "could not resolve ${OPEN_NODE}'s URL"
 CLOSED_URL=$(node_url "${CLOSED_NODE}") || fail "could not resolve ${CLOSED_NODE}'s URL"
@@ -89,8 +91,9 @@ echo "ok   discovery names the executor account (${RELAY_ACCOUNT})"
 PASS=$((PASS + 1))
 RELAY_KEY=$(echo "${DISCOVERY}" \
     | sed -n 's/.*"executorKey"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')
-[ -n "${RELAY_KEY}" ] || fail "the open node's discovery answer names no executor key"
-echo "ok   discovery names the executor key (${RELAY_KEY})"
+[ "${RELAY_KEY}" = "${MINTED_KEY}" ] \
+    || fail "discovery names executor key '${RELAY_KEY}', not the ${MINTED_KEY} the warrant was minted for"
+echo "ok   discovery names the executor key the warrant was minted for (${RELAY_KEY})"
 PASS=$((PASS + 1))
 
 # --- 2. The write itself, unauthenticated ------------------------------------

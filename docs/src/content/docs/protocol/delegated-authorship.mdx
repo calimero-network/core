@@ -47,7 +47,7 @@ A **warrant** is the author's signed statement that a specific request may be ru
 | `executor` | who may run it | An **account**: the subject the relay's authorship capability is granted to. |
 | `executor_key` | which device may run it | One device of `executor`. Each relay node spends nonces in its own ledger, so a warrant any device of the operator could present would be spendable once per device. A relay that re-keys voids the warrants it has not spent. |
 | `intent_hash` | what | `H(method ‖ args)`. The hash, never the plaintext — see below. |
-| `nonce` | once | Monotonic per author **device**. Per device rather than per account because two devices of one account are independent replicas and cannot coordinate on a shared counter. |
+| `nonce` | once | Monotonic per author **device**, spent in the ledger of the executor device the warrant names. Per device rather than per account because two devices of one account are independent replicas and cannot coordinate on a shared counter. Per executor device because each ledger then has one producer, so every replica reaches the same verdict: one nonce on warrants for two relays is two warrants, each spendable once. |
 | `not_after` | until when | Checked by the relay at admission. Deliberately *not* checked by peers at apply — see below. |
 | `governance_floor` | no earlier than | Governance heads the author had seen. The cut the change is authorized at must reach every one of them, or every peer refuses it — see [the cut a delegated change is judged at](#the-cut-a-delegated-change-is-judged-at). |
 
@@ -142,7 +142,9 @@ The mask is **replaced**, not merged, so re-pass any other flag the member alrea
 
 `<GROUP_ID>` may be the namespace root rather than each context's own group. The gate honours a grant found at the ancestor the relay inherits its membership through, so a relay fleet needs **one** grant and not one per channel. A `Restricted` subgroup is a wall here as it is everywhere: it required its own admission, so it needs its own grant.
 
-Note the subject: an **account**, not a key. That is what lets the relay rotate the key one of its processes signs with without the grant having to be reissued. Warrants name the key as well, so those not yet spent are minted again.
+Note the subject: an **account**, not a key.
+That is what lets the relay rotate the key one of its processes signs with without the grant having to be reissued.
+Warrants name the key as well, so those not yet spent are minted again.
 
 ## Discovery: what the author has to be told first
 
@@ -371,7 +373,8 @@ otherwise seat the author as that group's admin.
 
 ## Founding a namespace on a member's behalf
 
-A member with no node can found a namespace through a relay. They sign a `GovernanceWarrant` (kind `Root`, scope the new namespace id) over the exact `NamespaceCreatedV2` genesis: the id is `founded_namespace_id(author, salt)`, so the author computes it and the relay cannot choose another. The relay posts it to `POST /admin-api/groups/{namespace_id}/governance-intents`, takes an identity in the new namespace, and publishes the genesis in the clear, as every genesis travels. The warrant's `executor_key` is the relay's signing key, which the author reads from `GET /admin-api/identity` (`publicKey`) because a namespace that does not exist yet has no discovery route; the relay refuses a warrant naming another key before it enlists.
+A member with no node can found a namespace through a relay. They sign a `GovernanceWarrant` (kind `Root`, scope the new namespace id) over the exact `NamespaceCreatedV2` genesis: the id is `founded_namespace_id(author, salt)`, so the author computes it and the relay cannot choose another. The relay posts it to `POST /admin-api/groups/{namespace_id}/governance-intents`, takes an identity in the new namespace, and publishes the genesis in the clear, as every genesis travels.
+The warrant's `executor_key` is the relay's signing key, which the author reads from `GET /admin-api/identity` (`publicKey`) because a namespace that does not exist yet has no discovery route; the relay refuses a warrant naming another key before it enlists.
 
 Every peer applies it **as the author**: the author becomes the namespace's founder, owner and admin, bound by the credential in the genesis, exactly as if they had founded it from a node of their own. The relay is then seated in the namespace as a `Member` holding `CAN_AUTHOR_ON_BEHALF`, with its device bound from the executor certificate the warrant carries, and recorded as the namespace's **founding relay**. A founding that names an existing namespace is refused (`409`).
 
@@ -412,14 +415,18 @@ An empty floor, which every client has signed so far, is covered by every cut. S
 
 ## Replay, and why the ledger is a window
 
-A warrant's signature stays valid forever — that is what a signature is. So replay is not forgery, and the envelope check cannot be what stops it: a relay re-presenting the same authorization would produce a second perfectly-verifiable delta. Every node therefore keeps a per-`(context, author device)` ledger and spends the nonce as part of admitting the delta.
+A warrant's signature stays valid forever: that is what a signature is. So replay is not forgery, and the envelope check cannot be what stops it: a relay re-presenting the same authorization would produce a second perfectly-verifiable delta. Every node therefore keeps a per-`(context, author device, executor device)` ledger and spends the nonce as part of admitting the delta.
 
 The ledger is a **sliding window** (64 wide), not a strictly-increasing counter, and the reason is convergence. A high-water mark that only accepts `nonce > seen` makes acceptance depend on *arrival order*: two warrants that cross paths in the network would be accepted by one node and refused by another, and the two would never agree again. A window accepts any unseen nonce within it, so the verdict is a function of the set received, not the order.
 
-**The ledger is per node, and that is a known gap.** Each node spends nonces in its own store. The ledger is not part of replicated state, so two things escape it:
+**The ledger is per node, and that is a known gap.** Each node spends nonces in its own store. The ledger is not part of replicated state, so four things escape it:
 
 - A delta delayed past its author's window is refused only on the peers that moved past it.
 - A node that joins by **snapshot sync** starts with an empty ledger. It would accept a relay's replay of a warrant that every peer with full history refuses.
+- The executor device a warrant names can sign **two deltas from one warrant**.
+  Each replica keeps whichever arrives first, so replicas fork.
+  Naming one device keeps every other relay out; it does not stop the named one equivocating.
+- A device key **cloned onto two nodes** is one executor device to every verifier, so the two nodes can each spend a warrant naming it once, with the same fork.
 
 Both are divergence. The fix that would close them was studied and not landed. A node could ship its ledger with the snapshot, merged as a join (the higher mark, the union of spent nonces). But the snapshot channel deliberately refuses every record it can't authenticate per record, and a ledger row can't be authenticated that way. A malicious snapshot source could then mark nonces spent that never were, and the receiving node would refuse writes its peers accept. The sound fix records the spend **in the context's replicated state**. Each delegated delta would write its nonce into a reserved entry, so the ledger is covered by the state root a snapshot is verified against. That is a storage-layer change, and it is left as the next step.
 

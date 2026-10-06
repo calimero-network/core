@@ -126,9 +126,9 @@ pub enum Column {
     /// legacy delta rows retire (C2.5). Synchronized like the planes it will
     /// subsume. Auto-created from `Column::iter()` at `open_cf` (no DB migration).
     UnifiedOp,
-    /// Highest warrant nonce seen from one author device in one context, keyed
-    /// `context_id(32) ‖ author_device_key(32)` (see `ContextWarrantNonce`). One
-    /// `u64` per active author device per context.
+    /// Warrant nonces seen from one author device for one executor device in one
+    /// context, keyed `context_id(32) ‖ author_device_key(32) ‖ executor_key(32)`
+    /// (see `ContextWarrantNonce`). One window per active pair per context.
     ///
     /// Its own column rather than a prefix in `ContextLocal`, for the reason the
     /// other single-purpose context markers have theirs: the key is

@@ -558,7 +558,10 @@ fn a_bundle_from_a_device_the_warrant_does_not_name_is_refused() {
     let err = bundle
         .verify()
         .expect_err("a sibling device of the executor must not spend this warrant");
-    assert!(err.to_string().contains("executor key"), "{err}");
+    assert!(
+        matches!(err, AccountError::WarrantExecutorKeyMismatch { .. }),
+        "{err}"
+    );
 }
 
 #[test]
