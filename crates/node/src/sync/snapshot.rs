@@ -2455,6 +2455,13 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             continue;
         }
         let state_key = key.state_key();
+        // This node's records of collected deletes are not state to ship.
+        if matches!(
+            StorageKey::from_bytes(&state_key),
+            Some(StorageKey::Collected(_))
+        ) {
+            continue;
+        }
 
         // Discover entity ids from the keys: an entity row sits at its id
         // behind the entity tag, and the row codec refuses anything it did

@@ -79,18 +79,32 @@ fn on<R>(rows: &Rows, device: u8, f: impl FnOnce() -> R) -> R {
 }
 
 /// One node GC sweep over `rows` once every member has caught up past every
-/// tombstone, as `calimero-node`'s does it then: the tombstones go, then, when
-/// `prune` is set, every parent drops the children whose rows are gone.
-/// `prune: false` is GC as it was before.
+/// tombstone, as `calimero-node`'s does it then: each tombstone goes, a signed
+/// entity's leaving the record of its delete, then, when `prune` is set, every
+/// parent drops the children whose rows are gone. `prune: false` is GC as it
+/// was before.
 fn gc_pass(rows: &Rows, prune: bool) {
     let entity = |key: &[u8; KEY_LEN]| match Key::from_bytes(key) {
         Some(Key::Index(id)) => Some(id),
         _ => None,
     };
     let mut rows = rows.borrow_mut();
-    rows.retain(|key, value| {
-        entity(key).is_none_or(|id| tombstone_deleted_at(id, value).is_none())
-    });
+    let collected: Vec<_> = rows
+        .iter()
+        .filter_map(|(key, value)| {
+            let id = entity(key)?;
+            let _deleted_at = tombstone_deleted_at(id, value)?;
+            Some((id, deleted_at_to_record(id, value)))
+        })
+        .collect();
+    for (id, deleted_at) in collected {
+        let _tombstone = rows.remove(&Key::Index(id).to_bytes());
+        if let Some(deleted_at) = deleted_at {
+            let record_key = Key::Collected(id).to_bytes();
+            let record = collected_record(deleted_at, rows.get(&record_key).map(Vec::as_slice));
+            let _previous = rows.insert(record_key, record.to_vec());
+        }
+    }
     if !prune {
         return;
     }
