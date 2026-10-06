@@ -334,6 +334,41 @@ impl<'a> AccountBindingRepository<'a> {
         }))
     }
 
+    /// Is `account`'s `device` spent in the namespace owning `group`: revoked, or
+    /// withdrawn by the account's own root? Unlike a narrowing, neither is undone.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn is_spent(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<bool> {
+        let namespace = crate::NamespaceRepository::new(self.store).resolve(group)?;
+        Ok(self.is_revoked(&namespace, device)?
+            || self.is_withdrawn_for_account(&namespace, account, device)?)
+    }
+
+    /// Is `account`'s withdrawal of `device` still owed in `namespace`? Not where it
+    /// is spent already, nor where the same id is bound to another account.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn withdrawal_owed(
+        &self,
+        namespace: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<bool> {
+        if self.is_spent(namespace, account, device)? {
+            return Ok(false);
+        }
+        Ok(self
+            .raw_binding(namespace, device)?
+            .is_none_or(|bound| bound.account == *account.as_bytes()))
+    }
+
     /// Did `sign_pk` sign for a device that was revoked or narrowed out in `group`?
     ///
     /// Recorded by [`apply_revocation`](Self::apply_revocation) and

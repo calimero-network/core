@@ -677,7 +677,14 @@ from any other. Publication is still per-DAG: it takes effect in a group once it
 has been published there.
 
 It does not stop at the namespaces the publishing node can reach, either.
-Every device of the account follows the account namespace, so a proof-bearing revocation published there is folded by all of them, and each republishes it into every namespace it takes part in where the device is still bound.
+Every device of the account follows the account namespace, so a proof-bearing revocation published there is folded by all of them, and each republishes it into every namespace it takes part in that has not withdrawn the device yet, bound there or not.
+A namespace the device was never linked in records the account's withdrawal of it, so a link replayed there later, with the old certificate and a replayed endorsement, is refused.
+The account namespace keeps the proof itself, under the account the proof names.
+A device that gains a namespace later publishes its own account's recorded withdrawals into it before it links any device there.
+A device carries or replays only its own account's withdrawals, and never into a namespace that binds the same device id to another account.
+Each publish needs a namespace identity and a scope key there, so a namespace none of the account's devices takes part in does not receive the withdrawal until one of them joins it.
+A device that cannot publish into a namespace yet records nothing there, and its listener replays the account's withdrawals into every namespace it takes part in each time it starts.
+An account's own node checks the account namespace before it publishes a link, and one that names no account namespace links no device.
 The proof names no namespace, so the same bytes verify wherever they land.
 That is the lost-laptop case in full: the holder is gone, the phone revokes it with a proof minted from the phrase, and the tablet carries the tombstone into the projects the phone was never in.
 The revoker publishes into its own account namespace **last**, after every project namespace it reaches: that apply is what drives its own carry, and by then there is nothing left for the carry to publish.
