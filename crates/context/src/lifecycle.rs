@@ -26,6 +26,9 @@ const NAMESPACE_PENDING_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// How many dropped op ids one warning lists; the count is always whole.
 const MAX_DROPPED_IDS_LOGGED: usize = 8;
 
+/// A namespace's governance DAG, keyed by the namespace id it belongs to.
+type NamespaceDag = ([u8; 32], Arc<Mutex<DagStore<SignedNamespaceOp>>>);
+
 /// Drop every pending op older than `ttl` from each namespace's DAG, returning
 /// how many went. A DAG busy applying an op is skipped until the next sweep.
 ///
@@ -33,10 +36,7 @@ const MAX_DROPPED_IDS_LOGGED: usize = 8;
 /// waited on them, are missing until a sync delivers their parents again - and
 /// for an op whose parent this node can never authorize (core#4511), never.
 /// So each namespace that lost ops is named in a warning, with the ops' ids.
-async fn sweep_stale_pending(
-    dags: &[([u8; 32], Arc<Mutex<DagStore<SignedNamespaceOp>>>)],
-    ttl: Duration,
-) -> usize {
+async fn sweep_stale_pending(dags: &[NamespaceDag], ttl: Duration) -> usize {
     let mut dropped = 0;
     for (namespace_id, dag) in dags {
         let Ok(mut dag) = dag.try_lock() else {
