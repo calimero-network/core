@@ -72,6 +72,7 @@ pub async fn handler(
                     subgroup_count: ns.subgroup_count,
                     app_version,
                     founding: super::namespace_founding(&state.store, &ns.namespace_id),
+                    held_ops: super::namespace_held_ops(&state.store, &ns.namespace_id),
                 });
             }
             ApiResponse {
