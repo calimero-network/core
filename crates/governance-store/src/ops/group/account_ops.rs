@@ -382,9 +382,17 @@ pub(crate) fn apply_device_unlinked(
     // still be able to eject one whose link this replica has not folded. It only
     // means the self-service claim cannot be checked, so it does not authorize, and
     // the admin gate below decides.
-    let device_belongs_to_account = AccountBindingRepository::new(ctx.store())
-        .raw_binding(&group_id, *device)?
+    let binding = AccountBindingRepository::new(ctx.store()).raw_binding(&group_id, *device)?;
+    let device_belongs_to_account = binding
+        .as_ref()
         .is_some_and(|binding| binding.account == *account.as_bytes());
+
+    // The account-wide record: in its own namespace this is what the account's
+    // devices replay into every namespace they reach, including ones joined later.
+    let verified = proof.filter(|proof| proof.authorises(*account, *device).is_ok());
+    if let Some(proof) = verified {
+        crate::AccountDeviceRegistry::new(ctx.store(), group_id).record_revocation(proof)?;
+    }
 
     // What the proof CAN establish without a binding is narrower, and safe: that
     // this account withdrew this device for itself. Recorded in the slot keyed by
@@ -410,7 +418,12 @@ pub(crate) fn apply_device_unlinked(
         }
     }
 
+    // What the account's devices carry: never a proof for an account the binding does not name.
+    let carried = verified.filter(|_| binding.is_none() || device_belongs_to_account);
+
     let self_service = match proof {
+        // Unbound: the account's own withdrawal above is all a proof can do here.
+        Some(_) if binding.is_none() => false,
         Some(_) if !device_belongs_to_account => {
             tracing::warn!(
                 group_id = ?group_id,
@@ -450,6 +463,16 @@ pub(crate) fn apply_device_unlinked(
     // identically, so it records nothing and returns `Ok` — erroring would stall
     // the apply forever on an op that can never succeed.
     if !self_service && !ctx.permissions().is_admin(ctx.signer())? {
+        // The account's own withdrawal above still has to reach its other namespaces.
+        if let Some(proof) = carried {
+            ctx.queue_event(OpEvent::DeviceRevoked {
+                group_id: group_id.to_bytes(),
+                account: *account,
+                device: *device,
+                proof: Some(Box::new(proof.clone())),
+            });
+            return Ok(());
+        }
         tracing::warn!(
             group_id = ?group_id,
             signer = %ctx.signer(),
@@ -489,11 +512,8 @@ pub(crate) fn apply_device_unlinked(
         group_id: group_id.to_bytes(),
         account: *account,
         device: *device,
-        // Only the proof that actually authorised this: one that did not verify
-        // authorises nothing elsewhere either, and the admin gate does not travel.
-        proof: self_service
-            .then(|| proof.map(|proof| Box::new(proof.clone())))
-            .flatten(),
+        // One that did not verify authorises nothing, and the admin gate does not travel.
+        proof: carried.map(|proof| Box::new(proof.clone())),
     });
 
     tracing::debug!(
