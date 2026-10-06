@@ -21,7 +21,6 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_account::AccountId;
-use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{
@@ -29,20 +28,12 @@ use calimero_governance_store::{
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
 };
 use calimero_op::{Op, OpPayload, ScopeId};
-use calimero_op_adapter::set_writers_payload;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::{Acting, AuthorityBase, CutAncestry, ScopeState};
 use calimero_storage::address::Id;
-use calimero_storage::collections::decode_rotation_log_entry_child;
 use calimero_storage::entities::OpMask;
-use calimero_storage::index::EntityIndex;
-use calimero_storage::interface::Interface;
-use calimero_storage::logical_clock::HybridTimestamp;
-use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 use calimero_storage::shared_writers::{CellWriters, OverBudget, WritersUnavailable};
-use calimero_storage::store::{Key as StorageKey, MainStorage};
-use calimero_store::key::ContextState;
 use calimero_store::Store;
 
 use crate::governance_dag::signed_namespace_op_to_delta;
@@ -76,14 +67,6 @@ type AuthCutContext = (
     u32,
 );
 
-/// Assemble an [`Op`] that **mirrors a source-DAG op**: its `id` and `parents`
-/// are the source delta's own id/parents, *not* a fresh [`Op::compute_id`]. This
-/// is deliberate — it makes the projection's op graph share an id space with the
-/// source DAGs, so a live decision's cut (e.g. a delta's `governance_dag_heads`,
-/// which are governance-op ids) maps directly onto the projection and
-/// [`ScopeProjections::acl_view_at`] resolves the same ancestry the source DAG
-/// would. The source ids are themselves content-addressed + identical on every
-/// node, so the projection's `(hlc, op_id)` LWW stays deterministic.
 /// Which account does `key` speak for at this cut?
 ///
 /// A device's signing key is **not** a member key, so deriving an account from
@@ -198,172 +181,6 @@ fn admin_or_capability_in_view(
     // An explicit grant of nothing is a revocation, not an absence: only a
     // member with nothing folded falls back to the genesis default.
     view.capability(&group, account, default_cap_base) & capability != 0
-}
-
-fn build_op(
-    id: [u8; 32],
-    scope: ScopeId,
-    signer_binding: Option<(calimero_account::AccountId, calimero_account::DeviceId)>,
-    author: PublicKey,
-    hlc: HybridTimestamp,
-    parents: &[[u8; 32]],
-    payload: OpPayload,
-) -> Op {
-    // A rotation-log entry names a KEY, so without the caller's resolution this
-    // op is attributed to a stand-in — and `SetWriters` is gated on
-    // `is_owner(op.author(), object)`, where the owner is a real account. Every
-    // rotation-derived writer-set op would be refused as `NotOwner`.
-    let authorship = signer_binding.map_or_else(
-        || calimero_op::Authorship::unattributed(author),
-        |(account, device)| calimero_op::Authorship {
-            account,
-            device,
-            device_key: author,
-        },
-    );
-    Op::from_parts(
-        id,
-        scope,
-        parents.to_vec(),
-        authorship,
-        hlc,
-        payload,
-        [0u8; 32],
-        [0u8; 64],
-    )
-}
-
-/// Convert a writer-set rotation ([`RotationLogEntry`]) into the unified
-/// `SetWriters` [`Op`] for `object` in `scope`, or `None` for an unsigned
-/// bootstrap entry (no author to attribute it to — those are skipped exactly as
-/// the rotation-log append path skips them).
-///
-/// The op `id` is the rotation's `delta_id` (mirroring the source), the author
-/// is its `signer` (deterministic across nodes), and the hlc is its `delta_hlc`.
-/// Parents are left empty: the rotation log is a per-object sequence resolved by
-/// `(hlc, signer)` today, and the projection's per-object `(hlc, op_id)` LWW
-/// reproduces that ordering without needing the causal edges (the equivalence is
-/// covered by `op-adapter::acl_plane_matches_resolve_local_*`).
-///
-/// This is the ACL-plane **conversion**; feeding it from the live apply stream
-/// is a later step — the raw rotation entries are produced in the storage
-/// layer, below the projection, so the independent feed needs storage to
-/// surface applied rotations rather than re-deriving them from the resolver.
-#[must_use]
-pub fn op_from_rotation_entry(
-    object: Id,
-    scope: ScopeId,
-    entry: &RotationLogEntry,
-    signer_binding: Option<(calimero_account::AccountId, calimero_account::DeviceId)>,
-) -> Option<Op> {
-    let author = entry.signer?;
-    let payload = set_writers_payload(object, entry);
-    Some(build_op(
-        entry.delta_id,
-        scope,
-        signer_binding,
-        author,
-        entry.delta_hlc,
-        &[],
-        payload,
-    ))
-}
-
-/// Read a Shared anchor's rotation log directly from the datastore (no WASM
-/// storage env), by walking its hashed-collection children. `None` if the
-/// anchor has no rotation collection yet (never rotated / not a Shared anchor).
-///
-/// `only_delta` narrows the returned entries to the ones recorded by that
-/// delta (the live ACL feed only wants the just-applied delta's rotations, so
-/// the non-matching entries are dropped during the walk instead of collected
-/// and filtered by the caller). `None` keeps every entry.
-///
-/// This is the post-apply read the live ACL feed uses to recover the **raw**
-/// rotation entries (with their signer), the independent source the projection
-/// folds — as opposed to the resolver's already-merged output.
-///
-/// TODO(consolidate): mirrors `load_rotation_log_direct` in
-/// `crates/node/src/delta_store.rs`; both should share one Store-backed reader
-/// in `calimero-storage` before this becomes authoritative at cutover.
-#[must_use]
-pub fn load_rotation_log_direct(
-    client: &ContextClient,
-    context_id: ContextId,
-    anchor: Id,
-    only_delta: Option<&[u8; 32]>,
-) -> Option<RotationLog> {
-    let map_id = Interface::<MainStorage>::rotation_log_child_id(anchor);
-    let handle = client.datastore_handle();
-    // Read a state value. A store error is surfaced as a warning (distinct from
-    // a legitimately-absent key) so a transient I/O fault doesn't silently make
-    // the ACL shadow feed skip an anchor's rotations.
-    let raw = |key: StorageKey| -> Option<Vec<u8>> {
-        let state_key = ContextState::new(context_id, key.to_bytes());
-        match handle.get(&state_key) {
-            Ok(state) => state.map(|s| s.value.into_boxed().into_vec()),
-            Err(err) => {
-                tracing::warn!(
-                    %context_id, anchor = ?anchor, %err,
-                    "rotation-log read failed; ACL shadow feed skips this anchor"
-                );
-                None
-            }
-        }
-    };
-
-    // `Index` and `Entry` are the two parts of one entity row.
-    let read = |key: StorageKey| calimero_storage::row::read(key, raw);
-    let index_bytes = read(StorageKey::Index(map_id))?;
-    let index = match borsh::from_slice::<EntityIndex>(&index_bytes) {
-        Ok(index) => index,
-        Err(err) => {
-            tracing::warn!(
-                %context_id, anchor = ?anchor, %err,
-                "rotation-log index failed to decode; ACL shadow feed skips this anchor"
-            );
-            return None;
-        }
-    };
-    let mut entries = Vec::new();
-    {
-        // Children live in the anchor's ChildTrie, not inline in its index row,
-        // so walk the trie with the same raw reader this path already uses.
-        let _ = &index;
-        for child in
-            calimero_storage::child_trie::ChildTrie::<MainStorage>::children_with(map_id, read)
-        {
-            let Some(bytes) = read(StorageKey::Entry(child.id())) else {
-                // The child is listed in the index but its value is unreadable
-                // (store error — already warned in `read` — or an absent value,
-                // a write-skew). Either way the log is partial; flag it.
-                tracing::warn!(
-                    %context_id, anchor = ?anchor, child = ?child.id(),
-                    "rotation-log child listed but unreadable; ACL shadow feed may be incomplete"
-                );
-                continue;
-            };
-            match decode_rotation_log_entry_child(&bytes) {
-                Some(entry) => {
-                    if only_delta.is_none_or(|delta_id| entry.delta_id == *delta_id) {
-                        entries.push(entry);
-                    }
-                }
-                // A child that doesn't decode yields a partial log; warn rather
-                // than skip in silence (matches the node-crate reader).
-                None => tracing::warn!(
-                    %context_id, anchor = ?anchor, child = ?child.id(),
-                    "rotation-log child failed to decode; ACL shadow feed may be incomplete"
-                ),
-            }
-        }
-    }
-    // No canonical ordering: the sole caller folds this delta's entries in
-    // walk order (sorting by delta_id was O(n log n) of pure overhead — with
-    // the `only_delta` narrowing, all retained ids are equal anyway).
-    Some(RotationLog {
-        snapshot: None,
-        entries,
-    })
 }
 
 // `op_from_namespace_op` now lives in `calimero-governance-store` (so the
@@ -1106,9 +923,8 @@ impl ScopeProjections {
     /// so the ingested ops carry the same ids/parents as the live feed (see
     /// [`op_from_signed_namespace_op`]). Idempotent — `ingest_op` dedups by id,
     /// so a backfill after some live feed (or a repeated backfill) is a no-op
-    /// for already-seen ops. ACL (rotation) scopes are backfilled separately via
-    /// [`op_from_rotation_entry`] + [`load_rotation_log_direct`] at the call site
-    /// (the anchors are known there).
+    /// for already-seen ops. A cell's rotations are governance ops too, so they come
+    /// back with the rest.
     pub fn backfill_namespace(&mut self, store: &Store, namespace_id: [u8; 32]) {
         if self.backfilled.contains(&namespace_id) {
             return;
@@ -1123,6 +939,29 @@ impl ScopeProjections {
         }
         // A `None` (governance head unreadable) leaves the namespace UN-backfilled
         // so a later call retries; see `collect_namespace_ops`.
+    }
+
+    /// Fold `group`'s namespace into `projections` up to the cut `heads`, as the node's
+    /// state-delta path does before an at-cut read. A poisoned lock folds nothing.
+    pub fn refresh_for_cut(
+        projections: &std::sync::RwLock<Self>,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) {
+        // Bound to a `let` so the read guard drops before the write lock is taken.
+        let to_refresh = projections
+            .read()
+            .ok()
+            .and_then(|folded| folded.namespace_to_refresh(store, group, heads));
+        let Some(namespace_id) = to_refresh else {
+            return;
+        };
+        if let Some(ops) = Self::ops_for_namespace(store, namespace_id) {
+            if let Ok(mut folded) = projections.write() {
+                folded.apply_backfill(namespace_id, ops);
+            }
+        }
     }
 
     /// Has this namespace's governance history already been replayed into the
@@ -3012,6 +2851,37 @@ impl ScopeProjections {
         cell: Id,
         heads: &[[u8; 32]],
     ) -> Result<CellWriters, WritersUnavailable> {
+        let steps = self.shared_steps_at_cut(store, context, cell, heads)?;
+        let folded = calimero_storage::shared_writers::fold(cell, &steps)
+            .map_err(|OverBudget| WritersUnavailable::OverBudget)?;
+        Ok(folded.map_or(CellWriters::Genesis, CellWriters::Rotated))
+    }
+
+    /// Every writer `cell` has had by the cut: the union of the writer sets of its counted
+    /// steps with the genesis set, `Genesis` when no step counts. `Err` as for
+    /// [`Self::shared_writers_at_cut`].
+    pub fn shared_writers_ever_at_cut(
+        &self,
+        store: &Store,
+        context: &ContextId,
+        cell: Id,
+        heads: &[[u8; 32]],
+    ) -> Result<CellWriters, WritersUnavailable> {
+        let steps = self.shared_steps_at_cut(store, context, cell, heads)?;
+        let ever = calimero_storage::shared_writers::ever_writers(cell, &steps)
+            .map_err(|OverBudget| WritersUnavailable::OverBudget)?;
+        Ok(ever.map_or(CellWriters::Genesis, CellWriters::Rotated))
+    }
+
+    /// The rotation steps of `cell` in the context's group within the cut, each with the
+    /// account its signer spoke for at its own parents; `Err` when any of it is unreadable.
+    fn shared_steps_at_cut(
+        &self,
+        store: &Store,
+        context: &ContextId,
+        cell: Id,
+        heads: &[[u8; 32]],
+    ) -> Result<Vec<calimero_storage::shared_writers::RotationStep>, WritersUnavailable> {
         let cut = WritersUnavailable::Cut;
         if heads.is_empty() {
             return Err(cut);
@@ -3065,9 +2935,7 @@ impl ScopeProjections {
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(cut);
         }
-        let folded = calimero_storage::shared_writers::fold(cell, &steps)
-            .map_err(|OverBudget| WritersUnavailable::OverBudget)?;
-        Ok(folded.map_or(CellWriters::Genesis, CellWriters::Rotated))
+        Ok(steps)
     }
 
     /// [`role_at_cut_for_group`](Self::role_at_cut_for_group) for an account the
@@ -3472,7 +3340,7 @@ mod tests {
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_storage::entities::OpMask;
-    use calimero_storage::logical_clock::{Timestamp, ID, NTP64};
+    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 
     use super::*;
 
@@ -3899,74 +3767,6 @@ mod tests {
             OpPayload::AdminChanged { new_admin },
             "an opened sealed root op folds exactly as the cleartext one would"
         );
-    }
-
-    #[test]
-    fn rotation_entry_maps_to_set_writers_op() {
-        let scope = ScopeId::from([0u8; 32]);
-        let object = Id::new([0xB0; 32]);
-        // The signer names a KEY (it authorizes the rotation); the writer names an
-        // ACCOUNT (it is granted).
-        let signer = PublicKey::from([1u8; 32]);
-        let writer = calimero_account::AccountId::from([9u8; 32]);
-        let writers: std::collections::BTreeMap<calimero_account::AccountId, OpMask> =
-            [(writer, OpMask::FULL)].into_iter().collect();
-
-        let entry = RotationLogEntry {
-            delta_id: [7u8; 32],
-            delta_hlc: hlc(5),
-            signer: Some(signer),
-            signature: None,
-            signed_payload: None,
-            new_writers: writers.clone(),
-            writers_nonce: 1,
-        };
-
-        // Told who the signer is, the op names the real account — which matters
-        // because `SetWriters` is gated on `is_owner(op.author(), object)` against
-        // a real owner, so a stand-in author is refused as `NotOwner`.
-        let signer_account = calimero_account::AccountId::from([0xA7; 32]);
-        let signer_device = calimero_account::DeviceId::from([0xD7; 32]);
-        let op =
-            op_from_rotation_entry(object, scope, &entry, Some((signer_account, signer_device)))
-                .expect("signed rotation maps");
-        assert_eq!(
-            op.author(),
-            signer_account,
-            "the op must name the account the signing key speaks for"
-        );
-        assert_eq!(op.device(), signer_device, "and the device that signed it");
-        assert_ne!(
-            signer_account,
-            calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
-            "precondition: the stand-in differs, so the assertion above cannot \
-             hold whichever value was used"
-        );
-        // Without the caller's resolution it still stands in — the state that made
-        // every rotation-derived writer-set op unauthorizable.
-        assert_eq!(
-            op_from_rotation_entry(object, scope, &entry, None)
-                .expect("still maps")
-                .author(),
-            calimero_op::Authorship::UNATTRIBUTED_ACCOUNT,
-        );
-        assert_eq!(op.hlc, hlc(5));
-        assert_eq!(
-            op.payload,
-            OpPayload::SetWriters {
-                object,
-                // Verbatim: the rotation log is account-keyed, so there is
-                // nothing to bridge here — only the entry's signer is a key.
-                writers: writers.clone()
-            }
-        );
-
-        // Unsigned bootstrap entries have no author and are skipped.
-        let unsigned = RotationLogEntry {
-            signer: None,
-            ..entry
-        };
-        assert!(op_from_rotation_entry(object, scope, &unsigned, None).is_none());
     }
 
     /// A one-op-per-scenario walk through every history-gap cause, over the
@@ -5338,6 +5138,92 @@ mod tests {
             None,
             "an ancestor of the context's group is unreadable"
         );
+    }
+
+    fn ever_at(w: &Rotations, heads: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable> {
+        w.reg
+            .shared_writers_ever_at_cut(&w.store, &w.context, w.cell, heads)
+    }
+
+    /// Every writer a cell has had by a cut, including the ones a later step removed.
+    #[test]
+    fn the_ever_writers_keep_a_writer_a_later_step_removed() {
+        let (mut w, reader, _, _) = rotations();
+        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+        assert_eq!(ever_at(&w, &joins), Ok(CellWriters::Genesis), "no step yet");
+        w.rotate(admin, group, [0xB1; 32], &joins);
+        let admin_account = w.accounts[&admin];
+        let later: std::collections::BTreeMap<_, _> = [
+            (admin_account, OpMask::FULL),
+            (AccountId::from([0x77; 32]), OpMask::WRITE),
+        ]
+        .into();
+        let (prior, new) = (w.rotated.clone(), later.clone());
+        w.step(admin, group, [0xB2; 32], &[[0xB1; 32]], prior, 2, new);
+        assert_eq!(
+            w.at(&[[0xB2; 32]]),
+            Some(CellWriters::Rotated(later.clone()))
+        );
+        let mut ever = w.genesis.clone();
+        ever.extend(w.rotated.clone());
+        ever.extend(later);
+        assert_eq!(
+            ever_at(&w, &[[0xB2; 32]]),
+            Ok(CellWriters::Rotated(ever.clone())),
+            "the reader and stranger from genesis, the first grantee and the last"
+        );
+        assert!(ever.contains_key(&w.accounts[&reader]));
+        let mut after_first = w.genesis.clone();
+        after_first.extend(w.rotated.clone());
+        assert_eq!(
+            ever_at(&w, &[[0xB1; 32]]),
+            Ok(CellWriters::Rotated(after_first)),
+            "at the earlier cut, the later step is not counted"
+        );
+    }
+
+    /// The ever-writers read the same cut and count the same steps as the fold.
+    #[test]
+    fn the_ever_writers_share_the_folds_cut_and_counting() {
+        let (mut w, reader, stranger, sibling) = rotations();
+        let (joins, group) = (w.joins.clone(), w.group);
+        assert_eq!(
+            ever_at(&w, &[]),
+            Err(WritersUnavailable::Cut),
+            "an empty cut decides nothing"
+        );
+        assert_eq!(
+            ever_at(&w, &[[0xEE; 32]]),
+            Err(WritersUnavailable::Cut),
+            "an ancestor is missing"
+        );
+        w.rotate(stranger, sibling, [0xD5; 32], &joins);
+        w.rotate(reader, group, [0xD6; 32], &joins);
+        w.rotate(stranger, group, [0xD7; 32], &joins);
+        for id in [[0xD5; 32], [0xD6; 32], [0xD7; 32]] {
+            assert_eq!(
+                ever_at(&w, &[id]),
+                Ok(CellWriters::Genesis),
+                "a step the apply would not take adds nobody"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_over_the_step_budget_has_no_ever_writers() {
+        let (mut w, ..) = rotations();
+        let (joins, admin, group) = (w.joins.clone(), w.admin_pk, w.group);
+        let mut heads = Vec::new();
+        for n in 0..=calimero_storage::shared_writers::MAX_STEPS_PER_CELL as u16 {
+            let mut id = [0xA0; 32];
+            id[..2].copy_from_slice(&n.to_be_bytes());
+            let mut new = w.genesis.clone();
+            let _ = new.insert(AccountId::from([0x50; 32]), OpMask::WRITE);
+            let prior = w.genesis.clone();
+            w.step(admin, group, id, &joins, prior, u64::from(n), new);
+            heads.push(id);
+        }
+        assert_eq!(ever_at(&w, &heads), Err(WritersUnavailable::OverBudget));
     }
 
     /// Where a context's cells rotated, as a detach or register reads it at its cut.

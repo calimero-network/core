@@ -95,8 +95,9 @@ switching a field between the two types needs no migration.
   identical. The nonce has no lower bound, so the owner can replace its own
   entry with a backdated write; no one else can. `tests/write_once_devices.rs`
   and `tests/converge_write_once.rs` pin it. A `moderators` delete is checked
-  with `resolve_anchor_writers_as_of(anchor, nonce)` for `DELETE`, so revoking
-  a moderator never undoes their earlier removals. A collection reads only
+  with `resolve_anchor_writers(anchor)` for `DELETE`: the host resolves the
+  moderators at the delete's causal cut, so a moderator removed later does not
+  undo their earlier removals. A collection reads only
   entries whose rules equal its own (`Domain::admits`): an entry written with
   weaker rules is stored and never returned.
 - **Deleting an `immutable` entry is terminal** (only a moderator can: the owner
@@ -651,7 +652,7 @@ src/
 ├── child_trie.rs             # A parent's children as a hash trie (bounded-cost link/unlink)
 ├── admitted_count.rs         # Node-local count of the children a guarded collection admits
 ├── domain.rs                 # Domain: what nested collections inherit from a guarded entry
-├── env.rs                    # RuntimeEnv (storage backend injection)
+├── env.rs                    # RuntimeEnv (storage backend injection), shared_writers / record_shared_rotation (host-resolved writer sets)
 ├── js.rs                     # JS bindings
 ├── logical_clock.rs          # HLC (Hybrid Logical Clock)
 ├── constants.rs              # Constants
@@ -959,10 +960,8 @@ struct MyType {
   collection's id (`is_tee_only_collection_id`: `compute_collection_id` beneath a TEE-only
   parent tags it `\xCAtee\x00col`), the collection's own `Public` entity. Refuse that
   entity and every entry of a collection inside the cell is refused with it, as its
-  ancestor: a `Registry<_, _, Tee>`'s verdicts reached no member. The anchor's
-  rotation log is derived with `compute_unmarked_id`, because the node writes it, not the
-  TEE. Do not derive an id beneath a TEE-only one by any other function, or it escapes
-  the rule.
+  ancestor: a `Registry<_, _, Tee>`'s verdicts reached no member. Do not derive an id
+  beneath a TEE-only one by any other function, or it escapes the rule.
   Apply also checks every ancestor it would create, because a missing ancestor is
   created from the stamp the action claims for it, which nobody signs.
 - **A `SharedStorage` cell's ids say what may hold them.** A node keeps the first entity
@@ -976,9 +975,11 @@ struct MyType {
   and binding to every id beneath it (collections take their own tag, since their entity
   is `Public`). `refuse_foreign_entity_at_cell_id` (in `apply_action`, for the action and
   its missing ancestors, and in both snapshot verifiers) refuses anything else there.
-  A snapshot carries today's writer set, so it holds a wrapper only to being `Shared`;
-  a first apply of a rotated wrapper (a HashComparison repair on a node that never had
-  genesis) is refused until genesis arrives. `TeeOnly` keeps its own ids and rule.
+  A rotation never rewrites a wrapper, so a snapshot leaf carries the genesis set its id
+  commits to and both snapshot verifiers hold it to `cell_id_binds` (a leaf whose writers
+  the id does not commit to is refused, signed or not). A wrapper an earlier version's
+  rotation rewrote no longer binds and is not carried by a snapshot: this is breaking, as
+  the schema bump says. `TeeOnly` keeps its own ids and rule.
   `tests/shared_occupation.rs` replays each forgery on a group and a joiner.
 - **Every `Shared` entity is at a cell id and every `SharedMember` at an id bound to its
   anchor** (`shared_stamp_fits`), TEE-only ids aside, so apply refuses either anywhere
@@ -1007,9 +1008,9 @@ struct MyType {
   the parent the write names; a writer standing at another account's id would need a
   parent meeting a 96-bit hash. Such an entry is admitted only when its signer speaks
   for the owner (the `User` rule) AND the owner holds `WRITE` in the cell's writer set:
-  `Interface::refuse_cell_owner_without_write`, in `apply_action`'s `User` arm, as of
-  the write's HLC (`resolve_anchor_writers_as_of`, since the node resolves no writer set
-  for a `User` action), and on the local path (`add_child_to`, `save_raw`) against the
+  `Interface::refuse_cell_owner_without_write`, in `apply_action`'s `User` arm, against
+  the writers the host resolves for the cell (`resolve_anchor_writers`, since the node resolves
+  no writer set for a `User` action), and on the local path (`add_child_to`, `save_raw`) against the
   current writers. The cell is found from the parent's id: `cell_value_id` is
   `value_id_for_binding(anchor binding)`, so `bound_value_id(parent)` names the value,
   whose `SharedMember` stamp names the anchor (the index tree is flat, so no ancestor
@@ -1057,7 +1058,8 @@ struct MyType {
   Nested collections link under the root, so only a collection's own container holds such entries.
   `tests/owned_rules.rs` and `tests/index.rs` `subtree_tombstoning` pin it.
 
-- **A cell's writer set is the fold of its governance rotation steps** (`shared_writers::fold`, the rules are in the governance chapter of the docs). It takes the steps and their causal pasts and nothing else, so its answer cannot depend on arrival order or on this node's store. It takes at most `MAX_STEPS_PER_CELL` steps and has no answer past that, which bounds its cost without dropping history, and treats two identical concurrent rotations as one so a step built on either still counts. Its `Ok(None)` means no step took effect and `Err(OverBudget)` that there is no answer; the reader, not this crate, knows whether the cut could be read at all.
+- **A cell's writers come from the host, and a rotation is a request.** `Interface::resolve_anchor_writers(anchor)` asks `env::shared_writers(anchor)`: `Some(Rotated(w))` is `w`, `Some(Genesis)` is the `Shared { writers }` stored with the anchor, and `None` is the empty set (every caller refuses). Nothing on the local write path or on resolve reads the rotation log any more; a receiver no longer appends a rotation-log child on apply and the author never did, so a new cell hashes the same on every node; `rotation_log.rs` and `CrdtType::RotationLog` stay for a later change to delete. `WriterSetCell::rotate_writers_scoped` requires `ADMIN` in the current set, refuses a rotation the node could not publish (`SharedRotation::refusal`: an empty set on either side, a cell that is not a cell id, or a set over `MAX_WRITERS_PER_ROTATION`; the wasm host function applies the same rule), then calls `env::record_shared_rotation(&SharedRotation { cell, prior, new })` and invalidates its value cache: it does not re-stamp the wrapper, save anything or touch the index, so a rotation writes no byte and ships no delta (the node publishes the request from the run's `Outcome` as a governance op). The env keeps a per-run overlay, so the run that rotated reads the new set back at once (on wasm the instance is one run; on native `with_runtime_env` clears the overlay on entry and puts the outer run's back on exit). Native `mocked` answers `Some(Genesis)` with no resolver and keeps unsunk requests for `env::take_recorded_rotations()` (tests); `RuntimeEnv::with_shared_writers` and `with_rotation_sink` install the host's. `tests::common::env_resolving` plays the governance fold in a test. `apply_action`'s `Shared` arm refuses an update to an existing anchor whose claimed `writers` differ from the stored set (`ActionNotAllowed`), after the signature and mask checks; writer sets change by governance op alone. The same arm reads the writers it checks from `ApplyContext::effective_writers` when the node resolved a rotated set at the delta's position, and otherwise from the host exactly as `resolve_anchor_writers` does (the stored set at genesis, the empty set when the host cannot resolve), so a write with no cut of its own (a repair, a pushed leaf) is judged by the host's answer for repairs: every writer the cell has had by the node's current heads (`shared_writers::ever_writers`), so a since-removed writer's earlier write still reaches a repairing node. A `Shared` wrapper delete (`DeleteRef`) is judged the same way, by `ctx.effective_writers` else `resolve_anchor_writers`, and so is the local stamp (`authorize_local_shared_stamp`), never by the stored set alone. `tests/shared_cell_creator_and_applier.rs` pins that the node that writes a cell and a node that applies its deltas hold the same anchor hash and root hash through creation, a member entry, an update, a rotation (which writes nothing), and both deletes.
+- **A cell's writer set is the fold of its governance rotation steps** (`shared_writers::fold`, the rules are in the governance chapter of the docs). It takes the steps and their causal pasts and nothing else, so its answer cannot depend on arrival order or on this node's store. It takes at most `MAX_STEPS_PER_CELL` steps and has no answer past that, which bounds its cost without dropping history, and treats two identical concurrent rotations as one so a step built on either still counts. Its `Ok(None)` means no step took effect and `Err(OverBudget)` that there is no answer; the reader, not this crate, knows whether the cut could be read at all. `ever_writers` shares the counting loop (`count_steps`) and returns the genesis set unioned (accounts; `OpMask` bits OR-ed) with the `new` set of every counted step, void or not, because each was a real writer set at some cut.
 
 ## Further Documentation
 

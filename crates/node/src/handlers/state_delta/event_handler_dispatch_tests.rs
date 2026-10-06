@@ -28,7 +28,7 @@ use crate::test_node_harness::{boot_test_node, TestNode};
 const COMMITTED_ROOT: [u8; 32] = [0x5A; 32]; // what every export of MODULE commits
 const INITIAL_ROOT: [u8; 32] = [0x01; 32]; // the context's root before any run
 
-/// Three exports that each `commit` [`COMMITTED_ROOT`] with a one-byte artifact:
+/// Three exports that each `commit` [`COMMITTED_ROOT`] with an empty `Actions` artifact:
 /// the root at 0, the artifact at 32, the `{ptr, len}` descriptors at 64 and 80.
 const MODULE: &str = r#"
     (module
@@ -36,10 +36,10 @@ const MODULE: &str = r#"
         (memory (export "memory") 1)
         (data (i32.const 0)
             "\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a")
-        (data (i32.const 32) "\01")
+        (data (i32.const 32) "\00\00\00\00\00")
         (data (i32.const 64)
             "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
-            "\20\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
+            "\20\00\00\00\00\00\00\00\05\00\00\00\00\00\00\00")
         (func (export "__calimero_sync_next") (call $commit (i64.const 64) (i64.const 80)))
         (func (export "on_event") (call $commit (i64.const 64) (i64.const 80)))
         (func (export "transfer") (call $commit (i64.const 64) (i64.const 80))))

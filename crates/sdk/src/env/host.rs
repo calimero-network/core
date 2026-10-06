@@ -222,6 +222,15 @@ pub(crate) fn account_device_keys(account: &[u8; 32]) -> Vec<u8> {
     with(|h| h.account_devices.get(account).map(|keys| keys.concat())).unwrap_or_default()
 }
 
+pub(crate) fn shared_writers(_cell: &[u8; 32]) -> Option<Option<Vec<u8>>> {
+    // `TestHost` has no governance fold, so every cell stands at its genesis writers.
+    Some(None)
+}
+
+pub(crate) fn shared_writers_rotate(_rotation: &[u8]) {
+    // The storage crate's native mock records the request itself; there is no node to publish it.
+}
+
 /// Whether the mock host should report a blob announce as failed.
 pub(crate) fn blob_announce_should_fail() -> bool {
     with(|h| h.blob_announce_should_fail)

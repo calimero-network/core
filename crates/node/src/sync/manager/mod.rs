@@ -1506,8 +1506,7 @@ impl SyncManager {
                             // snapshot boundary heads as parents, the DAG accepts them.
                             if !result.dag_heads.is_empty() {
                                 let context_client = self.context_client.clone();
-                                let scope_projections =
-                                    std::sync::Arc::clone(&self.node_state.scope_projections);
+                                let projections = Arc::clone(&self.node_state.scope_projections);
                                 let (delta_store, _was_newly_created) =
                                     self.state_access.get_or_register_delta_store(
                                         context_id,
@@ -1517,7 +1516,7 @@ impl SyncManager {
                                                 context_client,
                                                 context_id,
                                                 our_identity,
-                                                scope_projections,
+                                                projections,
                                             )
                                         }),
                                     );
@@ -2263,8 +2262,7 @@ impl SyncManager {
                 // Get or create DeltaStore for this context (do this once before the loop)
                 let (delta_store_ref, is_new) = {
                     let context_client = self.context_client.clone();
-                    let scope_projections =
-                        std::sync::Arc::clone(&self.node_state.scope_projections);
+                    let projections = Arc::clone(&self.node_state.scope_projections);
                     self.state_access.get_or_register_delta_store(
                         context_id,
                         Box::new(move || {
@@ -2273,7 +2271,7 @@ impl SyncManager {
                                 context_client,
                                 context_id,
                                 our_identity,
-                                scope_projections,
+                                projections,
                             )
                         }),
                     )
@@ -2682,6 +2680,15 @@ impl SyncManager {
                             // to other peers that ask for the same delta.
                             let persisted_gov_blob =
                                 governance_position_blob.as_ref().map(|c| c.to_vec());
+                            // The resolver answers at the cut this delta was signed at.
+                            crate::handlers::state_delta::arm_signer_resolver_for_cut(
+                                &delta_store_ref,
+                                &self.node_state,
+                                &datastore_for_heads,
+                                &context_id,
+                                pos.as_ref(),
+                                calimero_storage::logical_clock::physical_time_secs(&dag_delta.hlc),
+                            );
                             // Before the delta can become a head this node serves.
                             crate::handlers::state_delta::record_accepted_events_hash(
                                 &datastore_for_heads,
@@ -3064,7 +3071,7 @@ impl SyncManager {
         // everything on disk and we'd later fail to match checkpoints.
         let (delta_store, is_new) = {
             let context_client = self.context_client.clone();
-            let scope_projections = std::sync::Arc::clone(&self.node_state.scope_projections);
+            let projections = Arc::clone(&self.node_state.scope_projections);
             self.state_access.get_or_register_delta_store(
                 context_id,
                 Box::new(move || {
@@ -3073,7 +3080,7 @@ impl SyncManager {
                         context_client,
                         context_id,
                         our_identity,
-                        scope_projections,
+                        projections,
                     )
                 }),
             )
@@ -3202,7 +3209,7 @@ impl SyncManager {
         // notifications.
         let (delta_store, is_new) = {
             let context_client = self.context_client.clone();
-            let scope_projections = std::sync::Arc::clone(&self.node_state.scope_projections);
+            let projections = Arc::clone(&self.node_state.scope_projections);
             self.state_access.get_or_register_delta_store(
                 context_id,
                 Box::new(move || {
@@ -3211,7 +3218,7 @@ impl SyncManager {
                         context_client,
                         context_id,
                         our_identity,
-                        scope_projections,
+                        projections,
                     )
                 }),
             )

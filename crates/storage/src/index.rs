@@ -1063,16 +1063,14 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// `storage_type` is not part of any Merkle hash (it lives in
     /// [`EntityIndex::metadata`], separate from the hashed entity bytes), so
-    /// this is hash-neutral and cannot cause root-hash divergence. It exists so
-    /// a `SharedStorage` writer-set rotation can persist the new set on the
-    /// **originating** node, whose rotation log is not appended locally (only
-    /// the apply path on a *receiving* node appends it). On receivers the log is
-    /// the authoritative source; this keeps the local index a correct fallback.
+    /// this is hash-neutral. Only a test rewrites a stamp in place, to play a
+    /// store that changed under a collection; no write path does.
     ///
     /// No-op if the entity has no index entry yet.
     ///
     /// # Errors
     /// Returns `StorageError` if the index cannot be loaded or written.
+    #[cfg(test)]
     pub(crate) fn set_storage_type(
         id: Id,
         storage_type: crate::entities::StorageType,

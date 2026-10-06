@@ -397,15 +397,12 @@ where
             }
             StorageDelta::CausalActions {
                 actions,
-                delta_id,
-                delta_hlc,
                 effective_writers,
                 signer_account,
                 on_behalf_accounts,
+                ..
             } => Self::apply_actions(actions, |action| crate::interface::ApplyContext {
                 effective_writers: effective_writers.get(&action.id()).cloned(),
-                delta_id: Some(delta_id),
-                delta_hlc: Some(delta_hlc),
                 // From the artifact, which the APPLYING node built — the same
                 // place `effective_writers` comes from and the same resolution
                 // pass. Not from the guest's `ctx`, which is an empty template

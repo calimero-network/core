@@ -454,7 +454,6 @@ fn tee_only_ids_mark_the_whole_cell_and_nothing_else() {
         compute_collection_id, compute_id, is_tee_only_collection_id, is_tee_only_id,
         shared::VALUE_KEY, tee_only_id,
     };
-    use crate::interface::MainInterface;
 
     let cell = tee_only_id("deck");
     let value = compute_id(cell, VALUE_KEY);
@@ -483,10 +482,7 @@ fn tee_only_ids_mark_the_whole_cell_and_nothing_else() {
     ] {
         assert!(!is_tee_only_collection_id(id), "{id:?}");
     }
-    let log = MainInterface::rotation_log_child_id(cell);
     for id in [
-        log,
-        compute_id(log, b"delta"),
         compute_collection_id(None, "deck"),
         compute_id(compute_collection_id(None, "deck"), VALUE_KEY),
     ] {

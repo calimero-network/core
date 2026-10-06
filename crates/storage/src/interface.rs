@@ -54,6 +54,7 @@ use crate::env::time_now;
 use crate::hash_meter::{Digest, Sha256};
 use crate::index::{EntityIndex, HeldRow, Index, MAX_PARENT_CHAIN};
 use crate::merge::{MergeCustomRequest, MergeRootStateRequest};
+use crate::shared_writers::CellWriters;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 // Re-export types for convenience
@@ -90,57 +91,36 @@ fn is_opaque_root_crdt_type(crdt_type: &Option<crate::collections::crdt_meta::Cr
 /// Apply-time context passed to [`Interface::apply_action`].
 ///
 /// Centralizes apply-time metadata so the call signature doesn't accumulate
-/// positional parameters. Per #2266 (DAG-causal Shared verifier), the node
-/// sync layer pre-resolves the writer set for a delta via
-/// `rotation_log_reader::writers_at(parents, happens_before)` and passes
-/// it here as `effective_writers`; storage no longer needs DAG ancestry
-/// knowledge. The closure-typed `happens_before` and `causal_parents`
-/// fields the P1/P3 design carried have been removed.
+/// positional parameters. The node decides a cell's writers from the governance
+/// fold at the delta's own position and passes a rotated cell's set here as
+/// `effective_writers`; storage holds no ancestry knowledge.
 ///
 /// # Field semantics
 ///
-/// - `effective_writers: Some(set)` → caller pre-resolved the
-///   ADR-0001-compliant writer set as of the delta's causal point.
-///   The Shared verifier MUST validate against this set.
+/// - `effective_writers: Some(set)` → the node resolved the cell's writers at
+///   the delta's governance position. The Shared verifier MUST validate against
+///   this set.
 ///
 ///   This set is the authorization decision itself, so storage takes it on
-///   trust and the caller owes it two properties. It must be resolved from
-///   the *local* rotation log — a set chosen by whoever authored the delta
-///   would let a peer name itself a writer of any Shared object and then
-///   satisfy the signature check against its own set (a signature proves
-///   possession of a key, never whose key it is). And it must be resolved
-///   with `writers_at_authenticated`, not `writers_at`, because the
-///   rotation log rides ordinary sync: each entry earns its place only when
-///   its signer held ADMIN in the set resolved just before it. The node's
-///   `ContextStorageApplier::apply` is the only production caller that
-///   passes `Some`, and it does both — which is also why the sync paths
-///   refuse a wire-supplied `StorageDelta::CausalActions` outright rather
+///   trust and the caller owes it one property: it comes from the node's own
+///   fold of signed governance ops, never from the delta, which would let a
+///   peer name itself a writer of any Shared object and then satisfy the
+///   signature check against its own set (a signature proves possession of a
+///   key, never whose key it is). The node's `ContextStorageApplier::apply` is
+///   the only production caller that passes `Some`, which is also why the sync
+///   paths refuse a wire-supplied `StorageDelta::CausalActions` outright rather
 ///   than forwarding the writer set it carries.
-/// - `effective_writers: None` → caller has no DAG context (snapshot
-///   leaf push, local apply, tests). The verifier falls back to the
-///   entity's currently-stored `metadata.storage_type.writers` (v2
-///   semantics, preserved for these known-safe paths).
-/// - `delta_id` / `delta_hlc` carry the originating `CausalDelta`'s
-///   identity. Both populated together: the rotation-log write hook
-///   appends an entry only when both are `Some`.
+/// - `effective_writers: None` → no rotated set was resolved for the cell. The
+///   host answers for it at the run's cut: a cell at genesis is checked against
+///   the set stored with it, and one the host cannot resolve has no writers.
 #[derive(Clone, Debug)]
 pub struct ApplyContext {
     /// Pre-resolved authoritative writer set for `Shared` actions. When
     /// `Some`, the verifier validates the signature against this set and
-    /// skips the v2 stored-writers fallback. Resolved by the applying
-    /// node's own sync layer from its own rotation log; see the trust
-    /// contract on the type docs before adding a caller that passes `Some`.
+    /// asks the host nothing. Resolved by the applying node from its own
+    /// governance fold; see the trust contract on the type docs before
+    /// adding a caller that passes `Some`.
     pub effective_writers: Option<BTreeMap<AccountId, OpMask>>,
-
-    /// Hash of the `CausalDelta` containing the action being applied. Used
-    /// by the rotation-log write hook to record the originating delta on
-    /// detected rotations. `None` for local apply / snapshot leaf push.
-    pub delta_id: Option<[u8; 32]>,
-
-    /// Hybrid timestamp of the containing `CausalDelta`. Used by the
-    /// rotation-log write hook (sibling tiebreak per ADR 0001). `None` for
-    /// callers without a `CausalDelta` in scope.
-    pub delta_hlc: Option<crate::logical_clock::HybridTimestamp>,
 
     /// The account the action's signing key speaks for, resolved by the node at
     /// the action's causal cut.
@@ -216,8 +196,6 @@ impl ApplyContext {
     pub const fn empty() -> Self {
         Self {
             effective_writers: None,
-            delta_id: None,
-            delta_hlc: None,
             signer_account: None,
         }
     }
@@ -428,283 +406,25 @@ fn stale_write_still_merges(id: Id, stored: Option<&Metadata>, incoming: &Metada
 }
 
 impl<S: StorageAdaptor> Interface<S> {
-    /// Resolve a [`SharedMember`](StorageType::SharedMember)'s writer set from
-    /// its `anchor`'s **locally verified** state, mirroring
-    /// `SharedStorage::current_writers`:
+    /// The writers of the `Shared` anchor `anchor`, as the host resolves them at
+    /// this run's governance cut. A [`SharedMember`](StorageType::SharedMember)
+    /// carries none of its own, so this is also who may write it.
     ///
-    /// 1. the anchor's rotation log (latest entry, then its compacted
-    ///    snapshot) — only ever written by a signature-verified rotation apply
-    ///    or the originating node's own committed rotation; and
-    /// 2. the anchor's index metadata (`Shared { writers }`).
-    ///
-    /// Returns the empty set when the anchor has neither — i.e. the anchor has
-    /// not synced to this node yet. The caller treats the empty set as "cannot
-    /// verify this member yet" (fail closed / buffer), never as "no writers".
-    /// This is the local-execution / settled-state resolver; the
-    /// causal-cut-accurate resolution at merge is the node layer's
-    /// `writers_at(anchor_log, delta.parents)`, passed in via
-    /// `effective_writers`.
-    ///
-    /// Resolution uses [`rotation_log::resolve_local`](crate::rotation_log::resolve_local):
-    /// the live entry that is max by `(delta_hlc, signer)`, or the compaction
-    /// snapshot when there are no live entries. This is **not** a full causal
-    /// cut (it has no `happens_before`), so it is reserved for the
-    /// **local-execution / settled-state** gate, where "current writers" is the
-    /// right answer. The **merge-path** security boundary is the causal
-    /// `writers_at(anchor_log, delta.parents)` set passed as `effective_writers`.
-    /// Because the HLC is causally monotonic since #2635, the `(delta_hlc,
-    /// signer)` max coincides with the causal latest for a well-formed log, and
-    /// — unlike the prior `entries.last()` — it is insertion-order invariant, so
-    /// it converges across nodes under concurrent rotations (core#2673).
-    ///
-    /// As of the DAG-causal rotation completion (P4), every node records the
-    /// genesis writer set **and its own rotations** in the log (the originator
-    /// via `add_local_applied_delta`'s self-log, receivers via
-    /// `maybe_append_rotation_log`, cold-joiners via a seeded floor). With a
-    /// complete log on every node, `writers_at` is **total** — it never returns
-    /// `None` for a causal cut, so the node always supplies `effective_writers`
-    /// and this non-causal fallback is no longer reached on the merge path for
-    /// anchors created post-P4. It remains for local execution (correct there)
-    /// and for legacy anchors whose log predates P4 (a vanishing set after a
-    /// state reset).
+    /// A rotated set is taken as the host gives it; a cell no rotation touched has
+    /// the set stored with its anchor. A cell the host cannot resolve has no
+    /// writers, which every caller treats as a refusal (never as "anyone").
     pub(crate) fn resolve_anchor_writers(anchor: Id) -> BTreeMap<AccountId, OpMask> {
-        // core#2716 P3: the rotation log is a real `UnorderedMap` child of the
-        // anchor (see `rotation_log_map`) and is THE authoritative, synced
-        // source — it converges identically on every node via HashComparison's
-        // structural add-wins merge. Resolve the latest writer set from it.
-        //
-        // Fall back to the anchor's stored `metadata.storage_type.writers` only
-        // for an anchor with no collection yet (legacy/bootstrap, or a cold join
-        // that hasn't materialised it — that stored set is the last-applied
-        // writers, correct for those non-causal paths).
-        if let Some(child_log) = Self::load_rotation_log_child(anchor) {
-            if let Some(writers) = crate::rotation_log::resolve_local(&child_log) {
-                return writers;
-            }
+        match crate::env::shared_writers(anchor) {
+            Some(CellWriters::Rotated(writers)) => writers,
+            Some(CellWriters::Genesis) => match <Index<S>>::get_metadata(anchor) {
+                Ok(Some(Metadata {
+                    storage_type: StorageType::Shared { writers, .. },
+                    ..
+                })) => writers,
+                _ => BTreeMap::new(),
+            },
+            None => BTreeMap::new(),
         }
-        if let Ok(Some(metadata)) = <Index<S>>::get_metadata(anchor) {
-            if let StorageType::Shared { writers, .. } = metadata.storage_type {
-                return writers;
-            }
-        }
-        BTreeMap::new()
-    }
-
-    /// Resolve an anchor's writer set **as of** the causal point of a write at
-    /// storage-HLC `at` (core#2716/#2673), rather than the latest set
-    /// ([`Self::resolve_anchor_writers`]).
-    ///
-    /// Used to verify a `SharedMember`/`Shared` value whose causal DAG position
-    /// is unavailable — a HashComparison-pushed leaf carries no delta parents,
-    /// so the node can't run the exact `writers_at(parents)` the gossip path
-    /// uses. Verifying such a value against the LATEST writers wrongly rejects a
-    /// value authored under an earlier rotation whose writer a later rotation
-    /// removed (the residual concurrent-rotation split-brain). Resolving as of
-    /// the value's own HLC authorizes it against the set that was in effect when
-    /// it was written.
-    ///
-    /// Reads the authoritative rotation-log collection child
-    /// ([`Self::load_rotation_log_child`]) and applies
-    /// [`rotation_log::resolve_local_as_of`]. Falls back to the anchor's stored
-    /// writers (last-applied) for a value authored before any signed rotation,
-    /// or a legacy anchor with no collection.
-    pub(crate) fn resolve_anchor_writers_as_of(anchor: Id, at: u64) -> BTreeMap<AccountId, OpMask> {
-        if let Some(child_log) = Self::load_rotation_log_child(anchor) {
-            if let Some(writers) = crate::rotation_log::resolve_local_as_of(&child_log, at) {
-                return writers;
-            }
-        }
-        if let Ok(Some(metadata)) = <Index<S>>::get_metadata(anchor) {
-            if let StorageType::Shared { writers, .. } = metadata.storage_type {
-                return writers;
-            }
-        }
-        BTreeMap::new()
-    }
-
-    /// Originator-side rotation logging: for each `Shared` rotation in this
-    /// delta's `actions`, append it to the anchor's hashed rotation-log
-    /// collection (idempotent on `delta_id`, and only when the writer set
-    /// actually changed). Returns `true` if any anchor changed, so the caller
-    /// can recompute the context root.
-    ///
-    /// The local write path persists the anchor and its children *during* WASM
-    /// execution — before the delta (hence `delta_id`) exists — so the
-    /// originator's own rotation isn't in its log yet. The execute pipeline
-    /// calls this once the delta is built (and signed) to record the
-    /// originator's OWN rotation, so it converges with peers that apply the
-    /// rotation as a delta. The `insert` into the rotation-log collection
-    /// propagates the new child's hash into the anchor's `full_hash` (and up to
-    /// the root) on its own — no separate anchor rehash is needed.
-    ///
-    /// # Errors
-    /// Propagates rotation-log / index read/write failures.
-    pub fn self_log_own_rotations(
-        actions: &[crate::action::Action],
-        delta_id: [u8; 32],
-        delta_hlc: crate::logical_clock::HybridTimestamp,
-    ) -> Result<bool, StorageError> {
-        use crate::action::Action;
-
-        let mut changed = false;
-        for action in actions {
-            let (id, metadata) = match action {
-                Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
-                    (*id, metadata)
-                }
-                Action::DeleteRef { .. } => continue,
-            };
-            let StorageType::Shared {
-                writers,
-                signature_data,
-            } = &metadata.storage_type
-            else {
-                continue;
-            };
-
-            // Read the authoritative rotation-log collection for the
-            // prior-writer check + dedup.
-            let existing = Self::load_rotation_log_child(id)
-                .unwrap_or_else(crate::rotation_log::RotationLog::empty);
-            // Append only on an actual rotation (writers changed from the latest
-            // logged set). `resolve_local` picks the causally-latest entry; a
-            // value-write that re-stamps the same writers is a no-op here.
-            if crate::rotation_log::resolve_local(&existing).as_ref() == Some(writers) {
-                continue;
-            }
-            // Dedup on delta_id (idempotent replay).
-            if existing.entries.iter().any(|e| e.delta_id == delta_id) {
-                continue;
-            }
-
-            let entry = crate::rotation_log::RotationLogEntry {
-                delta_id,
-                delta_hlc,
-                signer: signature_data.as_ref().and_then(|s| s.signer),
-                signature: signature_data.as_ref().map(|s| s.signature),
-                signed_payload: signature_data
-                    .as_ref()
-                    .map(|_| action.payload_for_signing()),
-                new_writers: writers.clone(),
-                writers_nonce: signature_data.as_ref().map(|s| s.nonce).unwrap_or(0),
-            };
-            // Write the entry into the hashed child collection (authoritative).
-            // The originator builds it from its own signed action; a receiver
-            // builds the identical entry from the same delta via
-            // `build_rotation_entry` — byte-identical, so the per-`delta_id`
-            // children converge across nodes under the add-wins collection merge.
-            // (Unsigned/bootstrap entries are skipped by `append_rotation_to_child`.)
-            Self::append_rotation_to_child(id, &entry)?;
-            changed = true;
-        }
-        Ok(changed)
-    }
-
-    /// Field key for the rotation-log **collection** parent under a `Shared`
-    /// anchor (P3 of core#2716). The rotation log is an `UnorderedMap`-shaped
-    /// child: a parent entity here, with one child PER `delta_id` (each holding
-    /// a single-entry `RotationLog`). Per-entry children are separate
-    /// content-addressed Merkle leaves, so HashComparison reconciles them
-    /// individually via the proven structural add-wins path — a single blob
-    /// child does NOT converge under HC (its custom merge re-runs every round).
-    pub(crate) const ROTATION_LOG_CHILD_KEY: &'static [u8] = b"__calimero_rotation_log__";
-
-    /// Id of the rotation-log collection PARENT for `anchor`.
-    ///
-    /// Never TEE-only, even under a `TeeOnly` anchor: the log is written by the
-    /// node applying a rotation, not by the TEE.
-    pub fn rotation_log_child_id(anchor: Id) -> Id {
-        crate::collections::compute_unmarked_id(anchor, Self::ROTATION_LOG_CHILD_KEY)
-    }
-
-    /// Open a handle to `anchor`'s rotation-log map (P3 of core#2716).
-    ///
-    /// The rotation log is a real
-    /// [`UnorderedMap<[u8; 32], RotationLogEntry>`](crate::collections::UnorderedMap)
-    /// child of the `Shared` anchor, keyed by `delta_id`. Using the genuine
-    /// collection type — rather than the previous hand-rolled per-`delta_id`
-    /// children stamped `CrdtType::RotationLog` — means each entry rides the
-    /// proven structural add-wins collection merge: `insert` routes through
-    /// `Interface::add_child_to`, which seeds the entry's REAL `own_hash` into
-    /// the parent's `ChildInfo` (the hand-rolled path seeded `[0u8; 32]` and
-    /// relied on a later `write_value_for` to backfill it, which did not
-    /// propagate into the parent's child list — so HashComparison saw equal
-    /// subtree hashes and never reconciled the per-`delta_id` children).
-    ///
-    /// This only OPENS a handle at the deterministic id; the parent entity
-    /// itself must already be linked under the anchor (see
-    /// [`Self::ensure_rotation_log_parent`]).
-    fn rotation_log_map(
-        anchor: Id,
-    ) -> crate::collections::UnorderedMap<[u8; 32], crate::rotation_log::RotationLogEntry, S> {
-        crate::collections::UnorderedMap::open_existing(Self::rotation_log_child_id(anchor))
-    }
-
-    /// Read the rotation log by collecting every `delta_id → RotationLogEntry`
-    /// value of the [`UnorderedMap`](Self::rotation_log_map) child (P3). `None`
-    /// if no rotation has been recorded yet (the parent map does not exist).
-    pub fn load_rotation_log_child(anchor: Id) -> Option<crate::rotation_log::RotationLog> {
-        let map_id = Self::rotation_log_child_id(anchor);
-        S::storage_read(Key::Entry(map_id))?;
-        let map = Self::rotation_log_map(anchor);
-        let mut entries: Vec<crate::rotation_log::RotationLogEntry> = map
-            .entries()
-            .ok()?
-            .map(|(_delta_id, entry)| entry)
-            .collect();
-        // Canonical order so resolution is insertion-order invariant.
-        entries.sort_by_key(|a| a.delta_id);
-        Some(crate::rotation_log::RotationLog {
-            snapshot: None,
-            entries,
-        })
-    }
-
-    /// Persist a whole log into the collection: insert each entry under its
-    /// `delta_id` key (idempotent). Used by the side-store mirror; the apply
-    /// paths prefer [`Self::append_rotation_to_child`] for a single entry.
-    ///
-    /// # Errors
-    /// Propagates serialization / storage failures.
-    pub fn save_rotation_log_child(
-        anchor: Id,
-        log: &crate::rotation_log::RotationLog,
-    ) -> Result<(), StorageError> {
-        for entry in &log.entries {
-            Self::append_rotation_to_child(anchor, entry)?;
-        }
-        Ok(())
-    }
-
-    /// Ensure the rotation-log collection PARENT (an [`UnorderedMap`] entity)
-    /// exists and is linked under `anchor`, returning its id.
-    ///
-    /// The parent is stamped `CrdtType::UnorderedMap` so the merge dispatch and
-    /// HashComparison treat it — and its per-`delta_id` children — exactly like
-    /// any other map: the parent value-merge returns incoming (structural;
-    /// entries are separate child entities), and the children converge by the
-    /// add-wins union of the parent's child list. Its own value is the empty
-    /// serialized collection (deterministic across nodes — `Element` serializes
-    /// only its id, metadata is `#[borsh(skip)]`); only its children carry
-    /// rotation entries. `add_child_to` before the value write avoids the
-    /// `CannotCreateOrphan` reject; `save_raw`'s `write_value_for` then sets the
-    /// real hash and propagates it into the anchor's `full_hash`.
-    fn ensure_rotation_log_parent(anchor: Id) -> Result<Id, StorageError> {
-        use crate::collections::crdt_meta::CrdtType;
-        let map_id = Self::rotation_log_child_id(anchor);
-        if S::storage_read(Key::Entry(map_id)).is_none() {
-            let crdt = CrdtType::UnorderedMap;
-            let meta = Metadata::with_crdt_type(0, 0, crdt);
-            <Index<S>>::add_child_to(anchor, ChildInfo::new(map_id, [0u8; 32], meta.clone()))?;
-            // Byte-identical to a genuinely-created empty `UnorderedMap` at this
-            // id (`Collection` serializes only its `Element`, which serializes
-            // only its id), so every node that materialises the parent stores
-            // the same bytes and the same `own_hash`.
-            let empty = to_vec(&Self::rotation_log_map(anchor))
-                .map_err(StorageError::SerializationError)?;
-            let _ = Self::save_raw_stamped(map_id, empty, meta, true, true, HeldRow::Unread)?;
-        }
-        Ok(map_id)
     }
 
     /// Enforce that the verified `signer` holds `required` in the resolved
@@ -1002,7 +722,7 @@ impl<S: StorageAdaptor> Interface<S> {
         let Some(anchor) = rules.moderators else {
             return false;
         };
-        Self::resolve_anchor_writers_as_of(anchor, sig_data.nonce)
+        Self::resolve_anchor_writers(anchor)
             .get(signer)
             .is_some_and(|mask| mask.contains(OpMask::DELETE))
     }
@@ -1136,9 +856,9 @@ impl<S: StorageAdaptor> Interface<S> {
         // about a cut, which a leaf does not carry, as for a member's writers.
         refuse_unbound_cell_owned_entity(id, parent, metadata)?;
         refuse_misfiled_owned_entry(id, parent, data)?;
-        // A snapshot carries the writer set a cell has now, not the one it was
-        // created with, so only the storage type is held to the id here.
-        refuse_foreign_entity_at_cell_id(id, metadata, false)?;
+        // A rotation never rewrites a wrapper, so a leaf carries the writers its cell
+        // id commits to and is held to them.
+        refuse_foreign_entity_at_cell_id(id, metadata, true)?;
 
         // Public / Frozen don't require signature verification.
         match &metadata.storage_type {
@@ -1289,7 +1009,7 @@ impl<S: StorageAdaptor> Interface<S> {
             ));
         };
         refuse_entity_at_reserved_id(id, metadata)?;
-        refuse_foreign_entity_at_cell_id(id, metadata, false)?;
+        refuse_foreign_entity_at_cell_id(id, metadata, true)?;
         let Some(sig_data) = signature_data.as_ref() else {
             return Err(StorageError::InvalidSignature);
         };
@@ -2057,10 +1777,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// validated against that pre-resolved set (the node sync layer
     /// resolves it via `writers_at(delta.parents)` per ADR 0001). When
     /// `None`, the verifier falls back to the entity's currently-stored
-    /// writer set (v2 semantics). On a successful apply that changes the
-    /// writer set, the rotation-log write hook appends a
-    /// [`RotationLogEntry`](crate::rotation_log::RotationLogEntry) when
-    /// `ctx.delta_id`/`delta_hlc` are populated.
+    /// writer set (v2 semantics). Nothing is logged for a writer-set change:
+    /// writer sets change by governance op alone.
     ///
     /// # Errors
     /// - `DeserializationError` if action data is invalid
@@ -2148,18 +1866,6 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
             }
         }
-
-        // P3 (core#2716): a `Shared` rotation is recorded in the anchor's hashed
-        // rotation-log child, but only AFTER the anchor's own `save_internal`
-        // runs in the apply pass below (the child links under an EXISTING anchor
-        // — appending before the anchor exists would synthesise a placeholder).
-        // The verification pass is where the entry's inputs are in scope (the
-        // pre-apply writer set, the signed payload), so it builds the entry and
-        // stashes it here; the apply pass drains it once the anchor is written.
-        // The stale-nonce path returns inside verification (it never reaches the
-        // apply pass), so it appends its own entry directly — the anchor already
-        // exists there.
-        let mut pending_rotation: Option<crate::rotation_log::RotationLogEntry> = None;
 
         // Set when an authentic write to a written-once entry orders before
         // the stored one, so the apply pass writes it over the stored bytes
@@ -2291,7 +1997,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 *id,
                                 owned_parent,
                                 metadata,
-                                |anchor| Self::resolve_anchor_writers_as_of(anchor, sig_data.nonce),
+                                Self::resolve_anchor_writers,
                             )?;
                         }
 
@@ -2451,21 +2157,22 @@ impl<S: StorageAdaptor> Interface<S> {
                             _ => None,
                         };
 
-                        // #2266: the node sync layer pre-resolves the
-                        // ADR-0001-compliant writer set via
-                        // writers_at(delta.parents) and passes it as
-                        // effective_writers. Storage no longer carries
-                        // DAG-ancestry knowledge.
+                        // The node pre-resolves a rotated cell's writers at the delta's
+                        // governance position and passes them as effective_writers.
                         //
-                        // When effective_writers is None (snapshot leaf
-                        // push, local apply), fall back to the entity's
-                        // currently-stored writers, then to the action's
-                        // claim for bootstrap. These paths are
-                        // already-verified state from a peer, so
-                        // stored-writers semantics are safe for them.
+                        // With none (a delta at genesis, a pushed leaf, a local apply) the
+                        // host answers for the cell at this run's cut: a rotated set as
+                        // given, else the set stored with the cell, else the action's claim
+                        // for bootstrap. A cell the host cannot resolve has no writers.
                         let authoritative_writers = match ctx.effective_writers.as_ref() {
                             Some(effective) => effective.clone(),
-                            None => stored_writers.clone().unwrap_or_else(|| writers.clone()),
+                            None => match crate::env::shared_writers(*id) {
+                                Some(CellWriters::Rotated(rotated)) => rotated,
+                                Some(CellWriters::Genesis) => {
+                                    stored_writers.clone().unwrap_or_else(|| writers.clone())
+                                }
+                                None => BTreeMap::new(),
+                            },
                         };
 
                         // Replay protection (per-entity monotonic nonce). Done BEFORE
@@ -2550,17 +2257,16 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Ok(());
                         }
 
-                        // P3: build the rotation-log entry from THIS delta's
-                        // metadata (identical on every node, so the child's
-                        // order-invariant union converges). It is appended to the
-                        // hashed child either here (stale path, anchor present) or
-                        // by the apply pass after `save_internal` (non-stale).
-                        let rotation_entry = Self::build_rotation_entry(
-                            metadata,
-                            ctx,
-                            stored_writers.as_ref(),
-                            Some(payload),
-                        );
+                        // Writers change by governance op alone, so an update to a
+                        // cell that exists may only restate the set stored with it.
+                        if stored_writers
+                            .as_ref()
+                            .is_some_and(|stored| stored != writers)
+                        {
+                            return Err(StorageError::ActionNotAllowed(
+                                "a Shared cell's writers change only by governance op".to_owned(),
+                            ));
+                        }
 
                         // An entry that merges whatever the order still
                         // merges an older write (see the User arm); no `Shared`
@@ -2578,11 +2284,6 @@ impl<S: StorageAdaptor> Interface<S> {
                             // out-of-order). A hard NonceReplay here would
                             // propagate through `Root::sync().expect()` and
                             // abort the sync batch, blocking convergence.
-                            //
-                            // The rotation's writer set was already recorded in
-                            // the log above (#2716), so dropping the data write
-                            // here never loses the writer-set fact — only the
-                            // (stale, no-op) value bytes.
                             //
                             // NOTE: the `==` (equal-nonce) case is
                             // deliberately NOT skipped here. Two distinct
@@ -2608,35 +2309,8 @@ impl<S: StorageAdaptor> Interface<S> {
                                 "Shared upsert: stale nonce, signature verified \
                                  — skipping save_internal (authentic but no-op)"
                             );
-                            // We skip `save_internal` here (the value write is a
-                            // stale no-op), but the rotation is still a causal
-                            // FACT for the writer set: a peer's rotation whose
-                            // nonce is below ours (because our own rotation bumped
-                            // the anchor nonce) must still enter this node's
-                            // rotation-log collection, or the originator of the
-                            // higher-nonce rotation never converges (the
-                            // concurrent-rotation split-brain). The `insert`
-                            // below moves the rotation-log child's hash into the
-                            // anchor's `full_hash`, so the context root reflects
-                            // this rotation even though the value write was skipped.
-                            //
-                            // Write the rotation into the hashed child
-                            // collection (authoritative) even on the stale-skip
-                            // path — the anchor exists (stale means it was
-                            // already present), and the writer-set FACT must be
-                            // recorded regardless of the value-write LWW outcome.
-                            // The `insert` propagates the child's hash into the
-                            // anchor's `full_hash` on its own.
-                            if let Some(entry) = &rotation_entry {
-                                Self::append_rotation_to_child(*id, entry)?;
-                            }
                             return Ok(());
                         }
-
-                        // Non-stale rotation: the anchor write happens in the
-                        // apply pass below; stash the entry for it to append once
-                        // the anchor exists.
-                        pending_rotation = rotation_entry;
                     }
                     StorageType::SharedMember {
                         anchor,
@@ -2670,14 +2344,9 @@ impl<S: StorageAdaptor> Interface<S> {
                         // lives in the node sync layer; storage just rejects.)
                         let authoritative_writers = match ctx.effective_writers.as_ref() {
                             Some(effective) => effective.clone(),
-                            // No causal context (HashComparison-pushed leaf has no
-                            // delta parents): resolve the writers AS OF this value's
-                            // own HLC, not the latest set, so a value authored under
-                            // an earlier rotation whose writer a later rotation
-                            // removed still verifies (core#2716/#2673). `sig_data.nonce`
-                            // is this write's storage HLC, the same clock the rotation
-                            // entries' `writers_nonce` records.
-                            None => Self::resolve_anchor_writers_as_of(*anchor, sig_data.nonce),
+                            // No causal context (a pushed leaf has no delta parents):
+                            // the host's answer for the anchor at this run's cut.
+                            None => Self::resolve_anchor_writers(*anchor),
                         };
 
                         // Replay protection — identical baseline to the Shared
@@ -2962,9 +2631,15 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // that name must be a writer, and its signature
                                 // must verify — one verify, no scan (matches
                                 // the Add/Update arm).
+                                // The writers are the cell's at the delete's cut, not the
+                                // set stored with it: a rotation leaves that one at genesis.
+                                let authoritative_writers = ctx
+                                    .effective_writers
+                                    .clone()
+                                    .unwrap_or_else(|| Self::resolve_anchor_writers(*id));
                                 let payload = action.payload_for_signing();
                                 let Some(signer) = Self::resolve_signer(
-                                    existing_writers,
+                                    &authoritative_writers,
                                     sig_data,
                                     &payload,
                                     ctx.signer_account,
@@ -2976,7 +2651,11 @@ impl<S: StorageAdaptor> Interface<S> {
                                     ));
                                 };
                                 // Operation-granularity gate: deletes need DELETE.
-                                Self::enforce_op_mask(&signer, OpMask::DELETE, existing_writers)?;
+                                Self::enforce_op_mask(
+                                    &signer,
+                                    OpMask::DELETE,
+                                    &authoritative_writers,
+                                )?;
 
                                 // Replay protection (per-entity monotonic nonce).
                                 //
@@ -3053,12 +2732,7 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // scan fails → InvalidSignature (fail closed).
                                 let existing_writers =
                                     ctx.effective_writers.clone().unwrap_or_else(|| {
-                                        // As-of THIS delete's HLC — same rationale as
-                                        // the upsert arm (core#2716/#2673).
-                                        Self::resolve_anchor_writers_as_of(
-                                            existing_anchor,
-                                            sig_data.nonce,
-                                        )
+                                        Self::resolve_anchor_writers(existing_anchor)
                                     });
 
                                 let payload = action.payload_for_signing();
@@ -3284,19 +2958,6 @@ impl<S: StorageAdaptor> Interface<S> {
                         %id,
                         "Remote action produced no storage change (save_internal returned None)"
                     );
-                    // The data write lost LWW (stored.updated_at >=
-                    // incoming.updated_at), but a `Shared` ROTATION is still a
-                    // causal FACT that must be recorded regardless of which value
-                    // bytes win — otherwise a concurrent sibling rotation whose
-                    // value lost LWW would never enter this node's rotation-log
-                    // collection and `writers_at` could never grant the writer it
-                    // added (the #2716 split-brain). Append it before returning
-                    // (the anchor exists — `save_internal` returning `None` means
-                    // it was already present). Same principle as the stale-nonce
-                    // skip path above.
-                    if let Some(entry) = pending_rotation.take() {
-                        Self::append_rotation_to_child(id, &entry)?;
-                    }
                     // save_internal short-circuited because stored.updated_at >
                     // incoming.updated_at: nothing changed locally, but the
                     // apply still "happened" from the network's perspective —
@@ -3312,19 +2973,6 @@ impl<S: StorageAdaptor> Interface<S> {
                     ancestor_count = ancestors.len(),
                     "Applied Add/Update action to storage"
                 );
-
-                // A non-stale Shared rotation stashed its entry during the
-                // verification pass; now that `save_internal` has written the
-                // anchor, append it to the hashed child (the anchor exists, so
-                // `add_child_to` can't synthesise a placeholder). This is a
-                // DIRECT write of the canonical `build_rotation_entry` entry —
-                // identical on every node for a given delta — so the
-                // per-`delta_id` children converge via the normal add-wins
-                // collection merge, and the `insert` propagates the child's
-                // hash into the anchor's `full_hash` on its own.
-                if let Some(entry) = pending_rotation.take() {
-                    Self::append_rotation_to_child(id, &entry)?;
-                }
 
                 // Receiver-side signature/data COUPLING (mirror of the
                 // originator's `persist_signed_signatures`). `save_internal`
@@ -3445,103 +3093,6 @@ impl<S: StorageAdaptor> Interface<S> {
         };
 
         Ok(())
-    }
-
-    /// Build the [`RotationLogEntry`](crate::rotation_log::RotationLogEntry) for
-    /// a `Shared` apply, or `None` if this write isn't a loggable rotation.
-    ///
-    /// Returns `None` when: the entity isn't `Shared`; the writer set is
-    /// unchanged from `pre_apply_writers` (a plain value-write — `None` prior
-    /// means bootstrap, which always logs); or the apply carries no causal
-    /// identity (`ctx.delta_id`/`delta_hlc` absent — snapshot leaf push / local
-    /// apply / non-causal `StorageDelta::Actions`).
-    ///
-    /// This is the single source of the rotation entry, shared by the receive
-    /// path and (via [`Self::append_rotation_to_child`]) every originator leg,
-    /// so the entry every node records for a given rotation delta is identical —
-    /// the precondition for the child's order-invariant union to converge.
-    pub fn build_rotation_entry(
-        metadata: &Metadata,
-        ctx: &ApplyContext,
-        pre_apply_writers: Option<&BTreeMap<AccountId, OpMask>>,
-        signed_payload: Option<[u8; 32]>,
-    ) -> Option<crate::rotation_log::RotationLogEntry> {
-        let StorageType::Shared {
-            writers,
-            signature_data,
-        } = &metadata.storage_type
-        else {
-            return None;
-        };
-        let is_rotation = pre_apply_writers != Some(writers);
-        if !is_rotation {
-            return None;
-        }
-        let (delta_id, delta_hlc) = (ctx.delta_id?, ctx.delta_hlc?);
-        let signer = signature_data.as_ref().and_then(|s| s.signer);
-        let nonce = signature_data.as_ref().map(|s| s.nonce).unwrap_or(0);
-        let signature = signature_data.as_ref().map(|s| s.signature);
-        Some(crate::rotation_log::RotationLogEntry {
-            delta_id,
-            delta_hlc,
-            signer,
-            signature,
-            signed_payload: signature.and(signed_payload),
-            new_writers: writers.clone(),
-            writers_nonce: nonce,
-        })
-    }
-
-    /// Append `entry` to the anchor's rotation-log [`UnorderedMap`] (P3), the
-    /// synced source of truth for its writer-set history. Inserts under the
-    /// `delta_id` key, so it is idempotent on replay (same key + byte-identical
-    /// value) and convergent on a same-`delta_id`/different-bytes collision (the
-    /// per-entry child LWW-merges to a node-independent winner — no hard
-    /// `DuplicateRotationInDelta` error, which the old blob would have raised;
-    /// the collection just converges).
-    ///
-    /// The anchor MUST already exist (callers append only after the anchor's own
-    /// `save_internal`, or on the stale-skip path where it was present), so
-    /// `ensure_rotation_log_parent`'s `add_child_to` can't synthesise a
-    /// placeholder.
-    ///
-    /// # Errors
-    /// Propagates child read/write failures.
-    pub fn append_rotation_to_child(
-        anchor: Id,
-        entry: &crate::rotation_log::RotationLogEntry,
-    ) -> Result<(), StorageError> {
-        // Only SIGNED rotations belong in the hashed collection. An unsigned
-        // entry (`signer == None` — the bootstrap/genesis writer set, logged by
-        // the originator's self-log from an unsigned bootstrap action) carries no
-        // authoritative writer-set fact: `writers_at_authenticated` and
-        // `resolve_local_as_of` both IGNORE unsigned entries (they can't be
-        // verified), and the genesis writer set is already available via the
-        // anchor's stored `metadata.storage_type.writers` and, when it actually
-        // rotated, via the first SIGNED entry. So an unsigned entry has ZERO
-        // effect on resolution — but if it lands in the collection it diverges
-        // the collection's Merkle hash across nodes: the ORIGINATOR self-logs it
-        // while peers (which receive the anchor via sync, not via that unsigned
-        // bootstrap action) never do, so the rotation-log map child hash splits
-        // and the anchor's `full_hash` never converges (CI run 27196723799:
-        // node-1 had a 4th unsigned entry `31498e5e writers=[8ae4fd15] signer=none`
-        // that node-3 lacked, with the 3 SIGNED entries byte-identical on both).
-        // Keep the collection to SIGNED rotations only so every node logs the
-        // same set.
-        if entry.signer.is_none() {
-            return Ok(());
-        }
-        // Ensure the map parent exists + is linked under the anchor before
-        // opening the handle (so `insert`'s `add_child_to(map_id, ..)` links the
-        // entry into a parent that is itself in the anchor's subtree).
-        let _map_id = Self::ensure_rotation_log_parent(anchor)?;
-        let mut map = Self::rotation_log_map(anchor);
-        map.insert(entry.delta_id, entry.clone())
-            .map(|_prev| ())
-            .map_err(|e| match e {
-                crate::collections::error::StoreError::StorageError(se) => se,
-                other => StorageError::InvalidData(other.to_string()),
-            })
     }
 
     /// 2. Exists locally - compare timestamps (LWW), unless `terminal`: a
@@ -3906,16 +3457,12 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         // If this is a local shared action by a writer, set the nonce. Same
-        // authority rule as save_raw, via the shared helper. Here `metadata`
-        // was just loaded from the index above, so its writers already are the
-        // stored set — pass them as `stored` so the helper skips a redundant
-        // index read, and the stored ∪ claimed union collapses to the stored
-        // membership check this delete requires.
+        // authority rule as save_raw, via the shared helper.
         let shared_to_stamp = if let StorageType::Shared {
             writers: claimed, ..
         } = &metadata.storage_type
         {
-            Self::authorize_local_shared_stamp(claimed, claimed)
+            Self::authorize_local_shared_stamp(child_id, claimed)?
         } else {
             None
         };
@@ -4334,17 +3881,8 @@ impl<S: StorageAdaptor> Interface<S> {
             data.to_vec()
         };
 
-        // `own_hash` is `Sha256(data)` for every storage type, including
-        // `Shared` anchors. The Phase-2 ACL fold (mixing the resolved writer set
-        // into a `Shared` anchor's `own_hash`) was removed once the rotation log
-        // became a hashed `UnorderedMap` child of the anchor (P3): a writer-set
-        // rotation is recorded as a per-`delta_id` child whose hash is part of
-        // the anchor's `full_hash`, so divergent writer sets surface as divergent
-        // child hashes (and divergent roots) WITHOUT folding them into `own_hash`.
-        // The fold was redundant AND it was a divergence source in its own right
-        // (a node could fold a stale/transient resolved set and never re-fold
-        // after the collection converged via HC), so dropping it makes `own_hash`
-        // identical on every write path (WASM-execute and merge alike).
+        // `own_hash` is `Sha256(data)` for every storage type, `Shared` anchors included:
+        // a cell's writer set changes by governance op and is no part of the Merkle state.
         //
         // The entry bytes and the index that records their `own_hash` are one
         // row, written once by `write_value_for` — no read-back of the row being
@@ -4958,38 +4496,30 @@ impl<S: StorageAdaptor> Interface<S> {
     /// `id`, returning the writer set to persist and the signer to record, or
     /// `None` if the executor is not authorized.
     ///
-    /// Authority is the union of two writer sets:
-    ///   - `claimed`: the writers carried in the metadata being written. On a
-    ///     save this is the incoming action's own claimed set; on a delete it
-    ///     is the set just loaded from the stored index (so `claimed` already
-    ///     equals stored there, and the union below is a no-op).
-    ///   - stored: the writers currently persisted in the index for `id`.
+    /// The executor must be in the writers the host resolves for the cell
+    /// (`resolve_anchor_writers`), the set every verifier judges the write by. A
+    /// rotation leaves the stored set at genesis, so it is not consulted. A cell
+    /// not yet stored has no resolved set, so the `claimed` set decides its
+    /// creation.
     ///
-    /// Membership in EITHER set authorizes the stamp. The union is what lets a
-    /// writer rotate itself out: it is still in the stored set though absent
-    /// from the new claimed set, and the remote verifier also checks against
-    /// stored, so the signature still verifies there.
-    ///
-    /// Both the save and delete paths route through here so the local-write
-    /// authority rule lives in exactly one place and cannot drift between them;
-    /// each caller keeps its own nonce and any schema re-stamp.
-    ///
-    /// `stored`: the stored writer set, from the row each caller has already
-    /// read. The delete path loads `metadata` from the index immediately
-    /// before calling, so its writers ARE the stored set. The save path's
-    /// `claimed` is the incoming action's set, so it passes the writers of the
-    /// row it read (none, when that row has no `Shared` stamp).
+    /// `claimed` is the writers carried in the metadata being written; it is
+    /// what gets persisted. The save and delete paths both route through here so
+    /// the local-write authority rule lives in one place; each caller keeps its
+    /// own nonce and any schema re-stamp.
     fn authorize_local_shared_stamp(
+        id: Id,
         claimed: &BTreeMap<AccountId, OpMask>,
-        stored: &BTreeMap<AccountId, OpMask>,
-    ) -> Option<SharedStampAuthorization> {
+    ) -> Result<Option<SharedStampAuthorization>, StorageError> {
         let executor: AccountId = crate::env::account_id().into();
-        let stored_has_executor = stored.contains_key(&executor);
-        let authorized = stored_has_executor || claimed.contains_key(&executor);
+        let authorized = if <Index<S>>::get_metadata(id)?.is_some() {
+            Self::resolve_anchor_writers(id).contains_key(&executor)
+        } else {
+            claimed.contains_key(&executor)
+        };
         // Same split as the other stamp site: authorized by account, stamped with the
         // key that will verify.
         let device: PublicKey = crate::env::device_id().into();
-        authorized.then(|| (claimed.clone(), device))
+        Ok(authorized.then(|| (claimed.clone(), device)))
     }
 
     /// Saves raw serialized data with orphan checking.
@@ -5120,8 +4650,8 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         // If this is a local shared action by a writer, set the nonce.
-        // Authority (stored ∪ claimed) is decided by the shared helper; here
-        // `claimed` is the incoming action's own writer set.
+        // Authority is decided by the shared helper; here `claimed` is the
+        // incoming action's own writer set.
         //
         // Same re-stamp-always rationale as the User arm above: a
         // re-write may carry the previously-stored real signature
@@ -5132,14 +4662,7 @@ impl<S: StorageAdaptor> Interface<S> {
             ..
         } = &metadata.storage_type
         {
-            // The stored set is the one in the row read above; an entity
-            // stored without a `Shared` stamp has none.
-            let no_writers = BTreeMap::new();
-            let stored_writers = match stored.map(|stored| &stored.metadata.storage_type) {
-                Some(StorageType::Shared { writers, .. }) => writers,
-                _ => &no_writers,
-            };
-            Self::authorize_local_shared_stamp(claimed_writers, stored_writers)
+            Self::authorize_local_shared_stamp(id, claimed_writers)?
         } else {
             None
         };
@@ -5626,8 +5149,9 @@ fn refuse_foreign_entity_at_tee_only_id(
 /// carry what may hold them ([`crate::collections::cell_id`],
 /// [`crate::collections::cell_value_id`]):
 ///
-/// - at a cell's wrapper id, only `Shared`, and the first time a node stores it
-///   (`first_write`), only with the writer set the id was derived from;
+/// - at a cell's wrapper id, only `Shared`, and, when `bind_writers`, only with
+///   the writer set the id was derived from (a snapshot leaf, or the first time a
+///   node stores the wrapper);
 /// - at an id in a cell's value subtree, only a `SharedMember` of the anchor the
 ///   id is bound to, or, at a collection's id there, the collection's own
 ///   `Public` entity, whose bytes are only its id;
@@ -5643,12 +5167,12 @@ fn refuse_foreign_entity_at_tee_only_id(
 fn refuse_foreign_entity_at_cell_id(
     id: Id,
     metadata: &crate::entities::Metadata,
-    first_write: bool,
+    bind_writers: bool,
 ) -> Result<(), StorageError> {
     let belongs = if crate::collections::is_cell_id(id) {
         match &metadata.storage_type {
             StorageType::Shared { writers, .. } => {
-                !first_write || crate::collections::cell_id_binds(id, writers)
+                !bind_writers || crate::collections::cell_id_binds(id, writers)
             }
             _ => false,
         }

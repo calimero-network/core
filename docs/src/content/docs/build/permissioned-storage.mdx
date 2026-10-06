@@ -75,7 +75,7 @@ wrappers below are ergonomic front-ends that set the right stamp for you.
 | `User { owner: AccountId, rules }` | Only `owner`'s account, within `rules` | `ed25519_verify` vs the signing device's key, then that device's account checked against `owner` + a monotonic per-entity nonce (replay protection). `rules` (`EntryRules { immutable, moderators }`) are signed and fixed at creation: an `immutable` entry refuses changed bytes and every delete, and a `moderators` writer set may also delete it |
 | `Frozen` | The first writer, once | Write-once: a delete is unconditionally rejected, and the content cannot be modified |
 | `Shared { writers: BTreeMap<AccountId, OpMask> }` | Any account in `writers`, masked | `ed25519_verify` vs the signing device's key, then that device's account checked against `writers`; it must also hold the op's `OpMask` bit |
-| `SharedMember { anchor }` | Writer set resolved from `anchor` | Member carries no writer set of its own — writers are read from the anchor's rotation log, so rotating the anchor revokes the whole subtree in O(1) |
+| `SharedMember { anchor }` | Writer set resolved from `anchor` | Member carries no writer set of its own; writers are the anchor's, as the host resolves them from governance, so rotating the anchor revokes the whole subtree in O(1) |
 
 The per-entity nonce on the signed stamps (`User`, `Shared`, `SharedMember`)
 drops a write older than the stored one, which is last-write-wins. The one
@@ -174,7 +174,7 @@ impl KvStore {
         Ok(())
     }
 
-    // Rotate the writer set. Caller must be a current writer; rejected if frozen.
+    // Ask to rotate the writer set. Caller must be a current admin; rejected if frozen.
     pub fn rotate_writers(&mut self, new_writers: Vec<AccountId>) -> app::Result<()> {
         let set: BTreeSet<AccountId> = new_writers.into_iter().collect();
         self.shared_value.rotate_writers(set)?;
@@ -375,16 +375,28 @@ write it through that wrapper's API — then the merge plane enforces it.
 
 ## Rotation and concurrency
 
-`rotate_writers` re-stamps **only the anchor** entity, never the members beneath
-it. Members carry `SharedMember { anchor }`, so a single rotation retroactively
-changes the writer set for the entire subtree in O(1) — no per-entity churn, no
-risk of split-brain from a partial re-stamp. Rotating the anchor is how you
-revoke a writer's access to everything under it at once.
+A writer set is not stored in the cell. It changes by a signed governance op in the
+context's group, and every node reads the current set from the fold of those ops
+(see [Shared writer-set rotations](/protocol/governance/#shared-writer-set-rotations)).
+`rotate_writers` therefore only **asks**: it checks that you hold `ADMIN` in the
+set you read, records the request on the execution outcome, and the node publishes
+it as a governance op. Your own run reads the new set back at once; everyone else
+reads it once the op applies. Nothing is written to the cell, so a rotation touches
+no stored byte.
+
+Members carry `SharedMember { anchor }`, so one rotation retroactively changes the
+writer set for the entire subtree in O(1), with no per-entity churn and no risk of
+split-brain from a partial re-stamp. Rotating the anchor is how you revoke a
+writer's access to everything under it at once.
+
+An update that restates a different writer set is not a rotation: a node refuses
+any write to an existing cell whose claimed `writers` differ from the set stored
+with it, however well it is signed.
 
 The revocation bites at the **merge plane**: a removed writer can still author a
-`Put`, but every honest node re-derives the post-rotation writer set in
-`apply_action` and the removed key no longer verifies — so the write is dropped,
-not retroactively trusted:
+`Put`, but every honest node asks the host for the set at the write's causal cut
+and the removed key no longer verifies, so the write is dropped, not
+retroactively trusted:
 
 <SeqDiagram
   id="d-perm-rotate"
@@ -395,30 +407,21 @@ not retroactively trusted:
     { label: 'Removed writer', color: '#f0883e' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'rotate_writers — signed ADMIN, removes W' },
-    { from: 1, to: 1, label: 're-stamp anchor; subtree writer set updated O(1)', color: '#39d0d8' },
+    { from: 0, to: 1, label: 'rotate_writers: signed ADMIN governance op, removes W' },
+    { from: 1, to: 1, label: 'fold updates the set; subtree writer set updated O(1)', color: '#39d0d8' },
     { from: 2, to: 1, label: 'Put alice = v — signed by removed writer\'s device key', color: '#f0883e' },
-    { from: 1, to: 1, label: 'apply_action: re-derive authoritative writers', color: '#39d0d8' },
+    { from: 1, to: 1, label: 'apply_action: ask the host for the writers at the write\'s cut', color: '#39d0d8' },
     { from: 1, to: 1, label: 'signature verifies, but the signer\'s account is no longer in writers', color: '#f0883e' },
     { from: 1, to: 2, label: 'InvalidSignature — write dropped', dashed: true, color: '#f0883e' },
     { type: 'divider', label: 'rotation revokes the subtree at merge' },
   ]}
 />
 
-When two current writers rotate **concurrently** (DAG siblings, neither in the
-other's causal history), the merge resolves deterministically:
-
-1. **Causal-first** — if one rotation happens-before the other, the later one
-   wins unconditionally (its author rotated from full knowledge of the earlier).
-2. **HLC tiebreak** — truly concurrent rotations resolve by larger
-   `HybridTimestamp` (embeds wall-time and a node ID, giving a total order).
-3. **Signer-pubkey tiebreak** — on an HLC tie (astronomically rare), the smaller
-   signing-key bytes win.
-
-The same ordering resolves ordinary value writes. Crucially, a write is verified
-against the writer set **as of its own causal parents**, not the post-merge set —
-so a write authored while you were a valid writer is never retroactively rejected
-by a later rotation that removed you.
+Concurrent rotations, and a rotation racing a write, resolve in the fold, by the
+rules in the governance chapter. In short, a write is verified against the writer
+set **as of its own causal parents**, not the post-merge set, so a write authored
+while you were a valid writer is never retroactively rejected by a later rotation
+that removed you.
 
 ## Node-local private state
 

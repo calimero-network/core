@@ -182,23 +182,19 @@ Draining is **delete-after-success**: a record is removed only once its verbatim
 
 ## Concurrent writer-set rotation
 
-The hardest partition case is two current writers rotating the **writer set** concurrently — siblings in the DAG, neither in the other's causal history, both validly signed. The merge has to pick a deterministic, information-preserving-where-possible outcome with no coordination. [ADR 0001](/protocol/governance/) fixes the rule: **causal-first last-writer-wins, with an HLC tiebreak, then a signer-pubkey tiebreak.**
-
-Given two rotations `R1` (in delta `D1`) and `R2` (in delta `D2`) on the same entity:
+The hardest partition case is two current writers rotating the **writer set** concurrently — siblings in the governance DAG, neither in the other's causal past, both validly signed. A rotation is a governance op (`SharedWritersRotated`), and a cell's writers at a cut are a **fold** of its rotations in that cut's ancestry, so the merge picks a deterministic outcome with no coordination. The full rules are in [shared writer-set rotations](/protocol/governance/#shared-writer-set-rotations); the two that decide a sibling case are:
 
 <Steps>
 
-1. **Causal precedence wins, unconditionally.** If `R1 happens-before R2` (that is, `D1.id` is in the transitive parents of `D2`), then `R2` wins. Its author saw `R1`'s reality and chose to rotate from it; overriding that would discard an informed decision.
+1. **Causal precedence wins, unconditionally.** A step counts only when its `prior` is the set in effect in its own causal past, so a rotation built on another's result follows it whatever either clock says. Its author saw the earlier rotation's reality and chose to rotate from it.
 
-2. **Truly concurrent rotations** are ordered by the larger delta `hlc`. `HybridTimestamp` is a total order embedding both wall-time and a node id, so every node picks the same winner.
-
-3. **HLC tie (vanishingly rare)** breaks by lexicographic comparison of the signing writer's pubkey bytes — smaller wins. Spelled out for completeness; the embedded node id makes a genuine tie astronomically unlikely.
+2. **Truly concurrent rotations** built on the same set are ordered by the lowest `(nonce, signer key, op id)`. The nonce is only a tie-break, so every node picks the same winner, and the loser is discarded.
 
 </Steps>
 
-A worked sibling case from the ADR: from a root writer set `(Wa, Wb)`, `Wa` rotates `Wb` out at HLC 20 while `Wb` rotates `Wa` out at HLC 21. The two are concurrent; HLC 21 > 20, so the result is `(Wb)` — `Wa` is rotated out and its rotation is discarded. This is the accepted, unavoidable information loss of any non-union rule; quorum / union-with-re-election schemes were considered and rejected for the operational complexity they impose on every app.
+A worked sibling case: from a root writer set `(Wa, Wb)`, both admins of the cell, `Wa` and `Wb` each rotate the other out, concurrently. Each step removes an admin the other's authority rests on, which the fold treats as a race, and a step that removes an admin of the cell's genesis set does not apply in a race: both are void and the set stays `(Wa, Wb)`. Two concurrent rotations that do not race, for example two different additions built on the same set, are ordered by the lowest `(nonce, signer key, op id)`, and the other is not applied. That is the accepted information loss of any non-union rule; quorum and union-with-re-election schemes were considered and rejected for the operational complexity they impose on every app.
 
-The rule is **stateless beyond a per-entity rotation log** sorted by causal order. `writers_at(entity_id, causal_parents)` walks the log filtered to entries causally visible from a given cut and applies the rule above. The verifier validates a write's signature against `writers_at(entity, the_author's_causal_parents)` — **not** the current writer set — which is the guarantee that makes concurrent operation safe: a write signed by the writer set as the author saw it never gets retroactively rejected by a later rotation. Two nodes that see `D1` then `D2` versus `D2` then `D1` converge to the same writer set, because the rule depends only on immutable per-delta facts (causal relation, HLC, signer hash). The deeper rationale for routing the wrapper's state through a verified per-entity entity (rather than letting it ride unverified in the root-state blob) is in [the storage chapter](/protocol/storage/) and the shared-wrapper verification design.
+A cell's writers are read from the governance fold at a cut, not from a log kept with the cell. A data write is checked against the set at the governance position its author signed, so a write signed by the writer set as the author saw it is never retroactively rejected by a later rotation. Two nodes that fold the same governance cut reach the same writer set, because the fold depends only on the signed ops and their causal relation.
 
 ## Why recovery always converges
 
@@ -213,7 +209,7 @@ Pulling the threads together, recovery is **eventual** and **order-independent**
 - Reconcile-after-divergence MUST verify repaired state against the **signed expected** root hash carried in the `DivergenceReport`, never against an anchor peer's claimed hash.
 - Operations that cannot apply yet (future schema, or unconfirmed governance prerequisite) MUST be buffered **verbatim** and drained later. They MUST NOT be dropped, and their bytes MUST NOT be translated (translation breaks `payload_for_signing`).
 - Buffered records MUST be deleted only **after** a successful replay (delete-after-success), so a crash mid-drain re-replays the survivor rather than losing it.
-- Concurrent writer-set rotations MUST resolve by causal-first last-writer-wins, then HLC, then signer-pubkey bytes (ADR 0001). A write MUST be authorised against `writers_at(entity, author's causal parents)`, not the current writer set.
+- Concurrent writer-set rotations MUST resolve through the governance fold (ADR 0001), which reads only the rotation steps and their causal pasts. A write MUST be authorised against the cell's writers at the governance position its author signed it at, not the current writer set.
 - Recovery MUST require no quorum and no agreed delivery order, and MUST NOT discard a validly-signed write to force agreement.
 :::
 
