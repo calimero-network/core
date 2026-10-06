@@ -429,6 +429,16 @@
 
 ### Fixed
 
+- **A device withdrawn by its account's root is withdrawn in every namespace
+  the account takes part in.** `revoke_device` published the withdrawal only
+  where the device was bound, so its old certificate could be replayed to link
+  it again in another namespace. The withdrawal is now carried into every
+  participating namespace where it is still owed, including ones the account
+  joins later, and a device spent in the account namespace or the target is
+  never linked. `revoked_in` lists only namespaces that received it. (adds a
+  stored row, prefix `0x59`, and moves the ledger pointer to `0x5A`; one-way)
+  (#4489)
+
 - **Group keys, blobs and sync state are served only to live members.** A
   member removed from, or who left, an Open subgroup under a Restricted parent
   kept its inherited membership: the removal is a deny-list entry and a
