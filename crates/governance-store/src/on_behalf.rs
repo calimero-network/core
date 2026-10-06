@@ -116,11 +116,7 @@ fn standing(
     signer_account: AccountId,
     on_behalf: AccountId,
 ) -> EyreResult<Result<(), OnBehalfRefusal>> {
-    let Some((role, role_group)) = reads.effective_role(group_id, &signer_account)? else {
-        return Ok(Err(OnBehalfRefusal::SignerNotARelay));
-    };
-    let (role, _) = namespace_tee_role(store, reads, group_id, &signer_account, role, role_group)?;
-    if role != GroupMemberRole::RelayTee {
+    if !seated_as_relay(store, reads, group_id, &signer_account)? {
         return Ok(Err(OnBehalfRefusal::SignerNotARelay));
     }
     Ok(match reads.effective_role(group_id, &on_behalf)? {
@@ -128,6 +124,24 @@ fn standing(
         Some((role, _)) if role.is_read_only() => Err(OnBehalfRefusal::AccountIsReadOnly),
         Some(_) => Ok(()),
     })
+}
+
+/// The signer half of the rule over any `reads`: whether `account` is a
+/// `RelayTee` in the namespace of `group_id`.
+///
+/// # Errors
+/// A store failure.
+pub fn seated_as_relay(
+    store: &Store,
+    reads: &dyn StandingReads,
+    group_id: &ContextGroupId,
+    account: &AccountId,
+) -> EyreResult<bool> {
+    let Some((role, role_group)) = reads.effective_role(group_id, account)? else {
+        return Ok(false);
+    };
+    let (role, _) = namespace_tee_role(store, reads, group_id, account, role, role_group)?;
+    Ok(role == GroupMemberRole::RelayTee)
 }
 
 #[cfg(test)]

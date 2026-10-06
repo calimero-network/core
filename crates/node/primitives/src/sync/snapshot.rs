@@ -649,8 +649,8 @@ pub enum SnapshotSafety {
     /// persisted (#3252) — the contradiction that otherwise permanently trips
     /// the safety gate (`root=0` routes only to snapshot, but the state keys
     /// make it look initialized, so it's refused forever). A re-bootstrap
-    /// snapshot IS the recovery: it re-applies the boundary and
-    /// `cleanup_stale_keys` reconciles the orphaned entries. Proceed.
+    /// snapshot IS the recovery: it re-applies the boundary and its install
+    /// deletes the orphaned entries. Proceed.
     RecoverContradiction,
     /// A non-zero root (with or without state keys), or state keys the node
     /// legitimately holds under a live root. A genuinely-initialized context —
