@@ -17,7 +17,6 @@ use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
 use crate::index::{EntityIndex, Index};
 use crate::interface::{ApplyContext, Interface, StorageError};
-use crate::logical_clock::HybridTimestamp;
 use crate::row::{encode, Row};
 use crate::store::{Key, MainStorage, KEY_LEN};
 use crate::tests::common::{
@@ -490,17 +489,14 @@ fn replay_after_collection(target: Target) -> (Option<EntityIndex>, Option<Entit
     let cell = cell_at(0xB1, &writers);
     let anchor = cell_at(0xB2, &writers);
     let entry = cell_value_id(anchor);
-    // Stamped from the clock, which also stamps a cell's rotation-log entry: a
-    // delete older than that entry would keep it, and the cell, alive.
+    // Stamped from the clock, so each step is newer than the cell's creation.
     let start = crate::env::time_now();
     let at = |step: u8| start + u64::from(step) * CELL_STEP_NANOS;
 
     let rows: Rows = Rc::default();
-    let apply = |action: Action, delta: u8| {
+    let apply = |action: Action, _delta: u8| {
         let ctx = ApplyContext {
             effective_writers: None,
-            delta_id: Some([delta; 32]),
-            delta_hlc: Some(HybridTimestamp::from_unix_nanos(at(delta))),
             signer_account: Some(writer),
         };
         on(&rows, 1, || {
