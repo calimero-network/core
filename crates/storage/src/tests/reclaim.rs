@@ -23,7 +23,7 @@ use crate::store::{Key, MainStorage, KEY_LEN};
 use crate::tests::common::{
     account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
     build_signed_shared_action, build_signed_shared_delete, cell_at, map_entry_bytes,
-    setup_root_for_main,
+    setup_root_for_main, writers_of,
 };
 use crate::tests::owned_rules::{delete, key, signed};
 
@@ -462,6 +462,9 @@ fn signed_nonce_in_last_delta(id: Id) -> u64 {
 enum Target {
     Cell,
     CellEntry,
+    /// The cell, after a peer first names it as an ancestor under an unsigned
+    /// stamp, so it is stored again before its write is replayed.
+    CellNamedAsAncestor,
 }
 
 /// Deletes a writer's `target`, has GC collect it, replays its original write,
@@ -524,7 +527,7 @@ fn replay_after_collection(target: Target) -> (Option<EntityIndex>, Option<Entit
     apply(entry_write(b"entry", 3), 3).unwrap();
 
     let (id, original, delete, fresh) = match target {
-        Target::Cell => (
+        Target::Cell | Target::CellNamedAsAncestor => (
             cell,
             shared_write(cell, b"cell", 2),
             build_signed_shared_delete(cell, writers.clone(), &writer_key, at(4)),
@@ -541,6 +544,24 @@ fn replay_after_collection(target: Target) -> (Option<EntityIndex>, Option<Entit
     gc_pass(&rows, true);
     assert!(stored(id).is_none(), "GC left the tombstone in place");
 
+    if matches!(target, Target::CellNamedAsAncestor) {
+        let claimed = Metadata {
+            updated_at: 1.into(),
+            storage_type: StorageType::Shared {
+                writers: writers_of(writers.iter().copied()),
+                signature_data: None,
+            },
+            ..Metadata::default()
+        };
+        let leaf = Action::Add {
+            id: Id::new([0x77; 32]),
+            data: b"leaf".to_vec(),
+            ancestors: vec![ChildInfo::new(cell, [0; 32], claimed), root.clone()],
+            metadata: Metadata::default(),
+        };
+        let _named = apply(leaf, 7);
+    }
+
     // Dropped as stale, as the tombstone would have it, not refused as an error.
     apply(original, 5).unwrap();
     let replayed = stored(id);
@@ -555,6 +576,18 @@ fn a_replayed_cell_write_does_not_bring_back_a_collected_cell() {
     assert!(
         replayed.is_none(),
         "a replayed write brought back a deleted cell"
+    );
+    assert!(rewritten.is_some(), "a later write did not land");
+}
+
+/// A peer that names a collected cell as an ancestor cannot re-create it, and
+/// so open it to a replayed write.
+#[test]
+fn a_collected_cell_named_as_an_ancestor_stays_gone() {
+    let (replayed, rewritten) = replay_after_collection(Target::CellNamedAsAncestor);
+    assert!(
+        replayed.is_none(),
+        "an ancestor stamp and a replayed write brought back a deleted cell"
     );
     assert!(rewritten.is_some(), "a later write did not land");
 }
