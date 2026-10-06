@@ -440,6 +440,17 @@
 
 ### Fixed
 
+- **A Restricted->Open flip no longer stalls the namespace for members outside
+  the subgroup.** A namespace member outside a Restricted subgroup can decrypt
+  the subgroup's Open flip but never the subgroup ops it cites, and is never
+  served their key, so the flip was undecidable forever and every namespace op
+  after it waited behind it until the pending TTL dropped it - later subgroups
+  and contexts never reached that node. A group op undecidable only because its
+  own group's history is sealed is now held like an op the node cannot decrypt:
+  logged, the head advanced, nothing applied, and the key-arrival replay applies
+  it if the key ever comes. The flipped subgroup keeps its pre-flip state on
+  such a node. Any other undecidable cut still parks. (#4511)
+
 - **A read on an account's session runs as that account's device, not as the
   node.** The delegated-read arm of `execute` built its principal from the
   session's account and THIS node's key, so on a relay every account's
