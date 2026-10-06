@@ -9,6 +9,7 @@
 //! key cannot open, instead of failing it, and warning, on every delivery.
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
 use calimero_store::key::Generic as GenericKey;
 use calimero_store::slice::Slice;
@@ -80,6 +81,22 @@ impl<'a> HeldOps<'a> {
         Ok(self.read()?.ops.iter().any(|op| op.delta_id == delta_id))
     }
 
+    /// The held ops still owed an effect: those of a group that still exists
+    /// here. An op held on a group deleted since will never apply, and listing
+    /// it would only say so forever.
+    pub fn read_live(&self) -> EyreResult<HeldOpsRecord> {
+        let mut record = self.read()?;
+        let meta = crate::MetaRepository::new(self.store);
+        let mut live = Vec::with_capacity(record.ops.len());
+        for op in record.ops {
+            if meta.load(&ContextGroupId::from(op.group_id))?.is_some() {
+                live.push(op);
+            }
+        }
+        record.ops = live;
+        Ok(record)
+    }
+
     /// Every held op of the namespace, in the order they were held.
     pub fn read(&self) -> EyreResult<HeldOpsRecord> {
         let handle = self.store.handle();
@@ -146,6 +163,36 @@ mod tests {
         let record = held.read().expect("read");
         assert_eq!(record.ops.len(), MAX_HELD_OPS_LISTED);
         assert_eq!(record.untracked, 1);
+    }
+
+    #[test]
+    fn an_op_held_on_a_group_deleted_since_is_not_listed_as_owed() {
+        let store = test_store();
+        let held = HeldOps::new(&store, NamespaceId::from([7; 32]));
+        crate::MetaRepository::new(&store)
+            .save(
+                &ContextGroupId::from([9; 32]),
+                &crate::test_fixtures::test_meta(),
+            )
+            .expect("save meta");
+        held.hold([1; 32], [9; 32])
+            .expect("hold on a group that exists");
+        held.hold([2; 32], [8; 32])
+            .expect("hold on a group that does not");
+
+        let live: Vec<_> = held
+            .read_live()
+            .expect("read live")
+            .ops
+            .iter()
+            .map(|op| op.delta_id)
+            .collect();
+        assert_eq!(live, vec![[1; 32]]);
+        assert_eq!(
+            held.read().expect("read").ops.len(),
+            2,
+            "kept, only not listed"
+        );
     }
 
     #[test]

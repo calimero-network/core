@@ -57,7 +57,7 @@ pub(crate) fn namespace_held_ops(
 ) -> Option<calimero_server_primitives::admin::NamespaceHeldOpsApi> {
     let held =
         calimero_governance_store::held_ops::HeldOps::new(store, namespace_id.to_bytes().into());
-    match held.read() {
+    match held.read_live() {
         Ok(record) if record.ops.is_empty() && record.untracked == 0 => None,
         Ok(record) => Some(calimero_server_primitives::admin::NamespaceHeldOpsApi {
             ops: record
