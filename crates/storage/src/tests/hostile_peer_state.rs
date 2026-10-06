@@ -15,13 +15,15 @@ use crate::collections::crdt_meta::{CrdtType, CustomTypeId};
 use crate::collections::{LwwRegister, Root, ROOT_ENTRY_ID};
 use crate::constants::DRIFT_TOLERANCE_NANOS;
 use crate::delta::StorageDelta;
-use crate::entities::Metadata;
+use crate::entities::{full_mask, ChildInfo, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
 use crate::interface::{ApplyContext, Interface, StorageError};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use crate::merge::registry::clear_merge_registry;
-use crate::merge::{merge_root_state_typed, register_crdt_merge, MergeRootStateResponse};
+use crate::merge::{
+    merge_root_state_typed, register_crdt_merge, MergeCustomRequest, MergeRootStateResponse,
+};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::account_of_key;
 use crate::tests::owned_rules::{apply, key, later, text};
@@ -346,24 +348,81 @@ fn a_repaired_app_state_entry_does_not_overwrite_a_write_made_during_its_merge()
     );
 }
 
+// ---------------------------------------------------------------------------
+// A custom entry merged outside a delta
+// ---------------------------------------------------------------------------
+
+const APP_RULE: &str = "app::Custom";
+
+fn custom(rule: &str) -> CrdtType {
+    CrdtType::Custom(CustomTypeId::of(rule))
+}
+
+/// A public entry under the root tagged `crdt_type`, holding the bytes `stored`.
+fn public_entry(crdt_type: CrdtType) -> Id {
+    let id = Id::random();
+    let at = env::time_now();
+    <Interface<MainStorage>>::apply_action(
+        Action::Add {
+            id,
+            data: b"stored".to_vec(),
+            ancestors: vec![ChildInfo::new(Id::root(), [0; 32], Metadata::default())],
+            metadata: Metadata::with_crdt_type(at, at, crdt_type),
+        },
+        &ApplyContext::empty(),
+    )
+    .expect("a public entry is stored");
+    id
+}
+
+fn entry(id: Id) -> Option<Vec<u8>> {
+    MainStorage::storage_read(Key::Entry(id))
+}
+
+/// The app's merge request for the peer's bytes `peer` at `id` under `rule`, stamped `at`.
+fn merge_request(
+    id: Id,
+    rule: &str,
+    at: u64,
+) -> Result<Option<(MergeCustomRequest, Metadata)>, StorageError> {
+    <Interface<MainStorage>>::custom_entry_merge_request(
+        id,
+        CustomTypeId::of(rule),
+        b"peer".to_vec(),
+        at,
+    )
+}
+
+/// Every stamp whose entry changes only by its signer's action.
+fn signed_stamps() -> [StorageType; 3] {
+    [
+        StorageType::User {
+            owner: mallory(),
+            signature_data: None,
+            rules: EntryRules::OWNED,
+        },
+        StorageType::Shared {
+            writers: full_mask([mallory()].into_iter().collect()),
+            signature_data: None,
+        },
+        StorageType::SharedMember {
+            anchor: Id::random(),
+            signature_data: None,
+        },
+    ]
+}
+
 #[test]
 #[serial]
 fn a_repaired_custom_entry_stamped_far_ahead_is_refused() {
     genesis();
-    let request = |at| {
-        <Interface<MainStorage>>::custom_entry_merge_request(
-            ROOT_ENTRY_ID,
-            CustomTypeId::of("app::Custom"),
-            b"peer".to_vec(),
-            at,
-        )
-    };
+    let id = public_entry(custom(APP_RULE));
     assert!(
-        matches!(request(env::time_now()), Ok(Some(_))),
+        matches!(merge_request(id, APP_RULE, env::time_now()), Ok(Some(_))),
         "control: a current stamp passes"
     );
 
-    let refused = request(u64::MAX);
+    let refused = merge_request(id, APP_RULE, u64::MAX);
 
     assert!(
         matches!(refused, Err(StorageError::InvalidTimestamp(..))),
@@ -375,26 +434,22 @@ fn a_repaired_custom_entry_stamped_far_ahead_is_refused() {
 #[serial]
 fn a_repaired_custom_entry_does_not_overwrite_a_write_made_during_its_merge() {
     genesis();
+    let id = public_entry(custom(APP_RULE));
     let incoming_ts = later();
-    let (request, stored_metadata) = <Interface<MainStorage>>::custom_entry_merge_request(
-        ROOT_ENTRY_ID,
-        CustomTypeId::of("app::Custom"),
-        app_state("peer"),
-        incoming_ts,
+    let (request, stored_metadata) = merge_request(id, APP_RULE, incoming_ts)
+        .expect("request")
+        .expect("an entry is stored");
+    <Interface<MainStorage>>::apply_action(
+        peer_update(id, b"local".to_vec(), incoming_ts - 1),
+        &ApplyContext::empty(),
     )
-    .expect("request")
-    .expect("an entry is stored");
-    let merged = app_state("merged");
-    assert!(
-        local_write_commits("local"),
-        "a write stamped below the peer's lands mid-merge"
-    );
+    .expect("a write stamped below the peer's lands mid-merge");
 
     let written = <Interface<MainStorage>>::write_custom_entry_merge(
-        ROOT_ENTRY_ID,
+        id,
         &request,
         &stored_metadata,
-        &merged,
+        b"merged",
         incoming_ts,
     );
 
@@ -403,8 +458,8 @@ fn a_repaired_custom_entry_does_not_overwrite_a_write_made_during_its_merge() {
         "nothing is written, got {written:?}"
     );
     assert_eq!(
-        app_value(),
-        "local",
+        entry(id).as_deref(),
+        Some(&b"local"[..]),
         "a merge of a stored entry that has since moved must not replace it"
     );
 }
@@ -413,25 +468,105 @@ fn a_repaired_custom_entry_does_not_overwrite_a_write_made_during_its_merge() {
 #[serial]
 fn a_repaired_custom_entry_is_written_when_the_entry_did_not_move() {
     genesis();
-    let (request, stored_metadata) = <Interface<MainStorage>>::custom_entry_merge_request(
-        ROOT_ENTRY_ID,
-        CustomTypeId::of("app::Custom"),
-        app_state("peer"),
-        later(),
-    )
-    .expect("request")
-    .expect("an entry is stored");
+    let id = public_entry(custom(APP_RULE));
+    let (request, stored_metadata) = merge_request(id, APP_RULE, later())
+        .expect("request")
+        .expect("an entry is stored");
 
     let written = <Interface<MainStorage>>::write_custom_entry_merge(
-        ROOT_ENTRY_ID,
+        id,
         &request,
         &stored_metadata,
-        &app_state("merged"),
+        b"merged",
         later(),
     );
 
     assert!(matches!(written, Ok(Some(_))), "got {written:?}");
-    assert_eq!(app_value(), "merged");
+    assert_eq!(entry(id).as_deref(), Some(&b"merged"[..]));
+}
+
+/// A peer's `crdt_type` is unsigned, so naming `Custom` must not open a
+/// signed entry to a merge no signer authorized.
+#[test]
+#[serial]
+fn a_signed_entry_takes_no_custom_merge() {
+    genesis();
+    for stamp in signed_stamps() {
+        let id = public_entry(custom(APP_RULE));
+        <Index<MainStorage>>::set_storage_type(id, stamp.clone()).expect("restamp");
+
+        let refused = merge_request(id, APP_RULE, later());
+
+        assert!(
+            matches!(refused, Err(StorageError::ActionNotAllowed(_))),
+            "{stamp:?}: got {refused:?}"
+        );
+        assert_eq!(entry(id).as_deref(), Some(&b"stored"[..]), "{stamp:?}");
+    }
+}
+
+/// Sync routes a peer's leaf to the app's merge by this, so only a stored public
+/// custom entry may name a rule.
+#[test]
+#[serial]
+fn only_a_stored_public_custom_entry_names_a_merge_rule() {
+    genesis();
+    let rule = |id| <Interface<MainStorage>>::custom_merge_type(id).expect("index");
+    assert_eq!(
+        rule(public_entry(custom(APP_RULE))),
+        Some(CustomTypeId::of(APP_RULE))
+    );
+    assert_eq!(rule(public_entry(CrdtType::lww_register())), None);
+    assert_eq!(rule(Id::random()), None, "nothing stored");
+    for stamp in signed_stamps() {
+        let id = public_entry(custom(APP_RULE));
+        <Index<MainStorage>>::set_storage_type(id, stamp.clone()).expect("restamp");
+        assert_eq!(rule(id), None, "{stamp:?}");
+    }
+}
+
+/// The app's rule runs only on the entry its own type names.
+#[test]
+#[serial]
+fn an_entry_takes_no_custom_merge_under_another_rule() {
+    genesis();
+    for crdt_type in [custom("app::Other"), CrdtType::lww_register()] {
+        let id = public_entry(crdt_type.clone());
+
+        let refused = merge_request(id, APP_RULE, later());
+
+        assert!(
+            matches!(refused, Err(StorageError::ActionNotAllowed(_))),
+            "{crdt_type:?}: got {refused:?}"
+        );
+    }
+}
+
+/// The write checks the stored entry again, since the request it is handed
+/// may come from a caller that did not ask.
+#[test]
+#[serial]
+fn a_custom_merge_is_not_written_into_an_entry_signed_since_its_request() {
+    genesis();
+    let id = public_entry(custom(APP_RULE));
+    let (request, stored_metadata) = merge_request(id, APP_RULE, later())
+        .expect("request")
+        .expect("an entry is stored");
+    <Index<MainStorage>>::set_storage_type(id, signed_stamps()[0].clone()).expect("restamp");
+
+    let written = <Interface<MainStorage>>::write_custom_entry_merge(
+        id,
+        &request,
+        &stored_metadata,
+        b"merged",
+        later(),
+    );
+
+    assert!(
+        matches!(written, Err(StorageError::ActionNotAllowed(_))),
+        "got {written:?}"
+    );
+    assert_eq!(entry(id).as_deref(), Some(&b"stored"[..]));
 }
 
 /// The stamp a merge write-back takes is the peer's, so the write bounds it as the

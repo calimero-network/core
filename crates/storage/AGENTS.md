@@ -461,11 +461,15 @@ Entity Conflict -> Has CrdtType? -> is_builtin_crdt()? -> merge_by_crdt_type()
 | Apply path | How the app's rule is reached |
 | ---------- | ----------------------------- |
 | in-WASM (`__calimero_sync_next`, normal delta apply) | `try_merge_non_root` looks the entry's `CustomTypeId` up in the in-module registry and calls the app's `Mergeable::merge` directly |
-| host-side (HashComparison / level-wise repair) | the DFS cannot call into WASM — it is synchronous, inside `with_runtime_env` — so it DEFERS the entry, and the sync driver dispatches `__calimero_merge_custom` after the session |
+| host-side (HashComparison / level-wise repair) | the DFS cannot call into WASM (it is synchronous, inside `with_runtime_env`), so it DEFERS a stored `Public` entry of that type (`custom_merge_type`), and the sync driver dispatches `__calimero_merge_custom` after the session; `custom_entry_merge_request` and `write_custom_entry_merge` refuse any other entry |
 
-Neither path falls back to LWW for a `Custom`. An entry the app can no longer
-merge stays divergent until the next round, which is recoverable; resolving it by
-a rule the app did not choose is not.
+Neither path falls back to LWW for a public `Custom` entry. An entry the app can
+no longer merge stays divergent until the next round, which is recoverable;
+resolving it by a rule the app did not choose is not.
+A signed `Custom` entry (`User`, `Shared`, `SharedMember`) is the exception on
+repair: no signature covers a merge the receiver computes, and `crdt_type` is
+unsigned, so its leaf goes through `apply_action`'s checks and settles by
+last-write-wins (`try_merge_non_root` gets `WasmRequired` on the host).
 
 **Key insight**: Collections (UnorderedMap, Vector, UnorderedSet) return incoming at
 container-level because entries are stored as **separate entities** - each entry merges

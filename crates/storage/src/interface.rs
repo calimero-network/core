@@ -333,6 +333,31 @@ fn merges_whatever_the_order(
         || origin == WriteOrigin::Applied && matches!(crdt_type, Some(CrdtType::FugueTextBlock))
 }
 
+/// The app rule a peer's bytes may be merged into this stored entry by outside a
+/// delta: only a `Public` entry has one, since a signed entry changes only by its signer.
+fn public_custom_type(metadata: &Metadata) -> Option<CustomTypeId> {
+    match (&metadata.storage_type, &metadata.crdt_type) {
+        (StorageType::Public, Some(crate::collections::crdt_meta::CrdtType::Custom(type_id))) => {
+            Some(*type_id)
+        }
+        _ => None,
+    }
+}
+
+/// Refuses a deferred custom merge into an entry [`public_custom_type`] does not
+/// give `type_id`.
+fn refuse_custom_merge_into(
+    metadata: &Metadata,
+    type_id: CustomTypeId,
+) -> Result<(), StorageError> {
+    if public_custom_type(metadata) == Some(type_id) {
+        return Ok(());
+    }
+    Err(StorageError::ActionNotAllowed(
+        "a custom merge writes only into a public entry of its own type".to_owned(),
+    ))
+}
+
 /// Whether `Interface::try_merge_non_root` settles a write of `crdt_type` by
 /// keeping one side's bytes whole (`lww_pick`), running no merge code.
 ///
@@ -4149,11 +4174,26 @@ impl<S: StorageAdaptor> Interface<S> {
         })
     }
 
+    /// The app rule a peer's bytes for the stored entry `id` merge by outside a delta;
+    /// `None` when nothing is stored or the entry is signed or not custom.
+    ///
+    /// # Errors
+    /// A failed index read.
+    pub fn custom_merge_type(id: Id) -> Result<Option<CustomTypeId>, StorageError> {
+        if S::storage_read(Key::Entry(id)).is_none() {
+            return Ok(None);
+        }
+        Ok(<Index<S>>::get_metadata(id)?
+            .as_ref()
+            .and_then(public_custom_type))
+    }
+
     /// The app's merge request and the stored metadata for a custom entry a peer sent
     /// outside a delta, once its stamp passes the bound; `None` when nothing is stored.
     ///
     /// # Errors
-    /// `InvalidTimestamp` for a stamp beyond the bound, or a failed index read.
+    /// `InvalidTimestamp` for a stamp beyond the bound, `ActionNotAllowed` unless the
+    /// stored entry is public and of `type_id`, or a failed index read.
     pub fn custom_entry_merge_request(
         id: Id,
         type_id: CustomTypeId,
@@ -4165,6 +4205,7 @@ impl<S: StorageAdaptor> Interface<S> {
             return Ok(None);
         };
         let metadata = <Index<S>>::get_metadata(id)?.unwrap_or_default();
+        refuse_custom_merge_into(&metadata, type_id)?;
         let request = MergeCustomRequest {
             type_id,
             existing,
@@ -4177,7 +4218,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// writing nothing, when the stored entry moved since `request` was read.
     ///
     /// # Errors
-    /// As [`Self::write_pre_merged_root_state`].
+    /// As [`Self::custom_entry_merge_request`] for the entry as now stored, or as
+    /// [`Self::write_pre_merged_root_state`].
     pub fn write_custom_entry_merge(
         id: Id,
         request: &MergeCustomRequest,
@@ -4186,13 +4228,14 @@ impl<S: StorageAdaptor> Interface<S> {
         incoming_ts: u64,
     ) -> Result<Option<[u8; 32]>, StorageError> {
         let _mutation_guard = crate::index::index_mutation_guard();
-        let now_ts = <Index<S>>::get_metadata(id)?.map(|metadata| metadata.updated_at);
-        if S::storage_read(Key::Entry(id)).as_ref() != Some(&request.existing)
-            || now_ts != Some(stored.updated_at)
-        {
+        let now = <Index<S>>::get_metadata(id)?;
+        let Some(mut metadata) = now.filter(|now| now.updated_at == stored.updated_at) else {
+            return Ok(None);
+        };
+        if S::storage_read(Key::Entry(id)).as_ref() != Some(&request.existing) {
             return Ok(None);
         }
-        let mut metadata = stored.clone();
+        refuse_custom_merge_into(&metadata, request.type_id)?;
         metadata.updated_at = (*stored.updated_at).max(incoming_ts).into();
         Self::write_pre_merged_root_state(id, merged, metadata, incoming_ts).map(Some)
     }
