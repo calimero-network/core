@@ -9580,7 +9580,7 @@ fn withdrawn_joiner(
         &crate::AccountBindingRepository::new(&store),
         &ContextGroupId::from(namespace_id),
         account,
-        calimero_account::DeviceId::from(device),
+        crate::test_fixtures::device_for(account, device),
     );
     WithdrawnJoiner {
         store,

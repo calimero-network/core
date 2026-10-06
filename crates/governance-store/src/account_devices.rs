@@ -419,7 +419,7 @@ mod tests {
         let root = NodeDeviceRepository::new(&store)
             .provision_account_root()
             .expect("this node's root");
-        let device = DeviceId::from([0x62; 32]);
+        let device = DeviceId::mint(root.account(), [0x62; 16]);
         let stranger = PrivateKey::from([0x63; 32]);
         let stranger_account = AccountGenesis::new(stranger.public_key()).account_id();
         let foreign = withdrawal(&stranger, stranger_account, device);

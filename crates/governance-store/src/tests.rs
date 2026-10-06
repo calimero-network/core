@@ -7016,22 +7016,21 @@ fn narrowed_device_key_is_denied_until_a_newer_scope_binds_it_again() {
     assert!(!revoked(), "on either path");
 }
 
-/// A device id another account binds after this account narrowed it out is still
-/// withdrawn for this account: the row left is not this account's binding.
+/// A device another account mints from the same nonce, bound after this account
+/// narrowed its own out, leaves this account's device withdrawn.
 #[test]
-fn a_device_id_bound_by_another_account_stays_withdrawn_for_the_first() {
+fn a_device_sharing_its_nonce_bound_by_another_account_stays_withdrawn_for_the_first() {
     let store = test_store();
     let ns = ContextGroupId::from([0xD4; 32]);
     let alice_pk = PublicKey::from([0xD5; 32]);
     let alice = account_for(&alice_pk);
     let device = *AsRef::<[u8; 32]>::as_ref(&alice_pk);
     let bindings = AccountBindingRepository::new(&store);
-    let _dropped = bindings
-        .narrow(&ns, alice, calimero_account::DeviceId::from(device), 1)
-        .unwrap();
+    let alice_device = super::test_fixtures::device_for(alice, device);
+    let _dropped = bindings.narrow(&ns, alice, alice_device, 1).unwrap();
     let withdrawn = || {
         bindings
-            .device_is_withdrawn(&ns, alice, calimero_account::DeviceId::from(device))
+            .device_is_withdrawn(&ns, alice, alice_device)
             .unwrap()
     };
     assert!(withdrawn(), "precondition: narrowed out");
@@ -7047,10 +7046,10 @@ fn a_device_id_bound_by_another_account_stays_withdrawn_for_the_first() {
     let _bound = bindings
         .apply_link(&ns, &mallory.genesis, &mallory.chain, &mallory.statement, 0)
         .unwrap()
-        .expect("an unbound device id links under another account");
+        .expect("a device minted from the same nonce links under another account");
     assert!(
         withdrawn(),
-        "another account's binding of the same id does not re-admit this account's device"
+        "another account's device sharing the nonce does not re-admit this account's device"
     );
 }
 
@@ -7538,10 +7537,8 @@ fn an_invited_join_signed_by_a_revoked_device_is_refused() {
     let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_sk.public_key());
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    // `real_join_account` certifies the device whose id is the signing key's bytes.
-    let device: [u8; 32] = *member_pk.as_ref();
     crate::AccountBindingRepository::new(&store)
-        .apply_revocation(&ns_gid, calimero_account::DeviceId::from(device))
+        .apply_revocation(&ns_gid, real_join_account(&member_pk).statement.device)
         .unwrap();
 
     let invitation = signed_invitation_for(&admin_sk, subgroup, [0xA7; 32]);
@@ -7650,9 +7647,9 @@ fn a_device_is_withdrawn_only_where_the_cut_and_the_rows_agree() {
     let ns = ContextGroupId::from([0xE4; 32]);
     let laptop_pk = PublicKey::from([0xE5; 32]);
     let account = account_for(&laptop_pk);
-    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
-    let phone = calimero_account::DeviceId::from([0xE6; 32]);
-    let tablet = calimero_account::DeviceId::from([0xE7; 32]);
+    let laptop = real_join_account(&laptop_pk).statement.device;
+    let phone = calimero_account::DeviceId::mint(account, [0xE6; 16]);
+    let tablet = calimero_account::DeviceId::mint(account, [0xE7; 16]);
     let bindings = AccountBindingRepository::new(&store);
     let withdrawn = |device: &calimero_account::DeviceId, at_cut: Option<u32>| {
         PermissionChecker::new(&store, ns)
@@ -7699,14 +7696,15 @@ fn a_device_is_withdrawn_only_where_the_cut_and_the_rows_agree() {
 #[test]
 fn a_device_withdrawal_at_an_unfolded_cut_is_undecidable() {
     let store = test_store();
+    let account = AccountId::from([0xE9; 32]);
     let err = PermissionChecker::new(&store, ContextGroupId::from([0xE8; 32]))
         .with_apply_auth(
             &crate::test_fixtures::TEST_CUT,
             &crate::test_fixtures::UnresolvableAuthorizer,
         )
         .device_withdrawn(
-            &AccountId::from([0xE9; 32]),
-            &calimero_account::DeviceId::from([0xEA; 32]),
+            &account,
+            &calimero_account::DeviceId::mint(account, [0xEA; 16]),
         )
         .unwrap_err();
     assert!(matches!(

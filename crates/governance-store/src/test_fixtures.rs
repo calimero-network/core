@@ -20,6 +20,8 @@ use calimero_store::Store;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
+pub const FOUNDER_DEVICE_SEED: [u8; 32] = [0x3E; 32]; // the device a founder credential certifies
+
 /// A fresh account root: its signing key and the genesis that names it.
 ///
 /// Returned as a pair so a test can mint SEVERAL credentials under one account —
@@ -313,7 +315,13 @@ pub fn namespace_genesis_v2_for(
 fn founder_credential(founder_sk: &PrivateKey) -> Box<JoinAccountCredential> {
     let root_sk = PrivateKey::from(*founder_sk.public_key());
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
-    join_account_for(&root_sk, genesis, &founder_sk.public_key(), [0x3E; 32], 0)
+    join_account_for(
+        &root_sk,
+        genesis,
+        &founder_sk.public_key(),
+        FOUNDER_DEVICE_SEED,
+        0,
+    )
 }
 
 /// The account [`namespace_genesis_for`] will establish for this founder.

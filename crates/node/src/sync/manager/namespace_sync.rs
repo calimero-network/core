@@ -4193,7 +4193,7 @@ mod join_responder_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use calimero_account::{AccountId, DeviceId};
+    use calimero_account::AccountId;
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -4392,7 +4392,10 @@ mod join_responder_tests {
         let joiner = party(0x07);
         let invitation = invitation_from(&r.admin, ns(), 1);
         AccountBindingRepository::new(&r.store)
-            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .apply_revocation(
+                &ns(),
+                real_join_account(&joiner.public_key()).statement.device,
+            )
             .unwrap();
 
         let reply = join_namespace(&r, &joiner, &invitation).await;
@@ -4412,7 +4415,10 @@ mod join_responder_tests {
             .unwrap();
         let invitation = invitation_from(&r.admin, ns(), 1);
         AccountBindingRepository::new(&r.store)
-            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .apply_revocation(
+                &ns(),
+                real_join_account(&joiner.public_key()).statement.device,
+            )
             .unwrap();
 
         let reply = join_namespace(&r, &joiner, &invitation).await;
@@ -4430,7 +4436,10 @@ mod join_responder_tests {
         let sibling = party(0x0B);
         let invitation = invitation_from(&r.admin, ns(), 1);
         AccountBindingRepository::new(&r.store)
-            .apply_revocation(&ns(), DeviceId::from(*revoked.public_key().digest()))
+            .apply_revocation(
+                &ns(),
+                real_join_account(&revoked.public_key()).statement.device,
+            )
             .unwrap();
 
         let root = PrivateKey::from(*revoked.public_key());
@@ -4456,7 +4465,10 @@ mod join_responder_tests {
         let joiner = party(0x0C);
         let invitation = invitation_from(&r.admin, ns(), 1);
         AccountBindingRepository::new(&r.store)
-            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .apply_revocation(
+                &ns(),
+                real_join_account(&joiner.public_key()).statement.device,
+            )
             .unwrap();
 
         let root = PrivateKey::from(*joiner.public_key());

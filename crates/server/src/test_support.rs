@@ -230,7 +230,7 @@ pub(crate) fn seed_device_members<const N: usize>(
     calimero_account::AccountId,
     calimero_primitives::identity::DeviceId,
 ); N] {
-    use calimero_governance_store::test_fixtures::enrol_member;
+    use calimero_governance_store::test_fixtures::{enrol_member, real_join_account};
     use calimero_governance_store::{MembershipRepository, NamespaceRepository};
     use calimero_primitives::context::GroupMemberRole;
 
@@ -245,7 +245,7 @@ pub(crate) fn seed_device_members<const N: usize>(
                 .add_member(group, &account, GroupMemberRole::Member)
                 .unwrap();
         }
-        (account, calimero_primitives::identity::DeviceId::from(*key))
+        (account, real_join_account(&key).statement.device)
     })
 }
 
