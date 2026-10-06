@@ -231,9 +231,38 @@ Each page payload is an lz4-compressed run of records. The current format (senti
 
 Snapshot apply does not behave like the incremental protocols — it has three properties worth stating outright, because each is a deliberate trade-off (`crates/node/src/sync/snapshot.rs`).
 
-**It is a full REPLACE, not a merge.** Before the first page lands the receiver snapshots its existing state keys; after the last page it calls `cleanup_stale_keys`, which deletes every key that existed locally but was *not* present in the snapshot (`snapshot.rs:1022`). A key the receiver held that the sender has since deleted is therefore removed — the snapshot is treated as the authoritative whole, not a set of additions. The one deliberate exception is rotation history the receiver rebuilt locally from delta replay: those keys are kept in the received set so the cleanup does not wipe them (`snapshot.rs:535`).
+**It is a full REPLACE, not a merge.** Before the first page lands the receiver snapshots its existing state keys; once the snapshot checks out, its install deletes every key that existed locally but is *not* in it. A key the receiver held that the sender has since deleted is therefore removed — the snapshot is treated as the authoritative whole, not a set of additions.
 
-**It bypasses `apply_action`.** Each verified `Entity` record is written with a raw `put` after its signature checks out — it does **not** go through `Interface::apply_action`, so there is no nonce-replay protection and no CRDT merge on this path (`snapshot.rs:640`). That is sound only because `request_snapshot_sync` refuses a snapshot when the local context is already initialized; the sole bypass is `force = true`, reserved for crash recovery where an on-disk marker confirms the local state was already mid-snapshot and is known-incomplete. In both cases the receiver holds no newer state that an older-nonce write could clobber. If that gate ever loosens, this path would need the nonce / CRDT-merge logic the incremental leaf-apply uses.
+**It is staged, checked as a tree, then installed.**
+Pages are written to a staging column of their own (`Column::SnapshotStage`, `sync/snapshot/stage.rs`), never to the context's state, so memory stays bounded whatever the context's size.
+When the stream ends, the receiver links every staged entity into its parent's staged child trie and checks that each entity's children fold to the `full_hash` it ships, that no parent chain loops, that the root names no parent, and that the root's hash is the `boundary_root_hash`.
+Only then does it set the `sync-in-progress` marker and move the staged rows into the context's state, deleting the keys they replace.
+A snapshot that fails any check leaves the context's state as it was and sets no marker, so the next attempt is an ordinary bootstrap (or an ordinary refused resync), not crash recovery.
+The staging area is cleared when an install ends either way, and before each one starts, so rows a crash left there are never counted.
+The move into the context's state is not one atomic write; a crash part way leaves the marker, and the next attempt is crash recovery.
+A `Public` entity the root does not reach is not installed, since nothing binds it to the claimed root; a signed one is, since its signature is checked on its own.
+A future-schema leaf is staged so the tree check counts it, and buffered in the absorb buffer only once the tree checks out.
+
+**A source whose tree does not fold cannot serve a snapshot.**
+Orphan index rows with no entry, dropped or declined entities on the source, or a stale parent trie entry all make a source's own hashes disagree with its rows, and the receiver refuses the snapshot, logging the entity, its parent and both hashes.
+A source that answers from a torn read is refused the same way.
+An honest node can be such a source: repair writes an applied entry row by row straight to the store, so a process killed part way through one apply is left with hashes that disagree, and neither a redelivery of the same entry nor a later write elsewhere in the tree is sure to put them right.
+The serving node checks its own tree when it starts a stream and warns with the context and the first inconsistent entity (`first_unfolding_entity`); it still serves, and the receiver's refusal names the same entity.
+A refusal is specific to the peer, so the receiver goes on to the next peer in the same sync round, and only when every peer has failed does the context back off, exponentially up to 5 minutes.
+
+**It bypasses `apply_action`.** Each verified `Entity` record is staged after its signature checks out and installed as it was shipped — it does **not** go through `Interface::apply_action`, so there is no nonce-replay protection and no CRDT merge on this path. That is sound only because `request_snapshot_sync` refuses a snapshot when the local context is already initialized; the sole bypass is `force = true`, reserved for crash recovery where an on-disk marker confirms the local state was already mid-snapshot and is known-incomplete. In both cases the receiver holds no newer state that an older-nonce write could clobber. If that gate ever loosens, this path would need the nonce / CRDT-merge logic the incremental leaf-apply uses.
+
+**Every entity is checked on arrival, and one that fails a check fails the snapshot.**
+Before anything else, each entity's index row must name it, its update time may be at most the 5 s drift tolerance ahead of the local clock, and its bytes must hash to the `own_hash` its row carries (`sync/snapshot/leaf.rs`).
+A joiner whose clock runs more than 5 s behind its source therefore cannot bootstrap.
+An entity that then fails its signature, owner, TEE-only or anchor check, or whose index row does not decode, is not dropped: the snapshot fails.
+Its parent's shipped hash counts it, so a snapshot installed without it would publish the source's root over state that lacks it, and nothing would notice the hole.
+An entry a relay wrote on a member's behalf is taken when its signer is a `RelayTee` now or was one at the cut of some governance op the joiner has folded.
+A leaf carries no cut, so the joiner cannot ask whether the relay was seated when it wrote, only whether it ever was; every peer that applied the entry by delta did so at the delta's cut and still holds it, so a joiner that dropped or refused it could never hold their state.
+A signer the joiner's folded history never seats as a relay still fails the snapshot, as does one whose seat sits in history the joiner has not folded or no longer retains: the first is retried, the second needs a source for the governance history.
+Two honest cases still fail: the joiner's governance lags the source's (retryable, as for an unknown signer), and the signer was a TEE authority that has since been removed or whose evidence has lapsed.
+A leaf whose schema this node cannot read yet is set aside without failing, after its bytes and signature check out.
+The boundary root itself remains the serving peer's claim: the tree check proves the rows it served are consistent with that claim, and nothing signed by another member names a context's data root.
 
 **It never ships rotation logs.** Every `Auxiliary` record — including `ROTATION_LOG` — is rejected on receipt, because no `Auxiliary` kind is per-record signature-verifiable yet and a forged rotation log would let the verifier accept actions from writers who weren't authorized at the relevant causal point (`snapshot.rs:808`). The receiver instead reconstructs writer-rotation history from verified delta replay. The bounded edge case: a late-arriving pre-snapshot delta that references a rotation point before the snapshot may fail to verify until per-entry rotation-log signing lands.
 
@@ -241,7 +270,7 @@ Snapshot apply does not behave like the incremental protocols — it has three p
 
 Two paths let a snapshot overwrite an already-initialized context, both bypassing the fresh-node invariant of the previous section.
 
-- **Crash recovery.** Before the first page lands, the receiver writes a `sync-in-progress` marker keyed by context id (`snapshot.rs:1043-1061`). If the node crashes mid-snapshot, that on-disk marker is still present on restart; `request_snapshot_sync` treats its presence as `is_crash_recovery` and forces a re-sync **without** an explicit `force` flag — the local state is known-incomplete, so the fresh-node gate is the wrong thing to enforce (`snapshot.rs:58-60,324-329`). The marker is the only thing that lets the bypass happen silently.
+- **Crash recovery.** Once the staged snapshot checks out, and before its rows move into the context's state, the receiver writes a `sync-in-progress` marker keyed by context id. If the node crashes after that, that on-disk marker is still present on restart; `request_snapshot_sync` treats its presence as `is_crash_recovery` and forces a re-sync **without** an explicit `force` flag — the local state is known-incomplete, so the fresh-node gate is the wrong thing to enforce (`snapshot.rs:58-60,324-329`). The marker is the only thing that lets the bypass happen silently.
 - **Operator resync (`force = true`).** A `force` resync (routed from `handle_dag_sync` for a `ContextResyncRequested` context) disables **both** the fresh-node gate (`snapshot.rs:329`) **and** the per-entity schema fence (`snapshot.rs:561-570`): a stranded context's loaded reader is its old bound blob, so fencing would decline the peer's current-schema entities and recover nothing. The receiver therefore adopts the peer's state wholesale, even from a peer that is behind — so the activation marker is bound to the **schema actually observed** on the applied entities, not the group target, so the result isn't mislabeled "up to date" (`snapshot.rs:490-502`).
 
 ## Side messages: blobs and key recovery

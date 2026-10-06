@@ -1552,7 +1552,7 @@ impl<'a> NamespaceGovernance<'a> {
             crate::member_account_in_namespace(self.store, &group_gid, &requester.identity)?;
         let is_member = match requester_account {
             Some(account) => {
-                MembershipRepository::new(self.store).is_member(&group_gid, &account)?
+                MembershipRepository::new(self.store).is_live_member(&group_gid, &account)?
             }
             None => false,
         };
@@ -1577,6 +1577,11 @@ impl<'a> NamespaceGovernance<'a> {
                 group_key
             }
             None => {
+                // Under the namespace key the group's own current row encrypts nothing
+                // yet, and is not for members who only inherit the group.
+                if crate::key_covering_group(self.store, &group_gid)? != group_gid {
+                    return Ok((Vec::new(), requester.identity));
+                }
                 let Some((_key_id, group_key)) =
                     GroupKeyring::new(self.store, group_gid).load_current_key()?
                 else {
@@ -4355,13 +4360,9 @@ pub fn collect_skeleton_delta_ids_for_group(
     NamespaceGovernance::new(store, namespace_id).collect_skeleton_delta_ids_for_group(group_id)
 }
 
-/// Whether a rotation riding a delegated op is an admin's.
-///
-/// True only for a wrapper around a removal or a self-leave that the relay
-/// signing the rotation is the certified executor of, and whose author is an
-/// admin of the group at the op's cut — the same authority a self-signed
-/// rotation needs, asked of the member the op was applied as.
-fn delegated_rotator_is_admin(
+/// Whether a rotation riding a delegated removal, leave or flip to Restricted is an admin's:
+/// the relay is its certified executor and the author is an admin at the op's cut.
+pub(super) fn delegated_rotator_is_admin(
     permissions: &PermissionChecker<'_>,
     op: &SignedNamespaceOp,
     delegated_inner: Option<&GroupOp>,
@@ -4375,7 +4376,11 @@ fn delegated_rotator_is_admin(
     };
     if !matches!(
         **inner,
-        GroupOp::MemberRemoved { .. } | GroupOp::MemberLeft { .. }
+        GroupOp::MemberRemoved { .. }
+            | GroupOp::MemberLeft { .. }
+            | GroupOp::SubgroupVisibilitySet {
+                mode: calimero_context_config::VisibilityMode::Restricted
+            }
     ) || delegation.executor_key != op.signer
     {
         return Ok(false);

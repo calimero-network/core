@@ -5,12 +5,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
+use rand::RngExt;
 use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
-use tracing::{debug, error, info, warn};
+use tokio::sync::{Mutex, Semaphore};
+use tracing::{debug, error};
+use uuid::Uuid;
 use validator::Validate;
 
 use crate::api::handlers::auth::TokenRequest;
@@ -22,65 +23,108 @@ use crate::providers::core::provider::{
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
-use crate::storage::models::Key;
-use crate::storage::{KeyManager, Storage};
+use crate::storage::models::{Key, PasswordLogin};
+use crate::storage::{KeyManager, Storage, StorageError};
 use crate::{register_auth_data_type, register_auth_provider, AuthResponse};
 
-/// Application-wide salt prefix for deriving the username/password key id.
-///
-/// The key id doubles as the storage lookup key, so it must be reproducible
-/// from the credentials alone, with no per-user state stored before lookup.
-/// A per-user *random* salt is therefore impossible in this model. We instead
-/// derive a per-user salt deterministically as `KEY_ID_SALT_PREFIX || username`
-/// (the username is known at lookup time), which defeats cross-user precomputed
-/// (rainbow) tables, and rely on the PBKDF2 iteration count for offline
-/// brute-force resistance. Tradeoff: because the salt is derived (not random),
-/// an attacker who learns the scheme can still mount a per-target attack, but
-/// that attack is now PBKDF2-stretched rather than a single unsalted SHA256.
-const KEY_ID_SALT_PREFIX: &[u8] = b"calimero:auth:user_password:key-id:v1:";
+const PASSWORD_PBKDF2_ITERATIONS: NonZeroU32 = NonZeroU32::new(600_000).unwrap(); // PBKDF2-HMAC-SHA256 rounds, the OWASP minimum
+const PASSWORD_SALT_LEN: usize = 16; // random salt bytes per stored password
+const PASSWORD_HASH_LEN: usize = 32; // stored hash bytes
+static REGISTER_LOCK: Mutex<()> = Mutex::const_new(()); // one registration at a time, so a username gets one key id
 
-/// PBKDF2 iteration count for key-id derivation.
-const KEY_ID_PBKDF2_ITERATIONS: u32 = 100_000;
-
-/// Length of the derived key-id, in bytes (256-bit, hex-encoded to 64 chars).
-const KEY_ID_LEN: usize = 32;
-
-/// Deterministically derive the storage key id from credentials using a
-/// per-user-salted PBKDF2-HMAC-SHA256, replacing the previous unsalted SHA256.
-///
-/// `pub(crate)` so the offline provisioning path ([`crate::provisioning`]) can
-/// mint the admin root key under exactly the id the login path will look up.
-pub(crate) fn derive_key_id(username: &str, password: &str) -> String {
-    // Per-user deterministic salt: fixed domain-separation prefix + username.
-    let mut salt = Vec::with_capacity(KEY_ID_SALT_PREFIX.len() + username.len());
-    salt.extend_from_slice(KEY_ID_SALT_PREFIX);
-    salt.extend_from_slice(username.as_bytes());
-
-    // Iteration count is a non-zero compile-time constant.
-    let iterations = NonZeroU32::new(KEY_ID_PBKDF2_ITERATIONS)
-        .expect("KEY_ID_PBKDF2_ITERATIONS must be non-zero");
-
-    let mut out = [0u8; KEY_ID_LEN];
+/// Hash `password` under `salt`.
+fn hash_password(password: &str, salt: &[u8]) -> Vec<u8> {
+    let mut hash = vec![0u8; PASSWORD_HASH_LEN];
     pbkdf2::derive(
         pbkdf2::PBKDF2_HMAC_SHA256,
-        iterations,
-        &salt,
+        PASSWORD_PBKDF2_ITERATIONS,
+        salt,
         password.as_bytes(),
-        &mut out,
+        &mut hash,
     );
-    hex::encode(out)
+    hash
 }
 
-/// The pre-PBKDF2 key-id derivation: an unsalted `SHA256("user_password:{u}:{p}")`.
-///
-/// Retained ONLY so that a node upgraded from a release that used this scheme
-/// can still find the root key it already stored, and transparently re-key it to
-/// the salted derivation on the next successful login (see
-/// [`UserPasswordProvider::verify_credentials`]). Never used to *create* a key.
-fn legacy_key_id(username: &str, password: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(format!("user_password:{username}:{password}").as_bytes());
-    hex::encode(hasher.finalize())
+/// Refuses a login this node cannot check, without counting it as a wrong password.
+fn verification_unavailable() -> eyre::Report {
+    eyre::Report::new(LoginRejection::Unavailable(
+        "Password verification is unavailable".to_owned(),
+    ))
+}
+
+/// Whether `password` opens `login`. An unknown user is checked against a dummy
+/// hash, so the answer takes as long and does not tell which usernames exist.
+fn password_opens(login: Option<&PasswordLogin>, password: &str) -> bool {
+    let dummy = ([0u8; PASSWORD_SALT_LEN], [0u8; PASSWORD_HASH_LEN]);
+    let (salt, hash) = login.map_or((&dummy.0[..], &dummy.1[..]), |login| {
+        (&login.salt[..], &login.hash[..])
+    });
+    let matches = pbkdf2::verify(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        PASSWORD_PBKDF2_ITERATIONS,
+        salt,
+        password.as_bytes(),
+        hash,
+    )
+    .is_ok();
+    matches && login.is_some()
+}
+
+/// Store `key` as the root key `username` opens with `password` and return its
+/// id and whether it replaced an account. A new password gets a new id.
+pub(crate) async fn register_root_key(
+    key_manager: &KeyManager,
+    username: &str,
+    password: &str,
+    key: &Key,
+) -> eyre::Result<(String, bool)> {
+    let _guard = REGISTER_LOCK.lock().await;
+    let previous = key_manager.password_login(username).await?;
+
+    let (checked, password) = (previous.clone(), password.to_owned());
+    let (same_password, salt, hash) = tokio::task::spawn_blocking(move || {
+        let salt: [u8; PASSWORD_SALT_LEN] = rand::rng().random();
+        let hash = hash_password(&password, &salt);
+        let same = checked.is_some_and(|login| password_opens(Some(&login), &password));
+        (same, salt.to_vec(), hash)
+    })
+    .await
+    .map_err(|err| eyre::eyre!("Password hashing task failed: {err}"))?;
+
+    // The id survives only while its key is live: reusing a revoked one would
+    // bring back every token minted under it.
+    let live_id = match &previous {
+        Some(login) if same_password => key_manager
+            .get_key(&login.key_id)
+            .await?
+            .map(|_| login.key_id.clone()),
+        _ => None,
+    };
+    let key_id = live_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    // Retire the old key before writing the new one: a crash then locks the user
+    // out until a re-run, but never leaves the old password's sessions alive.
+    if let Some(stale) = previous.as_ref().filter(|login| login.key_id != key_id) {
+        let _revoked = key_manager
+            .delete_client_keys_for_root(&stale.key_id)
+            .await?;
+        match key_manager.delete_key(&stale.key_id).await {
+            Ok(()) | Err(StorageError::NotFound) => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    key_manager
+        .set_password_login(
+            username,
+            &PasswordLogin {
+                key_id: key_id.clone(),
+                salt,
+                hash,
+            },
+        )
+        .await?;
+    let _existed = key_manager.set_key(&key_id, key).await?;
+    Ok((key_id, previous.is_some()))
 }
 
 /// Enforce configured password length bounds.
@@ -179,39 +223,29 @@ impl UserPasswordProvider {
         }
     }
 
-    /// Hash username and password to create a unique key ID
-    ///
-    /// # Arguments
-    ///
-    /// * `username` - The username
-    /// * `password` - The password
-    ///
-    /// # Returns
-    ///
-    /// * `String` - The generated key ID
-    async fn generate_key_id(&self, username: &str, password: &str) -> eyre::Result<String> {
-        let unavailable = || {
-            eyre::Report::new(LoginRejection::Unavailable(
-                "Password verification is unavailable".to_owned(),
-            ))
-        };
+    /// Check `password` against `login` off the async workers, behind the KDF semaphore.
+    async fn check_password(
+        &self,
+        login: Option<PasswordLogin>,
+        password: &str,
+    ) -> eyre::Result<bool> {
         let permit = Arc::clone(&self.kdf_permits)
             .acquire_owned()
             .await
             .map_err(|err| {
                 error!("Key derivation permit unavailable: {err}");
-                unavailable()
+                verification_unavailable()
             })?;
-        let (username, password) = (username.to_owned(), password.to_owned());
+        let password = password.to_owned();
         // The permit moves into the task so it is held until the derivation ends.
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            derive_key_id(&username, &password)
+            password_opens(login.as_ref(), &password)
         })
         .await
         .map_err(|err| {
             error!("Key derivation task failed: {err}");
-            unavailable()
+            verification_unavailable()
         })
     }
 
@@ -225,48 +259,6 @@ impl UserPasswordProvider {
             self.config.min_password_length,
             self.config.max_password_length,
         )
-    }
-
-    /// Re-key a root key stored under the legacy unsalted-SHA256 id onto the
-    /// salted-KDF id, in place, on a successful credential match.
-    ///
-    /// Returns the key under its NEW id when the migration applies, `None` when
-    /// no legacy key exists for these credentials (i.e. the credentials are
-    /// simply wrong). The move is write-then-delete: if the process dies between
-    /// the two, the key exists under both ids and the next login resolves via
-    /// the new id — never a state where the key is gone.
-    async fn migrate_legacy_key(
-        &self,
-        username: &str,
-        password: &str,
-        new_key_id: &str,
-    ) -> eyre::Result<Option<(String, Key)>> {
-        let legacy_id = legacy_key_id(username, password);
-
-        let Some(key) = self.key_manager.get_key(&legacy_id).await? else {
-            return Ok(None);
-        };
-        if !key.is_valid() || !key.is_root_key() {
-            return Ok(None);
-        }
-
-        // Store under the new id first so a crash can't lose the key.
-        self.key_manager.set_key(new_key_id, &key).await?;
-        if let Err(e) = self.key_manager.delete_key(&legacy_id).await {
-            // The new id is already usable; a stale legacy copy is harmless and
-            // will be retried on the next login. Don't fail the login for it.
-            warn!(
-                error = %e,
-                "Migrated user_password key id but failed to delete the legacy entry"
-            );
-        }
-
-        info!(
-            user = %crate::utils::sanitize_for_log(username),
-            "Migrated user_password root key from the legacy unsalted key id to the salted KDF id"
-        );
-
-        Ok(Some((new_key_id.to_string(), key)))
     }
 
     /// Verify username and password by checking if corresponding root key exists
@@ -284,28 +276,26 @@ impl UserPasswordProvider {
         username: &str,
         password: &str,
     ) -> eyre::Result<Option<(String, Key)>> {
-        // Generate key ID from username/password
-        let key_id = self.generate_key_id(username, password).await?;
+        let login = self
+            .key_manager
+            .password_login(username)
+            .await
+            .map_err(|err| {
+                error!("Failed to read the password login: {err}");
+                verification_unavailable()
+            })?;
+        let key_id = login.as_ref().map(|login| login.key_id.clone());
+        let opens = self.check_password(login, password).await?;
+        let Some(key_id) = key_id.filter(|_| opens) else {
+            return Ok(None);
+        };
 
-        // Try to get the root key
         match self.key_manager.get_key(&key_id).await {
-            Ok(Some(key)) => {
-                if key.is_valid() && key.is_root_key() {
-                    Ok(Some((key_id, key)))
-                } else {
-                    Ok(None)
-                }
-            }
-            // No key under the salted id. Before rejecting, check whether this
-            // node still stores the key under the OLD unsalted-SHA256 id: on an
-            // upgraded node every pre-existing user is in exactly that state,
-            // and without this migration they would be permanently locked out
-            // of their own node (the login path never mints keys, so nothing
-            // else could rescue them).
-            Ok(None) => self.migrate_legacy_key(username, password, &key_id).await,
+            Ok(Some(key)) if key.is_root_key() => Ok(Some((key_id, key))),
+            Ok(_) => Ok(None),
             Err(err) => {
-                error!("Failed to get root key: {}", err);
-                Err(eyre::eyre!("Failed to verify credentials: {}", err))
+                error!("Failed to get root key: {err}");
+                Err(verification_unavailable())
             }
         }
     }
@@ -382,6 +372,7 @@ impl AuthVerifierFn for UserPasswordVerifier {
             // the provider cannot know.
             device: None,
             is_valid: true,
+            user_id: key_id.clone(),
             key_id,
             permissions,
         })
@@ -565,10 +556,6 @@ impl AuthProvider for UserPasswordProvider {
         // Enforce password length bounds before creating the root key.
         self.validate_password(password)?;
 
-        // Generate key ID from username/password
-        let key_id = self.generate_key_id(username, password).await?;
-
-        // Create the root key
         let root_key = Key::new_root_key_with_permissions(
             public_key.to_string(),
             auth_method.to_string(),
@@ -576,12 +563,11 @@ impl AuthProvider for UserPasswordProvider {
             node_url.map(|s| s.to_string()),
         );
 
-        // Store the root key using KeyManager
-        let was_updated = self
-            .key_manager
-            .set_key(&key_id, &root_key)
-            .await
-            .map_err(|err| eyre::eyre!("Failed to store root key: {}", err))?;
+        // An existing username gets the new password; its old key and sessions are revoked.
+        let (_key_id, was_updated) =
+            register_root_key(&self.key_manager, username, password, &root_key)
+                .await
+                .map_err(|err| eyre::eyre!("Failed to store root key: {}", err))?;
 
         Ok(was_updated)
     }
@@ -626,12 +612,10 @@ register_auth_data_type!(UserPasswordAuthDataType);
 
 #[cfg(test)]
 mod tests {
-    use sha2::{Digest, Sha256};
-
     use super::*;
     use crate::config::JwtConfig;
     use crate::secrets::SecretManager;
-    use crate::storage::models::KeyType;
+    use crate::storage::models::{prefixes, KeyType};
     use crate::storage::MemoryStorage;
 
     /// A provider backed by in-memory storage. `config` lets a test set the
@@ -668,12 +652,6 @@ mod tests {
             .await
             .unwrap()
             .len()
-    }
-
-    fn old_unsalted_key_id(username: &str, password: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("user_password:{username}:{password}").as_bytes());
-        hex::encode(hasher.finalize())
     }
 
     // --- the login path can never mint a key (TOFU removal, finding #2) --
@@ -729,117 +707,217 @@ mod tests {
         assert_eq!(root_key_count(&provider).await, 1);
     }
 
-    // --- legacy key-id migration (upgrade path, finding #4) --------------
-
     #[tokio::test]
-    async fn legacy_key_id_is_migrated_in_place_on_login() {
-        // An upgraded node stores the root key under the OLD unsalted id.
-        // Without migration the salted lookup misses, root keys exist so the
-        // bootstrap branch is skipped, and the operator is locked out forever.
+    async fn a_wrong_password_is_refused() {
         let provider = test_provider(UserPasswordConfig::default());
-        let (user, pass) = ("alice", "correct horse battery staple");
+        let _key_id = crate::provisioning::provision_admin_key(
+            &provider.storage,
+            &provider.config,
+            "alice",
+            "right-password",
+        )
+        .await
+        .unwrap();
 
-        let legacy_id = old_unsalted_key_id(user, pass);
-        let key = Key::new_root_key_with_permissions(
-            user.to_string(),
-            "user_password".to_string(),
-            vec!["admin".to_string()],
-            None,
-        );
-        provider
-            .key_manager
-            .set_key(&legacy_id, &key)
-            .await
-            .unwrap();
-
-        // The existing operator can still log in (no bootstrap secret needed —
-        // they match on the migration/fast path, not the bootstrap branch).
-        let (key_id, permissions) = provider
-            .authenticate_core(user, pass)
-            .await
-            .expect("an existing user must not be locked out by the key-id change");
-
-        // ...and they are silently re-keyed onto the salted id.
-        let new_id = derive_key_id(user, pass);
-        assert_eq!(key_id, new_id, "login must return the migrated key id");
-        assert_eq!(permissions, vec!["admin".to_string()]);
-        assert!(
-            provider
-                .key_manager
-                .get_key(&new_id)
-                .await
-                .unwrap()
-                .is_some(),
-            "key must now exist under the salted id"
-        );
-        assert!(
-            provider
-                .key_manager
-                .get_key(&legacy_id)
-                .await
-                .unwrap()
-                .is_none(),
-            "legacy entry must be removed after migration"
-        );
-
-        // A second login resolves directly via the new id.
-        let (again, _) = provider.authenticate_core(user, pass).await.unwrap();
-        assert_eq!(again, new_id);
-    }
-
-    #[tokio::test]
-    async fn wrong_password_does_not_migrate_or_authenticate() {
-        let provider = test_provider(UserPasswordConfig::default());
-        let legacy_id = old_unsalted_key_id("alice", "right-password");
-        let key = Key::new_root_key_with_permissions(
-            "alice".to_string(),
-            "user_password".to_string(),
-            vec!["admin".to_string()],
-            None,
-        );
-        provider
-            .key_manager
-            .set_key(&legacy_id, &key)
-            .await
-            .unwrap();
-
-        // Wrong password: no legacy key exists for THOSE credentials.
         assert!(provider
             .authenticate_core("alice", "wrong-password")
             .await
             .is_err());
-        // The real key is untouched.
         assert!(provider
+            .authenticate_core("alice", "right-password")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_root_key_assigns_a_random_key_id() {
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let provider = test_provider(UserPasswordConfig::default());
+            let _created = provider
+                .create_root_key(
+                    "pk",
+                    "user_password",
+                    serde_json::json!({ "username": "alice", "password": "password-1" }),
+                    None,
+                )
+                .await
+                .unwrap();
+            let (key_id, _) = provider
+                .authenticate_core("alice", "password-1")
+                .await
+                .unwrap();
+            ids.push(key_id);
+        }
+
+        assert_ne!(
+            ids[0], ids[1],
+            "the same credentials must not give the same id"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_root_key_with_a_new_password_retires_the_old_one() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let mut replaced = Vec::new();
+        for password in ["password-1", "password-2"] {
+            replaced.push(
+                provider
+                    .create_root_key(
+                        "pk",
+                        "user_password",
+                        serde_json::json!({ "username": "alice", "password": password }),
+                        None,
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        assert_eq!(replaced, [false, true], "the second call replaces alice");
+
+        assert!(provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .is_err());
+        assert!(provider
+            .authenticate_core("alice", "password-2")
+            .await
+            .is_ok());
+        assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[tokio::test]
+    async fn the_same_credentials_are_hashed_under_a_fresh_salt_each_time() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let mut logins = Vec::new();
+        for _ in 0..2 {
+            let _key_id = crate::provisioning::provision_admin_key(
+                &provider.storage,
+                &provider.config,
+                "alice",
+                "shared-password",
+            )
+            .await
+            .unwrap();
+            logins.push(
+                provider
+                    .key_manager
+                    .password_login("alice")
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+
+        assert_ne!(logins[0].salt, logins[1].salt);
+        assert_ne!(logins[0].hash, logins[1].hash);
+    }
+
+    #[tokio::test]
+    async fn concurrent_registrations_of_one_user_agree_on_one_id() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let register = || {
+            crate::provisioning::provision_admin_key(
+                &provider.storage,
+                &provider.config,
+                "alice",
+                "password-1",
+            )
+        };
+
+        let (a, b) = tokio::join!(register(), register());
+
+        assert_eq!(a.unwrap(), b.unwrap());
+        assert_eq!(root_key_count(&provider).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_user_is_refused_with_the_right_password() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let key_id = crate::provisioning::provision_admin_key(
+            &provider.storage,
+            &provider.config,
+            "alice",
+            "password-1",
+        )
+        .await
+        .unwrap();
+        let mut key = provider
             .key_manager
-            .get_key(&legacy_id)
+            .get_key(&key_id)
             .await
             .unwrap()
-            .is_some());
+            .unwrap();
+        key.revoke();
+        let _ = provider.key_manager.set_key(&key_id, &key).await.unwrap();
+
+        assert!(provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_login_whose_key_is_gone_is_refused_until_reprovisioned() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let provision = || {
+            crate::provisioning::provision_admin_key(
+                &provider.storage,
+                &provider.config,
+                "alice",
+                "password-1",
+            )
+        };
+        let key_id = provision().await.unwrap();
+        provider.key_manager.delete_key(&key_id).await.unwrap();
+
+        assert!(provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .is_err());
+
+        let _ = provision().await.unwrap();
+        assert!(provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_login_is_refused() {
+        let provider = test_provider(UserPasswordConfig::default());
+        let path = format!("{}alice", prefixes::PASSWORD_LOGIN);
+        provider.storage.set(&path, b"not a login").await.unwrap();
+
+        let err = provider
+            .authenticate_core("alice", "password-1")
+            .await
+            .expect_err("must be refused");
+        assert!(matches!(
+            err.downcast_ref::<LoginRejection>(),
+            Some(LoginRejection::Unavailable(_))
+        ));
     }
 
     // --- password bounds apply to CREATION, not to existing logins -------
 
     #[tokio::test]
-    async fn short_legacy_password_still_authenticates_after_upgrade() {
+    async fn a_password_below_a_raised_minimum_still_authenticates() {
         // The min-length policy must not lock out a user whose password predates
         // it (e.g. the `dev`/`dev` credentials every e2e harness uses).
         let provider = test_provider(UserPasswordConfig::default());
-        let (user, pass) = ("dev", "dev"); // 3 chars, below the min of 8
-        let legacy_id = old_unsalted_key_id(user, pass);
-        let key = Key::new_root_key_with_permissions(
-            user.to_string(),
-            "user_password".to_string(),
-            vec!["admin".to_string()],
-            None,
-        );
-        provider
-            .key_manager
-            .set_key(&legacy_id, &key)
-            .await
-            .unwrap();
+        let lax = UserPasswordConfig {
+            min_password_length: 0,
+            ..UserPasswordConfig::default()
+        };
+        let _key_id =
+            crate::provisioning::provision_admin_key(&provider.storage, &lax, "dev", "dev")
+                .await
+                .unwrap();
 
         assert!(
-            provider.authenticate_core(user, pass).await.is_ok(),
+            provider.authenticate_core("dev", "dev").await.is_ok(),
             "an existing short password must still authenticate"
         );
     }
@@ -878,6 +956,7 @@ mod tests {
         let provider = test_provider(UserPasswordConfig::default());
         provider.kdf_permits.close();
 
+        // No "alice" exists, so this also pins that an unknown user pays for a hash.
         let err = provider
             .authenticate_core("alice", "some password")
             .await
@@ -907,42 +986,6 @@ mod tests {
         assert!(
             !done_when_others_ran,
             "other tasks must be able to run while a password is being hashed"
-        );
-    }
-
-    // --- salted KDF key-id derivation (finding #4) ----------------------
-
-    #[test]
-    fn test_derive_key_id_is_deterministic() {
-        let a = derive_key_id("alice", "correct horse battery staple");
-        let b = derive_key_id("alice", "correct horse battery staple");
-        assert_eq!(a, b);
-        assert_eq!(a.len(), KEY_ID_LEN * 2); // hex of 32 bytes
-    }
-
-    #[test]
-    fn test_derive_key_id_differs_by_password() {
-        let a = derive_key_id("alice", "password-one");
-        let b = derive_key_id("alice", "password-two");
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn test_derive_key_id_differs_by_username() {
-        // Same password, different user -> different id (per-user salt).
-        let a = derive_key_id("alice", "shared-password");
-        let b = derive_key_id("bob", "shared-password");
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn test_derive_key_id_is_salted_not_plain_sha256() {
-        // The new derivation must not equal the old unsalted SHA256.
-        let username = "alice";
-        let password = "correct horse battery staple";
-        assert_ne!(
-            derive_key_id(username, password),
-            old_unsalted_key_id(username, password)
         );
     }
 

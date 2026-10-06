@@ -600,11 +600,33 @@ enum EventRoute {
 }
 
 async fn fan_out_node_events(state: Arc<ServiceState>) {
+    // Listen before re-deriving, so a withdrawal lands either before the
+    // re-derive (which sees it) or after it (and arrives below).
+    let mut withdrawals = calimero_governance_store::op_events::subscribe();
     let events = state.node_client.receive_events();
+    prune_stale_grants(&state, None, None).await;
 
     let mut events = pin!(events);
 
-    while let Some(event) = events.next().await {
+    loop {
+        let event = tokio::select! {
+            // Before the next event, so a withdrawn device is served nothing after it.
+            biased;
+            withdrawn = next_withdrawal(&mut withdrawals) => {
+                match withdrawn {
+                    Some(withdrawal) => {
+                        prune_stale_grants(&state, Some(&withdrawal.namespace), Some(&withdrawal))
+                            .await;
+                    }
+                    None => prune_stale_grants(&state, None, None).await,
+                }
+                continue;
+            }
+            event = events.next() => match event {
+                Some(event) => event,
+                None => break,
+            },
+        };
         // Route by id-space: context events by context_id, membership and
         // migration events by group_id.
         let route = match &event {
@@ -696,7 +718,7 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
         // removed on the same stream the removal takes away from them. Pruning
         // first would drop the one event that explains the silence.
         if let Some(group_id) = membership_changed {
-            prune_stale_grants(&state, &group_id).await;
+            prune_stale_grants(&state, Some(&group_id), None).await;
         }
     }
 
@@ -706,12 +728,14 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
 /// Re-derive authority for the connections whose grants just went stale, and
 /// drop whatever no longer passes the subscribe-time gate.
 ///
-/// Run after a membership change on `group_id`. The narrowing is the point: a
-/// connection whose subscriptions do not depend on that group answers with one
-/// hash-set lookup and is skipped, so the store-touching re-derivation below
-/// runs only for connections the change could genuinely have affected. This
-/// function previously re-authorized *every* connection against the store on
-/// *every* removal.
+/// Run after a membership change or device withdrawal on `group_id`; `None`
+/// re-derives every connection, for when the fan-out may have missed one. A
+/// `withdrawal` also skips connections it cannot affect. The
+/// narrowing is the point: a connection whose subscriptions do not depend on
+/// that group answers with one hash-set lookup and is skipped, so the
+/// store-touching re-derivation below runs only for connections the change
+/// could genuinely have affected. This function previously re-authorized
+/// *every* connection against the store on *every* removal.
 ///
 /// The set a connection is tested against includes each governing group's
 /// ANCESTORS, so an inherited member of a descendant is caught by a removal
@@ -719,11 +743,15 @@ async fn fan_out_node_events(state: Arc<ServiceState>) {
 ///
 /// Node-owner and identity-less no-auth connections are unaffected; the gates
 /// admit them, so they never appear in a revocation.
-async fn prune_stale_grants(state: &ServiceState, group_id: &Hash) {
-    // Snapshot under the read lock, re-authorize without it. The membership
+async fn prune_stale_grants(
+    state: &ServiceState,
+    group_id: Option<&Hash>,
+    withdrawal: Option<&Withdrawal>,
+) {
+    // Collect under the read lock, re-authorize without it. The membership
     // lookups touch the store, and holding either lock across them would stall
     // the fan-out for every other subscriber.
-    let mut snapshots = Vec::new();
+    let mut affected = Vec::new();
     {
         let connections = state.connections.read().await;
         for (connection_id, connection) in &*connections {
@@ -734,31 +762,18 @@ async fn prune_stale_grants(state: &ServiceState, group_id: &Hash) {
             // The cheap filter, and the only thing most connections do: a
             // hash-set lookup under the read lock deciding whether this change
             // can touch them. Everything below this line reaches the store.
-            if !inner.grants.is_affected_by(group_id) {
+            if group_id.is_some_and(|group_id| !inner.grants.is_affected_by(group_id))
+                || withdrawal
+                    .is_some_and(|withdrawal| !withdrawal.may_affect(inner.caller.as_ref()))
+            {
                 continue;
             }
-            snapshots.push((
-                *connection_id,
-                connection.clone(),
-                inner.caller,
-                inner.node_owner,
-                inner.subscriptions.clone(),
-                inner.group_subscriptions.clone(),
-            ));
+            affected.push((*connection_id, connection.clone()));
         }
     }
 
-    for (connection_id, connection, caller, node_owner, subscriptions, group_subscriptions) in
-        snapshots
-    {
-        let revocation = subscribe::revoke_lost_subscriptions(
-            &state.ctx_client,
-            state.auth_enabled,
-            node_owner,
-            caller.as_ref(),
-            &subscriptions,
-            &group_subscriptions,
-        );
+    for (connection_id, connection) in affected {
+        let revocation = re_derive(state, &connection).await;
         let (contexts, denied_groups, demoted_groups) = revocation.lost();
         if !revocation.is_empty() {
             warn!(
@@ -769,30 +784,52 @@ async fn prune_stale_grants(state: &ServiceState, group_id: &Hash) {
                 "revoking subscriptions: the caller no longer passes the observation gate",
             );
         }
-        // Re-taken rather than held: a subscribe that raced this pass had to
-        // pass the same gate to add anything, so the worst case is that an id
-        // re-granted in between comes off and the client re-subscribes. Erring
-        // that way keeps a revocation from being lost to a race.
-        let mut guard = connection.inner.write().await;
-        let inner = &mut *guard;
-        revocation.apply(
-            &mut inner.subscriptions,
-            &mut inner.group_subscriptions,
-            &mut inner.admin_group_subscriptions,
-        );
-        // Re-vouch for what survived: the subscriptions changed, so what
-        // governs them may have too, and without this the connection stays
-        // stale and re-derives on every subsequent membership change.
-        let (subscriptions, group_subscriptions) = (
+    }
+}
+
+/// Re-run the subscribe-time gate over everything `connection` holds, drop
+/// what fails it, and vouch for the rest. Returns what was dropped.
+async fn re_derive(state: &ServiceState, connection: &ConnectionState) -> subscribe::Revocation {
+    let (caller, node_owner, subscriptions, group_subscriptions) = {
+        let inner = connection.inner.read().await;
+        (
+            inner.caller,
+            inner.node_owner,
             inner.subscriptions.clone(),
             inner.group_subscriptions.clone(),
-        );
-        inner.grants.vouch(
-            state.ctx_client.datastore(),
-            &subscriptions,
-            &group_subscriptions,
-        );
-    }
+        )
+    };
+    let revocation = subscribe::revoke_lost_subscriptions(
+        &state.ctx_client,
+        state.auth_enabled,
+        node_owner,
+        caller.as_ref(),
+        &subscriptions,
+        &group_subscriptions,
+    );
+    let checked = (&subscriptions, &group_subscriptions);
+    // Re-taken rather than held: a subscribe racing this pass re-derives after
+    // its own insert, so neither side loses the revocation. The worst case is
+    // that an id re-granted in between comes off and the client re-subscribes.
+    let mut guard = connection.inner.write().await;
+    let inner = &mut *guard;
+    revocation.apply(
+        &mut inner.subscriptions,
+        &mut inner.group_subscriptions,
+        &mut inner.admin_group_subscriptions,
+    );
+    // Re-vouch for what survived, unless a subscribe added an id this pass
+    // never checked: that one stays stale for the next pass to judge.
+    let (holds, holds_groups) = (
+        inner.subscriptions.clone(),
+        inner.group_subscriptions.clone(),
+    );
+    inner.grants.vouch_if_checked(
+        state.ctx_client.datastore(),
+        (&holds, &holds_groups),
+        checked,
+    );
+    revocation
 }
 
 async fn handle_commands(
@@ -1200,6 +1237,7 @@ use crate::auth::{
 };
 use crate::caller_account::EventCaller;
 use crate::config::ServerConfig;
+use crate::subscription_grants::{next_withdrawal, Withdrawal};
 
 /// WebSocket command channel buffer size
 ///
@@ -2112,6 +2150,107 @@ mod tests {
         assert!(
             inner.group_subscriptions.is_empty(),
             "the revoked group subscription must be dropped, not just filtered",
+        );
+    }
+
+    /// Connections authenticated as one device each, through the proxy
+    /// identity headers, the way a delegated device reaches a node.
+    #[actix::test]
+    async fn a_device_revoked_through_governance_loses_its_open_ws_subscription() {
+        use calimero_context_config::types::ContextGroupId;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let (event_sender, _) = broadcast::channel(256);
+        let server = spawn_test_ws_layered(
+            false,
+            |app| app.layer(axum::middleware::from_fn(crate::proxy_identity::inject)),
+            crate::test_support::stub_node_manager(vec![]),
+            event_sender,
+            WsConfig::new(true),
+        )
+        .await;
+        let store = server.state.ctx_client.datastore();
+        let ns = ContextGroupId::from([0xB0; 32]);
+        let ctx = ContextId::from([0xB2; 32]);
+        let [revoked, live] = crate::test_support::seed_device_members(
+            store,
+            &ns,
+            &ContextGroupId::from([0xB1; 32]),
+            &ctx,
+            [PublicKey::from([0x4A; 32]), PublicKey::from([0x4B; 32])],
+        );
+
+        let mut reads = Vec::new();
+        let mut writes = Vec::new();
+        for (account, device) in [revoked, live] {
+            let mut request = server.url.as_str().into_client_request().unwrap();
+            let headers = request.headers_mut();
+            let _previous = headers.insert("x-auth-account", account.to_string().parse().unwrap());
+            let _previous = headers.insert(
+                "x-auth-device",
+                hex::encode(device.as_bytes()).parse().unwrap(),
+            );
+            let (mut write, mut read) = connect_async(request).await.unwrap().0.split();
+            write.send(subscribe_msg(1, ctx)).await.unwrap();
+            let resp = next_json(&mut read, Duration::from_secs(5))
+                .await
+                .expect("subscribe response");
+            assert_eq!(
+                resp["result"]["contextIds"],
+                json!([ctx]),
+                "precondition: a live device subscribes: {resp}"
+            );
+            reads.push(read);
+            writes.push(write);
+        }
+        wait_for_fanout(&server).await;
+
+        crate::test_support::revoke_through_governance(store, &ns, revoked.0, revoked.1);
+
+        let is_revoked_device = |caller: &Option<crate::caller_account::EventCaller>| {
+            matches!(
+                caller,
+                Some(crate::caller_account::EventCaller::Account { device: Some(device), .. })
+                    if *device == revoked.1
+            )
+        };
+        let dropped = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                for connection in server.state.connections.read().await.values() {
+                    let inner = connection.inner.read().await;
+                    if is_revoked_device(&inner.caller) && inner.subscriptions.is_empty() {
+                        return;
+                    }
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(
+            dropped,
+            "an open connection must stop serving a device the namespace revoked"
+        );
+
+        let _receivers = server
+            .event_sender
+            .send(NodeEvent::Context(ContextEvent {
+                context_id: ctx,
+                payload: ContextEventPayload::StateMutation(
+                    StateMutationPayload::with_root_and_events(Hash::default(), vec![]),
+                ),
+            }))
+            .unwrap();
+        assert!(
+            next_json(&mut reads[1], Duration::from_secs(5))
+                .await
+                .is_some(),
+            "an unrelated live device keeps its subscription"
+        );
+        let leaked = next_json(&mut reads[0], Duration::from_millis(500)).await;
+        assert!(
+            leaked.is_none(),
+            "the revoked device must receive nothing further: {leaked:?}"
         );
     }
 

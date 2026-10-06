@@ -86,6 +86,11 @@ pub struct AclView {
     /// Separate from [`devices`](Self::devices) and **grow-only** — see the
     /// module docs.
     pub revoked_devices: BTreeSet<DeviceId>,
+    /// `(account, device)` pairs a narrowing took out and no wider link has
+    /// re-admitted at the cut. Unlike a revocation, a later widening lifts it.
+    pub descoped_devices: BTreeSet<(AccountId, DeviceId)>,
+    /// Highest scope epoch any folded link for each `(account, device)` was minted under.
+    pub device_link_epochs: BTreeMap<(AccountId, DeviceId), u32>,
     /// The namespace's TEE authoring policy at the cut: the MRTDs whose attested
     /// TEEs may author as the TEE authority. Empty means TEE authorship is off.
     pub tee_authoring_policy: Vec<String>,

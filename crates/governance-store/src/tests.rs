@@ -12,9 +12,9 @@ use calimero_store::key::{GroupMetaValue, GroupTarget, GroupUpgradeStatus, Group
 use calimero_store::Store;
 
 use super::test_fixtures::{
-    account_for, dummy_member_removed_op, enrol_member, enrolled, nest_for_test,
-    nest_for_test_unchecked, real_join_account, sample_meta_with_admin, test_group_id, test_meta,
-    test_store,
+    account_for, apply_member_joined, dummy_member_removed_op, enrol_member, enrolled,
+    nest_for_test, nest_for_test_unchecked, real_join_account, sample_meta_with_admin,
+    sealed_join_for_test, signed_invitation_for, test_group_id, test_meta, test_store,
 };
 use super::*;
 
@@ -7016,6 +7016,44 @@ fn narrowed_device_key_is_denied_until_a_newer_scope_binds_it_again() {
     assert!(!revoked(), "on either path");
 }
 
+/// A device id another account binds after this account narrowed it out is still
+/// withdrawn for this account: the row left is not this account's binding.
+#[test]
+fn a_device_id_bound_by_another_account_stays_withdrawn_for_the_first() {
+    let store = test_store();
+    let ns = ContextGroupId::from([0xD4; 32]);
+    let alice_pk = PublicKey::from([0xD5; 32]);
+    let alice = account_for(&alice_pk);
+    let device = *AsRef::<[u8; 32]>::as_ref(&alice_pk);
+    let bindings = AccountBindingRepository::new(&store);
+    let _dropped = bindings
+        .narrow(&ns, alice, calimero_account::DeviceId::from(device), 1)
+        .unwrap();
+    let withdrawn = || {
+        bindings
+            .device_is_withdrawn(&ns, alice, calimero_account::DeviceId::from(device))
+            .unwrap()
+    };
+    assert!(withdrawn(), "precondition: narrowed out");
+
+    let mallory_root = calimero_primitives::identity::PrivateKey::from([0xD6; 32]);
+    let mallory = super::test_fixtures::join_account_for(
+        &mallory_root,
+        calimero_account::AccountGenesis::new(mallory_root.public_key()),
+        &PublicKey::from([0xD7; 32]),
+        device,
+        0,
+    );
+    let _bound = bindings
+        .apply_link(&ns, &mallory.genesis, &mallory.chain, &mallory.statement, 0)
+        .unwrap()
+        .expect("an unbound device id links under another account");
+    assert!(
+        withdrawn(),
+        "another account's binding of the same id does not re-admit this account's device"
+    );
+}
+
 /// A withdrawal folded before the link it outranks must deny the key as one
 /// folded after it does, so the verdict does not depend on arrival order.
 #[test]
@@ -7275,129 +7313,6 @@ fn a_cleartext_subgroup_join_is_refused_but_a_namespace_root_join_is_not() {
     }
 }
 
-/// An admin-signed, non-expiring open invitation to `group_id` bearing `nonce`.
-fn signed_invitation_for(
-    admin_sk: &PrivateKey,
-    group_id: ContextGroupId,
-    nonce: [u8; 32],
-) -> calimero_context_config::types::SignedGroupOpenInvitation {
-    use calimero_context_config::types::{
-        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
-    };
-    use sha2::{Digest, Sha256};
-
-    let invitation = GroupInvitationFromAdmin {
-        inviter_identity: SignerId::from(*admin_sk.public_key().digest()),
-        group_id,
-        expiration_timestamp: 0,
-        invitation_nonce: nonce,
-        invited_role: 1,
-        // The inviter names itself, which is what the mint's default would
-        // produce for an admin issuing its own invitation.
-        admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],
-    };
-    let inv_bytes = borsh::to_vec(&invitation).unwrap();
-    let inv_sig = admin_sk.sign(&Sha256::digest(&inv_bytes)).unwrap();
-    SignedGroupOpenInvitation {
-        inviter_account: None,
-        invitation,
-        inviter_signature: hex::encode(inv_sig.to_bytes()),
-        application_id: None,
-        bytecode_id: None,
-        admitter_addrs: Vec::new(),
-    }
-}
-
-/// The wire form production publishes for a join, given the group its
-/// invitation targets.
-///
-/// A namespace-root join stays cleartext: that joiner holds no key, and its key
-/// arrives only in answer to the join itself. A SUBGROUP-targeted join travels
-/// sealed under the key covering that subgroup (#3858) — the joiner holds it,
-/// delivered in the join bundle — and the apply refuses a cleartext one, so a
-/// fixture publishing it in the clear would be under-building the state rather
-/// than exercising a real one.
-///
-/// The covering key is minted here when the store has none, which is exactly
-/// what the join bundle would have delivered. Without it the seal returns `None`
-/// and the fixture silently falls back to the cleartext form the apply refuses —
-/// a test failing on its own fixture rather than on its subject.
-fn sealed_join_for_test(
-    store: &Store,
-    ns_id: [u8; 32],
-    target: ContextGroupId,
-    join: calimero_context_client::local_governance::RootOp,
-) -> calimero_context_client::local_governance::NamespaceOp {
-    use calimero_context_client::local_governance::NamespaceOp;
-
-    if target.to_bytes() == ns_id {
-        return NamespaceOp::Root(join);
-    }
-    let covering = crate::key_covering_group(store, &target).expect("resolve the covering group");
-    if crate::GroupKeyring::new(store, covering)
-        .load_current_key()
-        .expect("read the covering keyring")
-        .is_none()
-    {
-        let _ = crate::GroupKeyring::new(store, covering)
-            .store_key(&[0x5B; 32])
-            .expect("mint the key the join bundle would have delivered");
-    }
-    crate::seal_root_op_for_group_if_keyed(store, target, &join)
-        .expect("seal the join")
-        .expect("the covering key was just ensured, so the seal must produce a sealed op")
-}
-
-/// Apply a `RootOp::MemberJoinedAt` signed by the joiner themselves, endorsed
-/// by `admitter_sk`.
-///
-/// The admitter's key is a separate parameter from the joiner's because the two
-/// signatures answer different questions: the joiner's proves it owns the
-/// account being admitted, the admitter's proves somebody entitled to admit
-/// agreed. Passing one key for both would make every test's join self-endorsed
-/// and hide that distinction.
-fn apply_member_joined(
-    store: &Store,
-    ns_id: [u8; 32],
-    member_sk: &PrivateKey,
-    signed_invitation: calimero_context_config::types::SignedGroupOpenInvitation,
-    nonce: u64,
-    admitter_sk: &PrivateKey,
-) -> EyreResult<()> {
-    use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
-
-    let member = crate::test_fixtures::account_for(&member_sk.public_key());
-    let admitter_endorsement = Box::new(
-        calimero_governance_types::AdmitterEndorsement::sign(
-            admitter_sk,
-            &ns_id,
-            &member,
-            &signed_invitation.invitation.invitation_nonce,
-        )
-        .expect("sign admitter endorsement"),
-    );
-
-    let target = signed_invitation.invitation.group_id;
-    let join = RootOp::MemberJoinedAt {
-        // The member and the credential beside it have to name the SAME
-        // account: the apply verifies the credential certifies the signer
-        // and speaks for the declared member. A synthetic member beside an
-        // unrelated credential is refused before the op reaches whatever
-        // the test meant to exercise.
-        member,
-        signed_invitation,
-        joined_at: 1,
-        account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
-    };
-
-    let wire = sealed_join_for_test(store, ns_id, target, join);
-    let signed = SignedNamespaceOp::sign(member_sk, ns_id.into(), vec![], nonce, wire).unwrap();
-    // On the envelope, after signing — see above.
-    let mut signed = signed;
-    signed.admitter_endorsement = Some(admitter_endorsement);
-    apply_signed_namespace_op(store, &signed).map(|_result| ())
-}
-
 /// The inviter-permission check is skipped on the node that authored the join,
 /// because a joiner has no namespace state to evaluate it against. These two pin
 /// the boundary of that exemption from both sides — it is what keeps the skip
@@ -7609,6 +7524,195 @@ fn an_admin_re_add_is_the_way_back_in_for_a_removed_member() {
     assert!(MembershipRepository::new(&store)
         .has_direct_member(&subgroup, &member)
         .unwrap());
+}
+
+/// An invitation does not outrank the namespace's revocation of the device signing the join.
+#[test]
+fn an_invited_join_signed_by_a_revoked_device_is_refused() {
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_sk.public_key());
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    // `real_join_account` certifies the device whose id is the signing key's bytes.
+    let device: [u8; 32] = *member_pk.as_ref();
+    crate::AccountBindingRepository::new(&store)
+        .apply_revocation(&ns_gid, calimero_account::DeviceId::from(device))
+        .unwrap();
+
+    let invitation = signed_invitation_for(&admin_sk, subgroup, [0xA7; 32]);
+    let err = apply_member_joined(&store, ns_id, &member_sk, invitation, 1, &admin_sk)
+        .expect_err("a revoked device must not join for its account");
+
+    assert!(
+        format!("{err:#}").contains("withdrawn"),
+        "expected the withdrawn-device refusal, got: {err:#}"
+    );
+    assert!(!MembershipRepository::new(&store)
+        .has_direct_member(&subgroup, &crate::test_fixtures::account_for(&member_pk))
+        .unwrap());
+}
+
+/// A projection that answers only whether the cut withdraws the device, and if so the
+/// widest link epoch folded for it there.
+struct CutWithdrawal(Option<u32>);
+
+impl crate::authorizer::AtCutAuthorizer for CutWithdrawal {
+    fn is_admin_at_cut(&self, _: &ContextGroupId, _: &PublicKey, _: &[[u8; 32]]) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &PublicKey,
+        _: u32,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: u32,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &ContextId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
+    fn device_withdrawn_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &calimero_account::DeviceId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<u32>> {
+        Some(self.0)
+    }
+}
+
+/// The cut says whether a withdrawal precedes the op, the rows whether anyone entitled
+/// made it: a withdrawal any member can put in the cut refuses nothing on its own.
+#[test]
+fn a_device_is_withdrawn_only_where_the_cut_and_the_rows_agree() {
+    let store = test_store();
+    let ns = ContextGroupId::from([0xE4; 32]);
+    let laptop_pk = PublicKey::from([0xE5; 32]);
+    let account = account_for(&laptop_pk);
+    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    let phone = calimero_account::DeviceId::from([0xE6; 32]);
+    let tablet = calimero_account::DeviceId::from([0xE7; 32]);
+    let bindings = AccountBindingRepository::new(&store);
+    let withdrawn = |device: &calimero_account::DeviceId, at_cut: Option<u32>| {
+        PermissionChecker::new(&store, ns)
+            .with_apply_auth(&crate::test_fixtures::TEST_CUT, &CutWithdrawal(at_cut))
+            .device_withdrawn(&account, device)
+            .unwrap()
+    };
+
+    assert!(
+        !withdrawn(&laptop, Some(0)),
+        "no row: a withdrawal nobody was entitled to"
+    );
+    let _dropped = bindings.narrow(&ns, account, laptop, 1).unwrap();
+    assert!(
+        !withdrawn(&laptop, None),
+        "a withdrawal outside the op's cut"
+    );
+    assert!(withdrawn(&laptop, Some(1)));
+    assert!(
+        !withdrawn(&laptop, Some(2)),
+        "the cut links the device above the floor the rows hold"
+    );
+
+    let widened = real_join_account(&laptop_pk);
+    let _bound = bindings
+        .apply_link(&ns, &widened.genesis, &widened.chain, &widened.statement, 2)
+        .unwrap()
+        .expect("a link under a newer scope is admitted");
+    assert!(
+        withdrawn(&laptop, Some(1)),
+        "a widening outside the op's cut does not lift a narrowing inside it"
+    );
+
+    bindings.withdraw_for_account(&ns, account, phone).unwrap();
+    assert!(withdrawn(&phone, Some(0)), "the account withdrew it");
+    bindings.apply_revocation(&ns, tablet).unwrap();
+    assert!(
+        withdrawn(&tablet, Some(u32::MAX)),
+        "a revocation outranks any link"
+    );
+}
+
+/// A cut the projection cannot fold is undecided, never answered from the live rows.
+#[test]
+fn a_device_withdrawal_at_an_unfolded_cut_is_undecidable() {
+    let store = test_store();
+    let err = PermissionChecker::new(&store, ContextGroupId::from([0xE8; 32]))
+        .with_apply_auth(
+            &crate::test_fixtures::TEST_CUT,
+            &crate::test_fixtures::UnresolvableAuthorizer,
+        )
+        .device_withdrawn(
+            &AccountId::from([0xE9; 32]),
+            &calimero_account::DeviceId::from([0xEA; 32]),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err.downcast_ref::<ApplyError>(),
+        Some(ApplyError::AuthorityUndecidable { .. })
+    ));
 }
 
 #[test]
@@ -11173,7 +11277,9 @@ mod apply_auth_at_cut {
 // key never rotate on removal, so a `MANAGE_MEMBERS` holder may still remove there.
 mod rotation_gate_alignment {
     use super::*;
-    use crate::group_governance_publisher::ensure_rotation_is_publishable_for;
+    use crate::group_governance_publisher::{
+        ensure_rotation_is_publishable_for, flip_rotation_is_owed,
+    };
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -11275,6 +11381,80 @@ mod rotation_gate_alignment {
             "an Open-chain group never rotates on removal, so a non-admin removal must \
              still be permitted",
         );
+    }
+
+    const RESTRICT: GroupOp = GroupOp::SubgroupVisibilitySet {
+        mode: VisibilityMode::Restricted,
+    };
+
+    #[test]
+    fn an_open_to_restricted_flip_rotates_and_needs_an_admin() {
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+            .unwrap();
+
+        assert!(flip_rotation_is_owed(&store, sub_gid, None, &RESTRICT).unwrap());
+        assert!(
+            !flip_rotation_is_owed(
+                &store,
+                sub_gid,
+                None,
+                &GroupOp::SubgroupVisibilitySet {
+                    mode: VisibilityMode::Open
+                }
+            )
+            .unwrap(),
+            "opening a subgroup ends nobody's access"
+        );
+        assert!(
+            !flip_rotation_is_owed(&store, ns_gid, None, &RESTRICT).unwrap(),
+            "the root's visibility gates no inheritance"
+        );
+
+        let _non_admin = make_namespace_identity_a_non_admin(&store, &ns_gid);
+        let err = flip_rotation_is_owed(&store, sub_gid, None, &RESTRICT)
+            .expect_err("a flip whose rotation peers would reject must be refused");
+        assert!(
+            format!("{err:#}").contains("An admin of the group must make this change"),
+            "got: {err:#}"
+        );
+    }
+
+    /// A namespace admin is an admin of an Open subgroup only by inheritance,
+    /// which the flip itself ends.
+    #[test]
+    fn an_inherited_admin_may_not_flip_to_restricted() {
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+            .unwrap();
+        let sk_bytes = [0x5E; 32];
+        let pk = PrivateKey::from(sk_bytes).public_key();
+        let account = enrol_member(&store, &ns_gid, &pk);
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .replace_identity(&ns_gid, &pk, &sk_bytes)
+            .unwrap();
+        assert!(
+            PermissionChecker::new(&store, sub_gid)
+                .is_admin(&pk)
+                .unwrap(),
+            "precondition: the namespace admin administers the Open subgroup"
+        );
+
+        let _ = flip_rotation_is_owed(&store, sub_gid, None, &RESTRICT)
+            .expect_err("an admin the flip demotes must not mint the subgroup's next key");
+    }
+
+    #[test]
+    fn restricting_an_already_restricted_subgroup_rotates_nothing() {
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        let _non_admin = make_namespace_identity_a_non_admin(&store, &ns_gid);
+
+        assert!(!flip_rotation_is_owed(&store, sub_gid, None, &RESTRICT).unwrap());
     }
 }
 
@@ -14690,7 +14870,14 @@ mod account_plane_apply {
         .unwrap();
 
         assert_eq!(live_for(&store, &gid, genesis.account_id()).len(), 1);
-        assert_eq!(events, vec![]);
+        // Only the signer's own slot may be announced withdrawn, never the owner's device.
+        assert!(
+            events.iter().all(|event| matches!(
+                event,
+                crate::op_events::OpEvent::DeviceWithdrawn { account, .. } if *account == other
+            )),
+            "{events:?}"
+        );
     }
 
     /// The apply pipeline re-runs a mutation before the op-log dedup gate, so a
@@ -14718,6 +14905,144 @@ mod account_plane_apply {
             last = Some(events);
         }
         assert_eq!(last.unwrap(), vec![], "the second run owes no wake-up");
+    }
+
+    /// An account seated here through one bound key, which is no admin, and a
+    /// second device of it that is bound nowhere: a thin client's device.
+    struct BoundNowhere {
+        store: Store,
+        gid: ContextGroupId,
+        root: PrivateKey,
+        signer: PrivateKey,
+        account: AccountId,
+        device: DeviceId,
+    }
+
+    fn bound_nowhere(seed: u8) -> BoundNowhere {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let root = key(seed);
+        let signer = an_account_key_bound_here(&store, &gid, &admin_sk, &root, seed + 1);
+        let account = AccountGenesis::new(root.public_key()).account_id();
+        let device = DeviceId::mint(account, [seed + 2; 16]);
+        BoundNowhere {
+            store,
+            gid,
+            root,
+            signer,
+            account,
+            device,
+        }
+    }
+
+    /// The account's root-signed withdrawal of its own `device`.
+    fn own_withdrawal(root: &PrivateKey, account: AccountId, device: DeviceId) -> GroupOp {
+        GroupOp::AccountDeviceUnlinked {
+            account,
+            device,
+            proof: Some(SignedDeviceRevocation {
+                genesis: AccountGenesis::new(root.public_key()),
+                chain: vec![],
+                statement: calimero_account::DeviceRevocation::sign(root, account, device, 0)
+                    .unwrap(),
+            }),
+        }
+    }
+
+    /// How many `DeviceWithdrawn` for `device` reached `events` so far.
+    fn withdrawals_of(events: &mut broadcast::Receiver<OpEvent>, device: DeviceId) -> usize {
+        let mut seen = 0;
+        while let Ok(event) = events.try_recv() {
+            if matches!(event, OpEvent::DeviceWithdrawn { device: d, .. } if d == device) {
+                seen += 1;
+            }
+        }
+        seen
+    }
+
+    /// Apply `op` through the logged path, then replay the same signed op.
+    fn apply_then_replay(store: &Store, gid: &ContextGroupId, signer: &PrivateKey, op: GroupOp) {
+        let applied = sign_apply_local_group_op_borsh(store, gid, signer, op).unwrap();
+        let signed: calimero_context_client::local_governance::SignedGroupOp =
+            borsh::from_slice(&applied.bytes).unwrap();
+        crate::apply_local_signed_group_op(store, &signed).unwrap();
+    }
+
+    /// Only the raised floor withdraws a device bound nowhere here, so the event
+    /// is what tells open streams to re-check; it owes no rotation.
+    #[test]
+    #[serial_test::serial]
+    fn a_descope_of_a_device_bound_nowhere_announces_its_withdrawal_once() {
+        let mut events = op_events::subscribe();
+        let b = bound_nowhere(0x6A);
+
+        apply_then_replay(
+            &b.store,
+            &b.gid,
+            &b.signer,
+            descoped(&b.root, b.device, elsewhere(), 1),
+        );
+
+        assert_eq!(withdrawals_of(&mut events, b.device), 1);
+    }
+
+    /// Published by the account's own bound device, which is no admin: the floor
+    /// is raised and the op goes no further.
+    #[test]
+    #[serial_test::serial]
+    fn an_accounts_own_withdrawal_of_a_device_bound_nowhere_announces_it_once() {
+        let mut events = op_events::subscribe();
+        let b = bound_nowhere(0x6E);
+
+        apply_then_replay(
+            &b.store,
+            &b.gid,
+            &b.signer,
+            own_withdrawal(&b.root, b.account, b.device),
+        );
+
+        assert_eq!(withdrawals_of(&mut events, b.device), 1);
+    }
+
+    /// The floor is written before the admin gate, and an undecidable gate parks
+    /// the op with its events dropped: the retry must still announce.
+    #[test]
+    fn a_withdrawal_parked_after_its_floor_was_written_announces_on_retry() {
+        let b = bound_nowhere(0x72);
+        let op = own_withdrawal(&b.root, b.account, b.device);
+        let apply = |authorizer: &dyn crate::authorizer::AtCutAuthorizer| {
+            crate::apply_group_op_mutations(
+                &b.store,
+                &b.gid,
+                &b.signer.public_key(),
+                &op,
+                &CUT,
+                authorizer,
+            )
+        };
+
+        assert!(
+            apply(&crate::test_fixtures::UnresolvableAuthorizer).is_err(),
+            "precondition: the admin gate cannot decide at this cut"
+        );
+        assert!(
+            AccountBindingRepository::new(&b.store)
+                .is_withdrawn_for_account(&b.gid, b.account, b.device)
+                .unwrap(),
+            "precondition: the floor was written before the op parked"
+        );
+
+        let (_handled, _divergence, events) = apply(&FixedAuthorizer(false)).unwrap();
+        assert!(
+            events.contains(&OpEvent::DeviceWithdrawn {
+                group_id: b.gid.to_bytes(),
+                account: b.account,
+                device: b.device,
+            }),
+            "the retry is the apply that gets logged, so it must carry the event: {events:?}"
+        );
     }
 
     /// What the rotation that rides on a descope actually excludes. The plan is

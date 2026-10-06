@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, ORIGIN};
 use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::Router;
@@ -11,6 +11,8 @@ use super::session::{builder, respond_with, MAX_SESSIONS, PROLOGUE};
 use super::*;
 
 const TRANSPORT_SECRET: [u8; 32] = [0x22; 32];
+const MIB: usize = 1024 * 1024;
+const NEAR_MAX: usize = MAX_SEALED_BYTES - MIB; // a body each request alone may send
 
 fn transport() -> Arc<SealedTransport> {
     transport_with(&SealedOptions::default())
@@ -41,6 +43,7 @@ async fn echo(headers: HeaderMap, uri: Uri, body: Bytes) -> impl IntoResponse {
             ("x-echo-auth", header(AUTHORIZATION)),
             ("x-echo-uri", uri.to_string()),
             ("x-echo-host", header(HOST)),
+            ("x-echo-origin", header(ORIGIN)),
         ],
         body,
     )
@@ -48,7 +51,8 @@ async fn echo(headers: HeaderMap, uri: Uri, body: Bytes) -> impl IntoResponse {
 
 fn app(
     transport: Arc<SealedTransport>,
-) -> impl tower::Service<Request, Response = Response, Error = core::convert::Infallible> {
+) -> impl tower::Service<Request, Response = Response, Error = core::convert::Infallible, Future: Send>
+{
     let router = Router::new()
         .route("/echo", post(echo))
         .route("/node/echo", post(echo))
@@ -292,6 +296,41 @@ async fn a_sealed_request_reaches_the_router_and_its_response_comes_back_sealed(
     );
 }
 
+async fn echoed_origin(stated: &[(&str, &str)], outer_origin: Option<&str>) -> String {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let (id, sealed) = client.seal(&head("POST", "/echo", stated), b"");
+    let mut request = Request::post(SEALED_PATH)
+        .header(HOST, "tee-node.example")
+        .header(CONTENT_TYPE, SEALED_CONTENT_TYPE);
+    if let Some(origin) = outer_origin {
+        request = request.header(ORIGIN, origin);
+    }
+    let response = app(Arc::clone(&transport))
+        .oneshot(request.body(Body::from(sealed)).unwrap())
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let (head, _, _) = client.open_response(id, &body);
+    response_header(&head, "x-echo-origin").unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn a_sealed_request_carries_the_page_origin_of_the_outer_hop() {
+    let origin = echoed_origin(
+        &[("origin", "http://localhost")],
+        Some("https://app.example"),
+    )
+    .await;
+    assert_eq!(origin, "https://app.example");
+}
+
+#[tokio::test]
+async fn a_sealed_request_from_a_hop_without_an_origin_has_none() {
+    let origin = echoed_origin(&[("origin", "http://localhost")], None).await;
+    assert_eq!(origin, "none");
+}
+
 #[tokio::test]
 async fn an_unsealed_request_passes_by_untouched() {
     let response = app(transport())
@@ -325,10 +364,10 @@ async fn the_transport_key_alone_does_not_open_a_recorded_session() {
     let envelope = RequestEnvelope::parse(&recorded_request).unwrap();
     assert_eq!(envelope.request_id, id);
     assert!(
-        open_request(&replayed_keys, &envelope).is_err(),
+        open_request(&replayed_keys, &envelope, &mut recorded_request.clone()).is_err(),
         "the transport key and the recorded handshake do not rebuild the session keys"
     );
-    assert!(open_request(&client.keys, &envelope).is_ok());
+    assert!(open_request(&client.keys, &envelope, &mut recorded_request.clone()).is_ok());
 }
 
 /// A restarted node holds a new key. It must say so rather than fail opaquely,
@@ -462,8 +501,6 @@ async fn send_body(
 
 #[tokio::test]
 async fn a_body_in_no_open_session_is_read_to_the_end_but_not_held() {
-    const MIB: usize = 1024 * 1024;
-
     let transport = transport();
     let mut client = Client::open(&transport).await;
     client.session_id = [0x99; SESSION_ID_LEN];
@@ -492,7 +529,7 @@ async fn a_body_declared_over_the_limit_is_refused_without_reading_it() {
     let transport = transport();
     let mut client = Client::open(&transport).await;
     let (_, sealed) = client.seal(&head("POST", "/echo", &[]), b"");
-    let (body, pulled) = counted_body(sealed, 256, 1024 * 1024);
+    let (body, pulled) = counted_body(sealed, 256, MIB);
 
     let (status, body) = send_body(&transport, body, Some(MAX_SEALED_BYTES + 1)).await;
 
@@ -503,8 +540,6 @@ async fn a_body_declared_over_the_limit_is_refused_without_reading_it() {
 
 #[tokio::test]
 async fn a_body_that_outgrows_the_limit_is_refused_as_it_arrives() {
-    const MIB: usize = 1024 * 1024;
-
     let transport = transport();
     let mut client = Client::open(&transport).await;
     let (_, sealed) = client.seal(&head("POST", "/echo", &[]), b"");
@@ -521,6 +556,166 @@ async fn a_body_that_outgrows_the_limit_is_refused_as_it_arrives() {
     );
 }
 
+/// Requests that each send the most one request may and then stall, as many as
+/// the node-wide budget holds, returned once the node has read all of them.
+async fn fill_the_budget(
+    transport: &Arc<SealedTransport>,
+    client: &mut Client,
+) -> Vec<tokio::task::JoinHandle<(StatusCode, Bytes)>> {
+    let mut held = Vec::new();
+    for _ in 0..MAX_SEALED_IN_FLIGHT / MAX_SEALED_BYTES {
+        let (_, mut prefix) = client.seal(&head("POST", "/echo", &[]), b"");
+        prefix.resize(MIB, 0);
+        let (body, pulled) = counted_body(prefix, MAX_SEALED_BYTES / MIB - 1, MIB);
+        let stalled = body
+            .into_data_stream()
+            .chain(futures_stream::pending::<Result<Bytes, axum::Error>>());
+        let transport = Arc::clone(transport);
+        held.push(tokio::spawn(async move {
+            send_body(&transport, Body::from_stream(stalled), None).await
+        }));
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while pulled.total() < MAX_SEALED_BYTES {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a request the budget has room for is read");
+    }
+    held
+}
+
+#[tokio::test]
+async fn requests_past_the_node_wide_budget_are_refused_though_each_is_within_its_own_limit() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let held = fill_the_budget(&transport, &mut client).await;
+
+    let (_, prefix) = client.seal(&head("POST", "/echo", &[]), b"");
+    let sent = prefix.len() + NEAR_MAX;
+    let (body, pulled) = counted_body(prefix, NEAR_MAX / MIB, MIB);
+    let (status, body) = send_body(&transport, body, None).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_code(&body), "busy");
+    assert_eq!(
+        pulled.total(),
+        sent,
+        "the refusal waits for the upload, so a client still sending is not reset"
+    );
+    assert!(
+        held.iter().all(|request| !request.is_finished()),
+        "the requests already held are not the ones refused"
+    );
+
+    let mut expired = Client::open(&transport).await;
+    expired.session_id = [0x99; SESSION_ID_LEN];
+    let (_, sealed) = expired.seal(&head("POST", "/echo", &[]), b"");
+    let chunks = sealed
+        .chunks(7)
+        .map(|chunk| Ok::<_, core::convert::Infallible>(Bytes::copy_from_slice(chunk)))
+        .collect::<Vec<_>>();
+    let body = Body::from_stream(futures_stream::iter(chunks));
+    let (status, body) = send_body(&transport, body, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        error_code(&body),
+        "unknown_session",
+        "a full budget does not hide the refusal its client renews on"
+    );
+    held.iter().for_each(tokio::task::JoinHandle::abort);
+}
+
+#[tokio::test]
+async fn the_budget_comes_back_however_a_request_ends() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    // More than the budget holds at once, so a request that kept its share
+    // would get the last of them refused.
+    let past_the_budget = MAX_SEALED_IN_FLIGHT / NEAR_MAX + 1;
+
+    for request in fill_the_budget(&transport, &mut client).await {
+        request.abort();
+        let _cancelled = request.await;
+    }
+
+    // Refused for naming no open session, then stalled while it is discarded.
+    let (_, mut prefix) = client.seal(&head("POST", "/echo", &[]), b"");
+    prefix[1..=SESSION_ID_LEN].fill(0x99);
+    let (body, _) = counted_body(prefix, NEAR_MAX / MIB, MIB);
+    let stalled = body
+        .into_data_stream()
+        .chain(futures_stream::pending::<Result<Bytes, axum::Error>>());
+    let stranger = {
+        let transport = Arc::clone(&transport);
+        tokio::spawn(async move { send_body(&transport, Body::from_stream(stalled), None).await })
+    };
+    let held = fill_the_budget(&transport, &mut client).await;
+    let (_, sealed) = client.seal(&head("POST", "/echo", &[]), b"");
+    let (status, _) = send(&transport, SEALED_PATH, sealed).await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the budget is full, so the refused request kept none of it"
+    );
+    for request in held {
+        request.abort();
+        let _cancelled = request.await;
+    }
+    stranger.abort();
+
+    for _ in 0..past_the_budget {
+        let (_, prefix) = client.seal(&head("POST", "/echo", &[]), b"");
+        let (body, _) = counted_body(prefix, NEAR_MAX / MIB, MIB);
+        let cut = body
+            .into_data_stream()
+            .chain(futures_stream::iter([Err(axum::Error::new(
+                "the client went away",
+            ))]));
+        let (status, body) = send_body(&transport, Body::from_stream(cut), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error_code(&body), "malformed");
+    }
+
+    for _ in 0..past_the_budget {
+        let (_, sealed) = client.seal(&head("POST", "/echo", &[]), &vec![0; NEAR_MAX]);
+        let (status, _) = send_body(&transport, Body::from(sealed), None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn a_request_head_larger_than_a_frame_is_refused() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let huge = "h".repeat(MAX_FRAME_DATA);
+    let (_, sealed) = client.seal(&head("POST", "/echo", &[("x-huge", huge.as_str())]), b"");
+
+    let (status, body) = send(&transport, SEALED_PATH, sealed).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(&body), "malformed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_body_that_stops_arriving_gives_its_share_back() {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+
+    for request in fill_the_budget(&transport, &mut client).await {
+        let (status, body) = tokio::time::timeout(2 * SEALED_READ_TIME, request)
+            .await
+            .expect("a stalled body is refused, not waited on forever")
+            .unwrap();
+        assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(error_code(&body), "timeout");
+    }
+
+    let (_, sealed) = client.seal(&head("POST", "/echo", &[]), &vec![0; NEAR_MAX]);
+    let (status, _) = send_body(&transport, Body::from(sealed), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
 // The client renews its session only on this refusal, so a large body must still
 // receive it rather than a reset.
 #[tokio::test]
@@ -529,7 +724,7 @@ async fn a_large_body_in_no_open_session_still_gets_the_refusal_over_a_socket() 
     let mut client = Client::open(&transport).await;
     client.session_id = [0x99; SESSION_ID_LEN];
     let (_, mut sealed) = client.seal(&head("POST", "/echo", &[]), b"");
-    sealed.resize(20 * 1024 * 1024, 0);
+    sealed.resize(20 * MIB, 0);
 
     let router = Router::new().route("/echo", post(echo));
     let service =
@@ -1231,3 +1426,21 @@ const SEALED_RESPONSE_VECTOR: &str =
     a76188b81887eb83cfccd2981229af48a3820df924261b3ff12d4b29340ca07c392ed4e0ee4bed0000001cfa\
     20a7633655179808da19e2fcbc81bc219262fc4f5406582834f549000000111426897864d7a92eec9261fe29\
     93415592";
+
+const SEVERAL_INNER_ORIGINS: [(&str, &str); 3] = [
+    ("Origin", "http://localhost"),
+    ("ORIGIN", "http://other.example"),
+    ("origin", "null"),
+];
+
+#[tokio::test]
+async fn every_inner_origin_is_replaced_by_the_outer_hops() {
+    let origin = echoed_origin(&SEVERAL_INNER_ORIGINS, Some("https://app.example")).await;
+    assert_eq!(origin, "https://app.example");
+}
+
+#[tokio::test]
+async fn every_inner_origin_is_dropped_when_the_outer_hop_has_none() {
+    let origin = echoed_origin(&SEVERAL_INNER_ORIGINS, None).await;
+    assert_eq!(origin, "none");
+}

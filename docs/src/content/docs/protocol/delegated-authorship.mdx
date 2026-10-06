@@ -232,7 +232,9 @@ failing for reasons the caller cannot see. Anything that must be bound belongs
 in the body.
 
 The expiry is what bounds replay, and nothing else does: a captured proof
-performs the identical request until it lapses. Keep it to minutes.
+performs the identical request until it lapses. A node refuses a request link
+valid for more than `MAX_REQUEST_LIFETIME_SECS` (300 s) and a session link valid
+for more than `MAX_SESSION_LIFETIME_SECS` (one hour), before any signature check.
 
 **Only the session link carries a node.** A three-link proof minted for one
 relay is refused by another, because the statement names the first relay's

@@ -493,7 +493,11 @@ pub struct LoginStatementCommand {
     credential: Option<String>,
 
     /// Seconds from now that the statement stays honourable.
-    #[arg(long, default_value_t = 300)]
+    #[arg(
+        long,
+        default_value_t = 300,
+        value_parser = clap::value_parser!(u64).range(..=calimero_account::MAX_SESSION_LIFETIME_SECS)
+    )]
     valid_for: u64,
 }
 
@@ -570,7 +574,11 @@ pub struct SignRequestCommand {
     ///
     /// Short is right. The window is what bounds replay and nothing else does —
     /// a captured signature performs the identical request until it expires.
-    #[arg(long, default_value_t = 300)]
+    #[arg(
+        long,
+        default_value_t = 300,
+        value_parser = clap::value_parser!(u64).range(..=calimero_account::MAX_REQUEST_LIFETIME_SECS)
+    )]
     valid_for: u64,
 
     /// The device credential from `account sign-cert`, hex.
@@ -1722,6 +1730,47 @@ mod tests {
     fn a_short_hex_key_says_so() {
         let err = super::parse_key(&hex::encode([1u8; 16]), "kem-pk").expect_err("must refuse");
         assert!(err.to_string().contains("32 bytes"), "{err}");
+    }
+
+    /// A proof the node would refuse for its lifetime is refused at minting.
+    #[test]
+    fn a_window_past_the_node_cap_is_refused_at_minting() {
+        let request = |valid_for: u64| {
+            SignRequestCommand::try_parse_from([
+                "sign-request",
+                "--method",
+                "GET",
+                "--path",
+                "/admin-api/namespaces",
+                "--signer-secret",
+                &"33".repeat(32),
+                "--valid-for",
+                &valid_for.to_string(),
+            ])
+        };
+        let session = |valid_for: u64| {
+            LoginStatementCommand::try_parse_from([
+                "login-statement",
+                "--challenge",
+                &"11".repeat(32),
+                "--node",
+                &"22".repeat(32),
+                "--generate-session-key",
+                "--device-secret",
+                &"33".repeat(32),
+                "--valid-for",
+                &valid_for.to_string(),
+            ])
+        };
+        let max_request = calimero_account::MAX_REQUEST_LIFETIME_SECS;
+        let max_session = calimero_account::MAX_SESSION_LIFETIME_SECS;
+
+        let _ = request(max_request).expect("a request window at the cap parses");
+        let err = request(max_request + 1).expect_err("past the cap");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation, "{err}");
+        let _ = session(max_session).expect("a session window at the cap parses");
+        let err = session(max_session + 1).expect_err("past the cap");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation, "{err}");
     }
 
     /// `--not-after` and `--valid-for` cannot both be given.

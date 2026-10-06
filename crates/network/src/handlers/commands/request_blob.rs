@@ -3,9 +3,9 @@ use core::time::Duration;
 use actix::{Context, Handler, Message, ResponseFuture};
 use borsh::BorshDeserialize;
 use calimero_network_primitives::{
-    blob_types::{BlobChunk, BlobRequest, BlobResponse},
+    blob_types::{BlobChunk, BlobRequest, BlobResponse, MAX_BLOB_RESPONSE_FRAME_BYTES},
     messages::{NetworkEvent, RequestBlob},
-    stream::{Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL},
+    stream::{Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL, MAX_MESSAGE_SIZE},
 };
 use eyre::{eyre, Context as EyreContext};
 use futures_util::{SinkExt, StreamExt};
@@ -70,6 +70,8 @@ impl Handler<RequestBlob> for NetworkManager {
 
                 // Convert to Calimero stream
                 let mut stream = Stream::new(libp2p_stream);
+                // Every byte read off the wire counts, so no framing trick gets past the caller's budget.
+                stream.meter(request.budget.clone());
 
                 // Send blob request
                 let blob_request = BlobRequest {
@@ -103,7 +105,8 @@ impl Handler<RequestBlob> for NetworkManager {
                     return Err(e).wrap_err("Failed to send blob request");
                 }
 
-                // Wait for initial response with timeout
+                // The header is a few bytes; a peer padding it is refused before it arrives.
+                stream.set_max_message_size(MAX_BLOB_RESPONSE_FRAME_BYTES);
                 let response_msg = match timeout(CHUNK_RECEIVE_TIMEOUT, stream.next()).await {
                     Ok(Some(Ok(msg))) => msg,
                     Ok(Some(Err(e))) => {
@@ -159,6 +162,8 @@ impl Handler<RequestBlob> for NetworkManager {
                     size = ?blob_response.size,
                     "Received initial blob response"
                 );
+
+                stream.set_max_message_size(MAX_MESSAGE_SIZE);
 
                 if blob_response.found {
                     debug!(

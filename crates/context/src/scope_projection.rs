@@ -435,6 +435,9 @@ pub struct ScopeProjections {
     /// Each scope's void set, and the state its log leaves without those ops,
     /// valid until the scope's log next changes.
     voided: Mutex<HashMap<ScopeId, Voided>>,
+    /// The cut that last showed an account seated as a relay for a group. Only a
+    /// hint of where to look first: the cut is asked again on every read.
+    relay_seats: Mutex<HashMap<(ContextGroupId, AccountId), [u8; 32]>>,
 }
 
 /// What a scope's log holds that carries no authority (see
@@ -2403,6 +2406,28 @@ impl ScopeProjections {
         )
     }
 
+    /// If the cut holds a revocation of `account`'s `device`, or a narrowing past every
+    /// link, the widest link epoch folded for it there. `None` on incomplete ancestry.
+    #[must_use]
+    pub fn device_withdrawn_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        device: &calimero_account::DeviceId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<u32>> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        let withdrawn = view.revoked_devices.contains(device)
+            || view.descoped_devices.contains(&(*account, *device));
+        Some(withdrawn.then(|| {
+            view.device_link_epochs
+                .get(&(*account, *device))
+                .copied()
+                .unwrap_or(0)
+        }))
+    }
+
     /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
     /// the cut — the apply-auth analogue of live's `is_authorized_with_capability`.
     /// Same authoritative `None`-on-incomplete-ancestry contract as
@@ -2760,6 +2785,42 @@ impl ScopeProjections {
             root_group,
             default_cap_base,
         })
+    }
+
+    /// Whether `relay` was a `RelayTee` for `group` at the cut of some op folded
+    /// for its namespace: the question a leaf with no cut of its own can be asked.
+    #[must_use]
+    pub fn relay_was_seated(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        relay: &AccountId,
+    ) -> bool {
+        let seated_at = |cut: &[u8; 32]| {
+            self.standing_reads_at_cut(store, group, &[*cut])
+                .is_some_and(|reads| {
+                    calimero_governance_store::seated_as_relay(store, &reads, &group, relay)
+                        .unwrap_or(false)
+                })
+        };
+        let Ok(namespace) = NamespaceRepository::new(store).resolve(&group) else {
+            return false;
+        };
+        let Some(log) = self.logs.get(&ScopeId::from(namespace.to_bytes())) else {
+            return false;
+        };
+        let mut seats = self
+            .relay_seats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if seats.get(&(group, *relay)).is_some_and(seated_at) {
+            return true;
+        }
+        let Some(cut) = log.iter().map(Op::id).find(seated_at) else {
+            return false;
+        };
+        let _previous = seats.insert((group, *relay), cut);
+        true
     }
 
     /// Does the cut `heads` reach every op in `floor`, in `group`'s namespace?
@@ -3276,6 +3337,13 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
         let heads = ScopeProjections::namespace_current_heads(store, *root)?;
         // A poisoned lock only means a panic elsewhere; the op log still answers.
         self.0.read().ok()?.folded_tee(store, *root, &heads)
+    }
+
+    fn relay_was_seated(&self, store: &Store, group: &ContextGroupId, relay: &AccountId) -> bool {
+        // A poisoned lock only means a panic elsewhere; not answering refuses.
+        self.0
+            .read()
+            .is_ok_and(|folded| folded.relay_was_seated(store, *group, relay))
     }
 }
 

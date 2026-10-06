@@ -410,6 +410,7 @@ impl AuthVerifierFn for AccountProofVerifier {
             // The subject is the ACCOUNT, not the device. This is what reaches
             // handlers as `X-Auth-User`, and it is the only identity governance
             // rows are keyed by.
+            user_id: key_id.clone(),
             key_id,
             permissions: self.provider.config.session_permissions.clone(),
             // The device, beside the account, because revocation is a
@@ -662,7 +663,7 @@ mod tests {
     }
 
     /// The token subject is what reaches handlers as `X-Auth-User`, and it must
-    /// be the ACCOUNT — `TokenManager` puts `key_id` straight into `sub`, and
+    /// be the ACCOUNT: `TokenManager` puts a root key's own id into `sub`, and
     /// `validate_handler` copies `sub` into the header. Pinned here because that
     /// chain is three hops of convention with nothing else asserting it.
     #[tokio::test]
@@ -684,6 +685,7 @@ mod tests {
                 .to_string(),
             "the subject must be the account, not the device and not a stored key id"
         );
+        assert_eq!(response.user_id, response.key_id);
         // The configured scope, verbatim: a minted session carries what the
         // operator set and nothing the provider added on its own.
         assert_eq!(

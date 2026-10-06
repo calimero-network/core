@@ -136,14 +136,8 @@ pub(super) fn decrypt_delta_actions(
         .decrypt(artifact, nonce)
         .ok_or_eyre("failed to decrypt delta payload")?;
 
-    // AEAD proves the payload came from a group-key holder, but a *malicious
-    // member* still holds the key and can seal an arbitrarily large artifact.
-    // Bound the inner artifact via the type's own `is_valid()` contract before
-    // deserializing the storage delta, so a crafted payload can't drive
-    // unbounded borsh allocation. (Deserializing the outer `SealedDeltaPayload`
-    // is itself bounded: `decrypted` came from an inbound gossip message capped
-    // at gossipsub's transmit size, or from a previously network-bounded delta
-    // on the buffered-replay path.)
+    // `is_valid` bounds artifact plus events before the inner decode; a backstop, as the payload
+    // came from a gossip message under its 1 MiB cap, directly or through the delta buffer.
     let sealed: SealedDeltaPayload = borsh::from_slice(&decrypted)?;
     if !sealed.is_valid() {
         bail!(

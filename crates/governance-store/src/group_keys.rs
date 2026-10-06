@@ -101,10 +101,19 @@ fn key_rank(val: &GroupKeyValue, key_id: [u8; 32]) -> KeyRank {
     (val.epoch, insertion_seq, key_id)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct StoredGroupKey {
     pub key_id: [u8; 32],
     pub group_key: [u8; 32],
+}
+
+impl std::fmt::Debug for StoredGroupKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredGroupKey")
+            .field("key_id", &self.key_id)
+            .field("group_key", &"[redacted]")
+            .finish()
+    }
 }
 
 impl StoredGroupKey {
@@ -2284,5 +2293,20 @@ mod root_op_sealing_tests {
         let b = GroupKeyring::encrypt_root_op(&key, &op).unwrap();
         assert_ne!(a.nonce, b.nonce, "nonce reused across two sealings");
         assert_ne!(a.ciphertext, b.ciphertext, "ciphertext is deterministic");
+    }
+
+    #[test]
+    fn stored_group_key_debug_omits_the_key() {
+        let key = [0xa7; 32];
+        let shown = format!(
+            "{:?}",
+            StoredGroupKey {
+                key_id: [1; 32],
+                group_key: key,
+            }
+        );
+
+        assert!(!shown.contains(&format!("{key:?}")), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }

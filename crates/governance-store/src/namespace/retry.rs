@@ -227,10 +227,9 @@ impl<'a> NamespaceRetryService<'a> {
         // request was ever emitted, leaving the membership undecryptable with
         // nothing to re-drive it and no error anywhere.
         //
-        // Two ordinary ways in: a subgroup flips `Open -> Restricted`
-        // (`SubgroupVisibilitySet` distributes no key — it writes the visibility
-        // row and queues an event, nothing more), so a direct member that never
-        // needed the group's own key suddenly does; or a `KeyDelivery` for a
+        // Two ordinary ways in: a subgroup flips `Open -> Restricted` and a
+        // direct member misses the rotation riding the flip, so it needs the
+        // group's own key and does not hold it; or a `KeyDelivery` for a
         // Restricted subgroup is missed while the node is offline, which is
         // precisely what this pull is the safety net for.
         //

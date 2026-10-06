@@ -52,7 +52,7 @@ pub use libp2p::PeerId;
 use libp2p::{Multiaddr, StreamProtocol};
 use tokio::sync::oneshot;
 
-use crate::blob_types::{BlobAuth, BlobProbe};
+use crate::blob_types::{BlobAuth, BlobProbe, ByteBudget};
 use crate::network_status::NetworkStatusSnapshot;
 use crate::stream::Stream;
 
@@ -500,7 +500,8 @@ impl actix::Message for QueryBlob {
 /// * `context_id` - The context for authorization
 /// * `peer_id` - The peer to request from (typically from [`QueryBlob`] results)
 /// * `auth` - Optional authentication data
-#[derive(Clone, Copy, Debug)]
+/// * `budget` - The bytes this transfer may still receive, shared with the caller's other transfers
+#[derive(Clone, Debug)]
 pub struct RequestBlob {
     /// The blob identifier to request.
     pub blob_id: BlobId,
@@ -510,6 +511,8 @@ pub struct RequestBlob {
     pub peer_id: PeerId,
     /// Optional authentication data.
     pub auth: Option<BlobAuth>,
+    /// Every byte the transfer reads counts into this; the read that overdraws it fails.
+    pub budget: ByteBudget,
 }
 
 impl actix::Message for RequestBlob {

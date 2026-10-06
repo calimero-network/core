@@ -475,6 +475,11 @@ opt-level = 3
 [profile.dev.package.wasmer-compiler-cranelift]
 opt-level = 3
 
+# Every password login and provisioning runs a full PBKDF2 hash in ring; built
+# optimized, the auth tests hash at release speed.
+[profile.dev.package.ring]
+opt-level = 3
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

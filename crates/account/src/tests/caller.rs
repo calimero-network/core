@@ -8,7 +8,9 @@
 use calimero_primitives::identity::{DeviceId, PrivateKey, PublicKey};
 
 use super::support::{genesis_for, key, sign_cert};
-use crate::caller::{CallerProof, VerifiedCaller};
+use crate::caller::{
+    CallerProof, VerifiedCaller, MAX_REQUEST_LIFETIME_SECS, MAX_SESSION_LIFETIME_SECS,
+};
 use crate::error::AccountError;
 use crate::login::{Audience, LoginStatement};
 use crate::request::RequestSig;
@@ -237,4 +239,56 @@ fn an_expired_session_is_refused_even_with_a_fresh_request() {
         check(&proof),
         Err(AccountError::ProofExpired { part: "session" }),
     ));
+}
+
+/// A request link may not outlive the short window a node accepts, whatever
+/// the caller chose, and that is decided before any signature is checked.
+#[test]
+fn a_request_link_longer_than_the_cap_is_refused_before_any_signature() {
+    let mut proof = long_chain();
+    proof.request.expires_at = proof.request.issued_at + MAX_REQUEST_LIFETIME_SECS + 1;
+    proof.request.signature = [0; 64];
+
+    assert!(matches!(
+        check(&proof),
+        Err(AccountError::ProofLifetimeTooLong {
+            part: "request",
+            max: MAX_REQUEST_LIFETIME_SECS
+        }),
+    ));
+}
+
+/// A session link may not outlive the login lifetime, and that is decided
+/// before any signature is checked.
+#[test]
+fn a_session_link_longer_than_the_cap_is_refused_before_any_signature() {
+    let mut proof = long_chain();
+    let session = proof.session.as_mut().expect("long chain has a session");
+    session.expires_at = session.issued_at + MAX_SESSION_LIFETIME_SECS + 1;
+    session.signature = [0; 64];
+    proof.request.signature = [0; 64];
+
+    assert!(matches!(
+        check(&proof),
+        Err(AccountError::ProofLifetimeTooLong {
+            part: "session",
+            max: MAX_SESSION_LIFETIME_SECS
+        }),
+    ));
+}
+
+/// Links exactly at the caps verify: the fixtures mint them at the cap.
+#[test]
+fn links_at_the_caps_verify() {
+    let proof = long_chain();
+    assert_eq!(
+        proof.request.expires_at - proof.request.issued_at,
+        MAX_REQUEST_LIFETIME_SECS
+    );
+    let session = proof.session.as_ref().expect("long chain has a session");
+    assert_eq!(
+        session.expires_at - session.issued_at,
+        MAX_SESSION_LIFETIME_SECS
+    );
+    check(&proof).expect("a chain at the caps verifies");
 }

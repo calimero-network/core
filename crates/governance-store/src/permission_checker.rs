@@ -301,12 +301,31 @@ impl<'a> PermissionChecker<'a> {
             return Ok(verdict);
         }
         self.ensure_live_fallback_is_sound_for_account(account)?;
-        let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
-        Ok(crate::AccountBindingRepository::new(self.store)
-            .raw_binding(&namespace, *device)?
-            .is_some_and(|bound| {
-                bound.account == *account.as_bytes() && device_epoch < bound.device_epoch
-            }))
+        crate::AccountBindingRepository::new(self.store).device_epoch_superseded(
+            &self.group_id,
+            *account,
+            *device,
+            device_epoch,
+        )
+    }
+
+    /// Has the namespace withdrawn `account`'s `device` by the op's cut? The cut orders a
+    /// withdrawal before the op; the rows, written only for an entitled one, confirm it.
+    pub fn device_withdrawn(&self, account: &AccountId, device: &DeviceId) -> EyreResult<bool> {
+        let bindings = crate::AccountBindingRepository::new(self.store);
+        match self
+            .authorizer
+            .device_withdrawn_at_cut(&self.group_id, account, device, self.parents)
+        {
+            Some(None) => Ok(false),
+            Some(Some(widest_link)) => {
+                bindings.device_withdrawn_past(&self.group_id, *account, *device, widest_link)
+            }
+            None => {
+                self.ensure_live_fallback_is_sound_for_account(account)?;
+                bindings.device_is_withdrawn(&self.group_id, *account, *device)
+            }
+        }
     }
 
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {

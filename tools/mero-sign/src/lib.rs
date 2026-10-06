@@ -29,7 +29,7 @@ const DEV_SEED: [u8; 32] = [
 ];
 
 /// Key file format
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct KeyFile {
     /// Base64url encoded 32-byte private key seed
     private_key: String,
@@ -37,6 +37,16 @@ struct KeyFile {
     public_key: String,
     /// The derived did:key signerId
     signer_id: String,
+}
+
+impl std::fmt::Debug for KeyFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyFile")
+            .field("private_key", &"<redacted>")
+            .field("public_key", &self.public_key)
+            .field("signer_id", &self.signer_id)
+            .finish()
+    }
 }
 
 /// Signature object in manifest
@@ -646,5 +656,18 @@ mod tests {
             id,
             "did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd"
         );
+    }
+
+    #[test]
+    fn key_file_debug_omits_the_private_key() {
+        let key_file = KeyFile {
+            private_key: "private-secret".to_owned(),
+            public_key: "public".to_owned(),
+            signer_id: "did:key:z".to_owned(),
+        };
+        let shown = format!("{key_file:?}");
+
+        assert!(!shown.contains("private-secret"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }

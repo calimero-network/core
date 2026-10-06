@@ -7,13 +7,17 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-use calimero_network_primitives::blob_types::BlobProbe;
+use calimero_blobstore::{BlobManager as BlobStore, FileSystem, CHUNK_SIZE};
+use calimero_network_primitives::blob_types::{BlobProbe, BlobResponse};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
+use calimero_network_primitives::network_status::{
+    AutonatEntry, NetworkStatusSnapshot, ReachabilityKind,
+};
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -121,9 +125,20 @@ pub fn network_accepting_announces() -> NetworkClient {
 }
 
 /// A network of one context peer that holds `blob` (or nothing) and answers
-/// every probe and fetch for it; it accepts announces and drops anything else.
+/// every probe and fetch for it, refusing one its budget cannot cover; it
+/// accepts announces and drops anything else.
 pub fn network_of_one_peer(blob: Option<Vec<u8>>) -> NetworkClient {
-    struct Serves(Option<Vec<u8>>);
+    network_of_peers(1, blob).0
+}
+
+/// [`network_of_one_peer`] with `peers` context peers that all hold `blob`, and
+/// a count of the bytes they have sent.
+pub fn network_of_peers(peers: usize, blob: Option<Vec<u8>>) -> (NetworkClient, Arc<AtomicU64>) {
+    struct Serves {
+        peers: usize,
+        blob: Option<Vec<u8>>,
+        sent: Arc<AtomicU64>,
+    }
 
     impl actix::Actor for Serves {
         type Context = actix::Context<Self>;
@@ -135,29 +150,81 @@ pub fn network_of_one_peer(blob: Option<Vec<u8>>) -> NetworkClient {
         fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
             match msg {
                 NetworkMessage::SubscribedPeers { outcome, .. } => {
-                    let _ignored = outcome.send(vec![PeerId::random()]);
+                    let _ignored =
+                        outcome.send((0..self.peers).map(|_| PeerId::random()).collect());
                 }
                 NetworkMessage::ProbeBlob { outcome, .. } => {
                     let probe =
-                        self.0
+                        self.blob
                             .as_ref()
                             .map_or(BlobProbe::Absent, |bytes| BlobProbe::Held {
                                 size: Some(bytes.len() as u64),
                             });
                     let _ignored = outcome.send(Ok(probe));
                 }
-                NetworkMessage::RequestBlob { outcome, .. } => {
-                    let _ignored = outcome.send(Ok(self.0.clone()));
+                NetworkMessage::RequestBlob { request, outcome } => {
+                    let sent = match &self.blob {
+                        Some(bytes) => {
+                            // A peer sends its bytes before the receiver can refuse them.
+                            let wire = wire_len(bytes.len());
+                            let _before = self.sent.fetch_add(wire, Ordering::SeqCst);
+                            if request.budget.take(wire) {
+                                Ok(Some(bytes.clone()))
+                            } else {
+                                Err(eyre::eyre!("blob exceeds the caller's budget"))
+                            }
+                        }
+                        None => Ok(None),
+                    };
+                    let _ignored = outcome.send(sent);
                 }
                 NetworkMessage::AnnounceBlob { outcome, .. } => {
                     let _ignored = outcome.send(Ok(()));
+                }
+                NetworkMessage::NetworkStatus { outcome, .. } => {
+                    let _ignored = outcome.send(network_status());
                 }
                 _ => {}
             }
         }
     }
 
-    network_on_own_system(move || Serves(blob))
+    let sent = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&sent);
+    let network = network_on_own_system(move || Serves {
+        peers,
+        blob,
+        sent: counted,
+    });
+    (network, sent)
+}
+
+/// What a holder puts on the wire for `len` bytes: the `BlobResponse` header
+/// frame, a frame per store chunk and the closing empty one, each length-prefixed.
+fn wire_len(len: usize) -> u64 {
+    let header = BlobResponse {
+        found: true,
+        size: Some(len as u64),
+    };
+    let header = serde_json::to_vec(&header).map_or(0, |json| json.len()) + 4;
+    let chunk_frames = len.div_ceil(CHUNK_SIZE) + 1;
+    (header + len + chunk_frames * 8) as u64
+}
+
+/// What a node signing a blob request reads to learn its own peer id.
+fn network_status() -> NetworkStatusSnapshot {
+    NetworkStatusSnapshot {
+        local_peer_id: PeerId::random(),
+        listen_addrs: Vec::new(),
+        external_addrs: Vec::new(),
+        relays: Vec::new(),
+        rendezvous: Vec::new(),
+        direct_upgrades: Vec::new(),
+        autonat: AutonatEntry {
+            reachability: ReachabilityKind::Unknown,
+            last_test: None,
+        },
+    }
 }
 
 /// Binds a network to `actor` on an actix system of its own thread, so a caller
