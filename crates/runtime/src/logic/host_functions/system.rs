@@ -1520,7 +1520,8 @@ mod tests {
         Cow, VMContext, VMHostFunctions, VMLimits, VMLogic, VMLogicError, DIGEST_SIZE,
     };
 
-    use super::{build_runtime_env, CallbackHandlerGuard, CURRENT_CALLBACK_HANDLER};
+    use super::{build_runtime_env, metered, CallbackHandlerGuard, CURRENT_CALLBACK_HANDLER};
+    use crate::logic::host_functions::write_meter::REPLAY_BUDGET_FACTOR;
 
     const DOC_DESC_PTR: u64 = 64;
     const KEY_DESC_PTR: u64 = 128;
@@ -1641,15 +1642,12 @@ mod tests {
         assert_eq!(host.read_root_state(1).unwrap(), 1);
     }
 
-    /// A peer's delta is applied whatever this execution's caps, so sync is
-    /// never refused.
-    #[test]
-    fn test_apply_storage_delta_ignores_the_write_limits() {
-        let root = vec![0xCD; 8192];
+    /// A delta in a form `apply_storage_delta` replays: the root saved by a peer.
+    fn root_delta_artifact(root: &[u8], updated_at: u64) -> Vec<u8> {
         let mut peer = SimpleMockStorage::new();
         let env = build_runtime_env(&mut peer, [0; 32], [0; 32], [0; 32]);
-        let artifact = with_runtime_env(env, || {
-            Interface::<MainStorage>::save_root_entry(root.clone(), Metadata::new(1, 1))
+        with_runtime_env(env, || {
+            Interface::<MainStorage>::save_root_entry(root.to_vec(), Metadata::new(1, updated_at))
                 .expect("save root");
             let (root_hash, _) = Index::<MainStorage>::get_hashes_for(Id::root())
                 .expect("root hash")
@@ -1658,20 +1656,230 @@ mod tests {
                 .expect("commit")
                 .expect("a delta");
             borsh::to_vec(&StorageDelta::Actions(delta.actions)).expect("encode")
-        });
+        })
+    }
+
+    #[test]
+    fn test_apply_storage_delta_applies_a_delta_within_the_limits() {
+        let root = vec![0xCD; 8192];
+        let artifact = root_delta_artifact(&root, 1);
 
         let mut storage = SimpleMockStorage::new();
-        let limits = VMLimits {
-            max_storage_value_size: NonZeroU64::new(4096).unwrap(),
-            max_storage_writes: 0,
-            ..VMLimits::default()
-        };
+        let limits = VMLimits::default();
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
         put_doc(&host, &artifact);
         host.apply_storage_delta(DOC_DESC_PTR).unwrap();
         assert_eq!(host.read_root_state(1).unwrap(), 1);
         assert_eq!(host.register_len(1).unwrap(), root.len() as u64);
+    }
+
+    #[test]
+    fn test_apply_storage_delta_draws_on_the_storage_write_budget() {
+        let artifact = root_delta_artifact(&[0xCD; 8192], 1);
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_writes: 0,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, &artifact);
+
+        let err = host.apply_storage_delta(DOC_DESC_PTR).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VMLogicError::HostError(HostError::StorageWriteCountExceeded { max: 0 })
+            ),
+            "{err:?}"
+        );
+        assert_eq!(
+            host.read_root_state(1).unwrap(),
+            0,
+            "the refused delta wrote nothing"
+        );
+    }
+
+    #[test]
+    fn test_apply_storage_delta_draws_on_the_storage_write_byte_budget() {
+        let artifact = root_delta_artifact(&[0xCD; 8192], 1);
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_write_bytes: 1024,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, &artifact);
+
+        let err = host.apply_storage_delta(DOC_DESC_PTR).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VMLogicError::HostError(HostError::StorageWriteBytesExceeded { max: 1024, .. })
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// Applied deltas are charged, so later replays see a smaller budget.
+    #[test]
+    fn test_apply_storage_delta_charges_the_budget_it_draws_on() {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_writes: 64,
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        let refused = (1..=64u64).find_map(|n| {
+            put_doc(&host, &root_delta_artifact(&[n as u8; 16], n));
+            host.apply_storage_delta(DOC_DESC_PTR)
+                .err()
+                .map(|err| (n, err))
+        });
+        let (n, err) = refused.expect("64 writes cannot cover 64 replayed deltas");
+        assert!(n > 1, "the first replay fits the budget");
+        assert!(
+            matches!(
+                err,
+                VMLogicError::HostError(HostError::StorageWriteCountExceeded { max: 64 })
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// Writes one replay of `artifact` makes, counted by a metered environment.
+    fn replay_write_count(artifact: &[u8]) -> u64 {
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, _store) = setup_vm!(&mut storage, &limits, vec![]);
+        let env = build_runtime_env(
+            logic.storage,
+            logic.context.context_id,
+            logic.context.executor_public_key,
+            logic.context.account_id,
+        );
+        let (env, meter) = metered(env, &logic);
+        with_runtime_env(env, || {
+            let ctx = calimero_storage::interface::ApplyContext::empty();
+            calimero_storage::collections::Root::<Vec<u8>>::sync_opaque(artifact, &ctx)
+        })
+        .expect("replay");
+        meter.settle(&mut logic).expect("within the default budget");
+        logic.storage_writes
+    }
+
+    /// The replay budget a run draws on: the default limits, scaled.
+    fn replay_budget() -> (u64, u64) {
+        let defaults = VMLimits::default();
+        (
+            defaults.max_storage_writes * REPLAY_BUDGET_FACTOR,
+            defaults.max_storage_write_bytes * REPLAY_BUDGET_FACTOR,
+        )
+    }
+
+    /// A peer's delta is judged by the default limits, not this node's own, so
+    /// every honest node reaches the same verdict.
+    #[test]
+    fn test_apply_storage_delta_from_a_peer_ignores_the_nodes_own_limits() {
+        let root = vec![0xCD; 8192];
+        let artifact = root_delta_artifact(&root, 1);
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits {
+            max_storage_writes: 1,
+            max_storage_write_bytes: 1,
+            max_storage_key_size: NonZeroU64::new(1).unwrap(),
+            max_storage_value_size: NonZeroU64::new(1).unwrap(),
+            ..VMLimits::default()
+        };
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        logic.context.remote_delta = true;
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, &artifact);
+        host.apply_storage_delta(DOC_DESC_PTR).unwrap();
+        assert_eq!(host.read_root_state(1).unwrap(), 1);
+        assert_eq!(host.register_len(1).unwrap(), root.len() as u64);
+    }
+
+    #[test]
+    fn test_apply_storage_delta_from_a_peer_is_held_to_the_replay_byte_budget() {
+        let artifact = root_delta_artifact(&[0xCD; 8192], 1);
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        logic.context.remote_delta = true;
+        let (_, max_bytes) = replay_budget();
+        logic.replay_write_bytes = max_bytes - 1;
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, &artifact);
+
+        let err = host.apply_storage_delta(DOC_DESC_PTR).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VMLogicError::HostError(HostError::StorageWriteBytesExceeded { max, .. })
+                    if max == max_bytes
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// Replays charge the run's replay counters, not the guest's own.
+    #[test]
+    fn test_apply_storage_delta_from_a_peer_charges_the_replay_budget_it_draws_on() {
+        let artifact = root_delta_artifact(&[0xCD; 64], 1);
+        let writes = replay_write_count(&artifact);
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        logic.context.remote_delta = true;
+        let mut host = logic.host_functions(store.as_store_mut());
+        put_doc(&host, &artifact);
+        host.apply_storage_delta(DOC_DESC_PTR).unwrap();
+
+        let charged = host.borrow_logic();
+        assert_eq!(charged.replay_writes, writes);
+        assert_eq!(
+            (charged.storage_writes, charged.storage_write_bytes),
+            (0, 0)
+        );
+    }
+
+    /// The replay budget covers the whole run, not each call.
+    #[test]
+    fn test_apply_storage_delta_from_a_peer_refuses_replays_past_the_run_budget() {
+        let first = root_delta_artifact(&[1; 16], 1);
+        let writes = replay_write_count(&first);
+        let (max_writes, _) = replay_budget();
+
+        let mut storage = SimpleMockStorage::new();
+        let limits = VMLimits::default();
+        let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
+        logic.context.remote_delta = true;
+        logic.replay_writes = max_writes - writes;
+        let mut host = logic.host_functions(store.as_store_mut());
+
+        put_doc(&host, &first);
+        host.apply_storage_delta(DOC_DESC_PTR)
+            .expect("the first replay fits");
+        put_doc(&host, &root_delta_artifact(&[2; 16], 2));
+        let err = host.apply_storage_delta(DOC_DESC_PTR).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VMLogicError::HostError(HostError::StorageWriteCountExceeded { max })
+                    if max == max_writes
+            ),
+            "{err:?}"
+        );
     }
 
     fn current_handler() -> Option<String> {
