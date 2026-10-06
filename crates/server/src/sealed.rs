@@ -112,6 +112,16 @@ const TAG_LEN: usize = 16;
 
 /// Largest sealed request accepted.
 const MAX_SEALED_BYTES: usize = 64 * 1024 * 1024;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "enforced by the following change")
+)]
+const MAX_SEALED_IN_FLIGHT: usize = 4 * MAX_SEALED_BYTES; // sealed bytes held at once, node-wide
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "enforced by the following change")
+)]
+const SEALED_READ_TIME: Duration = Duration::from_secs(120); // a 64 MiB body at 4.5 Mbit/s
 /// Most data sealed into one frame, a head or a piece of body, so a client can
 /// refuse a larger frame before holding any of it.
 const MAX_FRAME_DATA: usize = 64 * 1024;
