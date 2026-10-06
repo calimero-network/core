@@ -647,4 +647,17 @@ mod tests {
             "did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd"
         );
     }
+
+    #[test]
+    fn key_file_debug_omits_the_private_key() {
+        let key_file = KeyFile {
+            private_key: "private-secret".to_owned(),
+            public_key: "public".to_owned(),
+            signer_id: "did:key:z".to_owned(),
+        };
+        let shown = format!("{key_file:?}");
+
+        assert!(!shown.contains("private-secret"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }

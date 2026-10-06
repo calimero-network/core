@@ -2285,4 +2285,19 @@ mod root_op_sealing_tests {
         assert_ne!(a.nonce, b.nonce, "nonce reused across two sealings");
         assert_ne!(a.ciphertext, b.ciphertext, "ciphertext is deterministic");
     }
+
+    #[test]
+    fn stored_group_key_debug_omits_the_key() {
+        let key = [0xa7; 32];
+        let shown = format!(
+            "{:?}",
+            StoredGroupKey {
+                key_id: [1; 32],
+                group_key: key,
+            }
+        );
+
+        assert!(!shown.contains(&format!("{key:?}")), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }

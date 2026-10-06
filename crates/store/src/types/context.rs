@@ -635,3 +635,22 @@ mod warrant_nonce_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod context_identity_tests {
+    use super::ContextIdentity;
+
+    #[test]
+    fn debug_omits_the_private_key() {
+        let key = [0xa7; 32];
+        let shown = format!(
+            "{:?}",
+            ContextIdentity {
+                private_key: Some(key)
+            }
+        );
+
+        assert!(!shown.contains(&format!("{key:?}")), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+}

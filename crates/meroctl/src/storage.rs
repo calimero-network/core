@@ -114,3 +114,21 @@ impl ClientStorage for FileTokenStorage {
         Ok(config.nodes.keys().cloned().collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::JwtToken;
+
+    #[test]
+    fn debug_omits_the_tokens() {
+        let tokens = JwtToken {
+            access_token: "access-secret".to_owned(),
+            refresh_token: Some("refresh-secret".to_owned()),
+        };
+        let shown = format!("{tokens:?}");
+
+        assert!(!shown.contains("access-secret"), "{shown}");
+        assert!(!shown.contains("refresh-secret"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+}

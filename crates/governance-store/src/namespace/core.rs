@@ -1096,4 +1096,17 @@ mod tests {
             "both namespaces must be enumerable, not only the one that minted the key"
         );
     }
+
+    #[test]
+    fn identity_record_debug_omits_the_private_key() {
+        let key = [0xa7; 32];
+        let record = NamespaceIdentityRecord {
+            public_key: PrivateKey::from(key).public_key(),
+            private_key: key,
+        };
+        let shown = format!("{record:?}");
+
+        assert!(!shown.contains(&format!("{key:?}")), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }

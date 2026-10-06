@@ -1479,4 +1479,22 @@ mod tests {
         )
         .expect("the refused one left no rate entry");
     }
+
+    #[test]
+    fn publish_material_debug_omits_both_keys() {
+        let group_key = [0xa7; 32];
+        let signing_key = [0xb8; 32];
+        let material = PublishMaterial {
+            seal: SealMaterial {
+                key_id: [1; 32],
+                group_key,
+            },
+            signing_key,
+        };
+        let shown = format!("{material:?}");
+
+        assert!(!shown.contains(&format!("{group_key:?}")), "{shown}");
+        assert!(!shown.contains(&format!("{signing_key:?}")), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }

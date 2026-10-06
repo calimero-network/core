@@ -33,3 +33,18 @@ impl StoreConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_omits_the_encryption_key() {
+        let key = vec![0xa7; 32];
+        let config = StoreConfig::with_encryption("db".into(), Zeroizing::new(key.clone()));
+        let shown = format!("{config:?}");
+
+        assert!(!shown.contains(&format!("{key:?}")), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+}

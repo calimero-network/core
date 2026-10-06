@@ -827,7 +827,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use url::Url;
 
-    use super::{build_auth_url, generate_state, stays_on_host};
+    use super::{build_auth_url, generate_state, stays_on_host, AuthCallback, CallbackBody};
     use crate::config::{Config, NodeConnection};
     use crate::storage::JwtToken;
 
@@ -1134,5 +1134,24 @@ mod tests {
             !page.contains("window.location.href"),
             "the page must not navigate with the tokens in the URL"
         );
+    }
+
+    #[test]
+    fn callback_debug_omits_the_tokens() {
+        let callback = AuthCallback {
+            access_token: Some("access-secret".to_owned()),
+            refresh_token: Some("refresh-secret".to_owned()),
+        };
+        let body = CallbackBody {
+            access_token: "access-secret".to_owned(),
+            refresh_token: Some("refresh-secret".to_owned()),
+            state: Some("state-nonce".to_owned()),
+        };
+
+        for shown in [format!("{callback:?}"), format!("{body:?}")] {
+            assert!(!shown.contains("access-secret"), "{shown}");
+            assert!(!shown.contains("refresh-secret"), "{shown}");
+            assert!(shown.contains("redacted"), "{shown}");
+        }
     }
 }
