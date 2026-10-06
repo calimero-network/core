@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A fleet node that is refused admission is told why.** `fleet-join`
+  answered only `admitted: false`. Each admitter's refusal reason (removed
+  from the group, measurements outside the policy, a peer that may not vouch)
+  was folded into one error string and only logged. `FleetJoinResponse` now
+  carries `refusals: [{ peer, reason }]`, with each reason cut to 512 bytes,
+  and `admitted_by`, the peer that said yes before the key arrives. meroctl
+  prints both. Both fields are `serde(default)`, so an older node's answer
+  still decodes. (#4494)
+
 - **A shared cell's writers rotate by a governance op.** A `SharedStorage`
   cell's writer list is changed by `GroupOp::SharedWritersRotated
   { context_id, cell, prior, nonce, new }`, published encrypted in the group
@@ -419,6 +428,138 @@
   [#3528])
 
 ### Fixed
+
+- **Group keys, blobs and sync state are served only to live members.** A
+  member removed from, or who left, an Open subgroup under a Restricted parent
+  kept its inherited membership: the removal is a deny-list entry and a
+  re-entry block, and the membership walk read neither. Such a member could
+  still pull the subgroup key, sync its contexts, read its blobs and act as a
+  snapshot source. These gates now use `is_live_member`, which reads both. A
+  `ContextIdentity` row for a revoked device no longer counts as membership,
+  and the namespace-join responder refuses a revoked device before it wraps a
+  key. (#4479)
+
+- **A join signed by a revoked, narrowed-out or withdrawn device is refused.**
+  `MemberJoined`, `MemberJoinedAt` and `MemberJoinedOpen` took their authority
+  from the credential alone. A device the namespace had revoked or its account
+  had withdrawn could still join that account into groups, and an open join
+  also cleared the account's deny entry. The join gate now refuses a device
+  that is out at the op's cut. The namespace-join responder also refuses a
+  certificate at a device epoch that was re-keyed past. (breaking for
+  mixed-version namespaces: the projection's `governance_hash` now hashes the
+  account beside each device link, so older peers report
+  `scope_root_governance_divergence` and re-pull governance every tick until
+  all nodes upgrade; nothing on disk changes) (#4487)
+
+- **A password user's id no longer lets a token holder guess the password
+  offline.** A `user_password` key id was PBKDF2(username, password) under a
+  deterministic salt, and it was sent as the JWT `sub` and the `X-Auth-User`
+  header. Users are now root keys under a random id. Logins check a per-user
+  random salt and a 600,000-round PBKDF2 hash, and an unknown username does
+  the same work as a wrong password. JWTs gain a required `key_id` claim.
+  `POST /admin/keys` for an existing username now replaces the password and
+  revokes that user's sessions. (breaking: there is no migration; existing
+  password users must be re-provisioned and every token issued before this
+  release stops validating) (#4490)
+
+- **A subgroup's key rotates when it becomes Restricted.** Flipping an Open
+  subgroup to Restricted minted no key. A member who had only inherited
+  access while it was Open could keep pulling and reading it. The flip now
+  carries a key rotation wrapped for direct members only. A subgroup the
+  namespace key covers serves no key of its own. Only a direct admin of the
+  subgroup may flip it to Restricted; an inherited admin is refused. (an
+  older peer does not expect the rotation on `SubgroupVisibilitySet`, so
+  upgrade the namespace together) (#4480)
+
+- **An open subscription ends when its device is revoked, descoped or
+  withdrawn.** A WS or SSE subscription kept delivering events to a withdrawn
+  device until the client reconnected. When the node applies one of these ops
+  it now re-checks open subscriptions against the subscribe-time gate and
+  drops those that now fail. An SSE stream re-checks on every reconnect, so a
+  withdrawal applied while the client was away is not missed. (#4495)
+
+- **Deleting a public container no longer removes entries the deleter does
+  not own.** A peer's unsigned `DeleteRef` of a `Public` container
+  tombstoned every descendant except `Frozen` data. This covered the
+  owner's entries in an `Authored`, `WriteOnce` or `Moderated` map,
+  `UserStorage`, `AuthoredVector` and `SharedStorage` collections. The
+  replay now skips `User`, `Shared` and `SharedMember` descendants, and a
+  local delete of such a container is refused with `ActionNotAllowed`. (a
+  node on an older build still tombstones those entries on the same delete,
+  so upgrade a context's nodes together) (#4488)
+
+- **A snapshot is installed only if every entity checks out and the tree
+  folds to the claimed root.** An entity that failed its signature,
+  authorship or anchor check was dropped and the rest installed, and the root
+  was compared only with a row from the same stream. Pages are now staged on
+  disk, each entity is checked for its hash and a timestamp no more than 5 s
+  ahead, and the staged tree must fold to the claimed root before it replaces
+  state. A refused snapshot leaves the context as it was. (adds the node-local
+  column `Column::SnapshotStage`, created at open without migration; a joiner
+  whose clock runs more than 5 s behind its source can no longer bootstrap)
+  (#4229)
+
+- **A caller proof whose request or session link is valid for too long is
+  refused.** `CallerProof::verify` checked that a link's window was open but
+  not how long it was, so a captured proof could be replayed for as long as
+  the caller chose. Proofs are now refused with `401 invalid_proof` before
+  any signature is checked when the request link is longer than 300 s or the
+  session link longer than 3600 s. `merod account sign-request` and
+  `login-statement` refuse longer `--valid-for` values. (a client that
+  overrides its TTL above these caps is now refused) (#4348)
+
+- **A sealed request takes its `Origin` from the outer hop.** A request
+  opened from a sealed envelope already replaced `Host` and
+  `X-Forwarded-Host` with the outer hop's values, but kept whatever `Origin`
+  the envelope stated. That `Origin` is now dropped and the outer hop's
+  used, or none when the outer hop sends none. (#4468)
+
+- **The sealed transport bounds the bytes it holds before authentication.**
+  `POST /sealed/v2` read bodies of up to 64 MiB with no node-wide cap and no
+  deadline, so concurrent or stalled uploads could hold unbounded memory. In
+  this unauthenticated state the node now holds at most 256 MiB at once and
+  answers `503 busy` past it. A body must arrive within 120 s (`408 timeout`)
+  and an inner head is capped at 64 KiB. Decryption now works in place
+  instead of copying the body twice. (clients can now see `503 busy` and
+  `408 timeout` on an exchange) (#4503)
+
+- **A state delta may name at most 256 parents, and pending deltas are
+  bounded by bytes.** A delta naming tens of thousands of missing parents was
+  buffered pending, and pending deltas were capped only by count. Every
+  ingest path now refuses a delta with more than `MAX_DELTA_PARENTS` (256)
+  parents before decrypting or buffering it. Pending deltas per DAG are
+  capped at 64 MiB, and a writer with more than 256 heads names the newest
+  256. (an older node with more than 256 heads produces deltas that updated
+  nodes refuse) (#4323)
+
+- **One context member can make a fleet node prefetch at most 4 GiB a
+  day.** A fleet node prefetched every blob a member announced, up to
+  500 MiB each, with no limit on the total. Each member now has a 4 GiB
+  budget per 24 h, and every byte read from every holder counts against it.
+  A blob response header over 4 KiB is refused on transfers and probes.
+  Past its budget a member loses only prefetch, not access to the blob.
+  (#4499)
+
+- **A replayed storage delta counts against the guest's write limits.** A
+  guest could pass its own delta to `apply_storage_delta` and write past
+  `max_storage_writes` and `max_storage_write_bytes`, because the replay
+  was not metered. A guest's call now draws on its per-execution budget, so
+  a JS app that replays more than that budget in one call traps. A peer's
+  delta is held to twice the default limits, so every node reaches the same
+  verdict. (#4504)
+
+- **Debug output no longer prints key material or tokens.** `Debug` printed
+  the secret for the store encryption key, `ContextIdentity`, the namespace
+  identity record, `StoredGroupKey`, the node's seal and publish material,
+  meroctl's stored JWTs and login callback, and mero-sign's key file. These
+  types now print `[redacted]`, and meroctl's stored tokens are zeroized on
+  drop. (#4501)
+
+- **A rich text delete past the end of the text is a no-op.** A
+  `RichText::apply_delta` delete starting past the end returned an error after
+  earlier ops in the same delta had already been written. A delete of
+  `usize::MAX` overflowed and trapped the app. Both ends of the delete are now
+  clamped to the text, as documented and as `FugueText` does. (#4498)
 
 - **A read on an account's session runs as that account's device, not as the
   node.** The delegated-read arm of `execute` built its principal from the
