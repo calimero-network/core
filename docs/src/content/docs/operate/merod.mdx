@@ -396,10 +396,14 @@ merod account warrant \
   --method  set \
   --args    '{"key":"k","value":"v"}' \
   --executor <64-hex AccountId of the relay> \
+  --executor-key <64-hex signing key of the relay> \
   --nonce 1 \
   --device-secret-file ./device.secret \
   --credential <hex from sign-cert>
 ```
+
+`--executor` and `--executor-key` are the account and signing key of the relay that will spend it; the relay's `GET /admin-api/contexts/<id>/intents` reports both as `executorAccount` and `executorKey`.
+Only that one device of the account may spend the warrant.
 
 `--device-secret-file` reads the 64-hex secret from a file, or from stdin when given
 `-`; surrounding whitespace is ignored. `login-statement` takes the same flag, and

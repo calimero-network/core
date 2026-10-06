@@ -179,6 +179,67 @@ pub(crate) async fn admin_state(store: &Store) -> (std::sync::Arc<crate::AdminSt
     (state, blob_dir)
 }
 
+/// A decodable author proof: a genuinely root-signed device certificate for
+/// the key seeded `8`, under the account rooted at seed `1`.
+pub(crate) fn author_proof_hex() -> String {
+    use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
+    use calimero_primitives::identity::PrivateKey;
+
+    let root = PrivateKey::from([1; 32]);
+    let genesis = AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let statement = DeviceCert::sign(
+        &root,
+        account,
+        DeviceId::mint(account, [0x22; 16]),
+        &PrivateKey::from([8; 32]).public_key(),
+        &KemPublicKey::from([9; 32]),
+        0,
+        0,
+    )
+    .expect("cert");
+    hex::encode(
+        borsh::to_vec(&AccountProof {
+            genesis,
+            chain: vec![],
+            statement,
+        })
+        .expect("borsh"),
+    )
+}
+
+/// The admin API's unauthenticated router as a relay serves it
+/// (`delegated_access`), over `store` with this node's identity provisioned.
+pub(crate) async fn public_router(store: &Store) -> (axum::Router, TempDir) {
+    let (state, blob_dir) = admin_state(store).await;
+    let config = crate::config::ServerConfig::new(
+        vec![],
+        libp2p::identity::Keypair::generate_ed25519(),
+        Some(crate::admin::service::AdminConfig::new(true, true)),
+        None,
+        None,
+        None,
+    );
+    let (_path, _protected, public) =
+        crate::admin::service::setup(&config, state).expect("admin api enabled");
+    (public, blob_dir)
+}
+
+/// `GET`s `uri` from `router`, answering the status and the body.
+pub(crate) async fn get(router: axum::Router, uri: &str) -> (axum::http::StatusCode, String) {
+    use tower::ServiceExt as _;
+
+    let request = axum::http::Request::get(uri)
+        .body(axum::body::Body::empty())
+        .expect("a request");
+    let response = router.oneshot(request).await.expect("the route answers");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read the response");
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
 /// Seed a namespace with one Restricted subgroup and `caller` in `role`,
 /// returning the namespace and subgroup ids as wire hashes plus the account
 /// `caller`'s key resolves to - the principal every row below is keyed by,

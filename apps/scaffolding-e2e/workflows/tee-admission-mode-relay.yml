@@ -247,12 +247,14 @@ steps:
     node: tee-mode-relay
     outputs:
       relay_account: accountId
+      relay_key: publicKey
 
   - name: Read the replica TEE's account
     type: node_identity
     node: tee-mode-replica
     outputs:
       replica_account: accountId
+      replica_key: publicKey
 
   - name: Each TEE was admitted as the account a warrant names
     type: assert
@@ -273,6 +275,8 @@ steps:
       - '{{relay_context}}'
       - --executor
       - '{{relay_account}}'
+      - --executor-key
+      - '{{relay_key}}'
       - --method
       - set
       - --args
@@ -303,6 +307,8 @@ steps:
       - '{{replica_context}}'
       - --executor
       - '{{replica_account}}'
+      - --executor-key
+      - '{{replica_key}}'
       - --method
       - set
       - --args

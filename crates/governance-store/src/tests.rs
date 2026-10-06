@@ -13307,6 +13307,7 @@ mod account_plane_apply {
                 context,
                 author_account: account,
                 executor: relay,
+                executor_key: relay_pk,
                 app_version: ApplicationId::from([0u8; 32]),
                 method: "send_message".to_owned(),
                 intent_hash: Warrant::intent_hash("send_message", b"{}"),

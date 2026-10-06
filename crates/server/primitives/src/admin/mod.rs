@@ -1508,10 +1508,8 @@ pub struct PerformIntentApiRequest {
     /// key that signed the warrant is a device of the account it names.
     ///
     /// The author supplies only its OWN half. The executor's proof and signing
-    /// key are attached by the node from its own credentials, because the
-    /// warrant authorizes an operator ACCOUNT and the author has no business
-    /// knowing which of that operator's processes will run it — that is the
-    /// whole reason `Warrant::executor` is an account.
+    /// key are attached by the node from its own credentials, and must match
+    /// the `executor` and `executor_key` the warrant names.
     pub author_proof: String,
 }
 
@@ -1598,6 +1596,9 @@ pub struct CreateContextIntentRelayApiResponseData {
     /// The account a creation warrant for this node must name as its
     /// `executor`, hex.
     pub executor_account: String,
+    /// The signing key a creation warrant for this node must name as its
+    /// `executor_key`.
+    pub executor_key: PublicKey,
     /// The group asked about, hex.
     pub group_id: String,
     /// Whether this node may act for members in this group — a `RelayTee`, or a
@@ -1683,6 +1684,8 @@ pub struct GovernanceIntentApiResponse {
 pub struct GovernanceIntentRelayApiResponseData {
     /// The account a warrant for this node must name as its `executor`, hex.
     pub executor_account: String,
+    /// The signing key a warrant for this node must name as its `executor_key`.
+    pub executor_key: PublicKey,
     /// The group asked about, hex.
     pub group_id: String,
     /// Whether this node may act for members in this group.
@@ -1792,10 +1795,10 @@ pub struct QueryContextApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct IntentRelayApiResponseData {
     /// The account a warrant for this node must name as its `executor`, hex.
-    ///
-    /// An account, not this node's signing key: one of the relay's processes
-    /// re-keying must not void warrants already issued to it.
     pub executor_account: String,
+    /// The signing key a warrant for this node must name as its
+    /// `executor_key`: the one device that may spend it.
+    pub executor_key: PublicKey,
     /// Whether this node may execute a delegated write in the group owning this
     /// context — the same question `POST .../intents` and every peer asks.
     ///

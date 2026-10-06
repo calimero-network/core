@@ -225,14 +225,14 @@ pub struct SignCertCommand {
 /// intent` is the interactive form — this exists for a holder that has a shell
 /// and needs the bytes.
 ///
-/// **`--executor` must be the account that will actually run it.** A warrant
-/// naming the wrong operator is refused by every peer, and nothing here can
-/// check it — ask the relay: `GET /admin-api/identity` reports the account it
-/// acts as.
+/// **`--executor` and `--executor-key` must be the relay that will actually run
+/// it.** A warrant naming another account or device is refused, and nothing here
+/// can check it: the relay's `GET .../intents` reports both.
 ///
-/// **`--nonce` is the caller's to manage.** Peers refuse a repeat, so reusing one
-/// means the write is silently dropped; a gap in the sequence is how a member
-/// learns the relay withheld a request.
+/// **`--nonce` is the caller's to manage.** The named relay refuses a nonce it
+/// already spent for this device with a `403`, before running anything; one
+/// nonce on warrants for two relays is two warrants, each spendable once. A gap
+/// in the sequence is how a member learns the relay withheld a request.
 #[derive(Debug, Parser)]
 pub struct WarrantCommand {
     /// The context the intent runs in, 64 hex chars.
@@ -254,6 +254,11 @@ pub struct WarrantCommand {
     /// The operator account authorised to act, 64 hex chars.
     #[arg(long, value_name = "HEX")]
     executor: String,
+
+    /// The one device of that account that may spend it: the relay's signing
+    /// key, 64 hex chars.
+    #[arg(long, value_name = "HEX")]
+    executor_key: String,
 
     /// The application build this warrant is signed against, 64 hex chars.
     ///
@@ -329,6 +334,10 @@ impl WarrantCommand {
                 format!("--context '{}' is not a valid context id", self.context)
             })?;
         let executor = calimero_account::AccountId::from(parse_key(&self.executor, "executor")?);
+        let executor_key = calimero_primitives::identity::PublicKey::from(parse_key(
+            &self.executor_key,
+            "executor-key",
+        )?);
         let secret = PrivateKey::from(resolve_secret(
             self.device_secret.as_deref(),
             self.device_secret_file.as_deref(),
@@ -376,6 +385,7 @@ impl WarrantCommand {
                 context,
                 author_account: credential.statement.account,
                 executor,
+                executor_key,
                 app_version,
                 method: self.method.clone(),
                 intent_hash: calimero_account::Warrant::intent_hash(&self.method, &args_bytes),
@@ -1787,6 +1797,8 @@ mod tests {
             "set",
             "--executor",
             &"22".repeat(32),
+            "--executor-key",
+            &"44".repeat(32),
             "--nonce",
             "1",
             "--device-secret",
@@ -1823,6 +1835,8 @@ mod tests {
             "set",
             "--executor",
             &"22".repeat(32),
+            "--executor-key",
+            &"44".repeat(32),
             "--nonce",
             "1",
             "--device-secret",

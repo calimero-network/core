@@ -12332,6 +12332,7 @@ fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
             kind,
             author_account: author,
             executor: account_for(&relay_sk.public_key()),
+            executor_key: relay_sk.public_key(),
             op_hash: GovernanceWarrant::op_hash(kind, &form),
             account_heads: vec![],
             governance_floor: vec![],

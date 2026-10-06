@@ -244,6 +244,7 @@ fn relay_author(world: &World, actor: &Actor) -> Outcome {
             context: world.context,
             author_account: actor.account,
             executor: relay.account,
+            executor_key: relay.sign_pk(),
             app_version: world.application,
             method: "set".to_owned(),
             intent_hash: Warrant::intent_hash("set", b"{}"),

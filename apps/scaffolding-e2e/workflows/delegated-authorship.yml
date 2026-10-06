@@ -160,6 +160,7 @@ steps:
     node: delegated-node-1
     outputs:
       relay_account: accountId
+      relay_key: publicKey
 
   # Minted once, presented three times below (refused, accepted, refused) — same
   # bytes each time, so only the grant can explain the different verdicts.
@@ -189,6 +190,8 @@ steps:
       - '{{context_id}}'
       - --executor
       - '{{relay_account}}'
+      - --executor-key
+      - '{{relay_key}}'
       - --method
       - set
       # One argv element, and the exact JSON the intent below sends. The warrant
@@ -301,6 +304,8 @@ steps:
       - '{{context_id}}'
       - --executor
       - '{{relay_account}}'
+      - --executor-key
+      - '{{relay_key}}'
       - --method
       - set
       - --args

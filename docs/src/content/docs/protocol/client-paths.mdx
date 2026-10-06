@@ -59,8 +59,8 @@ A browser tab or a phone holds one signing key: no node, no scope key, no applic
   steps={[
     { from: 0, to: 1, label: 'which relay serves my namespace?' },
     { from: 1, to: 0, label: 'relay URL + executor account' },
-    { from: 0, to: 2, label: 'GET .../intents: executor, canAuthorOnBehalf' },
-    { from: 0, to: 0, label: 'sign warrant: context, H(method, args), executor, nonce', color: '#a5ff11' },
+    { from: 0, to: 2, label: 'GET .../intents: executor, executorKey, canAuthorOnBehalf' },
+    { from: 0, to: 0, label: 'sign warrant: context, H(method, args), executor, executor_key, nonce', color: '#a5ff11' },
     { from: 0, to: 2, label: 'POST .../intents { method, args, warrant, authorProof }' },
     { from: 2, to: 2, label: 'verify warrant + grant, run WASM as the AUTHOR' },
     { from: 2, to: 3, label: 'broadcast delta + delegation (warrant embedded)' },
