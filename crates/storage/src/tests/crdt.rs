@@ -25,6 +25,15 @@ type TestInterface = Interface<TestStorage>;
 
 const ONE_SEC_NANOS: u64 = 1_000_000_000;
 
+// A page saved as a child of the root; the root itself cannot be deleted.
+fn saved_child_page(title: &str) -> Page {
+    let mut root = Page::new_from_element("Root", Element::root());
+    assert!(TestInterface::save(&mut root).unwrap());
+    let mut page = Page::new_from_element(title, Element::new(None));
+    assert!(TestInterface::add_child_to(root.id(), &mut page).unwrap());
+    page
+}
+
 // ============================================================
 // Last-Write-Wins (LWW) Tests
 // ============================================================
@@ -115,10 +124,8 @@ fn lww_concurrent_updates_deterministic() {
 
 #[test]
 fn tombstone_marks_deleted() {
-    let mut page = Page::new_from_element("Test Page", Element::root());
+    let page = saved_child_page("Test Page");
     let id = page.id();
-
-    assert!(TestInterface::save(&mut page).unwrap());
 
     // Delete with tombstone
     let delete_action = Action::DeleteRef {
@@ -230,10 +237,8 @@ fn tombstone_does_not_regress_on_out_of_order_delete() {
 #[test]
 fn delete_vs_update_conflict() {
     // Test LWW conflict resolution between delete and update
-    let mut page = Page::new_from_element("Test Page", Element::root());
+    let mut page = saved_child_page("Test Page");
     let id = page.id();
-
-    assert!(TestInterface::save(&mut page).unwrap());
 
     // Create delete action
     let delete_action = Action::DeleteRef {
@@ -269,10 +274,8 @@ fn delete_vs_update_conflict() {
 #[serial]
 fn update_vs_delete_conflict() {
     super::common::register_test_merge_functions();
-    let mut page = Page::new_from_element("Test Page", Element::root());
+    let mut page = saved_child_page("Test Page");
     let id = page.id();
-
-    assert!(TestInterface::save(&mut page).unwrap());
 
     // Update
     page.title = "Updated".to_string();
@@ -432,8 +435,7 @@ fn update_before_add_creates_entity() {
 #[test]
 fn delete_prevents_old_add() {
     // Test that tombstones prevent resurrection with older timestamps
-    let mut page = Page::new_from_element("Test", Element::root());
-    TestInterface::save(&mut page).unwrap();
+    let page = saved_child_page("Test");
     let old_meta = page.element().metadata.clone();
 
     // Delete
@@ -449,7 +451,7 @@ fn delete_prevents_old_add() {
     let add_action = Action::Add {
         id: page.id(),
         data: borsh::to_vec(&page).unwrap(),
-        ancestors: vec![],
+        ancestors: d1_map_ancestors(),
         metadata: old_meta,
     };
 
@@ -542,8 +544,7 @@ fn malformed_entity_data() {
 
 #[test]
 fn multiple_deletes_idempotent() {
-    let mut page = Page::new_from_element("Test", Element::root());
-    assert!(TestInterface::save(&mut page).unwrap());
+    let page = saved_child_page("Test");
 
     let delete_action = Action::DeleteRef {
         id: page.id(),
@@ -601,11 +602,8 @@ fn many_sequential_updates() {
 fn rapid_add_delete_cycles() {
     super::common::register_test_merge_functions();
     // Test rapid add/delete cycles work correctly
-    let mut page = Page::new_from_element("Test", Element::root());
+    let mut page = saved_child_page("Test");
     let id = page.id();
-
-    // Start with entity saved
-    TestInterface::save(&mut page).unwrap();
 
     // Do a few update/delete cycles
     for i in 1..5 {
@@ -746,10 +744,7 @@ fn test_delete_near_future_accepted() {
     let future_time = now + (DRIFT_TOLERANCE_NANOS / 2);
 
     // Create a timestamp within the tolerance, simulating execution delay.
-    let mut page = Page::new_from_element("Delete Page", Element::root());
-
-    // Save page to have it in the storage.
-    TestInterface::save(&mut page).unwrap();
+    let page = saved_child_page("Delete Page");
 
     let action = Action::DeleteRef {
         id: page.id(),

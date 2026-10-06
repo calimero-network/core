@@ -35,20 +35,27 @@
 //! exposed through the [`ProtocolDispatch`] trait, mirroring the
 //! per-call-injection pattern used by [`crate::sync::reconciler`].
 
+use std::future::Future;
+
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::messages::ExecuteError;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{
-    InitProof, ProtocolSelection, SyncProtocol, SyncProtocolExecutor,
+    InitProof, ProtocolSelection, SyncProtocol, SyncProtocolExecutor, TreeLeafData,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use eyre::{bail, Result, WrapErr};
+use calimero_storage::interface::Interface;
+use calimero_storage::merge::{MergeRootStateRequest, MergeRootStateResponse};
+use calimero_storage::store::MainStorage;
+use eyre::{bail, ensure, Result, WrapErr};
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
+use super::helpers::{apply_under_context_lock, unreadable_schema};
 use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
 use super::metrics::SessionCost;
 
@@ -591,23 +598,6 @@ impl ProtocolSelector {
     }
 }
 
-/// Apply root-entity merges that HC's DFS deferred because the host can't
-/// dispatch the app's typed `Mergeable::merge` (the registry it would
-/// consult is populated inside WASM, separate address space). For each
-/// deferred `(entity_id, incoming_bytes)` pair:
-///
-/// 1. Read the locally-stored bytes + metadata for `entity_id`.
-/// 2. Build a [`MergeRootStateRequest`] from existing + incoming.
-/// 3. Invoke `ContextClient::merge_root_state` — calls into WASM via
-///    the macro-generated `__calimero_merge_root_state` export.
-/// 4. Write the merged bytes back via
-///    `Interface::write_pre_merged_root_state`, which updates the
-///    Merkle index + storage without re-running the merge step.
-///
-/// Errors per-entry are logged and the next entry is attempted —
-/// partial progress is preferable to dropping the whole batch on a
-/// single failure. The next sync tick will re-attempt anything that
-/// stays divergent.
 /// Apply the custom-typed ENTRY merges that sync deferred, for the same reason
 /// [`dispatch_deferred_root_merges`] exists: the apply is synchronous and inside
 /// the storage env, so it cannot reach a rule that lives in the app's module.
@@ -643,12 +633,6 @@ pub(crate) async fn dispatch_deferred_custom_merges(
     )],
 ) {
     use calimero_storage::address::Id;
-    use calimero_storage::entities::Metadata;
-    use calimero_storage::env::with_runtime_env;
-    use calimero_storage::index::Index;
-    use calimero_storage::interface::Interface;
-    use calimero_storage::merge::MergeCustomRequest;
-    use calimero_storage::store::{MainStorage, StorageAdaptor};
 
     let Ok(account) = calimero_governance_store::account_for_context(store, &context_id) else {
         tracing::warn!(
@@ -667,54 +651,40 @@ pub(crate) async fn dispatch_deferred_custom_merges(
 
     for (key, type_id, incoming, incoming_hlc_ts) in deferred {
         let entity_id = Id::new(*key);
-
-        let read_result: eyre::Result<(Option<Vec<u8>>, Metadata)> =
-            with_runtime_env(runtime_env.clone(), || {
-                let meta = Index::<MainStorage>::get_index(entity_id)
-                    .map_err(|e| eyre::eyre!("get_index: {e}"))?
-                    .map(|idx| idx.metadata)
-                    .unwrap_or_default();
-                let existing = <MainStorage as StorageAdaptor>::storage_read(
-                    calimero_storage::store::Key::Entry(entity_id),
+        let request =
+            apply_under_context_lock(Some(context_client), context_id, &runtime_env, || {
+                Interface::<MainStorage>::custom_entry_merge_request(
+                    entity_id,
+                    *type_id,
+                    incoming.clone(),
+                    *incoming_hlc_ts,
+                )
+            })
+            .await;
+        let (request, existing_metadata) = match request {
+            Ok(Some(found)) => found,
+            Ok(None) => {
+                tracing::debug!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    "deferred custom merge: nothing stored locally, leaving it to the \
+                     plain apply path"
                 );
-                Ok((existing, meta))
-            });
-
-        let (existing, existing_metadata) = match read_result {
-            Ok(pair) => pair,
+                continue;
+            }
             Err(err) => {
                 tracing::warn!(
                     %context_id,
                     entity_id = %hex::encode(key),
                     %err,
-                    "deferred custom merge: failed to read the stored entry, skipping"
+                    "deferred custom merge: refused or unreadable, skipping"
                 );
                 continue;
             }
         };
 
-        let Some(existing) = existing else {
-            tracing::debug!(
-                %context_id,
-                entity_id = %hex::encode(key),
-                "deferred custom merge: nothing stored locally, leaving it to the \
-                 plain apply path"
-            );
-            continue;
-        };
-
-        let existing_ts: u64 = *existing_metadata.updated_at;
-
         let merged = match context_client
-            .merge_custom(
-                &context_id,
-                &our_identity,
-                MergeCustomRequest {
-                    type_id: *type_id,
-                    existing,
-                    incoming: incoming.clone(),
-                },
-            )
+            .merge_custom(&context_id, &our_identity, request.clone())
             .await
         {
             Ok(bytes) => bytes,
@@ -730,25 +700,32 @@ pub(crate) async fn dispatch_deferred_custom_merges(
             }
         };
 
-        // `updated_at` advances past both inputs so the next LWW comparison
-        // resolves consistently, exactly as the root path does. The entry's
-        // `crdt_type` is preserved: `update_hash_for` only overwrites the stored
-        // tag when handed `Some`, and this path passes `None` for a non-root id
-        // — so the entry stays stamped and keeps dispatching.
-        let mut new_metadata = existing_metadata.clone();
-        new_metadata.updated_at = existing_ts.max(*incoming_hlc_ts).into();
-
-        let write_result = with_runtime_env(runtime_env.clone(), || {
-            Interface::<MainStorage>::write_pre_merged_root_state(entity_id, &merged, new_metadata)
-                .map_err(|e| eyre::eyre!("write_pre_merged_root_state: {e}"))
-        });
+        let write_result =
+            apply_under_context_lock(Some(context_client), context_id, &runtime_env, || {
+                Interface::<MainStorage>::write_custom_entry_merge(
+                    entity_id,
+                    &request,
+                    &existing_metadata,
+                    &merged,
+                    *incoming_hlc_ts,
+                )
+            })
+            .await;
 
         match write_result {
-            Ok(_full_hash) => {
+            Ok(Some(_full_hash)) => {
                 tracing::info!(
                     %context_id,
                     entity_id = %hex::encode(key),
                     "deferred custom merge: applied"
+                );
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    "deferred custom merge: the stored entry moved during the merge; \
+                     the next round merges it again"
                 );
             }
             Err(err) => {
@@ -763,23 +740,15 @@ pub(crate) async fn dispatch_deferred_custom_merges(
     }
 }
 
+/// Merges the app-state entries sync deferred, after the session, since the apply
+/// cannot reach the app's module; a failed entry is retried on the next tick.
 pub(crate) async fn dispatch_deferred_root_merges(
     context_client: &ContextClient,
     store: &calimero_store::Store,
     context_id: ContextId,
     our_identity: PublicKey,
-    deferred: &[([u8; 32], Vec<u8>, u64)],
+    deferred: &[TreeLeafData],
 ) {
-    use calimero_storage::address::Id;
-    use calimero_storage::entities::Metadata;
-    use calimero_storage::env::with_runtime_env;
-    use calimero_storage::index::Index;
-    use calimero_storage::interface::Interface;
-    use calimero_storage::merge::MergeRootStateRequest;
-    use calimero_storage::store::{MainStorage, StorageAdaptor};
-
-    // Build a runtime env so storage callbacks resolve against the
-    // right context — mirrors what HC initiator does for its DFS.
     // This helper returns `()`; an unresolvable account cannot be propagated, and
     // it also cannot be invented — so log and skip the deferred batch rather than
     // gate it on the wrong principal. The next sync tick retries.
@@ -797,108 +766,84 @@ pub(crate) async fn dispatch_deferred_root_merges(
         our_identity,
         account,
     );
+    let loaded = calimero_context::hlc_fence::loaded_reader_bytecode_id(store, &context_id);
 
-    for (key, incoming, incoming_hlc_ts) in deferred {
-        let entity_id = Id::new(*key);
-
-        // Read existing bytes + metadata under the runtime env so
-        // storage callbacks resolve. `get_metadata` returns `None` if
-        // the receiver has never seen the root entity — in that case
-        // existing is empty + timestamps are 0, and the WASM-side
-        // bootstrap fast-path (existing.created_at == existing.updated_at)
-        // accepts incoming unconditionally.
-        let read_result: eyre::Result<(Vec<u8>, Metadata)> =
-            with_runtime_env(runtime_env.clone(), || {
-                let meta = Index::<MainStorage>::get_index(entity_id)
-                    .map_err(|e| eyre::eyre!("get_index: {e}"))?
-                    .map(|idx| idx.metadata)
-                    .unwrap_or_default();
-                let existing = <MainStorage as StorageAdaptor>::storage_read(
-                    calimero_storage::store::Key::Entry(entity_id),
-                )
-                .unwrap_or_default();
-                Ok((existing, meta))
-            });
-
-        let (existing, existing_metadata) = match read_result {
-            Ok(pair) => pair,
+    for leaf in deferred {
+        let entity_id = hex::encode(leaf.key);
+        // The module merging the entry must read the schema it was written under.
+        match &loaded {
             Err(err) => {
                 warn!(
                     %context_id,
-                    entity_id = %hex::encode(key),
+                    %entity_id,
                     %err,
-                    "deferred root merge: failed to read existing root state, skipping"
+                    "deferred root merge: loaded reader unknown, skipping"
                 );
                 continue;
             }
-        };
-
-        // `incoming_ts` is the wire-carried HLC timestamp the remote
-        // peer recorded when it wrote the entity. The post-merge
-        // result's `updated_at` advances to `max(existing, incoming)`
-        // so the merged write is strictly newer than either input
-        // — necessary for the next sync round's LWW comparisons to
-        // resolve consistently.
-        let existing_ts: u64 = *existing_metadata.updated_at;
-        let incoming_ts: u64 = *incoming_hlc_ts;
-
-        let request = MergeRootStateRequest {
-            existing,
-            incoming: incoming.clone(),
-            existing_created_at: existing_metadata.created_at,
-            existing_ts,
-            incoming_ts,
-        };
-
-        let merged = match context_client
-            .merge_root_state(&context_id, &our_identity, request)
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                warn!(
+            Ok(Some(loaded)) if unreadable_schema(leaf, *loaded).is_some() => {
+                debug!(
                     %context_id,
-                    entity_id = %hex::encode(key),
-                    ?err,
-                    "deferred root merge: WASM dispatch failed, skipping"
+                    %entity_id,
+                    "deferred root merge: written under another schema, skipping"
                 );
                 continue;
             }
-        };
-
-        // Write merged bytes back. `updated_at` advances to
-        // `max(existing_ts, incoming_ts)` — the merged state must be
-        // strictly newer than both inputs so the next LWW comparison
-        // resolves consistently. If `incoming_ts` was older than
-        // `existing_ts` (a stale push during concurrent updates), we
-        // still keep the merged bytes but timestamp them at
-        // `existing_ts` rather than going backwards.
-        let mut new_metadata = existing_metadata.clone();
-        new_metadata.updated_at = existing_ts.max(incoming_ts).into();
-
-        let write_result = with_runtime_env(runtime_env.clone(), || {
-            Interface::<MainStorage>::write_pre_merged_root_state(entity_id, &merged, new_metadata)
-                .map_err(|e| eyre::eyre!("write_pre_merged_root_state: {e}"))
-        });
-
-        match write_result {
-            Ok(_full_hash) => {
-                info!(
-                    %context_id,
-                    entity_id = %hex::encode(key),
-                    "deferred root merge: applied"
-                );
-            }
-            Err(err) => {
-                warn!(
-                    %context_id,
-                    entity_id = %hex::encode(key),
-                    %err,
-                    "deferred root merge: failed to write merged bytes back"
-                );
-            }
+            _ => {}
+        }
+        let merged = merge_deferred_root(
+            Some(context_client),
+            context_id,
+            &runtime_env,
+            leaf,
+            |request| context_client.merge_root_state(&context_id, &our_identity, request),
+        )
+        .await;
+        match merged {
+            Ok(()) => info!(%context_id, %entity_id, "deferred root merge: applied"),
+            Err(err) => warn!(%context_id, %entity_id, %err, "deferred root merge: not applied"),
         }
     }
+}
+
+/// Merges one deferred app-state entry by the rule a delta's write of it takes:
+/// the stamp bound, then the app's merge, written back through storage.
+pub async fn merge_deferred_root<F, Fut>(
+    context_client: Option<&ContextClient>,
+    context_id: ContextId,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    leaf: &TreeLeafData,
+    merge: F,
+) -> eyre::Result<()>
+where
+    F: FnOnce(MergeRootStateRequest) -> Fut,
+    Fut: Future<Output = Result<MergeRootStateResponse, ExecuteError>>,
+{
+    let request = apply_under_context_lock(context_client, context_id, runtime_env, || {
+        Interface::<MainStorage>::root_entry_merge_request(
+            leaf.value.clone(),
+            leaf.metadata.hlc_timestamp,
+        )
+    })
+    .await?;
+    let merged = match merge(request.clone()).await? {
+        MergeRootStateResponse::Ok(merged) => Some(merged),
+        MergeRootStateResponse::Err(_) => None,
+        MergeRootStateResponse::Refused(reason) => bail!("the app refused the entry: {reason}"),
+    };
+    let written = apply_under_context_lock(context_client, context_id, runtime_env, || {
+        Interface::<MainStorage>::write_root_entry_merge(
+            &request,
+            merged.as_deref(),
+            leaf.metadata.created_at,
+        )
+    })
+    .await?;
+    ensure!(
+        written.is_some(),
+        "the stored entry moved during the merge; the next round merges it again"
+    );
+    Ok(())
 }
 
 // =========================================================================
@@ -909,26 +854,195 @@ pub(crate) async fn dispatch_deferred_root_merges(
 mod tests {
     // `execute` arms are driven through `Stream::test_pair`; the partition-scenario
     // integration tests cover the full fallback chains end to end.
-
-    use std::cell::Cell;
-
+    use super::*;
+    use super::{ProtocolDispatch, ProtocolSelector, RootHashPair};
+    use crate::sync::helpers::apply_leaf_with_crdt_merge;
+    use crate::test_node_harness::boot_test_node;
     use async_trait::async_trait;
+    use calimero_account::AccountId;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::test_fixtures::test_meta;
     use calimero_governance_store::{register_context_in_group, MetaRepository};
     use calimero_network_primitives::stream::Stream;
+    use calimero_node_primitives::sync::{create_runtime_env, LeafMetadata};
     use calimero_node_primitives::sync::{InitProof, ProtocolSelection, SyncProtocol};
     use calimero_primitives::context::ContextId;
+    use calimero_primitives::crdt::CrdtType;
     use calimero_primitives::hash::Hash;
     use calimero_primitives::identity::PublicKey;
+    use calimero_storage::address::Id;
+    use calimero_storage::collections::ROOT_ENTRY_ID;
+    use calimero_storage::entities::Metadata;
+    use calimero_storage::env::{time_now, with_runtime_env, RuntimeEnv};
+    use calimero_storage::index::Index;
+    use calimero_storage::store::{Key, StorageAdaptor};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
     use eyre::Result;
     use libp2p::PeerId;
     use serial_test::serial;
-
-    use super::{ProtocolDispatch, ProtocolSelector, RootHashPair};
-    use crate::test_node_harness::boot_test_node;
-
     /// Answers a DAG-heads catch-up and counts the requests; opens no other stream.
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    const STORED: &[u8] = b"stored entry";
+
+    fn context() -> ContextId {
+        ContextId::from([0xCB; 32])
+    }
+
+    /// A context holding the app-state entry `STORED`, written at `now - 1 s`.
+    fn context_with_an_app_state_entry() -> (ContextId, RuntimeEnv) {
+        let context_id = context();
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let env = create_runtime_env(
+            &store,
+            context_id,
+            PublicKey::from([0; 32]),
+            AccountId::from([0xAC; 32]),
+        );
+        with_runtime_env(env.clone(), || {
+            let at = time_now() - 1_000_000_000;
+            Interface::<MainStorage>::save_root_entry(STORED.to_vec(), Metadata::new(at, at))
+                .expect("seed the app-state entry");
+        });
+        (context_id, env)
+    }
+
+    fn leaf(id: Id, value: &[u8], at: u64) -> TreeLeafData {
+        TreeLeafData::new(
+            *id.as_bytes(),
+            value.to_vec(),
+            LeafMetadata::new(CrdtType::opaque_leaf(), at, [0; 32]),
+        )
+    }
+
+    fn stored(env: &RuntimeEnv, id: Id) -> (Vec<u8>, u64) {
+        with_runtime_env(env.clone(), || {
+            let bytes = MainStorage::storage_read(Key::Entry(id)).expect("stored bytes");
+            let index = Index::<MainStorage>::get_index(id)
+                .expect("index")
+                .expect("stored index");
+            (bytes, *index.metadata.updated_at)
+        })
+    }
+
+    async fn merge_answering(
+        env: &RuntimeEnv,
+        leaf: &TreeLeafData,
+        answer: MergeRootStateResponse,
+    ) -> eyre::Result<()> {
+        merge_deferred_root(None, context(), env, leaf, |_| async { Ok(answer) }).await
+    }
+
+    #[test]
+    fn a_repair_leaf_for_the_root_collection_moves_nothing_unless_it_is_the_shell() {
+        let (context_id, env) = context_with_an_app_state_entry();
+        let root = Id::new(*context_id.as_ref());
+        let before = stored(&env, root);
+
+        let far_ahead = with_runtime_env(env.clone(), || {
+            apply_leaf_with_crdt_merge(context_id, &leaf(root, &before.0, u64::MAX))
+        });
+        let undecodable = with_runtime_env(env.clone(), || {
+            apply_leaf_with_crdt_merge(context_id, &leaf(root, &[0xFF; 3], time_now()))
+        });
+
+        assert!(
+            far_ahead.is_ok(),
+            "a restated shell is skipped, got {far_ahead:?}"
+        );
+        assert!(
+            undecodable.is_err(),
+            "bytes that are not the shell are refused"
+        );
+        assert_eq!(stored(&env, root), before, "the root must not move");
+    }
+
+    #[tokio::test]
+    async fn a_deferred_app_state_entry_stamped_far_ahead_is_refused_before_the_merge() {
+        let (_, env) = context_with_an_app_state_entry();
+        let asked = Cell::new(false);
+
+        let merged = merge_deferred_root(
+            None,
+            context(),
+            &env,
+            &leaf(ROOT_ENTRY_ID, b"peer", u64::MAX),
+            |_| {
+                asked.set(true);
+                async { Ok(MergeRootStateResponse::Ok(b"merged".to_vec())) }
+            },
+        )
+        .await;
+
+        assert!(merged.is_err(), "a far-future stamp must be refused");
+        assert!(!asked.get(), "the app must not be asked to merge it");
+        assert_eq!(stored(&env, ROOT_ENTRY_ID).0, STORED);
+    }
+
+    #[tokio::test]
+    async fn a_deferred_app_state_entry_the_app_refuses_is_not_written() {
+        let (_, env) = context_with_an_app_state_entry();
+
+        let merged = merge_answering(
+            &env,
+            &leaf(ROOT_ENTRY_ID, &[0xFF; 3], time_now()),
+            MergeRootStateResponse::Refused("not the app's state".to_owned()),
+        )
+        .await;
+
+        assert!(merged.is_err());
+        assert_eq!(stored(&env, ROOT_ENTRY_ID).0, STORED);
+    }
+
+    #[tokio::test]
+    async fn a_deferred_app_state_entry_is_written_as_the_app_merged_it() {
+        let (_, env) = context_with_an_app_state_entry();
+        let (_, stored_at) = stored(&env, ROOT_ENTRY_ID);
+        let older = stored_at - 1;
+
+        merge_answering(
+            &env,
+            &leaf(ROOT_ENTRY_ID, b"peer", older),
+            MergeRootStateResponse::Ok(b"merged".to_vec()),
+        )
+        .await
+        .expect("a merged entry is written");
+
+        assert_eq!(
+            stored(&env, ROOT_ENTRY_ID),
+            (b"merged".to_vec(), stored_at),
+            "the merge is written, as new as the newer write"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_module_without_the_entry_merge_resolves_it_by_last_writer_wins() {
+        let (_, env) = context_with_an_app_state_entry();
+        let (_, stored_at) = stored(&env, ROOT_ENTRY_ID);
+        let no_merge = || MergeRootStateResponse::Err("no entry merge".to_owned());
+
+        merge_answering(
+            &env,
+            &leaf(ROOT_ENTRY_ID, b"older", stored_at - 1),
+            no_merge(),
+        )
+        .await
+        .expect("an older entry is a no-op");
+        assert_eq!(
+            stored(&env, ROOT_ENTRY_ID).0,
+            STORED,
+            "the older write loses"
+        );
+
+        let newer = time_now();
+        merge_answering(&env, &leaf(ROOT_ENTRY_ID, b"newer", newer), no_merge())
+            .await
+            .expect("a newer entry is written");
+        assert_eq!(stored(&env, ROOT_ENTRY_ID), (b"newer".to_vec(), newer));
+    }
+
     #[derive(Default)]
     struct DeltaCatchUp {
         requested: Cell<u32>,

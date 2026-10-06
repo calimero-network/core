@@ -318,10 +318,18 @@ mod interface__apply_actions {
         assert_eq!(retrieved_page.title, "New Title");
     }
 
+    /// A paragraph saved as a child of a root page (the root itself cannot be deleted).
+    fn saved_child(text: &str) -> Paragraph {
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+        let mut para = Paragraph::new_from_element(text, Element::new(None));
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+        para
+    }
+
     #[test]
     fn apply_action__delete() {
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let page = saved_child("Test Page");
 
         let action = Action::DeleteRef {
             id: page.id(),
@@ -332,7 +340,7 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was deleted
-        let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        let retrieved_page = MainInterface::find_by_id::<Paragraph>(page.id()).unwrap();
         assert!(retrieved_page.is_none());
     }
 
@@ -340,8 +348,7 @@ mod interface__apply_actions {
     fn apply_action__delete_ref() {
         use crate::env::time_now;
 
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let page = saved_child("Test Page");
 
         let action = Action::DeleteRef {
             id: page.id(),
@@ -352,7 +359,7 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was deleted (tombstone)
-        let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        let retrieved_page = MainInterface::find_by_id::<Paragraph>(page.id()).unwrap();
         assert!(retrieved_page.is_none());
 
         // Verify tombstone exists
@@ -362,11 +369,10 @@ mod interface__apply_actions {
     #[test]
     fn delete_ref_conflict_resolution() {
         crate::tests::common::register_test_merge_functions();
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let mut page = saved_child("Test Page");
 
         // Update page (newer timestamp)
-        page.title = "Updated Page".to_owned();
+        page.text = "Updated Page".to_owned();
         page.element_mut().update();
         assert!(MainInterface::save(&mut page).unwrap());
 
@@ -382,9 +388,9 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(old_delete, &ApplyContext::empty()).is_ok());
 
         // Page should still exist (update wins)
-        let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        let retrieved = MainInterface::find_by_id::<Paragraph>(page.id()).unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().title, "Updated Page");
+        assert_eq!(retrieved.unwrap().text, "Updated Page");
 
         // Now delete with newer timestamp
         let new_delete = Action::DeleteRef {
@@ -396,8 +402,17 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(new_delete, &ApplyContext::empty()).is_ok());
 
         // Page should be deleted (deletion wins)
-        let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        let retrieved = MainInterface::find_by_id::<Paragraph>(page.id()).unwrap();
         assert!(retrieved.is_none());
+    }
+
+    /// A child paragraph of the root page, saved and then updated outside merge mode.
+    fn updated_child(text: &str) -> Paragraph {
+        let mut para = saved_child(text);
+        para.text = format!("{text} updated");
+        para.element_mut().update();
+        assert!(MainInterface::save(&mut para).unwrap());
+        para
     }
 
     /// The equal-timestamp case, which `apply_delete_ref_action` calls "the
@@ -411,24 +426,19 @@ mod interface__apply_actions {
     #[test]
     fn an_equal_timestamp_delete_wins_over_the_update() {
         crate::tests::common::register_test_merge_functions();
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let para = updated_child("Test Paragraph");
 
-        page.title = "Updated Page".to_owned();
-        page.element_mut().update();
-        assert!(MainInterface::save(&mut page).unwrap());
-
-        let update_time = *page.element().metadata.updated_at;
+        let update_time = *para.element().metadata.updated_at;
 
         let tie = Action::DeleteRef {
-            id: page.id(),
+            id: para.id(),
             deleted_at: update_time, // exactly equal
             metadata: Metadata::default(),
         };
         assert!(MainInterface::apply_action(tie, &ApplyContext::empty()).is_ok());
 
         assert!(
-            MainInterface::find_by_id::<Page>(page.id())
+            MainInterface::find_by_id::<Paragraph>(para.id())
                 .unwrap()
                 .is_none(),
             "an equal-HLC delete must win: the guard is `deleted_at < updated_at`, strict"
@@ -461,32 +471,30 @@ mod interface__apply_actions {
 
         // Constructed INSIDE merge mode: this is what makes updated_at 0.
         // Updating inside merge mode would not — `update` preserves.
-        // `Element::root()` rather than `Element::new(None)`: a non-root element
-        // has no parent to link to yet and `save` refuses the orphan. Root goes
-        // through the same `timestamp_for_operation`, which is the field under
-        // test.
-        let page = crate::env::with_merge_mode(|| {
-            let mut page = Page::new_from_element("Merged Page", Element::root());
-            assert!(MainInterface::save(&mut page).unwrap());
-            page
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+        let para = crate::env::with_merge_mode(|| {
+            let mut para = Paragraph::new_from_element("Merged", Element::new(None));
+            assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+            para
         });
 
         assert_eq!(
-            *page.element().metadata.updated_at,
+            *para.element().metadata.updated_at,
             0,
             "merge mode must suppress the timestamp; the rest of this test rests on it"
         );
 
         // The weakest possible delete: timestamp 0.
         let earliest = Action::DeleteRef {
-            id: page.id(),
+            id: para.id(),
             deleted_at: 0,
             metadata: Metadata::default(),
         };
         assert!(MainInterface::apply_action(earliest, &ApplyContext::empty()).is_ok());
 
         assert!(
-            MainInterface::find_by_id::<Page>(page.id())
+            MainInterface::find_by_id::<Paragraph>(para.id())
                 .unwrap()
                 .is_none(),
             "a merge-stamped entity loses to a delete at timestamp 0, because the \
@@ -503,26 +511,22 @@ mod interface__apply_actions {
     fn an_entity_stamped_outside_merge_survives_the_same_delete() {
         crate::tests::common::register_test_merge_functions();
 
-        let mut page = Page::new_from_element("Live Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
-        page.title = "Live Update".to_owned();
-        page.element_mut().update();
-        assert!(MainInterface::save(&mut page).unwrap());
+        let para = updated_child("Live Paragraph");
 
         assert!(
-            *page.element().metadata.updated_at > 0,
+            *para.element().metadata.updated_at > 0,
             "outside merge mode the timestamp must be real"
         );
 
         let earliest = Action::DeleteRef {
-            id: page.id(),
+            id: para.id(),
             deleted_at: 0,
             metadata: Metadata::default(),
         };
         assert!(MainInterface::apply_action(earliest, &ApplyContext::empty()).is_ok());
 
         assert!(
-            MainInterface::find_by_id::<Page>(page.id())
+            MainInterface::find_by_id::<Paragraph>(para.id())
                 .unwrap()
                 .is_some(),
             "a delete at 0 must lose to a real update timestamp"

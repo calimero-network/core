@@ -139,7 +139,7 @@ impl SimStorage {
     ///
     /// Uses the same pattern as `hash_comparison.rs` to bridge
     /// `calimero-storage::Key` to `calimero-store::key::ContextState`.
-    fn create_runtime_env(&self) -> RuntimeEnv {
+    pub fn create_runtime_env(&self) -> RuntimeEnv {
         let store = self.store.clone();
         let context_id = self.context_id;
 

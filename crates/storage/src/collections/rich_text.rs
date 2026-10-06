@@ -804,6 +804,11 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
         Ok(marks)
     }
 
+    /// The id of the text this holds; two handles holding it name the same rows.
+    pub(crate) fn collection_id(&self) -> crate::address::Id {
+        self.text.blocks.collection_id()
+    }
+
     /// Copy in `other`'s text and mark rows. Write-once makes the mark join the
     /// identity, so a key both sides hold needs no reconciliation at all.
     pub(crate) fn merge_from<S2: StorageAdaptor>(

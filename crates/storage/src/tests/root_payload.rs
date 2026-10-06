@@ -51,11 +51,13 @@ fn sync(actions: Vec<Action>) -> Result<(), StorageError> {
 fn a_root_payload_that_is_not_the_root_type_is_refused() {
     seeded_root();
 
-    let refused = sync(vec![peer_add(Id::root())]);
+    // The shell rule drops the write as it drops any refused action, so the sync
+    // itself succeeds and the root is still the one that was stored.
+    sync(vec![peer_add(Id::root())]).expect("a refused root write is dropped, not fatal");
 
     assert!(
-        matches!(refused, Err(StorageError::DeserializationError(_))),
-        "{refused:?}"
+        Root::<Counter, S>::fetch().is_some(),
+        "the root still reads"
     );
 }
 

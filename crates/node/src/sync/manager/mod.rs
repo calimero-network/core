@@ -4091,14 +4091,29 @@ impl SyncManager {
                     first_request,
                 )
                 .await;
-                // Same as the HashComparison responder above.
+                // The responder merges the initiator's `EntityPush` leaves into
+                // storage without writing `root_hash`; dispatch the app-state
+                // entries it deferred, then re-anchor even when the session
+                // errored, since earlier pushes landed.
+                if let Ok(deferred) = &outcome {
+                    if !deferred.is_empty() {
+                        super::protocol_selector::dispatch_deferred_root_merges(
+                            &self.context_client,
+                            &store,
+                            context_id,
+                            our_identity,
+                            deferred,
+                        )
+                        .await;
+                    }
+                }
                 super::helpers::reanchor_after_entity_merge(
                     &self.context_client,
                     context_id,
                     "level-wise responder",
                 )
                 .await;
-                outcome?
+                outcome?;
             }
             InitPayload::EntityPush { .. } => {
                 // EntityPush is handled within the HashComparison and LevelWise

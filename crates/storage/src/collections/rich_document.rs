@@ -510,6 +510,11 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichDocument<Sc, S> {
         Ok(minted.start)
     }
 
+    /// The id of the spine this holds; two handles holding it name the same rows.
+    pub(crate) fn collection_id(&self) -> crate::address::Id {
+        self.spine.blocks.collection_id()
+    }
+
     /// Copy in `other`'s spine and block rows. A key both sides hold is merged
     /// field by field, because a block, unlike a mark, is mutable.
     pub(crate) fn merge_from(&mut self, other: &Self) -> Result<(), MergeError> {
