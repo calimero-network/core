@@ -575,21 +575,16 @@ fn a_custom_merge_is_not_written_into_an_entry_signed_since_its_request() {
 #[serial]
 fn a_custom_entry_written_back_with_a_far_future_stamp_is_refused() {
     genesis();
-    let before = app_value();
-    let (request, stored_metadata) = <Interface<MainStorage>>::custom_entry_merge_request(
-        ROOT_ENTRY_ID,
-        CustomTypeId::of("app::Custom"),
-        app_state("peer"),
-        later(),
-    )
-    .expect("request")
-    .expect("an entry is stored");
+    let id = public_entry(custom(APP_RULE));
+    let (request, stored_metadata) = merge_request(id, APP_RULE, later())
+        .expect("request")
+        .expect("an entry is stored");
 
     let written = <Interface<MainStorage>>::write_custom_entry_merge(
-        ROOT_ENTRY_ID,
+        id,
         &request,
         &stored_metadata,
-        &app_state("merged"),
+        b"merged",
         u64::MAX,
     );
 
@@ -597,7 +592,7 @@ fn a_custom_entry_written_back_with_a_far_future_stamp_is_refused() {
         matches!(written, Err(StorageError::InvalidTimestamp(..))),
         "got {written:?}"
     );
-    assert_eq!(app_value(), before);
+    assert_eq!(entry(id).as_deref(), Some(&b"stored"[..]));
 }
 
 /// As for a custom entry: the app-state write-back bounds the peer stamp it carries.
