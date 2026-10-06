@@ -24,10 +24,19 @@ use super::super::{
 /// the namespace parent-chain walk bound (see `context_config::MAX_NAMESPACE_DEPTH`).
 pub const MAX_NAMESPACE_DEPTH: usize = calimero_context_config::MAX_NAMESPACE_DEPTH;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct NamespaceIdentityRecord {
     pub public_key: PublicKey,
     pub private_key: [u8; 32],
+}
+
+impl std::fmt::Debug for NamespaceIdentityRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NamespaceIdentityRecord")
+            .field("public_key", &self.public_key)
+            .field("private_key", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1095,5 +1104,18 @@ mod tests {
             seen, want,
             "both namespaces must be enumerable, not only the one that minted the key"
         );
+    }
+
+    #[test]
+    fn identity_record_debug_omits_the_private_key() {
+        let key = [0xa7; 32];
+        let record = NamespaceIdentityRecord {
+            public_key: PrivateKey::from(key).public_key(),
+            private_key: key,
+        };
+        let shown = format!("{record:?}");
+
+        assert!(!shown.contains(&format!("{key:?}")), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }

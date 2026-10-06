@@ -38,6 +38,7 @@ tokio-tungstenite.workspace = true
 toml.workspace = true
 url = { workspace = true, features = ["serde"] }
 webbrowser.workspace = true
+zeroize.workspace = true
 
 calimero-client.workspace = true
 calimero-config.workspace = true
