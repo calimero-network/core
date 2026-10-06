@@ -1066,6 +1066,36 @@ mod tests {
         );
     }
 
+    /// Verify a delegated envelope whose stamp is `seconds_past` its warrant's deadline.
+    fn verify_stamped(seconds_past: u64) -> eyre::Result<VerifiedEnvelope> {
+        let ctx = ContextId::from([7u8; 32]);
+        let delta = [9u8; 32];
+        let (author, executor, d) = bundle_for(ctx);
+        let author_id = author.device_sk.public_key();
+        let stamp =
+            HybridTimestamp::from_unix_nanos((d.warrant.not_after + seconds_past) * 1_000_000_000);
+        let payload =
+            delegated_delta_signature_payload(ctx, delta, author_id, &d, None, stamp).unwrap();
+        let sig = executor.device_sk.sign(&payload).unwrap().to_bytes();
+        verify_delta_envelope(ctx, delta, author_id, Some(&d), None, None, stamp, &sig)
+    }
+
+    /// Expiry is judged on the delta's own signed stamp, so every replica reaches
+    /// the same verdict whenever it applies.
+    #[test]
+    fn a_delta_stamped_after_its_warrant_expired_is_refused() {
+        let err = verify_stamped(1).expect_err("a delta stamped past not_after must be refused");
+        assert!(
+            err.to_string().contains("expired"),
+            "expected the expiry, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_delta_stamped_at_its_warrants_deadline_is_accepted() {
+        let _verified = verify_stamped(0).expect("a warrant is live through the second it names");
+    }
+
     // ------------------------------------------------- recorded wire preimages
     //
     // Two byte-for-byte pins. They exist because merobox cannot reach this
