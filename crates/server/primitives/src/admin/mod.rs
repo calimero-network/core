@@ -1850,6 +1850,11 @@ pub struct IntentRelayApiResponseData {
     /// must not infer permission from this field alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub granted_on_group_id: Option<String>,
+    /// The blob id of the release this context's group names, hex: what a
+    /// warrant for this node must pin as `release_bytecode_id`.
+    pub release_bytecode_id: String,
+    /// That release's semver, for the warrant's `release_version`.
+    pub release_version: String,
 }
 
 /// Wrapped in `data` like every neighbouring response.

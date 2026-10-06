@@ -12,7 +12,8 @@
 //! another depending on when each applied, and authorization would stop
 //! converging — the same reason `calimero-account` has no certificate expiry at
 //! all. Here there is one clock and nothing has converged yet, so the bound is
-//! meaningful and cheap.
+//! meaningful and cheap. Peers hold the delta to it only against its own signed
+//! stamp, which the execute path refuses to commit past the deadline.
 //!
 //! **Whether this node may author here.** An intent for a context where this
 //! node may not author is refused with its own error rather than executed and
@@ -174,8 +175,8 @@ fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> 
     borsh::from_slice(&bytes).map_err(|err| {
         eyre::eyre!(IntentRefusal::Malformed(format!(
             "warrant is not a valid statement ({} bytes): {err}. A calimero.warrant.v2 \
-             warrant carries executor_key after executor; an older signer omits it and \
-             sends 32 bytes fewer",
+             warrant carries executor_key, then release_bytecode_id and release_version \
+             (from GET .../intents), after executor",
             bytes.len()
         )))
     })
@@ -505,7 +506,8 @@ mod tests {
             )
             .account_id(),
             executor_key: PrivateKey::from([10u8; 32]).public_key(),
-            app_version: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            release_bytecode_id: [0u8; 32],
+            release_version: String::new(),
             method: METHOD.to_owned(),
             intent_hash: Warrant::intent_hash(METHOD, ARGS),
             // Cited nothing: this fixture exercises the context/expiry/intent

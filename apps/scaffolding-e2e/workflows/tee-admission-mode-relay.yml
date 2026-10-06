@@ -281,6 +281,21 @@ steps:
       - "equal({{relay_account}}, {{relay_tee_account}})"
       - "equal({{replica_account}}, {{replica_tee_account}})"
 
+  # The release each warrant pins: the bytecode id its group names.
+  - name: Read the release the relay TEE's warrant pins
+    type: get_group_info
+    node: tee-mode-owner
+    group_id: '{{relay_namespace}}'
+    outputs:
+      relay_release: appKey # wire-pin: the field name group info still emits
+
+  - name: Read the release the replica TEE's warrant pins
+    type: get_group_info
+    node: tee-mode-owner
+    group_id: '{{replica_namespace}}'
+    outputs:
+      replica_release: appKey # wire-pin: the field name group info still emits
+
   # `warrant` is offline — it opens no datastore — so the owner stays up.
   # `--args` must be byte-identical to what the script POSTs.
   - name: The owner mints a warrant for the relay TEE
@@ -296,6 +311,8 @@ steps:
       - '{{relay_account}}'
       - --executor-key
       - '{{relay_key}}'
+      - --release-bytecode-id
+      - '{{relay_release}}'
       - --method
       - set
       - --args
@@ -328,6 +345,8 @@ steps:
       - '{{replica_account}}'
       - --executor-key
       - '{{replica_key}}'
+      - --release-bytecode-id
+      - '{{replica_release}}'
       - --method
       - set
       - --args

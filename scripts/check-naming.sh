@@ -11,7 +11,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 # Retired spellings are legitimate only as back-compat shims: serde/clap
 # aliases, wire-name renames, and the CLI reference's accepted flag alias.
-readonly DELIBERATE='(alias|rename) = "(appKey|app-key|app_key)"|alias: `--app-key`|// wire-pin'
+readonly DELIBERATE='(alias|rename) = "(appKey|app-key|app_key)"|alias: `--app-key`|// wire-pin|# wire-pin'
 
 # Stems, not whole identifiers, so a compound name cannot slip past.
 banned=(

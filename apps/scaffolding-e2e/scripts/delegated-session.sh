@@ -106,10 +106,18 @@ INTENT_ARGS='{"key":"delegated","value":"written-by-a-keyholder"}'
 # scenario granted it `CAN_AUTHOR_ON_BEHALF` one step up; without that the POST
 # below is refused, which is exactly what `delegated-authorship.yml` asserts
 # separately.
+# The release the warrant pins is read from the relay's discovery route, on the
+# same session, as a client would: any other release is refused.
+RELEASE=$(curl -sS "${URL}/admin-api/contexts/${CONTEXT}/intents" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    | sed -n 's/.*"releaseBytecodeId"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')
+[ -n "${RELEASE}" ] || fail "the relay's discovery answer names no release"
+
 WARRANT=$(offline_merod account warrant \
     --context "${CONTEXT}" \
     --executor "${RELAY_ACCOUNT}" \
     --executor-key "${NODE_KEY}" \
+    --release-bytecode-id "${RELEASE}" \
     --method set \
     --args "${INTENT_ARGS}" \
     --nonce 1 \
