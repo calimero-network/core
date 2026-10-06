@@ -3,7 +3,7 @@ use std::sync::Arc;
 use calimero_app_downloader::registry::RegistryMode;
 use calimero_blobstore::{Blob, BlobManager as BlobStore, Deleted, Size};
 use calimero_context_config::MAX_NAMESPACE_DEPTH;
-use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobProbe};
+use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobProbe, ByteBudget};
 use calimero_primitives::{
     blobs::{BlobId, BlobInfo, BlobMetadata},
     common::DIGEST_SIZE,
@@ -474,6 +474,12 @@ where
     .await
 }
 
+/// Ends a holder search as "not found" once its budget is spent, since no
+/// further holder's transfer could be received.
+fn out_of_budget(budget: &ByteBudget) -> Option<eyre::Result<Option<Blob>>> {
+    (budget.left() == 0).then_some(Ok(None))
+}
+
 impl NodeClient {
     // todo! maybe this should be an actor method?
     // todo! so we can cache the blob in case it's
@@ -506,13 +512,25 @@ impl NodeClient {
         }
     }
 
-    /// Fetch `blob_id` from the context's peers and record it as held for the
-    /// context, even when this node already holds the bytes for another one.
-    pub async fn fetch_blob_for_context(
+    /// [`Self::fetch_blob_for_context_within`] with no budget. A plain fn: another
+    /// `async` layer pushes callers' `Send` checks past the compiler's recursion limit.
+    pub fn fetch_blob_for_context<'a>(
+        &'a self,
+        blob_id: &'a BlobId,
+        context_id: &'a ContextId,
+    ) -> impl core::future::Future<Output = eyre::Result<Option<Blob>>> + 'a {
+        self.fetch_blob_for_context_within(blob_id, context_id, ByteBudget::new(u64::MAX))
+    }
+
+    /// Fetch `blob_id` from the context's peers and record it as held for the context,
+    /// even when held for another one; every holder's transfer reads against `budget`.
+    pub async fn fetch_blob_for_context_within(
         &self,
         blob_id: &BlobId,
         context_id: &ContextId,
+        budget: ByteBudget,
     ) -> eyre::Result<Option<Blob>> {
+        let budget = &budget;
         tracing::info!(
             blob_id = %blob_id,
             context_id = %context_id,
@@ -575,7 +593,7 @@ impl NodeClient {
 
                 let data = match self
                     .network_client
-                    .request_blob(*blob_id, *context_id, peer_id, auth)
+                    .request_blob(*blob_id, *context_id, peer_id, auth, budget.clone())
                     .await
                 {
                     Ok(Some(data)) => data,
@@ -589,7 +607,7 @@ impl NodeClient {
                             peer_id = %peer_id,
                             "Peer answered the probe but did not serve the blob"
                         );
-                        return None;
+                        return out_of_budget(budget);
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -598,7 +616,7 @@ impl NodeClient {
                             error = %e,
                             "Failed to download blob from peer, trying the next holder"
                         );
-                        return None;
+                        return out_of_budget(budget);
                     }
                 };
 
@@ -643,7 +661,7 @@ impl NodeClient {
                             "failed to delete the bytes a peer served under the wrong id"
                         );
                     }
-                    return None;
+                    return out_of_budget(budget);
                 }
 
                 // The holder served it under this context, so this node now

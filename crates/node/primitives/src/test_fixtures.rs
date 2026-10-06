@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-use calimero_network_primitives::blob_types::BlobProbe;
+use calimero_blobstore::{BlobManager as BlobStore, FileSystem, CHUNK_SIZE};
+use calimero_network_primitives::blob_types::{BlobProbe, BlobResponse};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
 use calimero_network_primitives::network_status::{
@@ -125,7 +125,8 @@ pub fn network_accepting_announces() -> NetworkClient {
 }
 
 /// A network of one context peer that holds `blob` (or nothing) and answers
-/// every probe and fetch for it; it accepts announces and drops anything else.
+/// every probe and fetch for it, refusing one its budget cannot cover; it
+/// accepts announces and drops anything else.
 pub fn network_of_one_peer(blob: Option<Vec<u8>>) -> NetworkClient {
     network_of_peers(1, blob).0
 }
@@ -161,11 +162,21 @@ pub fn network_of_peers(peers: usize, blob: Option<Vec<u8>>) -> (NetworkClient, 
                             });
                     let _ignored = outcome.send(Ok(probe));
                 }
-                NetworkMessage::RequestBlob { outcome, .. } => {
-                    if let Some(bytes) = &self.blob {
-                        let _before = self.sent.fetch_add(bytes.len() as u64, Ordering::SeqCst);
-                    }
-                    let _ignored = outcome.send(Ok(self.blob.clone()));
+                NetworkMessage::RequestBlob { request, outcome } => {
+                    let sent = match &self.blob {
+                        Some(bytes) => {
+                            // A peer sends its bytes before the receiver can refuse them.
+                            let wire = wire_len(bytes.len());
+                            let _before = self.sent.fetch_add(wire, Ordering::SeqCst);
+                            if request.budget.take(wire) {
+                                Ok(Some(bytes.clone()))
+                            } else {
+                                Err(eyre::eyre!("blob exceeds the caller's budget"))
+                            }
+                        }
+                        None => Ok(None),
+                    };
+                    let _ignored = outcome.send(sent);
                 }
                 NetworkMessage::AnnounceBlob { outcome, .. } => {
                     let _ignored = outcome.send(Ok(()));
@@ -186,6 +197,18 @@ pub fn network_of_peers(peers: usize, blob: Option<Vec<u8>>) -> (NetworkClient, 
         sent: counted,
     });
     (network, sent)
+}
+
+/// What a holder puts on the wire for `len` bytes: the `BlobResponse` header
+/// frame, a frame per store chunk and the closing empty one, each length-prefixed.
+fn wire_len(len: usize) -> u64 {
+    let header = BlobResponse {
+        found: true,
+        size: Some(len as u64),
+    };
+    let header = serde_json::to_vec(&header).map_or(0, |json| json.len()) + 4;
+    let chunk_frames = len.div_ceil(CHUNK_SIZE) + 1;
+    (header + len + chunk_frames * 8) as u64
 }
 
 /// What a node signing a blob request reads to learn its own peer id.

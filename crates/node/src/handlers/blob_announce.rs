@@ -25,12 +25,12 @@
 //! retry bolted on here.
 
 use core::time::Duration;
-use std::collections::BTreeSet;
-use std::sync::{Mutex, PoisonError};
+use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::get_group_for_context;
-use calimero_network_primitives::blob_types::{BlobAnnouncement, BlobRequest};
+use calimero_network_primitives::blob_types::{BlobAnnouncement, BlobRequest, ByteBudget};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
@@ -38,6 +38,7 @@ use calimero_primitives::identity::{MemberIdentity, PublicKey};
 use futures_util::StreamExt;
 use libp2p::PeerId;
 use tokio::sync::Semaphore;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::handlers::blob_protocol::is_signed_context_member;
@@ -70,29 +71,61 @@ const PREFETCH_FRAMING_BYTES: u64 = 64 * 1024; // headers and chunk framing over
 /// Global prefetch budget, shared by every inbound announcement.
 static PREFETCH_SLOTS: Semaphore = Semaphore::const_new(PREFETCH_CONCURRENCY);
 
-/// Members with a prefetch running for one of their announcements.
-static PREFETCHING_FOR: Mutex<BTreeSet<MemberIdentity>> = Mutex::new(BTreeSet::new());
+/// What each announcing member has caused this node to prefetch.
+static MEMBER_SPEND: Mutex<BTreeMap<MemberIdentity, MemberSpend>> = Mutex::new(BTreeMap::new());
 
-/// One announcing member's single prefetch, released when the fetch ends, so
-/// one member cannot take every global slot.
-struct MemberPrefetch(MemberIdentity);
+struct MemberSpend {
+    running: bool,
+    window_start: Instant,
+    bytes: u64,
+}
+
+/// One announcing member's single prefetch, charged to its byte budget and
+/// released when the fetch ends, so one member cannot take every global slot.
+struct MemberPrefetch {
+    member: MemberIdentity,
+    charge: u64,
+}
 
 impl MemberPrefetch {
-    fn claim(member: MemberIdentity) -> Option<Self> {
-        let mut busy = PREFETCHING_FOR
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        busy.insert(member).then(|| Self(member))
+    /// `None` while the member has a prefetch running or `charge` would take it
+    /// past its budget for the current window.
+    fn claim(member: MemberIdentity, charge: u64) -> Option<Self> {
+        let now = Instant::now();
+        let mut spend = member_spend();
+        spend.retain(|_, s| s.running || now - s.window_start < MEMBER_PREFETCH_WINDOW);
+        let entry = spend.entry(member).or_insert(MemberSpend {
+            running: false,
+            window_start: now,
+            bytes: 0,
+        });
+        let bytes = entry.bytes.saturating_add(charge);
+        if entry.running || bytes > MEMBER_PREFETCH_BUDGET_BYTES {
+            return None;
+        }
+        entry.running = true;
+        entry.bytes = bytes;
+        Some(Self { member, charge })
+    }
+
+    /// Replace the claimed charge with what the prefetch actually cost.
+    fn settle(self, cost: u64) {
+        if let Some(entry) = member_spend().get_mut(&self.member) {
+            entry.bytes = entry.bytes.saturating_sub(self.charge).saturating_add(cost);
+        }
     }
 }
 
 impl Drop for MemberPrefetch {
     fn drop(&mut self) {
-        let _was_busy = PREFETCHING_FOR
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.0);
+        if let Some(entry) = member_spend().get_mut(&self.member) {
+            entry.running = false;
+        }
     }
+}
+
+fn member_spend() -> MutexGuard<'static, BTreeMap<MemberIdentity, MemberSpend>> {
+    MEMBER_SPEND.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// How long an inbound announce stream may stay silent before it is dropped.
@@ -208,11 +241,14 @@ async fn prefetch_announced_blob(
         return Ok(());
     }
 
+    // Every holder's transfer counts into one budget of this charge, and the member
+    // is settled to what arrived, so junk any holder sends costs the announcer.
+    let charge = size.max(MIN_PREFETCH_CHARGE_BYTES);
     let announcer = announcing_member(context_client.datastore(), &context_id, auth.public_key);
-    let Some(_member_prefetch) = MemberPrefetch::claim(announcer) else {
+    let Some(member_prefetch) = MemberPrefetch::claim(announcer, charge) else {
         debug!(
-            %peer_id, %blob_id, %context_id, signer = %auth.public_key,
-            "a prefetch for this member is already running, skipping this announcement"
+            %peer_id, %blob_id, %context_id, signer = %auth.public_key, charge,
+            "this member has a prefetch running or has spent its prefetch budget, skipping"
         );
         return Ok(());
     };
@@ -222,6 +258,7 @@ async fn prefetch_announced_blob(
     // recoverable — the blob is still findable by probing its holder — so
     // shedding beats queueing.
     let Ok(_permit) = PREFETCH_SLOTS.try_acquire() else {
+        member_prefetch.settle(0);
         debug!(
             %blob_id, %context_id,
             concurrency = PREFETCH_CONCURRENCY,
@@ -230,26 +267,32 @@ async fn prefetch_announced_blob(
         return Ok(());
     };
 
+    let budget = ByteBudget::new(charge.saturating_add(PREFETCH_FRAMING_BYTES));
     info!(%peer_id, %blob_id, %context_id, size, "prefetching announced blob");
 
     // Fetch through the ordinary discovery path rather than straight from the
     // announcer: it signs the request with this node's own context identity,
     // verifies the content hash, stores the result, and falls back to another
     // holder if the announcer has since gone away.
-    match tokio::time::timeout(
+    let outcome = tokio::time::timeout(
         PREFETCH_TIMEOUT,
-        node_client.fetch_blob_for_context(&blob_id, &context_id),
+        node_client.fetch_blob_for_context_within(&blob_id, &context_id, budget.clone()),
     )
-    .await
-    {
+    .await;
+    // The framing allowance is headroom for the transfer, not a discount.
+    let received = budget.received();
+    let cost = match outcome {
         Ok(Ok(Some(_))) => {
-            info!(%blob_id, %context_id, size, "prefetched announced blob");
+            info!(%blob_id, %context_id, size, received, "prefetched announced blob");
+            received.max(MIN_PREFETCH_SUCCESS_COST_BYTES)
         }
         Ok(Ok(None)) => {
             warn!(%blob_id, %context_id, "announced blob could not be fetched from any holder");
+            received.max(MIN_PREFETCH_CHARGE_BYTES)
         }
         Ok(Err(err)) => {
             warn!(%blob_id, %context_id, %err, "failed to prefetch announced blob");
+            received.max(MIN_PREFETCH_CHARGE_BYTES)
         }
         Err(_elapsed) => {
             warn!(
@@ -257,8 +300,11 @@ async fn prefetch_announced_blob(
                 timeout_secs = PREFETCH_TIMEOUT.as_secs(),
                 "prefetch of announced blob timed out"
             );
+            // Its transfer may still be running, so the whole claim stands.
+            received.max(charge)
         }
-    }
+    };
+    member_prefetch.settle(cost);
 
     Ok(())
 }
