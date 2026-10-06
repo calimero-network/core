@@ -2113,6 +2113,17 @@ impl SyncManager {
         }
 
         for (group_id, key_id) in requests {
+            let request = (namespace_id, group_id, key_id);
+            if !self.node_state.key_recovery_allowed(request) {
+                debug!(
+                    group_id = %hex::encode(group_id),
+                    "group-key recovery: paused for this key after rounds no peer served it"
+                );
+                continue;
+            }
+            // Did any peer answer "no key", and did one serve it?
+            let mut answered_empty = false;
+            let mut served = false;
             // Anchors first, per group — `trusted_anchors` is per group, while
             // the candidate pool is the namespace mesh. Whether the ordering is
             // merely a preference or a hard restriction is decided by
@@ -2158,7 +2169,9 @@ impl SyncManager {
                     continue;
                 };
                 if envelope_bytes.is_empty() {
-                    // This peer doesn't hold the key — try the next one.
+                    // This peer doesn't hold the key — or will not serve it to
+                    // us; the two answers are deliberately alike. Try the next.
+                    answered_empty = true;
                     continue;
                 }
                 // **The gate.** An unwrapped key is just bytes: a node that
@@ -2284,7 +2297,24 @@ impl SyncManager {
                 }
                 // Got this group's key (or logged an apply error) — stop
                 // trying peers for it.
+                served = true;
                 break;
+            }
+            if served {
+                self.node_state.record_key_recovery_served(request);
+            } else if answered_empty {
+                if let Some(pause) = self.node_state.record_key_recovery_miss(request) {
+                    // The shape of a node outside a Restricted group: every peer
+                    // answers, none serves. Say so once per pause, not per tick.
+                    info!(
+                        namespace_id = %hex::encode(namespace_id),
+                        group_id = %hex::encode(group_id),
+                        pause_secs = pause.as_secs(),
+                        "group-key recovery: no peer serves this key; this node is \
+                         likely outside the group it belongs to, so it asks again \
+                         only after a pause (ops sealed under it stay held until then)"
+                    );
+                }
             }
         }
     }

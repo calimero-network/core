@@ -158,6 +158,65 @@ impl DeltaFetchBackoff {
     }
 }
 
+/// Rounds in which every peer answered "no key" before a group-key request is paused.
+pub(crate) const KEY_RECOVERY_TRIP_AFTER: u32 = 2;
+
+/// First pause once tripped. Doubles per subsequent round.
+pub(crate) const KEY_RECOVERY_BACKOFF_BASE: Duration = Duration::from_secs(30);
+
+/// Ceiling on the pause. Not "never": see [`KeyRecoveryBackoff`].
+pub(crate) const KEY_RECOVERY_BACKOFF_MAX: Duration = Duration::from_secs(600);
+
+/// Most `(namespace, group, key)` requests remembered. Past it a new one is
+/// simply asked at full rate, as before this existed.
+pub(crate) const MAX_KEY_RECOVERY_BACKOFF_ENTRIES: usize = 4096;
+
+/// Rounds in which no peer would serve a group key this node asked for.
+///
+/// **Why this exists.** The group-key recovery asks for every key a logged op is
+/// sealed under, on every sync tick. A namespace member outside a Restricted
+/// subgroup logs that subgroup's sealed ops and is never served their key - the
+/// key server answers non-members with an empty envelope, deliberately the same
+/// answer as "I do not hold it" (core#4511). So it asked every peer, every tick,
+/// forever.
+///
+/// **Why it backs off rather than gives up.** A member just added to that
+/// subgroup looks exactly the same until its key arrives: its membership row is
+/// sealed under the very key it is missing. Never asking again would strand it,
+/// so the pause is capped at [`KEY_RECOVERY_BACKOFF_MAX`] - and the key normally
+/// reaches a new member pushed in its `KeyDelivery`, not through this pull.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct KeyRecoveryBackoff {
+    /// Consecutive rounds in which every peer that answered held no key for us.
+    pub(crate) misses: u32,
+    /// When the next request is allowed. `None` until tripped.
+    pub(crate) retry_after: Option<Instant>,
+}
+
+impl KeyRecoveryBackoff {
+    pub(crate) fn may_attempt(&self, now: Instant) -> bool {
+        self.retry_after.is_none_or(|t| now >= t)
+    }
+
+    /// Fold in a round no peer served, returning the pause it arms, if any.
+    pub(crate) fn record_miss(&mut self, now: Instant) -> Option<Duration> {
+        self.misses = self.misses.saturating_add(1);
+        if self.misses < KEY_RECOVERY_TRIP_AFTER {
+            return None;
+        }
+        let shift = (self.misses - KEY_RECOVERY_TRIP_AFTER).min(16);
+        let pause = KEY_RECOVERY_BACKOFF_BASE
+            .saturating_mul(1u32 << shift)
+            .min(KEY_RECOVERY_BACKOFF_MAX);
+        self.retry_after = Some(now + pause);
+        Some(pause)
+    }
+}
+
+/// One group-key request: namespace, group, and the key epoch asked for (`None`
+/// for the group's current key).
+pub(crate) type KeyRecoveryRequest = ([u8; 32], [u8; 32], Option<[u8; 32]>);
+
 /// Mutable runtime state
 #[derive(Clone, Debug)]
 pub(crate) struct NodeState {
@@ -228,6 +287,10 @@ pub(crate) struct NodeState {
     /// rate immediately. Bounded by `(contexts × peers)`, and entries are
     /// removed rather than reset on success so a healthy fleet holds none.
     pub(crate) delta_fetch_backoff: Arc<DashMap<(ContextId, PeerId), DeltaFetchBackoff>>,
+    /// Group-key requests no peer would serve. See [`KeyRecoveryBackoff`].
+    /// Cleared per request on the first key served; capped at
+    /// [`MAX_KEY_RECOVERY_BACKOFF_ENTRIES`].
+    pub(crate) key_recovery_backoff: Arc<DashMap<KeyRecoveryRequest, KeyRecoveryBackoff>>,
     /// Durable backing for `peer_identities`: the same authenticated
     /// observations, structured per group with role + `last_seen`, so the
     /// membership signal survives a restart instead of being rebuilt from
@@ -319,6 +382,7 @@ impl NodeState {
             governance_pending: Arc::new(DashMap::new()),
             peer_identities: Arc::new(DashMap::new()),
             delta_fetch_backoff: Arc::new(DashMap::new()),
+            key_recovery_backoff: Arc::new(DashMap::new()),
             peer_identity_cache: Arc::new(Mutex::new(PeerIdentityCache::default())),
             peer_scores: Arc::new(Mutex::new(BTreeMap::new())),
             reconcile_attempts: Arc::new(DashMap::new()),
@@ -401,6 +465,33 @@ impl NodeState {
     /// entries at all.
     pub(crate) fn record_delta_fetch_success(&self, context_id: ContextId, peer: PeerId) {
         let _ = self.delta_fetch_backoff.remove(&(context_id, peer));
+    }
+
+    /// Whether a group-key request may be sent now, or is paused after rounds
+    /// in which no peer would serve it.
+    pub(crate) fn key_recovery_allowed(&self, request: KeyRecoveryRequest) -> bool {
+        self.key_recovery_backoff
+            .get(&request)
+            .is_none_or(|e| e.may_attempt(Instant::now()))
+    }
+
+    /// Record a round in which every peer that answered held no key for
+    /// `request`, returning the pause it arms, if it tripped.
+    pub(crate) fn record_key_recovery_miss(&self, request: KeyRecoveryRequest) -> Option<Duration> {
+        if !self.key_recovery_backoff.contains_key(&request)
+            && self.key_recovery_backoff.len() >= MAX_KEY_RECOVERY_BACKOFF_ENTRIES
+        {
+            return None;
+        }
+        self.key_recovery_backoff
+            .entry(request)
+            .or_default()
+            .record_miss(Instant::now())
+    }
+
+    /// Forget `request`'s misses: a peer served the key.
+    pub(crate) fn record_key_recovery_served(&self, request: KeyRecoveryRequest) {
+        let _ = self.key_recovery_backoff.remove(&request);
     }
 
     /// Shared handle to the sync-status map, for the run-loop publisher.
@@ -1229,5 +1320,53 @@ mod tests {
         let later = start + NAMESPACE_REFUSAL_BACKFILL_INTERVAL;
         assert!(state.claim_refusal_backfill_at(namespace, late, later));
         assert!(state.namespace_refusal_backfill.len() <= MAX_REFUSAL_BACKFILL_SLOTS);
+    }
+
+    #[test]
+    fn a_key_no_peer_serves_is_asked_less_often_until_a_peer_serves_it() {
+        let state = NodeState::new();
+        let request = ([1; 32], [2; 32], Some([3; 32]));
+
+        assert!(state.key_recovery_allowed(request));
+        assert_eq!(
+            state.record_key_recovery_miss(request),
+            None,
+            "one round with no key is ordinary"
+        );
+        assert!(state.key_recovery_allowed(request));
+
+        assert_eq!(
+            state.record_key_recovery_miss(request),
+            Some(KEY_RECOVERY_BACKOFF_BASE)
+        );
+        assert!(!state.key_recovery_allowed(request), "paused once tripped");
+
+        let mut pause = KEY_RECOVERY_BACKOFF_BASE;
+        for _ in 0..20 {
+            pause = state.record_key_recovery_miss(request).expect("tripped");
+        }
+        assert_eq!(
+            pause, KEY_RECOVERY_BACKOFF_MAX,
+            "never given up for good: a member just added looks like a non-member"
+        );
+
+        state.record_key_recovery_served(request);
+        assert!(state.key_recovery_allowed(request));
+        assert!(state.key_recovery_backoff.is_empty());
+    }
+
+    #[test]
+    fn key_recovery_backoff_is_bounded() {
+        let state = NodeState::new();
+        for i in 0..MAX_KEY_RECOVERY_BACKOFF_ENTRIES {
+            let mut group = [0; 32];
+            group[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            let _ = state.record_key_recovery_miss(([1; 32], group, None));
+        }
+        let _ = state.record_key_recovery_miss(([1; 32], [0xFF; 32], None));
+        assert_eq!(
+            state.key_recovery_backoff.len(),
+            MAX_KEY_RECOVERY_BACKOFF_ENTRIES
+        );
     }
 }
