@@ -1767,7 +1767,28 @@ fn leaving_a_namespace_forgets_what_was_kept_to_take_its_void_ops_back() {
     assert!(ledger.voided().unwrap().is_empty());
     assert!(ledger.key_intros().unwrap().is_empty());
     assert_eq!(ledger.default_seed([8; 32]).unwrap(), None);
-    assert!(!ledger.refused([9; 32]).unwrap(), "a refused op's verdict");
+    assert!(
+        !ledger.refused([9; 32]).unwrap(),
+        "a refused verdict does not outlive the namespace"
+    );
+}
+
+#[test]
+fn an_op_applied_with_its_key_held_is_not_judged_by_a_later_replay() {
+    let w = World::new();
+    let add = w.add(&w.owner, &[], &w.alice, GroupMemberRole::Member);
+    let id = add.content_hash().unwrap();
+    let ledger = crate::void_ledger::VoidLedger::new(&w.store, NS.into());
+    // The mark an earlier arrival of the same op left before it failed.
+    ledger.note_parked(id).unwrap();
+
+    w.apply(&add).expect("applies with the key held");
+    ledger.settle_parked(id, false).unwrap();
+
+    assert!(
+        !ledger.refused(id).unwrap(),
+        "a replay refusing an op applied on arrival must not mark it refused"
+    );
 }
 
 #[test]

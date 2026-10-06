@@ -3029,4 +3029,38 @@ mod tests {
             "a second sweep must leave the now-applied context registered (idempotent)"
         );
     }
+
+    /// A parked op whose key is already held when the node starts, with no replay
+    /// ever run for it, is decided by the startup sweep, sealed root ops included.
+    #[test]
+    fn the_startup_sweep_decides_parked_ops_whose_key_is_held() {
+        use crate::group_key_pull::tests::{
+            admin_at_heads, keyless_namespace, park_a_create_naming_a_folded_group,
+        };
+
+        let ns = ContextGroupId::from([0x53; 32]);
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let node_sk = PrivateKey::from([0x74; 32]);
+        NamespaceRepository::new(&store)
+            .store_identity(&ns, &node_sk.public_key(), &[0x74; 32])
+            .unwrap();
+        let ns_key = [0x63u8; 32];
+        let s = park_a_create_naming_a_folded_group(&store, ns, &owner_sk, &mallory_sk, &ns_key);
+        let _ = GroupKeyring::new(&store, ns).store_key(&ns_key).unwrap();
+
+        redrive_stranded_ops_sweep(&store);
+
+        assert_eq!(
+            admin_at_heads(&store, &ns, s, &owner),
+            Some(true),
+            "the sweep leaves S's cut decidable"
+        );
+        assert_eq!(
+            admin_at_heads(&store, &ns, s, &mallory),
+            Some(false),
+            "the sweep refuses the parked create rather than folding it"
+        );
+    }
 }

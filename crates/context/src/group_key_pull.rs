@@ -45,7 +45,7 @@ pub(crate) fn adopt_pulled_group_key(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use calimero_store::key::GroupTarget;
     use std::sync::Arc;
 
@@ -87,7 +87,12 @@ mod tests {
 
     /// Put a signed op on the DAG the way a received op lands. The op-log write
     /// also writes the unified op, decoding with whatever key is present then.
-    fn land(store: &Store, namespace: [u8; 32], op: &SignedNamespaceOp, parents: &[[u8; 32]]) {
+    pub(crate) fn land(
+        store: &Store,
+        namespace: [u8; 32],
+        op: &SignedNamespaceOp,
+        parents: &[[u8; 32]],
+    ) {
         let delta_id = op.content_hash().unwrap();
         NamespaceOpLogService::new(store, namespace.into())
             .store_signed_operation(op)
@@ -99,7 +104,7 @@ mod tests {
 
     /// An admin-signed invitation, so the joiner's `MemberJoined` folds into a
     /// namespace membership row the inheritance walk can anchor on.
-    fn invitation(
+    pub(crate) fn invitation(
         admin_sk: &PrivateKey,
         group: ContextGroupId,
     ) -> calimero_context_config::types::SignedGroupOpenInvitation {
@@ -395,7 +400,7 @@ mod tests {
 
     /// An admin, a plain member (Mallory), and this node, which holds the
     /// namespace key of neither yet.
-    fn keyless_namespace(ns: ContextGroupId) -> (Store, PrivateKey, PrivateKey) {
+    pub(crate) fn keyless_namespace(ns: ContextGroupId) -> (Store, PrivateKey, PrivateKey) {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let owner_sk = PrivateKey::from([0x71; 32]);
         let mallory_sk = PrivateKey::from([0x72; 32]);
@@ -413,7 +418,7 @@ mod tests {
     }
 
     /// Apply `op` as it arrives from a peer: parked, since this node lacks its key.
-    fn arrive(store: &Store, op: &SignedNamespaceOp, parents: &[[u8; 32]]) -> [u8; 32] {
+    pub(crate) fn arrive(store: &Store, op: &SignedNamespaceOp, parents: &[[u8; 32]]) -> [u8; 32] {
         let parked = calimero_governance_store::apply_signed_namespace_op_at_cut(
             store,
             op,
@@ -430,7 +435,7 @@ mod tests {
 
     /// Whether `account` is an admin of `group` at this node's governance heads,
     /// as the apply gates read it.
-    fn admin_at_heads(
+    pub(crate) fn admin_at_heads(
         store: &Store,
         ns: &ContextGroupId,
         group: ContextGroupId,
@@ -618,5 +623,359 @@ mod tests {
             Some(false),
             "ops the apply refused must not make their signer an admin of S at the cut"
         );
+    }
+
+    /// Land Mallory's join, so the cut names her as a namespace member.
+    pub(crate) fn land_mallory_join(
+        store: &Store,
+        ns: ContextGroupId,
+        owner_sk: &PrivateKey,
+        mallory_sk: &PrivateKey,
+    ) -> [u8; 32] {
+        let joined = SignedNamespaceOp::sign(
+            mallory_sk,
+            ns.to_bytes().into(),
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoined {
+                member: crate::test_support::account_for(&mallory_sk.public_key()),
+                signed_invitation: invitation(owner_sk, ns),
+                account: crate::test_support::credential(&mallory_sk.public_key()),
+            }),
+        )
+        .unwrap();
+        land(store, ns.to_bytes(), &joined, &[]);
+        joined.content_hash().unwrap()
+    }
+
+    /// `signer`'s `MemberRoleSet` in the namespace root, encrypted under `key`.
+    fn role_set(
+        signer: &PrivateKey,
+        ns: ContextGroupId,
+        parents: Vec<[u8; 32]>,
+        nonce: u64,
+        key: &[u8; 32],
+        member: calimero_account::AccountId,
+    ) -> SignedNamespaceOp {
+        SignedNamespaceOp::sign(
+            signer,
+            ns.to_bytes().into(),
+            parents,
+            nonce,
+            NamespaceOp::Group {
+                group_id: ns.to_bytes().into(),
+                key_id: GroupKeyring::key_id_for(key).into(),
+                encrypted: GroupKeyring::encrypt_op(
+                    key,
+                    &GroupOp::MemberRoleSet {
+                        member,
+                        role: GroupMemberRole::Admin,
+                    },
+                )
+                .unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap()
+    }
+
+    /// The owner's subgroup S, folded here, and Mallory's sealed `GroupCreated`
+    /// naming S with herself as its admin, parked for lack of `ns_key`.
+    pub(crate) fn park_a_create_naming_a_folded_group(
+        store: &Store,
+        ns: ContextGroupId,
+        owner_sk: &PrivateKey,
+        mallory_sk: &PrivateKey,
+        ns_key: &[u8; 32],
+    ) -> ContextGroupId {
+        let namespace_id = ns.to_bytes();
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let s_salt = [0x13u8; 32];
+        let s = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &owner,
+            &namespace_id,
+            false,
+            &s_salt,
+        ));
+        NamespaceRepository::new(store).nest(&ns, &s).unwrap();
+        MetaRepository::new(store).save(&s, &meta(owner)).unwrap();
+        CapabilitiesRepository::new(store)
+            .set_subgroup_visibility(&s, VisibilityMode::Open)
+            .unwrap();
+        let created = SignedNamespaceOp::sign(
+            owner_sk,
+            namespace_id.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                admin: owner,
+                group_id: s.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: false,
+                salt: s_salt,
+            }),
+        )
+        .unwrap();
+        land(store, namespace_id, &created, &[]);
+        let created_id = created.content_hash().unwrap();
+
+        let foreign = SignedNamespaceOp::sign(
+            mallory_sk,
+            namespace_id.into(),
+            vec![created_id],
+            1,
+            NamespaceOp::RootSealed {
+                key_id: GroupKeyring::key_id_for(ns_key).into(),
+                encrypted: GroupKeyring::encrypt_root_op(
+                    ns_key,
+                    &RootOp::GroupCreated {
+                        admin: mallory,
+                        group_id: s.to_bytes().into(),
+                        parent_id: namespace_id.into(),
+                        restricted: false,
+                        salt: s_salt,
+                    },
+                )
+                .unwrap(),
+            },
+        )
+        .unwrap();
+        let _ = arrive(store, &foreign, &[created_id]);
+        s
+    }
+
+    /// A create naming a group this node already folded is skipped by the replay as
+    /// a re-fed create, which must not leave a parked one folding its payload.
+    #[test]
+    fn a_parked_create_naming_a_folded_group_grants_nothing_once_its_key_arrives() {
+        let ns = ContextGroupId::from([0x4E; 32]);
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let ns_key = [0x5Eu8; 32];
+        let s = park_a_create_naming_a_folded_group(&store, ns, &owner_sk, &mallory_sk, &ns_key);
+
+        let _ = adopt_pulled_group_key(&store, ns.to_bytes().into(), ns, &ns_key)
+            .expect("the pulled key stores");
+
+        assert_eq!(
+            admin_at_heads(&store, &ns, s, &owner),
+            Some(true),
+            "control: the cut is decidable and names S's creator"
+        );
+        assert_eq!(
+            admin_at_heads(&store, &ns, s, &mallory),
+            Some(false),
+            "a create the apply would refuse must not seat its signer as S's admin"
+        );
+    }
+
+    /// A parked op is judged at its own cut, as on a node that held the key on
+    /// arrival, not against the rows this node holds when the key arrives.
+    #[test]
+    fn a_parked_op_is_judged_at_its_own_cut_once_its_key_arrives() {
+        let ns = ContextGroupId::from([0x4F; 32]);
+        let namespace_id = ns.to_bytes();
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let yara_sk = PrivateKey::from([0x73; 32]);
+        let yara = crate::test_support::enrol(&store, &ns, &yara_sk.public_key());
+        let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
+
+        // Mallory's Restricted subgroup S. Its live rows already show her gone,
+        // as a later removal's cascade leaves them; at the cut she is its admin.
+        let s_salt = [0x14u8; 32];
+        let s = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &mallory,
+            &namespace_id,
+            true,
+            &s_salt,
+        ));
+        NamespaceRepository::new(&store).nest(&ns, &s).unwrap();
+        MetaRepository::new(&store).save(&s, &meta(owner)).unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&s, VisibilityMode::Restricted)
+            .unwrap();
+        let created = SignedNamespaceOp::sign(
+            &mallory_sk,
+            namespace_id.into(),
+            vec![joined_id],
+            2,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                admin: mallory,
+                group_id: s.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+                salt: s_salt,
+            }),
+        )
+        .unwrap();
+        land(&store, namespace_id, &created, &[joined_id]);
+        let created_id = created.content_hash().unwrap();
+        assert_eq!(
+            admin_at_heads(&store, &ns, s, &mallory),
+            Some(true),
+            "control: at the cut Mallory is S's admin"
+        );
+
+        let s_key = [0x5Fu8; 32];
+        let add = SignedNamespaceOp::sign(
+            &mallory_sk,
+            namespace_id.into(),
+            vec![created_id],
+            3,
+            NamespaceOp::Group {
+                group_id: s.to_bytes().into(),
+                key_id: GroupKeyring::key_id_for(&s_key).into(),
+                encrypted: GroupKeyring::encrypt_op(
+                    &s_key,
+                    &GroupOp::MemberAdded {
+                        member: yara,
+                        role: GroupMemberRole::Member,
+                    },
+                )
+                .unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap();
+        let _ = arrive(&store, &add, &[created_id]);
+        let _ = adopt_pulled_group_key(&store, namespace_id.into(), s, &s_key)
+            .expect("the pulled key stores");
+
+        let (projection, _, heads) =
+            ScopeProjections::ephemeral_projection(&store, &ns).expect("fold the namespace");
+        assert_eq!(
+            projection.account_member_at_cut(&store, s, &yara, &heads),
+            Some(true),
+            "an add its signer was entitled to at its cut must fold"
+        );
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&s, &yara)
+                .unwrap(),
+            Some(GroupMemberRole::Member),
+            "and apply, as on every node that held the key on arrival"
+        );
+    }
+
+    /// Between a key being stored and the replay deciding a parked op, the op is a
+    /// hole: the key alone must not let it grant what its apply may refuse.
+    #[test]
+    fn a_parked_op_grants_nothing_before_its_replay_decides_it() {
+        let ns = ContextGroupId::from([0x50; 32]);
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
+        let ns_key = [0x60u8; 32];
+        let promote = role_set(&mallory_sk, ns, vec![joined_id], 2, &ns_key, mallory);
+        let _ = arrive(&store, &promote, &[joined_id]);
+
+        let _ = GroupKeyring::new(&store, ns).store_key(&ns_key).unwrap();
+        assert_ne!(
+            admin_at_heads(&store, &ns, ns, &mallory),
+            Some(true),
+            "a stored key with no replay yet must not make the op's signer an admin"
+        );
+
+        let _ = adopt_pulled_group_key(&store, ns.to_bytes().into(), ns, &ns_key)
+            .expect("the pulled key stores");
+        assert_eq!(admin_at_heads(&store, &ns, ns, &owner), Some(true));
+        assert_eq!(admin_at_heads(&store, &ns, ns, &mallory), Some(false));
+    }
+
+    /// An op its replay applies folds its payload: a parked op never stays a hole
+    /// once its key has arrived and its apply took.
+    #[test]
+    fn an_honest_parked_op_folds_once_its_key_arrives() {
+        let ns = ContextGroupId::from([0x51; 32]);
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
+        let ns_key = [0x61u8; 32];
+        let promote = role_set(&owner_sk, ns, vec![joined_id], 2, &ns_key, mallory);
+        let _ = arrive(&store, &promote, &[joined_id]);
+
+        let _ = adopt_pulled_group_key(&store, ns.to_bytes().into(), ns, &ns_key)
+            .expect("the pulled key stores");
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns, &mallory)
+                .unwrap(),
+            Some(GroupMemberRole::Admin),
+            "control: the apply took"
+        );
+        assert_eq!(
+            admin_at_heads(&store, &ns, ns, &mallory),
+            Some(true),
+            "the owner's promotion folds once applied"
+        );
+    }
+
+    /// A subgroup-sealed op carrying anything but a join is refused when its key
+    /// arrives, and folds as nothing rather than as a hole over the subgroup.
+    #[test]
+    fn a_group_sealed_op_carrying_no_join_folds_as_nothing_once_its_key_arrives() {
+        let ns = ContextGroupId::from([0x52; 32]);
+        let namespace_id = ns.to_bytes();
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let s_salt = [0x15u8; 32];
+        let s = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &owner,
+            &namespace_id,
+            true,
+            &s_salt,
+        ));
+        NamespaceRepository::new(&store).nest(&ns, &s).unwrap();
+        MetaRepository::new(&store).save(&s, &meta(owner)).unwrap();
+        let created = SignedNamespaceOp::sign(
+            &owner_sk,
+            namespace_id.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                admin: owner,
+                group_id: s.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+                salt: s_salt,
+            }),
+        )
+        .unwrap();
+        land(&store, namespace_id, &created, &[]);
+        let created_id = created.content_hash().unwrap();
+
+        let s_key = [0x62u8; 32];
+        let not_a_join = SignedNamespaceOp::sign(
+            &mallory_sk,
+            namespace_id.into(),
+            vec![created_id],
+            1,
+            NamespaceOp::RootSealedForGroup {
+                group_id: s.to_bytes().into(),
+                key_id: GroupKeyring::key_id_for(&s_key).into(),
+                encrypted: GroupKeyring::encrypt_root_op(
+                    &s_key,
+                    &RootOp::AdminChanged { new_admin: mallory },
+                )
+                .unwrap(),
+            },
+        )
+        .unwrap();
+        let _ = arrive(&store, &not_a_join, &[created_id]);
+        let _ = adopt_pulled_group_key(&store, namespace_id.into(), s, &s_key)
+            .expect("the pulled key stores");
+
+        assert_eq!(
+            admin_at_heads(&store, &ns, s, &owner),
+            Some(true),
+            "the refused op leaves S's cut decidable"
+        );
+        assert_eq!(admin_at_heads(&store, &ns, s, &mallory), Some(false));
     }
 }
