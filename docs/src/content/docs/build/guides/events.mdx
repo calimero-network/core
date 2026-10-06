@@ -97,6 +97,13 @@ impl KvStore {
   Use the plain one-argument `emit!` when you only want to notify clients, and the tuple form when you also want in-app logic to run.
 </Aside>
 
+<Aside type="caution" title="An event says only what its emitter wrote">
+  A receiving node applies a delta's storage actions and replays its events without running the method again, so nothing checks a field inside an event against what the method would have written.
+  A member who builds deltas by hand can put any value in a field such as `sender` or `author`.
+  The event a client receives from the node names no author.
+  Never use an identity field in an event to decide who may do something or to show who did it; read that from authored state instead, such as the owner an [`Authored`](/build/choosing-state/) collection records for each entry.
+</Aside>
+
 ## Exercise it
 
 ```sh

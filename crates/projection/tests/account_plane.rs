@@ -1809,6 +1809,50 @@ fn another_accounts_narrowing_cannot_withdraw_this_binding() {
     );
 }
 
+/// The widest link is keyed by account AND device too, so another account's
+/// certificate naming this device id cannot lift this account's narrowing.
+#[test]
+fn another_accounts_link_of_the_same_device_id_cannot_lift_a_narrowing() {
+    let mut fx = Fixture::new();
+    let alice = Account::new(10);
+    let mallory = Account::new(20);
+    let phone = alice.enroll(11, 0);
+    let laptop = alice.enroll(12, 0);
+
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(grant_membership(&fx.admin, mallory.id, 31, fx.head.clone()));
+    fx.push(alice.link_op(&phone, 40, fx.head.clone()));
+    fx.push(alice.link_op(&laptop, 41, fx.head.clone()));
+    fx.push(alice.descope_op(&phone, &laptop, 50, fx.head.clone(), 2));
+
+    // Mallory's own root certifies a key of hers under Alice's device id.
+    let sk = key(21);
+    let claim = Device {
+        id: phone.id,
+        cert: DeviceCert::sign(
+            &mallory.root,
+            mallory.id,
+            phone.id,
+            &sk.public_key(),
+            &KemPublicKey::from([21; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert"),
+        sk,
+        account: mallory.id,
+    };
+    fx.push(mallory.link_op_at(&claim, 60, fx.head.clone(), 9));
+    assert!(
+        !ScopeState::from_ops(&fx.log)
+            .acl_view()
+            .devices
+            .get(&phone.id)
+            .is_some_and(|bound| bound.account == alice.id),
+        "a link under another account's scope is not a wider link of this binding"
+    );
+}
+
 // ------------------------------------------------------------ convergence --
 
 #[test]

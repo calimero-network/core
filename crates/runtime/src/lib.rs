@@ -460,6 +460,7 @@ impl Module {
             false,
             logic::SealingContext::default(),
             None,
+            false,
         )
     }
 
@@ -474,6 +475,9 @@ impl Module {
     ///
     /// `sealing` holds the keys behind the sealing host functions; see
     /// [`logic::SealingContext`].
+    ///
+    /// `remote_delta` marks the merge-apply of a peer's delta; see
+    /// [`VMContext::remote_delta`].
     #[allow(clippy::too_many_arguments, reason = "execution context is wide")]
     pub fn run_with_origin<'a>(
         &'a self,
@@ -489,6 +493,7 @@ impl Module {
         tee_trigger: bool,
         sealing: logic::SealingContext,
         search: Option<Arc<dyn logic::SearchHost>>,
+        remote_delta: bool,
     ) -> RuntimeResult<Outcome> {
         let context_id = context;
         debug!(%context_id, method, "Running WASM method");
@@ -499,6 +504,7 @@ impl Module {
         context.tee_trigger = tee_trigger;
         context.sealing = sealing;
         context.search = search;
+        context.remote_delta = remote_delta;
 
         let mut logic = VMLogic::new(storage, private_storage, context, &self.limits, node_client);
 
@@ -2013,6 +2019,7 @@ mod gas_metering_tests {
                 false,
                 logic::SealingContext::default(),
                 Some(Arc::new(Matches(matched))),
+                false,
             )
             .expect("run must return an Outcome")
     }

@@ -38,7 +38,7 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | `DeltaKind` | enum | `Regular` (0) \| `Checkpoint { root_hash }` (1) \| `Genesis` (2). Discriminants are pinned by a test; `Genesis` was appended so the first two did not move. NOT a wire field — receivers derive it locally, so a peer cannot assert it |
 | `DeltaApplier<T>` | async trait | `async fn apply(&self, delta: &CausalDelta<T>) -> Result<(), ApplyError>` - dependency-injected application logic. `fn admit_pending(&self, delta) -> Result<Option<origin>, ApplyError>` is called before a delta that is missing a parent is stored: `Err` keeps it out (`DagError::PendingRefused`), `Ok(Some(origin))` charges it to `origin`'s `MAX_PENDING_PER_ORIGIN` allowance, and the default `Ok(None)` admits it uncharged |
 | `ApplyError` | enum (`#[non_exhaustive]`) | `Application(String)` |
-| `DagError` | enum (`#[non_exhaustive]`) | `DuplicateDelta([u8; 32])`, `ApplyFailed(#[from] ApplyError)`, `PendingRefused(ApplyError)` (the applier's `admit_pending` declined to hold the delta) |
+| `DagError` | enum (`#[non_exhaustive]`) | `DuplicateDelta([u8; 32])`, `ApplyFailed(#[from] ApplyError)`, `PendingRefused(ApplyError)` (the applier's `admit_pending` declined to hold the delta), `TooManyParents { id, count, max }` (more parents than the store's cap), `PendingTooLarge { id, bytes }` (a waiting delta larger than the whole pending byte budget) |
 | `AddDeltaOutcome` | enum | `Applied` \| `Pending` \| `Duplicate`, with `is_applied()`/`is_pending()`/`is_duplicate()` |
 | `DagStore<T>` | struct | The DAG itself; see below |
 | `DagStats` | struct | `total_deltas`, `applied_deltas`, `pending_deltas`, `head_count` |
@@ -46,6 +46,8 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | `MAX_DELTA_QUERY_LIMIT` | const | `3000` - hard cap on query-method result size |
 | `MAX_PENDING_DELTAS` | const | `10_000` - default cap on the pending map |
 | `MAX_PENDING_PER_ORIGIN` | const | `1024` - default cap on pending deltas one origin (named by `DeltaApplier::admit_pending`) may hold; past it the origin's own oldest is evicted. When the shared map is full, the inserting origin gives up its own oldest first, then the origin holding the most does |
+| `MAX_PENDING_BYTES` | const | `64 MiB` - cap on the memory held by pending deltas; each is charged twice its encoded size, since it is stored in both `deltas` and `pending` |
+| `MAX_DELTA_PARENTS` | const | `256` - default cap on the parents one delta may name; state-delta writers cap their parents at it |
 | `MAX_PRUNED_TRACKED` | const | `100_000` - default cap on the pruned-ancestor tracking set |
 
 ### `DagStore<T>` methods
@@ -53,7 +55,7 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | Method | Purpose |
 | --- | --- |
 | `new(root)` | Empty DAG seeded with `root` as applied and as the sole head |
-| `add_delta(delta, applier) -> Result<bool, DagError>` | Applies immediately, stores pending, or dedupes; `true` only on `Applied` |
+| `add_delta(delta, applier) -> Result<bool, DagError>` | Applies immediately, stores pending, or dedupes; `true` only on `Applied`. Refuses a delta over the parent cap, and a waiting delta larger than the whole pending byte budget. Needs `T: BorshSerialize` to size pending deltas |
 | `add_delta_with_outcome(delta, applier) -> Result<AddDeltaOutcome, DagError>` | Same, but distinguishes `Pending` from `Duplicate` |
 | `restore_applied_delta(delta) -> bool` | Registers topology for an already-applied delta (e.g. loaded from DB) without re-applying; does **not** cascade pending children |
 | `try_process_pending(applier) -> Result<usize, DagError>` | Explicitly re-attempts every currently-pending delta; needed after `restore_applied_delta` |
@@ -67,7 +69,7 @@ The `testing` feature (enabled via `calimero-storage`'s `testing` feature in `[d
 | `stats() -> DagStats` / `delta_count() -> usize` | Size accounting (the latter feeds compaction eligibility elsewhere in the node) |
 | `delta_ids()` | Ids of every delta held (applied or pending); the node's durable prune keeps these rows |
 | `prune_to_recent(retain_count) -> Vec<[u8; 32]>` | Drops applied history outside a BFS window back from the heads, never a pending delta or a parent a pending delta already holds; returns pruned ids |
-| `set_delta_query_limit(n)` / `set_max_pending(n)` | Runtime-adjustable caps (`set_max_pending` clamps to a minimum of 1) |
+| `set_delta_query_limit(n)` / `set_max_pending(n)` / `set_max_parents(n)` | Runtime-adjustable caps (`set_max_pending` clamps to a minimum of 1). The namespace governance DAG sets its parent cap to the op layer's `MAX_PARENT_OP_HASHES`, since namespace heads are not capped when an op is signed |
 
 ## Mental Model
 
@@ -87,6 +89,7 @@ Out-of-order arrival is core, not an edge case: a delta whose parent hasn't show
 | --- | --- |
 | `src/lib.rs` | Everything: types, `DagStore`, and the in-file `basic_tests` module |
 | `src/tests.rs` | The bulk of the unit test suite (pagination, pruning, eviction, concurrent branches, stress tests) |
+| `src/tests_bounds.rs` | Parent cap, pending byte budget, and capped-parent convergence |
 | `tests/complexity.rs` | Scaling guards: each times one peer-drivable pending-set path at 500 and 4000 deltas and fails if it grew past 24x (linear is ~8x, quadratic ~64x). Covers shared-parent eviction, inserts into a full map, an origin flooding at its quota, and reverse-chain / fan-in cascades |
 | `benches/pending.rs` | Criterion trend for the same shapes (`dag_adversarial` group) plus the read-side walks (`dag` group). Reporting only |
 | `src/tests_convergence.rs` | Regression tests replaying a real E2E root-hash-divergence bug: applying the same deltas in different orders on two simulated nodes must converge to the same state |
@@ -100,6 +103,7 @@ Out-of-order arrival is core, not an edge case: a delta whose parent hasn't show
 - **Pruned parents count as satisfied, and are never requested for backfill.** `prune_to_recent` drops old applied history outside a BFS retention window from the heads, remembering dropped ids in `pruned` (bounded FIFO via `pruned_order`, capped at `MAX_PRUNED_TRACKED`). `can_apply` treats a pruned parent as satisfied (its ancestry was already applied before pruning) and `get_missing_parents` skips it - requesting it from a peer would be a wasted round trip since the peer likely dropped it too.
 - **Zombie deltas are evicted on retry, not treated as duplicates.** A delta can end up in `deltas` without being in `applied` or `pending` if an in-flight apply future is cancelled (e.g. an outer `tokio::time::timeout`) after the insert but before `apply_delta`'s error path rolls it back. `add_delta_with_outcome` checks "genuinely present" (`applied` or `pending`, not just `deltas`) before returning `Duplicate`, and evicts+retries otherwise. The same rollback happens on an ordinary `ApplyError`.
 - **`pending`, `pending_order`, and `pending_children` must stay in lockstep.** Always go through `insert_pending`/`remove_pending`/`evict_oldest_pending` rather than touching `self.pending` directly - they keep the arrival-order BTreeMap and the reverse-edge index consistent. Several regression tests exist purely to catch index leaks (`test_pending_order_index_no_leak_on_apply`, `test_pending_children_index_no_leak`, `test_seed_bucket_removed_with_still_blocked_child`).
+- **The pending map is bounded by count and by bytes.** A waiting delta that would exceed either evicts the oldest pending entries first (catch-up fetches newest-first, so the newcomer is usually the older delta that unblocks the rest); only a delta larger than the whole byte budget is refused. `pending_bytes` is kept in lockstep through `insert_pending`/`remove_pending`.
 - **No per-delta scan of the pending set.** `pending_children` buckets are `BTreeSet`s and `pending_by_origin` holds each origin's entries keyed by arrival `seq`, so removing one waiter and finding an origin's oldest are O(log n). Both used to be linear (a `Vec::retain` over the shared parent's bucket, a walk of `pending_order` past every other origin's entries), which made `cleanup_stale` over 10k waiters of one parent ~130 ms and each insert from an origin at its quota ~1 ms under the DAG lock. `tests/complexity.rs` fails if either comes back.
 - **`set_max_pending(0)` is clamped to 1**, not honored literally - a cap of 0 can never be satisfied since `add_delta` must store at least the delta it's currently handling.
 - **Query result caps are best-effort, not errors.** `get_missing_parents` and `get_deltas_since` silently truncate to `delta_query_limit` (default `MAX_DELTA_QUERY_LIMIT`) and log a warning rather than erroring; pagination via the returned cursor is the caller's responsibility.

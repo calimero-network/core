@@ -14,6 +14,8 @@ publish = true
 # also dev-dependencies, for the crate's own `cfg(test)` build.
 tempfile = { workspace = true, optional = true }
 calimero-blobstore = { workspace = true, optional = true }
+# Also testing-only: `authz_matrix` forks a store column by column.
+strum = { workspace = true, optional = true }
 actix.workspace = true
 async-trait.workspace = true
 borsh.workspace = true
@@ -64,6 +66,7 @@ serial_test.workspace = true
 # (unused by the publish path itself, but a required constructor field).
 calimero-blobstore.workspace = true
 tempfile.workspace = true
+strum.workspace = true
 
 [features]
 default = []
@@ -72,4 +75,4 @@ default = []
 # build correctly — membership rows AND the binding rows that make an account's
 # own ops verify. Reimplementing that setup per crate is how a test ends up
 # asserting against a member whose ops would be refused in production.
-testing = ["dep:tempfile", "dep:calimero-blobstore"]
+testing = ["dep:tempfile", "dep:calimero-blobstore", "dep:strum"]

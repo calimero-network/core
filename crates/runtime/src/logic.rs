@@ -105,6 +105,9 @@ pub struct VMContext<'a> {
     /// supplies it only to a read-only (`#[app::view]`) run, so `search_query`
     /// is unreachable from anything that could write. `None` everywhere else.
     pub search: Option<std::sync::Arc<dyn SearchHost>>,
+    /// `true` when this run merge-applies a peer's delta, so `apply_storage_delta`
+    /// draws on a replay budget. Set by the node, never from guest memory.
+    pub remote_delta: bool,
 }
 
 /// The node's full-text search as a run sees it.
@@ -194,6 +197,7 @@ impl<'a> VMContext<'a> {
             tee_trigger: false,
             sealing: SealingContext::default(),
             search: None,
+            remote_delta: false,
         }
     }
 }
@@ -290,8 +294,8 @@ const DEFAULT_MAX_PRECOMPILED_MODULE_SIZE_MIB: u64 = 256;
 /// `private_storage_write`, and `storage_index_set` all draw from this one
 /// budget — so a guest loop cannot issue an unbounded stream of writes into the
 /// host store (each write carries fixed per-entry overhead independent of its
-/// size). The JS root and collection writes are charged too; a replayed delta
-/// (`apply_storage_delta`, guest-callable) is NOT, so JS sync is not refused.
+/// size). The JS root and collection writes and a guest's own replayed delta
+/// (`apply_storage_delta`) are charged too. A JS app's peer replay has its own budget.
 const DEFAULT_MAX_STORAGE_WRITES: u64 = 100_000;
 /// Default maximum cumulative bytes a single execution may write to storage, in
 /// MiB (128 MiB).
@@ -410,10 +414,9 @@ pub struct VMLimits {
     /// The maximum number of direct guest storage writes per execution.
     ///
     /// Shared budget across `storage_write`, `private_storage_write`, the
-    /// `storage_index_*` writes and the JS collection and root host functions'
-    /// writes: a per-execution *count* ceiling that turns an unbounded write
-    /// loop into a trappable one. A replayed delta (`apply_storage_delta`) is
-    /// not charged against it.
+    /// `storage_index_*` writes and the writes of the JS collection and root host
+    /// functions and of a guest's own `apply_storage_delta`: a per-execution
+    /// *count* ceiling that turns an unbounded write loop into a trappable one.
     pub max_storage_writes: u64,
     /// The maximum cumulative `key + value` bytes written to storage per
     /// execution.
@@ -629,6 +632,10 @@ pub struct VMLogic<'a> {
     /// Cumulative `key + value` bytes written to storage so far (same shared
     /// budget as `storage_writes`).
     storage_write_bytes: u64,
+    /// Writes and bytes charged to peer-delta replays so far, apart from the
+    /// guest's own counters above.
+    replay_writes: u64,
+    replay_write_bytes: u64,
     /// Number of guest storage reads performed so far.
     ///
     /// Telemetry, NOT a budget — unlike `storage_writes` there is no limit to
@@ -761,6 +768,8 @@ impl<'a> VMLogic<'a> {
 
             storage_writes: 0,
             storage_write_bytes: 0,
+            replay_writes: 0,
+            replay_write_bytes: 0,
             storage_reads: 0,
             storage_read_bytes: 0,
             blob_bytes_written: 0,

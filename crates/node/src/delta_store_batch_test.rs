@@ -9,13 +9,18 @@
 //! pending classification, the no-apply persist gate, and behavioural
 //! equivalence to a loop of single `add_delta` calls.
 
+use std::sync::Arc;
+
 use calimero_dag::{CausalDelta, DeltaKind};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::logical_clock::HybridTimestamp;
+use calimero_store::db::InMemoryDB;
+use calimero_store::key::ContextDagDelta;
+use calimero_store::Store;
 
 use crate::delta_store::BatchDeltaInput;
-use crate::test_support::build_delta_store;
+use crate::test_support::{build_delta_store, context, delta_store_over};
 
 /// A parent id that is never supplied, so every delta referencing it stays
 /// pending (and the applier — i.e. WASM — is never invoked).
@@ -129,4 +134,82 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
         stats_a.total_missing_parents, stats_b.total_missing_parents,
         "missing-parent accounting must match"
     );
+}
+
+/// A delta naming more parents than a delta may have is refused by every
+/// `DeltaStore` entry point, before anything is buffered or written, and the
+/// honest deltas beside it are unaffected.
+#[tokio::test]
+async fn every_ingest_entry_point_refuses_a_delta_naming_too_many_parents() {
+    let flood_parents: Vec<[u8; 32]> = (0..=calimero_dag::MAX_DELTA_PARENTS)
+        .map(|i| {
+            let mut id = [0xAA; 32];
+            id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            id
+        })
+        .collect();
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (delta_store, _tmp, _rx) = delta_store_over(store.clone()).await;
+    let author = Some(PublicKey::from([0xBB; 32]));
+    let is_too_many_parents = |err: &eyre::Report| {
+        matches!(
+            err.downcast_ref::<calimero_dag::DagError>(),
+            Some(calimero_dag::DagError::TooManyParents { .. })
+        )
+    };
+
+    let single = [0x02u8; 32];
+    let refused = delta_store
+        .add_delta(
+            make_delta(single, flood_parents.clone()),
+            author,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("single add refuses it");
+    assert!(is_too_many_parents(&refused));
+
+    let with_events = [0x04u8; 32];
+    let refused = delta_store
+        .add_delta_with_events(
+            make_delta(with_events, flood_parents.clone()),
+            Some(b"events".to_vec()),
+            author,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("events add refuses it");
+    assert!(is_too_many_parents(&refused));
+
+    let in_batch = [0x03u8; 32];
+    let honest = [0x01u8; 32];
+    let result = delta_store
+        .add_deltas_batch(vec![
+            BatchDeltaInput {
+                delta: make_delta(in_batch, flood_parents),
+                events: Some(b"events".to_vec()),
+                ..pending_input(in_batch)
+            },
+            pending_input(honest),
+        ])
+        .await
+        .expect("the rest of the batch goes on");
+    assert_eq!(result.failed, vec![in_batch]);
+    assert_eq!(result.pending, vec![honest]);
+
+    for id in [single, with_events, in_batch] {
+        assert!(
+            !delta_store.has_delta(&id).await,
+            "refused delta is not held"
+        );
+        let row = store
+            .handle()
+            .get(&ContextDagDelta::new(context(), id))
+            .expect("read row");
+        assert!(row.is_none(), "a refused delta leaves no row on disk");
+    }
 }

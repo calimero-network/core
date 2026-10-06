@@ -29,6 +29,7 @@ type MainInterface = Interface<MainStorage>;
 type Messages = WriteOnce<UnorderedMap<String, LwwRegister<String>>>;
 type Board = Moderated<UnorderedMap<String, LwwRegister<String>>>;
 type Chat = ModeratedOnce<UnorderedMap<String, LwwRegister<String>>>;
+type Notes = Authored<UnorderedMap<String, LwwRegister<String>>>;
 
 pub(super) fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -669,4 +670,65 @@ fn a_plain_authored_entry_is_unchanged() {
         .remove(&"n".to_owned())
         .expect("owner removes")
         .is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Deleting the container
+// ---------------------------------------------------------------------------
+
+/// Alice's note in an authored map: the map, the note and its `Public` container.
+fn alices_note() -> (Root<Notes>, Id, Id) {
+    env::reset_for_testing();
+    let _ = act_as(&key(0xA1));
+    let mut notes = Root::new(Notes::new);
+    notes
+        .insert("n".to_owned(), text("alice's note"))
+        .expect("insert");
+    let note = notes.entry_id(&"n".to_owned());
+    let container = <Index<MainStorage>>::get_parent_id(note)
+        .expect("parent")
+        .expect("linked");
+    assert!(
+        matches!(stored_metadata(container).storage_type, StorageType::Public),
+        "control: the container is Public"
+    );
+    (notes, note, container)
+}
+
+#[test]
+#[serial]
+fn a_peer_s_delete_of_a_public_container_keeps_the_owned_entries_under_it() {
+    let (notes, note, container) = alices_note();
+
+    let delete = Action::DeleteRef {
+        id: container,
+        deleted_at: later(),
+        metadata: stored_metadata(container),
+    };
+    apply(delete, account_of_key(&key(0xEE))).expect("a public delete applies");
+
+    assert!(is_gone(container), "control: the container is deleted");
+    assert!(
+        !is_gone(note),
+        "a public delete must not remove an owned entry"
+    );
+    assert!(notes.get(&"n".to_owned()).expect("get").is_some());
+}
+
+#[test]
+#[serial]
+fn a_local_delete_of_a_public_container_holding_owned_entries_is_refused() {
+    let (_notes, note, container) = alices_note();
+    let parent = <Index<MainStorage>>::get_parent_id(container)
+        .expect("parent")
+        .expect("linked");
+
+    let result = MainInterface::remove_child_from(parent, container);
+
+    assert!(
+        matches!(result, Err(StorageError::ActionNotAllowed(_))),
+        "peers would keep the owned entry, so the deleter must too, got {result:?}"
+    );
+    assert!(!is_gone(container));
+    assert!(!is_gone(note));
 }

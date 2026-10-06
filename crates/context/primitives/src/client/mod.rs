@@ -55,8 +55,8 @@ use crate::messages::{
     AcquireContextLockRequest, ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest,
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
     DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, InternalErrorKind,
-    MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest, UpdateApplicationRequest,
-    WriteSource,
+    MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest, ReadAs,
+    UpdateApplicationRequest, WriteSource,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -729,7 +729,8 @@ impl ContextRegistry {
     ///   resolve a binding (they live in `calimero-governance-store`, which
     ///   depends on this crate), so the caller supplies it. `None` skips the
     ///   group-membership arm rather than guessing — the `ContextIdentity` arm
-    ///   is key-keyed and still answers.
+    ///   is key-keyed and still answers, unless the namespace revoked the key's
+    ///   device and no live binding speaks for it.
     ///
     /// # Returns
     ///
@@ -741,17 +742,28 @@ impl ContextRegistry {
         account: Option<calimero_account::AccountId>,
     ) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
+        let ref_key = key::ContextGroupRef::new(*context_id);
+        let group_id_bytes = handle.get(&ref_key)?;
 
         // Check ContextIdentity first (fast path, covers locally-written entries).
+        // A row written before the key's device was revoked does not outlive the
+        // revocation, unless a live binding speaks for the key again (`account`).
         let ci_key = key::ContextIdentity::new(*context_id, *public_key);
         if handle.has(&ci_key)? {
-            return Ok(true);
+            let revoked = match (account, group_id_bytes) {
+                (None, Some(group_id)) => {
+                    self.signer_revoked_in_namespace_of(group_id, public_key)?
+                }
+                _ => false,
+            };
+            if !revoked {
+                return Ok(true);
+            }
         }
 
         // Fall back to group membership: if the identity is a member of the
         // group that owns this context, they are implicitly a context member.
-        let ref_key = key::ContextGroupRef::new(*context_id);
-        if let (Some(group_id_bytes), Some(account)) = (handle.get(&ref_key)?, account) {
+        if let (Some(group_id_bytes), Some(account)) = (group_id_bytes, account) {
             // Both group-level arms are account-keyed, so `None` skips them
             // entirely rather than guessing which key speaks for whom.
             let gm_key = key::GroupMember::new(group_id_bytes, account);
@@ -773,6 +785,28 @@ impl ContextRegistry {
         }
 
         Ok(false)
+    }
+
+    /// Whether the namespace above `group_id` revoked the device that signs as
+    /// `signer`.
+    fn signer_revoked_in_namespace_of(
+        &self,
+        group_id: [u8; 32],
+        signer: &PublicKey,
+    ) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
+        let mut current = group_id;
+        // `<=` because the root is seen at depth D only after D parent hops.
+        for _ in 0..=calimero_context_config::MAX_NAMESPACE_DEPTH {
+            match handle.get(&key::GroupParentRef::new(current))? {
+                Some(parent) => current = parent,
+                None => {
+                    let revoked = key::GroupRevokedSigner::new(current, *signer.as_ref());
+                    return Ok(handle.has(&revoked)?);
+                }
+            }
+        }
+        eyre::bail!("group parent chain exceeds the maximum namespace depth")
     }
 
     /// Returns the group/namespace ID for a context, if the context is owned by a group.
@@ -1441,10 +1475,10 @@ impl ContextClient {
     /// merely unset.
     ///
     /// `executor` is this node's own key: it identifies the replica, and a read
-    /// writes nothing for a replica to own. The account is what the run observes
-    /// and what membership is checked against — see
-    /// [`ExecuteRequest::read_as`] for why supplying it here is not a caller
-    /// asserting its own identity.
+    /// writes nothing for a replica to own. `read_as` is what the run observes
+    /// — the account membership is checked against, and the device the method
+    /// sees as `env::device_id()` — see [`ExecuteRequest::read_as`] for why
+    /// supplying it here is not a caller asserting its own identity.
     ///
     /// # Errors
     /// [`ExecuteError`] for a method that is not read-only, a caller that is not
@@ -1452,7 +1486,7 @@ impl ContextClient {
     pub async fn query_as(
         &self,
         context_id: &ContextId,
-        account: calimero_account::AccountId,
+        read_as: ReadAs,
         executor: &PublicKey,
         method: String,
         payload: Vec<u8>,
@@ -1467,7 +1501,7 @@ impl ContextClient {
                 xcall_origin: None,
                 xcall_depth: 0,
                 delegation: None,
-                read_as: Some(account),
+                read_as: Some(read_as),
                 tee_trigger: None,
                 event_handler: false,
                 write_source: WriteSource::Local,
@@ -2949,6 +2983,176 @@ mod get_context_version_tests {
             .expect("get_context ok")
             .expect("context present");
         assert_eq!(ctx.name, None);
+    }
+}
+
+#[cfg(test)]
+mod has_member_tests {
+    use std::sync::Arc;
+
+    use calimero_account::AccountId;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::{key, types, Store};
+
+    use super::ContextRegistry;
+
+    const NAMESPACE: [u8; 32] = [0x01; 32];
+    const SUBGROUP: [u8; 32] = [0x02; 32];
+
+    fn signer() -> PublicKey {
+        PublicKey::from([0x33; 32])
+    }
+
+    fn context() -> ContextId {
+        ContextId::from([0x44; 32])
+    }
+
+    /// A context in `SUBGROUP`, itself a child of `NAMESPACE`, with `signer()`
+    /// recorded as one of its identities.
+    fn seeded() -> (Store, ContextRegistry) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        {
+            let mut handle = store.handle();
+            handle
+                .put(&key::ContextGroupRef::new(context()), &SUBGROUP)
+                .expect("seed the context's group");
+            handle
+                .put(&key::GroupParentRef::new(SUBGROUP), &NAMESPACE)
+                .expect("seed the subgroup's parent");
+            handle
+                .put(
+                    &key::ContextIdentity::new(context(), signer()),
+                    &types::ContextIdentity { private_key: None },
+                )
+                .expect("seed the context identity");
+        }
+        let registry = ContextRegistry::new(store.clone());
+        (store, registry)
+    }
+
+    fn revoke(store: &Store) {
+        store
+            .handle()
+            .put(
+                &key::GroupRevokedSigner::new(NAMESPACE, *AsRef::<[u8; 32]>::as_ref(&signer())),
+                &(),
+            )
+            .expect("seed the revocation");
+    }
+
+    /// Control: a context identity row alone makes a member.
+    #[test]
+    fn a_context_identity_is_a_member() {
+        let (_store, registry) = seeded();
+        assert!(registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    #[test]
+    fn revoked_signer_with_stale_context_identity_is_not_a_member() {
+        let (store, registry) = seeded();
+        revoke(&store);
+        assert!(
+            !registry.has_member(&context(), &signer(), None).unwrap(),
+            "a key whose device the namespace revoked must not count as a member \
+             because of an identity row written before the revocation"
+        );
+    }
+
+    /// Control: only the context's own namespace revokes.
+    #[test]
+    fn a_revocation_in_another_namespace_does_not_count() {
+        let (store, registry) = seeded();
+        store
+            .handle()
+            .put(
+                &key::GroupRevokedSigner::new([0x09; 32], *AsRef::<[u8; 32]>::as_ref(&signer())),
+                &(),
+            )
+            .expect("seed the other namespace's revocation");
+        assert!(registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    /// A re-paired node keeps its key under a fresh device, and the live binding
+    /// supersedes the old device's revocation.
+    #[test]
+    fn a_revoked_key_that_a_live_binding_speaks_for_keeps_its_identity_row() {
+        let (store, registry) = seeded();
+        revoke(&store);
+        let account = AccountId::from([0x55; 32]);
+        assert!(registry
+            .has_member(&context(), &signer(), Some(account))
+            .unwrap());
+    }
+
+    fn chain(links: &[([u8; 32], [u8; 32])]) -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let mut handle = store.handle();
+        for (child, parent) in links {
+            handle
+                .put(&key::GroupParentRef::new(*child), parent)
+                .expect("seed a parent link");
+        }
+        drop(handle);
+        store
+    }
+
+    fn hold(store: &Store, group: Option<[u8; 32]>) {
+        let mut handle = store.handle();
+        if let Some(group) = group {
+            handle
+                .put(&key::ContextGroupRef::new(context()), &group)
+                .expect("seed the context's group");
+        }
+        handle
+            .put(
+                &key::ContextIdentity::new(context(), signer()),
+                &types::ContextIdentity { private_key: None },
+            )
+            .expect("seed the context identity");
+    }
+
+    /// Control: a context in no group has no namespace to revoke in.
+    #[test]
+    fn a_context_in_no_group_keeps_its_identity_rows() {
+        let store = chain(&[]);
+        hold(&store, None);
+        revoke(&store);
+        let registry = ContextRegistry::new(store);
+        assert!(registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    #[test]
+    fn a_context_in_the_namespace_itself_is_judged_by_its_revocations() {
+        let store = chain(&[]);
+        hold(&store, Some(NAMESPACE));
+        revoke(&store);
+        let registry = ContextRegistry::new(store);
+        assert!(!registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    #[test]
+    fn a_revocation_several_levels_up_counts() {
+        let middle = [0x03; 32];
+        let store = chain(&[(SUBGROUP, middle), (middle, NAMESPACE)]);
+        hold(&store, Some(SUBGROUP));
+        revoke(&store);
+        let registry = ContextRegistry::new(store);
+        assert!(!registry.has_member(&context(), &signer(), None).unwrap());
+    }
+
+    #[test]
+    fn a_parent_chain_deeper_than_a_namespace_allows_is_an_error() {
+        let depth = calimero_context_config::MAX_NAMESPACE_DEPTH + 2;
+        let ids: Vec<[u8; 32]> = (0..=depth)
+            .map(|i| [u8::try_from(i + 0x10).unwrap(); 32])
+            .collect();
+        let links: Vec<_> = ids.windows(2).map(|w| (w[0], w[1])).collect();
+        let store = chain(&links);
+        hold(&store, Some(ids[0]));
+        let registry = ContextRegistry::new(store);
+        assert!(registry.has_member(&context(), &signer(), None).is_err());
     }
 }
 

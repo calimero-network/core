@@ -185,6 +185,18 @@ pub trait AtCutAuthorizer: Send + Sync {
         None
     }
 
+    /// If the cut withdraws `account`'s `device`, the widest link epoch folded for it there
+    /// (`Some(None)` = not withdrawn, `None` = defer). Entitled or not: callers confirm on the rows.
+    fn device_withdrawn_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _account: &AccountId,
+        _device: &DeviceId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<u32>> {
+        None
+    }
+
     /// Drop what this authorizer has folded: the store changed under it, as when a key
     /// arrives and ops parked unreadable can now be read.
     fn forget(&self) {}

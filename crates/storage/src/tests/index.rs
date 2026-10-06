@@ -731,7 +731,10 @@ mod index__private_methods {
 
 #[cfg(test)]
 mod subtree_tombstoning {
+    use calimero_account::AccountId;
+
     use super::*;
+    use crate::entities::OpMask;
     use crate::env::time_now;
     use crate::store::MockedStorage;
 
@@ -954,11 +957,76 @@ mod subtree_tombstoning {
         );
     }
 
-    /// `find_frozen_descendant` powers the local delete guard: it locates a
+    /// A delete of a `Public` entity carries no signature, so its cascade leaves
+    /// every owned or writer-set descendant, and what sits under it, in place.
+    #[test]
+    fn a_public_subtree_delete_leaves_owned_and_shared_descendants() {
+        type S = MockedStorage<2107>;
+
+        let owned = Metadata {
+            storage_type: StorageType::User {
+                owner: AccountId::from([0xA1; 32]),
+                signature_data: None,
+                rules: EntryRules::OWNED,
+            },
+            ..Metadata::default()
+        };
+        let shared = Metadata {
+            storage_type: StorageType::Shared {
+                writers: BTreeMap::from([(AccountId::from([0xB0; 32]), OpMask::WRITE)]),
+                signature_data: None,
+            },
+            ..Metadata::default()
+        };
+
+        let root = Id::random();
+        let a = Id::random(); // public container being deleted
+        let b = Id::random(); // public entry -> tombstoned
+        let u = Id::random(); // owned entry -> survives
+        let under_u = Id::random(); // public collection inside it -> survives
+        let s = Id::random(); // writer-set entry -> survives
+
+        <Index<S>>::add_root(ChildInfo::new(root, [1; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(a, [2; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(b, [3; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(u, [4; 32], owned.clone())).unwrap();
+        <Index<S>>::add_child_to(u, ChildInfo::new(under_u, [5; 32], Metadata::default())).unwrap();
+        <Index<S>>::add_child_to(a, ChildInfo::new(s, [6; 32], shared)).unwrap();
+
+        <Index<S>>::remove_child_from(root, a, time_now()).unwrap();
+
+        assert!(<Index<S>>::is_deleted(a).unwrap(), "container tombstoned");
+        assert!(
+            <Index<S>>::is_deleted(b).unwrap(),
+            "public entry tombstoned"
+        );
+        assert!(!<Index<S>>::is_deleted(u).unwrap(), "owned entry survives");
+        assert!(
+            !<Index<S>>::is_deleted(under_u).unwrap(),
+            "what an owned entry holds survives with it"
+        );
+        assert!(
+            !<Index<S>>::is_deleted(s).unwrap(),
+            "writer-set entry survives"
+        );
+
+        // A signed delete of an owned entry still takes its subtree with it.
+        let o = Id::random();
+        let under_o = Id::random();
+        <Index<S>>::add_child_to(root, ChildInfo::new(o, [7; 32], owned.clone())).unwrap();
+        <Index<S>>::add_child_to(o, ChildInfo::new(under_o, [8; 32], owned)).unwrap();
+        <Index<S>>::remove_child_from(root, o, time_now()).unwrap();
+        assert!(
+            <Index<S>>::is_deleted(under_o).unwrap(),
+            "owned subtree tombstoned"
+        );
+    }
+
+    /// `find_kept_descendant` powers the local delete guard: it locates a
     /// Frozen entity buried anywhere below the delete root (excluding the root
     /// itself) and returns `None` for a frozen-free subtree.
     #[test]
-    fn find_frozen_descendant_locates_deep_frozen_and_ignores_root() {
+    fn find_kept_descendant_locates_deep_frozen_and_ignores_root() {
         use crate::entities::StorageType;
         type S = MockedStorage<2106>;
 
@@ -978,8 +1046,8 @@ mod subtree_tombstoning {
         <Index<S>>::add_child_to(b, ChildInfo::new(f, [4; 32], frozen_md.clone())).unwrap();
 
         assert_eq!(
-            <Index<S>>::find_frozen_descendant(a).unwrap(),
-            Some(f),
+            <Index<S>>::find_kept_descendant(a).unwrap(),
+            Some((f, "Frozen")),
             "must find the frozen entity nested below the delete root"
         );
 
@@ -987,7 +1055,7 @@ mod subtree_tombstoning {
         let c = Id::random();
         <Index<S>>::add_child_to(root, ChildInfo::new(c, [5; 32], Metadata::default())).unwrap();
         assert_eq!(
-            <Index<S>>::find_frozen_descendant(c).unwrap(),
+            <Index<S>>::find_kept_descendant(c).unwrap(),
             None,
             "a subtree with no frozen data must not be flagged"
         );
@@ -996,11 +1064,32 @@ mod subtree_tombstoning {
         let froot = Id::random();
         <Index<S>>::add_child_to(root, ChildInfo::new(froot, [6; 32], frozen_md)).unwrap();
         assert_eq!(
-            <Index<S>>::find_frozen_descendant(froot).unwrap(),
+            <Index<S>>::find_kept_descendant(froot).unwrap(),
             None,
             "the scan excludes the root itself: a Frozen root with no frozen \
              descendants returns None"
         );
+
+        // Under a Public root an owned entry is kept; under an owned root it is not.
+        let owned = Metadata {
+            storage_type: StorageType::User {
+                owner: AccountId::from([0xA1; 32]),
+                signature_data: None,
+                rules: EntryRules::OWNED,
+            },
+            ..Metadata::default()
+        };
+        let (public, owned_root, u, v) = (Id::random(), Id::random(), Id::random(), Id::random());
+        <Index<S>>::add_child_to(root, ChildInfo::new(public, [7; 32], Metadata::default()))
+            .unwrap();
+        <Index<S>>::add_child_to(public, ChildInfo::new(u, [8; 32], owned.clone())).unwrap();
+        <Index<S>>::add_child_to(root, ChildInfo::new(owned_root, [9; 32], owned.clone())).unwrap();
+        <Index<S>>::add_child_to(owned_root, ChildInfo::new(v, [10; 32], owned)).unwrap();
+        assert_eq!(
+            <Index<S>>::find_kept_descendant(public).unwrap(),
+            Some((u, "User"))
+        );
+        assert_eq!(<Index<S>>::find_kept_descendant(owned_root).unwrap(), None);
     }
 }
 
@@ -2861,7 +2950,7 @@ mod parent_loops {
 
     #[test]
     fn a_walk_down_a_looping_child_trie_returns() {
-        let (frozen, tombstoned) = returns(|| {
+        let (kept, tombstoned) = returns(|| {
             // Written after the delete below, so the walk keeps both rows.
             for (parent, child) in [(a(), x()), (x(), a())] {
                 Index::<MainStorage>::save_index(&EntityIndex {
@@ -2872,11 +2961,11 @@ mod parent_loops {
                 let _root = ChildTrie::<MainStorage>::new(parent).insert(named(child));
             }
             (
-                Index::<MainStorage>::find_frozen_descendant(a()),
+                Index::<MainStorage>::find_kept_descendant(a()),
                 Index::<MainStorage>::tombstone_descendants_of(a(), 1),
             )
         });
-        assert!(matches!(frozen, Ok(None)), "{frozen:?}");
+        assert!(matches!(kept, Ok(None)), "{kept:?}");
         assert!(tombstoned.is_ok(), "{tombstoned:?}");
     }
 }

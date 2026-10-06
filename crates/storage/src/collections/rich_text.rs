@@ -475,9 +475,11 @@ impl<Sc: MarkSchema, S: StorageAdaptor> RichText<Sc, S> {
                     pos += insert.chars().count();
                 }
                 DeltaOp::Delete { delete } => {
-                    let end = (pos + delete).min(self.text.len()?);
-                    let attrs = self.attr_runs(pos, end)?;
-                    if let Some(removed) = self.text.delete_range(pos, end)? {
+                    let len = self.text.len()?;
+                    let start = pos.min(len);
+                    let end = pos.saturating_add(delete).min(len);
+                    let attrs = self.attr_runs(start, end)?;
+                    if let Some(removed) = self.text.delete_range(start, end)? {
                         undo.push(UndoStep::Insert { removed, attrs });
                     }
                 }

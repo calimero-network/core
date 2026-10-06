@@ -325,6 +325,17 @@ pub trait FoldedTeeAuthority: Sync {
     /// not folded every governance op it holds for that namespace: the caller
     /// then reads the op log.
     fn folded_tee(&self, store: &Store, root: &ContextGroupId) -> Option<FoldedTee>;
+
+    /// Whether `relay` was a `RelayTee` for `group` at the cut of some governance
+    /// op folded here. `false` without a fold, which can only refuse.
+    fn relay_was_seated(
+        &self,
+        _store: &Store,
+        _group: &ContextGroupId,
+        _relay: &AccountId,
+    ) -> bool {
+        false
+    }
 }
 
 /// A namespace's TEE state as the projection folded it.
