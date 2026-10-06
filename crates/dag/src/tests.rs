@@ -551,7 +551,7 @@ async fn test_dag_cleanup_stale() {
         reference_start + Duration::from_secs(1),
         Duration::from_millis(50),
     );
-    assert_eq!(evicted, 1);
+    assert_eq!(evicted.len(), 1);
     assert_eq!(dag.pending_stats().count, 0);
 }
 

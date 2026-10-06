@@ -1068,6 +1068,12 @@ impl<T: Clone> DagStore<T> {
     /// This allows them to be re-fetched in future syncs instead of being stuck as
     /// zombie deltas (in deltas but not in pending or applied).
     pub fn cleanup_stale(&mut self, max_age: Duration) -> usize {
+        self.cleanup_stale_ids(max_age).len()
+    }
+
+    /// [`cleanup_stale`](Self::cleanup_stale), returning the ids it evicted, so
+    /// a caller can say which ops were given up on rather than only how many.
+    pub fn cleanup_stale_ids(&mut self, max_age: Duration) -> Vec<[u8; 32]> {
         self.cleanup_stale_since(Instant::now(), max_age)
     }
 
@@ -1080,7 +1086,7 @@ impl<T: Clone> DagStore<T> {
     /// deterministically — no real sleep, and no reliance on the host's
     /// monotonic-clock uptime. `saturating_duration_since` keeps a `reference`
     /// earlier than `received_at` from panicking.
-    fn cleanup_stale_since(&mut self, reference: Instant, max_age: Duration) -> usize {
+    fn cleanup_stale_since(&mut self, reference: Instant, max_age: Duration) -> Vec<[u8; 32]> {
         // Collect IDs to evict
         let to_evict: Vec<[u8; 32]> = self
             .pending
@@ -1097,7 +1103,7 @@ impl<T: Clone> DagStore<T> {
             self.deltas.remove(id);
         }
 
-        to_evict.len()
+        to_evict
     }
 
     /// Get statistics for pending deltas
@@ -1629,7 +1635,7 @@ mod basic_tests {
             reference_start + Duration::from_secs(1),
             Duration::from_millis(50),
         );
-        assert_eq!(evicted, 1, "Should evict the stale delta");
+        assert_eq!(evicted.len(), 1, "Should evict the stale delta");
         assert_eq!(dag.pending_stats().count, 0);
     }
 

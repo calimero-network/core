@@ -23,22 +23,42 @@ const NAMESPACE_PENDING_TTL: Duration = Duration::from_secs(600);
 /// How often resident namespace DAGs are swept for ops past the TTL.
 const NAMESPACE_PENDING_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Drop every pending op older than `ttl` from each DAG, returning how many went.
-/// A DAG busy applying an op is skipped until the next sweep.
+/// How many dropped op ids one warning lists; the count is always whole.
+const MAX_DROPPED_IDS_LOGGED: usize = 8;
+
+/// Drop every pending op older than `ttl` from each namespace's DAG, returning
+/// how many went. A DAG busy applying an op is skipped until the next sweep.
+///
+/// A drop is a namespace falling behind on this node: those ops, and whatever
+/// waited on them, are missing until a sync delivers their parents again - and
+/// for an op whose parent this node can never authorize (core#4511), never.
+/// So each namespace that lost ops is named in a warning, with the ops' ids.
 async fn sweep_stale_pending(
-    dags: &[Arc<Mutex<DagStore<SignedNamespaceOp>>>],
+    dags: &[([u8; 32], Arc<Mutex<DagStore<SignedNamespaceOp>>>)],
     ttl: Duration,
 ) -> usize {
     let mut dropped = 0;
-    for dag in dags {
-        if let Ok(mut dag) = dag.try_lock() {
-            dropped += dag.cleanup_stale(ttl);
+    for (namespace_id, dag) in dags {
+        let Ok(mut dag) = dag.try_lock() else {
+            continue;
+        };
+        let ids = dag.cleanup_stale_ids(ttl);
+        if ids.is_empty() {
+            continue;
         }
-    }
-    if dropped > 0 {
-        tracing::info!(
-            dropped,
-            "dropped namespace ops that waited too long for a parent"
+        dropped += ids.len();
+        let sample: Vec<String> = ids
+            .iter()
+            .take(MAX_DROPPED_IDS_LOGGED)
+            .map(hex::encode)
+            .collect();
+        tracing::warn!(
+            namespace_id = %hex::encode(namespace_id),
+            dropped = ids.len(),
+            ?sample,
+            ttl_secs = ttl.as_secs(),
+            "dropped namespace ops that waited too long for a parent: their effects \
+             are missing on this node until a sync delivers the parents again"
         );
     }
     dropped
@@ -153,7 +173,11 @@ impl ContextManager {
     /// missing parent longer than [`NAMESPACE_PENDING_TTL`].
     pub(crate) fn start_namespace_pending_sweep(&self, ctx: &mut actix::Context<Self>) {
         ctx.run_interval(NAMESPACE_PENDING_SWEEP_INTERVAL, |act, _ctx| {
-            let dags: Vec<_> = act.namespace_dags.values().cloned().collect();
+            let dags: Vec<_> = act
+                .namespace_dags
+                .iter()
+                .map(|(id, dag)| (*id, Arc::clone(dag)))
+                .collect();
             actix::spawn(async move {
                 let _dropped = sweep_stale_pending(&dags, NAMESPACE_PENDING_TTL).await;
             });
@@ -254,7 +278,8 @@ mod tests {
         let dag = dag_with_one_pending_op().await;
         tokio::time::sleep(Duration::from_millis(5)).await;
 
-        let dropped = sweep_stale_pending(&[Arc::clone(&dag)], Duration::from_millis(1)).await;
+        let dropped =
+            sweep_stale_pending(&[([0x5A; 32], Arc::clone(&dag))], Duration::from_millis(1)).await;
 
         assert_eq!(dropped, 1);
         assert_eq!(dag.lock().await.pending_stats().count, 0);
@@ -264,7 +289,8 @@ mod tests {
     async fn an_op_within_the_ttl_is_kept() {
         let dag = dag_with_one_pending_op().await;
 
-        let dropped = sweep_stale_pending(&[Arc::clone(&dag)], Duration::from_secs(3600)).await;
+        let dropped =
+            sweep_stale_pending(&[([0x5A; 32], Arc::clone(&dag))], Duration::from_secs(3600)).await;
 
         assert_eq!(dropped, 0);
         assert_eq!(dag.lock().await.pending_stats().count, 1);
@@ -276,7 +302,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(5)).await;
 
         let held = dag.lock().await;
-        let dropped = sweep_stale_pending(&[Arc::clone(&dag)], Duration::from_millis(1)).await;
+        let dropped =
+            sweep_stale_pending(&[([0x5A; 32], Arc::clone(&dag))], Duration::from_millis(1)).await;
         drop(held);
 
         assert_eq!(dropped, 0, "the sweep must not wait on the DAG lock");
