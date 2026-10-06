@@ -115,7 +115,7 @@ pub use self::contexts::{
 pub use self::deny_list::DenyListRepository;
 pub use self::device_link::{
     bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
-    withdraw_device_in, CarriedLink, CarriedLinkRefusal,
+    replay_known_revocations, withdraw_device_in, CarriedLink, CarriedLinkRefusal,
 };
 pub use self::ops::group::shared_writers_rotated::require_context_not_rotated;
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
