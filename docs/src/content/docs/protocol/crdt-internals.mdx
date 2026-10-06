@@ -111,7 +111,7 @@ Every leaf type resolves a same-id collision with a fixed, node-independent rule
 | `Vector<T>` | indexed entries, each `Id::random()` at push | element-wise by index, then append the longer tail |
 | `RGA` (text) | `UnorderedMap<CharId, { content, left }>` | union of immutable chars; delete = tombstone |
 | `Frozen` | `UnorderedMap` keyed by `SHA-256(value)` | first-write-wins (keep existing) |
-| `Shared` / `SharedMember` | LWW per writer | per-writer LWW; rotation-log children union regardless of timestamp |
+| `Shared` / `SharedMember` | LWW per writer | per-writer LWW; the writer set is not merged here but read from the governance fold |
 
 A little more on each:
 
@@ -313,12 +313,6 @@ heads, with neither ever moving. Breaking the tie by `SHA-256(value)` makes the 
 property of the *data*, not of arrival order: both nodes compute the same winner, so they
 converge. Equal data is a true no-op.
 
-<Aside type="note">
-The same reasoning drives the rotation-log merge, which is an order-invariant union by
-`delta_id` with a deterministic byte-tiebreak on collision — so two nodes that apply each
-other's logs in opposite orders produce byte-identical results and the same hash.
-</Aside>
-
 Two nodes write the *same* entity concurrently, gossip their deltas, and each
 runs the identical `lww_pick` — equal HLC, broken by `SHA-256(value)` — so both
 pick the same winner regardless of arrival order:
@@ -394,11 +388,11 @@ issued timestamp always sorts strictly after any event it causally follows.
 
 The rules above cover the common path. Three further mechanisms close gaps that only surface under writer rotation, runtime nesting, and schema migration — each one a small reuse of machinery you have already seen.
 
-### The rotation log is just add-wins children
+### The rotation log is history, not a source of writers
 
-A `Shared` set tracks who may write it through a per-entity **writer-rotation log**. Rather than invent a side channel, the log is materialised as an ordinary `UnorderedMap<delta_id, RotationLogEntry>` child of the `Shared` anchor entity, keyed by `delta_id` (`crates/storage/src/rotation_log.rs:17-22`, `crates/storage/src/interface.rs:388-416`). Each rotation is therefore one more hashed Merkle child — a content-addressed leaf — and converges through the very same add-wins entity-tree comparison that reconciles any other map.
+A `Shared` set used to track who may write it through a per-entity **writer-rotation log**: an ordinary `UnorderedMap<delta_id, RotationLogEntry>` child of the `Shared` anchor entity (`crates/storage/src/rotation_log.rs`), one hashed Merkle leaf per rotation, converging through the same add-wins comparison as any other map.
 
-A single blob holding the whole log would *not* converge: its custom merge re-runs every sync round and never settles. Per-`delta_id` leaves reconcile individually via the proven structural path, and insertion order does not matter — causal precedence between concurrent rotations is resolved at read time, not baked into storage order.
+A writer set now changes by a governance op, and the guest reads it from the host (`env::shared_writers`), which resolves it from the fold of those ops. The log is no longer read to resolve a writer set, and a data-plane `Update` that names a different set is refused. Nodes no longer append entries, so a cell's anchor hashes the same on the node that created it and on every node that applied its delta; the log's remaining code is deleted in a later change.
 
 ### Runtime id rekey and the `DeleteRef` tombstone
 

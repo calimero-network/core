@@ -857,7 +857,7 @@ fn a_snapshot_leaf_whose_bytes_do_not_match_its_own_hash_is_not_installed() {
         *leaf.as_bytes(),
         entry,
         index,
-        &BufferedChildren::new(),
+        &|_| Ok(CellWriters::Genesis),
     )
     .unwrap();
 
@@ -883,7 +883,7 @@ fn a_snapshot_leaf_dated_ahead_of_the_clock_is_not_installed_from_the_buffer() {
         *leaf.as_bytes(),
         entry,
         index,
-        &BufferedChildren::new(),
+        &|_| Ok(CellWriters::Genesis),
     )
     .unwrap();
 
@@ -906,7 +906,7 @@ fn a_snapshot_leaf_that_is_what_its_hash_says_drains_into_the_store() {
         *leaf.as_bytes(),
         entry,
         index,
-        &BufferedChildren::new(),
+        &|_| Ok(CellWriters::Genesis),
     )
     .unwrap();
 

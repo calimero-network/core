@@ -33,6 +33,7 @@ use calimero_context_config::types::GovernanceParentEdge;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::hash::Hash;
+use calimero_storage::shared_writers::SharedRotation;
 use calimero_sys as sys;
 use ouroboros::self_referencing;
 use serde::Serialize;
@@ -605,6 +606,9 @@ pub struct VMLogic<'a> {
     /// `#[app::migration_check]` to read. Carried out on `Outcome` like
     /// logs/events; never written to storage.
     migration_witness: Option<Vec<u8>>,
+    /// Writer-set rotations the guest asked for, in order. Carried out on the
+    /// [`Outcome`] for the node to publish as governance ops.
+    shared_rotations: Vec<SharedRotation>,
     /// Tracks whether the guest has explicitly called `env.commit`.
     commit_called: bool,
     /// Tracks whether the guest called `register_js_sdk_root_merge`, opting its
@@ -759,6 +763,7 @@ impl<'a> VMLogic<'a> {
             root_hash: None,
             artifact: vec![],
             migration_witness: None,
+            shared_rotations: vec![],
             commit_called: false,
             js_root_merge: false,
 
@@ -974,6 +979,10 @@ pub struct Outcome {
     /// Transient migration witness: a borsh blob `#[app::migrate]` emitted for
     /// `#[app::migration_check]`. Carried like logs/events; never persisted.
     pub migration_witness: Option<Vec<u8>>,
+    /// Writer-set rotations the run asked for, in order, for the node to publish
+    /// as governance ops. Never persisted by the run itself.
+    #[serde(skip)]
+    pub shared_rotations: Vec<SharedRotation>,
     /// Gas (metering points) this execution consumed, if the module was
     /// metered. `None` only when execution never reached a metered instance
     /// (e.g. an invalid method name or an instantiation failure). On gas
@@ -1095,6 +1104,7 @@ impl VMLogic<'_> {
             root_hash: self.root_hash,
             artifact: self.artifact,
             migration_witness: self.migration_witness,
+            shared_rotations: self.shared_rotations,
             gas_used: self.gas_used,
             storage_reads: self.storage_reads,
             storage_read_bytes: self.storage_read_bytes,
@@ -1421,13 +1431,26 @@ mod tests {
     // tests).
     pub struct SimpleMockStorage {
         data: HashMap<Vec<u8>, Vec<u8>>,
+        /// What the governance fold would answer for a cell; a cell not named
+        /// here stands at genesis.
+        folded: HashMap<[u8; 32], Option<calimero_storage::shared_writers::CellWriters>>,
     }
 
     impl SimpleMockStorage {
         pub fn new() -> Self {
             Self {
                 data: HashMap::new(),
+                folded: HashMap::new(),
             }
+        }
+
+        /// Answers `answer` for `cell`'s writers from now on, as the node's fold would.
+        pub fn fold_writers(
+            &mut self,
+            cell: [u8; 32],
+            answer: Option<calimero_storage::shared_writers::CellWriters>,
+        ) {
+            let _prior = self.folded.insert(cell, answer);
         }
     }
 
@@ -1446,6 +1469,16 @@ mod tests {
 
         fn has(&self, key: &Key) -> bool {
             self.data.contains_key(key)
+        }
+
+        fn shared_writers(
+            &self,
+            cell: &[u8; 32],
+        ) -> Option<calimero_storage::shared_writers::CellWriters> {
+            self.folded
+                .get(cell)
+                .cloned()
+                .unwrap_or(Some(calimero_storage::shared_writers::CellWriters::Genesis))
         }
     }
 

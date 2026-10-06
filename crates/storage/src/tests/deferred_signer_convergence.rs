@@ -63,8 +63,6 @@ fn root_hash<A: StorageAdaptor>() -> [u8; 32] {
 fn ctx_resolving(account: Option<calimero_account::AccountId>) -> ApplyContext {
     ApplyContext {
         effective_writers: None,
-        delta_id: None,
-        delta_hlc: None,
         signer_account: account,
     }
 }

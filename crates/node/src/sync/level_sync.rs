@@ -83,7 +83,8 @@ use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
     classify_leaf, generate_nonce, get_local_root_hash_for_context,
     handle_entity_delete_push_locked, handle_entity_push_locked, is_leaf_currently_authorized,
-    push_entities, stores_value, LeafDisposition, LeafOutcome, MAX_ENTITIES_PER_PUSH,
+    push_entities, stores_value, with_repair_cell_writers, LeafDisposition, LeafOutcome,
+    MAX_ENTITIES_PER_PUSH,
 };
 
 // =============================================================================
@@ -263,7 +264,11 @@ async fn run_initiator_impl<T: SyncTransport>(
 
     // Set up storage bridge
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
-    let runtime_env = create_runtime_env(store, context_id, identity, account);
+    let runtime_env = with_repair_cell_writers(
+        create_runtime_env(store, context_id, identity, account),
+        context_client,
+        context_id,
+    );
 
     // The sender's loaded-reader schema, stamped onto every row we push back.
     let schema_bytecode_id =
@@ -808,7 +813,11 @@ async fn run_responder_impl<T: SyncTransport>(
 
     // Set up storage bridge
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
-    let runtime_env = create_runtime_env(store, context_id, identity, account);
+    let runtime_env = with_repair_cell_writers(
+        create_runtime_env(store, context_id, identity, account),
+        context_client.as_ref(),
+        context_id,
+    );
 
     // The sender's loaded-reader schema, stamped onto every row we emit so a
     // peer on an older reader can decline+buffer a future-schema one.

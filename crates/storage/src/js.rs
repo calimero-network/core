@@ -1855,15 +1855,15 @@ impl JsSharedStorage {
         self.shared.is_frozen()
     }
 
-    /// Rotates the writer set. Must be called by a current writer; rejected if
-    /// frozen or if `writers` is empty. Authenticated at merge.
+    /// Asks for the writer set to be rotated. Must be called by a current admin;
+    /// rejected if frozen or if `writers` is empty. The request rides the
+    /// execution outcome, so this writes nothing to the cell.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError`] with `ActionNotAllowed` if frozen, if `writers` is
-    /// empty, or if the current executor is not a current writer.
+    /// empty, or if the current executor does not hold `ADMIN`.
     pub fn rotate_writers(&mut self, writers: Vec<[u8; 32]>) -> Result<(), StoreError> {
-        self.storage.update();
         self.shared.rotate_writers(writer_set(writers))
     }
 

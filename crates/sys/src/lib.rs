@@ -74,6 +74,13 @@ wasm_imports! {
         fn tee_random_bytes(buf: Ref<BufferMut<'_>>);
         fn tee_authority_keys(register_id: RegisterId);
         fn account_device_keys(account: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
+        // The writers of a `SharedStorage` cell at this run's governance cut. Returns 0 when
+        // they cannot be resolved, 1 when no rotation took effect (the cell's stored set
+        // stands), 2 when rotated, with `borsh(BTreeMap<AccountId, OpMask>)` in the register.
+        fn shared_writers(cell: Ref<Buffer<'_>>, register_id: RegisterId) -> u32;
+        // Records a `borsh(SharedRotation)` request on the runtime Outcome, for the node to
+        // publish as a governance op. Never stored by the guest.
+        fn shared_writers_rotate(rotation: Ref<Buffer<'_>>);
         // Sealing: public-key encryption to an Ed25519 key, and opening with this
         // run's executor key. See `env::seal_to`.
         fn seal_to(key: Ref<Buffer<'_>>, plaintext: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;

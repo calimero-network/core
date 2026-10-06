@@ -1295,6 +1295,42 @@ pub fn search(
     }
 }
 
+/// The borsh-encoded writers of the `SharedStorage` cell `cell` at this run's
+/// governance cut, for the storage crate to decode.
+///
+/// `None` means the host cannot resolve them and the caller must fail closed.
+/// `Some(None)` means no rotation took effect, so the writers stored with the cell
+/// stand. `Some(Some(bytes))` is the rotated set. Under the in-process test
+/// harness every cell is at genesis.
+#[must_use]
+pub fn shared_writers(cell: &[u8; 32]) -> Option<Option<Vec<u8>>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        match unsafe { sys::shared_writers(Ref::new(&Buffer::from(&cell[..])), DATA_REGISTER) } {
+            1 => Some(None),
+            2 => Some(Some(
+                read_register(DATA_REGISTER).unwrap_or_else(expected_register),
+            )),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::shared_writers(cell)
+}
+
+/// Asks the host to rotate a `SharedStorage` cell's writers: a borsh-encoded
+/// rotation request the node publishes as a governance op. Nothing is stored by
+/// the guest, and the rotation takes effect once the op applies.
+#[inline]
+pub fn shared_writers_rotate(rotation: &[u8]) {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::shared_writers_rotate(Ref::new(&Buffer::from(rotation)))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::shared_writers_rotate(rotation);
+}
+
 /// Gets the current time.
 #[inline]
 #[must_use]

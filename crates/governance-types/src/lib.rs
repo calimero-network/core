@@ -2728,7 +2728,8 @@ pub mod bounds {
     /// A sealed 32-byte key is about 100 bytes.
     pub const MAX_TEE_VAULT_ENVELOPE_BYTES: usize = 256;
     /// Max accounts in a shared cell's writer set named by a rotation.
-    pub const MAX_SHARED_WRITERS: usize = 256;
+    pub const MAX_SHARED_WRITERS: usize =
+        calimero_storage::shared_writers::MAX_WRITERS_PER_ROTATION;
     /// Max root-key handoffs in one device-link credential chain.
     ///
     /// Each entry costs an Ed25519 verification in `root_key_at_epoch`, on a
