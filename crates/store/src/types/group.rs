@@ -94,6 +94,11 @@ impl PredefinedEntry for key::GroupAccountDevice {
     type DataType<'a> = key::GroupAccountDeviceValue;
 }
 
+impl PredefinedEntry for key::GroupAccountDeviceRevocation {
+    type Codec = Borsh;
+    type DataType<'a> = calimero_account::SignedDeviceRevocation;
+}
+
 impl PredefinedEntry for key::GroupAccountDeviceLabel {
     type Codec = Borsh;
     type DataType<'a> = key::GroupAccountDeviceLabelValue;
