@@ -3323,11 +3323,12 @@ impl VMHostFunctions<'_> {
     /// child of [`Id::root()`], so the orphan is always a root child.
     ///
     /// Delegates to [`Interface::remove_child_from`], which cascades the subtree,
-    /// refuses to delete Frozen data (which peers would reject, causing a
-    /// split-brain), and enforces writer authority for a `Shared` cell — so a
-    /// caller can only delete a collection it legitimately created. The
-    /// reassignment runs on fresh state, where the create and this delete land in
-    /// the same genesis delta, so every replica converges with no orphan.
+    /// refuses to delete Frozen data or owned and writer-set entries under it
+    /// (which peers would keep, causing a split-brain), and enforces writer
+    /// authority for a `Shared` cell, so a caller can only delete a collection it
+    /// legitimately created. The reassignment runs on fresh state, where the
+    /// create and this delete land in the same genesis delta, so every replica
+    /// converges with no orphan.
     ///
     /// Returns 1 if an entity was deleted, 0 if none existed at that id
     /// (idempotent), or -1 with an error message in `dest_register_id`.
