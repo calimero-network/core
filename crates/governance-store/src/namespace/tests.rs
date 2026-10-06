@@ -9192,6 +9192,17 @@ fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
         VisibilityMode::Restricted,
         "a held op's effect waits for the key: nothing unverified is applied"
     );
+    let held = crate::held_ops::HeldOps::new(&store, namespace_id.into())
+        .read()
+        .expect("read held ops");
+    assert_eq!(
+        held.ops,
+        vec![crate::held_ops::HeldOp {
+            delta_id: flip.content_hash().expect("flip id"),
+            group_id: subgroup.to_bytes(),
+        }],
+        "a held op is listed, so its missing effect is visible without logs"
+    );
 
     // And the namespace moves on: an op after the held one applies.
     let sibling = SignedNamespaceOp::sign(
@@ -9251,6 +9262,14 @@ fn a_held_group_op_applies_once_its_groups_key_arrives() {
             .expect("read visibility"),
         VisibilityMode::Restricted,
         "the replay must apply the held flip once its group's history reads"
+    );
+    assert!(
+        crate::held_ops::HeldOps::new(&store, namespace_id.into())
+            .read()
+            .expect("read held ops")
+            .ops
+            .is_empty(),
+        "an applied op is no longer listed as held"
     );
 
     // Applied once: a second key arrival finds its nonce spent and changes nothing.
