@@ -1,0 +1,229 @@
+name: E2E Scaffolding - a Restricted->Open flip does not stall a non-member
+description: >
+  Regression coverage for #4511: flipping a subgroup from Restricted to Open
+  must not stall namespace governance on a namespace member outside that
+  subgroup.
+
+  The flip (`SubgroupVisibilitySet(Open)`) is sealed under the namespace key,
+  so every namespace member can read it, but authorizing it folds the
+  subgroup's own history - and that history holds an op sealed under the
+  subgroup's key, which a non-member is never served. Before the fix the flip
+  was undecidable forever on such a node, and because the namespace DAG is
+  shared by every group, every namespace op after it waited behind it until
+  the pending TTL dropped it: the node never saw another subgroup.
+
+  Topology:
+    * node-1 - the namespace owner.
+    * node-2 - a plain namespace member, never added to `before`.
+
+  node-2 is offline while node-1 creates `before` Restricted, gives it a
+  sealed op (its metadata), flips it Open, deletes it, and creates `after`
+  Open - the shape of the production incident, where the stalled member was
+  offline through the flip and the subgroup was gone (and its key with it)
+  before that member could ask for the key. With node-1 online and the
+  subgroup alive, node-2's key request is answered and the park clears on its
+  own; here no one can answer it.
+
+  Headline: back online, node-2 converges on the namespace and lists `after`.
+  Before the fix it never did: the flip stayed undecidable and `after`, the
+  deletion and every other op after it waited behind it.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  - name: Login on e2e-node-1
+    type: login
+    node: e2e-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  # Node-2 must hold the namespace before node-1 seals anything, so every op
+  # below reaches it through the namespace DAG.
+  - name: Converge node-2 on the namespace before the subgroup exists
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    trigger_sync: true
+
+  # --- node-2 goes offline, as the stalled member was during the incident ---
+
+  - name: Node-2 goes offline
+    type: stop_node
+    nodes: e2e-node-2
+
+  # --- The trigger: a Restricted subgroup with a sealed op, then flipped Open ---
+
+  - name: Node-1 creates `before`, born Restricted
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_name: before
+    visibility: restricted
+    outputs:
+      before_sub: groupId
+
+  - name: Assert `before` created
+    type: assert
+    statements:
+      - "is_set({{before_sub}})"
+
+  # Sealed under `before`'s own key: node-2, outside `before`, can never read it.
+  - name: Node-1 names `before` (an op sealed under the subgroup key)
+    type: set_group_metadata
+    node: e2e-node-1
+    group_id: '{{before_sub}}'
+    record_name: Before
+
+  # Sealed under the namespace key, so node-2 reads it, but its parents
+  # include the sealed metadata op above.
+  - name: Node-1 flips `before` Open
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{before_sub}}'
+    visibility: open
+
+  # The subgroup, and its key, are gone before node-2 can ask anyone for it.
+  - name: Node-1 deletes `before`
+    type: delete_group
+    node: e2e-node-1
+    group_id: '{{before_sub}}'
+
+  # Causally after the flip: on a stalled node-2 this never applies.
+  - name: Node-1 creates `after`, born Open
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_name: after
+    visibility: open
+    outputs:
+      after_sub: groupId
+
+  - name: Assert `after` created
+    type: assert
+    statements:
+      - "is_set({{after_sub}})"
+
+  # --- node-2 comes back ---
+
+  - name: Node-2 comes back online
+    type: start_node
+    nodes: e2e-node-2
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev-password
+
+  # --- Headline ---
+
+  # Before the fix node-2's head never moves past the flip, so this times out.
+  - name: Converge node-2 on the namespace after the flip
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 90
+    trigger_sync: true
+
+  # The barrier. `wait_for_sync` can report converged before a restarted node
+  # has pulled anything, so wait for node-2's own word that it reached the flip
+  # and held it. The held flip, the deletion and `after` arrive in one backfill
+  # and apply together. Before the fix node-2 parks the flip instead and this
+  # never appears.
+  - name: Node-2 reached the flip and held it
+    type: assert_log_present
+    nodes:
+      - e2e-node-2
+    patterns:
+      - "group op held unapplied"
+    timeout: 90
+
+  - name: Brief settle for the rest of that backfill
+    type: wait
+    seconds: 3
+
+  - name: Node-2 lists the namespace subgroups
+    type: list_subgroups
+    node: e2e-node-2
+    group_id: '{{namespace_id}}'
+    outputs:
+      subgroups_node2: subgroups
+
+  - name: Assert node-2 kept up - it sees `after`, created after the flip
+    type: assert
+    statements:
+      - "contains({{subgroups_node2}}, {{after_sub}})"
+
+  - name: Assert node-2 applied the deletion that came after the flip
+    type: assert
+    statements:
+      - "not_contains({{subgroups_node2}}, {{before_sub}})"
+
+  # Control: node-1 holds every key and applied everything.
+  - name: Node-1 lists the namespace subgroups
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      subgroups_node1: subgroups
+
+  - name: Assert node-1 sees `after` and not the deleted `before`
+    type: assert
+    statements:
+      - "contains({{subgroups_node1}}, {{after_sub}})"
+      - "not_contains({{subgroups_node1}}, {{before_sub}})"
+
+stop_all_nodes: false

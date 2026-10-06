@@ -254,6 +254,11 @@ scenarios:
   - workflow: group-list-subgroups-restricted-hidden
     file: workflows/group-list-subgroups-restricted-hidden.yml
     app: scaffolding-e2e
+  # #4511: a Restricted->Open flip whose subgroup history a namespace member
+  # cannot read must not stall that member's namespace governance.
+  - workflow: group-restricted-flip-open-nonmember-keeps-up
+    file: workflows/group-restricted-flip-open-nonmember-keeps-up.yml
+    app: scaffolding-e2e
     registry_fetch: "false"
   # #4522: only a Restricted subgroup's creator may open it, and a member
   # outside it applies the opening as it arrives. Governance only.
