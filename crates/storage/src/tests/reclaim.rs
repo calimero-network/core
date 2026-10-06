@@ -7,20 +7,30 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use super::*;
-use crate::collections::{Root, UnorderedMap};
+use crate::action::Action;
+use crate::collections::{Authored, Root, UnorderedMap};
 use crate::delta::{clear_pending_delta, StorageDelta};
-use crate::entities::{EntryRules, StorageType};
+use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
 use crate::index::{EntityIndex, Index};
 use crate::interface::{ApplyContext, Interface};
 use crate::row::{encode, Row};
 use crate::store::{Key, MainStorage, KEY_LEN};
+use crate::tests::common::{account_of_key, apply_ctx_for, map_entry_bytes};
+use crate::tests::owned_rules::{delete, key, signed};
 
 type Rows = Rc<RefCell<BTreeMap<[u8; KEY_LEN], Vec<u8>>>>;
 type Map = UnorderedMap<String, String, MainStorage>;
+type Notes = Authored<UnorderedMap<String, String>>;
 
 /// Shared by every replica, so they hold the same collection.
 const FIELD: &str = "reclaimed";
+
+/// The owned collection's field name and deterministic id seed.
+const NOTES: &str = "notes";
+
+/// When the owner's first write was made; a fixed past instant.
+const WRITTEN_AT: u64 = 1_700_000_000_000_000_000;
 
 /// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded
 /// from the first context id any test on the process reads.
@@ -221,6 +231,84 @@ fn a_late_write_behaves_the_same_with_the_parent_pruned() {
         *pruned.borrow(),
         "pruning the parent changed how a late write lands"
     );
+}
+
+/// GC has collected an owned entry's tombstone: a peer replaying the owner's
+/// original signed write must not bring it back, while a later owner write lands.
+#[test]
+fn a_replayed_signed_write_does_not_bring_back_a_collected_entry() {
+    let owner_key = key(0xA1);
+    let owner = account_of_key(&owner_key);
+    let entry_key = "k".to_owned();
+
+    let rows: Rows = Rc::default();
+    let (parent, id, rules) = on(&rows, 1, || {
+        let notes = Root::new(|| {
+            let mut notes = Notes::new_with_field_name(NOTES);
+            notes.reassign_deterministic_id(NOTES);
+            notes
+        });
+        let inner: &UnorderedMap<String, String> = &notes;
+        let parent = inner.id();
+        let id = notes.entry_id_of(&owner, &entry_key);
+        let rules = notes.entry_rules();
+        notes.commit();
+        (parent, id, rules)
+    });
+    let write = |value: &str, at: u64| {
+        let data = map_entry_bytes(id, &entry_key, &value.to_owned());
+        let ancestors = vec![ChildInfo::new(parent, [0; 32], Metadata::default())];
+        let add = move |metadata| Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        };
+        signed(add, owner, rules, &owner_key, at)
+    };
+    let apply = |action: Action| {
+        on(&rows, 1, || {
+            Interface::<MainStorage>::apply_action(action, &apply_ctx_for(owner))
+        })
+    };
+    let read = || {
+        on(&rows, 1, || {
+            Root::<Notes>::fetch()
+                .unwrap()
+                .get_by(&owner, &entry_key)
+                .unwrap()
+        })
+    };
+
+    let original = borsh::to_vec(&write("deleted", WRITTEN_AT)).unwrap();
+    apply(borsh::from_slice(&original).unwrap()).unwrap();
+    assert_eq!(read(), Some("deleted".to_owned()));
+
+    let deleted_at = WRITTEN_AT + 1;
+    apply(signed(
+        delete(id, deleted_at),
+        owner,
+        rules,
+        &owner_key,
+        deleted_at,
+    ))
+    .unwrap();
+    assert_eq!(read(), None);
+
+    gc_pass(&rows, true);
+    let collected = on(&rows, 1, || Index::<MainStorage>::get_index(id).unwrap());
+    assert!(collected.is_none(), "GC left the tombstone in place");
+
+    // Refused or dropped as stale: either way nothing is stored.
+    let _replayed = apply(borsh::from_slice(&original).unwrap());
+    assert_eq!(
+        read(),
+        None,
+        "a replayed write brought back a deleted entry"
+    );
+
+    apply(write("rewritten", deleted_at + 1)).unwrap();
+    assert_eq!(read(), Some("rewritten".to_owned()));
 }
 
 fn tombstone(id: Id, deleted_at: u64) -> EntityIndex {
