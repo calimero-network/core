@@ -930,14 +930,14 @@ fn refreshing_the_missing_ancestor_unblocks_the_authoritative_grant() {
 /// device lands.
 fn real_join_account_for(
     sign_pk: &PublicKey,
-    device: [u8; 32],
+    device_nonce: [u8; 16],
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     let root_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
     let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         genesis.account_id(),
-        calimero_account::DeviceId::from(device),
+        calimero_account::DeviceId::mint(genesis.account_id(), device_nonce),
         sign_pk,
         &calimero_account::KemPublicKey::from([0x2B; 32]),
         0,
@@ -982,7 +982,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
     // sides as key-derived stand-ins, so the out-of-band root matched what a
     // bare key resolved to — the two agreed only because they were the same
     // derivation, which no production namespace reproduces.
-    let admin_credential = real_join_account_for(&admin, [0x6C; 32]);
+    let admin_credential = real_join_account_for(&admin, [0x6C; 16]);
     let admin_account = admin_credential.statement.account;
     MetaRepository::new(&store)
         .save(&ns, &meta(admin_account))
@@ -1095,7 +1095,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
                 calimero_context::test_support::account_for(&admin_sk.public_key()),
             ),
             joined_at: 1,
-            account: real_join_account_for(&joiner, [0x3E; 32]),
+            account: real_join_account_for(&joiner, [0x3E; 16]),
         }),
     )
     .expect("sign join_ns");
@@ -1120,7 +1120,7 @@ fn a_folded_join_device_does_not_hide_an_inherited_admin() {
             RootOp::MemberJoinedOpen {
                 member: calimero_context::test_support::account_for(&joiner),
                 group_id: subgroup.to_bytes().into(),
-                account: real_join_account_for(&joiner, [0x3F; 32]),
+                account: real_join_account_for(&joiner, [0x3F; 16]),
             },
         ),
     )
@@ -1439,7 +1439,7 @@ fn a_join_is_attributed_to_the_account_its_certificate_names() {
     let ns = ContextGroupId::from([0x21; 32]);
     let group = ContextGroupId::from([0x22; 32]);
 
-    let credential = real_join_account_for(&joiner, [0x4D; 32]);
+    let credential = real_join_account_for(&joiner, [0x4D; 16]);
     let certified_account = credential.statement.account;
     let certified_device = credential.statement.device;
 
@@ -1517,7 +1517,7 @@ fn a_rotation_by_an_enrolled_device_absorbs_through_the_real_converter() {
     let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         account,
-        calimero_account::DeviceId::from([0x63; 32]),
+        calimero_account::DeviceId::mint(account, [0x63; 16]),
         &device_key,
         &calimero_account::KemPublicKey::from([0x64; 32]),
         0,

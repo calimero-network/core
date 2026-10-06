@@ -171,6 +171,17 @@ impl RootSigned for DeviceCert {
     fn signature(&self) -> &[u8; 64] {
         &self.signature
     }
+
+    /// An id minted for another account would let this root claim that device.
+    fn check_fields(&self) -> Result<(), AccountError> {
+        if self.device.is_minted_for(self.account) {
+            Ok(())
+        } else {
+            Err(AccountError::CertDeviceNotMinted {
+                device: self.device,
+            })
+        }
+    }
 }
 
 /// A [`DeviceCert`] whose genesis anchor, key chain, and signature have all been

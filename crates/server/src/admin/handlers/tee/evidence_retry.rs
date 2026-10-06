@@ -1,15 +1,17 @@
-//! Re-announce a TEE replica whose authority evidence never landed.
+//! Prompt again a TEE replica whose authority evidence never landed.
 //!
 //! The evidence an admitter publishes right after admitting a TEE carries the
 //! TEE's raw quote, and only the TEE holds that quote. Fleet-join stops
-//! announcing once admitted, so if that one publish failed, nothing would ever
+//! prompting once admitted, so if that one publish failed, nothing would ever
 //! produce the evidence again and the TEE could never author. This loop closes
 //! that gap from the TEE's side: while it is owed evidence
 //! ([`calimero_governance_store::tee_evidence_owed`]) in a namespace, it
-//! announces itself again with a fresh quote. An admitter that hears an
+//! prompts the namespace again. A member that hears it offers a challenge, the
+//! TEE answers with a quote over it, and an admitter that finds an
 //! already-admitted TEE with no evidence publishes the evidence, the same path
-//! an admission takes, so no new wire message is involved. It names the node's
-//! release, which the admitter checks under a signed-release policy.
+//! an admission takes. Every refresh quote carries a challenge of its own, so a
+//! quote is never reused, and it names the node's release, which the admitter
+//! checks under a signed-release policy.
 //!
 //! Every node runs it, and it is idle on any node that is not an admitted TEE.
 
@@ -25,14 +27,14 @@ use tracing::{debug, info, warn};
 
 /// How often the loop looks for a namespace owed evidence.
 const CHECK_INTERVAL: Duration = Duration::from_secs(30);
-/// The wait before the first re-announce in a namespace, doubled after each
-/// one that does not settle it.
+/// The wait before the first re-prompt in a namespace, doubled after each one
+/// that does not settle it.
 const FIRST_BACKOFF: Duration = Duration::from_secs(60);
-/// The longest wait between re-announces. Each one costs every admitter that
+/// The longest wait between re-prompts. Each one costs every admitter that
 /// hears it a quote verification and a collateral fetch.
 const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
-/// When a namespace may be announced to next, and the wait after that.
+/// When a namespace may be prompted next, and the wait after that.
 struct Backoff {
     next_at: tokio::time::Instant,
     wait: Duration,
@@ -71,7 +73,7 @@ pub async fn run(
 
         let now = tokio::time::Instant::now();
         for namespace in owed {
-            // The first announce waits a full backoff: right after an admission
+            // The first prompt waits a full backoff: right after an admission
             // the admitter's own evidence publish is still in flight, and that
             // is the ordinary way the evidence arrives.
             let entry = backoff.entry(namespace).or_insert(Backoff {
@@ -84,7 +86,7 @@ pub async fn run(
             entry.next_at = now + entry.wait;
             entry.wait = next_wait(entry.wait);
 
-            announce(
+            prompt(
                 &store,
                 &node_client,
                 &namespace,
@@ -118,7 +120,7 @@ fn owed_namespaces(store: &Store) -> eyre::Result<Vec<ContextGroupId>> {
     Ok(owed)
 }
 
-async fn announce(
+async fn prompt(
     store: &Store,
     node_client: &NodeClient,
     namespace: &ContextGroupId,
@@ -129,44 +131,46 @@ async fn announce(
     else {
         return;
     };
-    let announcement = match super::announce::build(
+    #[cfg(not(feature = "mock-attestation"))]
+    let mock_tee = false;
+    let prompt = match super::prompt::build(
         store,
         namespace,
         public_key,
         // The release the admitter checks under a signed-release policy.
         release_version,
-        #[cfg(feature = "mock-attestation")]
+        Vec::new(),
         mock_tee,
     ) {
-        Ok(announcement) => announcement,
+        Ok(prompt) => prompt,
         Err(err) => {
             warn!(
                 namespace = %hex::encode(namespace.to_bytes()),
                 reason = err.message(),
-                "TEE evidence retry: could not build an announcement"
+                "TEE evidence retry: could not build a prompt"
             );
             return;
         }
     };
-    for payload in announcement.payloads {
-        match node_client
-            .publish_on_namespace_now(namespace.to_bytes(), payload)
-            .await
-        {
-            Ok(mesh_peers) => info!(
-                namespace = %hex::encode(namespace.to_bytes()),
-                mesh_peers,
-                "TEE authority evidence is missing; re-announced so an admitter publishes it"
-            ),
-            Err(err) => {
-                debug!(
-                    namespace = %hex::encode(namespace.to_bytes()),
-                    ?err,
-                    "TEE evidence retry: re-announce publish failed; retrying later"
-                );
-                return;
-            }
-        }
+    // With no addresses the request only registers the node to answer a challenge,
+    // so its error is expected.
+    if let Err(err) = node_client.request_tee_admission(prompt.params).await {
+        debug!(?err, "TEE evidence retry: waiting for a member's challenge");
+    }
+    match node_client
+        .publish_on_namespace_now(namespace.to_bytes(), prompt.payload)
+        .await
+    {
+        Ok(mesh_peers) => info!(
+            namespace = %hex::encode(namespace.to_bytes()),
+            mesh_peers,
+            "TEE authority evidence is missing; prompted so an admitter refreshes it"
+        ),
+        Err(err) => debug!(
+            namespace = %hex::encode(namespace.to_bytes()),
+            ?err,
+            "TEE evidence retry: prompt publish failed; retrying later"
+        ),
     }
 }
 

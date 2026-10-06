@@ -893,7 +893,7 @@ mod tests {
         applications: &[ApplicationId],
     ) -> DeviceId {
         let genesis = AccountGenesis::new(root_sk.public_key());
-        let device = DeviceId::from([seed; 32]);
+        let device = DeviceId::mint(genesis.account_id(), [seed; 16]);
         let proof = AccountProof {
             genesis,
             chain: vec![],
@@ -1662,7 +1662,10 @@ mod tests {
                 .participate_in(&namespace)
                 .expect("take part");
         }
-        let lost = DeviceId::from([0x66; 32]);
+        let lost = DeviceId::mint(
+            AccountGenesis::new(root_sk.public_key()).account_id(),
+            [0x66; 16],
+        );
         for namespace in [account_namespace, still_live, already_tombstoned] {
             a_device_bound_in(&store, namespace, &root_sk, lost);
         }
@@ -1695,7 +1698,10 @@ mod tests {
                 .participate_in(&namespace)
                 .expect("take part");
         }
-        let lost = DeviceId::from([0x67; 32]);
+        let lost = DeviceId::mint(
+            AccountGenesis::new(root_sk.public_key()).account_id(),
+            [0x67; 16],
+        );
         for namespace in [account_namespace, linked] {
             a_device_bound_in(&store, namespace, &root_sk, lost);
         }
@@ -1719,7 +1725,10 @@ mod tests {
                 .participate_in(&namespace)
                 .expect("take part");
         }
-        let lost = DeviceId::from([0x6B; 32]);
+        let lost = DeviceId::mint(
+            AccountGenesis::new(root_sk.public_key()).account_id(),
+            [0x6B; 16],
+        );
         a_device_bound_in(&store, narrowed, &root_sk, lost);
         let account = AccountGenesis::new(root_sk.public_key()).account_id();
         assert!(AccountBindingRepository::new(&store)
@@ -1740,7 +1749,10 @@ mod tests {
         let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
         let project = ContextGroupId::from([0x88; 32]);
         let stranger = PrivateKey::from([0x89; 32]);
-        let foreign = DeviceId::from([0x68; 32]);
+        let foreign = DeviceId::mint(
+            AccountGenesis::new(stranger.public_key()).account_id(),
+            [0x68; 16],
+        );
         for namespace in [account_namespace, project] {
             let _identity = NamespaceRepository::new(&store)
                 .participate_in(&namespace)
@@ -1935,7 +1947,10 @@ mod tests {
                 .store_key(&[0x42; 32])
                 .expect("hold the scope key");
         }
-        let lost = DeviceId::from([0x69; 32]);
+        let lost = DeviceId::mint(
+            AccountGenesis::new(root_sk.public_key()).account_id(),
+            [0x69; 16],
+        );
         for namespace in [still_live, withdrawn] {
             a_device_bound_in(&store, namespace, &root_sk, lost);
         }
@@ -1989,7 +2004,10 @@ mod tests {
         let _key_id = GroupKeyring::new(&store, elsewhere)
             .store_key(&[0x42; 32])
             .expect("hold the scope key");
-        let lost = DeviceId::from([0x6A; 32]);
+        let lost = DeviceId::mint(
+            AccountGenesis::new(root_sk.public_key()).account_id(),
+            [0x6A; 16],
+        );
         a_device_bound_in(&store, account_namespace, &root_sk, lost);
         a_device_bound_in(&store, elsewhere, &root_sk, lost);
         let account = AccountGenesis::new(root_sk.public_key()).account_id();
@@ -2034,7 +2052,10 @@ mod tests {
         let _key_id = GroupKeyring::new(&store, missed)
             .store_key(&[0x42; 32])
             .expect("hold the scope key the replay publishes under");
-        let lost = DeviceId::from([0x6C; 32]);
+        let lost = DeviceId::mint(
+            AccountGenesis::new(root_sk.public_key()).account_id(),
+            [0x6C; 16],
+        );
         AccountDeviceRegistry::new(&store, account_namespace)
             .record_revocation(&a_revocation_of(&root_sk, lost))
             .expect("the account namespace holds the withdrawal");

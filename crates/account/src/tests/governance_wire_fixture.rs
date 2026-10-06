@@ -2,7 +2,7 @@
 //! Same purpose as `warrant_wire_fixture`; the JS implementation is tested
 //! against these vectors.
 
-use calimero_primitives::identity::AccountId;
+use calimero_primitives::identity::{AccountId, PublicKey};
 
 use super::support::key;
 use crate::account::borsh_bytes;
@@ -19,6 +19,7 @@ fn fixture() -> GovernanceWarrant {
             kind: GovernanceOpKind::Root,
             author_account: AccountId::from([0x22; 32]),
             executor: AccountId::from([0x33; 32]),
+            executor_key: PublicKey::from([0x77; 32]),
             op_hash: GovernanceWarrant::op_hash(GovernanceOpKind::Root, OP),
             account_heads: vec![[0x55; 32]],
             governance_floor: vec![[0x66; 32]],
@@ -41,7 +42,7 @@ fn the_op_hash_is_stable() {
 fn the_signing_preimage_is_stable() {
     assert_eq!(
         hex::encode(fixture().signing_payload()),
-        "23110c9012218d6996c33991173280928db4cc030a77164a31a2b1e47946bf80"
+        "b71a40cfbbe50e40d3423e8729a9ca8359e69f2762396922e6b314a971c5f720"
     );
 }
 
@@ -50,8 +51,8 @@ fn the_wire_encoding_is_stable() {
     let bytes = borsh_bytes(&fixture());
     assert_eq!(
         bytes.len(),
-        313,
-        "32 scope + 1 kind + 32*3 + 32 op_hash + 2*(4+32) + 8 + 8 + 64"
+        345,
+        "32 scope + 1 kind + 32*4 + 32 op_hash + 2*(4+32) + 8 + 8 + 64"
     );
     assert_eq!(
         hex::encode(&bytes),
@@ -66,6 +67,8 @@ fn the_wire_encoding_is_stable() {
             "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
             // executor
             "3333333333333333333333333333333333333333333333333333333333333333",
+            // executor_key
+            "7777777777777777777777777777777777777777777777777777777777777777",
             // op_hash
             "d6bc121f9fcf7b85bea94d356d620c14dd8e1ae5fa2317cbcfc2c486cf04dfb3",
             // account_heads: count 1
@@ -78,8 +81,8 @@ fn the_wire_encoding_is_stable() {
             "2a00000000000000",
             "00f1536500000000",
             // signature
-            "27a7c779c5d7aef80dcf7125c2ef733bb0f4bbe20d84a75d0b132516d3b2a1a0",
-            "0e292b674f927df135d6f631dc7768f2e40a0c1c1040f5fc923385d2b5b05e07",
+            "03ce6c011f565924099b2c776032a1cfe540d1c4c09fad0b470723f8ee76138d",
+            "1d685a20948edf4dee2901d3f9187e3363a16e3b141b0bc94553f5948becae07",
         ),
     );
 }

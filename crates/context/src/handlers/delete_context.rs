@@ -179,8 +179,9 @@ async fn delete_context(
 /// Kept on purpose:
 /// - `Delta`: deltas are part of the distributed DAG and must stay servable to
 ///   peers syncing missing parents; context deletion is a soft delete of it.
-/// - `ContextWarrantNonce`: the per-author replay ledger. Dropping it would let
-///   a warrant already spent here be accepted again if the context returns.
+/// - `ContextWarrantNonce`: the per-author, per-executor replay ledger.
+///   Dropping it would let a warrant already spent here be accepted again if
+///   the context returns.
 /// - `ContextLocal` and the single-row migration markers: tiny, and they record
 ///   decisions (a `leave_context`, a pinned bytecode) that must not be undone
 ///   by accident.
@@ -264,7 +265,7 @@ mod tests {
             (Column::ContextBlob, prefixed(context, &[0x0a; 32])),
             (Column::AbsorbBuffer, absorbed(context)),
             (Column::Delta, prefixed(context, &[0x06; 32])),
-            (Column::ContextWarrantNonce, prefixed(context, &[0x07; 32])),
+            (Column::ContextWarrantNonce, prefixed(context, &[0x07; 64])),
             (Column::BlobOwner, prefixed(context, &[0x08; 32])),
             (Column::SnapshotStage, prefixed(context, &[0x0b; 33])),
         ]

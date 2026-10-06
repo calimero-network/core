@@ -84,28 +84,33 @@ pub struct RelaySealedJoinParams {
     pub signed_op_bytes: Vec<u8>,
 }
 
-/// Parameters for asking named peers to admit this TEE node directly, rather
-/// than broadcasting the attestation and hoping a peer that may vouch hears it.
+/// What this TEE node needs to be admitted: to ask named peers for a challenge
+/// and answer with a quote over it, and to answer a challenge a member offers
+/// when it hears the node's prompt on the namespace topic.
 ///
-/// Carries what `BroadcastMessage::TeeAttestationAnnounce` carries, plus where
-/// to send it. The addresses decide only who is ASKED: each responder runs the
-/// same verification and the same vouching rule as the broadcast receiver, so
-/// a wrong or hostile address costs a failed dial or a refusal, never an
-/// admission that would not otherwise have happened.
-#[derive(Debug)]
+/// The quote is made for the challenge an admitter chose, so it cannot be made
+/// ahead of time: the node holds these parameters and attests when asked. The
+/// addresses decide only who is ASKED: each responder applies the same
+/// verification and the same vouching rule, so a wrong or hostile address costs
+/// a failed dial or a refusal, never an admission that would not otherwise have
+/// happened.
+#[derive(Clone, Debug)]
 pub struct TeeAdmissionParams {
     pub namespace_id: [u8; 32],
     /// libp2p multiaddrs ending in `/p2p/<peer id>`, tried in order. The same
-    /// shape an invitation's `admitter_addrs` has.
+    /// shape an invitation's `admitter_addrs` has. May be empty, when the node
+    /// only waits for a member to answer its prompt.
     pub admitter_addrs: Vec<String>,
     /// This node's namespace identity — the key the quote binds to.
     pub public_key: PublicKey,
-    pub quote_bytes: Vec<u8>,
-    pub nonce: [u8; 32],
+    /// The credential the quote commits to and the admission carries.
     pub account: Box<calimero_governance_types::JoinAccountCredential>,
     /// The mero-tee node release this node runs, when it knows it. Sent as
     /// `InitPayload::TeeReleaseAdmissionRequest` when set.
     pub release_version: Option<String>,
+    /// Produce a mock quote instead of a hardware one. Honoured only by a build
+    /// with the `mock-attestation` feature; any other build refuses to attest.
+    pub mock_tee: bool,
 }
 
 /// The reply half of the direct TEE admission channel: the peer that admitted
@@ -157,7 +162,7 @@ impl TeeAdmissionRefused {
 /// answers it as a refusal.
 ///
 /// The same order as `fleet-join`'s own wait for admission, which follows the
-/// direct request and still has the broadcast to fall back on.
+/// direct request and still has a member answering its prompt to fall back on.
 pub const TEE_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How much longer than [`TEE_ADMISSION_DEADLINE`] the requester waits for that
@@ -311,12 +316,14 @@ impl SyncClient {
             .map_err(|_| eyre::eyre!("relay sealed join response channel dropped"))?
     }
 
-    /// Ask the peers in `params.admitter_addrs` to admit this TEE node, one at a
-    /// time, until one does. Returns the peer that admitted it.
+    /// Register that this TEE node waits to be admitted, then ask the peers in
+    /// `params.admitter_addrs` to admit it, one at a time, until one does.
+    /// Returns the peer that admitted it.
     ///
     /// An `Err` means nobody admitted it — every address refused, or none could
-    /// be reached — and names each refusal. The caller still has the broadcast
-    /// to fall back on; this path only replaces hoping with asking.
+    /// be reached, or there were none — and names each refusal. The node stays
+    /// registered either way, so a member that answers its prompt with a
+    /// challenge is answered.
     ///
     /// Bounded: the sync manager answers within [`TEE_ADMISSION_DEADLINE`], and
     /// a reply that has not come by then plus a grace is reported as a timeout
@@ -1771,8 +1778,6 @@ mod tee_admission_request_tests {
             namespace_id: [0x7E; 32],
             admitter_addrs: Vec::new(),
             public_key,
-            quote_bytes: Vec::new(),
-            nonce: [0x22; 32],
             account: Box::new(calimero_governance_types::JoinAccountCredential {
                 statement: calimero_account::DeviceCert {
                     account: genesis.account_id(),
@@ -1787,6 +1792,7 @@ mod tee_admission_request_tests {
                 chain: Vec::new(),
             }),
             release_version: None,
+            mock_tee: false,
         };
 
         let started = tokio::time::Instant::now();

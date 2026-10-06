@@ -71,7 +71,7 @@ Repeating a join changes nothing however often it happens: while no removal or l
 The projection keeps a bounded number of joins per member, and resolves one situation with a fixed rule instead of the exact answer.
 When a member's latest membership write in a group is a removal or a leave above its first join there, and more than 64 of its joins are above that write, the member holds the least role any of its joins of that group ever carried (`ReadOnly` below `Member` below `Admin`).
 That is the same in every arrival order, it is the exact role whenever all those joins carried one role, and it can lower a member's authority but never raise it.
-This rule is part of `SignedNamespaceOp` version 22: a node on an older version folds a different role, so nodes of one namespace must be upgraded together.
+This rule is part of `SignedNamespaceOp` version 23: a node on an older version folds a different role, so nodes of one namespace must be upgraded together.
 
 ### Which group an invitation may target
 
@@ -386,7 +386,7 @@ Governance operations travel as a signed envelope. The group-scoped form:
 
 ```rust
 struct SignedGroupOp {
-  version: u8,  // current schema version = 15; checked strictly-equal on decode
+  version: u8,  // current schema version = 16; checked strictly-equal on decode
   group_id: [u8; 32],
   parent_op_hashes: Vec<[u8; 32]>,  // DAG parents
   signer: PublicKey,
@@ -403,7 +403,7 @@ op_id = SHA-256( DOMAIN ‖ borsh(signable) )  // signable = all fields except s
 signature = Ed25519_sign( signer_secret, DOMAIN ‖ borsh(signable) )
 
 // group ops     DOMAIN = b"calimero.group.v1"
-// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 22)
+// namespace ops DOMAIN = b"calimero.namespace.v1"  (SignedNamespaceOp, version = 23)
 ```
 
 ### Replay protection

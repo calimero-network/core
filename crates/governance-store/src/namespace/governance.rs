@@ -89,8 +89,8 @@ pub(crate) fn ackable_members(
         return 0;
     }
     let group_id = ContextGroupId::from(namespace_id.to_bytes());
-    // One scan answers both halves: `member_account_in_namespace` is this same
-    // lookup over the same rows, the namespace root being its own namespace.
+    // One scan answers both halves, under `member_account_in_namespace`'s rule: a
+    // key live under two accounts names neither.
     let bindings = match crate::AccountBindingRepository::new(store).live_bindings(&group_id) {
         Ok(bindings) => bindings,
         Err(err) => {
@@ -104,11 +104,12 @@ pub(crate) fn ackable_members(
     };
     // Without the signer's own account every member row reads as somebody else,
     // so fail open loudly rather than wait out a timeout nobody can end.
-    let Some(own) = bindings
+    let mut accounts = bindings
         .iter()
-        .find(|b| b.sign_pk == *signer_pk)
-        .map(|b| b.account)
-    else {
+        .filter(|b| b.sign_pk == *signer_pk)
+        .map(|b| b.account);
+    let first = accounts.next();
+    let Some(own) = first.filter(|own| accounts.all(|account| account == *own)) else {
         tracing::warn!(
             namespace_id = %hex::encode(namespace_id.as_bytes()),
             "publishing key has no live binding here; assuming an ack may come"

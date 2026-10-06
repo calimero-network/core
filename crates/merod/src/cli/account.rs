@@ -157,10 +157,10 @@ impl AccountCommand {
 /// therefore does not matter who publishes or presents it, and with `--from` the
 /// root never has to reach a node at all — no home, no store, no init.
 ///
-/// **It cannot check that the device id matches the keys.** `DeviceId` is
-/// `H(account ‖ nonce)` and deliberately excludes the keys, so a device survives
-/// a re-key. Nothing here can tell a mistyped id from a real one; a certificate
-/// naming a device the holder does not have is inert rather than dangerous.
+/// **It cannot check that the device id matches the keys.** A `DeviceId` is
+/// minted from the account and a nonce and excludes the keys, so a device survives
+/// a re-key. It does refuse an id not minted for this account, which catches a
+/// mistyped one; a well-formed id nobody holds is inert rather than dangerous.
 ///
 /// **Epoch 0 only**, exactly as `revoke-proof` is: the certificate is signed at
 /// key epoch 0 with an empty handoff chain. An account whose root has rotated
@@ -225,14 +225,14 @@ pub struct SignCertCommand {
 /// intent` is the interactive form — this exists for a holder that has a shell
 /// and needs the bytes.
 ///
-/// **`--executor` must be the account that will actually run it.** A warrant
-/// naming the wrong operator is refused by every peer, and nothing here can
-/// check it — ask the relay: `GET /admin-api/identity` reports the account it
-/// acts as.
+/// **`--executor` and `--executor-key` must be the relay that will actually run
+/// it.** A warrant naming another account or device is refused, and nothing here
+/// can check it: the relay's `GET .../intents` reports both.
 ///
-/// **`--nonce` is the caller's to manage.** Peers refuse a repeat, so reusing one
-/// means the write is silently dropped; a gap in the sequence is how a member
-/// learns the relay withheld a request.
+/// **`--nonce` is the caller's to manage.** The named relay refuses a nonce it
+/// already spent for this device with a `403`, before running anything; one
+/// nonce on warrants for two relays is two warrants, each spendable once. A gap
+/// in the sequence is how a member learns the relay withheld a request.
 #[derive(Debug, Parser)]
 pub struct WarrantCommand {
     /// The context the intent runs in, 64 hex chars.
@@ -254,6 +254,11 @@ pub struct WarrantCommand {
     /// The operator account authorised to act, 64 hex chars.
     #[arg(long, value_name = "HEX")]
     executor: String,
+
+    /// The one device of that account that may spend it: the relay's signing
+    /// key, 64 hex chars.
+    #[arg(long, value_name = "HEX")]
+    executor_key: String,
 
     /// The application build this warrant is signed against, 64 hex chars.
     ///
@@ -329,6 +334,10 @@ impl WarrantCommand {
                 format!("--context '{}' is not a valid context id", self.context)
             })?;
         let executor = calimero_account::AccountId::from(parse_key(&self.executor, "executor")?);
+        let executor_key = calimero_primitives::identity::PublicKey::from(parse_key(
+            &self.executor_key,
+            "executor-key",
+        )?);
         let secret = PrivateKey::from(resolve_secret(
             self.device_secret.as_deref(),
             self.device_secret_file.as_deref(),
@@ -376,6 +385,7 @@ impl WarrantCommand {
                 context,
                 author_account: credential.statement.account,
                 executor,
+                executor_key,
                 app_version,
                 method: self.method.clone(),
                 intent_hash: calimero_account::Warrant::intent_hash(&self.method, &args_bytes),
@@ -776,6 +786,11 @@ impl SignCertCommand {
                 parse_key(self.kem_pk.as_deref().unwrap_or_default(), "kem-pk")?,
             )
         };
+        eyre::ensure!(
+            device.is_minted_for(account),
+            "device {device} was not minted for account {account}, so no verifier would \
+             accept a certificate for it. Check --device, or the account it was minted for"
+        );
 
         let cert = calimero_account::DeviceCert::sign(
             root.signing_key(),
@@ -1317,6 +1332,50 @@ mod tests {
 
     use super::*;
 
+    /// `sign-cert` refuses a device id no verifier would accept for this root's
+    /// account, rather than printing a credential that can never be used.
+    #[tokio::test]
+    async fn sign_cert_refuses_a_device_not_minted_for_the_roots_account() {
+        use clap::Parser;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let phrase = camino::Utf8PathBuf::from_path_buf(dir.path().join("phrase"))
+            .expect("the temp path is utf-8");
+        std::fs::write(&phrase, PHRASE).expect("write the phrase");
+        let account = root().account();
+        let other =
+            calimero_account::AccountGenesis::new(PrivateKey::from([0x42; 32]).public_key())
+                .account_id();
+        let root_args = RootArgs::try_parse_from(["merod"]).expect("no flags needed");
+        let key = "44".repeat(32);
+        let sign_cert = |device: DeviceId| {
+            SignCertCommand::try_parse_from([
+                "sign-cert",
+                "--device",
+                &device.to_string(),
+                "--sign-pk",
+                &key,
+                "--kem-pk",
+                &key,
+                "--from",
+                phrase.as_str(),
+            ])
+            .expect("parse")
+        };
+
+        sign_cert(DeviceId::mint(account, [0x43; 16]))
+            .run(&root_args)
+            .await
+            .expect("a device minted for this account is certified");
+        assert!(
+            sign_cert(DeviceId::mint(other, [0x43; 16]))
+                .run(&root_args)
+                .await
+                .is_err(),
+            "a device minted for another account must not be certified"
+        );
+    }
+
     /// `--session` without `--credential` is refused at parse time.
     ///
     /// Alone it would be silently dropped: the proof is only assembled when a
@@ -1787,6 +1846,8 @@ mod tests {
             "set",
             "--executor",
             &"22".repeat(32),
+            "--executor-key",
+            &"44".repeat(32),
             "--nonce",
             "1",
             "--device-secret",
@@ -1823,6 +1884,8 @@ mod tests {
             "set",
             "--executor",
             &"22".repeat(32),
+            "--executor-key",
+            &"44".repeat(32),
             "--nonce",
             "1",
             "--device-secret",

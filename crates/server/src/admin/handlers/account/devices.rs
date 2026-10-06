@@ -163,12 +163,12 @@ mod tests {
     fn remember_cert(
         store: &Store,
         root: &AccountRoot,
-        device: [u8; 32],
+        nonce: [u8; 16],
         sign_pk: &PublicKey,
         applications: &[ApplicationId],
     ) -> DeviceId {
         let genesis = AccountGenesis::new(root.public_key());
-        let device_id = DeviceId::from(device);
+        let device_id = DeviceId::mint(genesis.account_id(), nonce);
         let cert = DeviceCert::sign(
             root.signing_key(),
             genesis.account_id(),
@@ -200,14 +200,14 @@ mod tests {
         store: &Store,
         root: &AccountRoot,
         namespace: &ContextGroupId,
-        device: [u8; 32],
+        device: DeviceId,
         sign_pk: &PublicKey,
     ) {
         let genesis = AccountGenesis::new(root.public_key());
         let cert = DeviceCert::sign(
             root.signing_key(),
             genesis.account_id(),
-            DeviceId::from(device),
+            device,
             sign_pk,
             &KemPublicKey::from([0x2B; 32]),
             0,
@@ -227,7 +227,7 @@ mod tests {
         let device = remember_cert(
             &store,
             &root,
-            [0x11; 32],
+            [0x11; 16],
             &PrivateKey::from([0x22; 32]).public_key(),
             &[app],
         );
@@ -247,7 +247,7 @@ mod tests {
         let device = remember_cert(
             &store,
             &root,
-            [0x11; 32],
+            [0x11; 16],
             &PrivateKey::from([0x22; 32]).public_key(),
             &[],
         );
@@ -271,18 +271,12 @@ mod tests {
             .ensure_enrolled(&ns(NS_A))
             .expect("mint this node's device");
         let own_sign_pk = PrivateKey::from([0x77; 32]).public_key();
-        bind(
-            &store,
-            &root,
-            &ns(NS_A),
-            *own.device().as_bytes(),
-            &own_sign_pk,
-        );
+        bind(&store, &root, &ns(NS_A), own.device(), &own_sign_pk);
         // A second device of the same account, known only via a remembered cert.
         let other = remember_cert(
             &store,
             &root,
-            [0x33; 32],
+            [0x33; 16],
             &PrivateKey::from([0x44; 32]).public_key(),
             &[],
         );
@@ -307,7 +301,7 @@ mod tests {
         let device = remember_cert(
             &store,
             &root,
-            [0x55; 32],
+            [0x55; 16],
             &PrivateKey::from([0x66; 32]).public_key(),
             &[],
         );
@@ -339,7 +333,7 @@ mod tests {
         let device = remember_cert(
             &store,
             &root,
-            [0x77; 32],
+            [0x77; 16],
             &PrivateKey::from([0x88; 32]).public_key(),
             &[],
         );
@@ -371,13 +365,14 @@ mod tests {
     fn a_bound_but_uncached_device_appears_with_its_namespace() {
         let (store, root) = seeded_account();
         let sign_pk = PrivateKey::from([0x88; 32]).public_key();
-        bind(&store, &root, &ns(NS_A), [0x99; 32], &sign_pk);
+        let device = DeviceId::mint(root.account(), [0x99; 16]);
+        bind(&store, &root, &ns(NS_A), device, &sign_pk);
 
         let entries = collect(&store).expect("collect").expect("has account");
 
         let entry = entries
             .iter()
-            .find(|entry| entry.device_id == DeviceId::from([0x99; 32]))
+            .find(|entry| entry.device_id == device)
             .expect("a bound device with no cached cert still appears");
         assert!(entry.applications.is_empty());
         assert_eq!(entry.namespaces, vec![hex::encode(NS_A)]);
@@ -389,7 +384,7 @@ mod tests {
         let device = remember_cert(
             &store,
             &root,
-            [0xAA; 32],
+            [0xAA; 16],
             &PrivateKey::from([0xBB; 32]).public_key(),
             &[],
         );
@@ -411,7 +406,7 @@ mod tests {
         let device = remember_cert(
             &store,
             &root,
-            [0x11; 32],
+            [0x11; 16],
             &PrivateKey::from([0x22; 32]).public_key(),
             &[],
         );
@@ -477,7 +472,7 @@ mod tests {
         let narrow = ApplicationId::from([0x77; 32]);
         let wide = ApplicationId::from([0x88; 32]);
         let sign_pk = PrivateKey::from([0x22; 32]).public_key();
-        let device = DeviceId::from([0x11; 32]);
+        let device = DeviceId::mint(root.account(), [0x11; 16]);
 
         let genesis = AccountGenesis::new(root.public_key());
         let cert = DeviceCert::sign(
@@ -520,7 +515,7 @@ mod tests {
             .expect("a holder names an account namespace");
         let app = ApplicationId::from([0x77; 32]);
         let sign_pk = PrivateKey::from([0x99; 32]).public_key();
-        let device = DeviceId::from([0xAB; 32]);
+        let device = DeviceId::mint(root.account(), [0xAB; 16]);
         let genesis = AccountGenesis::new(root.public_key());
         let cert = DeviceCert::sign(
             root.signing_key(),

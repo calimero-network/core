@@ -77,6 +77,7 @@ fn terms(author: &Party, executor: &Party) -> ContextCreationTerms {
         seed: SEED,
         author_account: author.account(),
         executor: executor.account(),
+        executor_key: executor.device_key(),
         application_id: ApplicationId::from(APP),
         service_name: Some("chat".to_owned()),
         name: Some("general".to_owned()),
@@ -159,6 +160,13 @@ fn every_field_is_covered_by_the_signature() {
             "executor",
             ContextCreationWarrant {
                 executor: other.account(),
+                ..warrant.clone()
+            },
+        ),
+        (
+            "executor_key",
+            ContextCreationWarrant {
+                executor_key: other.device_key(),
                 ..warrant.clone()
             },
         ),
@@ -380,6 +388,7 @@ fn a_method_warrant_signature_does_not_verify_as_a_creation_warrant() {
             context: calimero_primitives::context::ContextId::from(SEED),
             author_account: author.account(),
             executor: executor.account(),
+            executor_key: creation.executor_key,
             app_version: ApplicationId::from(APP),
             method: "init".to_owned(),
             intent_hash: creation.init_hash,
@@ -524,6 +533,35 @@ fn an_executor_key_the_executor_never_certified_is_refused() {
     bundle.executor_key = key(12).public_key();
 
     assert_eq!(bundle.verify(), Err(AccountError::WarrantProofKeyMismatch));
+}
+
+/// A creation warrant is spendable only by the executor device it names.
+#[test]
+fn a_bundle_from_a_device_the_warrant_does_not_name_is_refused() {
+    let (author, executor, warrant) = fixture();
+    let sibling_sk = key(13);
+    let sibling = sign_cert(
+        &executor.root,
+        executor.account(),
+        DeviceId::mint(executor.account(), [0x78; 16]),
+        &sibling_sk,
+        0,
+        0,
+    );
+    let bundle = ContextCreationDelegation {
+        warrant: Box::new(warrant),
+        author_proof: author.own_proof(),
+        executor_proof: executor.proof_of(sibling),
+        executor_key: sibling_sk.public_key(),
+    };
+
+    let err = bundle
+        .verify()
+        .expect_err("a sibling device of the executor must not spend this warrant");
+    assert!(
+        matches!(err, AccountError::WarrantExecutorKeyMismatch { .. }),
+        "{err}"
+    );
 }
 
 #[test]

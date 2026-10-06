@@ -1996,7 +1996,7 @@ mod tests {
 
         /// A second device of the account that was never bound in the namespace,
         /// as a thin client's device is: it subscribes on the account's standing.
-        const THIN_DEVICE: [u8; 32] = [0x7D; 32];
+        const THIN_DEVICE_NONCE: [u8; 16] = [0x7D; 16];
 
         fn revoke_in_the_namespace(f: &Fixture) {
             AccountBindingRepository::new(&f.state.store)
@@ -2212,7 +2212,7 @@ mod tests {
             };
             assert!(!withdrawn(f.device), "precondition: a live device is not");
             assert!(
-                !withdrawn(DeviceId::from([0x77; 32])),
+                !withdrawn(DeviceId::mint(f.account, [0x77; 16])),
                 "nor is a device the namespace never heard of"
             );
 
@@ -2255,7 +2255,7 @@ mod tests {
             let f = fixture().await;
             let caller = EventCaller::Account {
                 account: f.account,
-                device: Some(DeviceId::from([0x77; 32])),
+                device: Some(DeviceId::mint(f.account, [0x77; 16])),
             };
             assert!(caller_may_observe_context(
                 &f.state.ctx_client,
@@ -2351,7 +2351,7 @@ mod tests {
             withdraw: fn(&PrivateKey, DeviceId) -> GroupOp,
         ) {
             let f = fixture().await;
-            let thin = DeviceId::from(THIN_DEVICE);
+            let thin = DeviceId::mint(f.account, THIN_DEVICE_NONCE);
             let mut stream = open_stream(&f, 1, (f.account, thin)).await;
             publish_state_change(&f);
             assert!(
@@ -2508,7 +2508,9 @@ mod tests {
                 sub,
                 context,
                 account,
-                device: DeviceId::from(*device_key),
+                device: calimero_context::test_support::credential(&device_key)
+                    .statement
+                    .device,
             }
         }
 

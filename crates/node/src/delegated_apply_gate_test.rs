@@ -156,6 +156,7 @@ fn seed() -> (Store, Delegation) {
             context: context(),
             author_account: author,
             executor: relay,
+            executor_key: relay_pk,
             app_version: ApplicationId::from([0u8; 32]),
             method: "send_message".to_owned(),
             intent_hash: Warrant::intent_hash("send_message", b"{}"),

@@ -167,6 +167,7 @@ fn a_login_payload_is_not_a_warrant_payload() {
         author_account: AccountId::from([0u8; 32]),
         author_device_key: key(3).public_key(),
         executor: AccountId::from([0u8; 32]),
+        executor_key: key(3).public_key(),
         app_version: ApplicationId::from([0u8; 32]),
         method: String::new(),
         intent_hash: [0u8; 32],

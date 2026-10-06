@@ -825,6 +825,32 @@ impl<S: StorageAdaptor> Interface<S> {
         crate::env::ed25519_verify(&sig_data.signature, signer.digest(), payload)
     }
 
+    /// The `deleted_at` of `id`'s delete, if tombstone GC has collected it.
+    fn collected_deleted_at(id: Id) -> Option<u64> {
+        S::storage_read(Key::Collected(id))
+            .and_then(|record| crate::reclaim::collected_deleted_at(&record))
+    }
+
+    /// Whether a signed write to `id`, which this node does not hold, is no newer
+    /// than a delete GC collected there, by nonce or stamp, as its tombstone judged.
+    fn predates_collected_delete(id: Id, held: bool, metadata: &Metadata, nonce: u64) -> bool {
+        if held {
+            return false;
+        }
+        let stamp = nonce.min(*metadata.updated_at);
+        let Some(deleted_at) = Self::collected_deleted_at(id).filter(|at| stamp <= *at) else {
+            return false;
+        };
+        warn!(
+            %id,
+            stamp,
+            deleted_at,
+            "signed write no newer than a collected delete, signature verified: \
+             dropped, as its tombstone would have dropped it"
+        );
+        true
+    }
+
     /// Verify a [`User`](StorageType::User) action: the signature under the key
     /// it names, and then that key's account against the stored `owner`.
     ///
@@ -2227,6 +2253,15 @@ impl<S: StorageAdaptor> Interface<S> {
                             )?;
                         }
 
+                        if Self::predates_collected_delete(
+                            *id,
+                            stored_metadata.is_some(),
+                            metadata,
+                            new_nonce,
+                        ) {
+                            return Ok(());
+                        }
+
                         // A written-once entry keeps one write for good: of
                         // every authentic write its owner made to it, the one
                         // with the lowest `(nonce, content hash)`. Keeping the
@@ -2464,6 +2499,14 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Operation-granularity gate: the signer is a current
                         // writer, but must also hold the capability for THIS op.
                         Self::enforce_put_mask(&signer, &authoritative_writers, *id, data)?;
+                        if Self::predates_collected_delete(
+                            *id,
+                            stored_metadata.is_some(),
+                            metadata,
+                            new_nonce,
+                        ) {
+                            return Ok(());
+                        }
 
                         // P3: build the rotation-log entry from THIS delta's
                         // metadata (identical on every node, so the child's
@@ -2621,6 +2664,14 @@ impl<S: StorageAdaptor> Interface<S> {
                         };
                         // Operation-granularity gate (member resolves the anchor's masks).
                         Self::enforce_put_mask(&signer, &authoritative_writers, *id, data)?;
+                        if Self::predates_collected_delete(
+                            *id,
+                            stored_metadata.is_some(),
+                            metadata,
+                            new_nonce,
+                        ) {
+                            return Ok(());
+                        }
 
                         // An entry that merges whatever the order still
                         // merges an older write (see the User arm): a map of
@@ -3044,10 +3095,10 @@ impl<S: StorageAdaptor> Interface<S> {
                 // shapes have drifted).
                 let ancestors = Self::with_stored_parent(id, ancestors)?;
                 Self::verify_ancestor_integrity(&ancestors);
+                let mut missing = Vec::new();
                 let mut parent = None;
                 for this in ancestors.iter().rev() {
                     let parent = parent.replace(this);
-
                     if <Index<S>>::has_index(this.id()) {
                         debug!(
                             ancestor = %this.id(),
@@ -3055,7 +3106,18 @@ impl<S: StorageAdaptor> Interface<S> {
                         );
                         continue;
                     }
-
+                    // A signed entity re-created from an ancestor's unsigned stamp
+                    // would take a replayed write its collected delete refuses.
+                    if this.metadata.storage_type.is_signed()
+                        && Self::collected_deleted_at(this.id()).is_some()
+                    {
+                        return Err(StorageError::ActionNotAllowed(
+                            "an ancestor names an entity whose delete was collected".to_owned(),
+                        ));
+                    }
+                    missing.push((this, parent));
+                }
+                for (this, parent) in missing {
                     let Some(parent) = parent else {
                         debug!(
                             ancestor = %this.id(),
@@ -4840,7 +4902,11 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let mut metadata = metadata.clone();
         if let Some(stored) = stored.filter(|_| new_write) {
-            stamp_after_stored(stored, &mut metadata);
+            // Only a signed write is judged against a collected delete, so only
+            // one reads its record.
+            let signed = metadata.storage_type.is_signed();
+            let collected = || signed.then(|| Self::collected_deleted_at(id)).flatten();
+            stamp_after_stored(stored, collected, &mut metadata);
         }
         // Whether THIS call is a local owner/writer write — i.e. one of the
         // three stamp branches below fired. When it does, the owner-driven
@@ -5552,17 +5618,23 @@ fn written_once_order(write: (u64, &[u8]), other: (u64, &[u8])) -> core::cmp::Or
 ///
 /// A row carrying this write's own stamps is not a predecessor: `add_child_to`
 /// links a new entity under its parent, stamps and all, before its first save.
+/// What such a first write follows is the delete GC collected there, if any
+/// (`collected`), as it would follow that delete's tombstone.
 ///
 /// Merge mode keeps the stamps it was given: it replays writes, it does not
 /// make new ones.
-fn stamp_after_stored(stored: &crate::index::EntityIndex, metadata: &mut Metadata) {
+fn stamp_after_stored(
+    stored: &crate::index::EntityIndex,
+    collected: impl FnOnce() -> Option<u64>,
+    metadata: &mut Metadata,
+) {
     if crate::env::in_merge_mode() {
         return;
     }
     let own_link = stored.metadata.created_at == metadata.created_at
         && stored.metadata.updated_at == metadata.updated_at;
     let written = if own_link {
-        0
+        collected().unwrap_or(0)
     } else {
         *stored.metadata.updated_at
     };

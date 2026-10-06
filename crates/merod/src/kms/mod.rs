@@ -62,7 +62,7 @@ struct KmsGetKeyRequest {
 ///
 /// A KMS that predates sealed release answers with `key` alone; that answer is
 /// refused, because the key in it was readable by whatever terminated TLS.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct KmsGetKeyResponse {
     #[serde(default)]

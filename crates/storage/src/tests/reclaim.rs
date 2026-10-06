@@ -3,24 +3,55 @@
 //! `deleted_children` changes nothing a replica can observe.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use calimero_account::AccountId;
+use ed25519_dalek::SigningKey;
+
 use super::*;
-use crate::collections::{Root, UnorderedMap};
+use crate::action::Action;
+use crate::collections::{cell_value_id, Authored, Root, UnorderedMap};
 use crate::delta::{clear_pending_delta, StorageDelta};
-use crate::entities::{EntryRules, StorageType};
+use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
 use crate::index::{EntityIndex, Index};
-use crate::interface::{ApplyContext, Interface};
+use crate::interface::{ApplyContext, Interface, StorageError};
+use crate::logical_clock::HybridTimestamp;
 use crate::row::{encode, Row};
 use crate::store::{Key, MainStorage, KEY_LEN};
+use crate::tests::common::{
+    account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
+    build_signed_shared_action, build_signed_shared_delete, cell_at, map_entry_bytes,
+    setup_root_for_main, writers_of,
+};
+use crate::tests::owned_rules::{delete, key, signed};
 
 type Rows = Rc<RefCell<BTreeMap<[u8; KEY_LEN], Vec<u8>>>>;
 type Map = UnorderedMap<String, String, MainStorage>;
+type Notes = Authored<UnorderedMap<String, String>>;
 
 /// Shared by every replica, so they hold the same collection.
 const FIELD: &str = "reclaimed";
+
+/// The owned collection's field name and deterministic id seed.
+const NOTES: &str = "notes";
+
+/// The key of the owned entry the replay tests write and delete.
+const ENTRY_KEY: &str = "k";
+
+/// When the owner's first write was made; a fixed past instant.
+const WRITTEN_AT: u64 = 1_700_000_000_000_000_000;
+
+/// When the owner deleted that entry.
+const DELETED_AT: u64 = WRITTEN_AT + 1;
+
+/// Between a cell test's writes, so its last (step 6) stays within the
+/// future-drift tolerance of the clock it starts from.
+const CELL_STEP_NANOS: u64 = 500_000_000;
+
+/// How far behind a collected delete a re-inserting owner's clock reads.
+const CLOCK_LAG_NANOS: u64 = 60_000_000_000;
 
 /// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded
 /// from the first context id any test on the process reads.
@@ -48,18 +79,32 @@ fn on<R>(rows: &Rows, device: u8, f: impl FnOnce() -> R) -> R {
 }
 
 /// One node GC sweep over `rows` once every member has caught up past every
-/// tombstone, as `calimero-node`'s does it then: the tombstones go, then, when
-/// `prune` is set, every parent drops the children whose rows are gone.
-/// `prune: false` is GC as it was before.
+/// tombstone, as `calimero-node`'s does it then: each tombstone goes, a signed
+/// entity's leaving the record of its delete, then, when `prune` is set, every
+/// parent drops the children whose rows are gone. `prune: false` is GC as it
+/// was before.
 fn gc_pass(rows: &Rows, prune: bool) {
     let entity = |key: &[u8; KEY_LEN]| match Key::from_bytes(key) {
         Some(Key::Index(id)) => Some(id),
         _ => None,
     };
     let mut rows = rows.borrow_mut();
-    rows.retain(|key, value| {
-        entity(key).is_none_or(|id| tombstone_deleted_at(id, value).is_none())
-    });
+    let collected: Vec<_> = rows
+        .iter()
+        .filter_map(|(key, value)| {
+            let id = entity(key)?;
+            let _deleted_at = tombstone_deleted_at(id, value)?;
+            Some((id, deleted_at_to_record(id, value)))
+        })
+        .collect();
+    for (id, deleted_at) in collected {
+        let _tombstone = rows.remove(&Key::Index(id).to_bytes());
+        if let Some(deleted_at) = deleted_at {
+            let record_key = Key::Collected(id).to_bytes();
+            let record = collected_record(deleted_at, rows.get(&record_key).map(Vec::as_slice));
+            let _previous = rows.insert(record_key, record.to_vec());
+        }
+    }
     if !prune {
         return;
     }
@@ -221,6 +266,356 @@ fn a_late_write_behaves_the_same_with_the_parent_pruned() {
         *pruned.borrow(),
         "pruning the parent changed how a late write lands"
     );
+}
+
+/// An owner's entry that a peer's signed actions wrote and deleted, and whose
+/// tombstone GC has since collected.
+struct CollectedEntry {
+    rows: Rows,
+    owner_key: SigningKey,
+    owner: AccountId,
+    parent: Id,
+    id: Id,
+    rules: EntryRules,
+    /// The first write's bytes, as a peer that relayed it still holds them.
+    original: Vec<u8>,
+}
+
+impl CollectedEntry {
+    fn new() -> Self {
+        let owner_key = key(0xA1);
+        let owner = account_of_key(&owner_key);
+        let rows: Rows = Rc::default();
+        let (parent, id, rules) = on(&rows, 1, || {
+            let notes = Root::new(|| {
+                let mut notes = Notes::new_with_field_name(NOTES);
+                notes.reassign_deterministic_id(NOTES);
+                notes
+            });
+            let inner: &UnorderedMap<String, String> = &notes;
+            let parent = inner.id();
+            let id = notes.entry_id_of(&owner, &ENTRY_KEY.to_owned());
+            let rules = notes.entry_rules();
+            notes.commit();
+            (parent, id, rules)
+        });
+        let mut entry = Self {
+            rows,
+            owner_key,
+            owner,
+            parent,
+            id,
+            rules,
+            original: Vec::new(),
+        };
+        entry.original = borsh::to_vec(&entry.write("deleted", WRITTEN_AT)).unwrap();
+        entry
+            .apply(borsh::from_slice(&entry.original).unwrap())
+            .unwrap();
+        assert_eq!(entry.read(), Some("deleted".to_owned()));
+
+        let removal = signed(
+            delete(id, DELETED_AT),
+            owner,
+            rules,
+            &entry.owner_key,
+            DELETED_AT,
+        );
+        entry.apply(removal).unwrap();
+        assert_eq!(entry.read(), None);
+
+        gc_pass(&entry.rows, true);
+        let collected = on(&entry.rows, 1, || {
+            Index::<MainStorage>::get_index(id).unwrap()
+        });
+        assert!(collected.is_none(), "GC left the tombstone in place");
+        entry
+    }
+
+    /// The owner's signed write of `value` at `at`.
+    fn write(&self, value: &str, at: u64) -> Action {
+        let (id, parent) = (self.id, self.parent);
+        let data = map_entry_bytes(id, &ENTRY_KEY.to_owned(), &value.to_owned());
+        let add = move |metadata| Action::Add {
+            id,
+            data,
+            ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
+            metadata,
+        };
+        signed(add, self.owner, self.rules, &self.owner_key, at)
+    }
+
+    fn apply(&self, action: Action) -> Result<(), StorageError> {
+        on(&self.rows, 1, || {
+            Interface::<MainStorage>::apply_action(action, &apply_ctx_for(self.owner))
+        })
+    }
+
+    fn read(&self) -> Option<String> {
+        on(&self.rows, 1, || {
+            Root::<Notes>::fetch()
+                .unwrap()
+                .get_by(&self.owner, &ENTRY_KEY.to_owned())
+                .unwrap()
+        })
+    }
+}
+
+/// A peer replaying the owner's original signed write must not bring a
+/// collected entry back, while a later owner write lands.
+#[test]
+fn a_replayed_signed_write_does_not_bring_back_a_collected_entry() {
+    let entry = CollectedEntry::new();
+
+    // Dropped as stale, as the tombstone would have it, not refused as an error.
+    entry
+        .apply(borsh::from_slice(&entry.original).unwrap())
+        .unwrap();
+    assert_eq!(
+        entry.read(),
+        None,
+        "a replayed write brought back a deleted entry"
+    );
+
+    entry
+        .apply(entry.write("rewritten", DELETED_AT + 1))
+        .unwrap();
+    assert_eq!(entry.read(), Some("rewritten".to_owned()));
+}
+
+/// The delete wins a tie, collected or not: a write stamped with the delete's
+/// own time stays deleted.
+#[test]
+fn a_write_stamped_at_a_collected_delete_stays_deleted() {
+    let entry = CollectedEntry::new();
+    entry.apply(entry.write("tied", DELETED_AT)).unwrap();
+    assert_eq!(
+        entry.read(),
+        None,
+        "a write no newer than the collected delete brought it back"
+    );
+}
+
+/// The owner re-inserts a key after GC collected its delete, on a clock behind
+/// that delete: the write must still be stamped after it, or peers drop it.
+#[test]
+fn a_re_insert_after_collection_is_stamped_past_the_delete() {
+    let rows: Rows = Rc::default();
+    let entry_key = ENTRY_KEY.to_owned();
+    let id = on(&rows, 1, || {
+        let mut notes = Root::new(|| {
+            let mut notes = Notes::new_with_field_name(NOTES);
+            notes.reassign_deterministic_id(NOTES);
+            notes
+        });
+        notes.insert(entry_key.clone(), "first".to_owned()).unwrap();
+        let id = notes.entry_id(&entry_key);
+        notes.commit();
+        id
+    });
+    on(&rows, 1, || {
+        let mut notes = Root::<Notes>::fetch().unwrap();
+        drop(notes.remove(&entry_key).unwrap());
+        notes.commit();
+    });
+    let deleted_at = on(&rows, 1, || {
+        Index::<MainStorage>::get_index(id)
+            .unwrap()
+            .and_then(|index| index.deleted_at)
+            .unwrap()
+    });
+    gc_pass(&rows, true);
+    let collected = on(&rows, 1, || Index::<MainStorage>::get_index(id).unwrap());
+    assert!(collected.is_none(), "GC left the tombstone in place");
+
+    let nonce = on(&rows, 1, || {
+        let previous = crate::env::begin_execution_for_testing(deleted_at - CLOCK_LAG_NANOS);
+        let mut notes = Root::<Notes>::fetch().unwrap();
+        notes.insert(entry_key.clone(), "again".to_owned()).unwrap();
+        notes.commit();
+        crate::env::restore_wall_clock_for_testing(previous);
+        signed_nonce_in_last_delta(id)
+    });
+    assert!(
+        nonce > deleted_at,
+        "a re-insert on a lagging clock was signed at {nonce}, not after the collected delete at {deleted_at}"
+    );
+}
+
+/// The nonce the last committed delta signs `id`'s write with.
+fn signed_nonce_in_last_delta(id: Id) -> u64 {
+    let delta = take_last_artifact().unwrap();
+    let actions = match borsh::from_slice::<StorageDelta>(&delta).unwrap() {
+        StorageDelta::Actions(actions) | StorageDelta::CausalActions { actions, .. } => actions,
+    };
+    actions
+        .into_iter()
+        .find_map(|action| match action {
+            Action::Add {
+                id: written,
+                metadata,
+                ..
+            }
+            | Action::Update {
+                id: written,
+                metadata,
+                ..
+            } if written == id => match metadata.storage_type {
+                StorageType::User {
+                    signature_data: Some(signature),
+                    ..
+                } => Some(signature.nonce),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap()
+}
+
+/// Which entity a cell test deletes, has GC collect, and replays.
+enum Target {
+    Cell,
+    CellEntry,
+    /// The cell, after a peer first names it as an ancestor under an unsigned
+    /// stamp, so it is stored again before its write is replayed.
+    CellNamedAsAncestor,
+}
+
+/// Deletes a writer's `target`, has GC collect it, replays its original write,
+/// then writes it afresh: what is stored after the replay, and after that write.
+fn replay_after_collection(target: Target) -> (Option<EntityIndex>, Option<EntityIndex>) {
+    let writer_key = key(0xB1);
+    let writer = account_of_key(&writer_key);
+    let writers: BTreeSet<AccountId> = [writer].into_iter().collect();
+    let cell = cell_at(0xB1, &writers);
+    let anchor = cell_at(0xB2, &writers);
+    let entry = cell_value_id(anchor);
+    // Stamped from the clock, which also stamps a cell's rotation-log entry: a
+    // delete older than that entry would keep it, and the cell, alive.
+    let start = crate::env::time_now();
+    let at = |step: u8| start + u64::from(step) * CELL_STEP_NANOS;
+
+    let rows: Rows = Rc::default();
+    let apply = |action: Action, delta: u8| {
+        let ctx = ApplyContext {
+            effective_writers: None,
+            delta_id: Some([delta; 32]),
+            delta_hlc: Some(HybridTimestamp::from_unix_nanos(at(delta))),
+            signer_account: Some(writer),
+        };
+        on(&rows, 1, || {
+            Interface::<MainStorage>::apply_action(action, &ctx)
+        })
+    };
+    let stored = |id: Id| on(&rows, 1, || Index::<MainStorage>::get_index(id).unwrap());
+    let root = on(&rows, 1, setup_root_for_main);
+
+    let shared_write = |id: Id, value: &[u8], step: u8| {
+        build_signed_shared_action(
+            true,
+            id,
+            value.to_vec(),
+            writers.clone(),
+            at(step),
+            &writer_key,
+            vec![root.clone()],
+        )
+    };
+    let entry_write = |value: &[u8], step: u8| {
+        let ancestors = vec![
+            ChildInfo::new(anchor, [0; 32], Metadata::default()),
+            root.clone(),
+        ];
+        build_signed_member_action(
+            true,
+            entry,
+            anchor,
+            value.to_vec(),
+            at(step),
+            &writer_key,
+            ancestors,
+        )
+    };
+    apply(shared_write(anchor, b"anchor", 1), 1).unwrap();
+    apply(shared_write(cell, b"cell", 2), 2).unwrap();
+    apply(entry_write(b"entry", 3), 3).unwrap();
+
+    let (id, original, delete, fresh) = match target {
+        Target::Cell | Target::CellNamedAsAncestor => (
+            cell,
+            shared_write(cell, b"cell", 2),
+            build_signed_shared_delete(cell, writers.clone(), &writer_key, at(4)),
+            shared_write(cell, b"cell again", 6),
+        ),
+        Target::CellEntry => (
+            entry,
+            entry_write(b"entry", 3),
+            build_signed_member_delete(entry, anchor, &writer_key, at(4)),
+            entry_write(b"entry again", 6),
+        ),
+    };
+    apply(delete, 4).unwrap();
+    gc_pass(&rows, true);
+    assert!(stored(id).is_none(), "GC left the tombstone in place");
+
+    if matches!(target, Target::CellNamedAsAncestor) {
+        let claimed = Metadata {
+            updated_at: 1.into(),
+            storage_type: StorageType::Shared {
+                writers: writers_of(writers.iter().copied()),
+                signature_data: None,
+            },
+            ..Metadata::default()
+        };
+        let leaf = Action::Add {
+            id: Id::new([0x77; 32]),
+            data: b"leaf".to_vec(),
+            ancestors: vec![ChildInfo::new(cell, [0; 32], claimed), root.clone()],
+            metadata: Metadata::default(),
+        };
+        let _named = apply(leaf, 7);
+    }
+
+    // Dropped as stale, as the tombstone would have it, not refused as an error.
+    apply(original, 5).unwrap();
+    let replayed = stored(id);
+    apply(fresh, 6).unwrap();
+    (replayed, stored(id))
+}
+
+/// A writer's replayed signed write does not bring back a collected cell.
+#[test]
+fn a_replayed_cell_write_does_not_bring_back_a_collected_cell() {
+    let (replayed, rewritten) = replay_after_collection(Target::Cell);
+    assert!(
+        replayed.is_none(),
+        "a replayed write brought back a deleted cell"
+    );
+    assert!(rewritten.is_some(), "a later write did not land");
+}
+
+/// A peer that names a collected cell as an ancestor cannot re-create it, and
+/// so open it to a replayed write.
+#[test]
+fn a_collected_cell_named_as_an_ancestor_stays_gone() {
+    let (replayed, rewritten) = replay_after_collection(Target::CellNamedAsAncestor);
+    assert!(
+        replayed.is_none(),
+        "an ancestor stamp and a replayed write brought back a deleted cell"
+    );
+    assert!(rewritten.is_some(), "a later write did not land");
+}
+
+/// A writer's replayed signed write does not bring back a collected entry of
+/// a cell.
+#[test]
+fn a_replayed_cell_entry_write_does_not_bring_back_a_collected_entry() {
+    let (replayed, rewritten) = replay_after_collection(Target::CellEntry);
+    assert!(
+        replayed.is_none(),
+        "a replayed write brought back a deleted cell entry"
+    );
+    assert!(rewritten.is_some(), "a later write did not land");
 }
 
 fn tombstone(id: Id, deleted_at: u64) -> EntityIndex {

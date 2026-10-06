@@ -68,6 +68,7 @@ fn terms(author: &Party, executor: &Party) -> GovernanceTerms {
         kind: GovernanceOpKind::Group,
         author_account: author.account(),
         executor: executor.account(),
+        executor_key: executor.device_key(),
         op_hash: GovernanceWarrant::op_hash(GovernanceOpKind::Group, OP),
         account_heads: vec![[0x44; 32]],
         governance_floor: vec![[0x55; 32]],
@@ -145,6 +146,13 @@ fn every_field_is_covered_by_the_signature() {
             },
         ),
         (
+            "executor_key",
+            GovernanceWarrant {
+                executor_key: other.device_key(),
+                ..w.clone()
+            },
+        ),
+        (
             "op_hash",
             GovernanceWarrant {
                 op_hash: [0xcd; 32],
@@ -215,6 +223,7 @@ fn consent_to_create_is_not_consent_to_govern() {
             seed: [0; 32],
             author_account: author.account(),
             executor: executor.account(),
+            executor_key: governance.executor_key,
             application_id: [0; 32].into(),
             service_name: None,
             name: None,
@@ -287,6 +296,35 @@ fn a_proof_for_another_device_or_key_is_refused() {
     let mut bundle = delegation(&author, &executor, warrant);
     bundle.executor_key = key(12).public_key();
     assert_eq!(bundle.verify(), Err(AccountError::WarrantProofKeyMismatch));
+}
+
+/// A governance warrant is spendable only by the executor device it names.
+#[test]
+fn a_bundle_from_a_device_the_warrant_does_not_name_is_refused() {
+    let (author, executor, warrant) = fixture();
+    let sibling_sk = key(13);
+    let sibling = sign_cert(
+        &executor.root,
+        executor.account(),
+        DeviceId::mint(executor.account(), [0x78; 16]),
+        &sibling_sk,
+        0,
+        0,
+    );
+    let bundle = GovernanceDelegation {
+        warrant: Box::new(warrant),
+        author_proof: author.own_proof(),
+        executor_proof: executor.proof_of(sibling),
+        executor_key: sibling_sk.public_key(),
+    };
+
+    let err = bundle
+        .verify()
+        .expect_err("a sibling device of the executor must not spend this warrant");
+    assert!(
+        matches!(err, AccountError::WarrantExecutorKeyMismatch { .. }),
+        "{err}"
+    );
 }
 
 #[test]

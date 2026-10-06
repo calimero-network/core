@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 
 use calimero_account::{
-    AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+    AccountError, AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
 };
 use calimero_authz::{authorize, AclView, Rejected};
 use calimero_context_config::types::ContextGroupId;
@@ -432,85 +432,65 @@ fn a_second_device_links_with_no_further_grant() {
 }
 
 #[test]
-fn two_devices_sharing_a_replica_seed_converge_on_the_lower_id() {
-    // The seed rule must be a function of the folded SET, not of arrival order.
-    // `admit_device_link` used to reject an incoming device only when an
-    // already-folded one compared LOWER, which is order-dependent in the
-    // direction it did not check: low-then-high left one device live, but
-    // high-then-low admitted BOTH — and two replicas sharing an HLC seed mint
-    // colliding RGA ids and lose characters silently, which is the whole reason
-    // the rule exists.
+fn another_accounts_device_cannot_shadow_a_members_device() {
+    let mut fx = Fixture::new();
     let alice = Account::new(10);
+    let mallory = Account::new(20);
+    let phone = alice.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(grant_membership(&fx.admin, mallory.id, 31, fx.head.clone()));
+    fx.push(alice.link_op(&phone, 40, fx.head.clone()));
 
-    // Forge two ids sharing an hlc_seed (the id's first 16 bytes) rather than
-    // hunting for a `mint` nonce collision.
-    let mut low_id = [0u8; 32];
-    low_id[..16].copy_from_slice(&[0xAA; 16]);
-    let mut high_id = low_id;
-    high_id[31] = 0xFF;
-    let (low_id, high_id) = (DeviceId::from(low_id), DeviceId::from(high_id));
-    assert_eq!(low_id.hlc_seed(), high_id.hlc_seed());
-    assert!(low_id < high_id);
-
-    let forge = |device_seed: u8, id: DeviceId| {
-        let sk = key(device_seed);
-        Device {
+    // Shares the phone's first 16 bytes and sorts below it.
+    let mut shadow = *phone.id.as_bytes();
+    shadow[16..].fill(0);
+    let sk = key(21);
+    let claim = Device {
+        id: DeviceId::from(shadow),
+        cert: DeviceCert::sign(
+            &mallory.root,
+            mallory.id,
+            DeviceId::from(shadow),
+            &sk.public_key(),
+            &KemPublicKey::from([21; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert"),
+        sk,
+        account: mallory.id,
+    };
+    fx.push(mallory.link_op(&claim, 50, fx.head.clone()));
+    // Minted from the same nonce as the phone, as any account may.
+    let sk = key(22);
+    let id = DeviceId::mint(mallory.id, [11; 16]);
+    let same_nonce = Device {
+        id,
+        cert: DeviceCert::sign(
+            &mallory.root,
+            mallory.id,
             id,
-            cert: calimero_account::DeviceCert::sign(
-                &alice.root,
-                alice.id,
-                id,
-                &sk.public_key(),
-                &KemPublicKey::from([device_seed; 32]),
-                alice.epoch,
-                0,
-            )
-            .expect("sign cert"),
-            sk,
-            account: alice.id,
-        }
+            &sk.public_key(),
+            &KemPublicKey::from([22; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert"),
+        sk,
+        account: mallory.id,
     };
-    let low = forge(11, low_id);
-    let high = forge(12, high_id);
+    fx.push(mallory.link_op(&same_nonce, 60, fx.head.clone()));
 
-    // Fold both links in each order and compare the resulting live view. Using
-    // `root()` compares the whole account plane, not just the device map, so a
-    // divergence anywhere in the fold shows up.
-    let live_and_root = |first: &Device, second: &Device| {
-        let mut fx = Fixture::new();
-        fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
-        let a = alice.link_op(first, 40, fx.head.clone());
-        fx.push(a);
-        let b = alice.link_op(second, 50, fx.head.clone());
-        fx.push(b);
-
-        let view = ScopeState::acl_view_at(&fx.log, &fx.head);
-        let mut devices: Vec<DeviceId> = view
-            .devices
-            .keys()
-            .copied()
-            .filter(|d| *d == low_id || *d == high_id)
-            .collect();
-        devices.sort_unstable();
-        (devices, fx.root())
-    };
-
-    let (low_first, root_low_first) = live_and_root(&low, &high);
-    let (high_first, root_high_first) = live_and_root(&high, &low);
-
+    let devices = ScopeState::from_ops(&fx.log).acl_view().devices;
     assert_eq!(
-        low_first, high_first,
-        "the live device set must not depend on which link folded first"
+        devices.get(&phone.id).map(|bound| bound.account),
+        Some(alice.id),
+        "another account's device link took a member's device out of the live set"
     );
     assert_eq!(
-        low_first,
-        vec![low_id],
-        "the lower device id is the arbitrary-but-fixed winner"
-    );
-    assert_eq!(
-        root_low_first, root_high_first,
-        "the account plane folds into the root hash, so an order-dependent live \
-         set would also split the root"
+        devices.get(&same_nonce.id).map(|bound| bound.account),
+        Some(mallory.id),
+        "a validly minted device of another account must stay live too"
     );
 }
 
@@ -697,8 +677,8 @@ fn a_forged_handoff_reusing_the_real_new_key_cannot_displace_it() {
 /// the answer to depend on. So this one is deliberately built from the shapes that
 /// broke:
 ///
-///   * two device links whose ids share an HLC seed — at most one may be live,
-///     and which one cannot depend on arrival order;
+///   * device links of two accounts whose ids share a prefix - both stay live,
+///     whatever the arrival order;
 ///   * a revocation naming an account the device is NOT bound to — the mismatch
 ///     is what made the tombstone's hashed value order-dependent;
 ///   * a forged handoff reusing a real rotation's new-root key with a garbage
@@ -723,43 +703,40 @@ fn the_adversarial_account_workload_converges() {
     // Rotate FIRST, so the devices below are certified under the epoch the
     // rotation establishes. Certifying them at epoch 0 and then folding a rotation
     // to epoch 1 in the same workload would supersede them — correct behaviour,
-    // but it would mask the collision property this test is here to pin.
+    // but it would mask the shared-prefix property this test is here to pin.
     let base = fx.head.clone();
     let real_handoff = alice.rotate_to(14);
     let mut forged_handoff = real_handoff;
     forged_handoff.signature = [0u8; 64];
 
-    // Two ids sharing an hlc_seed (the id's first 16 bytes).
-    let mut low_id = [0u8; 32];
-    low_id[..16].copy_from_slice(&[0xAA; 16]);
-    let mut high_id = low_id;
-    high_id[31] = 0xFF;
-    let forge = |device_seed: u8, id: [u8; 32]| {
+    // Minted from one nonce by two accounts, so the ids share their first half.
+    let same_nonce = |account: &Account, device_seed: u8| {
         let sk = key(device_seed);
+        let id = DeviceId::mint(account.id, [0xAA; 16]);
         Device {
-            id: DeviceId::from(id),
+            id,
             cert: calimero_account::DeviceCert::sign(
-                &alice.root,
-                alice.id,
-                DeviceId::from(id),
+                &account.root,
+                account.id,
+                id,
                 &sk.public_key(),
                 &KemPublicKey::from([device_seed; 32]),
-                alice.epoch,
+                account.epoch,
                 0,
             )
             .expect("sign cert"),
             sk,
-            account: alice.id,
+            account: account.id,
         }
     };
-    let colliding_low = forge(11, low_id);
-    let colliding_high = forge(12, high_id);
+    let alice_shared = same_nonce(&alice, 11);
+    let mallory_shared = same_nonce(&mallory, 12);
     let honest = alice.enroll(13, 0);
 
     let ops = vec![
-        // Colliding pair — only the lower id may end up live.
-        alice.link_op(&colliding_low, 40, base.clone()),
-        alice.link_op(&colliding_high, 41, base.clone()),
+        // Ids sharing a prefix across accounts - both must end up live.
+        alice.link_op(&alice_shared, 40, base.clone()),
+        mallory.link_op(&mallory_shared, 41, base.clone()),
         // An honest device of the same account.
         alice.link_op(&honest, 42, base.clone()),
         // A revocation naming the WRONG account for this device.
@@ -826,12 +803,9 @@ fn the_adversarial_account_workload_converges() {
         s.acl_view()
     };
     assert!(
-        view.devices.contains_key(&colliding_low.id),
-        "the lower colliding id must be the one left live"
-    );
-    assert!(
-        !view.devices.contains_key(&colliding_high.id),
-        "the higher colliding id must not also be live"
+        view.devices.contains_key(&alice_shared.id)
+            && view.devices.contains_key(&mallory_shared.id),
+        "devices sharing an id prefix must both stay live"
     );
     assert!(
         view.accounts.get(&alice.id).is_some_and(|a| a.epoch == 1),
@@ -1410,7 +1384,7 @@ fn a_device_cannot_be_moved_between_accounts() {
     fx.push(grant_membership(&fx.admin, mallory.id, 31, fx.head.clone()));
     fx.push(alice.link_op(&phone, 40, fx.head.clone()));
 
-    // Mallory certifies a device whose id collides with Alice's bound device.
+    // Mallory certifies Alice's bound device id, which was not minted for him.
     let mut hijack = mallory.enroll(11, 1);
     hijack.id = phone.id;
     hijack.cert.device = phone.id;
@@ -1428,7 +1402,9 @@ fn a_device_cannot_be_moved_between_accounts() {
     let op = mallory.link_op(&hijack, 50, fx.head.clone());
     assert_eq!(
         decide(&fx.log, &op),
-        Err(Rejected::DeviceAccountReassignment)
+        Err(Rejected::CredentialInvalid {
+            reason: AccountError::CertDeviceNotMinted { device: phone.id }
+        })
     );
 }
 

@@ -652,7 +652,7 @@ pub(crate) enum SnapshotAuthorship {
 ///
 /// This closes that with the part of the question that has no timing in it:
 /// whose key signed the leaf. The key is resolved through every certificate
-/// ever folded here ([`calimero_governance_store::signer_account_in_namespace`]),
+/// ever folded here ([`calimero_governance_store::signer_accounts_in_namespace`]),
 /// not the live binding, so a member who has since left, been downgraded, or had
 /// the signing device revoked keeps the state they wrote. Asking whether the
 /// author may write *now*, as HashComparison does, would silently drop all of
@@ -688,23 +688,43 @@ pub(crate) fn snapshot_leaf_authorship(
         Ok(None) => return SnapshotAuthorship::Authored,
         Err(_) => return SnapshotAuthorship::Unknown,
     };
-    authorship_verdict(
-        &metadata.storage_type,
-        anchor_writers,
-        |signer| {
-            calimero_governance_store::signer_account_in_namespace(store, &group_id, signer)
-                .ok()
-                .flatten()
-        },
-        // The TEE-authority mapping `signer_account_for` applies, so a TEE's
-        // leaf in a TEE-only entry names the writer the set holds. A lookup
-        // error keeps the signer's own account, which can only refuse.
-        |signer, account| {
-            calimero_governance_store::writer_account(store, folded, &group_id, signer, account)
-                .unwrap_or(account)
-        },
-        |relay, on_behalf| snapshot_relay_may_write_for(store, folded, &group_id, relay, on_behalf),
-    )
+    let verdict = |account: Option<calimero_account::AccountId>| {
+        authorship_verdict(
+            &metadata.storage_type,
+            anchor_writers,
+            |_| account,
+            // The TEE-authority mapping `signer_account_for` applies, so a TEE's
+            // leaf in a TEE-only entry names the writer the set holds. A lookup
+            // error keeps the signer's own account, which can only refuse.
+            |signer, account| {
+                calimero_governance_store::writer_account(store, folded, &group_id, signer, account)
+                    .unwrap_or(account)
+            },
+            |relay, on_behalf| {
+                snapshot_relay_may_write_for(store, folded, &group_id, relay, on_behalf)
+            },
+        )
+    };
+    let Some(signer) = extract_author_from_leaf_authorization(Some(&metadata.storage_type)) else {
+        return verdict(None);
+    };
+    let Ok(accounts) =
+        calimero_governance_store::signer_accounts_in_namespace(store, &group_id, &signer)
+    else {
+        return SnapshotAuthorship::Unknown;
+    };
+    // A certificate does not prove its account holds the key, so the leaf stands
+    // if any account that certified the key may have written it.
+    let verdicts: Vec<_> = accounts.into_iter().map(|a| verdict(Some(a))).collect();
+    if verdicts.is_empty() {
+        verdict(None)
+    } else if verdicts.contains(&SnapshotAuthorship::Authored) {
+        SnapshotAuthorship::Authored
+    } else if verdicts.contains(&SnapshotAuthorship::Unknown) {
+        SnapshotAuthorship::Unknown
+    } else {
+        SnapshotAuthorship::Forged
+    }
 }
 
 /// Whether a relay may have written a snapshot leaf for `on_behalf`: its account is
@@ -754,8 +774,7 @@ pub(crate) fn rotation_removed_the_signer(
     let StorageType::Shared { writers, .. } = &metadata.storage_type else {
         return false;
     };
-    let Some((signer, account, writer)) =
-        snapshot_signer_accounts(store, folded, context_id, metadata)
+    let Some((signer, accounts)) = snapshot_signer_accounts(store, folded, context_id, metadata)
     else {
         return false;
     };
@@ -763,7 +782,11 @@ pub(crate) fn rotation_removed_the_signer(
         entries,
         writers,
         &signer,
-        |prior| prior.contains_key(&account) || prior.contains_key(&writer),
+        |prior| {
+            accounts
+                .iter()
+                .any(|(account, writer)| prior.contains_key(account) || prior.contains_key(writer))
+        },
         crate::delta_store::verify_rotation_entry,
     )
 }
@@ -796,20 +819,23 @@ pub(crate) fn member_signer_was_a_writer_then(
     if !matches!(metadata.storage_type, StorageType::SharedMember { .. }) {
         return false;
     }
-    let Some((_, account, writer)) = snapshot_signer_accounts(store, folded, context_id, metadata)
-    else {
+    let Some((_, accounts)) = snapshot_signer_accounts(store, folded, context_id, metadata) else {
         return false;
     };
     writer_when_written(
         entries,
         *metadata.updated_at,
-        |set| set.contains_key(&account) || set.contains_key(&writer),
+        |set| {
+            accounts
+                .iter()
+                .any(|(account, writer)| set.contains_key(account) || set.contains_key(writer))
+        },
         crate::delta_store::verify_rotation_entry,
     )
 }
 
-/// A snapshot leaf's signer, the account it was certified for, and that
-/// account as a writer set names it (the TEE-authority mapping). `None` when
+/// A snapshot leaf's signer, and each account it was certified for paired with
+/// that account as a writer set names it (the TEE-authority mapping). `None` when
 /// the leaf names no signer, its context is in no group, or no certificate for
 /// the key has been folded.
 fn snapshot_signer_accounts(
@@ -819,27 +845,35 @@ fn snapshot_signer_accounts(
     metadata: &Metadata,
 ) -> Option<(
     PublicKey,
-    calimero_account::AccountId,
-    calimero_account::AccountId,
+    Vec<(calimero_account::AccountId, calimero_account::AccountId)>,
 )> {
     let signer = extract_author_from_leaf_authorization(Some(&metadata.storage_type))?;
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)
         .ok()
         .flatten()?;
-    let account = calimero_governance_store::signer_account_in_namespace(store, &group_id, &signer)
-        .ok()
-        .flatten()?;
-    // Written on an account's behalf by a relay that may write for it: the leaf
-    // is that account's, as `snapshot_leaf_authorship` decides it.
-    if let Some(on_behalf) = on_behalf_of_leaf(Some(&metadata.storage_type)) {
-        return snapshot_relay_may_write_for(store, folded, &group_id, account, on_behalf)
-            .filter(|may| *may)
-            .map(|_| (signer, on_behalf, on_behalf));
-    }
-    let writer =
-        calimero_governance_store::writer_account(store, folded, &group_id, &signer, account)
-            .unwrap_or(account);
-    Some((signer, account, writer))
+    let accounts =
+        calimero_governance_store::signer_accounts_in_namespace(store, &group_id, &signer).ok()?;
+    let on_behalf = on_behalf_of_leaf(Some(&metadata.storage_type));
+    let pairs: Vec<_> = accounts
+        .into_iter()
+        .filter_map(|account| match on_behalf {
+            // Written on an account's behalf by a relay that may write for it: the
+            // leaf is that account's, as `snapshot_leaf_authorship` decides it.
+            Some(on_behalf) => {
+                snapshot_relay_may_write_for(store, folded, &group_id, account, on_behalf)
+                    .filter(|may| *may)
+                    .map(|_| (on_behalf, on_behalf))
+            }
+            None => Some((
+                account,
+                calimero_governance_store::writer_account(
+                    store, folded, &group_id, &signer, account,
+                )
+                .unwrap_or(account),
+            )),
+        })
+        .collect();
+    (!pairs.is_empty()).then_some((signer, pairs))
 }
 
 /// [`member_signer_was_a_writer_then`] with the account check and the entry
@@ -2935,9 +2969,13 @@ mod on_behalf_resolution_tests {
     use calimero_account::AccountId;
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
-    use calimero_governance_store::test_fixtures::{enrolled, sample_meta_with_admin, test_store};
+    use calimero_governance_store::test_fixtures::{
+        enrol_member, enrolled, join_account_for, sample_meta_with_admin, test_account_root,
+        test_store,
+    };
     use calimero_governance_store::{
-        CapabilitiesRepository, MembershipRepository, MetaRepository, NotFolded,
+        AccountBindingRepository, CapabilitiesRepository, MembershipRepository, MetaRepository,
+        NotFolded,
     };
     use calimero_node_primitives::sync::{LeafMetadata, TreeLeafData};
     use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -3036,6 +3074,27 @@ mod on_behalf_resolution_tests {
         let mut metadata = Metadata::new(1, 1);
         metadata.storage_type = storage_type;
         snapshot_leaf_authorship(&w.store, &NotFolded, &w.context, &metadata, None)
+    }
+
+    /// Another account certifying a member's signing key first must not make the
+    /// member's own entries look forged to a cold joiner.
+    #[test]
+    fn a_key_another_account_certified_first_still_authors_its_owners_entries() {
+        let w = world();
+        let victim_pk = PublicKey::from([0x4A; 32]);
+        let (attacker_root, attacker_genesis) = test_account_root();
+        let claim = join_account_for(&attacker_root, attacker_genesis, &victim_pk, [0; 32], 0);
+        let _attacker = AccountBindingRepository::new(&w.store)
+            .apply_link(&w.group, &claim.genesis, &claim.chain, &claim.statement, 0)
+            .expect("store the attacker's link")
+            .expect("the attacker's own device links");
+        let victim = enrol_member(&w.store, &w.group, &victim_pk);
+
+        assert_eq!(
+            snapshot(&w, owned(*victim.as_bytes(), victim_pk, None)),
+            SnapshotAuthorship::Authored,
+            "the victim's own entry was judged against the attacker's account"
+        );
     }
 
     /// A relay's entry for alice resolves to alice, so storage judges it as

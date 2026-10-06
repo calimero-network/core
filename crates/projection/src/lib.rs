@@ -1123,29 +1123,9 @@ impl ScopeState {
                 .is_none_or(|account| binding.key_epoch >= account.epoch)
                 && !self.is_descoped(**device, binding)
         });
-
-        // Replica-seed uniqueness, applied HERE for the same reason supersession
-        // is: the answer depends on the whole folded set, not on what had folded
-        // when each link arrived. Two devices sharing an HLC seed mint colliding
-        // RGA ids and lose characters silently, so at most one of a colliding
-        // pair may be live, and the lower id is the arbitrary-but-fixed winner.
-        //
-        // `admit_device_link` used to reject the newcomer when an already-folded
-        // device compared lower, which is order-dependent in the direction it did
-        // not check — high-then-low admitted both. As a filter over the folded
-        // set the rule cannot depend on arrival order.
-        let mut by_seed: BTreeMap<[u8; 16], (DeviceId, DeviceBinding)> = BTreeMap::new();
-        for (device, binding) in unsuperseded {
-            by_seed
-                .entry(device.hlc_seed())
-                .and_modify(|kept| {
-                    if *device < kept.0 {
-                        *kept = (*device, *binding);
-                    }
-                })
-                .or_insert((*device, *binding));
-        }
-        by_seed.into_values().collect()
+        unsuperseded
+            .map(|(device, binding)| (*device, *binding))
+            .collect()
     }
 
     /// Every `(account, device)` whose floor outranks the widest link folded for it,

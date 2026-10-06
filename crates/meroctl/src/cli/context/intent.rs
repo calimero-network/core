@@ -19,10 +19,8 @@
 //!   stops the node running one authorization twice; a gap in the sequence is
 //!   also how you find out it dropped a request.
 //!
-//! You do **not** supply the node's own key. The warrant authorizes an operator
-//! account and the node attaches its own credential — so which of its processes
-//! runs the intent is not your problem, and a re-key on its side does not
-//! invalidate a warrant you already signed.
+//! You do **not** supply the node's account or key: both are read from the node,
+//! and the warrant names them so that only this node can spend it.
 
 use std::io::Read;
 
@@ -36,7 +34,7 @@ use eyre::{Result, WrapErr};
 
 use crate::cli::Environment;
 
-#[derive(Clone, Debug, Parser)]
+#[derive(Clone, Parser)]
 #[command(about = "Ask a node to run a method on your behalf, under a warrant you sign")]
 pub struct IntentCommand {
     #[clap(name = "CONTEXT_ID", help = "The context to run in")]
@@ -92,6 +90,24 @@ pub struct IntentCommand {
     pub valid_for: u64,
 }
 
+impl std::fmt::Debug for IntentCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntentCommand")
+            .field("context_id", &self.context_id)
+            .field("method", &self.method)
+            .field("args", &self.args)
+            .field("device_secret_file", &self.device_secret_file)
+            .field(
+                "device_secret",
+                &self.device_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("credential", &self.credential)
+            .field("nonce", &self.nonce)
+            .field("valid_for", &self.valid_for)
+            .finish()
+    }
+}
+
 impl IntentCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let context_id: ContextId = self
@@ -129,8 +145,8 @@ impl IntentCommand {
         let args_bytes = serde_json::to_vec(&args).wrap_err("--args could not be re-encoded")?;
 
         // Which operator is being authorized is read from the node, not asserted
-        // here: the warrant has to name the account that will actually run it,
-        // and a client guessing that would mint warrants nothing can spend.
+        // here: the warrant has to name the account and key that will actually
+        // run it, and a client guessing them would mint warrants nothing can spend.
         //
         // Read from the relay descriptor rather than from `identity`, because the
         // descriptor answers the other half too — whether this node may author at
@@ -197,6 +213,7 @@ impl IntentCommand {
                 context: context_id,
                 author_account,
                 executor,
+                executor_key: relay.data.executor_key,
                 app_version,
                 method: self.method.clone(),
                 intent_hash: Warrant::intent_hash(&self.method, &args_bytes),
@@ -343,5 +360,16 @@ mod tests {
         let inline = resolve_device_secret(Some(&hex), None, &mut std::io::empty())
             .expect("the inline form keeps working");
         assert_eq!(inline, [0xab; 32]);
+    }
+
+    #[test]
+    fn debug_omits_the_device_secret() {
+        let inline = "11".repeat(32);
+        let command = parse(["--device-secret", &inline]).expect("a valid command");
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains(&inline), "{shown}");
+        assert!(shown.contains("\"set\""), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }

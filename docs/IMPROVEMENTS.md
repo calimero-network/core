@@ -100,7 +100,7 @@ polished product. Grouped by theme; check items off as they land.
 - [ ] 78. Document the actor message contracts.
 
 ## J · Accuracy & freshness
-- [ ] 79. Fix the stale `TeeAttestationAnnounce.nonce` doc-comment in code.
+- [x] 79. Fix the stale `TeeAttestationAnnounce.nonce` doc-comment in code. (The message is gone: the node now answers a challenge a member chose.)
 - [ ] 80. Reconcile `minRuntimeVersion` docs vs the bundle-manifest reality.
 - [ ] 81. Sweep remaining `:::caution` markers and resolve where possible.
 - [ ] 82. Cross-check every config default against a freshly generated config.

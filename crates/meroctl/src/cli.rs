@@ -119,7 +119,7 @@ pub enum SubCommands {
     Node(NodeCommand),
 }
 
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 pub struct RootArgs {
     /// Directory for config and data
     #[arg(long, value_name = "PATH", default_value_t = defaults::default_node_dir())]
@@ -173,6 +173,23 @@ pub struct RootArgs {
     #[arg(long, value_name = "HEX", requires = "device_credential")]
     #[arg(env = "CALIMERO_DEVICE_SESSION", hide_env_values = true)]
     pub device_session: Option<String>,
+}
+
+impl std::fmt::Debug for RootArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RootArgs")
+            .field("home", &self.home)
+            .field("api", &self.api)
+            .field("node", &self.node)
+            .field("output_format", &self.output_format)
+            .field("device_credential", &self.device_credential)
+            .field(
+                "device_secret",
+                &self.device_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("device_session", &self.device_session)
+            .finish()
+    }
 }
 
 /// Decode one hex, borsh-encoded link of a proof chain.
@@ -458,7 +475,8 @@ mod tests {
     use clap::CommandFactory;
     use clap::Parser;
 
-    use super::RootCommand;
+    use super::{RootArgs, RootCommand};
+    use crate::output::Format;
 
     /// The credential and the secret require each other.
     ///
@@ -536,5 +554,23 @@ mod tests {
     #[test]
     fn cli_definition_is_well_formed() {
         RootCommand::command().debug_assert();
+    }
+
+    #[test]
+    fn root_args_debug_omits_the_device_secret() {
+        let args = RootArgs {
+            home: "home".into(),
+            api: None,
+            node: Some("relay-node".to_owned()),
+            output_format: Format::default(),
+            device_credential: Some("aabb".to_owned()),
+            device_secret: Some("device-secret".to_owned()),
+            device_session: None,
+        };
+        let shown = format!("{args:?}");
+
+        assert!(!shown.contains("device-secret"), "{shown}");
+        assert!(shown.contains("relay-node"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }

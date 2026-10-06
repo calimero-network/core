@@ -364,8 +364,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 15,
-        "the ordinals frozen below are the v15 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 16,
+        "the ordinals frozen below are the v16 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
@@ -901,7 +901,7 @@ const GOLDEN_ROOT_OP_MEMBER_JOINED_VIA_TEE: &[u8] = &[
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 #[test]
@@ -2440,7 +2440,7 @@ fn an_oversized_device_scope_application_list_is_refused() {
     let root = PrivateKey::from([0x22; 32]);
     let genesis = AccountGenesis::new(root.public_key());
     let account = genesis.account_id();
-    let device = DeviceId::from([0x23; 32]);
+    let device = DeviceId::mint(account, [0x23; 16]);
     let cert = DeviceCert::sign(
         &root,
         account,
@@ -2807,6 +2807,7 @@ fn only_the_two_bootstrap_variants_travel_in_the_clear() {
             tcb_status: String::new(),
             role: calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
             account: deterministic_credential(),
+            quote: Vec::new(),
         }
     ));
 
@@ -3027,6 +3028,7 @@ fn context_registered_on_behalf_is_appended_and_round_trips() {
             seed: [0x12; 32],
             author_account: account,
             executor: account,
+            executor_key: author.public_key(),
             application_id: calimero_primitives::application::ApplicationId::from([0x13; 32]),
             service_name: None,
             name: Some("general".to_owned()),
@@ -3779,6 +3781,31 @@ fn delegable_target_application_set_vector_is_stable() {
         hex::encode(GovernanceWarrant::op_hash(GovernanceOpKind::Group, &bytes)),
         "904984c8f39e4172ea8864a65511faead68baa76af18d31e1d442a0b9fcb656b"
     );
+}
+
+/// The quote an admission carries is bounded like the quote in evidence, so a
+/// sealed admission cannot be used to make every peer hold and parse a huge blob.
+#[test]
+fn a_tee_admission_quote_is_bounded() {
+    let admission = |quote: Vec<u8>| RootOp::MemberJoinedViaTeeAttestation {
+        group_id: ContextGroupId::from([6u8; 32]),
+        member: PublicKey::from([7u8; 32]),
+        quote_hash: [0u8; 32],
+        mrtd: String::new(),
+        rtmr0: String::new(),
+        rtmr1: String::new(),
+        rtmr2: String::new(),
+        rtmr3: String::new(),
+        tcb_status: String::new(),
+        role: calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
+        account: deterministic_credential(),
+        quote,
+    };
+    let limit = crate::bounds::MAX_TEE_QUOTE_BYTES;
+    assert!(admission(vec![0; limit]).validate_after_unsealing().is_ok());
+    assert!(admission(vec![0; limit + 1])
+        .validate_after_unsealing()
+        .is_err());
 }
 
 #[test]

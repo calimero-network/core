@@ -928,6 +928,7 @@ fn pairing_refusal_status(err: &calimero_context::error::ContextError) -> Option
     Some(match err {
         Refusal::PairingStatementInvalid { .. }
         | Refusal::PairingCodeMismatch { .. }
+        | Refusal::PairingDeviceNotMinted { .. }
         | Refusal::ScopeReplacementEmpty
         | Refusal::ScopeReplacementTooLarge { .. }
         | Refusal::ScopeReplacementUnknownApplication { .. }
@@ -1015,7 +1016,9 @@ fn membership_refusal_status(err: &MembershipError) -> Option<StatusCode> {
         | Refusal::TeeRoleNotPolicyMode { .. }
         | Refusal::TeeMemberRoleLocked { .. }
         | Refusal::TeeAdmissionWrongNamespace { .. }
-        | Refusal::TeeCredentialNotTheAttestedKey { .. } => StatusCode::FORBIDDEN,
+        | Refusal::TeeCredentialNotTheAttestedKey { .. }
+        | Refusal::TeeQuoteNotBoundToCredential { .. }
+        | Refusal::TeeQuoteHashMismatch => StatusCode::FORBIDDEN,
 
         // Well-formed and permitted, but it conflicts with how the group looks
         // right now. Escalating privileges does not help; changing the group
@@ -2470,6 +2473,19 @@ mod parse_api_error_tests {
                 assert_eq!(api.status_code, status, "{message}");
                 assert_eq!(api.message, message);
             }
+        }
+
+        /// A device id minted for another account is the caller's payload, so `400`.
+        #[test]
+        fn a_device_not_minted_for_the_account_maps_to_400() {
+            let api = parse_api_error(
+                ContextError::PairingDeviceNotMinted {
+                    device: "d".to_owned(),
+                    account: "a".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
         }
 
         /// And a revoked one to `403`, permanently: re-enrolling the machine mints

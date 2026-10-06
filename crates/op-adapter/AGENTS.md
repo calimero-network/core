@@ -6,7 +6,7 @@ Transitional pure-function adapter that maps each per-plane operation type onto 
 
 - **Crate**: `calimero-op-adapter`
 - **Entry**: `src/lib.rs` (crate docs + the flat re-export facade; one module per plane holds the encoders themselves)
-- **Key deps**: `calimero-op` (`OpPayload`/`ScopeId`, the unified log's vocabulary), `calimero-storage` (`Action`, `RotationLogEntry`, `Id` - the data and ACL plane source types), `calimero-governance-types` (`GroupOp`, `RootOp` - the governance plane source types), `calimero-account` (`AccountId`, `DeviceCert`, `verify_device_cert` - the account plane the credentials are checked against), `calimero-context-config` (`ContextGroupId`, `VisibilityMode`), `calimero-primitives` (`PublicKey`, `GroupMemberRole`)
+- **Key deps**: `calimero-op` (`OpPayload`/`ScopeId`, the unified log's vocabulary), `calimero-storage` (`Action`, `RotationLogEntry`, `Id` - the data and ACL plane source types), `calimero-governance-types` (`GroupOp`, `RootOp` - the governance plane source types), `calimero-account` (`AccountId`, `DeviceCert`, `verify_device_cert` - the account plane the credentials are checked against), `calimero-tee-attestation` (the admission binding and the structural report-data read), `calimero-context-config` (`ContextGroupId`, `VisibilityMode`), `calimero-primitives` (`PublicKey`, `GroupMemberRole`)
 - **Dev-deps**: `calimero-projection` (`ScopeState` - folds the encoded ops back down in tests to prove fold-equivalence), `calimero-authz` (`AclView` - the shape a receiver resolves a signature against, used only by the writer-plane test)
 
 ## Commands
@@ -35,6 +35,7 @@ cargo test -p calimero-op-adapter group_op_encoder_mapping -- --nocapture
 | `payload_from_root_op(op: &RootOp) -> Option<OpPayload>` | fn | Admin/namespace plane (root governance ops): maps to `AdminChanged`/`PolicyUpdated`/`MemberAdded`/`MemberJoinedWithDevice`/`DeviceLinked`/`SubgroupCreated`/`SubgroupReparented`/`SubgroupDeleted`; `KeyDelivery` -> `None`. Takes **no signer** - every arm reads the account off the op |
 | `join_credential_binds(member: &AccountId, genesis, chain, cert) -> bool` | fn | The op-local half of credential admission: does this credential name `member`, and does it verify? Shared verbatim with the governance apply path |
 | `join_credential_certifies(member: &PublicKey, genesis, chain, cert) -> bool` | fn | The same question for the one join op that names a **key** (`MemberJoinedViaTeeAttestation`, whose quote binds to the attested signing key) |
+| `tee_admission_binding(namespace, group, member, credential) -> [u8; 32]` / `tee_quote_binds_credential(namespace, group, member, credential, quote) -> bool` | fn | What a TEE admission quote's report data must commit to in bytes 32..64 for this credential, and the structural check of it (no signature). The joiner that makes the quote, the admitting node, `admit_tee_node`, the apply of `RootOp::MemberJoinedViaTeeAttestation`, the evidence check and the projection's decode all call it, so none can disagree about what the quote commits to |
 
 Every function is pure - no I/O, no state, no async. They only ever consume a per-plane source type and produce an `OpPayload` (or `None`, or a verdict). Assembling the rest of the `Op` (id, parents, author, hlc, signature) is always the caller's job.
 

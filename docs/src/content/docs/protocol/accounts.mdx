@@ -39,14 +39,15 @@ The account plane separates those jobs.
 | CRDT replica id  | never                        | yes                      |
 | KEM recipient    | no                           | yes                      |
 
-Neither is a public key. Both are content addresses:
+Neither is a public key:
 
 ```
 AccountId = H( genesis(root_pk) )
-DeviceId  = H( account ‖ nonce )
+DeviceId  = nonce ‖ H( account ‖ nonce )[..16]
 ```
 
-Because the id is a hash rather than a key, the keys underneath can rotate without the identity moving.
+Because neither id is a key, the keys underneath can rotate without the identity moving.
+The second half of a `DeviceId` binds it to its account, so a certificate naming an id minted for another account is refused, and no account can claim another's device.
 
 **The non-goal is as important as the goal.** Accounts never reach below authorization. Nothing that needs per-writer uniqueness (counter slots, HLC seeds), per-key revocability (KEM recipients), or cryptographic attribution (operation signatures) may be re-keyed onto `AccountId`. The test for any future change: *if two devices of the same account did this concurrently, is the result still correct?* If correctness depends on them being distinct, it stays device-keyed, and per-user aggregation happens **above** storage.
 
@@ -119,7 +120,7 @@ FROM THE ROOT KEY (deterministic, recomputable)
   AccountId  = H( genesis(root_pk) )
 
 RANDOM AT CREATION (generated once, stored, unrecoverable)
-  DeviceId   = H(account ‖ random 16 bytes)
+  DeviceId   = nonce ‖ H(account ‖ nonce)[..16], nonce = random 16 bytes
   KEM secret = X25519, random
   device signing keypair = Ed25519, random
 ```
@@ -192,7 +193,7 @@ Nothing in building the credential publishes or encrypts. `ensure_enrolled` mint
 
 ### The one join somebody else publishes
 
-A fleet replica cannot admit itself — an existing member has to check its attestation quote against the namespace policy first — so `MemberJoinedViaTeeAttestation` is signed by that **verifier**, not by the joiner. The credential still belongs to the replica, so it travels to the verifier on the attestation announcement, and the verifier checks it against the key the quote binds to before admitting.
+A fleet replica cannot admit itself — an existing member has to check its attestation quote against the namespace policy first — so `MemberJoinedViaTeeAttestation` is signed by that **verifier**, not by the joiner. The credential still belongs to the replica, so it travels to the verifier in the node's answer to its challenge, and the verifier checks it against the key the quote binds to before admitting.
 
 That is why the apply path does not assert `op.signer == member` for this one op, the way it does for the other three. The verifier-membership gate stands in its place.
 
@@ -254,7 +255,7 @@ Anything that records a binding must move **both** planes. "Does this change wha
   ]}
   steps={[
     { from: 0, to: 0, label: 'generate account root (once per node)' },
-    { from: 0, to: 0, label: 'account = H(root_pk); device = H(account, random)' },
+    { from: 0, to: 0, label: 'account = H(root_pk); device = nonce ‖ H(account, nonce)[..16]' },
     { from: 0, to: 0, label: 'cert signed by ACCOUNT ROOT; endorsement signed by MEMBER KEY' },
     { from: 0, to: 1, label: 'AccountDeviceLinked (encrypted GroupOp)', color: '#a5ff11' },
     { from: 1, to: 2, label: 'verify cert + endorsement; is endorser a member at the cut?' },
@@ -296,7 +297,7 @@ Pairing is a **two-way exchange**, and the ordering is forced rather than stylis
   ]}
 />
 
-**Two things gate the certificate, and they answer different questions.** The new device signs a statement over the account, its own id and both keys, so the values arrive as a statement by the device that minted them rather than as claims by whoever relayed them. But a signature only proves the payload agrees with itself, and an attacker holding both keys can arrange that — so `pair-complete` also **requires** the confirmation code, and refuses if it does not describe the key material that arrived. The account holder gets that code from whoever is at the pairing device; it is the one value an attacker rewriting the payload cannot produce.
+**Two things gate the certificate, and they answer different questions.** The new device signs a statement over the account, its own id and both keys, so the values arrive as a statement by the device that minted them rather than as claims by whoever relayed them. But a signature only proves the payload agrees with itself, and an attacker holding both keys can arrange that, so `pair-complete` also **requires** the confirmation code, and refuses if it does not describe the key material that arrived. The account holder gets that code from whoever is at the pairing device; it is the one value an attacker rewriting the payload cannot produce. It also refuses a device id not minted for the account, since no peer would accept a certificate for it.
 
 Requiring it rather than printing it for comparison is the point: an advisory step is one an operator in a hurry skips. What the requirement cannot do is force the code to travel *separately* from the keys — pasted along with them it proves nothing, since whoever rewrote the payload rewrote the code too. That part is the operator's channel, and it is the whole security assumption of pairing. See [Known limits](#known-limits) for why the code is 64 bits rather than a friendlier six digits.
 

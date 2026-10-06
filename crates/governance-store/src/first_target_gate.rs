@@ -379,6 +379,7 @@ mod tests {
                             kind,
                             author_account: account_for(&author_sk.public_key()),
                             executor: self.relay,
+                            executor_key: self.relay_sk.public_key(),
                             op_hash: GovernanceWarrant::op_hash(kind, form),
                             account_heads: vec![],
                             governance_floor: vec![],

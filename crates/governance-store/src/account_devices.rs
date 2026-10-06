@@ -254,7 +254,7 @@ mod tests {
             statement: DeviceCert::sign(
                 root.signing_key(),
                 root.account(),
-                DeviceId::from([device; 32]),
+                DeviceId::mint(root.account(), [device; 16]),
                 &PrivateKey::from([device; 32]).public_key(),
                 &KemPublicKey::from([device ^ 0xFF; 32]),
                 0,
@@ -287,8 +287,8 @@ mod tests {
     fn a_higher_scope_epoch_supersedes_and_nothing_else_does() {
         let store = test_store();
         let registry = AccountDeviceRegistry::new(&store, ContextGroupId::from(NS));
-        let device = DeviceId::from([0x61; 32]);
         let proof = proof(&store, 0x61);
+        let device = proof.statement.device;
 
         assert!(registry
             .record(&proof, &scope(&store, 0x61, &[app(1)], 0))
@@ -328,8 +328,8 @@ mod tests {
     #[test]
     fn two_scopes_at_one_epoch_converge_whichever_order_they_arrive_in() {
         let store = test_store();
-        let device = DeviceId::from([0x61; 32]);
         let proof = proof(&store, 0x61);
+        let device = proof.statement.device;
         let rivals = [
             scope(&store, 0x61, &[app(1)], 4),
             scope(&store, 0x61, &[app(2)], 4),
@@ -419,7 +419,7 @@ mod tests {
         let root = NodeDeviceRepository::new(&store)
             .provision_account_root()
             .expect("this node's root");
-        let device = DeviceId::from([0x62; 32]);
+        let device = DeviceId::mint(root.account(), [0x62; 16]);
         let stranger = PrivateKey::from([0x63; 32]);
         let stranger_account = AccountGenesis::new(stranger.public_key()).account_id();
         let foreign = withdrawal(&stranger, stranger_account, device);
