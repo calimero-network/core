@@ -2536,6 +2536,7 @@ async fn internal_execute(
         tee_authority,
         sealing,
         search_host,
+        write_source == WriteSource::RemoteDelta,
     )
     .await?;
 
@@ -3342,6 +3343,7 @@ pub(crate) async fn execute(
     sealing: calimero_runtime::logic::SealingContext,
     // Only ever `Some` for a read-only run (see `internal_execute`).
     search: Option<std::sync::Arc<dyn calimero_runtime::logic::SearchHost>>,
+    remote_delta: bool,
 ) -> eyre::Result<(Outcome, ContextStorage, Option<ContextPrivateStorage>)> {
     let context_id = **context;
 
@@ -3383,6 +3385,7 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     search,
+                    remote_delta,
                 )?
             } else {
                 module.run_with_origin(
@@ -3398,6 +3401,7 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     None,
+                    remote_delta,
                 )?
             };
             Ok((outcome, storage, private_storage))
