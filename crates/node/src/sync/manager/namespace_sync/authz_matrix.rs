@@ -48,8 +48,7 @@ const TABLES: &[OpTable] = &[
     OpTable {
         op: GatedOp::OpenSubgroupJoinKey,
         allow: SUBJECT_MEMBERS,
-        // A removal from an Open subgroup leaves the inherited path standing.
-        gap: &[Kicked, Left],
+        gap: &[],
     },
     OpTable {
         op: GatedOp::AcceptOpenSubgroupKey,

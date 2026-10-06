@@ -27,14 +27,15 @@
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
-use calimero_account::{DeviceId, DeviceRevocation};
+use calimero_account::{AccountId, DeviceId, DeviceRevocation};
 use calimero_context_client::group::{
     RevocationOutcome, RevokeDeviceRequest, RevokeDeviceResponse,
 };
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
-    withdraw_device_in, NamespaceRepository, NodeDeviceRepository, RevocationTarget,
+    withdraw_device_in, AccountBindingRepository, NamespaceRepository, NodeDeviceRepository,
+    RevocationTarget,
 };
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::Store;
@@ -51,6 +52,36 @@ pub(crate) fn revocation_namespaces(store: &Store) -> EyreResult<Vec<ContextGrou
     let mut namespaces = NamespaceRepository::new(store).participating_namespaces()?;
     namespaces.sort_by_key(|namespace| Some(*namespace) == account_namespace);
     Ok(namespaces)
+}
+
+/// Where `account`'s withdrawal of `device` is published: where it is bound to the
+/// account, and with its proof everywhere it is unbound too, so a later link is refused.
+pub(crate) fn revocation_targets(
+    store: &Store,
+    account: AccountId,
+    device: DeviceId,
+    proven: bool,
+) -> EyreResult<Vec<ContextGroupId>> {
+    let devices = NodeDeviceRepository::new(store);
+    let bindings = AccountBindingRepository::new(store);
+    let mut targets = Vec::new();
+    for namespace in revocation_namespaces(store)? {
+        match devices.revocation_target(&namespace, device) {
+            Ok(Some(target)) if target.account == account => targets.push(namespace),
+            // The same id bound to another account: the withdrawal is not theirs.
+            Ok(Some(_)) => {}
+            Ok(None) if proven => match bindings.withdrawal_owed(&namespace, account, device) {
+                Ok(true) => targets.push(namespace),
+                Ok(false) => {}
+                Err(err) => warn!(namespace_id = ?namespace, %device, %err,
+                                  "revocation: could not read the withdrawal; skipping here"),
+            },
+            Ok(None) => {}
+            Err(err) => warn!(namespace_id = ?namespace, %device, %err,
+                              "revocation: could not read the binding; skipping this namespace"),
+        }
+    }
+    Ok(targets)
 }
 
 /// Whose device `device` is in `namespace`, or the refusal a caller can act on.
@@ -219,32 +250,12 @@ impl Handler<RevokeDeviceRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                // A device belongs to an account, not to a scope, so the revocation
-                // goes everywhere the account holds this device — not only the
-                // namespace the caller named. The proof is minted once above and
-                // reused: it names `{account, device}` and nothing about it is
-                // namespace-scoped, so the same bytes verify wherever they land.
-                //
-                // Publication stays per-DAG. Wider validity is not wider reach: the
-                // op takes effect in a namespace when it is published there, which
-                // is what this loop does, one namespace at a time.
-                let namespaces = revocation_namespaces(&store)?;
+                // A device belongs to an account, not to a scope: with the account's
+                // proof the withdrawal goes into every namespace, bound there or not.
+                let proven = matches!(op, GroupOp::AccountDeviceUnlinked { proof: Some(_), .. });
                 let mut revoked_in = Vec::new();
 
-                for ns in namespaces {
-                    // A namespace that never linked this device has nothing to
-                    // withdraw, and publishing there would name an account its
-                    // bindings do not agree with.
-                    match NodeDeviceRepository::new(&store).revocation_target(&ns, device) {
-                        Ok(Some(_)) => {}
-                        Ok(None) => continue,
-                        Err(err) => {
-                            warn!(namespace_id = ?ns, %device, %err,
-                                  "revocation: could not read the binding; skipping this namespace");
-                            continue;
-                        }
-                    }
-
+                for ns in revocation_targets(&store, account, device, proven)? {
                     match withdraw_device_in(
                         &store,
                         &node_client,
@@ -290,7 +301,8 @@ mod tests {
     use calimero_store::db::InMemoryDB;
 
     use super::{
-        resolve_target, revocation_namespaces, ContextError, ContextGroupId, DeviceId, Store,
+        resolve_target, revocation_namespaces, revocation_targets, ContextError, ContextGroupId,
+        DeviceId, Store,
     };
 
     const NS: [u8; 32] = [0xA1; 32];
@@ -372,5 +384,96 @@ mod tests {
             revocation_namespaces(&store).expect("read the namespaces"),
             vec![projects[0], projects[1], account_namespace],
         );
+    }
+
+    /// With the account's proof a withdrawal reaches every namespace that has not
+    /// withdrawn the device; without one only where it is bound, an admin's reach.
+    #[test]
+    fn a_proven_revocation_reaches_a_namespace_the_device_never_linked() {
+        let (store, _own) = a_node_with_its_own_device();
+        let other = ContextGroupId::from([0xA2; 32]);
+        let spent = ContextGroupId::from([0xA3; 32]);
+        for namespace in [other, spent] {
+            let _identity = NamespaceRepository::new(&store)
+                .participate_in(&namespace)
+                .expect("take part in another namespace");
+        }
+        let root = calimero_primitives::identity::PrivateKey::from([0x3C; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
+        let lost = DeviceId::from([0x3D; 32]);
+        let cert = calimero_account::DeviceCert::sign(
+            &root,
+            genesis.account_id(),
+            lost,
+            &calimero_primitives::identity::PrivateKey::from([0x3E; 32]).public_key(),
+            &calimero_account::KemPublicKey::from([0x3F; 32]),
+            0,
+            0,
+        )
+        .expect("the root certifies its device");
+        let linked = calimero_governance_store::AccountBindingRepository::new(&store)
+            .apply_link(&NS.into(), &genesis, &[], &cert, 0)
+            .expect("write the binding");
+        assert!(
+            linked.is_ok(),
+            "control: the device links in the first namespace"
+        );
+        calimero_governance_store::AccountBindingRepository::new(&store)
+            .apply_revocation(&spent, lost)
+            .expect("a namespace that already withdrew the device");
+
+        let sorted = |mut namespaces: Vec<ContextGroupId>| {
+            namespaces.sort_by_key(ContextGroupId::to_bytes);
+            namespaces
+        };
+        let account = genesis.account_id();
+        assert_eq!(
+            sorted(revocation_targets(&store, account, lost, true).expect("read the targets")),
+            sorted(vec![NS.into(), other])
+        );
+        assert_eq!(
+            revocation_targets(&store, account, lost, false).expect("read the targets"),
+            vec![ContextGroupId::from(NS)]
+        );
+    }
+
+    /// A namespace where the same device id is bound to another account is not a
+    /// target: the withdrawal names this account, and must remove nothing of theirs.
+    #[test]
+    fn a_namespace_binding_the_device_to_another_account_is_not_a_target() {
+        let (store, _own) = a_node_with_its_own_device();
+        let other = ContextGroupId::from([0xA2; 32]);
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&other)
+            .expect("take part in a second namespace");
+        let lost = DeviceId::from([0x3D; 32]);
+        let mut accounts = Vec::new();
+        for (namespace, root) in [(ContextGroupId::from(NS), 0x3C), (other, 0x3B)] {
+            let root = calimero_primitives::identity::PrivateKey::from([root; 32]);
+            let genesis = calimero_account::AccountGenesis::new(root.public_key());
+            let cert = calimero_account::DeviceCert::sign(
+                &root,
+                genesis.account_id(),
+                lost,
+                &calimero_primitives::identity::PrivateKey::from([0x3E; 32]).public_key(),
+                &calimero_account::KemPublicKey::from([0x3F; 32]),
+                0,
+                0,
+            )
+            .expect("the root certifies a device id of its choosing");
+            let linked = calimero_governance_store::AccountBindingRepository::new(&store)
+                .apply_link(&namespace, &genesis, &[], &cert, 0)
+                .expect("write the binding");
+            assert!(linked.is_ok(), "control: the device links");
+            accounts.push(genesis.account_id());
+        }
+
+        for proven in [true, false] {
+            assert_eq!(
+                revocation_targets(&store, accounts[0], lost, proven).expect("read the targets"),
+                vec![ContextGroupId::from(NS)],
+                "proven: {proven}"
+            );
+        }
     }
 }
