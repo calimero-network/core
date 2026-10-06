@@ -1,5 +1,7 @@
 #![allow(single_use_lifetimes, reason = "borsh shenanigans")]
 
+use core::fmt;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::entry::{Borsh, Identity};
@@ -159,13 +161,24 @@ impl AsRef<[u8]> for ContextPrivateState<'_> {
     }
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Eq, PartialEq)]
 #[expect(
     clippy::exhaustive_structs,
     reason = "This is not expected to have additional fields"
 )]
 pub struct ContextIdentity {
     pub private_key: Option<[u8; 32]>,
+}
+
+impl fmt::Debug for ContextIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextIdentity")
+            .field(
+                "private_key",
+                &self.private_key.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 impl PredefinedEntry for key::ContextIdentity {

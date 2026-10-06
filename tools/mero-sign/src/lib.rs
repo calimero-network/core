@@ -29,7 +29,7 @@ const DEV_SEED: [u8; 32] = [
 ];
 
 /// Key file format
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct KeyFile {
     /// Base64url encoded 32-byte private key seed
     private_key: String,
@@ -37,6 +37,16 @@ struct KeyFile {
     public_key: String,
     /// The derived did:key signerId
     signer_id: String,
+}
+
+impl std::fmt::Debug for KeyFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyFile")
+            .field("private_key", &"<redacted>")
+            .field("public_key", &self.public_key)
+            .field("signer_id", &self.signer_id)
+            .finish()
+    }
 }
 
 /// Signature object in manifest

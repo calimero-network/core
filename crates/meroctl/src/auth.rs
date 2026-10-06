@@ -23,19 +23,47 @@ use crate::connection::ConnectionInfo;
 use crate::output::{InfoLine, Output, WarnLine};
 use crate::storage::FileTokenStorage;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct AuthCallback {
     access_token: Option<String>,
     refresh_token: Option<String>,
 }
 
+impl std::fmt::Debug for AuthCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthCallback")
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
 /// What the callback page posts: the tokens it read from the URL fragment and
 /// the state nonce from the callback URL's query.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CallbackBody {
     access_token: String,
     refresh_token: Option<String>,
     state: Option<String>,
+}
+
+impl std::fmt::Debug for CallbackBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackBody")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("state", &self.state.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {

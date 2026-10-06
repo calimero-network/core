@@ -119,13 +119,22 @@ fn initial_seq() -> u64 {
 ///
 /// Separate from the node's own signing key because a relay seals an
 /// account's update, which the account signed itself.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) struct SealMaterial {
     /// `sha256(group_key)` of the current key — goes on the wire so receivers
     /// can check they hold the same key.
     key_id: [u8; 32],
     /// The current encryption key.
     group_key: [u8; 32],
+}
+
+impl std::fmt::Debug for SealMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SealMaterial")
+            .field("key_id", &self.key_id)
+            .field("group_key", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Everything a node's own publish needs out of the store, resolved in one
@@ -136,11 +145,20 @@ pub(crate) struct SealMaterial {
 /// signing key but no key cannot encrypt. Resolving them as a unit is what lets
 /// [`set_local_ephemeral`] decide, synchronously, whether a publish is possible
 /// at all before it echoes anything to the local client.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) struct PublishMaterial {
     seal: SealMaterial,
     /// This node's local signing key for `author` in the context.
     signing_key: [u8; 32],
+}
+
+impl std::fmt::Debug for PublishMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishMaterial")
+            .field("seal", &self.seal)
+            .field("signing_key", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Resolve the group a context belongs to and the current key of the keyring

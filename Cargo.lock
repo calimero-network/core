@@ -6335,6 +6335,7 @@ dependencies = [
  "toml",
  "url",
  "webbrowser",
+ "zeroize",
 ]
 
 [[package]]

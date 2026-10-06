@@ -24,10 +24,19 @@ use super::super::{
 /// the namespace parent-chain walk bound (see `context_config::MAX_NAMESPACE_DEPTH`).
 pub const MAX_NAMESPACE_DEPTH: usize = calimero_context_config::MAX_NAMESPACE_DEPTH;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct NamespaceIdentityRecord {
     pub public_key: PublicKey,
     pub private_key: [u8; 32],
+}
+
+impl std::fmt::Debug for NamespaceIdentityRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NamespaceIdentityRecord")
+            .field("public_key", &self.public_key)
+            .field("private_key", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

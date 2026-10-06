@@ -1,7 +1,6 @@
 use camino::Utf8PathBuf;
 use zeroize::Zeroizing;
 
-#[derive(Debug)]
 #[non_exhaustive]
 pub struct StoreConfig {
     pub path: Utf8PathBuf,
@@ -13,6 +12,18 @@ pub struct StoreConfig {
     /// whole process lifetime. The bytes are handed to the encryption layer's
     /// `KeyManager` (which is itself `ZeroizeOnDrop`) on open.
     pub encryption_key: Option<Zeroizing<Vec<u8>>>,
+}
+
+impl core::fmt::Debug for StoreConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StoreConfig")
+            .field("path", &self.path)
+            .field(
+                "encryption_key",
+                &self.encryption_key.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 impl StoreConfig {
