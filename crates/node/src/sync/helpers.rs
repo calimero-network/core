@@ -905,8 +905,10 @@ pub enum LeafDisposition {
 /// The app-state entry defers and the root collection applies as a shell whatever
 /// type the peer names, since the wire type is the peer's claim.
 ///
-/// A custom entry defers only when `stored_locally` says this node holds a value
-/// to merge it with. With nothing stored there is nothing to merge, and the
+/// A custom entry defers only when `stored_custom_type` names the rule of a public
+/// custom entry this node stores, and carries that rule: `crdt_type` is the peer's
+/// unsigned claim, and a signed entry changes only through `apply_action`'s checks.
+/// With nothing stored there is nothing to merge, and the
 /// deferred pass skips such an entry ([`dispatch_deferred_custom_merges`]
 /// leaves it "to the plain apply path"), so deferring it would deliver it
 /// nowhere: a receiver that missed the entry — its delta's signed actions were
@@ -920,7 +922,7 @@ pub enum LeafDisposition {
 pub fn classify_leaf(
     entity_id: Id,
     crdt_type: &CrdtType,
-    stored_locally: impl FnOnce() -> bool,
+    stored_custom_type: impl FnOnce() -> Option<CustomTypeId>,
 ) -> LeafDisposition {
     if entity_id == ROOT_ENTRY_ID {
         return LeafDisposition::DeferRoot;
@@ -929,23 +931,22 @@ pub fn classify_leaf(
         return LeafDisposition::Apply;
     }
 
-    if let CrdtType::Custom(type_id) = crdt_type {
-        if stored_locally() {
-            return LeafDisposition::DeferCustom(*type_id);
+    if matches!(crdt_type, CrdtType::Custom(_)) {
+        if let Some(type_id) = stored_custom_type() {
+            return LeafDisposition::DeferCustom(type_id);
         }
     }
 
     LeafDisposition::Apply
 }
 
-/// Whether this node stores a value for `entity_id`: the [`classify_leaf`]
-/// question of whether a custom entry has anything to merge with here. Reads
-/// the current runtime env's storage, so call it inside `with_runtime_env`.
-pub fn stores_value(entity_id: Id) -> bool {
-    <MainStorage as calimero_storage::store::StorageAdaptor>::storage_read(
-        calimero_storage::store::Key::Entry(entity_id),
-    )
-    .is_some()
+/// The [`classify_leaf`] probe: the rule of the public custom entry this node stores
+/// for `entity_id`. Reads the current runtime env's storage, so call it inside
+/// `with_runtime_env`; an unreadable entry takes the plain apply, which reports it.
+pub fn stored_custom_type(entity_id: Id) -> Option<CustomTypeId> {
+    Interface::<MainStorage>::custom_merge_type(entity_id)
+        .ok()
+        .flatten()
 }
 
 /// The schema `leaf` was written under, when the loaded reader is another one and
@@ -1507,7 +1508,7 @@ fn apply_entity_push_batch(
             }
             // The app-state entry merges in the app's module; the caller, which
             // holds the `ContextClient`, dispatches it.
-            if classify_leaf(Id::new(leaf.key), &leaf.metadata.crdt_type, || false)
+            if classify_leaf(Id::new(leaf.key), &leaf.metadata.crdt_type, || None)
                 == LeafDisposition::DeferRoot
             {
                 deferred_root_merges.push(leaf.clone());
@@ -2288,6 +2289,11 @@ mod classify_leaf_tests {
 
     use super::{classify_leaf, LeafDisposition};
 
+    /// A probe for a node storing a public custom entry.
+    fn stored() -> Option<CustomTypeId> {
+        Some(CustomTypeId::of("app::Stored"))
+    }
+
     /// The reachability check. A stamped entry must be recognised from the
     /// metadata that actually crosses the wire — the sender carries the
     /// entity's stored `crdt_type` verbatim, so this is the tag that arrives.
@@ -2297,10 +2303,24 @@ mod classify_leaf_tests {
     fn a_custom_entry_defers_and_carries_its_id() {
         let id = CustomTypeId::of("team::Stats");
         assert_eq!(
-            classify_leaf(Id::random(), &CrdtType::Custom(id), || true),
+            classify_leaf(Id::random(), &CrdtType::Custom(id), || Some(id)),
             LeafDisposition::DeferCustom(id),
             "the id must survive classification — the dispatcher has no other \
              way to know which rule to run"
+        );
+    }
+
+    /// The stored entry's rule decides, not the peer's unsigned claim.
+    #[test]
+    fn a_custom_entry_defers_under_the_stored_rule() {
+        let stored = CustomTypeId::of("team::Stats");
+        assert_eq!(
+            classify_leaf(
+                Id::random(),
+                &CrdtType::Custom(CustomTypeId::of("peer::Claim")),
+                || Some(stored)
+            ),
+            LeafDisposition::DeferCustom(stored)
         );
     }
 
@@ -2315,7 +2335,7 @@ mod classify_leaf_tests {
             classify_leaf(
                 Id::random(),
                 &CrdtType::Custom(CustomTypeId::of("app::Read")),
-                || false
+                || None
             ),
             LeafDisposition::Apply,
             "with nothing to merge, the plain apply is the only path that stores it"
@@ -2348,7 +2368,7 @@ mod classify_leaf_tests {
             CrdtType::lww_register(),
         ] {
             assert_eq!(
-                classify_leaf(Id::random(), &crdt_type, || true),
+                classify_leaf(Id::random(), &crdt_type, stored),
                 LeafDisposition::Apply,
                 "{crdt_type:?} merges in the storage layer"
             );
@@ -2366,12 +2386,12 @@ mod classify_leaf_tests {
             CrdtType::Custom(CustomTypeId::of("x")),
         ] {
             assert_eq!(
-                classify_leaf(ROOT_ENTRY_ID, &crdt_type, || true),
+                classify_leaf(ROOT_ENTRY_ID, &crdt_type, stored),
                 LeafDisposition::DeferRoot,
                 "{crdt_type:?}"
             );
             assert_eq!(
-                classify_leaf(Id::root(), &crdt_type, || true),
+                classify_leaf(Id::root(), &crdt_type, stored),
                 LeafDisposition::Apply,
                 "{crdt_type:?}"
             );

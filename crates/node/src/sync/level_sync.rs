@@ -83,7 +83,7 @@ use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
     classify_leaf, generate_nonce, get_local_root_hash_for_context,
     handle_entity_delete_push_locked, handle_entity_push_locked, is_leaf_currently_authorized,
-    push_entities, stores_value, with_repair_cell_writers, LeafDisposition, LeafOutcome,
+    push_entities, stored_custom_type, with_repair_cell_writers, LeafDisposition, LeafOutcome,
     MAX_ENTITIES_PER_PUSH,
 };
 
@@ -726,8 +726,8 @@ async fn merge_remote_row(
     }
 
     let entity_id = Id::new(leaf_data.key);
-    let stored_locally = || with_runtime_env(runtime_env.clone(), || stores_value(entity_id));
-    match classify_leaf(entity_id, &leaf_data.metadata.crdt_type, stored_locally) {
+    let stored_type = || with_runtime_env(runtime_env.clone(), || stored_custom_type(entity_id));
+    match classify_leaf(entity_id, &leaf_data.metadata.crdt_type, stored_type) {
         LeafDisposition::DeferRoot => {
             stats.deferred_root_merges.push(leaf_data.clone());
             return Ok(());

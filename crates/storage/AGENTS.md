@@ -461,7 +461,7 @@ Entity Conflict -> Has CrdtType? -> is_builtin_crdt()? -> merge_by_crdt_type()
 | Apply path | How the app's rule is reached |
 | ---------- | ----------------------------- |
 | in-WASM (`__calimero_sync_next`, normal delta apply) | `try_merge_non_root` looks the entry's `CustomTypeId` up in the in-module registry and calls the app's `Mergeable::merge` directly |
-| host-side (HashComparison / level-wise repair) | the DFS cannot call into WASM — it is synchronous, inside `with_runtime_env` — so it DEFERS the entry, and the sync driver dispatches `__calimero_merge_custom` after the session |
+| host-side (HashComparison / level-wise repair) | the DFS cannot call into WASM — it is synchronous, inside `with_runtime_env` — so it DEFERS the entry, and the sync driver dispatches `__calimero_merge_custom` after the session. Only a stored `Public` entry of that type defers (`custom_merge_type`; `custom_entry_merge_request` and `write_custom_entry_merge` refuse anything else): a signed entry is applied, and checked, by `apply_action` |
 
 Neither path falls back to LWW for a `Custom`. An entry the app can no longer
 merge stays divergent until the next round, which is recoverable; resolving it by

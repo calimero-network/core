@@ -505,6 +505,26 @@ fn a_signed_entry_takes_no_custom_merge() {
     }
 }
 
+/// Sync routes a peer's leaf to the app's merge by this, so only a stored public
+/// custom entry may name a rule.
+#[test]
+#[serial]
+fn only_a_stored_public_custom_entry_names_a_merge_rule() {
+    genesis();
+    let rule = |id| <Interface<MainStorage>>::custom_merge_type(id).expect("index");
+    assert_eq!(
+        rule(public_entry(custom(APP_RULE))),
+        Some(CustomTypeId::of(APP_RULE))
+    );
+    assert_eq!(rule(public_entry(CrdtType::lww_register())), None);
+    assert_eq!(rule(Id::random()), None, "nothing stored");
+    for stamp in signed_stamps() {
+        let id = public_entry(custom(APP_RULE));
+        <Index<MainStorage>>::set_storage_type(id, stamp.clone()).expect("restamp");
+        assert_eq!(rule(id), None, "{stamp:?}");
+    }
+}
+
 /// The app's rule runs only on the entry its own type names.
 #[test]
 #[serial]

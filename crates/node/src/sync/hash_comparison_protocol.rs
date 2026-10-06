@@ -457,7 +457,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                         &leaf_data.metadata.crdt_type,
                         || {
                             with_runtime_env(runtime_env.clone(), || {
-                                crate::sync::helpers::stores_value(entity_id)
+                                crate::sync::helpers::stored_custom_type(entity_id)
                             })
                         },
                     ) {

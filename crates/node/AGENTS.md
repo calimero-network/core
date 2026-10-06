@@ -250,8 +250,10 @@ cargo test -p calimero-node --test network_simulation
 - **A repair leaf defers only when there is something to merge it with.**
   `sync/helpers.rs`'s `classify_leaf` sends a `Custom`-typed leaf to
   `dispatch_deferred_custom_merges` (`__calimero_merge_custom`) only when this
-  node stores a value for it (`stores_value`), because that pass skips an entry
-  with nothing stored. One the receiver lacks applies through the plain path,
+  node stores a `Public` custom entry for it (`stored_custom_type`), under that
+  entry's rule, because that pass skips an entry with nothing stored. The leaf's
+  `crdt_type` is unsigned, so a signed entry always takes the plain apply, and
+  storage refuses a custom merge into anything else (`custom_entry_merge_request`). One the receiver lacks applies through the plain path,
   which stores it as it arrives. Deferring it anyway made HashComparison and
   level-wise unable to deliver an entry a node had refused (its delta applied
   before the author's binding folded), so the replicas stayed divergent on the
