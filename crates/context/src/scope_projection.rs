@@ -22,7 +22,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
+use calimero_governance_store::metrics::{
+    record_at_cut_undecidable, UndecidableCause, UndecidableRemedy,
+};
 use calimero_governance_store::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
@@ -2442,28 +2444,39 @@ impl ScopeProjections {
             Ok(_) => true,
             Err(cause) => {
                 record_at_cut_undecidable(cause);
-                if cause.is_transient() {
+                match cause.remedy() {
                     // The common, self-healing case — the op parks and retries
                     // once sync delivers the history. Not worth an operator's
                     // attention, and loud enough at debug to explain a park.
-                    tracing::debug!(
+                    UndecidableRemedy::Sync | UndecidableRemedy::Retry => tracing::debug!(
                         group = ?group,
                         ?cause,
                         "at-cut authority undecidable; op parks for retry"
-                    );
-                } else {
+                    ),
+                    // An op this cut cites is sealed under a key this node lacks.
+                    // Not sync's to fix: it clears when that key arrives, and a
+                    // node outside the op's group is never served it. An op whose
+                    // own group's history is the hole is held instead (core#4511);
+                    // what parks here cites a sealed op in an ancestor group.
+                    UndecidableRemedy::Key => tracing::debug!(
+                        group = ?group,
+                        ?cause,
+                        "at-cut authority undecidable; op parks until the key of \
+                         a group its history is sealed in arrives, which a node \
+                         outside that group is never served"
+                    ),
                     // Permanent: no amount of sync brings a dropped prefix back,
                     // so this op will park on every retry and everything causally
                     // downstream of it stalls behind it on this node. Warn —
                     // nothing below this layer can recover it.
-                    tracing::warn!(
+                    UndecidableRemedy::Never => tracing::warn!(
                         group = ?group,
                         ?cause,
                         "at-cut authority permanently undecidable: the retained \
                          op-log no longer reaches this cut, so the op cannot ever \
                          apply here and this namespace's governance DAG will not \
                          advance past it"
-                    );
+                    ),
                 }
                 false
             }
@@ -2508,7 +2521,7 @@ impl ScopeProjections {
         // An absent log goes through `classify_unresolvable_cut`, not a bare
         // `ScopeUnfed`: that function checks truncation FIRST, so a truncated
         // scope whose log is already evicted keeps reporting the permanent
-        // `LogTruncated` instead of a cause `is_transient` calls self-healing —
+        // `LogTruncated` instead of a cause whose `remedy` is sync —
         // which would park the op retrying forever and leave the one series
         // worth alerting on silent.
         let Some(log) = self.logs.get(&scope) else {
@@ -3907,8 +3920,9 @@ mod tests {
             "an evicted log looks unfed; the truncation mark is the only thing \
              that distinguishes permanent loss from history that never arrived",
         );
-        assert!(
-            !cause.is_transient(),
+        assert_eq!(
+            cause.remedy(),
+            UndecidableRemedy::Never,
             "the point of the distinction: this cut can never resolve, so the \
              op must stop being retried as though it could",
         );
