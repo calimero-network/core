@@ -208,7 +208,14 @@ the subgroups it follows; read from its own governance state, never taken from
 the announcement — does not already hold the blob for that context, and the advertised size is within the 500 MiB
 transfer cap. At most 2 prefetches run at once, and at most one per announcing
 account; announcements arriving while a slot is busy are dropped rather than
-queued. A dropped prefetch costs availability for one blob, never correctness.
+queued.
+Each announcing account is charged its advertised size, at least 1 MiB, against a budget of 4 GiB per 24-hour window kept in memory; past the budget its announcements are dropped until the window ends.
+The charge, plus 64 KiB for headers and framing, is also what the prefetch may read off its transfer streams from every holder it tries together; the read that passes it fails, and the search ends.
+The account is then charged everything that arrived: a success at least 64 KiB, a failure at least 1 MiB, and a timed-out prefetch at least its whole claim, since its transfer may still be running.
+What the connection buffered for a stream but nothing read is not counted, so each probe or transfer stream can add up to one transport flow-control window.
+Bytes any holder sends count against the announcer, so a peer serving junk, or any partial transfer, ahead of the real holder can make the prefetch fail; the blob is still fetchable from its uploader.
+An announcement dropped because both slots are busy costs nothing.
+A dropped prefetch costs availability for one blob, never correctness.
 
 Announcing is best-effort in the same spirit, and **the producer does not wait
 for it**: the notices are sent detached, so `blob_announce_to_context` returns
