@@ -6,6 +6,8 @@ labels: ''
 assignees: ''
 ---
 
+<!-- One defect per issue, without side investigations. Operator or user reports (system specs, install method) use the bug report template. -->
+
 ## Summary
 
 A single-paragraph statement of the problem: what is wrong, and where (crate, module, or flow). State the observed behavior, not a proposed fix.

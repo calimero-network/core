@@ -38,8 +38,9 @@ Building the example WASM apps is a separate step (apps compile to
 `wasm32-unknown-unknown`):
 
 ```sh
-# Build one app
-cargo build -p kv-store --target wasm32-unknown-unknown --release
+# Build one app; `cargo mero` embeds the ABI a bare `cargo build` leaves out
+PATH="$(scripts/setup-cargo-mero.sh):$PATH"
+cargo mero build --manifest-path apps/kv-store/Cargo.toml
 
 # Build all example apps
 ./scripts/build-all-apps.sh

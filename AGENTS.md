@@ -2,32 +2,15 @@
 
 Peer-to-peer platform for building collaborative apps with automatic conflict-free (CRDT) sync, encrypted P2P networking, and group-based access control. Apps are written in Rust or JavaScript and compiled to WASM; every node runs the same logic over state that converges automatically.
 
-## Two layers of docs: WHAT vs WHY
+## Where to read
 
-Read them in this order when you land in an unfamiliar area:
+`docs/` explains why the system works as it does and how the crates add up; a directory's `AGENTS.md` explains that one unit.
 
-1. **`docs/` - the WHY and how it all connects.** The Astro Starlight
-   documentation site (source under `docs/src/content/docs/`, published to
-   <https://calimero-network.github.io/core/>) explains the system as a whole:
-   the philosophy, the end-to-end flows, and how the crates interconnect. Start
-   at the [protocol overview](docs/src/content/docs/protocol/overview.mdx) - the
-   life of one operation - then the rest of the protocol reference: the
-   [write path](docs/src/content/docs/protocol/write-path.mdx),
-   [receive & apply path](docs/src/content/docs/protocol/receive-path.mdx),
-   [operations & the causal DAG](docs/src/content/docs/protocol/operations.mdx),
-   [state, projection & the root hash](docs/src/content/docs/protocol/projection.mdx),
-   [sync & convergence](docs/src/content/docs/protocol/sync.mdx), and
-   [governance](docs/src/content/docs/protocol/governance.mdx). The
-   [architecture orientation](docs/src/content/docs/contribute/architecture.mdx)
-   and [crate guide](docs/src/content/docs/contribute/crate-guide.mdx) map the
-   crates and their edges. The content is MDX - read the source directly, or
-   `cd docs && npm run dev` to browse. Treat `docs/` as the source of truth for
-   *intent*; a per-crate `AGENTS.md` explains one crate, `docs/` explains how
-   they add up.
-2. **Per-directory `AGENTS.md` - the WHAT.** Each crate/tool/app dir has one
-   describing that unit: its types, entry points, commands, and local gotchas.
-   Every `AGENTS.md` has a `CLAUDE.md` symlink beside it so both this tool and
-   AGENTS-aware tools auto-load the same guidance.
+- **Intent**: before changing a flow that spans crates, read the [protocol overview](docs/src/content/docs/protocol/overview.mdx) and the chapters it names, all under `docs/src/content/docs/protocol/`.
+- **Directory**: before working in a crate, app or tool, read the `AGENTS.md` in its directory (the `CLAUDE.md` beside it is a symlink); [crates/AGENTS.md](crates/AGENTS.md) indexes the crates and [architecture](docs/src/content/docs/contribute/architecture.mdx) shows how they connect.
+- **Glossary**: when a protocol term (namespace, group, context, scope, operation) is unclear, read the [glossary](docs/src/content/docs/protocol/glossary.mdx).
+- **Nodes**: before running `merod` by hand, read [Run local nodes](docs/src/content/docs/contribute/development.mdx#run-local-nodes).
+- **Issues**: before filing an engineering issue, fill in the [`technical_issue`](.github/ISSUE_TEMPLATE/technical_issue.md) template.
 
 ## Setup Commands
 
@@ -110,19 +93,6 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`
 
 - No period, no capitalization
 
-### Filing Issues
-
-When you (or an agent) open an engineering issue, follow this structure - it is
-the [`technical_issue`](.github/ISSUE_TEMPLATE/technical_issue.md) template:
-
-1. **Summary** - what is wrong and where (crate/module/flow); observed behavior, not a proposed fix.
-2. **Impact** - who/what is affected and how badly: severity, blast radius, and a concrete real-world consequence.
-3. **Steps to reproduce** - numbered, minimal steps, with actual vs expected result and any log / failing test / merobox scenario.
-4. **Criteria for resolving** - an objective checklist that decides when it is fixed: the specific behavior that must hold, a regression test covering it, and `cargo fmt`/`clippy`/`test` passing.
-
-Keep it scope-focused: one issue per defect, no side investigations. Operator/user
-bug reports (system specs, install method) use the separate `bug_report` template.
-
 ## Security: trust boundaries
 
 A PR touching a path in `TRUST_BOUNDARY_PATHS` ([`scripts/check-trust-boundary.py`](scripts/check-trust-boundary.py)) must answer the PR template's Trust boundary block; CI fails without it.
@@ -142,87 +112,11 @@ Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero
 
 - Secrets: `~/.calimero/node/config.toml` (local only)
 
-## JIT Index (what to open, not what to paste)
+## Testing
 
-### Package Structure
-
-Every crate has its own `AGENTS.md`; [crates/AGENTS.md](crates/AGENTS.md) is the full index. The most-opened directories:
-
-| Directory            | Purpose                       | AGENTS.md                                                  |
-| -------------------- | ----------------------------- | ---------------------------------------------------------- |
-| `crates/`            | Core library crates (index)   | [crates/AGENTS.md](crates/AGENTS.md)                       |
-| `crates/merod/`      | Node daemon binary            | [crates/merod/AGENTS.md](crates/merod/AGENTS.md)           |
-| `crates/meroctl/`    | CLI tool                      | [crates/meroctl/AGENTS.md](crates/meroctl/AGENTS.md)       |
-| `crates/node/`       | Node orchestration            | [crates/node/AGENTS.md](crates/node/AGENTS.md)             |
-| `crates/context/`    | Context lifecycle & governance| [crates/context/AGENTS.md](crates/context/AGENTS.md)       |
-| `crates/runtime/`    | WASM execution (wasmer)       | [crates/runtime/AGENTS.md](crates/runtime/AGENTS.md)       |
-| `crates/storage/`    | CRDT collections              | [crates/storage/AGENTS.md](crates/storage/AGENTS.md)       |
-| `crates/store/`      | RocksDB KV store (+enc, blobs)| [crates/store/AGENTS.md](crates/store/AGENTS.md)           |
-| `crates/dag/`        | Causal delta DAG              | [crates/dag/AGENTS.md](crates/dag/AGENTS.md)               |
-| `crates/sdk/`        | App development SDK           | [crates/sdk/AGENTS.md](crates/sdk/AGENTS.md)               |
-| `crates/server/`     | HTTP/WS/SSE server            | [crates/server/AGENTS.md](crates/server/AGENTS.md)         |
-| `crates/network/`    | P2P networking (libp2p)       | [crates/network/AGENTS.md](crates/network/AGENTS.md)       |
-| `crates/primitives/` | Shared types (ids, keys, hash)| [crates/primitives/AGENTS.md](crates/primitives/AGENTS.md) |
-| `crates/bundle/`     | `.mpk` manifest + signature   | [crates/bundle/AGENTS.md](crates/bundle/AGENTS.md)         |
-| `crates/crypto/`     | ECDH shared-key encryption    | [crates/crypto/AGENTS.md](crates/crypto/AGENTS.md)         |
-| `apps/`              | Example WASM apps             | [apps/AGENTS.md](apps/AGENTS.md)                           |
-| `tools/`             | Dev tools (merodb, abi)       | [tools/AGENTS.md](tools/AGENTS.md)                         |
-
-## Testing & Verifying a Fix
-
-Two layers. Use both - a green `cargo test` does not prove a networked flow works, and a green E2E does not localize a logic bug.
-
-### 1. Unit & integration tests (`cargo test`)
-
-Fast, in-process, no network.
-
-- `crates/node/tests/` holds heavier integration binaries, including deterministic multi-node simulations (`sync_sim`, `sync_scenarios`, `network_simulation`, `dag_*`) that exercise sync/DAG/readiness convergence in one process without Docker - the fastest way to reproduce a sync or ordering bug.
-- `fuzz/` holds coverage-guided fuzz targets over inbound bytes; run one with `scripts/fuzz.sh <target> [seconds]` (see [fuzz/README.md](fuzz/README.md)).
-
-### 2. merobox E2E (real nodes)
-
-merobox boots **real `merod` nodes as Docker containers** and drives them through declarative YAML scenarios. It exercises the actual built binaries over the network - the layer that validates real product flows: context create, member invite, group-key delivery, state/blob sync, partitions, leave/rejoin.
-
-- Scenarios: `apps/scaffolding-e2e/workflows/*.yml` (group membership, key delivery, kick/rejoin, subgroups, leave, late-joiner, sync-resilience/partition, mesh-soak, etc.), plus `apps/blobs/workflows/`, `workflows/sync-tests/`, `workflows/app-migration/`.
-- Run one locally: `merobox bootstrap run <scenario.yml>` (then `merobox stop --all`). See [apps/AGENTS.md](apps/AGENTS.md) for the YAML format.
-- A new scenario for `e2e-rust-apps.yml` is an entry in `.github/e2e-scenarios.yml`; CI packs the entries into groups, one runner each. A failed group re-runs all its scenarios; its step summary names the one that failed, and its logs are under `docker-logs/<scenario>/` in the group's `logs-*` artifact.
-- Nodes are built **from the PR's own code** (`.github/actions/build-local-merod` → `merod:local`), so a green E2E means your actual code passed.
-
-### Reading logs (to reproduce & validate)
-
-`merod` logs via `tracing` to stdout; target a subsystem with `RUST_LOG` to see the flow you're debugging:
-
-```bash
-RUST_LOG=debug merod --node node1 run
-RUST_LOG=calimero_node::sync=trace,calimero_context=debug merod --node node1 run
-```
-
-- **merobox**: each node is a container, so read its output with `docker logs <container>`; scenarios themselves assert on log signals (grep for an expected line, e.g. the `sync-resilience-*` scenarios count occurrences of a sync marker). To turn up verbosity in a scenario, set `RUST_LOG` on the node in its YAML.
-- Panics are logged with a structured hook (message, thread, location, backtrace) - grep for the panic message, not just `panicked`.
-- When validating a report: reproduce, capture the log window around the failure, and confirm the specific line/marker that proves the bug (or its absence after the fix). That captured before/after is the proof you put in the PR (see Definition of Done).
-
-### What runs in CI (path-filtered)
-
-| Workflow | Triggers on | Runs |
-| --- | --- | --- |
-| `e2e-rust-apps.yml` | any `crates/**` + app dirs | main merobox suite (scaffolding-e2e, xcall, blobs, kv-store): the scenarios in `.github/e2e-scenarios.yml`, several per runner (`scripts/e2e-scenario-groups.py`) |
-| `sync-regression.yml` | `crates/node/src/sync/**`, storage sync paths | `workflows/sync-tests/` |
-| `app-migration-e2e.yml` | migration paths | v1→v2 app-migration scenarios |
-| `sdk-e2e.yml` | SDK paths | SDK end-to-end |
-| `fuzzy-load-test.yml` | manual / load paths | fuzzy load |
-| `platforms.yml` | nightly; PRs reaching Windows-only code (`scripts/needs-windows-ci.py`); label `ci:platforms` | Windows tests and e2e, macOS/Windows release builds |
-
-Documentation never starts a code workflow: every `paths:` filter ends with `!**/*.md` / `!**/*.mdx`, re-including only the Markdown some code reads (an `include_str!` target, a manifest's `guide` or `readme`); `scripts/tests/ci-paths-test.py` fails a filter that lets docs back in. `ci-checks.yml` and `release.yml` carry required checks, so they run on every PR and skip work instead: `scripts/ci-scope.py` follows each job's packages through their dependency closure and skips a job the change cannot reach (the storage cost gate, WASM size gate, cargo-mero e2e and app builds run only when their inputs move; a docs-only PR builds nothing).
-
-### Critical blind spot - what E2E CANNOT catch
-
-Every node in a merobox run is the **same build against fresh state**. So it validates a **uniform, new-from-scratch network**, but by construction it does NOT test **mixed old/new node interop** or **reading data persisted by an older version**. A green E2E says nothing about backward compatibility or rolling upgrades. Any format / derivation / schema / borsh-layout change that must survive existing data or staggered upgrades needs a dedicated migration path and its own test - merobox will not flag the break.
-
-### How to confirm a fix actually works
-
-1. **Reproduce first, end to end.** Write the failing case at the layer a user hits it - a `sync_sim`/integration test for logic/ordering bugs, a merobox scenario for networked flows - and watch it fail.
-2. Confirm the same test now passes, and keep it as the regression test.
-3. For anything touching on-disk formats or wire encoding, also reason about old-data/mixed-version cases explicitly - E2E won't.
+- **Reproduce first**: write the failing test at the layer a user hits the bug and watch it go red before changing code.
+- **Blind spot**: merobox E2E runs one build on fresh state, so it never tests backward compatibility; an on-disk or wire format change needs its own migration test.
+- **Test guide**: before writing a test or merobox scenario, reading node logs, or debugging a CI failure, read [Testing strategy](docs/src/content/docs/contribute/testing.mdx).
 
 ## Definition of Done
 
@@ -254,55 +148,3 @@ Working in Claude Code, drive this loop with the skills instead of by hand:
 - `resolve-bot-review-comments` - triage/fix/resolve Bugbot / meroreviewer / CodeRabbit threads (filters real findings from nits, then resolves).
 - `babysit` - watch the PR and CI until green and all actionable review is resolved.
 - `security-review` / `code-review` - self-review the diff before requesting review.
-
-## Data Flow Overview
-
-```
-Client Request → JSON-RPC Server → WASM Runtime → Storage (CRDTs)
-                                        ↓
-                             State Delta → DAG → Network (Gossipsub)
-                                        ↓
-                             Other Nodes receive & apply delta
-```
-
-## Core Concepts (Summary)
-
-Grounded in the [Concepts & Scopes](docs/src/content/docs/protocol/concepts.mdx) page; read it for the full model.
-
-- **Namespace**: A root group (a group with no parent). The application-instance boundary and identity scope for a node - each namespace has its own Ed25519 keypair, and all its subgroups and contexts share that identity. All groups in a namespace share one governance DAG.
-- **Group**: A governance boundary within a namespace. Has members, an inherited application, and one or more contexts. Membership, access control, and upgrades happen here via signed governance ops that propagate over P2P gossip; every group has at least one Admin.
-- **Context**: A running instance of a WASM application with its own isolated state, kept in sync across context members via CRDT replication. Belongs to exactly one group (32-byte `ContextId`).
-- **CRDTs**: Automatic conflict resolution - `GCounter`, `PnCounter`, `LwwRegister<T>`, `UnorderedMap<K,V>`, `UnorderedSet<T>`, `Vector<T>`, `FugueText`, `RichText`, `RichDocument`, `ReplicatedGrowableArray` (see [crates/storage/AGENTS.md](crates/storage/AGENTS.md)).
-- **DAG**: Causal ordering of governance ops and state deltas via parent references. Governance ops are either cleartext `RootOp`s (group creation, member join, key delivery) or encrypted `GroupOp`s (membership, capabilities).
-- **Gossipsub**: libp2p P2P broadcast; governance ops and deltas propagate per namespace/context topic.
-
-## Running Local Nodes
-
-```bash
-# `init` defaults to `--auth-mode proxy`: any page served from localhost can reach the admin API,
-# so use it only on a development machine.
-# Initialize and run first node. `--mdns` only matters once a second node has to
-# find it (see below), but it is set here so the pair works as written.
-merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns
-merod --node node1 run
-
-# Second node connecting to first. BOTH need `--mdns`: it is off by default, and two
-# nodes with no bootstrap peer and no rendezvous have NO other way
-# to find each other. The failure is indirect: the join reports a key-delivery
-# timeout, not "no peer", so it reads as a broken join rather than as discovery.
-merod --node node2 init --server-port 2429 --swarm-port 2529 --mdns
-merod --node node2 run
-
-# Or an explicit bootstrap, which needs node1's PEER ID; a bare
-# /ip4/../tcp/.. is rejected at startup ("Failed to parse peer id from addr").
-# Read it from a running node1:
-#   curl -s localhost:2428/admin-api/network/status | jq -r .localPeerId
-merod --node node2 init --server-port 2429 --swarm-port 2529 \
-  --boot-nodes /ip4/127.0.0.1/tcp/2528/p2p/<node1-peer-id>
-```
-
-## Building WASM Apps
-
-`cargo mero build` emits the app's ABI and embeds it as the `calimero_abi_v1`
-section. A bare `cargo build` does neither, leaving a wasm the node cannot
-introspect.
