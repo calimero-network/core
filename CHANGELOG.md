@@ -2,27 +2,23 @@
 
 ## [Unreleased]
 
-### Changed
-
-- **TEE admission is bound to the admitted credential and fresh.** A fleet TEE
-  node is admitted only on a quote whose report data is a challenge the
-  admitting member chose for it (32 random bytes, single-use, valid for about
-  a minute), followed by `SHA-256("calimero.tee.admission.v1" || namespace ||
-  group || identity key || account || delivery key || device)`. The node asks
-  for the challenge over the direct admission request path, or a member offers
-  it after hearing the node's prompt: `TeeAttestationAnnounce` and
-  `TeeReleaseAttestationAnnounce` are replaced by a quote-free
-  `TeeAdmissionPrompt`, which admits nobody. `RootOp::MemberJoinedViaTeeAttestation`
-  carries its quote and every peer checks it against the credential in the op;
-  `GroupOp::TeeAuthorityEvidence` carries the credential its quote was made
-  for; the admitting node refuses a quote already used in an admission or an
-  evidence refresh in the namespace.
-  Breaking: wire and signed-op layouts change
-  (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 23, the step after core#4263's 22;
-  `SIGNED_GROUP_OP_SCHEMA_VERSION` 16), so every peer of a namespace upgrades together, and the node image's
-  fleet-join must be a build that answers a challenge (mero-tee).
-
 ### Added
+
+- **A warrant names the one device that may spend it.** A warrant named only
+  the executor account, and each relay spends nonces in its own ledger, so two
+  devices of one operator account could each spend the same warrant and
+  replicas forked. `Warrant`, `GovernanceWarrant` and `ContextCreationWarrant`
+  now carry `executor_key`. Every replica refuses a bundle from another device
+  (`WarrantExecutorKeyMismatch`), and the intent routes answer 403 to a
+  warrant naming another key before anything is presented or installed. The
+  discovery routes report `executorKey`; `merod account warrant` requires
+  `--executor-key`. A relay that re-keys voids its unspent warrants.
+  `GET /contexts/:id/intents` answers 404 when the node owns no identity in
+  the context (was `canAuthorOnBehalf: false`). (breaking: the signed
+  preimage and borsh layout of all three warrants change, so warrants signed
+  earlier no longer decode, and the node-local `ContextWarrantNonce` key grows
+  from 64 to 96 bytes with no migration; pairs with mero-js#250 and
+  calimero-client-py#127) (#4505)
 
 - **A fleet node that is refused admission is told why.** `fleet-join`
   answered only `admitted: false`. Each admitter's refusal reason (removed
@@ -45,10 +41,22 @@
   another account removes its signer's `ADMIN`, and a cell folds at most 256
   steps. `ScopeProjections::shared_writers_at_cut` answers for a governance
   cut; a context whose cells have rotated cannot be detached or deleted.
-  Execution does not read the fold yet. (breaking: `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`
-  moves to 22 and an older node cannot decode the op, so every peer of a
-  namespace upgrades together; the SDK signs at 22 from mero-js 23.8.2,
-  mero-js#244) (#4263)
+  Every check of who may write a cell reads the fold: the delta applier at
+  the delta's own governance position, execution at a cut pinned before the
+  run, and snapshot and repair leaves, whose signer must be a writer the cell
+  has ever had. An admin's `rotate_writers` (new host functions
+  `shared_writers` and `shared_writers_rotate`) writes nothing; the node
+  publishes the rotation before the run's delta, which cites it, and a run may
+  ask for at most 64. A delegated, TEE, relay or state-op run, or a context in
+  no group, is refused with `SharedRotationRefused` (403, 409 or 503). The
+  storage rotation log is gone; `CrdtType::RotationLog` stays as a
+  decode-only tag. (breaking: `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` moves to 22
+  and an older node cannot decode the op, so every peer of a namespace
+  upgrades together; the SDK signs at 22 from mero-js 23.8.2, mero-js#244.
+  Rebuild apps that use `SharedStorage`. A node on an earlier build still
+  appends rotation-log children and computes different hashes, and a wrapper
+  an earlier rotation rewrote no longer binds to its cell id) (#4263, #4277,
+  #4278)
 
 - **A namespace ownership proof says who founded the namespace.**
   `issue-namespace-ownership-proof` now answers `founding` (founder account and
@@ -449,6 +457,80 @@
 
 ### Fixed
 
+- **A WebSocket upgrade is judged by the same origin rule as HTTP.** `GET /ws`
+  had its own origin check, which refused a loopback page on another port, the
+  desktop webview (`tauri://localhost`) and the node's own page under an
+  address it does not listen on, though all of them reached HTTP routes. The
+  upgrade now asks the router's `OriginGuard` in both auth modes and is
+  refused with the same 403 and log line. (an embedded-auth node behind a
+  proxy that rewrites `Host` loses its dashboard socket until that origin is
+  listed in `[server.cors] allowed_origins`) (#4471)
+
+- **`GET /sse` refuses a request no script opened, before creating a
+  session.** A navigation, a frame or a `no-cors` subresource load created and
+  persisted an SSE session, and on a `proxy`-mode node the origin guard admits
+  such requests. A request whose `Sec-Fetch-Mode` is present and is neither
+  `cors` nor `same-origin` now gets `403` and no session. `EventSource`,
+  `fetch` and clients that send no fetch metadata are served as before.
+  (#4476)
+
+- **The mock token endpoint refuses browser pages.** `POST /auth/mock-token`
+  (debug builds only) minted a token for any page that could reach it,
+  including one on another site. A request carrying `Origin` or
+  `Sec-Fetch-Site` now gets `403`, also when mock auth is off. Scripts and
+  CLIs send neither and are served as before. (#4469)
+
+- **A namespace join is recorded at the role its invitation names.** The node
+  answering a join recorded every new joiner as `Member`, so one invited as
+  `Admin` was listed as a member there until the join op arrived from
+  elsewhere. The responder now uses the apply path's rule
+  (`admission_role`): a new joiner gets the invited role, an existing member
+  keeps its own, and an `Admin` invitation from a non-admin is refused before
+  any key is wrapped. A responder that is not an admitter records no `Admin`
+  row. (#4481)
+
+- **A repeat join no longer replaces a member's standing role.** The
+  governance projection folded an invitation join as a role write. So a
+  member promoted to Admin who presented another invitation was listed, and
+  judged at a cut, as a Member, and a Member presenting an Admin invitation
+  became Admin. A join now takes effect only when no add stands for the
+  member, the earliest such join wins, and leaving the namespace root ends the
+  member's subgroup roles, as the apply does. (breaking for mixed-version
+  namespaces: older nodes fold a different role, `governance_hash` and at-cut
+  admin verdict for these histories; it rides the
+  `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 23 upgrade with #4265) (#4465)
+
+- **A peer's write to the app state or the root goes through the remote write
+  rules on every path.** Delta replay saved the root verbatim, and a
+  HashComparison or LevelWise repair wrote an app-state entry the peer called
+  opaque, so a concurrent field write could be lost by last-writer-wins. The
+  app-state entry now merges through the app's own `Mergeable` on every path.
+  A register stamp beyond the drift bound loses, and a root write other than
+  the stored shell is refused, as is a remote delete of the root or the
+  app-state entry. An equal stamp keeps the greater bytes. (rebuild Rust apps
+  against this release: an older module, like a JS guest, has no merge export
+  and falls back to bounded last-writer-wins; upgrade a context's nodes
+  together, since an older node merges these writes otherwise; one-way)
+  (#4204)
+
+- **A device id is bound to the account that minted it.** No verifier checked
+  a device id against its certificate's account. Another account could link
+  an id sharing a member's 16-byte prefix and shadow, evict or claim that
+  member's device or signing key. Ids are now
+  `nonce ‖ H(account ‖ nonce)[..16]`, and every device certificate check
+  refuses one minted for another account (`pair-complete` answers 400
+  `PairingDeviceNotMinted`). A signing key certified under two accounts
+  resolves to neither. (breaking, one-way: device ids and certificates from
+  earlier builds stop verifying, so every device is minted and certified
+  again; mero-js mints the new layout from mero-js#249) (#4496)
+
+- **A collected signed delete keeps an older write dropped.** Once tombstone
+  GC collected a deleted `User`, `Shared` or `SharedMember` entry, a replay of
+  an authentic older signed write brought it back. GC now leaves a node-local
+  `Key::Collected(id)` record, a signed write stamped at or before it stays
+  dropped, and a local re-insert is stamped after it. (adds one 8-byte row per
+  collected signed delete, kept for good and never synced; one-way) (#4500)
+
 - **A device withdrawn by its account's root is withdrawn in every namespace
   the account takes part in.** `revoke_device` published the withdrawal only
   where the device was bound, so its old certificate could be replayed to link
@@ -578,12 +660,17 @@
   delta is held to twice the default limits, so every node reaches the same
   verdict. (#4504)
 
-- **Debug output no longer prints key material or tokens.** `Debug` printed
-  the secret for the store encryption key, `ContextIdentity`, the namespace
-  identity record, `StoredGroupKey`, the node's seal and publish material,
-  meroctl's stored JWTs and login callback, and mero-sign's key file. These
-  types now print `[redacted]`, and meroctl's stored tokens are zeroized on
-  drop. (#4501)
+- **Debug output no longer prints key material, passwords or tokens.**
+  `Debug` printed the secret for the store encryption key, `ContextIdentity`,
+  the namespace identity record, `StoredGroupKey`, the node's seal and publish
+  material, meroctl's stored JWTs and login callback, and mero-sign's key
+  file. It also printed mero-auth's user-password requests and root-key
+  provider data, `CreateContextRequest.identity_secret`, and meroctl's device
+  secret, identity secret and node tokens. These types now print
+  `[redacted]`. meroctl's stored tokens are zeroized on drop, and the
+  governance preflight holds the node's signing key as a zeroizing
+  `PrivateKey`. The token-refresh and KMS key responses no longer derive
+  `Debug`. (#4501, #4516)
 
 - **A rich text delete past the end of the text is a no-op.** A
   `RichText::apply_delta` delete starting past the end returned an error after
@@ -1608,6 +1695,25 @@
 
 ### Changed
 
+- **TEE admission is bound to the admitted credential and fresh.** A fleet TEE
+  node is admitted only on a quote whose report data is a challenge the
+  admitting member chose for it (32 random bytes, single-use, valid for about
+  a minute), followed by `SHA-256("calimero.tee.admission.v1" || namespace ||
+  group || identity key || account || delivery key || device)`. The node asks
+  for the challenge over the direct admission request path, or a member offers
+  it after hearing the node's prompt: `TeeAttestationAnnounce` and
+  `TeeReleaseAttestationAnnounce` are replaced by a quote-free
+  `TeeAdmissionPrompt`, which admits nobody. `RootOp::MemberJoinedViaTeeAttestation`
+  carries its quote and every peer checks it against the credential in the op;
+  `GroupOp::TeeAuthorityEvidence` carries the credential its quote was made
+  for; the admitting node refuses a quote already used in an admission or an
+  evidence refresh in the namespace.
+  (breaking: wire and signed-op layouts change,
+  `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 23, the step after core#4263's 22, and
+  `SIGNED_GROUP_OP_SCHEMA_VERSION` 16, so every peer of a namespace upgrades
+  together; the node image's fleet-join must be a mero-tee build that answers
+  a challenge; the SDK signs at 23 from mero-js#220) (#4265)
+
 - **A namespace subgroup is created Open unless the caller says otherwise.**
   `POST /admin-api/namespaces/:id/groups` without `visibility` now creates an
   Open subgroup; it used to create a Restricted one. Creating Restricted and
@@ -1619,7 +1725,7 @@
   Rust client's `create_group_in_namespace` takes the visibility, and
   `meroctl namespace create-group` takes `--visibility`. (breaking: a caller
   relying on the Restricted default gets an Open group; apps#377 names it in
-  every app)
+  every app) (#4508)
 
 - **Tombstone GC sweeps every 10 minutes, and the interval is configurable.**
   The new `[gc] check_interval` (seconds, default `600`) replaces the fixed
