@@ -1,8 +1,13 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::{
     blobs::BlobId, common::DIGEST_SIZE, context::ContextId, identity::PublicKey,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+pub const MAX_BLOB_RESPONSE_FRAME_BYTES: usize = 4 * 1024; // a `BlobResponse` is a few dozen bytes of JSON
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobRequest {
@@ -126,5 +131,64 @@ mod signature_serde {
         let mut arr = [0u8; 64];
         arr.copy_from_slice(&bytes);
         Ok(arr)
+    }
+}
+
+/// Bytes a caller lets its blob transfers receive in total, shared by every
+/// transfer it hands a clone to, so falling back to another holder draws on the same bytes.
+#[derive(Clone, Debug)]
+pub struct ByteBudget {
+    limit: u64,
+    received: Arc<AtomicU64>,
+}
+
+impl ByteBudget {
+    #[must_use]
+    pub fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            received: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Count `bytes` as received, and say whether they still fit the limit:
+    /// bytes that arrived were received whether or not they are kept.
+    #[must_use]
+    pub fn take(&self, bytes: u64) -> bool {
+        let before = self
+            .received
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |received| {
+                Some(received.saturating_add(bytes))
+            })
+            .unwrap_or_else(|received| received);
+        before.saturating_add(bytes) <= self.limit
+    }
+
+    #[must_use]
+    pub fn left(&self) -> u64 {
+        self.limit.saturating_sub(self.received())
+    }
+
+    #[must_use]
+    pub fn received(&self) -> u64 {
+        self.received.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod byte_budget_tests {
+    use super::ByteBudget;
+
+    #[test]
+    fn clones_count_into_one_budget_and_an_overdraw_is_still_received() {
+        let budget = ByteBudget::new(10);
+        let other_holder = budget.clone();
+
+        assert!(budget.take(6));
+        assert_eq!(other_holder.left(), 4);
+        assert!(!other_holder.take(5), "only 4 bytes are left");
+        assert_eq!(budget.received(), 11);
+        assert_eq!(budget.left(), 0);
+        assert!(!budget.take(0), "nothing fits once the limit is passed");
     }
 }

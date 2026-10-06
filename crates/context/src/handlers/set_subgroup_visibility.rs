@@ -41,8 +41,9 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
 
         // Preflight without the admin gate (resolves the signer + signing
         // key, checks the group exists), then require admin **or**
-        // `CAN_MANAGE_VISIBILITY` — re-checked on every peer in
-        // `GroupSettingsService::set_subgroup_visibility`.
+        // `CAN_MANAGE_VISIBILITY`, re-checked on every peer in
+        // `GroupSettingsService::set_subgroup_visibility`. A flip to Restricted
+        // also needs a direct admin, to rotate the key (`flip_rotation_is_owed`).
         let preflight = match self.governance_preflight(&group_id, false) {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),

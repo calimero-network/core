@@ -440,6 +440,24 @@
 
 ### Fixed
 
+- **A read on an account's session runs as that account's device, not as the
+  node.** The delegated-read arm of `execute` built its principal from the
+  session's account and THIS node's key, so on a relay every account's
+  `env::device_id()` answered the relay's key on `POST
+  /admin-api/contexts/{ctx}/query`, while the same method through `/intents`
+  answered the caller's device. The read now resolves the session's device to
+  its signing key through the namespace's device binding (the row revocation
+  is judged on) and runs as `(account, that key)`. A session naming no device,
+  or a device not bound to that account in the namespace, keeps the node's
+  key as before, never another account's. (#4492)
+
+- **An intent or query on a context this node does not hold is refused as not
+  found.** `perform_intent` and `query` turned a missing context into a bare
+  `500 Internal server error`; they now answer `404 context '<id>' is not held
+  by this node; send the request to a node that holds it`, before any nonce is
+  spent. Seen on prod when an invitee executed on its own assigned relay
+  before its session moved to the admitting one. (#4491)
+
 - **An account reads its own member metadata and its groups' context
   metadata.** `GET /admin-api/groups/{g}/members/{account}/metadata` and
   `GET /admin-api/groups/{g}/contexts/{ctx}/metadata` fell to the group

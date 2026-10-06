@@ -41,6 +41,11 @@ impl MessageCodec {
         length_codec.set_max_frame_length(max_message_size);
         Self { length_codec }
     }
+
+    /// Refuse, from its length prefix, any later frame longer than this.
+    pub fn set_max_message_size(&mut self, max_message_size: usize) {
+        self.length_codec.set_max_frame_length(max_message_size);
+    }
 }
 
 impl Decoder for MessageCodec {

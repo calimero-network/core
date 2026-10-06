@@ -30,7 +30,7 @@
 
 use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::client::TeeAdmissionParams;
+use calimero_node_primitives::client::{TeeAdmissionParams, TeeAdmissionRefused};
 use calimero_node_primitives::sync::{
     InitPayload, MessagePayload, StreamMessage, TeeAdmissionOffered,
 };
@@ -137,7 +137,10 @@ impl SyncManager {
             .build_join_init_pop(params.namespace_id, params.public_key)
             .await;
 
-        let mut refusals: Vec<String> = Vec::new();
+        let mut refused = TeeAdmissionRefused {
+            namespace_id: params.namespace_id,
+            refusals: Vec::new(),
+        };
         for (peer, peer_routes) in routes {
             // Dial first: the peer is named precisely because the mesh may not
             // have connected us, and `open_stream` needs a connection.
@@ -159,16 +162,12 @@ impl SyncManager {
                 }
                 Err(reason) => {
                     debug!(%peer, %reason, "direct TEE admission: peer did not admit us");
-                    refusals.push(format!("{peer}: {reason}"));
+                    refused.push(peer, reason);
                 }
             }
         }
 
-        eyre::bail!(
-            "no admitter admitted this node to namespace {}: [{}]",
-            hex::encode(params.namespace_id),
-            refusals.join("; ")
-        )
+        Err(refused.into())
     }
 
     /// One admission attempt at one peer: get its challenge, make a quote over

@@ -26,12 +26,10 @@ use crate::AuthError;
 /// the two notions of "expired" cannot disagree.
 const JWT_EXPIRY_LEEWAY_SECS: u64 = 60;
 
-/// Whether an access token and a refresh token belong to the same subject.
-///
-/// Enforces finding #3: the refresh endpoint must reject a request that pairs a
-/// refresh token with an access token issued to a different subject.
-fn tokens_share_subject(access: &Claims, refresh: &Claims) -> bool {
-    access.sub == refresh.sub
+/// Whether an access token and a refresh token were issued for the same key.
+/// The key, not `sub`: every client key of one user shares its `sub`.
+fn tokens_share_key(access: &Claims, refresh: &Claims) -> bool {
+    access.key_id == refresh.key_id
 }
 
 // Common response type used by all helper functions
@@ -433,17 +431,16 @@ pub async fn refresh_token_handler(
         }
     };
 
-    // Bind access <-> refresh: both must belong to the same subject (finding #3).
-    // Without this, any valid refresh token could be paired with an unrelated
-    // expired access token to mint a fresh pair for the refresh token's subject.
-    if !tokens_share_subject(&access_claims, &refresh_claims) {
+    // Bind access <-> refresh to one key, or any refresh token could be paired
+    // with an unrelated expired access token to mint a fresh pair.
+    if !tokens_share_key(&access_claims, &refresh_claims) {
         warn!(
-            "Refresh rejected: access/refresh subject mismatch ({} != {})",
-            access_claims.sub, refresh_claims.sub
+            "Refresh rejected: access/refresh key mismatch ({} != {})",
+            access_claims.key_id, refresh_claims.key_id
         );
         return error_response(
             StatusCode::UNAUTHORIZED,
-            "Access and refresh tokens do not belong to the same subject",
+            "Access and refresh tokens do not belong to the same key",
             None,
         );
     }
@@ -558,9 +555,9 @@ fn classify(headers: &HeaderMap) -> Probe {
 /// Name an account-anchored session's account and device, for a node that sits
 /// behind this service rather than embedding it.
 ///
-/// `X-Auth-User` cannot say this. It is the key id, which for an
+/// `X-Auth-User` cannot say this. It is the user id, which for an
 /// `account_proof` session happens to be the account and for a
-/// username/password one is a username, so a node reading it would have to
+/// username/password one is an opaque id, so a node reading it would have to
 /// guess which it holds — and a wrong guess reads a node owner as a tenant or a
 /// tenant as the owner. The record's own `auth_method` says which provider
 /// minted it, so that decides, as it does in the embedded guard.
@@ -655,7 +652,7 @@ pub async fn validate_handler(
             }
 
             // Verify the key exists and is valid
-            let key = match state.0.key_manager.get_key(&claims.sub).await {
+            let key = match state.0.key_manager.get_key(&claims.key_id).await {
                 Ok(Some(key)) if key.is_valid() => key,
                 Ok(Some(_)) => {
                     let mut error_headers = HeaderMap::new();
@@ -1061,6 +1058,7 @@ mod tests {
         Claims {
             device: None,
             sub: sub.to_string(),
+            key_id: sub.to_string(),
             iss: "calimero-test".to_string(),
             aud: "calimero-test".to_string(),
             exp: 0,
@@ -1114,8 +1112,8 @@ mod tests {
         );
     }
 
-    /// A username/password session's subject is a username. Naming it as an
-    /// account would read the node owner as a tenant.
+    /// A username/password session's subject is no account. Naming it as one
+    /// would read the node owner as a tenant.
     #[test]
     fn a_password_session_names_no_account() {
         let mut claims = claims_for("admin");
@@ -1124,22 +1122,25 @@ mod tests {
     }
 
     #[test]
-    fn tokens_share_subject_accepts_same_subject() {
-        // finding #3: matching subjects bind the access/refresh pair.
-        assert!(tokens_share_subject(
-            &claims_for("user-a"),
-            &claims_for("user-a")
+    fn tokens_share_key_accepts_same_key() {
+        assert!(tokens_share_key(&claims_for("key-a"), &claims_for("key-a")));
+    }
+
+    #[test]
+    fn tokens_share_key_rejects_mismatched_key() {
+        assert!(!tokens_share_key(
+            &claims_for("key-a"),
+            &claims_for("key-b")
         ));
     }
 
     #[test]
-    fn tokens_share_subject_rejects_mismatched_subject() {
-        // finding #3: a refresh token must not be paired with an access token
-        // issued to a different subject.
-        assert!(!tokens_share_subject(
-            &claims_for("user-a"),
-            &claims_for("user-b")
-        ));
+    fn tokens_share_key_rejects_two_keys_of_one_user() {
+        let mut other_client = claims_for("client-b");
+        other_client.sub = "user".to_owned();
+        let mut client = claims_for("client-a");
+        client.sub = "user".to_owned();
+        assert!(!tokens_share_key(&client, &other_client));
     }
 }
 
@@ -1467,15 +1468,118 @@ mod login_throttle_tests {
         respond_with(state, method, public_key, username, "not the password").await
     }
 
-    async fn provision_admin(state: &Arc<AppState>) {
-        let key = Key::new_root_key_with_permissions(
-            "provisioned".to_owned(),
-            "user_password".to_owned(),
-            vec!["admin".to_owned()],
-            None,
+    async fn provision_admin(state: &Arc<AppState>) -> String {
+        crate::provisioning::provision_admin_key(
+            &state.storage,
+            &UserPasswordConfig::default(),
+            "admin",
+            PASSWORD,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn login(state: &Arc<AppState>) -> String {
+        let response = respond_with(state, "user_password", "pk", "admin", PASSWORD).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        body["data"]["access_token"].as_str().unwrap().to_owned()
+    }
+
+    /// Asks the token and the forward-auth gate who `token` names.
+    /// Returns (token subject, `X-Auth-User` header).
+    async fn subject_and_header_of(state: &Arc<AppState>, token: &str) -> (String, String) {
+        let sub = state.token_generator.verify_token(token).await.unwrap().sub;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", format!("Bearer {token}").parse().unwrap());
+        headers.insert("Host", "localhost:2428".parse().unwrap());
+        let gate = validate_handler(Extension(Arc::clone(state)), headers)
+            .await
+            .into_response();
+        assert_eq!(gate.status(), StatusCode::OK);
+        let header = gate.headers()["X-Auth-User"].to_str().unwrap().to_owned();
+        (sub, header)
+    }
+
+    async fn subject_and_header(state: &Arc<AppState>) -> (String, String) {
+        subject_and_header_of(state, &login(state).await).await
+    }
+
+    #[tokio::test]
+    async fn a_client_sessions_subject_and_header_name_its_user_not_its_key() {
+        let state = state_with_wide_window().await;
+        let user = provision_admin(&state).await;
+        let client = Key::new_client_key(user.clone(), "app".to_owned(), vec![], None);
+        let _ = state
+            .key_manager
+            .set_key("client-1", &client)
+            .await
+            .unwrap();
+        let (access, refresh) = state
+            .token_generator
+            .generate_token_pair("client-1".to_owned(), vec![], None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            subject_and_header_of(&state, &access).await,
+            (user.clone(), user.clone())
         );
-        let key_id = crate::providers::impls::user_password::derive_key_id("admin", PASSWORD);
-        let _ = state.key_manager.set_key(&key_id, &key).await.unwrap();
+
+        // Refreshing rotates the client key; the user it names stays put.
+        let (rotated, _) = state
+            .token_generator
+            .refresh_token_pair(&refresh)
+            .await
+            .unwrap();
+        assert_eq!(
+            subject_and_header_of(&state, &rotated).await,
+            (user.clone(), user)
+        );
+    }
+
+    #[tokio::test]
+    async fn re_registering_a_revoked_user_does_not_revive_its_sessions() {
+        let state = state_with_wide_window().await;
+        let old = provision_admin(&state).await;
+        let token = login(&state).await;
+        let mut key = state.key_manager.get_key(&old).await.unwrap().unwrap();
+        key.revoke();
+        let _ = state.key_manager.set_key(&old, &key).await.unwrap();
+
+        let new = provision_admin(&state).await;
+
+        assert_ne!(new, old);
+        assert!(state
+            .token_generator
+            .verify_token_string(&token, None)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_users_subject_is_random_not_derived_from_the_credentials() {
+        let mut subjects = Vec::new();
+        for _ in 0..2 {
+            let state = state_with_wide_window().await;
+            let key_id = provision_admin(&state).await;
+
+            let (sub, header) = subject_and_header(&state).await;
+            let (again, _) = subject_and_header(&state).await;
+
+            assert_eq!((&sub, &header), (&key_id, &key_id));
+            assert_eq!(again, sub, "the subject must stay stable across logins");
+            subjects.push(sub);
+        }
+
+        assert_ne!(
+            subjects[0], subjects[1],
+            "the same credentials must not give the same subject"
+        );
     }
 
     async fn attempt(
@@ -1564,7 +1668,7 @@ mod login_throttle_tests {
     #[tokio::test]
     async fn one_callers_failures_do_not_lock_the_owner_out() {
         let state = state_with_wide_window().await;
-        provision_admin(&state).await;
+        let _key_id = provision_admin(&state).await;
 
         let attacker = [203, 0, 113, 9];
         for i in 0..5 {
@@ -1599,7 +1703,7 @@ mod login_throttle_tests {
             LoginRateLimiter::new(10, 3_600_000),
         )
         .await;
-        provision_admin(&state).await;
+        let _key_id = provision_admin(&state).await;
 
         for host in 0..10_u8 {
             let status = respond_from(&state, [203, 0, 113, host], "admin", "wrong")
@@ -1636,7 +1740,7 @@ mod login_throttle_tests {
     #[tokio::test]
     async fn method_spellings_share_the_locked_accounts_bucket() {
         let state = state_with_wide_window().await;
-        provision_admin(&state).await;
+        let _key_id = provision_admin(&state).await;
         fail_five_times(&state, "admin").await;
 
         for (i, method) in method_spellings().iter().enumerate() {
@@ -1653,7 +1757,7 @@ mod login_throttle_tests {
     #[tokio::test]
     async fn method_spellings_of_no_provider_never_authenticate() {
         let state = state_with_wide_window().await;
-        provision_admin(&state).await;
+        let _key_id = provision_admin(&state).await;
 
         // Case and lookalike letters survive sanitizing and match no provider.
         for method in ["USER_PASSWORD", "User_Password", "user_passw\u{43e}rd"] {
@@ -1676,7 +1780,7 @@ mod login_throttle_tests {
     async fn a_locked_account_is_locked_under_every_method_spelling_at_once() {
         // Failures spread over spellings count towards the same account.
         let state = state_with_wide_window().await;
-        provision_admin(&state).await;
+        let _key_id = provision_admin(&state).await;
         for (i, method) in method_spellings().iter().take(5).enumerate() {
             let status = attempt(&state, method, &format!("pk-{i}"), "admin").await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{method:?}");
@@ -1691,7 +1795,7 @@ mod login_throttle_tests {
     #[tokio::test]
     async fn username_spellings_are_the_accounts_storage_sees() {
         let state = state_with_wide_window().await;
-        provision_admin(&state).await;
+        let _key_id = provision_admin(&state).await;
         fail_five_times(&state, "admin").await;
 
         // Case and whitespace name other accounts, which do not exist.
@@ -1710,7 +1814,7 @@ mod login_throttle_tests {
     #[tokio::test]
     async fn requests_that_are_not_credential_guesses_do_not_lock_the_account() {
         let state = state_with_wide_window().await;
-        provision_admin(&state).await;
+        let _key_id = provision_admin(&state).await;
 
         let too_long = "x".repeat(500);
         for i in 0..6 {

@@ -128,7 +128,7 @@ headers that the server explicitly exposes. The layer exposes exactly three:
 | Exposed header | Use |
 | --- | --- |
 | `x-auth-error` | Signals the auth-failure reason. A 401 from an expired-but-refreshable token carries `X-Auth-Error: token_expired`. |
-| `x-auth-user` | The authenticated user/key. |
+| `x-auth-user` | The authenticated user: an opaque ID, stable across logins and token refreshes; a password reset issues a new one. |
 | `x-auth-permissions` | The caller's resolved permissions. |
 
 To implement transparent refresh-on-401, read `X-Auth-Error` on a 401: if it is

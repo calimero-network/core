@@ -52,3 +52,19 @@ async fn test_multiple_objects_stream() {
     let decoded3 = framed.next().await;
     assert!(decoded3.is_none());
 }
+
+#[test]
+fn a_frame_past_a_lowered_limit_is_refused_from_its_length_prefix() {
+    let mut buffer = BytesMut::new();
+    MessageCodec::new(MAX_MESSAGE_SIZE)
+        .encode(Message::new(vec![0; 100]), &mut buffer)
+        .unwrap();
+    let mut prefix_only = buffer.split_to(4);
+
+    let mut codec = MessageCodec::new(MAX_MESSAGE_SIZE);
+    codec.set_max_message_size(16);
+    assert!(
+        codec.decode(&mut prefix_only).is_err(),
+        "refused before any of its body arrives"
+    );
+}

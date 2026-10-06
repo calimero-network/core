@@ -531,11 +531,11 @@ impl SyncManager {
     ///    and be admitted as its owner, which is a worse hole than the one this
     ///    check closes.
     ///
-    /// Returns the account and the device the certificate names.
+    /// Returns the account, the device and the device epoch the certificate names.
     fn verified_joiner_account(
         credential_bytes: &[u8],
         joiner_public_key: &PublicKey,
-    ) -> Result<(calimero_account::AccountId, calimero_account::DeviceId), String> {
+    ) -> Result<(calimero_account::AccountId, calimero_account::DeviceId, u32), String> {
         let credential: calimero_context_client::local_governance::JoinAccountCredential =
             borsh::from_slice(credential_bytes).map_err(|e| format!("undecodable: {e}"))?;
 
@@ -557,7 +557,11 @@ impl SyncManager {
             return Err("certificate names a different signing key than the request".to_owned());
         }
 
-        Ok((credential.statement.account, verified.device))
+        Ok((
+            credential.statement.account,
+            verified.device,
+            verified.device_epoch,
+        ))
     }
 
     /// Handle an incoming NamespaceJoinRequest on the responder side.
@@ -676,7 +680,7 @@ impl SyncManager {
         // presented a device this responder held no binding for had its deny row
         // go unread, and collected the backfill and the wrapped group key ahead
         // of the apply-time check that does reject it.
-        let (joiner_account, joiner_device) =
+        let (joiner_account, joiner_device, joiner_device_epoch) =
             match Self::verified_joiner_account(joiner_credential_bytes, &joiner_public_key) {
                 Ok(joiner) => joiner,
                 Err(reason) => {
@@ -709,6 +713,30 @@ impl SyncManager {
                 payload: MessagePayload::NamespaceJoinRejected {
                     reason: "the joining device was revoked or narrowed out of this namespace"
                         .to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // A certificate at an epoch the device has been re-keyed past names a key it
+        // retired: served, the old key would receive every later namespace key.
+        if AccountBindingRepository::new(&store).device_epoch_superseded(
+            &namespace,
+            joiner_account,
+            joiner_device,
+            joiner_device_epoch,
+        )? {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "rejecting namespace join: the joining key was re-keyed past"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "the joining device was re-keyed past this key".to_owned(),
                 },
                 next_nonce: nonce,
             };
@@ -957,8 +985,8 @@ impl SyncManager {
     }
 
     /// Handle an incoming `OpenSubgroupJoinRequest` (issue #2357) on the
-    /// responder side. Validates that the joiner has
-    /// `MembershipPath::Inherited` to the requested subgroup, wraps the
+    /// responder side. Validates that the joiner is a live member of the
+    /// requested subgroup (inherited, and not removed from it), wraps the
     /// local subgroup key for the joiner via ECDH, and replies with the
     /// envelope. Mirrors `handle_namespace_join_request` for the
     /// inherited self-join path.
@@ -971,8 +999,6 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context_config::types::ContextGroupId;
-        use calimero_governance_store::MembershipPath;
-
         let subgroup_gid = ContextGroupId::from(subgroup_id);
         let store = self.context_client.datastore_handle().into_inner();
 
@@ -1022,9 +1048,8 @@ impl SyncManager {
         }
 
         // Authorisation check: the joiner must reach the subgroup via the
-        // Open-chain inheritance walk. `MembershipPath::Inherited`
-        // implies every intermediate ancestor was Open (see
-        // `membership.rs:267`), so this is the proof of authorisation.
+        // Open-chain inheritance walk and must not have been removed from it.
+        // An inherited path implies every intermediate ancestor was Open.
         let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
             &store,
             &subgroup_gid,
@@ -1036,19 +1061,16 @@ impl SyncManager {
                 "joiner identity is bound to no account in this namespace"
             ));
         };
-        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_account)? {
-            MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
-            MembershipPath::None => {
-                let msg = StreamMessage::Message {
-                    sequence_id: 0,
-                    payload: MessagePayload::OpenSubgroupJoinRejected {
-                        reason: "joiner has no membership path to subgroup".to_owned(),
-                    },
-                    next_nonce: nonce,
-                };
-                crate::sync::stream::send(stream, &msg, None).await?;
-                return Ok(());
-            }
+        if !MembershipRepository::new(&store).is_live_member(&subgroup_gid, &joiner_account)? {
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "joiner has no membership path to subgroup".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
         }
 
         // Same mapping as the invitation responder above: serve the key that
@@ -3003,7 +3025,7 @@ mod open_subgroup_key_tests {
 
     /// Answer one join request on `end` with `key_envelope_bytes`, mirroring what
     /// `handle_open_subgroup_join_request` puts on the wire.
-    fn spawn_responder(
+    pub(super) fn spawn_responder(
         mut end: Stream,
         key_envelope_bytes: Vec<u8>,
     ) -> tokio::task::JoinHandle<()> {
@@ -3299,7 +3321,7 @@ mod joiner_credential_tests {
         let joiner = PublicKey::from([0x11; 32]);
         let (credential, genesis) = credential_for(&joiner);
 
-        let (account, _device) =
+        let (account, _device, _device_epoch) =
             SyncManager::verified_joiner_account(&borsh::to_vec(&credential).unwrap(), &joiner)
                 .expect("a well-formed credential for this key must resolve");
 
@@ -3795,6 +3817,10 @@ mod admitter_derivation_tests {
     }
 }
 
+// In the feature-gated test job, beside the other in-process governance node tests.
+#[cfg(all(test, feature = "mock-attestation"))]
+mod authz_matrix;
+
 #[cfg(test)]
 pub(super) mod group_key_recovery_anchor_tests {
     //! Who `recover_missing_group_keys` believes, driven end to end against a
@@ -3851,8 +3877,17 @@ pub(super) mod group_key_recovery_anchor_tests {
     pub(in crate::sync::manager) async fn manager(
         mock: Arc<MockSyncNetwork>,
     ) -> (SyncManager, Store, TempDir) {
-        let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (sync_manager, tmp) = manager_over(store.clone(), mock).await;
+        (sync_manager, store, tmp)
+    }
+
+    /// [`manager`] over a store the caller built.
+    pub(super) async fn manager_over(
+        store: Store,
+        mock: Arc<MockSyncNetwork>,
+    ) -> (SyncManager, TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
         let blob_store_config =
             BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
         let file_system = FileSystem::new(&blob_store_config).await.expect("blob fs");
@@ -3897,7 +3932,7 @@ pub(super) mod group_key_recovery_anchor_tests {
             relay_sealed_join_rx,
         );
         sync_manager.set_sync_network(mock);
-        (sync_manager, store, tmp)
+        (sync_manager, tmp)
     }
 
     /// The joiner's state after a fleet-join pull: its own namespace identity
@@ -3927,7 +3962,7 @@ pub(super) mod group_key_recovery_anchor_tests {
 
     /// Answer one group-key request on `end` the way `handle_group_key_request`
     /// does, claiming `responder_identity` and attaching no device proof.
-    fn respond(
+    pub(super) fn respond(
         mut end: Stream,
         key_envelope_bytes: Vec<u8>,
         responder_identity: PublicKey,
@@ -4152,6 +4187,404 @@ pub(super) mod group_key_recovery_anchor_tests {
 }
 
 #[cfg(test)]
+mod join_responder_tests {
+    //! The join responders, driven over an in-memory stream against a real store.
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_account::{AccountId, DeviceId};
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_governance_store::test_fixtures::{
+        bootstrap_namespace_with_admin_account, enrol_member, real_join_account,
+        sample_meta_with_admin,
+    };
+    use calimero_governance_store::{
+        AccountBindingRepository, CapabilitiesRepository, DenyListRepository, GroupKeyring,
+        MembershipRepository, MetaRepository, NamespaceRepository, ReentryRepository,
+    };
+    use calimero_network_primitives::stream::Stream;
+    use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::key::GroupExitReason;
+    use calimero_store::Store;
+    use libp2p::PeerId;
+    use sha2::{Digest, Sha256};
+
+    use super::group_key_recovery_anchor_tests::manager;
+    use crate::sync::network::mock::MockSyncNetwork;
+    use crate::sync::SyncManager;
+
+    const NAMESPACE: [u8; 32] = [0x6A; 32];
+    const PARENT: [u8; 32] = [0x6B; 32];
+    const SUBGROUP: [u8; 32] = [0x6C; 32];
+
+    struct Responder {
+        sm: SyncManager,
+        store: Store,
+        admin: PrivateKey,
+        _tmp: tempfile::TempDir,
+    }
+
+    fn ns() -> ContextGroupId {
+        ContextGroupId::from(NAMESPACE)
+    }
+
+    /// A responder that holds the namespace key and is run by the namespace admin.
+    async fn responder() -> Responder {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (sm, store, tmp) = manager(mock).await;
+        let ((admin, _), _account) = bootstrap_namespace_with_admin_account(&store, NAMESPACE);
+        GroupKeyring::new(&store, ns())
+            .store_key(&[0x77; 32])
+            .expect("hold the namespace key");
+        Responder {
+            sm,
+            store,
+            admin,
+            _tmp: tmp,
+        }
+    }
+
+    fn invitation_from(
+        inviter: &PrivateKey,
+        group: ContextGroupId,
+        invited_role: u8,
+    ) -> SignedGroupOpenInvitation {
+        let invitation = GroupInvitationFromAdmin {
+            inviter_identity: SignerId::from(*inviter.public_key().digest()),
+            group_id: group,
+            expiration_timestamp: 0,
+            invitation_nonce: [0x42; 32],
+            invited_role,
+            admitters: Vec::new(),
+        };
+        let signature = inviter
+            .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
+            .unwrap();
+        SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation,
+            inviter_signature: hex::encode(signature.to_bytes()),
+            application_id: None,
+            bytecode_id: None,
+            admitter_addrs: Vec::new(),
+        }
+    }
+
+    /// Dial the responder as `party`, send `payload`, and return its first reply.
+    async fn exchange(
+        sm: &SyncManager,
+        party: &PrivateKey,
+        payload: InitPayload,
+    ) -> Option<StreamMessage<'static>> {
+        let peer = PeerId::random();
+        let party_id = party.public_key();
+        let proof = InitProof {
+            signature: party
+                .sign(&InitProof::message(
+                    &ContextId::from(NAMESPACE),
+                    &party_id,
+                    &peer.to_bytes(),
+                ))
+                .expect("sign the proof")
+                .to_bytes(),
+        };
+        let init = StreamMessage::Init {
+            context_id: ContextId::from([0u8; 32]),
+            party_id,
+            payload,
+            next_nonce: crate::sync::helpers::generate_nonce(),
+            pop: Some(proof),
+        };
+        let (responder, mut dialer) = Stream::test_pair();
+        let dial = async move {
+            crate::sync::stream::send(&mut dialer, &init, None)
+                .await
+                .expect("send the request");
+            crate::sync::stream::recv(&mut dialer, None, Duration::from_secs(5))
+                .await
+                .ok()
+                .flatten()
+        };
+        let ((), reply) = tokio::join!(sm.handle_opened_stream(peer, Box::new(responder)), dial);
+        reply
+    }
+
+    async fn join_namespace(
+        r: &Responder,
+        joiner: &PrivateKey,
+        invitation: &SignedGroupOpenInvitation,
+    ) -> Option<StreamMessage<'static>> {
+        let credential = real_join_account(&joiner.public_key());
+        join_namespace_as(r, joiner, &credential, invitation).await
+    }
+
+    async fn join_namespace_as(
+        r: &Responder,
+        joiner: &PrivateKey,
+        credential: &calimero_context_client::local_governance::JoinAccountCredential,
+        invitation: &SignedGroupOpenInvitation,
+    ) -> Option<StreamMessage<'static>> {
+        exchange(
+            &r.sm,
+            joiner,
+            InitPayload::NamespaceJoinRequest {
+                namespace_id: NAMESPACE,
+                invitation_bytes: borsh::to_vec(invitation).unwrap(),
+                joiner_public_key: joiner.public_key(),
+                joiner_credential_bytes: borsh::to_vec(credential).unwrap(),
+            },
+        )
+        .await
+    }
+
+    /// Whether a namespace-join answer carried a key, or `None` for a refusal.
+    fn served_key(reply: Option<StreamMessage<'static>>) -> Option<bool> {
+        match reply {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::NamespaceJoinResponse {
+                        key_envelope_bytes, ..
+                    },
+                ..
+            }) => Some(!key_envelope_bytes.is_empty()),
+            Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceJoinRejected { .. },
+                ..
+            }) => None,
+            other => panic!("unexpected reply: {other:?}"),
+        }
+    }
+
+    /// Why a namespace join was refused, or `None` for any other answer.
+    fn refusal<'a>(reply: &'a Option<StreamMessage<'static>>) -> Option<&'a str> {
+        match reply {
+            Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceJoinRejected { reason },
+                ..
+            }) => Some(reason),
+            _ => None,
+        }
+    }
+
+    fn account_of(key: &PrivateKey) -> AccountId {
+        calimero_governance_store::test_fixtures::account_for(&key.public_key())
+    }
+
+    fn party(seed: u8) -> PrivateKey {
+        PrivateKey::from([seed; 32])
+    }
+
+    fn role_held(r: &Responder, key: &PrivateKey) -> Option<GroupMemberRole> {
+        MembershipRepository::new(&r.store)
+            .role_of(&ns(), &account_of(key))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_revoked_device_is_served_nothing_by_the_namespace_join() {
+        let r = responder().await;
+        let joiner = party(0x07);
+        let invitation = invitation_from(&r.admin, ns(), 1);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .unwrap();
+
+        let reply = join_namespace(&r, &joiner, &invitation).await;
+        assert!(
+            refusal(&reply).is_some_and(|reason| reason.contains("revoked")),
+            "a device the namespace revoked is not admitted, whatever invitation it holds: {reply:?}"
+        );
+        assert_eq!(role_held(&r, &joiner), None);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_device_of_an_existing_member_is_served_nothing_either() {
+        let r = responder().await;
+        let joiner = party(0x08);
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &account_of(&joiner), GroupMemberRole::Member)
+            .unwrap();
+        let invitation = invitation_from(&r.admin, ns(), 1);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .unwrap();
+
+        let reply = join_namespace(&r, &joiner, &invitation).await;
+        assert!(
+            refusal(&reply).is_some_and(|reason| reason.contains("revoked")),
+            "{reply:?}"
+        );
+    }
+
+    /// Control: the revocation is of one device, not of its account.
+    #[tokio::test]
+    async fn a_live_device_of_the_account_is_served_after_a_sibling_is_revoked() {
+        let r = responder().await;
+        let revoked = party(0x0A);
+        let sibling = party(0x0B);
+        let invitation = invitation_from(&r.admin, ns(), 1);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&ns(), DeviceId::from(*revoked.public_key().digest()))
+            .unwrap();
+
+        let root = PrivateKey::from(*revoked.public_key());
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
+        let credential = calimero_governance_store::test_fixtures::join_account_for(
+            &root,
+            genesis,
+            &sibling.public_key(),
+            *sibling.public_key().as_ref(),
+            0,
+        );
+
+        assert_eq!(
+            served_key(join_namespace_as(&r, &sibling, &credential, &invitation).await),
+            Some(true)
+        );
+    }
+
+    /// Control: a node re-paired under a fresh device keeps its signing key.
+    #[tokio::test]
+    async fn a_re_paired_device_with_the_same_signing_key_is_served() {
+        let r = responder().await;
+        let joiner = party(0x0C);
+        let invitation = invitation_from(&r.admin, ns(), 1);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&ns(), DeviceId::from(*joiner.public_key().digest()))
+            .unwrap();
+
+        let root = PrivateKey::from(*joiner.public_key());
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
+        let credential = calimero_governance_store::test_fixtures::join_account_for(
+            &root,
+            genesis,
+            &joiner.public_key(),
+            [0xC1; 32],
+            0,
+        );
+
+        assert_eq!(
+            served_key(join_namespace_as(&r, &joiner, &credential, &invitation).await),
+            Some(true)
+        );
+    }
+
+    /// An Open subgroup under a Restricted parent, holding a key of its own, and
+    /// a member that reaches it only by inheritance from the parent.
+    fn inherited_member(r: &Responder) -> PrivateKey {
+        let parent = ContextGroupId::from(PARENT);
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        let admin_account = account_of(&r.admin);
+        for group in [parent, subgroup] {
+            MetaRepository::new(&r.store)
+                .save(&group, &sample_meta_with_admin(admin_account))
+                .unwrap();
+        }
+        NamespaceRepository::new(&r.store)
+            .nest(&ns(), &parent)
+            .unwrap();
+        NamespaceRepository::new(&r.store)
+            .nest(&parent, &subgroup)
+            .unwrap();
+        let caps = CapabilitiesRepository::new(&r.store);
+        caps.set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+            .unwrap();
+        caps.set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+            .unwrap();
+        GroupKeyring::new(&r.store, subgroup)
+            .store_key(&[0x78; 32])
+            .unwrap();
+
+        let member = party(0x09);
+        let account = enrol_member(&r.store, &ns(), &member.public_key());
+        MembershipRepository::new(&r.store)
+            .add_member(&parent, &account, GroupMemberRole::Member)
+            .unwrap();
+        caps.set_member_capability(
+            &parent,
+            &account,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+        member
+    }
+
+    fn remove_from_subgroup(r: &Responder, member: &PrivateKey) {
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        let account = account_of(member);
+        DenyListRepository::new(&r.store)
+            .mark(&subgroup, &account)
+            .unwrap();
+        ReentryRepository::new(&r.store)
+            .block(&subgroup, &account, GroupExitReason::Removed)
+            .unwrap();
+    }
+
+    async fn join_subgroup(r: &Responder, member: &PrivateKey) -> Option<bool> {
+        let reply = exchange(
+            &r.sm,
+            member,
+            InitPayload::OpenSubgroupJoinRequest {
+                namespace_id: NAMESPACE,
+                subgroup_id: SUBGROUP,
+                joiner_public_key: member.public_key(),
+            },
+        )
+        .await;
+        match reply {
+            Some(StreamMessage::Message {
+                payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+                ..
+            }) => Some(!key_envelope_bytes.is_empty()),
+            Some(StreamMessage::Message {
+                payload: MessagePayload::OpenSubgroupJoinRejected { .. },
+                ..
+            }) => None,
+            other => panic!("unexpected reply: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_member_removed_from_an_open_subgroup_is_served_no_key_by_its_join() {
+        let r = responder().await;
+        let member = inherited_member(&r);
+        assert_eq!(
+            join_subgroup(&r, &member).await,
+            Some(true),
+            "precondition: before the removal the inherited member is served the key"
+        );
+
+        remove_from_subgroup(&r, &member);
+
+        assert_eq!(join_subgroup(&r, &member).await, None);
+    }
+
+    #[tokio::test]
+    async fn inbound_sync_does_not_admit_a_member_removed_from_an_open_subgroup() {
+        let r = responder().await;
+        let member = inherited_member(&r);
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        assert!(r
+            .sm
+            .peer_is_group_member(&r.store, subgroup, &member.public_key())
+            .unwrap());
+
+        remove_from_subgroup(&r, &member);
+
+        assert!(!r
+            .sm
+            .peer_is_group_member(&r.store, subgroup, &member.public_key())
+            .unwrap());
+    }
+}
+
+#[cfg(test)]
 mod namespace_join_device_tests {
     //! Who the namespace join responder serves, by the standing of the joining device.
 
@@ -4159,6 +4592,7 @@ mod namespace_join_device_tests {
     use std::time::Duration;
 
     use calimero_account::DeviceId;
+    use calimero_context_client::local_governance::JoinAccountCredential;
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -4249,6 +4683,17 @@ mod namespace_join_device_tests {
         joiner_sk: &PrivateKey,
         invitation_bytes: Vec<u8>,
     ) -> Result<Vec<u8>, String> {
+        let credential = calimero_context::test_support::credential(&joiner_sk.public_key());
+        join_presenting(sm, joiner_sk, &credential, invitation_bytes).await
+    }
+
+    /// [`join`], presenting `credential` for the joiner's key.
+    async fn join_presenting(
+        sm: &SyncManager,
+        joiner_sk: &PrivateKey,
+        credential: &JoinAccountCredential,
+        invitation_bytes: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
         let peer = PeerId::random();
         let party_id = joiner_sk.public_key();
         let pop = InitProof {
@@ -4268,10 +4713,7 @@ mod namespace_join_device_tests {
                 namespace_id: NAMESPACE,
                 invitation_bytes,
                 joiner_public_key: party_id,
-                joiner_credential_bytes: borsh::to_vec(
-                    &calimero_context::test_support::credential(&party_id),
-                )
-                .expect("borsh the credential"),
+                joiner_credential_bytes: borsh::to_vec(credential).expect("borsh the credential"),
             },
             next_nonce: crate::sync::helpers::generate_nonce(),
             pop: Some(pop),
@@ -4368,6 +4810,57 @@ mod namespace_join_device_tests {
         assert!(
             served(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x04)).await),
             "a device linked again above its floor is served the key"
+        );
+    }
+
+    /// A key the joining device was re-keyed past proves nothing: its old
+    /// certificate is refused the namespace key, the current one is served.
+    #[tokio::test]
+    async fn a_rotated_out_device_key_is_not_served_the_namespace_key() {
+        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let ns = ContextGroupId::from(NAMESPACE);
+        let admin_sk = PrivateKey::from([0x62; 32]);
+        let admitter = found(&store, &admin_sk);
+
+        let (root_sk, genesis) = calimero_governance_store::test_fixtures::test_account_root();
+        let device = [0x74; 32];
+        let old_sk = PrivateKey::from([0x75; 32]);
+        let new_sk = PrivateKey::from([0x76; 32]);
+        let old = calimero_governance_store::test_fixtures::join_account_for(
+            &root_sk,
+            genesis,
+            &old_sk.public_key(),
+            device,
+            0,
+        );
+        let new = calimero_governance_store::test_fixtures::join_account_for(
+            &root_sk,
+            genesis,
+            &new_sk.public_key(),
+            device,
+            1,
+        );
+        let _bound = AccountBindingRepository::new(&store)
+            .apply_link(&ns, &new.genesis, &new.chain, &new.statement, 0)
+            .expect("store")
+            .expect("bind the device at its current key");
+        MembershipRepository::new(&store)
+            .add_member(&ns, &new.statement.account, GroupMemberRole::Member)
+            .expect("seat the member");
+
+        assert!(
+            join_presenting(&sm, &new_sk, &new, invitation(&admin_sk, admitter, 0x05))
+                .await
+                .is_ok_and(|key| !key.is_empty()),
+            "precondition: the device's current key is served"
+        );
+        let reply =
+            join_presenting(&sm, &old_sk, &old, invitation(&admin_sk, admitter, 0x06)).await;
+        assert!(
+            reply
+                .as_ref()
+                .is_err_and(|reason| reason.contains("re-keyed past")),
+            "a key the device was re-keyed past must be refused, got {reply:?}"
         );
     }
 }

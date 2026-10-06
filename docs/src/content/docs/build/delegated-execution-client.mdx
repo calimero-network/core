@@ -550,6 +550,14 @@ Authorization: Bearer <session token>
 { "data": { "returns": { /* the method's return value */ } } }
 ```
 
+The method runs **as the caller**: `env::account_id()` is the session's account
+and `env::device_id()` is the certified signing key of the device that opened the
+session, resolved from the namespace's bindings — the same pair a warrant for
+that device would carry through `/intents`. So a view such as "whose turn is
+it" or "who am I" answers for the caller, not for the relay executing the read.
+A session that names no device runs on the relay's key for that half only; the
+account is always the caller's.
+
 Three refusals a client must handle distinctly, because they mean different things
 to a user:
 

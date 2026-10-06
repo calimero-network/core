@@ -115,7 +115,48 @@ pub struct TeeAdmissionParams {
 
 /// The reply half of the direct TEE admission channel: the peer that admitted
 /// this node, or an error naming every refusal.
+///
+/// When every peer asked answered and none admitted, the error is a
+/// [`TeeAdmissionRefused`], so a caller can report each peer's reason rather
+/// than one flattened string.
 pub type TeeAdmissionReply = oneshot::Sender<eyre::Result<PeerId>>;
+
+/// Every directly-asked admitter declined to admit this node.
+///
+/// Each entry is a peer and why it said no — its own refusal (removed from the
+/// namespace, measurements outside the policy, not allowed to vouch), or what
+/// went wrong reaching it. The reasons come from the peers, so each is bounded
+/// to [`TeeAdmissionRefused::MAX_REASON_LEN`] bytes before it is kept.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "no admitter admitted this node to namespace {}: [{}]",
+    hex::encode(.namespace_id),
+    .refusals.iter().map(|(peer, reason)| format!("{peer}: {reason}")).collect::<Vec<_>>().join("; ")
+)]
+pub struct TeeAdmissionRefused {
+    pub namespace_id: [u8; 32],
+    pub refusals: Vec<(PeerId, String)>,
+}
+
+impl TeeAdmissionRefused {
+    /// Longest refusal reason kept, in bytes. A peer's reason is free text from
+    /// across the network; this keeps one from bloating the error, the logs and
+    /// the fleet-join answer that carry it.
+    pub const MAX_REASON_LEN: usize = 512;
+
+    /// Record one peer's refusal, cut to [`Self::MAX_REASON_LEN`] on a char
+    /// boundary.
+    pub fn push(&mut self, peer: PeerId, mut reason: String) {
+        if reason.len() > Self::MAX_REASON_LEN {
+            let mut end = Self::MAX_REASON_LEN;
+            while !reason.is_char_boundary(end) {
+                end -= 1;
+            }
+            reason.truncate(end);
+        }
+        self.refusals.push((peer, reason));
+    }
+}
 
 /// How long the sync manager lets one direct TEE admission run before it
 /// answers it as a refusal.
@@ -1764,5 +1805,41 @@ mod tee_admission_request_tests {
         assert_eq!(started.elapsed(), bound, "{refusal:#}");
         assert!(format!("{refusal:#}").contains("no answer"), "{refusal:#}");
         holder.abort();
+    }
+}
+
+#[cfg(test)]
+mod tee_admission_refused_tests {
+    use libp2p::PeerId;
+
+    use super::TeeAdmissionRefused;
+
+    #[test]
+    fn a_long_reason_is_cut_to_the_bound_on_a_char_boundary() {
+        let mut refused = TeeAdmissionRefused {
+            namespace_id: [7; 32],
+            refusals: Vec::new(),
+        };
+        // Multi-byte chars straddle the bound, so a byte-index cut would panic.
+        let reason = "é".repeat(TeeAdmissionRefused::MAX_REASON_LEN);
+        refused.push(PeerId::random(), reason);
+
+        let (_, kept) = &refused.refusals[0];
+        assert!(kept.len() <= TeeAdmissionRefused::MAX_REASON_LEN);
+        assert!(kept.len() > TeeAdmissionRefused::MAX_REASON_LEN - 2);
+    }
+
+    #[test]
+    fn the_message_names_every_peer_and_its_reason() {
+        let peer = PeerId::random();
+        let mut refused = TeeAdmissionRefused {
+            namespace_id: [0xab; 32],
+            refusals: Vec::new(),
+        };
+        refused.push(peer, "was removed from group".to_owned());
+
+        let message = refused.to_string();
+        assert!(message.contains(&"ab".repeat(32)));
+        assert!(message.contains(&format!("{peer}: was removed from group")));
     }
 }

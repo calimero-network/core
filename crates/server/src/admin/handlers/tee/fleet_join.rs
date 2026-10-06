@@ -10,8 +10,9 @@ use calimero_context_client::group::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{GroupKeyring, MembershipRepository, NamespaceRepository};
+use calimero_node_primitives::client::TeeAdmissionRefused;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::FleetJoinRequest;
+use calimero_server_primitives::admin::{FleetJoinRefusal, FleetJoinRequest, FleetJoinResponse};
 use calimero_store::Store;
 use libp2p::multiaddr::Protocol;
 use libp2p::{Multiaddr, PeerId};
@@ -103,15 +104,18 @@ pub async fn handler(
                 &entries,
             )
             .await;
-            return fleet_join_response(
-                &req.group_id,
-                ns_id,
-                our_public_key,
-                our_account,
-                true,
+            return fleet_join_response(FleetJoinResponse {
+                status: "joined".to_owned(),
+                group_id: req.group_id,
+                namespace_id: hex::encode(ns_id.to_bytes()),
+                public_key: our_public_key.to_string(),
+                account: hex::encode(our_account.as_bytes()),
+                admitted: true,
                 auto_follow_enabled,
                 contexts_joined,
-            );
+                admitted_by: None,
+                refusals: Vec::new(),
+            });
         }
         Ok(None) => {}
         // A read that failed says nothing either way; the join below is what
@@ -199,8 +203,11 @@ pub async fn handler(
 
     // Register first, so the node can answer a challenge; then ask the named admitters
     // directly. Without addresses, or if none admits, the prompt below draws an offer.
+    let mut admitted_by = None;
+    let mut refusals = Vec::new();
     match state.node_client.request_tee_admission(params).await {
         Ok(admitter) => {
+            admitted_by = Some(admitter.to_string());
             info!(
                 group_id = %req.group_id,
                 %admitter,
@@ -214,11 +221,19 @@ pub async fn handler(
                 );
             }
         }
-        Err(err) => info!(
-            group_id = %req.group_id,
-            error = %format!("{err:#}"),
-            "no admitter admitted this node directly; relying on the prompt"
-        ),
+        Err(err) => {
+            // Kept for the answer: a refusal is the one thing the caller
+            // cannot learn anywhere else, since the prompt is refused
+            // silently on the admitter's side.
+            if let Some(refused) = err.downcast_ref::<TeeAdmissionRefused>() {
+                refusals = refusal_entries(refused);
+            }
+            info!(
+                group_id = %req.group_id,
+                error = %format!("{err:#}"),
+                "no admitter admitted this node directly; relying on the prompt"
+            );
+        }
     }
 
     // Prompt the namespace up front. A single publish at fleet-join time is
@@ -415,41 +430,39 @@ pub async fn handler(
         );
     }
 
-    fleet_join_response(
-        &req.group_id,
-        ns_id,
-        our_public_key,
-        account_id,
+    fleet_join_response(FleetJoinResponse {
+        status: if admitted { "joined" } else { "announced" }.to_owned(),
+        group_id: req.group_id,
+        namespace_id: hex::encode(ns_id.to_bytes()),
+        public_key: our_public_key.to_string(),
+        account: hex::encode(account_id.as_bytes()),
         admitted,
         auto_follow_enabled,
         contexts_joined,
-    )
+        admitted_by,
+        // A refusal from an earlier asked peer is moot once this node is in.
+        refusals: if admitted { Vec::new() } else { refusals },
+    })
 }
 
-/// The fleet-join answer. One builder, so the already-a-member answer and the
-/// admitted-by-asking one cannot drift apart in shape.
-fn fleet_join_response(
-    group_id: &str,
-    ns_id: ContextGroupId,
-    our_public_key: PublicKey,
-    account: AccountId,
-    admitted: bool,
-    auto_follow_enabled: bool,
-    contexts_joined: Vec<String>,
-) -> axum::response::Response {
-    ApiResponse {
-        payload: serde_json::json!({
-            "status": if admitted { "joined" } else { "announced" },
-            "group_id": group_id,
-            "namespace_id": hex::encode(ns_id.to_bytes()),
-            "public_key": our_public_key.to_string(),
-            "account": hex::encode(account.as_bytes()),
-            "admitted": admitted,
-            "auto_follow_enabled": auto_follow_enabled,
-            "contexts_joined": contexts_joined,
-        }),
-    }
-    .into_response()
+/// The fleet-join answer. Built from the shared response type, so the
+/// already-a-member answer, the admitted-by-asking one and what `meroctl`
+/// decodes cannot drift apart in shape.
+fn fleet_join_response(response: FleetJoinResponse) -> axum::response::Response {
+    ApiResponse { payload: response }.into_response()
+}
+
+/// The refusals of a direct admission request, as the fleet-join answer
+/// reports them.
+fn refusal_entries(refused: &TeeAdmissionRefused) -> Vec<FleetJoinRefusal> {
+    refused
+        .refusals
+        .iter()
+        .map(|(peer, reason)| FleetJoinRefusal {
+            peer: peer.to_string(),
+            reason: reason.clone(),
+        })
+        .collect()
 }
 
 /// The account this node is a member of `group_id` as, when it already is one

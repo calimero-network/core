@@ -4731,6 +4731,205 @@ async fn a_sealed_group_created_lands_after_the_key_arrives() {
     );
 }
 
+/// Every namespace op this node put on the wire, in order.
+fn published_namespace_ops(
+    node: &TestNode,
+) -> Vec<calimero_context_client::local_governance::SignedNamespaceOp> {
+    use calimero_context_client::local_governance::NamespaceTopicMsg;
+
+    node.publishes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(|bytes| match borsh::from_slice(bytes).ok()? {
+            BroadcastMessage::NamespaceGovernanceDelta { payload, .. } => {
+                match borsh::from_slice(&payload).ok()? {
+                    NamespaceTopicMsg::Op(op) => Some(op),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The key a member is handed when it pulls `group`'s current key, opened with
+/// its own device secret.
+fn pulled_key(
+    store: &Store,
+    ns_gid: &ContextGroupId,
+    group: &ContextGroupId,
+    member_sk: &PrivateKey,
+) -> Option<[u8; 32]> {
+    let member_pk = member_sk.public_key();
+    let device = calimero_governance_store::test_fixtures::device_secret_for(&member_pk);
+    let (bytes, responder) = calimero_governance_store::build_group_key_delivery(
+        store,
+        ns_gid.to_bytes().into(),
+        group.to_bytes(),
+        calimero_governance_store::KeyRequester {
+            identity: member_pk,
+            device: Some(device.device),
+        },
+        None,
+    )
+    .expect("build the key delivery");
+    if bytes.is_empty() {
+        return None;
+    }
+    let envelope = borsh::from_slice(&bytes).expect("decode the served envelope");
+    Some(
+        calimero_governance_store::GroupKeyring::unwrap_any(
+            member_sk,
+            Some(&device),
+            &group.to_bytes(),
+            Some(&responder),
+            &envelope,
+        )
+        .expect("open the served envelope"),
+    )
+}
+
+/// An Open -> Restricted flip must not leave the subgroup encrypting under a key
+/// that members who only inherited it could pull while it was Open.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn flipping_an_open_subgroup_to_restricted_rotates_its_key() {
+    use calimero_context_client::group::SetSubgroupVisibilityRequest;
+    use calimero_context_client::local_governance::NamespaceOp;
+    use calimero_context_config::VisibilityMode;
+    use calimero_governance_store::test_fixtures::{device_secret_for, enrol_member};
+    use calimero_governance_store::{GroupKeyring, MembershipRepository};
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let ns_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let admin_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+    let sub = create_born_open_subgroup(&node, &ns_gid).await;
+
+    let inherited_sk = PrivateKey::random(&mut rng);
+    let direct_sk = PrivateKey::random(&mut rng);
+    let members = MembershipRepository::new(&node.store);
+    let [inherited_account, direct_account] = [&inherited_sk, &direct_sk].map(|sk| {
+        let account = enrol_member(&node.store, &ns_gid, &sk.public_key());
+        members
+            .add_member(&ns_gid, &account, GroupMemberRole::Member)
+            .expect("add to the namespace root");
+        account
+    });
+    members
+        .add_member(&sub, &direct_account, GroupMemberRole::Member)
+        .expect("add a direct subgroup member");
+    assert!(
+        members.is_member(&sub, &inherited_account).unwrap(),
+        "precondition: the root member reaches the Open subgroup by inheritance"
+    );
+
+    assert_eq!(
+        pulled_key(&node.store, &ns_gid, &sub, &inherited_sk),
+        None,
+        "while the namespace key covers the subgroup, no member may pull the subgroup's own key"
+    );
+    let open_era_key = GroupKeyring::new(&node.store, sub)
+        .load_current_key()
+        .unwrap()
+        .expect("the subgroup holds its birth key")
+        .1;
+
+    node.context_client
+        .set_subgroup_visibility(SetSubgroupVisibilityRequest {
+            group_id: sub,
+            subgroup_visibility: VisibilityMode::Restricted,
+        })
+        .await
+        .expect("flip to Restricted");
+
+    let (new_key_id, new_key) = GroupKeyring::new(&node.store, sub)
+        .load_current_key()
+        .unwrap()
+        .expect("a current subgroup key");
+    assert_ne!(
+        new_key, open_era_key,
+        "after the flip the subgroup must encrypt under a key minted with it"
+    );
+
+    let flip = published_namespace_ops(&node)
+        .into_iter()
+        .rev()
+        .find_map(|op| match op.op {
+            NamespaceOp::Group {
+                group_id,
+                key_rotation,
+                ..
+            } if group_id.to_bytes() == sub.to_bytes() => Some(key_rotation),
+            _ => None,
+        })
+        .expect("the flip was published");
+    let rotation = flip.expect("the flip carries the new key");
+    assert_eq!(rotation.new_key_id.to_bytes(), new_key_id);
+    let opens_for = |sk: &PrivateKey| {
+        let device = device_secret_for(&sk.public_key());
+        rotation.envelopes.iter().find_map(|envelope| {
+            GroupKeyring::unwrap_any(
+                sk,
+                Some(&device),
+                &sub.to_bytes(),
+                Some(&admin_pk),
+                envelope,
+            )
+            .ok()
+        })
+    };
+    assert_eq!(
+        opens_for(&direct_sk),
+        Some(new_key),
+        "a direct member must receive the new key with the flip"
+    );
+    assert_eq!(
+        opens_for(&inherited_sk),
+        None,
+        "a member that only inherited the subgroup must not"
+    );
+    assert_eq!(
+        pulled_key(&node.store, &ns_gid, &sub, &direct_sk),
+        Some(new_key),
+        "a direct member that missed the flip pulls the new key"
+    );
+    assert_eq!(pulled_key(&node.store, &ns_gid, &sub, &inherited_sk), None);
+
+    // Back to Open: the namespace key covers the subgroup again and nothing rotates.
+    node.context_client
+        .set_subgroup_visibility(SetSubgroupVisibilityRequest {
+            group_id: sub,
+            subgroup_visibility: VisibilityMode::Open,
+        })
+        .await
+        .expect("flip back to Open");
+    let namespace_key_id = GroupKeyring::new(&node.store, ns_gid)
+        .load_current_key()
+        .unwrap()
+        .expect("the namespace key")
+        .0;
+    let reopen = published_namespace_ops(&node)
+        .into_iter()
+        .last()
+        .expect("the reopening was published");
+    let NamespaceOp::Group {
+        key_id,
+        key_rotation,
+        ..
+    } = reopen.op
+    else {
+        panic!("the reopening is a group op");
+    };
+    assert_eq!(
+        key_id.to_bytes(),
+        namespace_key_id,
+        "an Open subgroup stays under the namespace key"
+    );
+    assert!(key_rotation.is_none(), "opening a subgroup rotates nothing");
+}
+
 /// A namespace op is applied only when it arrives on that namespace's own gossip
 /// topic, whatever namespace id the envelope carries.
 #[tokio::test]

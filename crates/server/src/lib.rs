@@ -24,6 +24,8 @@ use crate::service_mounts::mount_runtime_services;
 
 pub mod admin;
 mod auth;
+#[cfg(test)]
+mod authz_matrix;
 mod caller_account;
 pub mod config;
 mod ephemeral_replay;

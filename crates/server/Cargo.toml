@@ -71,7 +71,7 @@ mock-attestation = ["calimero-tee-attestation/mock-attestation"]
 # node client (see `jsonrpc/test_support.rs`).
 actix.workspace = true
 color-eyre.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # WebSocket integration tests (crates/server/src/ws.rs `mod tests`)

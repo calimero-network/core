@@ -191,6 +191,7 @@ mod tests {
     use calimero_account::{
         AccountGenesis, AccountProof, Audience, CallerProof, DeviceCert, KemPublicKey,
         LoginStatement, RequestSig, RootKeyHandoff, MAX_PRESENTED_HANDOFFS,
+        MAX_REQUEST_LIFETIME_SECS,
     };
     use calimero_primitives::identity::{DeviceId, PrivateKey};
 
@@ -417,6 +418,32 @@ mod tests {
         assert_eq!(
             p.admit(b"abcdef", METHOD, PATH, b"", NOW),
             Err(Refusal::Malformed),
+        );
+    }
+
+    /// A correctly signed request link with a window past the cap is refused, so
+    /// a client cannot mint a proof that stays replayable for longer.
+    #[test]
+    fn a_request_link_valid_for_too_long_is_refused() {
+        let node = key(4);
+        let (mut proof, account) = chain_for(1, &node);
+        let session_sk = key(101);
+        let p = policy(&node, account, false);
+        p.admit(encoded(&proof).as_bytes(), METHOD, PATH, b"", NOW)
+            .expect("control: the chain at the cap is admitted");
+
+        proof.request = RequestSig::sign(
+            &session_sk,
+            METHOD,
+            PATH,
+            b"",
+            NOW,
+            NOW + MAX_REQUEST_LIFETIME_SECS + 1,
+        )
+        .expect("request");
+        assert_eq!(
+            p.admit(encoded(&proof).as_bytes(), METHOD, PATH, b"", NOW),
+            Err(Refusal::Unverified),
         );
     }
 

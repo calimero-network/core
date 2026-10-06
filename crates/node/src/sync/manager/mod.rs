@@ -3446,6 +3446,8 @@ impl SyncManager {
     /// re-resolves once governance advances. Reuses the data-write path's
     /// refreshing `projection_member_at_cut`, so sync and writes decide against an
     /// identically up-to-date fold.
+    ///
+    /// A removal the live rows record overrides the projection's verdict.
     fn peer_is_group_member(
         &self,
         store: &calimero_store::Store,
@@ -3463,13 +3465,15 @@ impl SyncManager {
         else {
             return Ok(false);
         };
-        let live = MembershipRepository::new(store).is_member(&group_id, &their_account)?;
+        let membership = MembershipRepository::new(store);
+        let walk_member = membership.is_member(&group_id, &their_account)?;
+        let live = membership.is_live_member(&group_id, &their_account)?;
         let Some(heads) =
             calimero_context::scope_projection::ScopeProjections::namespace_current_heads(
                 store, group_id,
             )
         else {
-            return Ok(live);
+            return Ok(inbound_member_verdict(walk_member, live, None));
         };
         let projected = crate::handlers::state_delta::projection_member_at_cut(
             &self.node_state,
@@ -3481,7 +3485,7 @@ impl SyncManager {
         // The projection is authoritative for inbound-sync auth (validated
         // divergence-free across the e2e `membership-sync` plane); `None` (can't
         // decide) falls back to live. (The live read retires in #29b.)
-        Ok(projected.unwrap_or(live))
+        Ok(inbound_member_verdict(walk_member, live, projected))
     }
 
     /// Authorize the dialing peer as a sync-eligible member of `context_id` —
@@ -4463,6 +4467,15 @@ pub(crate) fn pending_upgrade_info(
     let applied = calimero_context::activation::activated_bytecode(store, context_id)
         == Some(meta.target.bytecode_id);
     (!applied).then(|| (target, staged_bytecode_for(store, &meta)))
+}
+
+/// The projection folds no deny list or re-entry block, so a removal the live
+/// rows record (`walk_member` but not `live`) overrides it.
+fn inbound_member_verdict(walk_member: bool, live: bool, projected: Option<bool>) -> bool {
+    if walk_member && !live {
+        return false;
+    }
+    projected.unwrap_or(live)
 }
 
 #[cfg(test)]
