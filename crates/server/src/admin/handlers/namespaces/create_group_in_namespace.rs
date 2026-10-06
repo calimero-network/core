@@ -265,7 +265,10 @@ mod tests {
     #[test]
     fn an_unknown_visibility_is_refused() {
         let err = restricted_from(Some("public")).expect_err("must be refused");
-        assert!(err.to_string().contains("invalid visibility 'public'"), "got: {err}");
+        assert!(
+            err.to_string().contains("invalid visibility 'public'"),
+            "got: {err}"
+        );
     }
 
     #[test]
