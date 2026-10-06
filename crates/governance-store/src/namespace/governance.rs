@@ -773,6 +773,8 @@ impl<'a> NamespaceGovernance<'a> {
                 // signal for the rotation gate below: a node with no key for the
                 // group is not a member and must never process a rotation for it.
                 let inner_decrypted = resolved_key.is_some();
+                // Decrypted, but kept unapplied for the key-arrival replay.
+                let mut held = false;
                 if !inner_decrypted {
                     keep_bytes &= self.admit_unreadable(op)?;
                     // The key-arrival replay applies the rotation at this op's sequence.
@@ -797,20 +799,60 @@ impl<'a> NamespaceGovernance<'a> {
                     // encrypted group op, so the assignment is a simple
                     // overwrite. Any prior `None` is preserved if this
                     // op reports `None`.
-                    let report =
-                        self.decrypt_and_apply_group_op(op, &group_id_typed, group_key, encrypted)?;
-                    if report.is_some() {
-                        result.divergence = report;
+                    match self.decrypt_and_apply_group_op(op, &group_id_typed, group_key, encrypted)
+                    {
+                        Ok(report) => {
+                            if report.is_some() {
+                                result.divergence = report;
+                            }
+                        }
+                        // Readable, but judged at a cut whose only hole is this
+                        // group's own sealed history (core#4511): a namespace
+                        // member outside a Restricted subgroup reads the Open flip
+                        // but never the subgroup ops it cites, and is never served
+                        // their key. Refusing here parked the op for good, and every
+                        // op after it in the namespace with it. Kept instead like an
+                        // op this node cannot decrypt: logged, head advanced,
+                        // nothing applied. The key-arrival replay re-feeds every op
+                        // of this group and applies it once the history reads.
+                        Err(e)
+                            if matches!(
+                                e.downcast_ref::<crate::ApplyError>(),
+                                Some(crate::ApplyError::AuthorityUndecidable { .. })
+                            ) && self
+                                .authorizer
+                                .history_sealed_in_group(&group_id_typed, self.parents) =>
+                        {
+                            tracing::warn!(
+                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                group_id = %hex::encode(group_id_typed.to_bytes()),
+                                delta_id = %hex::encode(delta_id),
+                                signer = %op.signer,
+                                nonce = op.nonce,
+                                "group op held unapplied: its group's history is sealed under \
+                                 a key this node does not hold; the namespace moves on and \
+                                 the op applies if that key arrives"
+                            );
+                            held = true;
+                            applied = None;
+                            if key_rotation.is_some() {
+                                DeferredRotations::new(self.store, self.namespace_id)
+                                    .defer(delta_id, op_sequence)?;
+                            }
+                        }
+                        Err(e) => return Err(e),
                     }
                 }
 
-                self.apply_carried_rotation(
-                    op,
-                    inner_op.as_ref(),
-                    op_sequence,
-                    delta_id,
-                    &mut result,
-                )?;
+                if !held {
+                    self.apply_carried_rotation(
+                        op,
+                        inner_op.as_ref(),
+                        op_sequence,
+                        delta_id,
+                        &mut result,
+                    )?;
+                }
             }
             // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op type
             // contributes nothing to apply (it folds as a `Noop` in decode),

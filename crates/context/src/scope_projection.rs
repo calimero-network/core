@@ -2374,6 +2374,45 @@ impl ScopeProjections {
     /// otherwise, defer to live), build the folded view + the genesis root tuple
     /// (`AclView::is_authorized_admin` prefers the folded root admin, tracking
     /// `AdminChanged`; this is the un-folded base) + the namespace default cap.
+    /// Is the cut at `heads` undecidable for `group` only because an op of
+    /// `group` ITSELF is sealed under a key this node does not hold?
+    ///
+    /// The one undecidable cut a key can settle and history cannot: the
+    /// ancestry is whole, and what is missing is the reading of `group`'s own
+    /// sealed ops. An op of `group` judged at such a cut can be kept in the log
+    /// unapplied, like an op this node cannot decrypt at all - the key-arrival
+    /// replay re-feeds every op of `group`, and applies it once the history
+    /// reads. A node outside a Restricted subgroup never gets that key, and
+    /// without this the op parked for good and the namespace's DAG with it
+    /// (core#4511).
+    ///
+    /// `false` for every other refusal: a gap in the history is closed by sync,
+    /// not by a key, so an op held for one would never be re-fed.
+    #[must_use]
+    pub fn sealed_in_own_group(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> bool {
+        let Ok(namespace) = NamespaceRepository::new(store).resolve(&group) else {
+            return false;
+        };
+        let namespace_id = namespace.to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        let Some(log) = self.logs.get(&scope) else {
+            return false;
+        };
+        let Some(base) = authority_base(store, namespace_id) else {
+            return false;
+        };
+        let walked = self.walk(&scope, log, heads, base);
+        walked.is_complete()
+            && walked
+                .first_opaque_in_any(&BTreeSet::from([group]))
+                .is_some()
+    }
+
     /// Can this projection decide ANY authority question for `group` at `heads`?
     ///
     /// Every `*_at_cut` gate funnels through [`auth_cut_context`](Self::auth_cut_context),
