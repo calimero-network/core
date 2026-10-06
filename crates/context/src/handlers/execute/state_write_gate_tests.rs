@@ -103,7 +103,7 @@ pub(super) struct Fixture {
 /// A one-group namespace with one context on [`MODULE`], and the local node
 /// holding `role` in it. Someone else is the group's admin, so the local node
 /// is never an admin by accident.
-async fn fixture(role: LocalRole) -> Fixture {
+pub(super) async fn fixture(role: LocalRole) -> Fixture {
     fixture_running(role, |_| MODULE.to_owned()).await
 }
 

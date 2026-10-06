@@ -108,10 +108,7 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
     // account-keyed, and every caller below turned it into "not authorized" one
     // step later. Returning `None` says that directly instead of routing it
     // through an account nobody has heard of.
-    view.devices
-        .values()
-        .find(|binding| binding.sign_pk == *key)
-        .map(|binding| binding.account)
+    bound_account(view, key)
 }
 
 /// The two immutable bases every at-cut membership walk in a namespace takes:
@@ -1513,7 +1510,7 @@ impl ScopeProjections {
             .filter(|c| view.is_member_at_cut(*group, c, root, default_cap_base))
             // Namespace-leave cascade: every (sub)group member must also be a
             // namespace-ROOT member (live has no subgroup member who isn't one; the
-            // folded single `MemberLeft` doesn't carry the descendant-row cascade).
+            // fold cascades a namespace leave, but not a root TEE eviction).
             // For `group == root_group` this filter is a no-op on purpose — the
             // FIRST filter above (`is_member_at_cut(*group, …)` with `*group ==
             // root_group`) already decides root membership directly, and the root's
@@ -3215,11 +3212,17 @@ impl calimero_governance_store::FoldedTeeAuthority for FoldedProjections<'_> {
     }
 }
 
+/// The account `key` signs for at this view. A certificate names its signing key
+/// without proof the account holds the private key, so a key bound under two
+/// accounts names neither.
 fn bound_account(view: &calimero_authz::AclView, key: &PublicKey) -> Option<AccountId> {
-    view.devices
+    let mut accounts = view
+        .devices
         .values()
-        .find(|binding| binding.sign_pk == *key)
-        .map(|binding| binding.account)
+        .filter(|binding| binding.sign_pk == *key)
+        .map(|binding| binding.account);
+    let first = accounts.next()?;
+    accounts.all(|account| account == first).then_some(first)
 }
 
 /// The attested key of `account`'s evidence, when `view` makes `account` a TEE
@@ -3263,6 +3266,38 @@ fn tee_evidence_key(
 
 #[cfg(test)]
 mod tests {
+    /// A certificate names a signing key without proof the account holds the
+    /// private key, so a key two accounts' devices share resolves to neither.
+    #[test]
+    fn a_signing_key_two_accounts_certified_resolves_to_neither() {
+        let key = PublicKey::from([0x61; 32]);
+        let (victim, attacker) = (AccountId::from([0x62; 32]), AccountId::from([0x63; 32]));
+        let view = |devices: [([u8; 32], AccountId); 2]| {
+            let mut view = calimero_authz::AclView::default();
+            for (device, account) in devices {
+                let _ = view.devices.insert(
+                    calimero_account::DeviceId::from(device),
+                    calimero_authz::DeviceBinding {
+                        account,
+                        sign_pk: key,
+                        kem_pk: calimero_account::KemPublicKey::from([0x64; 32]),
+                        device_epoch: 0,
+                        key_epoch: 0,
+                    },
+                );
+            }
+            view
+        };
+
+        let own = view([([0x70; 32], victim), ([0x00; 32], victim)]);
+        assert_eq!(account_for_author(&own, &key), Some(victim));
+        assert_eq!(bound_account(&own, &key), Some(victim));
+
+        let shared = view([([0x70; 32], victim), ([0x00; 32], attacker)]);
+        assert_eq!(account_for_author(&shared, &key), None);
+        assert_eq!(bound_account(&shared, &key), None);
+    }
+
     /// A joiner credential for projection tests. These assert what the projection
     /// FOLDS from an op, so the credential only has to be well-formed — except that
     /// the account it names is now the membership key, so it must be stable and
@@ -3280,7 +3315,7 @@ mod tests {
         let cert = calimero_account::DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
-            calimero_account::DeviceId::from([0x3E; 32]),
+            calimero_account::DeviceId::mint(genesis.account_id(), [0x3E; 16]),
             &sign_pk,
             &calimero_account::KemPublicKey::from([0x2B; 32]),
             0,
@@ -5052,7 +5087,7 @@ mod tests {
                 // What the live apply attributes the op to.
                 Some((
                     self.accounts[&signer],
-                    calimero_account::DeviceId::from([0x3E; 32]),
+                    calimero_account::DeviceId::mint(self.accounts[&signer], [0x3E; 16]),
                 )),
                 id,
                 hlc(0),

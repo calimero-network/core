@@ -174,7 +174,9 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
                 Err(Rejected::NotOwner)
             }
         }
-        OpPayload::MemberAdded { group, .. } | OpPayload::MemberRemoved { group, .. } => {
+        OpPayload::MemberAdded { group, .. }
+        | OpPayload::MemberRemoved { group, .. }
+        | OpPayload::MemberLeft { group, .. } => {
             if acl_at_cut.is_group_admin(&op.author(), *group) {
                 Ok(())
             } else {

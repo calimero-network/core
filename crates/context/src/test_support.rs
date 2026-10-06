@@ -28,17 +28,29 @@ fn credential_for(
     calimero_account::AccountGenesis,
     calimero_account::DeviceCert,
 ) {
+    credential_for_kem(sign_pk, [0x2B; 32])
+}
+
+/// [`credential_for`] certifying `kem` as the key scope keys are delivered to.
+fn credential_for_kem(
+    sign_pk: &PublicKey,
+    kem: [u8; 32],
+) -> (
+    calimero_account::AccountGenesis,
+    calimero_account::DeviceCert,
+) {
     let root_sk = PrivateKey::from(*(*sign_pk));
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
+    // The device nonce is taken from the signing key rather than fixed, so two
+    // keys of one store never claim the same device.
+    let mut nonce = [0u8; 16];
+    nonce.copy_from_slice(&(**sign_pk)[..16]);
     let cert = calimero_account::DeviceCert::sign(
         &root_sk,
         genesis.account_id(),
-        // The device id is derived from the signing key rather than fixed: a
-        // constant would make every credential claim the same device, and the
-        // second enrolment in any store would be refused as a reassignment.
-        calimero_account::DeviceId::from(*(*sign_pk)),
+        calimero_account::DeviceId::mint(genesis.account_id(), nonce),
         sign_pk,
-        &calimero_account::KemPublicKey::from([0x2B; 32]),
+        &calimero_account::KemPublicKey::from(kem),
         0,
         0,
     )
@@ -56,6 +68,24 @@ pub fn credential(
     sign_pk: &PublicKey,
 ) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
     let (genesis, cert) = credential_for(sign_pk);
+    Box::new(
+        calimero_context_client::local_governance::JoinAccountCredential {
+            genesis,
+            chain: vec![],
+            statement: cert,
+        },
+    )
+}
+
+/// [`credential`] for the same account, key and device, certifying another key
+/// for scope keys to be delivered to. Not the credential `sign_pk` would
+/// present: a quote made for one is not a quote for the other.
+#[must_use]
+pub fn credential_with_kem(
+    sign_pk: &PublicKey,
+    kem: [u8; 32],
+) -> Box<calimero_context_client::local_governance::JoinAccountCredential> {
+    let (genesis, cert) = credential_for_kem(sign_pk, kem);
     Box::new(
         calimero_context_client::local_governance::JoinAccountCredential {
             genesis,
@@ -169,7 +199,7 @@ pub fn certify_device(
     let root = devices
         .provision_account_root()
         .expect("this node's account root");
-    let device = calimero_account::DeviceId::from([seed; 32]);
+    let device = calimero_account::DeviceId::mint(root.account(), [seed; 16]);
     let proof = calimero_account::AccountProof {
         genesis: root.genesis(),
         chain: vec![],

@@ -666,6 +666,11 @@ where
         }
     }
 
+    /// This collection's own id; two handles holding it name the same entries.
+    pub(crate) fn collection_id(&self) -> Id {
+        self.inner.id()
+    }
+
     /// The storage entity id this `key` maps to for the calling account: the
     /// key's own id, or in an owned collection the caller's entry at it (see
     /// [`Collection::resolve`]). Exposed so the RGA blob-merge tombstone check

@@ -20,13 +20,10 @@
 //! | `author_account` | account | membership, writer sets, the owner stamp |
 //! | `author_device_key` | key | this warrant's signature, and the replica slot |
 //! | `executor` | account | the authorship capability check |
-//! | `executor_key` | key | the envelope signature over the change itself |
+//! | `executor_key` | key | the one device that may spend it, and the envelope signature |
 //!
-//! `executor` is an account rather than a key so that a relay re-keying does not
-//! void warrants already in flight — a device that re-keys keeps its replica slot
-//! by design, and a warrant sitting unspent on an offline client should survive
-//! the same rotation. Which *process* signed is [`Delegation::executor_key`],
-//! outside the warrant, so the author never has to know it.
+//! `executor_key` is signed because each relay spends nonces in its own ledger,
+//! so any device of the operator could otherwise spend the warrant once more.
 //!
 //! **The intent travels as a hash.** The envelope a delegated change rides in is
 //! plaintext to anything subscribed to the topic, members and non-members alike.
@@ -86,9 +83,12 @@ pub struct Warrant {
     /// The device key that signed this warrant, and the replica the change is
     /// attributed to.
     pub author_device_key: PublicKey,
-    /// The operator authorized to act — an account, so that one of its processes
-    /// re-keying does not void warrants already issued to it.
+    /// The operator authorized to act, as the account its authorship capability
+    /// is granted to.
     pub executor: AccountId,
+    /// The one device of [`Self::executor`] that may spend this warrant; see the
+    /// module header.
+    pub executor_key: PublicKey,
     /// The exact application this warrant authorizes, as the content address of
     /// its bytecode.
     ///
@@ -132,7 +132,7 @@ pub struct Warrant {
     /// the relay alone, this detects an honest relay's staleness and does not
     /// constrain a dishonest one.
     pub governance_floor: Vec<[u8; 32]>,
-    /// Monotonic per author **device**.
+    /// Monotonic per author **device**, spent in each executor device's ledger.
     ///
     /// Per device rather than per account because two devices of one account are
     /// independent replicas: they cannot coordinate on a shared counter, so an
@@ -154,7 +154,7 @@ pub const MAX_WARRANT_CITED_HEADS: usize = 64;
 
 /// The values a warrant is minted from, minus the ones derived for you.
 ///
-/// A struct rather than eleven arguments to [`Warrant::sign`]: four of them
+/// A struct rather than twelve arguments to [`Warrant::sign`]: four of them
 /// are `[u8; 32]` and two are `Vec<[u8; 32]>`, so positionally they are
 /// interchangeable to the compiler and not to the verifier. Named fields
 /// make a swap a compile error instead of a signature that verifies against
@@ -170,6 +170,8 @@ pub struct WarrantTerms {
     pub author_account: AccountId,
     /// The operator authorized to act.
     pub executor: AccountId,
+    /// The one executor device that may spend it.
+    pub executor_key: PublicKey,
     /// The exact application, as the content address of its bytecode.
     pub app_version: ApplicationId,
     /// The method, in the clear.
@@ -190,7 +192,7 @@ impl Warrant {
     /// The canonical bytes an author signs.
     ///
     /// Takes `&self` rather than a parameter per field: with the v2 field set
-    /// that list runs to eleven, and eleven positional arguments of which four
+    /// that list runs to twelve, and twelve positional arguments of which four
     /// are `[u8; 32]` is a swap waiting to happen. The struct already names them.
     ///
     /// Covers every field except the signature itself.
@@ -205,11 +207,12 @@ impl Warrant {
         let governance_len = (self.governance_floor.len() as u64).to_le_bytes();
 
         let mut parts: Vec<&[u8]> =
-            Vec::with_capacity(10 + self.account_heads.len() + self.governance_floor.len());
+            Vec::with_capacity(11 + self.account_heads.len() + self.governance_floor.len());
         parts.push(self.context.digest());
         parts.push(self.author_account.as_bytes());
         parts.push(AsRef::<[u8; 32]>::as_ref(&self.author_device_key));
         parts.push(self.executor.as_bytes());
+        parts.push(AsRef::<[u8; 32]>::as_ref(&self.executor_key));
         parts.push(AsRef::<[u8; 32]>::as_ref(&self.app_version));
         parts.push(self.method.as_bytes());
         parts.push(&self.intent_hash);
@@ -272,6 +275,7 @@ impl Warrant {
             author_account: terms.author_account,
             author_device_key: author_device_sk.public_key(),
             executor: terms.executor,
+            executor_key: terms.executor_key,
             app_version: terms.app_version,
             method: terms.method,
             intent_hash: terms.intent_hash,
@@ -367,6 +371,10 @@ impl WarrantStatement for Warrant {
 
     fn executor(&self) -> AccountId {
         self.executor
+    }
+
+    fn executor_key(&self) -> PublicKey {
+        self.executor_key
     }
 
     fn nonce(&self) -> u64 {

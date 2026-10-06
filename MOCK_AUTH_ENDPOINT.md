@@ -142,7 +142,8 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" \
 
 ## Security Considerations
 
-1. **Production Safety**: The endpoint returns 404 when `enable_mock_auth` is false
+1. **Production Safety**: The endpoint returns 404 when `enable_mock_auth` is false.
+   It returns 403 to any request a browser sent (one carrying `Origin` or `Sec-Fetch-Site`), checked before the 404.
 2. **Authorization Header**: Require a secret header value for additional protection
 3. **Audit Logging**: All mock token generation is logged with warnings
 4. **Temporary Keys**: Generated keys are prefixed with "mock_" for identification
@@ -164,6 +165,12 @@ Mock tokens have the following characteristics:
 
 - Check that `enable_mock_auth = true` in configuration
 - Verify you're using the correct endpoint path `/auth/mock-token`
+
+### Forbidden (403)
+
+- The request carries `Origin` or `Sec-Fetch-Site`, so it is treated as a browser page's
+- Call the endpoint from a script or `curl`, which send neither header
+- A malformed body is answered 400 before this check
 
 ### Unauthorized (401)
 

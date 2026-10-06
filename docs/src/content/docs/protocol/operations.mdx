@@ -75,6 +75,7 @@ The `payload` is a single enum spanning four planes of change. Folding them into
 - **Membership** (`who`)
   - `MemberAdded { group, member, role }`
   - `MemberRemoved { group, member }`
+  - `MemberLeft { group, member }` - a self-leave; of the namespace root, it also removes the member from every subgroup
 - **Admin & structure** (`gov`)
   - `AdminChanged`, `PolicyUpdated`
   - `SubgroupCreated / Reparented / Deleted`
@@ -171,6 +172,7 @@ _Borsh reminder for reimplementers: a `Vec<u8>` is a `u32` little-endian length 
 | Access | `SharedWritersRotated` | `group`, `context`, `cell: Id`, `prior` and `new: BTreeMap<AccountId, OpMask>`, `nonce: u64` |
 | Membership | `MemberAdded` | `group: ContextGroupId`, `member: PublicKey`, `role: GroupMemberRole` |
 | Membership | `MemberRemoved` | `group: ContextGroupId`, `member: PublicKey` |
+| Membership | `MemberLeft` | `group: ContextGroupId`, `member: PublicKey` |
 | Admin / structure | `AdminChanged` | `new_admin: PublicKey` |
 | Admin / structure | `PolicyUpdated` | `policy_bytes: Vec<u8>` |
 | Admin / structure | `SubgroupCreated` | `child: ScopeId`, `parent: ScopeId`, `restricted: bool`, `admin: PublicKey` |

@@ -635,19 +635,12 @@ impl ContextManager {
 pub struct GovernancePreflight {
     /// The key this node signs with. There is one, so there is nothing to pick.
     pub signer: calimero_primitives::identity::PublicKey,
-    /// The signing private key (as raw bytes).
-    pub signing_key: [u8; 32],
+    /// The signing private key.
+    pub signing_key: calimero_primitives::identity::PrivateKey,
     /// Cloned datastore for use in async blocks.
     pub datastore: Store,
     /// Cloned node client for use in async blocks.
     pub node_client: calimero_node_primitives::client::NodeClient,
-}
-
-impl GovernancePreflight {
-    /// Convenience: build a `PrivateKey` from the stored signing key bytes.
-    pub fn signer_sk(&self) -> calimero_primitives::identity::PrivateKey {
-        calimero_primitives::identity::PrivateKey::from(self.signing_key)
-    }
 }
 
 impl ContextManager {
@@ -721,7 +714,7 @@ impl ContextManager {
             MembershipRepository::new(&self.datastore).require_admin(group_id, &signer_account)?;
         }
 
-        let signing_key = node_sk;
+        let signing_key = calimero_primitives::identity::PrivateKey::from(node_sk);
 
         Ok(GovernancePreflight {
             signer,
@@ -753,7 +746,7 @@ impl ContextManager {
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
-        let sk = preflight.signer_sk();
+        let sk = preflight.signing_key;
         let group_id = *group_id;
         let op_debug = format!("{op:?}");
 

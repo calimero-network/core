@@ -34,6 +34,7 @@ mod state;
 pub(crate) mod state_delta_bridge;
 pub mod sync;
 pub(crate) mod sync_session_bridge;
+mod tee_admission_state;
 mod tee_firing;
 mod tee_scheduler;
 pub(crate) mod tombstone_stability;

@@ -27,7 +27,7 @@
 //! | `group` | Membership plane: [`payload_from_group_op`] |
 //! | `root` | Admin/namespace plane: [`payload_from_root_op`] |
 //! | `guard` | Owner-level ops: a `RootGuarded` wrapper and its proof's op-local check |
-//! | `credential` | [`join_credential_binds`] / [`join_credential_certifies`] — the op-local admission predicates the apply path shares |
+//! | `credential` | [`join_credential_binds`] / [`join_credential_certifies`] — the op-local admission predicates the apply path shares — and [`tee_quote_binds_credential`], which every peer repeats on a TEE admission |
 //!
 //! Every public item is re-exported here, so `calimero_op_adapter::payload_from_root_op`
 //! keeps working regardless of which module it moved to.
@@ -41,7 +41,10 @@ mod root;
 #[cfg(test)]
 mod tests;
 
-pub use crate::credential::{join_credential_binds, join_credential_certifies};
+pub use crate::credential::{
+    join_credential_binds, join_credential_certifies, tee_admission_binding,
+    tee_quote_binds_credential,
+};
 pub use crate::data::payload_from_action;
 pub use crate::group::{payload_from_group_op, payload_from_pre_guard_group_op};
 pub use crate::root::{payload_from_pre_guard_root_op, payload_from_root_op};

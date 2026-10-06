@@ -264,6 +264,11 @@ where
         Ok(true)
     }
 
+    /// This collection's own id; two handles holding it name the same entries.
+    pub(crate) fn collection_id(&self) -> Id {
+        self.inner.id()
+    }
+
     /// The deterministic storage entity id this `value` maps to. Lets the
     /// add-wins merge consult `Index::is_deleted` without re-deriving
     /// `compute_id` and drifting from the set's own keying.

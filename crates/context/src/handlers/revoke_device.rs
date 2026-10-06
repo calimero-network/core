@@ -400,7 +400,7 @@ mod tests {
         }
         let root = calimero_primitives::identity::PrivateKey::from([0x3C; 32]);
         let genesis = calimero_account::AccountGenesis::new(root.public_key());
-        let lost = DeviceId::from([0x3D; 32]);
+        let lost = DeviceId::mint(genesis.account_id(), [0x3D; 16]);
         let cert = calimero_account::DeviceCert::sign(
             &root,
             genesis.account_id(),
@@ -446,31 +446,44 @@ mod tests {
         let _identity = NamespaceRepository::new(&store)
             .participate_in(&other)
             .expect("take part in a second namespace");
-        let lost = DeviceId::from([0x3D; 32]);
-        let mut accounts = Vec::new();
-        for (namespace, root) in [(ContextGroupId::from(NS), 0x3C), (other, 0x3B)] {
-            let root = calimero_primitives::identity::PrivateKey::from([root; 32]);
-            let genesis = calimero_account::AccountGenesis::new(root.public_key());
-            let cert = calimero_account::DeviceCert::sign(
-                &root,
-                genesis.account_id(),
-                lost,
-                &calimero_primitives::identity::PrivateKey::from([0x3E; 32]).public_key(),
-                &calimero_account::KemPublicKey::from([0x3F; 32]),
-                0,
-                0,
+        let root = calimero_primitives::identity::PrivateKey::from([0x3C; 32]);
+        let genesis = calimero_account::AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let lost = DeviceId::mint(account, [0x3D; 16]);
+        let cert = calimero_account::DeviceCert::sign(
+            &root,
+            account,
+            lost,
+            &calimero_primitives::identity::PrivateKey::from([0x3E; 32]).public_key(),
+            &calimero_account::KemPublicKey::from([0x3F; 32]),
+            0,
+            0,
+        )
+        .expect("the root certifies its device");
+        let linked = calimero_governance_store::AccountBindingRepository::new(&store)
+            .apply_link(&NS.into(), &genesis, &[], &cert, 0)
+            .expect("write the binding");
+        assert!(linked.is_ok(), "control: the device links");
+        // A minted id verifies for one account only, so the other account's
+        // binding is seeded directly.
+        store
+            .handle()
+            .put(
+                &calimero_store::key::GroupDeviceBinding::new(other.to_bytes(), *lost.as_bytes()),
+                &calimero_store::key::GroupDeviceBindingValue {
+                    account: [0x3B; 32],
+                    sign_pk: [0x3E; 32],
+                    kem_pk: [0x3F; 32],
+                    device_epoch: 0,
+                    key_epoch: 0,
+                    scope_epoch: 0,
+                },
             )
-            .expect("the root certifies a device id of its choosing");
-            let linked = calimero_governance_store::AccountBindingRepository::new(&store)
-                .apply_link(&namespace, &genesis, &[], &cert, 0)
-                .expect("write the binding");
-            assert!(linked.is_ok(), "control: the device links");
-            accounts.push(genesis.account_id());
-        }
+            .expect("seed the other account's binding");
 
         for proven in [true, false] {
             assert_eq!(
-                revocation_targets(&store, accounts[0], lost, proven).expect("read the targets"),
+                revocation_targets(&store, account, lost, proven).expect("read the targets"),
                 vec![ContextGroupId::from(NS)],
                 "proven: {proven}"
             );

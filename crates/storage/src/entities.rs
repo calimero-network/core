@@ -810,6 +810,18 @@ pub enum StorageType {
     },
 }
 
+impl StorageType {
+    /// Whether a write of this type carries its writer's signature, which apply
+    /// judges by its nonce.
+    #[must_use]
+    pub const fn is_signed(&self) -> bool {
+        matches!(
+            self,
+            Self::User { .. } | Self::Shared { .. } | Self::SharedMember { .. }
+        )
+    }
+}
+
 /// System metadata (timestamps in u64 nanoseconds).
 ///
 /// Serialized by hand, compactly: it sits in every index row, every child-trie

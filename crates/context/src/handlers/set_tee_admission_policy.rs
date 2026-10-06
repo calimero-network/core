@@ -119,7 +119,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             Ok(op) => op,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        let sk = preflight.signer_sk();
+        let sk = preflight.signing_key;
         let datastore = preflight.datastore;
         let node_client = preflight.node_client;
         let ack_router = Arc::clone(&self.ack_router);

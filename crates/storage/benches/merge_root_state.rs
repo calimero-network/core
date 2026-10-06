@@ -8,7 +8,8 @@ use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
 use calimero_storage::collections::crdt_meta::{MergeError, MergeStrategy, Mergeable};
 use calimero_storage::collections::rekey::RekeyTarget;
-use calimero_storage::merge::merge_root_state_typed;
+use calimero_storage::collections::ROOT_ENTRY_ID;
+use calimero_storage::merge::{merge_root_state_typed, MergeRootStateRequest};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug)]
@@ -42,32 +43,32 @@ impl Mergeable for BenchState {
     }
 }
 
+/// An app-state entry: the encoded state followed by the entry id.
 fn payload(items: usize, salt: u8) -> Vec<u8> {
-    to_vec(&BenchState::new(items, salt)).expect("borsh encode of BenchState cannot fail")
+    let mut entry =
+        to_vec(&BenchState::new(items, salt)).expect("borsh encode of BenchState cannot fail");
+    entry.extend_from_slice(ROOT_ENTRY_ID.as_bytes());
+    entry
 }
 
 fn merge(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge_root_state");
 
     for items in [10_usize, 100, 1_000, 10_000] {
-        let existing = payload(items, 1);
-        let incoming = payload(items, 2);
+        let request = MergeRootStateRequest {
+            existing: payload(items, 1),
+            incoming: payload(items, 2),
+            existing_created_at: 1,
+            existing_ts: 2,
+            incoming_ts: 3,
+        };
 
         group.throughput(Throughput::Elements(items as u64));
         group.bench_with_input(
             BenchmarkId::from_parameter(items),
-            &(existing, incoming),
-            |b, (existing, incoming)| {
-                b.iter(|| {
-                    black_box(merge_root_state_typed::<BenchState>(
-                        black_box(existing),
-                        black_box(incoming),
-                        // created_at != existing_ts, so this is not the bootstrap path.
-                        1,
-                        2,
-                        3,
-                    ))
-                });
+            &request,
+            |b, request| {
+                b.iter(|| black_box(merge_root_state_typed::<BenchState>(black_box(request))));
             },
         );
     }

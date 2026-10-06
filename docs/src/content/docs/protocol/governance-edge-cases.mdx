@@ -69,6 +69,7 @@ Both paths end with a removed membership row, a deny-list entry, and a `MemberRe
 | **Direct row** | Required — a purely inherited member has nothing to delete and bails with `MemberNotDirect` | Optional — an inherited Open-subgroup member with no direct row is removed via the soft-leave path |
 | **Key rotation** | **None** | **Yes** — a fresh scope key, wrapped to each remaining member |
 | **Owner** | Cannot self-leave (`OwnerCannotSelfLeave`) | Cannot be removed (`OwnerImmuneFromRemoval`) |
+| **Subgroup rows** | A leave of the namespace root also deletes the leaver's direct row in every subgroup; a leave of a subgroup touches no other group | Left in place, except for a TEE member removed from the namespace root, which is evicted from every subgroup |
 
 The asymmetry on key rotation is the whole point. An admin removal rotates the scope key forward — `MemberRemoved` carries a `KeyRotation` bundle with one wrapped envelope per *remaining* member and none for the removed one, so the removed member can read nothing authored after the cut. That is forward secrecy.
 
@@ -83,6 +84,7 @@ A `MemberLeft` op **MUST** be signed by the leaving member (`signer == member`).
 Two members can author governance ops against the **same DAG head** — neither op is the other's parent, so they are causal siblings. Receivers may see them in either order. Convergence comes from two independent mechanisms working together.
 
 **The at-cut fold orders them deterministically.** `ScopeState::acl_view_at` walks the transitive ancestry of an op's parents and folds it with per-slot last-writer-wins. Governance ops all carry an HLC of `0`, so the tiebreak that actually decides causally-related writes is a **causal generation**: the longest path from a root, `1 + max(parent generation)`. A re-add that descends from an earlier remove has a strictly higher generation and therefore wins — independent of arrival order. Two genuinely concurrent ops touching disjoint slots simply both apply; two touching the same slot resolve by `(generation, op_id)`, identically on every node.
+A join is the exception: it never replaces a standing membership, whatever its stamp (see [the join slot](/protocol/projection/#the-one-slot-that-is-not-a-plain-register-joins)).
 
 **The nonce window keeps concurrent siblings from one author dedup-safe.** When the *same* signer authors two consecutive-nonce ops concurrently from two sessions, they are DAG siblings with no ordering between them. A naive high-water mark would advance to the higher nonce and then permanently drop the lower one when it arrives — a divergence. The window (next section) tolerates exactly this.
 

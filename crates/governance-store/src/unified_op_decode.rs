@@ -248,6 +248,9 @@ pub fn op_from_namespace_op_with_binding(
     // schema gate unless it carries the current version.
     let pre_guard = signed.version < calimero_governance_types::ROOT_GUARD_SCHEMA_VERSION;
     let root_payload = |root: &RootOp| {
+        if !admission_quote_commits(signed.namespace_id, root) {
+            return OpPayload::Noop;
+        }
         if pre_guard {
             payload_from_pre_guard_root_op(root)
         } else {
@@ -377,6 +380,34 @@ pub fn op_from_namespace_op_with_binding(
         parents,
         payload,
     )
+}
+
+/// Whether a TEE admission's quote commits to its credential, as the apply
+/// requires; any other op passes. An admission that fails it folds as nothing.
+fn admission_quote_commits(
+    namespace: calimero_governance_types::NamespaceId,
+    root: &RootOp,
+) -> bool {
+    let RootOp::MemberJoinedViaTeeAttestation {
+        group_id,
+        member,
+        quote_hash,
+        account,
+        quote,
+        ..
+    } = root
+    else {
+        return true;
+    };
+    crate::tee::check_tee_admission_quote(
+        &namespace.to_bytes(),
+        group_id,
+        member,
+        account,
+        quote_hash,
+        quote,
+    )
+    .is_ok()
 }
 
 /// `signed` as a hole: its place in the causal graph and nothing it says, `payload` being
@@ -593,10 +624,14 @@ pub(crate) fn group_op_payload(
         quote,
         collateral,
         attested_at,
+        account,
     } = op
     {
         return match crate::tee::verify_authority_evidence(
+            &group,
+            member,
             attested_key,
+            account,
             quote,
             collateral.as_deref(),
             *attested_at,

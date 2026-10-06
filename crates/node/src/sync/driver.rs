@@ -863,10 +863,9 @@ mod tee_admission_tests {
             namespace_id: [0x7E; 32],
             admitter_addrs: Vec::new(),
             public_key,
-            quote_bytes: Vec::new(),
-            nonce: [0x22; 32],
             account: calimero_governance_store::test_fixtures::real_join_account(&public_key),
             release_version: None,
+            mock_tee: false,
         }
     }
 

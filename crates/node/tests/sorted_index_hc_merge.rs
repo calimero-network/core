@@ -8,7 +8,7 @@
 //! deferred-root-merge orchestration** — specifically the path where a peer
 //! applies a foreign delta's child leaves via `Interface::apply_action` AND
 //! merges the app-root entity via the WASM `__calimero_merge_root_state` export
-//! (`ContextClient::merge_root_state`) + `Interface::write_pre_merged_root_state`
+//! (`ContextClient::merge_root_state`) + `Interface::write_root_entry_merge`
 //! (see `crates/node/src/sync/protocol_selector.rs::dispatch_deferred_root_merges`).
 //!
 //! Neither `sync_sim` nor `crdt_conformance` drives that root-merge path. This
@@ -22,7 +22,7 @@
 //!   * Reconciliation replays EXACTLY what `dispatch_deferred_root_merges` does:
 //!     non-root leaves through native `Interface::apply_action` (which clears the
 //!     `SortedIndexMeta` marker), then the app-root entity through the WASM merge
-//!     export + native `write_pre_merged_root_state`.
+//!     export + native `write_root_entry_merge`.
 //!
 //! If the ordered `iter()` diverges here, #3333 is reproduced in-process at the
 //! layer the issue names, and this becomes the regression test. If it converges,
@@ -35,13 +35,8 @@
 //!   1. Convergence is carried entirely by the native `apply_action` marker
 //!      clear + rebuild-on-read — which self-heals deterministically in a
 //!      single process (the branch's storage_bridge repro already showed this).
-//!   2. The deferred-root-merge WASM export is a SILENT NO-OP for this Rust
-//!      structured root: the stored/wire root doc is `borsh(Entry<AppState>)`
-//!      but `merge_root_state_typed` strict-`from_slice`s bare `AppState`, so it
-//!      errors `"Not all bytes read"` and `dispatch_deferred_root_merges` skips
-//!      it (`continue`). See `deferred_root_merge_is_noop_for_structured_rust_root`.
-//!      So the "re-stamp during the deferred merge" hypothesis is refuted here —
-//!      that merge never executes its recursive field merge.
+//!   2. The deferred-root-merge WASM export now reads the entry layout and runs
+//!      the recursive field merge; see `deferred_root_merge_runs_for_structured_rust_root`.
 //!
 //! Conclusion: the #3333 divergence is NOT reachable by this in-process layer; it
 //! requires the real merobox/network path (gossip/HC timing across processes).
@@ -61,6 +56,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::{Engine, Module};
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
+use calimero_storage::collections::ROOT_ENTRY_ID;
 use calimero_storage::delta::StorageDelta;
 use calimero_storage::entities::{Metadata, StorageType};
 use calimero_storage::env::with_runtime_env;
@@ -76,10 +72,6 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 
 const CTX: [u8; 32] = [7u8; 32];
-// The app-root entity id (`Root<T>` entry) that carries the serialised app
-// state — the id `merge_root_state_typed::<AppState>` deserialises. Mirrors the
-// storage crate's `ROOT_ENTRY_ID` (pub(crate) there); reconstructed here.
-const ROOT_ENTRY_ID: [u8; 32] = [118u8; 32];
 
 // ---------------------------------------------------------------------------
 // Fixture wasm: build the scaffolding-e2e app once per test-binary run.
@@ -295,7 +287,7 @@ fn copy_state(from: &Store, to: &Store) {
 fn read_root(node: &Node) -> (Vec<u8>, Metadata) {
     let env = create_runtime_env(&node.store, node.ctx(), node.executor, node.account());
     with_runtime_env(env, || {
-        let id = Id::new(ROOT_ENTRY_ID);
+        let id = ROOT_ENTRY_ID;
         let meta = Index::<MainStorage>::get_index(id)
             .ok()
             .flatten()
@@ -310,10 +302,8 @@ fn read_root(node: &Node) -> (Vec<u8>, Metadata) {
 /// Faithfully replay `dispatch_deferred_root_merges` for a single foreign delta:
 /// apply the delta's non-root child leaves via `Interface::apply_action` (the
 /// marker-clearing HC leaf path), then merge the app-root entity via the WASM
-/// `__calimero_merge_root_state` export + `write_pre_merged_root_state`.
-/// Returns `true` if the WASM root-state merge succeeded and was written back,
-/// `false` if it errored and was skipped (production's dispatcher `continue`s on
-/// a WASM merge error — see `dispatch_deferred_root_merges`).
+/// `__calimero_merge_root_state` export + `write_root_entry_merge`.
+/// Returns whether the root entry was written back (`false` when the app refused it).
 fn apply_foreign_delta(
     receiver: &Node,
     sender_artifact: &[u8],
@@ -369,20 +359,19 @@ fn apply_foreign_delta_as(
         }
     });
 
-    // 2. Build the deferred-root-merge request. `incoming` = the sender's
-    //    app-root bytes + its update timestamp captured at write time;
-    //    `existing` = the receiver's current app-root bytes + metadata.
+    // 2. Build the deferred-root-merge request, as the dispatcher does, through
+    //    the stamp check every remote root write passes.
     let (incoming, incoming_meta) = incoming_root.clone();
-    let (existing, existing_meta) = read_root(receiver);
-    let existing_ts: u64 = *existing_meta.updated_at;
-    let incoming_ts: u64 = *incoming_meta.updated_at;
-    let request = MergeRootStateRequest {
-        existing,
-        incoming,
-        existing_created_at: existing_meta.created_at,
-        existing_ts,
-        incoming_ts,
-    };
+    let env = create_runtime_env(
+        &receiver.store,
+        receiver.ctx(),
+        receiver.executor,
+        receiver.account(),
+    );
+    let request = with_runtime_env(env, || {
+        Interface::<MainStorage>::root_entry_merge_request(incoming, *incoming_meta.updated_at)
+    })
+    .expect("root_entry_merge_request");
     let payload = borsh::to_vec(&request).unwrap();
 
     // 3. Invoke the REAL WASM merge export. Its temporal writes are NOT
@@ -408,23 +397,17 @@ fn apply_foreign_delta_as(
         .expect("merge returned bytes");
     drop(merge_storage); // discard temporal (matches dispatcher: no commit here)
     let merged = match from_slice::<MergeRootStateResponse>(&return_bytes).expect("decode resp") {
-        MergeRootStateResponse::Ok(bytes) => bytes,
-        MergeRootStateResponse::Err(msg) => {
-            // Mirror `dispatch_deferred_root_merges`: a WASM merge error is
-            // logged and the entry is SKIPPED (`continue`) — never fatal. The
-            // next sync tick re-attempts. So the receiver keeps its existing
-            // root doc; child leaves already applied above via `apply_action`.
-            eprintln!(
-                "  [apply_foreign_delta] WASM merge returned Err (skipped, mirrors \
-                 dispatch_deferred_root_merges): {msg}"
-            );
+        MergeRootStateResponse::Ok(bytes) => Some(bytes),
+        MergeRootStateResponse::Err(_) => None,
+        MergeRootStateResponse::Refused(msg) => {
+            // Mirror `dispatch_deferred_root_merges`: a refused entry is logged
+            // and skipped, so the receiver keeps its existing root doc.
+            eprintln!("  [apply_foreign_delta] the app refused the entry (skipped): {msg}");
             return false;
         }
     };
 
-    // 4. Write the merged bytes back via the native pre-merged root-state path.
-    let mut new_meta = existing_meta.clone();
-    new_meta.updated_at = existing_ts.max(incoming_ts).into();
+    // 4. Write the outcome back through the storage entry point the dispatcher uses.
     let env = create_runtime_env(
         &receiver.store,
         receiver.ctx(),
@@ -432,12 +415,13 @@ fn apply_foreign_delta_as(
         receiver.account(),
     );
     with_runtime_env(env, || {
-        Interface::<MainStorage>::write_pre_merged_root_state(
-            Id::new(ROOT_ENTRY_ID),
-            &merged,
-            new_meta,
+        Interface::<MainStorage>::write_root_entry_merge(
+            &request,
+            merged.as_deref(),
+            incoming_meta.created_at,
         )
-        .expect("write_pre_merged_root_state");
+        .expect("write_root_entry_merge")
+        .expect("nothing wrote the entry during the merge");
     });
     true
 }
@@ -457,25 +441,10 @@ fn contains_tag(node: &Node, tag: &str) -> bool {
     v.as_bool().unwrap_or(false)
 }
 
-/// Documents the decisive finding from this investigation: for a Rust
-/// `#[app::state]` (structured) root, the deferred-root-merge WASM export is a
-/// **silent no-op**. The app-root doc is stored (and shipped on the HC wire) as
-/// `borsh(Entry<AppState>)` — the `AppState` value followed by the `Entry`'s
-/// `Element` framing (see `calimero_storage::collections::nested`, entries are
-/// `find_by_id::<Entry<T>>`). But `merge_root_state_typed::<AppState>` does a
-/// strict `borsh::from_slice::<AppState>`, so it reads the `AppState` prefix and
-/// then rejects the trailing `Element` bytes with `"Not all bytes read"`.
-/// `dispatch_deferred_root_merges` catches that error and `continue`s (skips),
-/// so the recursive field merge (`SortedSet::merge` et al.) never runs on this
-/// path — refuting the "re-stamp the ordered-index marker during the deferred
-/// root merge" hypothesis for a Rust structured root.
-///
-/// Fed EXACTLY what production feeds (`find_by_id_raw == storage_read(Entry)`),
-/// a no-op merge (existing == incoming == the stored doc, with
-/// `created_at != updated_at` so the bootstrap fast-path does not short-circuit
-/// the deserialize) MUST therefore return `Err`.
+/// The root-merge export reads a Rust root's entry layout (`borsh(AppState)` then the
+/// id) and runs the field merge, so the stored entry merged with itself is unchanged.
 #[test]
-fn deferred_root_merge_is_noop_for_structured_rust_root() {
+fn deferred_root_merge_runs_for_structured_rust_root() {
     let node = Node::new([1u8; 32]);
     run_wasm(&node, "init", &json!({}), true);
     run_wasm(&node, "sorted_tag_add", &json!({ "tag": "a" }), true);
@@ -488,11 +457,6 @@ fn deferred_root_merge_is_noop_for_structured_rust_root() {
     assert!(
         !doc.is_empty(),
         "app-root doc must be stored at ROOT_ENTRY_ID"
-    );
-    assert_ne!(
-        meta.created_at, *meta.updated_at,
-        "the write advanced updated_at past created_at, so the merge's bootstrap \
-         fast-path will NOT short-circuit the deserialize"
     );
 
     let (_, module) = engine_module();
@@ -519,18 +483,10 @@ fn deferred_root_merge_is_noop_for_structured_rust_root() {
         .expect("merge run");
     let ret = outcome.returns.expect("ok").expect("bytes");
     match from_slice::<MergeRootStateResponse>(&ret).expect("decode") {
-        MergeRootStateResponse::Ok(_) => panic!(
-            "unexpected: the deferred root merge succeeded for a structured Rust root — \
-             the Entry<T> framing described in this test's doc-comment must have changed; \
-             re-evaluate whether the deferred merge now actually runs the recursive field \
-             merge (and thus whether the #3333 re-stamp hypothesis is back in play)"
-        ),
-        MergeRootStateResponse::Err(e) => {
-            assert!(
-                e.contains("Not all bytes read"),
-                "expected the Entry<T>-framing deserialize error, got: {e}"
-            );
+        MergeRootStateResponse::Ok(merged) => {
+            assert_eq!(merged, doc, "a doc merged with itself is unchanged");
         }
+        other => panic!("the deferred root merge must read a structured Rust root, got {other:?}"),
     }
 }
 

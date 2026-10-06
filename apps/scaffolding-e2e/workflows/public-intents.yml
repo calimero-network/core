@@ -172,6 +172,7 @@ steps:
     node: public-intents-node-1
     outputs:
       relay_account: accountId
+      relay_key: publicKey
 
   # Bit 9 = 512. Without it the intent below is refused for a reason that has
   # nothing to do with the flag, and the scenario would report the wrong thing.
@@ -194,6 +195,8 @@ steps:
       - '{{context_id}}'
       - --executor
       - '{{relay_account}}'
+      - --executor-key
+      - '{{relay_key}}'
       - --method
       - set
       # Byte-identical to what the script POSTs. The warrant commits to a hash
@@ -229,6 +232,7 @@ steps:
       - '{{context_id}}'
       - '{{warrant}}'
       - '{{author_credential}}'
+      - '{{relay_key}}'
 
   # The write has to be real, not merely accepted: a relay could answer 200 and
   # produce a delta the network drops.

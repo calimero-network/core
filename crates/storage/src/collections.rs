@@ -1024,7 +1024,7 @@ static ROOT_ID: LazyLock<Id> = LazyLock::new(Id::root);
 /// In short: `[118; 32]` cannot be reached unintentionally; an attacker
 /// who *could* synthesise an entity at this id would already have a
 /// hash-collision primitive on the entity-id space.
-pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
+pub const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 
 /// Whether `id` addresses the app's root state — either the canonical
 /// `ROOT_ID` (system root) or the `Root<T>` entry (the WASM app's
@@ -1042,6 +1042,12 @@ pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 #[inline]
 pub fn is_app_root_entry(id: Id) -> bool {
     id.is_root() || id == ROOT_ENTRY_ID
+}
+
+/// Whether `data` is the root collection as a `Root<T>` stores it: an untyped collection at the root id.
+pub(crate) fn is_root_collection_bytes(data: &[u8]) -> bool {
+    borsh::from_slice::<Collection<()>>(data)
+        .is_ok_and(|root| root.storage.id.is_root() && root.storage.metadata.crdt_type.is_none())
 }
 
 impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {

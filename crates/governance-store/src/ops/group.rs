@@ -246,6 +246,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             quote,
             collateral,
             attested_at,
+            account,
         } => tee_authority_evidence::apply(
             ctx,
             member,
@@ -253,6 +254,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             quote,
             collateral.as_deref(),
             *attested_at,
+            account,
         )?,
         GroupOp::MemberJoinedViaTeeAttestation {
             member,

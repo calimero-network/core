@@ -88,7 +88,7 @@ impl Namespace {
         let cert = calimero_account::DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
-            calimero_account::DeviceId::from([device; 32]),
+            calimero_account::DeviceId::mint(genesis.account_id(), [device; 16]),
             key,
             &calimero_account::KemPublicKey::from([0x2B; 32]),
             0,

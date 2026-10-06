@@ -116,6 +116,9 @@ pub mod tests {
     /// `Frozen<T>`: one value, written once.
     #[cfg(test)]
     pub mod frozen_values;
+    /// The rules a peer's root, app-state and register writes meet on every path.
+    #[cfg(test)]
+    pub mod hostile_peer_state;
     /// A leaf stamped with the retired rotation-log type is verified like any other.
     #[cfg(test)]
     pub mod legacy_crdt_label;

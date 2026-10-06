@@ -44,14 +44,17 @@ use std::collections::HashMap;
 #[cfg(all(any(target_arch = "wasm32", feature = "testing"), not(test)))]
 use std::sync::{LazyLock, RwLock};
 
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+use super::MergeFnError;
+
 /// Function signature for merging serialized state
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
-pub type MergeFn = fn(&[u8], &[u8], u64, u64) -> Result<Vec<u8>, Box<dyn std::error::Error>>;
+pub type MergeFn = fn(&[u8], &[u8], u64, u64) -> Result<Vec<u8>, MergeFnError>;
 
 /// Result of attempting to merge using registered merge functions.
 ///
 /// Available on every target — `merge_root_state` pattern-matches on
-/// this enum to choose the bootstrap / I5-error / LWW-fallback path.
+/// this enum to choose the merge / bootstrap / I5-error / refusal path.
 /// On host production builds the registry doesn't exist so the
 /// `Success` and `AllFunctionsFailed` arms can't be produced from
 /// inside the storage crate, but the enum still has to be matchable
@@ -65,7 +68,8 @@ pub enum MergeRegistryResult {
     Success(Vec<u8>),
     /// No merge functions are registered (I5 enforcement needed)
     NoFunctionsRegistered,
-    /// Merge functions are registered but all failed (e.g., type mismatch)
+    /// Merge functions are registered but none could read the incoming value,
+    /// or its merge failed
     AllFunctionsFailed,
 }
 
@@ -228,25 +232,7 @@ where
     let type_id = TypeId::of::<T>();
 
     let merge_fn: MergeFn = |existing, incoming, _existing_ts, _incoming_ts| {
-        // Deserialize both states
-        let mut existing_state = borsh::from_slice::<T>(existing)
-            .map_err(|e| format!("Failed to deserialize existing state: {e}"))?;
-
-        let incoming_state = borsh::from_slice::<T>(incoming)
-            .map_err(|e| format!("Failed to deserialize incoming state: {e}"))?;
-
-        // Merge using Mergeable trait
-        // CRITICAL: Use merge mode to prevent timestamp generation during merge.
-        // Without this, different nodes generate different timestamps, causing
-        // hash divergence even when logical state is identical.
-        crate::env::with_merge_mode(|| {
-            existing_state
-                .merge(&incoming_state)
-                .map_err(|e| format!("Merge failed: {e}"))
-        })?;
-
-        // Serialize result
-        borsh::to_vec(&existing_state).map_err(|e| format!("Serialization failed: {e}").into())
+        super::merge_values::<T>(existing, incoming)
     };
 
     with_registry_mut(|registry| {
@@ -291,10 +277,17 @@ pub fn clear_merge_registry() {
     with_registry_mut(|registry| registry.clear());
 }
 
+/// Whether any merge function is registered.
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+pub(crate) fn has_merge_functions() -> bool {
+    with_registry(|registry| !registry.is_empty())
+}
+
 /// Try to merge using registered merge function
 ///
 /// Returns:
-/// - `Success(merged)` if a merge function succeeded
+/// - `Success(merged)` if a merge function succeeded, or `Success(incoming)` when
+///   a registered type reads the incoming value but not the stored one
 /// - `NoFunctionsRegistered` if no merge functions are registered (I5 violation)
 /// - `AllFunctionsFailed` if merge functions exist but none could merge the data
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
@@ -323,13 +316,20 @@ pub fn try_merge_registered(
             return MergeRegistryResult::NoFunctionsRegistered;
         }
 
+        let mut incoming_decodes = false;
         for merge_fn in registry.values() {
-            if let Ok(merged) = merge_fn(existing, incoming, existing_ts, incoming_ts) {
-                return MergeRegistryResult::Success(merged);
+            match merge_fn(existing, incoming, existing_ts, incoming_ts) {
+                Ok(merged) => return MergeRegistryResult::Success(merged),
+                Err(MergeFnError::Existing) => incoming_decodes = true,
+                Err(MergeFnError::Incoming | MergeFnError::Merge) => {}
             }
         }
 
-        MergeRegistryResult::AllFunctionsFailed
+        if incoming_decodes {
+            MergeRegistryResult::Success(incoming.to_vec())
+        } else {
+            MergeRegistryResult::AllFunctionsFailed
+        }
     })
 }
 

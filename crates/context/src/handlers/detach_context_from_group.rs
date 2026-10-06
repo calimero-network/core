@@ -39,7 +39,7 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
-        let sk = preflight.signer_sk();
+        let sk = preflight.signing_key;
 
         ActorResponse::r#async(
             async move {

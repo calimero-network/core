@@ -156,6 +156,7 @@ fn delegation_for(author: &Party, relay: &Party, context: ContextId, nonce: u64)
             context,
             author_account: author.account,
             executor: relay.account,
+            executor_key: relay.device_sk.public_key(),
             app_version: ApplicationId::from([0u8; 32]),
             method: "send_message".to_owned(),
             intent_hash: Warrant::intent_hash("send_message", br#"{"text":"on my way"}"#),

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Extension};
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,9 @@ use crate::AuthError;
 /// be expired" policy. Matches jsonwebtoken's default `Validation::leeway` so
 /// the two notions of "expired" cannot disagree.
 const JWT_EXPIRY_LEEWAY_SECS: u64 = 60;
+
+#[cfg(debug_assertions)]
+const SEC_FETCH_SITE: &str = "sec-fetch-site"; // sent by browsers even when Origin is omitted
 
 /// Whether an access token and a refresh token were issued for the same key.
 /// The key, not `sub`: every client key of one user shares its `sub`.
@@ -925,6 +928,16 @@ pub async fn mock_token_handler(
     ValidatedJson(mut request): ValidatedJson<MockTokenRequest>,
 ) -> impl IntoResponse {
     warn!("⚠️  MOCK TOKEN ENDPOINT ACCESSED - This should only be used for testing!");
+
+    // Test scripts send neither header, and no browser page should hold a mock admin token.
+    if headers.contains_key(header::ORIGIN) || headers.contains_key(SEC_FETCH_SITE) {
+        warn!("Mock token endpoint refused a browser request");
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "Not available to browser pages",
+            None,
+        );
+    }
 
     // Check if mock endpoints are enabled in config
     if !state.0.config.development.enable_mock_auth {

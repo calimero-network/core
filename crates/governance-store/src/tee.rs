@@ -1,7 +1,7 @@
-use crate::{MembershipPath, MembershipRepository, NamespaceRepository};
+use crate::{MembershipError, MembershipPath, MembershipRepository, NamespaceRepository};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{
-    GroupOp, NamespaceOp, RootOp, SignedGroupOp, TeeAdmissionMode,
+    GroupOp, JoinAccountCredential, NamespaceOp, RootOp, SignedGroupOp, TeeAdmissionMode,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -402,9 +402,13 @@ fn scan_tee(store: &Store, root: &ContextGroupId) -> EyreResult<FoldedTee> {
                 quote,
                 collateral,
                 attested_at,
+                account,
             } => {
                 let Ok(verdict) = verify_authority_evidence(
+                    &root,
+                    &member,
                     &attested_key,
+                    &account,
                     &quote,
                     collateral.as_deref(),
                     attested_at,
@@ -633,6 +637,7 @@ pub fn tee_authority_evidence(
             quote,
             collateral,
             attested_at,
+            account: credential,
         } = op.op
         else {
             continue;
@@ -652,9 +657,15 @@ pub fn tee_authority_evidence(
         {
             continue;
         }
-        let Ok(verdict) =
-            verify_authority_evidence(&attested_key, &quote, collateral.as_deref(), attested_at)
-        else {
+        let Ok(verdict) = verify_authority_evidence(
+            &root,
+            &member,
+            &attested_key,
+            &credential,
+            &quote,
+            collateral.as_deref(),
+            attested_at,
+        ) else {
             continue;
         };
         if crate::member_account_in_namespace(store, &root, &attested_key)? != Some(member) {
@@ -674,7 +685,7 @@ pub fn tee_authority_evidence(
 /// ([`TEE_EVIDENCE_REFRESH_AFTER_SECS`]).
 ///
 /// The admitting side asks this before publishing evidence for a TEE that is
-/// already a member, so a re-announcement refreshes old evidence rather than
+/// already a member, so a fresh answer refreshes old evidence rather than
 /// being ignored.
 ///
 /// # Errors
@@ -703,7 +714,7 @@ pub fn tee_evidence_refresh_due(
 /// replace it.
 ///
 /// Whether the policy names the TEE's MRTD is deliberately not part of this.
-/// Evidence is owed either way, and asking that would re-announce forever on a
+/// Evidence is owed either way, and asking that would prompt forever on a
 /// policy that simply does not list this image.
 ///
 /// # Errors
@@ -726,12 +737,41 @@ pub fn tee_evidence_owed(
     tee_evidence_refresh_due(store, &root, account)
 }
 
-/// Verify TEE authority evidence offline. The quote must bind `attested_key` the
-/// way fleet join binds it: SHA-256 of the key in report data bytes `32..64`.
+/// Verify TEE authority evidence offline. The quote must commit to the
+/// credential the evidence carries, admitted as `attested_key` into `namespace`
+/// (an evidence op is namespace-scoped, so the group is the namespace root), the
+/// way the joiner's quote does at admission, and the credential must be
+/// `member`'s and certify `attested_key`.
+///
+/// # Errors
+/// If the credential is not the member's or the key's, the collateral does not
+/// decode, or the evidence does not verify.
+pub(crate) fn verify_authority_evidence(
+    namespace: &ContextGroupId,
+    member: &AccountId,
+    attested_key: &PublicKey,
+    account: &JoinAccountCredential,
+    quote: &[u8],
+    collateral: Option<&[u8]>,
+    attested_at: u64,
+) -> EyreResult<calimero_tee_attestation::EvidenceVerdict> {
+    if account.statement.account != *member
+        || !calimero_op_adapter::join_credential_certifies(attested_key, account)
+    {
+        eyre::bail!("TEE evidence credential is not the attested key's for this member");
+    }
+    let namespace = namespace.to_bytes();
+    let binding =
+        calimero_op_adapter::tee_admission_binding(&namespace, &namespace, attested_key, account);
+    verify_evidence_bound_to(quote, collateral, attested_at, &binding)
+}
+
+/// Verify the evidence of a founding relay, whose quote binds the key that
+/// signed the op: SHA-256 of the key in report data bytes `32..64`.
 ///
 /// # Errors
 /// If the collateral does not decode, or the evidence does not verify.
-pub(crate) fn verify_authority_evidence(
+pub(crate) fn verify_founding_evidence(
     attested_key: &PublicKey,
     quote: &[u8],
     collateral: Option<&[u8]>,
@@ -739,12 +779,21 @@ pub(crate) fn verify_authority_evidence(
 ) -> EyreResult<calimero_tee_attestation::EvidenceVerdict> {
     use sha2::{Digest, Sha256};
 
+    let key_hash: [u8; 32] = Sha256::digest(**attested_key).into();
+    verify_evidence_bound_to(quote, collateral, attested_at, &key_hash)
+}
+
+fn verify_evidence_bound_to(
+    quote: &[u8],
+    collateral: Option<&[u8]>,
+    attested_at: u64,
+    bound: &[u8; 32],
+) -> EyreResult<calimero_tee_attestation::EvidenceVerdict> {
     let collateral = collateral
         .map(serde_json::from_slice::<calimero_tee_attestation::QuoteCollateralV3>)
         .transpose()
         .map_err(|err| eyre::eyre!("TEE evidence collateral does not decode: {err}"))?;
-    let key_hash: [u8; 32] = Sha256::digest(**attested_key).into();
-    calimero_tee_attestation::verify_evidence(quote, collateral.as_ref(), attested_at, &key_hash)
+    calimero_tee_attestation::verify_evidence(quote, collateral.as_ref(), attested_at, bound)
         .map_err(|err| eyre::eyre!("TEE evidence does not verify: {err}"))
 }
 
@@ -1021,6 +1070,46 @@ pub fn is_evidence_quote_used(
         }
     }
     Ok(false)
+}
+
+/// The quote a TEE admission carries must be the one it records and must commit
+/// to the credential it admits: the namespace, group, identity key, account,
+/// delivery key and device.
+///
+/// One rule for the apply and for the projection's decode, so the two planes
+/// fold the same admissions.
+///
+/// # Errors
+/// [`MembershipError::TeeQuoteHashMismatch`] or
+/// [`MembershipError::TeeQuoteNotBoundToCredential`].
+pub fn check_tee_admission_quote(
+    namespace_id: &[u8; 32],
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+    account: &JoinAccountCredential,
+    quote_hash: &[u8; 32],
+    quote: &[u8],
+) -> Result<(), MembershipError> {
+    if sha256(quote) != *quote_hash {
+        return Err(MembershipError::TeeQuoteHashMismatch);
+    }
+    if !calimero_op_adapter::tee_quote_binds_credential(
+        namespace_id,
+        &group_id.to_bytes(),
+        member,
+        account,
+        quote,
+    ) {
+        return Err(MembershipError::TeeQuoteNotBoundToCredential {
+            member: format!("{member}"),
+        });
+    }
+    Ok(())
+}
+
+/// SHA-256 of `bytes`, the hash an admission records for its quote.
+pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
 }
 
 /// True if `identity` joined `group_id` via a `MemberJoinedViaTeeAttestation`
@@ -1395,6 +1484,32 @@ pub(crate) mod tests {
         calimero_tee_attestation::generate_mock_attestation(report_data).quote_bytes
     }
 
+    use super::sha256;
+
+    /// A mock quote for the admission of `key` into `namespace`: the honest
+    /// joiner's report data, over the credential [`real_join_account`] certifies
+    /// for that key.
+    pub(crate) fn admission_quote_for(namespace: &ContextGroupId, key: &PublicKey) -> Vec<u8> {
+        admission_quote_with(
+            namespace,
+            key,
+            &crate::test_fixtures::real_join_account(key),
+        )
+    }
+
+    /// A mock admission quote for `credential` admitted as `key`.
+    pub(crate) fn admission_quote_with(
+        namespace: &ContextGroupId,
+        key: &PublicKey,
+        credential: &calimero_context_client::local_governance::JoinAccountCredential,
+    ) -> Vec<u8> {
+        let namespace = namespace.to_bytes();
+        let binding =
+            calimero_op_adapter::tee_admission_binding(&namespace, &namespace, key, credential);
+        let report_data = calimero_tee_attestation::admission_report_data(&[0x01; 32], &binding);
+        calimero_tee_attestation::generate_mock_attestation(report_data).quote_bytes
+    }
+
     fn evidence_op(
         signer_sk: &PrivateKey,
         ns_gid: ContextGroupId,
@@ -1415,6 +1530,7 @@ pub(crate) mod tests {
                 quote,
                 collateral: None,
                 attested_at,
+                account: crate::test_fixtures::real_join_account(&attested_key),
             },
         )
         .unwrap()
@@ -1489,7 +1605,7 @@ pub(crate) mod tests {
     #[test]
     fn tee_authority_follows_the_latest_policy_and_membership() {
         let f = Fixture::new(0xAC);
-        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.evidence(f.tee, f.tee_key, admission_quote_for(&f.ns_gid, &f.tee_key));
 
         assert!(!f.is_authority(&f.tee), "no policy: TEE authorship is off");
         f.policy(&["m2"]);
@@ -1533,7 +1649,7 @@ pub(crate) mod tests {
     #[test]
     fn the_authority_is_read_from_the_fold_when_there_is_one() {
         let f = Fixture::new(0xAF);
-        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.evidence(f.tee, f.tee_key, admission_quote_for(&f.ns_gid, &f.tee_key));
         f.policy(&[MOCK_MRTD]);
         let evidence = tee_authority_evidence(&f.store, &f.ns_gid, &f.tee)
             .unwrap()
@@ -1573,7 +1689,7 @@ pub(crate) mod tests {
     fn a_log_read_once_answers_as_the_log_does() {
         let f = Fixture::new(0xB1);
         let scan = super::ScanOnce::default();
-        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.evidence(f.tee, f.tee_key, admission_quote_for(&f.ns_gid, &f.tee_key));
         f.policy(&[MOCK_MRTD]);
         assert!(is_tee_authority(&f.store, &scan, &f.ns_gid, &f.tee).unwrap());
         assert_eq!(
@@ -1594,7 +1710,7 @@ pub(crate) mod tests {
     #[test]
     fn the_fold_names_the_candidates_and_their_keys_must_be_bound() {
         let f = Fixture::new(0xB0);
-        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.evidence(f.tee, f.tee_key, admission_quote_for(&f.ns_gid, &f.tee_key));
         f.policy(&[MOCK_MRTD]);
         let evidence = tee_authority_evidence(&f.store, &f.ns_gid, &f.tee)
             .unwrap()
@@ -1647,7 +1763,7 @@ pub(crate) mod tests {
         );
         assert!(!owed(&member), "a member is never owed TEE evidence");
 
-        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.evidence(f.tee, f.tee_key, admission_quote_for(&f.ns_gid, &f.tee_key));
         assert!(!owed(&f.tee), "recorded evidence settles it");
 
         let g = Fixture::new(0xAE);
@@ -1669,7 +1785,7 @@ pub(crate) mod tests {
         let f = Fixture::new(0xB3);
         f.policy(&[MOCK_MRTD]);
         let now = crate::now_secs();
-        let quote = mock_quote_for(&f.tee_key);
+        let quote = admission_quote_for(&f.ns_gid, &f.tee_key);
 
         f.evidence_at(
             f.tee,
@@ -1711,7 +1827,7 @@ pub(crate) mod tests {
         let f = Fixture::new(0xB4);
         f.policy(&[MOCK_MRTD]);
         let now = crate::now_secs();
-        let quote = mock_quote_for(&f.tee_key);
+        let quote = admission_quote_for(&f.ns_gid, &f.tee_key);
 
         f.evidence_at(f.tee, f.tee_key, quote.clone(), now - 60);
         f.evidence_at(
@@ -1807,7 +1923,7 @@ pub(crate) mod tests {
             .unwrap();
         f.log(|sk, ns, n| tee_join_op(sk, ns, n, other, [0x08; 32]));
         f.policy(&[MOCK_MRTD]);
-        f.evidence(other, f.tee_key, mock_quote_for(&f.tee_key));
+        f.evidence(other, f.tee_key, admission_quote_for(&f.ns_gid, &f.tee_key));
 
         assert!(!f.is_authority(&other));
     }
@@ -1819,7 +1935,7 @@ pub(crate) mod tests {
         let f = Fixture::new(0xB1);
         let stranger = PublicKey::from([0x99; 32]);
         f.policy(&[MOCK_MRTD]);
-        f.evidence(f.tee, f.tee_key, mock_quote_for(&stranger));
+        f.evidence(f.tee, f.tee_key, admission_quote_for(&f.ns_gid, &stranger));
 
         assert!(!f.is_authority(&f.tee));
     }
@@ -1835,7 +1951,7 @@ pub(crate) mod tests {
         MembershipRepository::new(&f.store)
             .add_member(&f.ns_gid, &member, GroupMemberRole::Member)
             .unwrap();
-        f.evidence(member, key, mock_quote_for(&key));
+        f.evidence(member, key, admission_quote_for(&f.ns_gid, &key));
         f.policy(&[MOCK_MRTD]);
 
         assert!(!f.is_authority(&member));
@@ -1856,7 +1972,7 @@ pub(crate) mod tests {
         membership
             .add_member(&f.ns_gid, &admin, GroupMemberRole::Admin)
             .unwrap();
-        f.evidence(f.tee, f.tee_key, mock_quote_for(&f.tee_key));
+        f.evidence(f.tee, f.tee_key, admission_quote_for(&f.ns_gid, &f.tee_key));
         let resolve = |key: &PublicKey, account| {
             writer_account(&f.store, &NotFolded, &f.ns_gid, key, account).unwrap()
         };
@@ -1895,18 +2011,22 @@ pub(crate) mod tests {
         use calimero_op::OpPayload;
 
         let ns_gid = ContextGroupId::from([0xB2; 32]);
-        let member = AccountId::from([0x42; 32]);
         let key = PublicKey::from([0x11; 32]);
+        let member = crate::test_fixtures::account_for(&key);
         let op = |quote| GroupOp::TeeAuthorityEvidence {
             member,
             attested_key: key,
             quote,
             collateral: None,
             attested_at: 1_751_000_000,
+            account: crate::test_fixtures::real_join_account(&key),
         };
 
         assert_eq!(
-            crate::unified_op_decode::group_op_payload(ns_gid, &op(mock_quote_for(&key))),
+            crate::unified_op_decode::group_op_payload(
+                ns_gid,
+                &op(admission_quote_for(&ns_gid, &key))
+            ),
             OpPayload::TeeAuthorityEvidence {
                 group: ns_gid,
                 member,
@@ -1918,9 +2038,75 @@ pub(crate) mod tests {
         assert_eq!(
             crate::unified_op_decode::group_op_payload(
                 ns_gid,
-                &op(mock_quote_for(&PublicKey::from([0x99; 32])))
+                &op(admission_quote_for(&ns_gid, &PublicKey::from([0x99; 32])))
             ),
             OpPayload::Noop
+        );
+    }
+
+    /// Evidence is a quote plus the credential it was made for: the quote must
+    /// commit to exactly that credential, so the same identity key cannot carry
+    /// evidence made for another device, delivery key or namespace.
+    #[test]
+    fn evidence_folds_only_for_the_credential_its_quote_commits_to() {
+        use calimero_op::OpPayload;
+
+        let ns_gid = ContextGroupId::from([0xB3; 32]);
+        let key = PublicKey::from([0x12; 32]);
+        let credential = crate::test_fixtures::real_join_account(&key);
+        let member = credential.statement.account;
+        let other = crate::test_fixtures::join_account_for(
+            &PrivateKey::from(*key),
+            credential.genesis,
+            &key,
+            [0x99; 32],
+            0,
+        );
+        let op = |quote, account| GroupOp::TeeAuthorityEvidence {
+            member,
+            attested_key: key,
+            quote,
+            collateral: None,
+            attested_at: 1_751_000_000,
+            account,
+        };
+        let folds = |op: &GroupOp| {
+            matches!(
+                crate::unified_op_decode::group_op_payload(ns_gid, op),
+                OpPayload::TeeAuthorityEvidence { .. }
+            )
+        };
+
+        let honest = admission_quote_with(&ns_gid, &key, &credential);
+        assert!(folds(&op(honest.clone(), credential.clone())));
+        // A quote made for the same account and key on another device.
+        let other_device = admission_quote_with(&ns_gid, &key, &other);
+        assert!(!folds(&op(other_device.clone(), credential.clone())));
+        // Carrying the other credential is fine: then the quote commits to what
+        // the op carries, and that credential is what folds.
+        assert!(folds(&op(other_device, other)));
+        // A quote made for another namespace.
+        let elsewhere = admission_quote_with(&ContextGroupId::from([0xB4; 32]), &key, &credential);
+        assert!(!folds(&op(elsewhere, credential.clone())));
+        // A credential that is not the member's.
+        let stranger = crate::test_fixtures::real_join_account(&PublicKey::from([0x13; 32]));
+        assert!(!folds(&op(honest, stranger)));
+    }
+
+    /// A quote published as evidence is spent: presenting it again, to an
+    /// admission or to another refresh, is a replay.
+    #[test]
+    fn a_quote_published_as_evidence_is_spent() {
+        let f = Fixture::new(0xB0);
+        let quote = admission_quote_for(&f.ns_gid, &f.tee_key);
+        let hash = sha256(&quote);
+        assert!(!super::is_evidence_quote_used(&f.store, &f.ns_gid, &hash).unwrap());
+
+        f.evidence(f.tee, f.tee_key, quote);
+        assert!(super::is_evidence_quote_used(&f.store, &f.ns_gid, &hash).unwrap());
+        assert!(
+            !super::is_evidence_quote_used(&f.store, &f.ns_gid, &sha256(b"another quote")).unwrap(),
+            "and only that quote"
         );
     }
 
@@ -2018,6 +2204,7 @@ pub(crate) mod tests {
                     tcb_status: "UpToDate".to_owned(),
                     role: GroupMemberRole::ReadOnlyTee,
                     account,
+                    quote: Vec::new(),
                 },
             ),
         )

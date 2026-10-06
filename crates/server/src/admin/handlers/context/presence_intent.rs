@@ -138,7 +138,7 @@ mod tests {
         let cert = DeviceCert::sign(
             &root,
             genesis.account_id(),
-            DeviceId::from([0x77u8; 32]),
+            DeviceId::mint(genesis.account_id(), [0x77u8; 16]),
             &device.public_key(),
             &KemPublicKey::from([0x88u8; 32]),
             0,

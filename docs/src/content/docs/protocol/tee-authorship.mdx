@@ -133,11 +133,12 @@ So authority needs a second op, `TeeAuthorityEvidence`, which carries the proof:
 | `quote` | The raw TDX quote. |
 | `collateral` | The Intel-signed DCAP collateral the quote was appraised against. |
 | `attested_at` | The moment the collateral is judged at. |
-| `attested_key` | The key the quote binds: SHA-256 of it is in report data bytes 32..64. |
+| `attested_key` | The identity key the quote is made for. |
+| `account` | The credential the quote is made for: its account, identity key, delivery key and device. Report data bytes 32..64 are the [admission binding](/protocol/tee-attestation/#the-attestation-quote) of it in this namespace. |
 
 The node that admits the TEE publishes it right after the admission. Every node
 verifies it **offline** when it applies the op: the quote's signature chain
-against the collateral at `attested_at`, the key binding, and the measurements
+against the collateral at `attested_at`, that it commits to exactly the credential the op carries, and the measurements
 and TCB status against the admission policy. The check needs no network and no
 clock, so a node that joins years later and replays the log reaches the same
 verdict. An op that fails is never applied.
@@ -145,17 +146,17 @@ verdict. An op that fails is never applied.
 The reader verifies again when it looks the evidence up, and it ignores
 evidence whose `attested_key` does not speak for the account it names. Copying
 one TEE's evidence and relabelling it for another account does not work, and
-neither does evidence whose quote binds a different key.
+neither does evidence whose quote commits to a different credential or key.
 
 Only the TEE holds its quote, so only the TEE can put right evidence that
 never landed: a publish that failed right after admission, or an admission by a
 build that published none. A TEE therefore watches for it. While TEE authorship
 is on in a namespace it was admitted to, and no verified evidence for it is on
-the log, it announces itself again with a fresh quote, and an admitter that
-hears an already-admitted TEE with no evidence publishes it. The first
-re-announce waits a minute, since right after an admission the admitter's own
-publish is usually still on its way, and the wait doubles after each one up to
-half an hour. It stops once the evidence is recorded. Whether the policy names
+the log, it prompts the namespace again, and an admitter that hears an
+already-admitted TEE with no evidence offers it a challenge and publishes the
+evidence from the quote the TEE makes over it. The first re-prompt waits a
+minute, since right after an admission the admitter's own publish is usually
+still on its way, and the wait doubles after each one up to half an hour. It stops once the evidence is recorded. Whether the policy names
 the TEE's MRTD plays no part: the evidence is owed either way.
 
 ### How long evidence lasts
@@ -171,9 +172,12 @@ first evidence exists, so evidence lapses:
 | Evidence dated ahead of the reader's clock by more than | 5 minutes is ignored |
 
 The refresh is the same exchange as the retry above: the TEE's evidence is
-owed once it is a day old, so it announces itself with a fresh quote, and an
-admitter publishes new evidence for an already-admitted TEE whose evidence is
-missing or a day old. A TEE whose platform has fallen out of date fails that
+owed once it is a day old, so it prompts again and answers the challenge it is
+offered with a fresh quote, and an admitter publishes new evidence for an
+already-admitted TEE whose evidence is missing or a day old. A refresh is held
+to the rules an admission is: its quote commits to the TEE's credential, and a
+quote already used in an admission or an earlier refresh in the namespace
+cannot refresh evidence again. A TEE whose platform has fallen out of date fails that
 appraisal, so nothing replaces its old evidence and its authority ends when
 that evidence lapses. The most recently appraised evidence counts, whatever
 order it was logged in.

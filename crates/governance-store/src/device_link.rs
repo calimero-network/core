@@ -661,16 +661,16 @@ mod tests {
 
     /// A device of `root_sk`'s account, with `seed` deciding its id.
     ///
-    /// The id is `seed` repeated rather than minted, so the store's key-ordered
-    /// scan visits these devices in a known order - which one test needs in order
-    /// to prove that a failure early in the scan does not stop the ones after it.
+    /// The nonce leads a minted id, so the store's key-ordered scan visits these
+    /// devices in `seed` order - which one test needs in order to prove that a
+    /// failure early in the scan does not stop the ones after it.
     fn certify(root_sk: &PrivateKey, seed: u8, kem: [u8; 32]) -> AccountProof<DeviceCert> {
         let genesis = AccountGenesis::new(root_sk.public_key());
         let account = genesis.account_id();
         let statement = DeviceCert::sign(
             root_sk,
             account,
-            calimero_account::DeviceId::from([seed; 32]),
+            calimero_account::DeviceId::mint(account, [seed; 16]),
             &PrivateKey::from([seed; 32]).public_key(),
             &KemPublicKey::from(kem),
             0,

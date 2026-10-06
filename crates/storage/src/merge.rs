@@ -73,7 +73,7 @@ pub use custom_registry::clear_custom_merge_registry;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::collections::crdt_meta::{CrdtType, CustomTypeId, MergeError, Mergeable};
-use crate::collections::{Counter, FugueText, ReplicatedGrowableArray};
+use crate::collections::{Counter, FugueText, ReplicatedGrowableArray, ROOT_ENTRY_ID};
 use crate::store::MainStorage;
 
 /// Canonical wire format for a host→WASM root-state merge invocation.
@@ -97,28 +97,20 @@ pub struct MergeRootStateRequest {
 
 /// Response from the WASM-side root-merge dispatcher.
 ///
-/// `Ok(bytes)` carries the merged root-state bytes the host writes back
-/// into storage. `Err(message)` surfaces a merge failure (typically a
-/// deserialization or app-`Mergeable::merge` error) to the host without
-/// having to panic in WASM.
+/// `Ok(bytes)` carries the merged entry the host writes back into storage.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub enum MergeRootStateResponse {
     Ok(Vec<u8>),
+    /// A failure from a module that holds no merge of the stored entry, one built
+    /// before `Refused` existed or a JS guest: the host applies its own rule.
     Err(String),
+    /// The app's type does not read the incoming entry, or its merge failed:
+    /// the stored entry stays, as a delta carrying it would be refused.
+    Refused(String),
 }
 
-/// Request the host sends into WASM to merge one custom-typed ENTRY.
-///
-/// Sibling of [`MergeRootStateRequest`], and deliberately smaller. A root
-/// merge needs `existing_created_at` for its bootstrap fast-path, where a
-/// freshly-materialised default state must accept `incoming` wholesale. An
-/// entry has no such state: it exists because something wrote it, so there is
-/// nothing to bootstrap and both sides are real history.
-///
-/// Timestamps are absent for a stronger reason — an app-defined rule that
-/// consults them is not commutative, and the whole point of dispatching is
-/// that the app's rule decides. The host advances `updated_at` on the write
-/// back, exactly as the root path does.
+/// Request the host sends into WASM to merge one custom-typed entry. It carries no
+/// timestamps, since an app rule that read them would not commute.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub struct MergeCustomRequest {
     /// Which app-defined type this entry holds, as stamped on the entry.
@@ -141,54 +133,48 @@ pub enum MergeCustomResponse {
     Err(String),
 }
 
-/// Typed root-state merge for use inside the WASM module's
-/// macro-generated `__calimero_merge_root_state` export.
-///
-/// Implements the same two-tier dispatch the pre-rewrite host-side
-/// `merge_root_state` provided:
-///
-/// 1. **Bootstrap fast-path** — when `existing_created_at == existing_ts`,
-///    the local entity was created but has never been explicitly
-///    updated since (the freshly-materialised default state on a
-///    joiner). In that case `incoming` carries the only real history
-///    and must be accepted unconditionally. Plain CRDT merge would
-///    treat the local defaults as a competing branch and produce a
-///    union-like result that drops parts of the remote's writes —
-///    exactly the regression `kv-store-with-shared-storage` exposes.
-///
-/// 2. **Typed merge** — deserialize both sides as `T`, run
-///    `Mergeable::merge` (wrapped in `with_merge_mode` so timestamp
-///    generation is suppressed and the merged hash is deterministic),
-///    return serialized bytes.
-///
-/// # Errors
-///
-/// Returns `MergeError::SerializationError` if either input bytes
-/// fail to deserialize as `T`, or if the merged state fails to
-/// re-serialize. Returns whatever error variant
-/// `<T as Mergeable>::merge` produces if the app's merge logic fails.
-pub fn merge_root_state_typed<T>(
-    existing: &[u8],
-    incoming: &[u8],
-    existing_created_at: u64,
-    existing_ts: u64,
-    _incoming_ts: u64,
-) -> Result<Vec<u8>, MergeError>
+/// The app's merge of the app-state entry for a host request, run by the
+/// `__calimero_merge_root_state` export: the rule a delta's write of the entry takes.
+pub fn merge_root_state_typed<T>(request: &MergeRootStateRequest) -> MergeRootStateResponse
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
 {
-    if existing_created_at == existing_ts {
-        return Ok(incoming.to_vec());
+    let merged = merge_entry_values(
+        &request.existing,
+        &request.incoming,
+        |existing, incoming| match merge_values::<T>(existing, incoming) {
+            Err(MergeFnError::Existing) => Ok(incoming.to_vec()),
+            merged => merged.map_err(|e| MergeError::SerializationError(format!("{e:?}"))),
+        },
+    );
+    match merged {
+        Ok(merged) => MergeRootStateResponse::Ok(merged),
+        Err(e) => MergeRootStateResponse::Refused(e.to_string()),
     }
+}
 
-    let mut existing_state = borsh::from_slice::<T>(existing)
-        .map_err(|e| MergeError::SerializationError(format!("existing: {e}")))?;
-    let incoming_state = borsh::from_slice::<T>(incoming)
-        .map_err(|e| MergeError::SerializationError(format!("incoming: {e}")))?;
+/// Why a pair of encoded values of one type was left unmerged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeFnError {
+    /// The incoming value is not of this type.
+    Incoming,
+    /// The incoming value is of this type and the stored one is not.
+    Existing,
+    /// Both decode, but the merge or re-encoding failed.
+    Merge,
+}
 
-    crate::env::with_merge_mode(|| existing_state.merge(&incoming_state))?;
-
-    borsh::to_vec(&existing_state).map_err(|e| MergeError::SerializationError(e.to_string()))
+/// Merges two encoded values of `T` under merge mode, so no node mints a stamp.
+pub(crate) fn merge_values<T>(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeFnError>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable,
+{
+    let incoming_state = borsh::from_slice::<T>(incoming).map_err(|_| MergeFnError::Incoming)?;
+    let mut existing_state =
+        borsh::from_slice::<T>(existing).map_err(|_| MergeFnError::Existing)?;
+    crate::env::with_merge_mode(|| existing_state.merge(&incoming_state))
+        .map_err(|_| MergeFnError::Merge)?;
+    borsh::to_vec(&existing_state).map_err(|_| MergeFnError::Merge)
 }
 
 /// Attempts to merge two Borsh-serialized app state blobs using CRDT semantics.
@@ -241,7 +227,14 @@ where
 /// # Errors
 /// Returns error if:
 /// - No merge function is registered for the root entity type (`MergeError::NoMergeFunctionRegistered`)
-/// - The registered merge function fails
+/// - No registered type reads `incoming`, or the registered merge function fails
+#[cfg_attr(
+    not(any(target_arch = "wasm32", test, feature = "testing")),
+    expect(
+        unused_variables,
+        reason = "without the registry nothing reads the stored value"
+    )
+)]
 pub fn merge_root_state(
     existing: &[u8],
     incoming: &[u8],
@@ -302,37 +295,71 @@ pub fn merge_root_state(
             // error pointing the developer at `#[app::state]`.
             Err(MergeError::NoMergeFunctionRegistered)
         }
-        registry::MergeRegistryResult::AllFunctionsFailed => {
-            // Merge functions are registered, but none could deserialize+merge
-            // these bytes. Dispatch is type-blind — there is no per-entity type
-            // hint to select a merger by, so every registered fn is tried and
-            // this arm is reached whenever none deserializes the bytes. Two
-            // cases land here indistinguishably:
-            //   * EXPECTED (common): this entity's type simply has no custom
-            //     CRDT merge, so plain LWW is the correct resolution — e.g. a
-            //     routine `set`, or a root "shell" whose real data lives in
-            //     child entities that merge on their own paths.
-            //   * RARE: a custom-merge type's bytes are a genuine
-            //     mismatch/corruption.
-            // Log at DEBUG, not WARN: the benign case dominates (a WARN reading
-            // "type mismatch or corrupt data" here made every routine write look
-            // like data loss), and a real corruption still surfaces downstream
-            // as hash divergence and via the loud `NoMergeFunctionRegistered`
-            // error path above (which fires when NO merger is registered).
-            tracing::debug!(
-                target: "calimero_storage::merge",
-                existing_ts,
-                incoming_ts,
-                "no registered merge function matched this entity; resolving by \
-                 LWW (expected when the type has no custom CRDT merge)"
-            );
-            if incoming_ts >= existing_ts {
-                Ok(incoming.to_vec())
-            } else {
-                Ok(existing.to_vec())
-            }
-        }
+        // Bytes the app's own type does not read are not its state, so they
+        // must never replace state it does read.
+        registry::MergeRegistryResult::AllFunctionsFailed => Err(MergeError::SerializationError(
+            "no registered root-state type reads the incoming value".to_owned(),
+        )),
     }
+}
+
+/// Whether this build holds the app's root-state merger: a Rust app inside WASM.
+pub(crate) fn has_root_merger() -> bool {
+    #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
+    return registry::has_merge_functions();
+    #[cfg(not(any(target_arch = "wasm32", test, feature = "testing")))]
+    return false;
+}
+
+/// Merges two stored `Root<T>` entries, each `borsh(T)` followed by the entry id,
+/// by running the registered merger over the values and putting the id back.
+///
+/// # Errors
+///
+/// As [`merge_entry_values`].
+pub(crate) fn merge_root_entry(
+    existing: &[u8],
+    incoming: &[u8],
+    existing_created_at: u64,
+    existing_ts: u64,
+    incoming_ts: u64,
+) -> Result<Vec<u8>, MergeError> {
+    merge_entry_values(existing, incoming, |existing, incoming| {
+        merge_root_state(
+            existing,
+            incoming,
+            existing_created_at,
+            existing_ts,
+            incoming_ts,
+        )
+    })
+}
+
+/// Merges two `Root<T>` entries by merging their values with `merge` and putting the id back.
+///
+/// # Errors
+///
+/// Refuses an incoming entry that does not end in its id, and what `merge` refuses.
+/// A stored entry without the id reaches `merge` as an empty, unreadable value.
+fn merge_entry_values(
+    existing: &[u8],
+    incoming: &[u8],
+    merge: impl FnOnce(&[u8], &[u8]) -> Result<Vec<u8>, MergeError>,
+) -> Result<Vec<u8>, MergeError> {
+    let id = ROOT_ENTRY_ID.as_bytes().as_slice();
+    let incoming_value = incoming.strip_suffix(id).ok_or_else(|| {
+        MergeError::SerializationError("the incoming root entry does not end in its id".to_owned())
+    })?;
+    // A value merged with itself is unchanged, so an identical one is only read,
+    // sparing a root's collections a walk of every entry they hold.
+    let existing_value = existing
+        .strip_suffix(id)
+        .filter(|value| *value != incoming_value)
+        .unwrap_or_default();
+
+    let mut merged = merge(existing_value, incoming_value)?;
+    merged.extend_from_slice(id);
+    Ok(merged)
 }
 
 /// Trait for app state types that need custom CRDT merge.
@@ -653,12 +680,23 @@ mod typed_dispatch_tests {
         }
     }
 
+    /// A request carrying two app-state entries, each a value followed by the entry id.
+    fn request(existing: &[u8], incoming: &[u8]) -> MergeRootStateRequest {
+        let entry = |value: &[u8]| [value, ROOT_ENTRY_ID.as_bytes()].concat();
+        MergeRootStateRequest {
+            existing: entry(existing),
+            incoming: entry(incoming),
+            existing_created_at: 50,
+            existing_ts: 100,
+            incoming_ts: 200,
+        }
+    }
+
     #[test]
     #[serial]
     fn merge_root_state_typed_combines_disjoint_executor_counts() {
         env::reset_for_testing();
 
-        // Executor A: counter incremented twice — value 2.
         env::set_device_id([1; 32]);
         let mut state_a = DispatchTestApp {
             counter: Counter::new(),
@@ -667,7 +705,6 @@ mod typed_dispatch_tests {
         state_a.counter.increment().unwrap();
         let bytes_a = borsh::to_vec(&state_a).unwrap();
 
-        // Executor B: counter incremented once — value 1.
         env::set_device_id([2; 32]);
         let mut state_b = DispatchTestApp {
             counter: Counter::new(),
@@ -675,131 +712,111 @@ mod typed_dispatch_tests {
         state_b.counter.increment().unwrap();
         let bytes_b = borsh::to_vec(&state_b).unwrap();
 
-        // Typed merge with non-bootstrap timestamps (existing was
-        // written, so we want the real CRDT merge, not the fast-path).
-        // A receives B's increments. G-Counter union per executor → 2 + 1 = 3.
-        let merged_bytes = merge_root_state_typed::<DispatchTestApp>(
-            &bytes_a, &bytes_b, /* created_at */ 50, /* existing_ts */ 100,
-            /* incoming_ts */ 200,
-        )
-        .expect("typed merge should succeed");
-        let merged: DispatchTestApp = borsh::from_slice(&merged_bytes).unwrap();
+        // A receives B's increments: a G-Counter keeps each executor's own, 2 + 1.
+        let MergeRootStateResponse::Ok(merged) =
+            merge_root_state_typed::<DispatchTestApp>(&request(&bytes_a, &bytes_b))
+        else {
+            panic!("the typed merge must succeed");
+        };
+        let value = merged
+            .strip_suffix(ROOT_ENTRY_ID.as_bytes().as_slice())
+            .unwrap();
+        let merged: DispatchTestApp = borsh::from_slice(value).unwrap();
         assert_eq!(merged.counter.value().unwrap(), 3);
     }
 
     #[test]
     #[serial]
-    fn merge_root_state_typed_bootstrap_returns_incoming_verbatim() {
+    fn merge_root_state_typed_takes_the_incoming_entry_over_an_unreadable_stored_one() {
         env::reset_for_testing();
-
-        // Bootstrap shape: existing was created but never written
-        // (`created_at == existing_ts`). The fast-path must accept
-        // incoming bytes verbatim, regardless of whether they'd
-        // deserialize as the typed `T` — this is the joiner-bootstrap
-        // case the kv-store-with-shared-storage regression exposed.
-        let some_bytes = vec![9, 9, 9, 9];
-        let incoming = vec![1, 2, 3, 4];
-
-        let out = merge_root_state_typed::<DispatchTestApp>(
-            &some_bytes,
-            &incoming,
-            /* created_at */ 100,
-            /* existing_ts */ 100,
-            /* incoming_ts */ 50,
-        )
-        .expect("bootstrap fast-path must succeed");
-        assert_eq!(out, incoming, "bootstrap must return incoming verbatim");
-    }
-
-    #[test]
-    #[serial]
-    fn merge_root_state_typed_rejects_malformed_existing() {
-        env::reset_for_testing();
-
-        let valid_bytes = borsh::to_vec(&DispatchTestApp {
+        let valid = borsh::to_vec(&DispatchTestApp {
             counter: Counter::new(),
         })
         .unwrap();
-        let bad = vec![0xff, 0xff, 0xff, 0xff];
+        let request = request(&[0xff; 4], &valid);
 
-        // Post-bootstrap timestamps to avoid the fast-path so the
-        // typed deserialize is reached.
-        let result = merge_root_state_typed::<DispatchTestApp>(
-            &bad,
-            &valid_bytes,
-            /* created_at */ 50,
-            /* existing_ts */ 100,
-            /* incoming_ts */ 200,
-        );
+        let response = merge_root_state_typed::<DispatchTestApp>(&request);
+
         assert!(
-            matches!(result, Err(MergeError::SerializationError(_))),
-            "expected SerializationError, got {result:?}"
+            matches!(&response, MergeRootStateResponse::Ok(merged) if *merged == request.incoming),
+            "a readable incoming entry replaces an unreadable stored one, got {response:?}"
         );
     }
 
     #[test]
     #[serial]
-    fn merge_root_state_typed_rejects_malformed_incoming() {
+    fn merge_root_state_typed_refuses_an_incoming_entry_the_app_type_does_not_read() {
         env::reset_for_testing();
-
-        let valid_bytes = borsh::to_vec(&DispatchTestApp {
+        let valid = borsh::to_vec(&DispatchTestApp {
             counter: Counter::new(),
         })
         .unwrap();
-        let bad = vec![0xff, 0xff, 0xff, 0xff];
+        let mut bootstrap = request(&valid, &[0xff; 4]);
+        bootstrap.existing_ts = bootstrap.existing_created_at;
 
-        let result = merge_root_state_typed::<DispatchTestApp>(
-            &valid_bytes,
-            &bad,
-            /* created_at */ 50,
-            /* existing_ts */ 100,
-            /* incoming_ts */ 200,
-        );
+        let response = merge_root_state_typed::<DispatchTestApp>(&bootstrap);
+
         assert!(
-            matches!(result, Err(MergeError::SerializationError(_))),
-            "expected SerializationError, got {result:?}"
+            matches!(response, MergeRootStateResponse::Refused(_)),
+            "an unreadable incoming entry is refused on a never-written stored one, got {response:?}"
         );
     }
 
     #[test]
     #[serial]
-    fn merge_root_state_all_functions_failed_falls_back_to_lww() {
-        // The type-blind `merge_root_state` path (vs the typed one above): a
-        // merger IS registered, but the bytes don't deserialize as its type, so
-        // the registry returns `AllFunctionsFailed` and we resolve by LWW. This
-        // pins that fallback after the log-level change — it is the branch a
-        // routine `set` exercises in production.
+    fn merge_root_state_refuses_an_incoming_value_the_app_type_does_not_read() {
         env::reset_for_testing();
         clear_merge_registry();
         register_crdt_merge::<DispatchTestApp>();
+        let existing = borsh::to_vec(&DispatchTestApp {
+            counter: Counter::new(),
+        })
+        .unwrap();
 
-        // Neither side deserializes as DispatchTestApp (a 0xFFFFFFFF borsh
-        // length prefix overruns), so the one registered fn fails on both.
-        let existing = vec![0xff, 0xff, 0xff, 0xff];
-        let incoming = vec![0x01, 0x02, 0x03, 0x04];
+        // A 0xFFFFFFFF borsh length prefix overruns, so this is no DispatchTestApp.
+        let result = merge_root_state(&existing, &[0xff; 4], 50, 100, 200);
 
-        // Non-bootstrap timestamps (created_at != existing_ts) so the
-        // accept-incoming fast-path is skipped and we reach the LWW fallback.
-        let newer_incoming = merge_root_state(
-            &existing, &incoming, /* created_at */ 50, /* existing_ts */ 100,
-            /* incoming_ts */ 200,
-        )
-        .expect("LWW fallback returns Ok");
-        assert_eq!(
-            newer_incoming, incoming,
-            "incoming_ts >= existing_ts → incoming wins"
+        assert!(
+            matches!(result, Err(MergeError::SerializationError(_))),
+            "an unreadable incoming value must be refused, got {result:?}"
         );
+        clear_merge_registry();
+    }
 
-        let older_incoming = merge_root_state(
-            &existing, &incoming, /* created_at */ 50, /* existing_ts */ 200,
-            /* incoming_ts */ 100,
-        )
-        .expect("LWW fallback returns Ok");
-        assert_eq!(
-            older_incoming, existing,
-            "incoming_ts < existing_ts → existing wins"
-        );
+    #[test]
+    #[serial]
+    fn merge_root_state_takes_a_readable_incoming_value_over_an_unreadable_stored_one() {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<DispatchTestApp>();
+        let incoming = borsh::to_vec(&DispatchTestApp {
+            counter: Counter::new(),
+        })
+        .unwrap();
 
+        let merged = merge_root_state(&[0xff; 4], &incoming, 50, 200, 100)
+            .expect("a readable incoming value replaces an unreadable stored one");
+
+        assert_eq!(merged, incoming);
+        clear_merge_registry();
+    }
+
+    #[test]
+    #[serial]
+    fn merge_root_entry_takes_the_incoming_entry_over_a_stored_one_without_its_id() {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<DispatchTestApp>();
+        let mut incoming = borsh::to_vec(&DispatchTestApp {
+            counter: Counter::new(),
+        })
+        .unwrap();
+        incoming.extend_from_slice(ROOT_ENTRY_ID.as_bytes());
+
+        let merged = merge_root_entry(&[0xff; 4], &incoming, 50, 100, 200)
+            .expect("a stored entry without its id loses to a readable incoming one");
+
+        assert_eq!(merged, incoming, "the id goes back on the merged value");
         clear_merge_registry();
     }
 

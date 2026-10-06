@@ -24,6 +24,10 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
 use eyre::{bail, Result as EyreResult};
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per field of the op being applied"
+)]
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &SignedNamespaceOp,
@@ -32,6 +36,8 @@ pub(crate) fn apply(
     claims: &TeeAttestationClaims<'_>,
     role: &GroupMemberRole,
     account: &JoinAccountCredential,
+    quote_hash: &[u8; 32],
+    quote: &[u8],
 ) -> EyreResult<()> {
     let signer = op.signer;
     let store = ctx.store();
@@ -75,6 +81,16 @@ pub(crate) fn apply(
         bail!(MembershipError::TeeVerifierNotAuthorized);
     };
     policy_gate.require_tee_attestation_verifier(&verifier)?;
+    // After the voucher gate, so only a voucher's op costs a quote parse.
+    // Every peer repeats this, so a quote cannot be paired with another credential.
+    crate::tee::check_tee_admission_quote(
+        &resolved_ns.to_bytes(),
+        &group_id,
+        member,
+        account,
+        quote_hash,
+        quote,
+    )?;
     let policy = policy_gate.read_required_tee_admission_policy()?;
     policy_gate.validate_tee_attestation_allowlists(&policy, claims)?;
     // The role is the policy's, not the admitter's: `ReadOnlyTee` in replica

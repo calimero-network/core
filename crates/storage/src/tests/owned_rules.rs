@@ -31,7 +31,7 @@ type Board = Moderated<UnorderedMap<String, LwwRegister<String>>>;
 type Chat = ModeratedOnce<UnorderedMap<String, LwwRegister<String>>>;
 type Notes = Authored<UnorderedMap<String, LwwRegister<String>>>;
 
-pub(super) fn key(seed: u8) -> SigningKey {
+pub(crate) fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
@@ -71,7 +71,7 @@ pub(super) fn refused<T: core::fmt::Debug>(
 }
 
 /// A signed owner-stamped action, as a peer's node would produce it.
-pub(super) fn signed(
+pub(crate) fn signed(
     action_of: impl FnOnce(Metadata) -> Action,
     owner: AccountId,
     rules: EntryRules,
@@ -123,7 +123,7 @@ pub(super) fn update(id: Id, parent: Id, data: Vec<u8>) -> impl FnOnce(Metadata)
     }
 }
 
-pub(super) fn delete(id: Id, at: u64) -> impl FnOnce(Metadata) -> Action {
+pub(crate) fn delete(id: Id, at: u64) -> impl FnOnce(Metadata) -> Action {
     move |metadata| Action::DeleteRef {
         id,
         deleted_at: at,

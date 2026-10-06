@@ -195,7 +195,11 @@ id_newtype! {
 /// only on that op, which appears only in a namespace whose owner chose to
 /// trust signed releases. Bumping would instead make every older peer reject
 /// every op in every namespace.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 15;
+///
+/// v16: `GroupOp::TeeAuthorityEvidence` gained the credential its quote commits
+/// to, a layout change to an existing variant, so a v15 peer must reject at the
+/// gate rather than mis-decode.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 16;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -764,8 +768,9 @@ pub enum GroupOp {
     /// `MemberJoinedViaTeeAttestation` carries only the admitter's word for the
     /// measurements. This op carries the proof, and every node verifies it
     /// offline at apply: the quote's signature chain against `collateral` at
-    /// `attested_at`, its report data binding `attested_key`, and its
-    /// measurements and TCB status against the admission policy. An op that
+    /// `attested_at`, its report data committing to `account` admitted as
+    /// `attested_key`, and its measurements and TCB status against the
+    /// admission policy. An op that
     /// fails is never applied, so the log holds only verified evidence.
     ///
     /// Namespace-root only, published by a TEE voucher: an admin or an
@@ -784,6 +789,10 @@ pub enum GroupOp {
         /// When the collateral is judged, in seconds since the epoch. It must
         /// fall inside the collateral's validity window.
         attested_at: u64,
+        /// The credential the quote was made for. The quote's report data
+        /// commits to it, so evidence verifies only against the account,
+        /// identity key, delivery key and device it names.
+        account: Box<JoinAccountCredential>,
     },
     /// TEE admission policy that trusts signed mero-tee node releases instead
     /// of fixed measurement lists. Only admins can set it, on a namespace root.
@@ -1752,9 +1761,10 @@ pub enum RootOp {
     /// the quote against the namespace's policy first. The credential therefore
     /// travels to that verifier on the announcement, and the verifier is
     /// responsible for having checked that it belongs to the attested key
-    /// before putting it here. `member` is that same attested key: the quote's
-    /// `report_data` binds to it, which is what stops a captured quote being
-    /// replayed for a different identity.
+    /// before putting it here. `member` is that same attested key, and the
+    /// quote's `report_data` commits to it together with `account` and the
+    /// namespace, which is what stops a captured quote being replayed for a
+    /// different identity or credential.
     ///
     /// **Wire note:** appended at the END of `RootOp` so existing borsh
     /// discriminants do not renumber.
@@ -1793,6 +1803,10 @@ pub enum RootOp {
         /// the join op, why it carries no endorsement, and why it is not
         /// optional.
         account: Box<JoinAccountCredential>,
+        /// The raw quote `quote_hash` names. Every peer reads its report data
+        /// and requires it to commit to exactly the credential above, so the
+        /// admission cannot pair a quote with a credential it was not made for.
+        quote: Vec<u8>,
     },
     /// A delegable root op published by a relay on a member's behalf, under the
     /// member's signed [`calimero_account::GovernanceWarrant`].
@@ -2343,7 +2357,15 @@ pub struct SignedNamespaceOp {
 /// cannot decode it. A coordinated upgrade.
 /// - core#4453: a capability revoke voids the member's concurrent ops that needed
 ///   a removed bit. Nothing moves on the wire, but a v21 node applies them.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 22;
+///
+/// v23, the step after 22: `RootOp::MemberJoinedViaTeeAttestation` gained the
+/// quote it admits on, which peers check against the credential the op carries,
+/// and `GroupOp::TeeAuthorityEvidence` gained the credential its quote was made
+/// for. Layout changes to existing variants, so a v22 or older peer must reject
+/// at the gate rather than mis-decode. A coordinated upgrade.
+/// - core#4465: a join never replaces a standing role, and a namespace leave folds
+///   onto every subgroup. Nothing moves on the wire, but a v22 node folds otherwise.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 23;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,
@@ -3158,6 +3180,9 @@ impl RootOp {
             | Self::MemberJoinedAt {
                 signed_invitation, ..
             } => validate_invitation_bounds(signed_invitation),
+            Self::MemberJoinedViaTeeAttestation { quote, .. } => {
+                check_bound("root_op.quote", quote.len(), bounds::MAX_TEE_QUOTE_BYTES)
+            }
             _ => Ok(()),
         }
     }

@@ -73,7 +73,8 @@ Everything unsigned — request envelopes, arguments, responses — is JSON, cam
 ## 1. Discovery — live today
 
 Before minting a warrant a client needs two facts it cannot derive: which node to
-talk to, and which account that node will name as `executor`.
+talk to, and the account and signing key the warrant must name for that node
+(`executor` and `executor_key`).
 
 **Which relay**, from the cloud:
 
@@ -106,6 +107,7 @@ GET /admin-api/contexts/{context_id}/intents
 ```jsonc
 {
   "executorAccount": "…",
+  "executorKey": "…",
   "canAuthorOnBehalf": false,
   "groupId": "…",
   "grantedOnGroupId": null
@@ -134,6 +136,7 @@ pub struct Warrant {
     pub author_account: AccountId,
     pub author_device_key: PublicKey,
     pub executor: AccountId,
+    pub executor_key: PublicKey,           // the one relay device that may spend it
     pub app_version: ApplicationId,        // the exact build, not a version string
     pub method: String,                    // in the clear
     pub intent_hash: [u8; 32],             // H(method ‖ args)
@@ -161,6 +164,7 @@ signature = sign(domain_hash(b"calimero.warrant.v2", &[
     author_account.as_bytes(),
     author_device_key,                      // 32 bytes
     executor.as_bytes(),
+    executor_key,                           // 32 bytes
     app_version,                            // 32 bytes
     method.as_bytes(),                      // variable length
     intent_hash,                            // 32 bytes
@@ -223,10 +227,10 @@ POST /admin-api/contexts/{context_id}/intents
 }
 ```
 
-The client supplies only **its own half** of the proof. The executor's proof and
-signing key are attached by the node from its own credentials, because the warrant
-authorizes an operator *account* and the author has no business knowing which of
-that operator's processes will run it.
+The client supplies only **its own half** of the proof.
+The executor's proof and signing key are attached by the node from its own credentials, and the node refuses the warrant with a `403` unless its signing key is the `executor_key` the warrant names.
+Naming one device is what makes a warrant spendable once: each relay keeps its own nonce ledger, so a warrant any device of the operator could present would be spendable once per device.
+A relay that re-keys voids the warrants it has not spent yet.
 
 ```jsonc
 // 200
@@ -280,7 +284,7 @@ POST /admin-api/groups/{group_id}/context-intents
 
 ```jsonc
 // GET 200 — ask first; it signs nothing and spends nothing
-{ "data": { "executorAccount": "…", "groupId": "…",
+{ "data": { "executorAccount": "…", "executorKey": "…", "groupId": "…",
             "canCreateOnBehalf": true, "authorMayCreate": true } }
 
 // POST body
@@ -296,7 +300,8 @@ POST /admin-api/groups/{group_id}/context-intents
 `init_args` is the JSON the node re-encodes from `initArgs` (compact, keys in the
 order sent). The signing preimage is
 `domain_hash("calimero.context-creation-warrant.v1", parts)` over, in order: group,
-seed, author account, author device key, executor, application id, then for each
+seed, author account, author device key, executor, executor key, application id,
+then for each
 of `service_name` and `name` a one-byte presence tag (`00`/`01`) followed by its
 UTF-8 bytes (empty when absent), then `init_hash`, the `u64le`-counted account
 heads and governance floor, `u64le(nonce)` and `u64le(not_after)`.
@@ -322,7 +327,8 @@ POST /admin-api/groups/{group_id}/governance-intents
 
 ```jsonc
 // GET 200 — signs nothing, spends nothing
-{ "data": { "executorAccount": "…", "groupId": "…", "canActOnBehalf": true } }
+{ "data": { "executorAccount": "…", "executorKey": "…", "groupId": "…",
+            "canActOnBehalf": true } }
 
 // POST body — every field hex borsh
 { "warrant": "<GovernanceWarrant>",
@@ -339,7 +345,7 @@ The warrant's `kind` names the plane (`0` group op, published on `{group_id}`;
 `op_hash = domain_hash("calimero.governance-warrant.op.v1", [[kind], op_bytes])`,
 where `op_bytes` is exactly the `op` field. The signing preimage is
 `domain_hash("calimero.governance-warrant.v1", parts)` over, in order: scope,
-`[kind]`, author account, author device key, executor, `op_hash`, the
+`[kind]`, author account, author device key, executor, executor key, `op_hash`, the
 `u64le`-counted account heads and governance floor, `u64le(nonce)` and
 `u64le(not_after)`.
 
@@ -671,7 +677,7 @@ shares nothing.
 4.  POST /auth/token  (auth_method=account_proof)  → session token
 5.  GET  /admin-api/namespaces                     → my namespaces
     GET  /admin-api/contexts                       → my contexts, with groupId
-6.  GET  /admin-api/contexts/{ctx}/intents         → canAuthorOnBehalf?
+6.  GET  /admin-api/contexts/{ctx}/intents         → executorKey, canAuthorOnBehalf?
     ├── false → stop; ask an admin of groupId for the grant
     └── true  → continue
 7.  READ   POST /admin-api/contexts/{ctx}/query    (token; no warrant)
@@ -716,18 +722,18 @@ The last two rows are the whole reason the prefixes exist: both hash the letters
 `crates/account/src/tests/warrant_wire_fixture.rs`
 
 Inputs: `context` = `0x11`×32, `author_account` = `0x22`×32, `executor` =
-`0x33`×32, `app_version` = `0x44`×32, `method` = `"set"`, `args` =
+`0x33`×32, `executor_key` = `0x77`×32, `app_version` = `0x44`×32, `method` = `"set"`, `args` =
 `{"key":"k","value":"v"}` (exactly those bytes, no whitespace), `account_heads` =
 `[0x55`×32`]`, `governance_floor` = `[0x66`×32`]`, `nonce` = 42, `not_after` =
 1700000000, author device secret = `0x07` seeded.
 
 ```text
 intent_hash       dc066cc8524c74dc21714174009df536376e3151f5b92f0a676defde599dbae5
-signing preimage  cd03cfaad8fb5f5aa143c76f35f39363b6608b820ab318a53ed01be901c7c6c7
+signing preimage  f7ebb6c7645c551a7148866d7b2268f7e62fe79685e05ae82d131a2fbde75e34
 author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
 ```
 
-The full 351-byte encoding, field by field:
+The full 383-byte encoding, field by field:
 
 ```text
 offset  field              bytes  value
@@ -735,17 +741,18 @@ offset  field              bytes  value
     32  author_account        32  2222…22
     64  author_device_key     32  ea4a6c63…
     96  executor              32  3333…33
-   128  app_version           32  4444…44
-   160  method len             4  03000000           (3, little-endian)
-   164  method                 3  736574             ("set")
-   167  intent_hash           32  dc066cc8…
-   199  account_heads len      4  01000000           (1, little-endian)
-   203  account_heads[0]      32  5555…55
-   235  governance_floor len   4  01000000           (1, little-endian)
-   239  governance_floor[0]   32  6666…66
-   271  nonce                  8  2a00000000000000   (42, little-endian)
-   279  not_after              8  00f1536500000000   (1700000000, little-endian)
-   287  signature             64  4007d416…
+   128  executor_key          32  7777…77
+   160  app_version           32  4444…44
+   192  method len             4  03000000           (3, little-endian)
+   196  method                 3  736574             ("set")
+   199  intent_hash           32  dc066cc8…
+   231  account_heads len      4  01000000           (1, little-endian)
+   235  account_heads[0]      32  5555…55
+   267  governance_floor len   4  01000000           (1, little-endian)
+   271  governance_floor[0]   32  6666…66
+   303  nonce                  8  2a00000000000000   (42, little-endian)
+   311  not_after              8  00f1536500000000   (1700000000, little-endian)
+   319  signature             64  317e0f84…
 ```
 
 v1 was pure fixed-width concatenation — no length prefixes, no tags — and v2 gives
@@ -767,18 +774,19 @@ prefix.
 `crates/account/src/tests/creation_wire_fixture.rs`
 
 Inputs: `group` = `0x11`×32, `seed` = `0x12`×32, `author_account` = `0x22`×32,
-`executor` = `0x33`×32, `application_id` = `0x44`×32, `service_name` absent,
+`executor` = `0x33`×32, `executor_key` = `0x77`×32, `application_id` = `0x44`×32,
+`service_name` absent,
 `name` = `"general"`, init args = `{"name":"general"}`, `account_heads` =
 `[0x55`×32`]`, `governance_floor` = `[0x66`×32`]`, `nonce` = 42, `not_after` =
 1700000000, author device secret = `0x07` seeded.
 
 ```text
 init_hash         074dc4be8c7abe685532a48947430edd0301b42f60222e715a834e723d2a055e
-signing preimage  f838cd94995573a7fea9768a82b6207632c4a89ce37c860e0d05febf5609644f
+signing preimage  7e1126b215a794e565bb59c630cb1a36e43590c4bd8f62c6111792f77c231598
 author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
-encoding          389 bytes; service_name encodes as 00, name as 01 07000000 67656e6572616c
-signature         7e47c0655b1b0ef65a420ef301f6888328579abc153b122d9e7f6396c8757aa5
-                  14d8a4e65ff85912dfb20f6858fcdbfc60818214ca2e6adcbfbf4dae3d9fd906
+encoding          421 bytes; service_name encodes as 00, name as 01 07000000 67656e6572616c
+signature         19103d73752d052f747911b4b36e423221d89d120bf6f4d32122d3c4fd1fb030
+                  9add40f3f3b80a5e5d6fefa02de5f4d6bb914c85c5c8b10a3a0e3a0e22c08400
 ```
 
 ### Governance warrant
@@ -786,17 +794,18 @@ signature         7e47c0655b1b0ef65a420ef301f6888328579abc153b122d9e7f6396c8757a
 `crates/account/src/tests/governance_wire_fixture.rs`
 
 Inputs: `scope` = `0x11`×32, `kind` = `1` (root), `author_account` = `0x22`×32,
-`executor` = `0x33`×32, op bytes = `010203`, `account_heads` = `[0x55`×32`]`,
+`executor` = `0x33`×32, `executor_key` = `0x77`×32, op bytes = `010203`,
+`account_heads` = `[0x55`×32`]`,
 `governance_floor` = `[0x66`×32`]`, `nonce` = 42, `not_after` = 1700000000, author
 device secret = `0x07` seeded.
 
 ```text
 op_hash           d6bc121f9fcf7b85bea94d356d620c14dd8e1ae5fa2317cbcfc2c486cf04dfb3
-signing preimage  23110c9012218d6996c33991173280928db4cc030a77164a31a2b1e47946bf80
+signing preimage  b71a40cfbbe50e40d3423e8729a9ca8359e69f2762396922e6b314a971c5f720
 author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
-encoding          313 bytes
-signature         27a7c779c5d7aef80dcf7125c2ef733bb0f4bbe20d84a75d0b132516d3b2a1a0
-                  0e292b674f927df135d6f631dc7768f2e40a0c1c1040f5fc923385d2b5b05e07
+encoding          345 bytes
+signature         03ce6c011f565924099b2c776032a1cfe540d1c4c09fad0b470723f8ee76138d
+                  1d685a20948edf4dee2901d3f9187e3363a16e3b141b0bc94553f5948becae07
 ```
 
 Real ops, from `delegated_governance_op_vectors_are_stable` and

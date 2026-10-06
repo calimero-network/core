@@ -280,8 +280,8 @@ So every new stamp is taken against the version it replaces:
 - **A register** (`LwwRegister::set`, `value_mut`) takes `hlc.after(previous)`: the
   current HLC, or the tick after the previous stamp when the HLC is not later.
 
-Replays keep the stamps their writers gave them (`Root::sync` re-saves the root
-document through `save_raw_replayed`), and merge mode stamps nothing. Concurrent
+Replays keep the stamps their writers gave them (`Root::sync` applies each action
+through `apply_action`, which stamps nothing), and merge mode stamps nothing. Concurrent
 writes, which did not see each other, resolve exactly as before: the newer stamp
 wins, then the tiebreak below. `crates/storage/src/tests/entity_clock.rs` steps the
 clock back between two writes for each case.
