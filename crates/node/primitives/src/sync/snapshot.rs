@@ -106,10 +106,9 @@ pub const MAX_COMPRESSED_PAYLOAD_SIZE: usize = 8 * 1024 * 1024;
 /// 3. Reject any tampered or unsigned entity record before
 ///    `handle.put` lands the bytes.
 ///
-/// Non-entity records (per-entity rotation log, local sync-state
-/// pointers) ship as [`SnapshotRecord::Auxiliary`] — they're
-/// either implicit-from-the-signed-entity (rotation log) or
-/// local-state-ish (sync state) and not individually verifiable.
+/// Non-entity records (local sync-state pointers) ship as
+/// [`SnapshotRecord::Auxiliary`] - they're local-state-ish and not
+/// individually verifiable.
 /// A hand-written [`BorshDeserialize`] (not the derive) keeps the trailing
 /// `Entity.schema_bytecode_id` field backward-compatible: a peer running the
 /// pre-#2539 binary serialises `Entity` as `{id, entry, index}` and stops, so
@@ -154,16 +153,14 @@ pub enum SnapshotRecord {
         schema_bytecode_id: Option<[u8; 32]>,
     },
     /// Auxiliary state keyed under the same context but not
-    /// signature-verifiable per record. Currently used for:
+    /// signature-verifiable per record. No kind is in use, and the receiver
+    /// refuses every one:
     ///
-    /// * `kind = 3`: `Key::RotationLog(id)` — per-entity writer
-    ///   rotation history. Its authenticity is implicit from the
-    ///   signed entity's writer set (the rotation log just records
-    ///   transitions between writer-set-signed states).
+    /// * `kind = 2` named a sync-state key nothing ever wrote.
+    /// * `kind = 3` was a per-entity rotation log that older peers shipped. It
+    ///   is retired: a cell's writers come from the governance fold.
     ///
-    /// The receiver re-derives the storage key via
-    /// `Key::RotationLog(id).to_bytes()` and writes through. Any other
-    /// kind is refused.
+    /// Neither number is reused.
     Auxiliary {
         /// Discriminator byte from `calimero_storage::store::Key`.
         kind: u8,
@@ -236,8 +233,6 @@ pub mod snapshot_record_kind {
     /// `Key::Entry(id)` — not used in `Auxiliary` (Entry is shipped
     /// inside `Entity`); kept here for completeness.
     pub const ENTRY: u8 = 1;
-    /// `Key::RotationLog(id)` — per-entity writer rotation history.
-    pub const ROTATION_LOG: u8 = 3;
 }
 
 /// Cursor for resuming snapshot pagination.
@@ -1673,7 +1668,7 @@ mod tests {
 
         // Auxiliary is unaffected by the new trailing field.
         let aux = SnapshotRecord::Auxiliary {
-            kind: snapshot_record_kind::ROTATION_LOG,
+            kind: 3,
             id: [3u8; 32],
             value: vec![1],
         };

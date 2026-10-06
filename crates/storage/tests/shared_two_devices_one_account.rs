@@ -26,7 +26,7 @@
 //! first test above — before the harness could sign, it failed.
 //!
 //! What this does NOT cover: the causal cut. The harness resolves writers from
-//! settled local state, never from the rotation log at a delta's parents, so
+//! settled local state, never from the governance fold at a delta's parents, so
 //! rotation ORDERING lives in merobox — see
 //! `apps/scaffolding-e2e/workflows/shared-storage-account-writers-concurrent.yml`
 //! for the same two-devices-of-one-account story over the real wire, where the

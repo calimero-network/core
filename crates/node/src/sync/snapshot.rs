@@ -1014,18 +1014,17 @@ impl SyncManager {
                                     //   key nothing ever wrote; a
                                     //   peer emitting one is
                                     //   misbehaving.
-                                    // * `ROTATION_LOG` - legacy rotation
-                                    //   history nothing reads now: a
-                                    //   cell's writers come from the
-                                    //   governance fold.
+                                    // * kind 3 - the retired rotation
+                                    //   log an older peer may still
+                                    //   ship: a cell's writers come
+                                    //   from the governance fold.
                                     warn!(
                                         %context_id,
                                         kind,
                                         id = ?id,
                                         "snapshot Auxiliary record: rejecting — no kind \
                                          currently has per-record authentication (issue \
-                                         #2387 follow-up: sign each rotation-log entry \
-                                         at write time)"
+                                         #2387 follow-up)"
                                     );
                                     rejected += 1;
                                     continue;
@@ -2261,7 +2260,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // existence checks alone (no value reads). This reproduces the
     // pre-#2133 bookkeeping exactly: `consumed_keys` collects every
     // state_key we either ship in a bundle, deliberately skip
-    // (cursor / RotationLog), and `unrecognized_count` is the
+    // (cursor), and `unrecognized_count` is the
     // residual `total_records − consumed`. It is computed over the
     // *full* id set on every call (independent of the page window)
     // so the operator-visible warning stays stable across
@@ -2308,8 +2307,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         let has_index = present_keys.contains(&index_key);
         let has_entry = with_entry.contains(id);
 
-        // An entity contributes 1 record (Entity bundling Entry + Index). A rotation
-        // writes no data, so there is no rotation key to count.
+        // An entity contributes 1 record (Entity bundling Entry + Index).
         if has_index && has_entry {
             total_entries += 1;
         }
@@ -2882,11 +2880,8 @@ mod tests {
     use calimero_store::Store;
 
     use super::*;
-    // Wire-codec round-trip tests below use the `ROTATION_LOG` auxiliary
-    // kind as a sample `SnapshotRecord::Auxiliary`; the constant lives in
-    // node-primitives and is exercised only here (the sender never emits a
-    // rotation-log auxiliary record).
-    use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
+
+    const AUX_KIND: u8 = 3; // a retired auxiliary kind, as an older peer ships it
 
     /// Grouping siblings behind one row cache must be invisible in the result.
     ///
@@ -3690,7 +3685,7 @@ mod tests {
                 schema_bytecode_id: Some([7u8; 32]),
             },
             SnapshotRecord::Auxiliary {
-                kind: snapshot_record_kind::ROTATION_LOG,
+                kind: AUX_KIND,
                 id: [4u8; 32],
                 value: vec![5, 6, 7],
             },
@@ -3710,7 +3705,7 @@ mod tests {
         assert!(matches!(
             &records[1],
             SnapshotRecord::Auxiliary { kind, id, value }
-                if *kind == snapshot_record_kind::ROTATION_LOG
+                if *kind == AUX_KIND
                     && *id == [4u8; 32]
                     && value == &vec![5, 6, 7]
         ));
@@ -3730,7 +3725,7 @@ mod tests {
             schema_bytecode_id: None,
         };
         let aux = SnapshotRecord::Auxiliary {
-            kind: snapshot_record_kind::ROTATION_LOG,
+            kind: AUX_KIND,
             id: [2u8; 32],
             value: vec![30, 31],
         };
@@ -3746,7 +3741,7 @@ mod tests {
         assert!(matches!(
             &records[1],
             SnapshotRecord::Auxiliary { kind, id, .. }
-                if *kind == snapshot_record_kind::ROTATION_LOG && *id == [2u8; 32]
+                if *kind == AUX_KIND && *id == [2u8; 32]
         ));
     }
 
