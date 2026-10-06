@@ -9207,8 +9207,9 @@ fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
 }
 
 /// The other half of the hold: a held op is not lost. Once this node can read
-/// the group's history - the key arrives, as when the node is added to the
-/// subgroup - the key-arrival replay re-feeds the held flip and it applies.
+/// the group's history - the key arrives, served by a key holder once the
+/// subgroup is Open there, or because the node is added to it - the key-arrival
+/// replay re-feeds the held flip and it applies.
 #[test]
 fn a_held_group_op_applies_once_its_groups_key_arrives() {
     use calimero_context_config::VisibilityMode;

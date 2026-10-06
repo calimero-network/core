@@ -268,10 +268,10 @@ scenarios:
     file: workflows/group-only-creator-opens-restricted.yml
     app: scaffolding-e2e
     registry_fetch: "false"
-  # The replay half: the held flip applies once the member is added and the
-  # subgroup key arrives. Governance only, too.
-  - workflow: group-held-flip-applies-when-member-added
-    file: workflows/group-held-flip-applies-when-member-added.yml
+  # The replay half: the held flip applies once the subgroup key arrives.
+  # Governance only, too.
+  - workflow: group-held-flip-applies-when-key-arrives
+    file: workflows/group-held-flip-applies-when-key-arrives.yml
     app: scaffolding-e2e
     registry_fetch: "false"
   - workflow: member-removed-multi-context-convergence
