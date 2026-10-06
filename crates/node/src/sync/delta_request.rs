@@ -167,6 +167,18 @@ fn verify_fetched_parent(
         return VerifiedParent::Skip;
     }
 
+    // The DAG would refuse it anyway, and its parents must not drive the walk.
+    if fetched.delta.parents.len() > calimero_dag::MAX_DELTA_PARENTS {
+        warn!(
+            %context_id,
+            delta_id = ?delta_id,
+            author = %fetched.author_id,
+            parent_count = fetched.delta.parents.len(),
+            "DAG-catchup parent-pull: delta names more parents than a delta may have, dropping"
+        );
+        return VerifiedParent::Skip;
+    }
+
     // Genesis carve-out: the responder serves the genesis delta with
     // the all-zeros sentinel `author_id` because the wire requires an
     // author but genesis predates any governance op. Skip every
@@ -1030,7 +1042,11 @@ mod tests {
     };
 
     fn genesis_claim() -> FetchedDelta {
-        let parents = vec![[0u8; 32]];
+        claim_naming(vec![[0u8; 32]])
+    }
+
+    /// A content-addressed delta under the genesis sentinel naming `parents`.
+    fn claim_naming(parents: Vec<[u8; 32]>) -> FetchedDelta {
         let hlc = HybridTimestamp::default();
         FetchedDelta {
             delta: CausalDelta {
@@ -1068,6 +1084,21 @@ mod tests {
                 position: None,
                 envelope: None
             }
+        ));
+    }
+
+    #[test]
+    fn a_fetched_parent_naming_more_parents_than_a_delta_may_have_is_skipped() {
+        let parents = (0..=calimero_dag::MAX_DELTA_PARENTS)
+            .map(|i| {
+                let mut id = [0xAA; 32];
+                id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                id
+            })
+            .collect();
+        assert!(matches!(
+            verdict(&claim_naming(parents), FetchedAs::Parent),
+            VerifiedParent::Skip
         ));
     }
 

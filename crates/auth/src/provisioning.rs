@@ -16,16 +16,16 @@
 //!   wipe;
 //! * `merod auth set-admin`, the offline equivalent for a stopped node.
 //!
-//! The password is consumed on the spot: only the PBKDF2-derived key id and
-//! the key record (username, method, permissions) are stored — nothing
-//! secret is ever written to config or logs.
+//! The password is consumed on the spot: only a randomly salted PBKDF2 hash
+//! of it and the key record (username, method, permissions) are stored;
+//! nothing secret is ever written to config or logs.
 
 use std::sync::Arc;
 
 use tracing::{info, warn};
 
 use crate::config::{AuthConfig, UserPasswordConfig};
-use crate::providers::impls::user_password::{derive_key_id, validate_password_length};
+use crate::providers::impls::user_password::{register_root_key, validate_password_length};
 use crate::storage::models::{Key, KeyType};
 use crate::storage::{KeyManager, Storage};
 
@@ -39,29 +39,12 @@ pub const ADMIN_PASSWORD_ENV: &str = "MERO_AUTH_ADMIN_PASSWORD";
 /// (e.g. a mounted secret). Takes precedence over [`ADMIN_PASSWORD_ENV`].
 pub const ADMIN_PASSWORD_FILE_ENV: &str = "MERO_AUTH_ADMIN_PASSWORD_FILE";
 
-/// Auth-method names the `user_password` provider answers to; used to scope
-/// key lookups and rotation to this provider's keys only.
+/// Auth-method names the `user_password` provider answers to; scopes bootstrap
+/// detection to this provider's keys.
 const USER_PASSWORD_METHODS: [&str; 2] = ["user_password", "username_password"];
 
-/// Mint the `user_password` admin root key for the given credentials.
-///
-/// Applies the creation-time password policy (both minimum and maximum
-/// length), derives the storage key id with the same salted PBKDF2 the login
-/// path uses, and stores a root key carrying the `admin` permission.
-///
-/// This SETS the account for `username`: any other `user_password` root key
-/// stored for the same username (i.e. minted under a previous password,
-/// including pre-PBKDF2 legacy ids) is deleted — along with every scoped
-/// client key derived from it — so re-provisioning rotates the password and
-/// invalidates tokens minted under the old one rather than leaving either
-/// valid forever. Keys for other usernames are untouched. Idempotent for
-/// identical credentials.
-///
-/// The new key is stored before the old ones are deleted, so a crash in
-/// between leaves both passwords valid (re-run to finish the rotation) —
-/// never an account-less node.
-///
-/// Returns the key id.
+/// Set `username`'s admin password and return its root key id. A new password
+/// retires the old key with its client keys; the same password is idempotent.
 pub async fn provision_admin_key(
     storage: &Arc<dyn Storage>,
     config: &UserPasswordConfig,
@@ -70,7 +53,6 @@ pub async fn provision_admin_key(
 ) -> eyre::Result<String> {
     validate_admin_credentials(config, username, password)?;
 
-    let key_id = derive_key_id(username, password);
     let root_key = Key::new_root_key_with_permissions(
         username.to_owned(), // the username doubles as the "public key"
         "user_password".to_owned(),
@@ -79,55 +61,9 @@ pub async fn provision_admin_key(
     );
 
     let key_manager = KeyManager::new(Arc::clone(storage));
-    let _was_updated = key_manager
-        .set_key(&key_id, &root_key)
+    let (key_id, _was_updated) = register_root_key(&key_manager, username, password, &root_key)
         .await
         .map_err(|err| eyre::eyre!("Failed to store admin root key: {err}"))?;
-
-    // Rotate: drop every other user_password key stored for this username.
-    // Without this, provisioning a new password after a compromise would
-    // leave the compromised one authenticating forever (its derived key id
-    // is still a valid lookup).
-    let existing = key_manager
-        .list_keys(KeyType::Root)
-        .await
-        .map_err(|err| eyre::eyre!("Failed to list root keys for rotation: {err}"))?;
-    for (stale_id, key) in existing {
-        let same_user = key.public_key.as_deref() == Some(username);
-        let same_provider = match key.auth_method.as_deref() {
-            Some(method) => USER_PASSWORD_METHODS.contains(&method),
-            // Legacy keys predate the `auth_method` field being populated (the
-            // "pre-PBKDF2 legacy ids" this function's doc promises to rotate
-            // out). A root key whose public key is this username but has no
-            // recorded auth_method is such a key: `user_password` is the only
-            // provider that mints username-keyed root keys, so treat it as
-            // belonging here rather than leaving an old credential able to
-            // authenticate forever. `same_user` already pins it to this exact
-            // username, so this can't sweep some other identity.
-            None => true,
-        };
-        if stale_id != key_id && same_user && same_provider {
-            // Revoke the client keys derived from the superseded root key
-            // first: they authenticate independently of their parent, so a
-            // token minted under the old password would otherwise survive the
-            // rotation. Do this before deleting the root key — deleting the
-            // root drops the root→client index this lookup relies on.
-            let revoked_clients = key_manager
-                .delete_client_keys_for_root(&stale_id)
-                .await
-                .map_err(|err| {
-                    eyre::eyre!("Failed to revoke client keys of the superseded root key: {err}")
-                })?;
-            key_manager.delete_key(&stale_id).await.map_err(|err| {
-                eyre::eyre!("Failed to delete the superseded root key for this username: {err}")
-            })?;
-            info!(
-                user = %crate::utils::sanitize_for_log(username),
-                revoked_clients,
-                "Rotated out a superseded root key for this username"
-            );
-        }
-    }
 
     info!(
         user = %crate::utils::sanitize_for_log(username),
@@ -269,26 +205,13 @@ pub async fn provision_admin_from_env_if_unbootstrapped(
         return Ok(());
     }
 
-    // Does a user_password admin already exist? This MUST use the same
-    // definition of "belongs to user_password" as `provision_admin_key`'s
-    // rotation sweep, or the two disagree: rotation treats a root key with no
-    // auth_method as a legacy user_password key, so bootstrap detection must
-    // too. Otherwise a node whose only admin is a pre-PBKDF2 legacy key (no
-    // auth_method) reads as un-bootstrapped here, env-provisioning runs, and
-    // the rotation logic silently deletes that legacy admin — a routine
-    // restart with the env vars still set (common in containers) would
-    // replace an existing account. A root key minted by some FUTURE other
-    // provider still doesn't count: providers tag their own auth_method, so it
-    // is neither a user_password method nor untagged.
+    // A root key minted by another provider does not count: providers tag
+    // their own auth_method.
     let key_manager = KeyManager::new(Arc::clone(storage));
     let has_admin = key_manager
         .has_any_key(KeyType::Root, Some(&USER_PASSWORD_METHODS))
         .await
-        .map_err(|err| eyre::eyre!("failed to determine provisioning state: {err}"))?
-        || key_manager
-            .has_any_key(KeyType::Root, Some(&[]))
-            .await
-            .map_err(|err| eyre::eyre!("failed to determine provisioning state: {err}"))?;
+        .map_err(|err| eyre::eyre!("failed to determine provisioning state: {err}"))?;
     if has_admin {
         return Ok(());
     }
@@ -357,6 +280,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_key_id_is_random_not_derived_from_the_credentials() {
+        let first = provision_admin_key(
+            &memory_storage(),
+            &UserPasswordConfig::default(),
+            "admin",
+            "password-1",
+        )
+        .await
+        .unwrap();
+        let second = provision_admin_key(
+            &memory_storage(),
+            &UserPasswordConfig::default(),
+            "admin",
+            "password-1",
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(
+            first, second,
+            "the same credentials must not give the same id"
+        );
+    }
+
+    #[tokio::test]
     async fn reprovisioning_same_credentials_is_idempotent() {
         let storage = memory_storage();
         let config = UserPasswordConfig::default();
@@ -368,6 +316,27 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert_eq!(root_keys(&storage).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rotating_the_password_of_a_revoked_admin_succeeds() {
+        let storage = memory_storage();
+        let config = UserPasswordConfig::default();
+        let old = provision_admin_key(&storage, &config, "admin", "old-password-1")
+            .await
+            .unwrap();
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let mut revoked = key_manager.get_key(&old).await.unwrap().unwrap();
+        revoked.revoke();
+        let _ = key_manager.set_key(&old, &revoked).await.unwrap();
+
+        let new_id = provision_admin_key(&storage, &config, "admin", "new-password-2")
+            .await
+            .unwrap();
+
+        let roots = root_keys(&storage).await;
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].0, new_id);
     }
 
     #[tokio::test]
@@ -389,9 +358,7 @@ mod tests {
         assert_eq!(keys.len(), 1, "the superseded key must be deleted");
         assert_eq!(keys[0].0, new_id);
 
-        // The username→key_id index must still resolve to the CURRENT key:
-        // deleting the old key (whose public_key is the same username) must not
-        // clobber the index entry the new key just claimed.
+        // The public-key index, keyed by the same username, follows the new key.
         let resolved = KeyManager::new(Arc::clone(&storage))
             .find_root_key_by_public_key("admin")
             .await
@@ -400,78 +367,6 @@ mod tests {
             resolved.map(|(id, _)| id),
             Some(new_id),
             "the public-key index must point at the rotated-in key"
-        );
-    }
-
-    #[tokio::test]
-    async fn rotation_sweeps_a_legacy_key_with_no_auth_method() {
-        // Pre-PBKDF2 keys predate the auth_method field: a root key for this
-        // username with auth_method == None must still be rotated out, or an
-        // old credential keeps authenticating forever (the doc promises it is
-        // swept).
-        let storage = memory_storage();
-        let config = UserPasswordConfig::default();
-        let key_manager = KeyManager::new(Arc::clone(&storage));
-
-        let mut legacy = Key::new_root_key_with_permissions(
-            "admin".to_owned(),
-            "user_password".to_owned(),
-            vec!["admin".to_owned()],
-            None,
-        );
-        legacy.auth_method = None; // as an old on-disk record would be
-        key_manager.set_key("legacy-id", &legacy).await.unwrap();
-
-        let new_id = provision_admin_key(&storage, &config, "admin", "new-password-2")
-            .await
-            .unwrap();
-
-        let keys = root_keys(&storage).await;
-        assert_eq!(keys.len(), 1, "the legacy key must be swept");
-        assert_eq!(keys[0].0, new_id);
-    }
-
-    // Holds the std Mutex across `.await`: a test-only serialization guard for
-    // the process-global env vars, on a per-test current-thread runtime with no
-    // other task contending it — none of the deadlock hazard the lint guards.
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test]
-    async fn a_legacy_only_node_reads_as_already_bootstrapped() {
-        // Bootstrap detection must count a legacy key (auth_method == None) as
-        // an existing admin, or env-provisioning runs on restart and the
-        // rotation sweep silently replaces the legacy account.
-        let _env = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let storage = memory_storage();
-        let key_manager = KeyManager::new(Arc::clone(&storage));
-
-        let mut legacy = Key::new_root_key_with_permissions(
-            "admin".to_owned(),
-            "user_password".to_owned(),
-            vec!["admin".to_owned()],
-            None,
-        );
-        legacy.auth_method = None;
-        key_manager.set_key("legacy-id", &legacy).await.unwrap();
-
-        // Env vars a container would keep passing on every restart.
-        std::env::set_var(ADMIN_USER_ENV, "admin");
-        std::env::set_var(ADMIN_PASSWORD_ENV, "env-password-123");
-        let result = provision_admin_from_env_if_unbootstrapped(
-            &storage,
-            &crate::embedded::default_config(),
-        )
-        .await;
-        std::env::remove_var(ADMIN_USER_ENV);
-        std::env::remove_var(ADMIN_PASSWORD_ENV);
-        result.unwrap();
-
-        let keys = root_keys(&storage).await;
-        assert_eq!(keys.len(), 1, "the legacy admin must be left untouched");
-        assert_eq!(
-            keys[0].0, "legacy-id",
-            "env-provisioning must not run against a legacy-only node"
         );
     }
 

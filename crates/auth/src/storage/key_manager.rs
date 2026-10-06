@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::auth::permissions::Permission;
-use crate::storage::models::{prefixes, Key, KeyType};
+use crate::storage::models::{prefixes, Key, KeyType, PasswordLogin};
 use crate::storage::{deserialize, serialize, Storage, StorageError};
 
 /// KeyManager handles all domain-specific key management operations
@@ -146,23 +146,17 @@ impl KeyManager {
         Ok(was_updated)
     }
 
-    /// Delete a key and its indices
+    /// Delete a key and its indices, revoked or expired ones included.
     pub async fn delete_key(&self, key_id: &str) -> Result<(), StorageError> {
-        if let Some(key) = self.get_key(key_id).await? {
+        if let Some(key) = self.get_key_including_invalid(key_id).await? {
             match key.key_type {
                 KeyType::Root => {
                     // Delete the main key
                     let key_path = format!("{}{}", prefixes::ROOT_KEY, key_id);
                     self.storage.delete(&key_path).await?;
 
-                    // Delete the public-key index — but only if it still points
-                    // at THIS key. The public key is the username, which is
-                    // stable across password rotations: when a rotation stores
-                    // the new root key first (repointing the index at the new
-                    // id) and then deletes the superseded one, its `public_key`
-                    // is the same username, so an unconditional delete here
-                    // would drop the index entry that now belongs to the live
-                    // key. Guard against clearing another key's index.
+                    // Delete the public-key index only while it points at this key:
+                    // another root key may have claimed the same public key since.
                     if let Some(public_key) = key.public_key {
                         let public_key_index =
                             format!("{}{}", prefixes::PUBLIC_KEY_INDEX, public_key);
@@ -209,6 +203,29 @@ impl KeyManager {
         }
     }
 
+    /// The password login stored for `username`, if any.
+    pub async fn password_login(
+        &self,
+        username: &str,
+    ) -> Result<Option<PasswordLogin>, StorageError> {
+        let path = format!("{}{}", prefixes::PASSWORD_LOGIN, username);
+        self.storage
+            .get(&path)
+            .await?
+            .map(|data| deserialize(&data))
+            .transpose()
+    }
+
+    /// Store the password login for `username`, replacing any previous one.
+    pub async fn set_password_login(
+        &self,
+        username: &str,
+        login: &PasswordLogin,
+    ) -> Result<(), StorageError> {
+        let path = format!("{}{}", prefixes::PASSWORD_LOGIN, username);
+        self.storage.set(&path, &serialize(login)?).await
+    }
+
     /// Check if any keys exist of a specific type, optionally filtered by auth_method
     ///
     /// This method is more efficient than `list_keys()` as it returns early
@@ -219,7 +236,6 @@ impl KeyManager {
     /// * `key_type` - The type of keys to check (Root or Client)
     /// * `auth_methods` - Optional slice of auth methods to filter by.
     ///   If `None`, checks for any key regardless of auth_method.
-    ///   If `Some(&[])`, checks for keys with no auth_method.
     ///   If `Some(&["method1", "method2"])`, checks for keys matching any of these methods.
     ///
     /// # Returns
@@ -255,17 +271,11 @@ impl KeyManager {
 
                 // If no auth_method filter, any valid key counts as a match
                 let matches = if let Some(auth_methods) = auth_methods {
-                    if auth_methods.is_empty() {
-                        // Empty slice means we want keys with no auth_method
-                        key_data.auth_method.is_none()
-                    } else {
-                        // Check if key's auth_method matches any of the provided methods
-                        key_data
-                            .auth_method
-                            .as_ref()
-                            .map(|m| auth_methods.contains(&m.as_str()))
-                            .unwrap_or(false)
-                    }
+                    key_data
+                        .auth_method
+                        .as_ref()
+                        .map(|m| auth_methods.contains(&m.as_str()))
+                        .unwrap_or(false)
                 } else {
                     // No filter means any valid key matches
                     true
@@ -358,8 +368,8 @@ impl KeyManager {
     /// rotating a compromised admin password), those client keys must go too,
     /// otherwise a token issued before the rotation keeps authenticating.
     ///
-    /// Returns the number of client keys deleted. Client ids already gone or
-    /// revoked (invisible to `get_key`) are skipped.
+    /// Returns the number of client keys deleted. Client ids already gone are
+    /// skipped.
     pub async fn delete_client_keys_for_root(
         &self,
         root_key_id: &str,
@@ -373,7 +383,7 @@ impl KeyManager {
         let mut deleted = 0;
         for client_id in &client_ids {
             // delete_key also maintains the root→client index for us; a client
-            // that is already gone/revoked resolves to NotFound — skip it.
+            // that is already gone resolves to NotFound, so skip it.
             match self.delete_key(client_id).await {
                 Ok(()) => deleted += 1,
                 Err(StorageError::NotFound) => {}
@@ -648,6 +658,27 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn delete_key_removes_a_revoked_key() {
+        let key_manager = KeyManager::new(Arc::new(MemoryStorage::new()));
+        let mut root = Key::new_root_key_with_permissions(
+            "admin".to_string(),
+            "user_password".to_string(),
+            vec!["admin".to_string()],
+            None,
+        );
+        root.revoke();
+        key_manager.set_key("root-1", &root).await.unwrap();
+
+        key_manager.delete_key("root-1").await.unwrap();
+
+        assert!(key_manager
+            .get_key_including_invalid("root-1")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

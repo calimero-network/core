@@ -14,7 +14,7 @@ use core::time::Duration;
 
 use actix::{Context, Handler, Message, ResponseFuture};
 use calimero_network_primitives::{
-    blob_types::{BlobProbe, BlobRequest, BlobResponse},
+    blob_types::{BlobProbe, BlobRequest, BlobResponse, MAX_BLOB_RESPONSE_FRAME_BYTES},
     messages::ProbeBlob,
     stream::{Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL},
 };
@@ -51,6 +51,7 @@ impl Handler<ProbeBlob> for NetworkManager {
                     .send(StreamMessage::new(serde_json::to_vec(&blob_request)?))
                     .await?;
 
+                stream.set_max_message_size(MAX_BLOB_RESPONSE_FRAME_BYTES);
                 // A peer that closes without answering is not a holder. The
                 // stream is dropped here, before any chunk is read: that is
                 // what makes this a probe rather than a download.

@@ -405,13 +405,24 @@ pub async fn handle_subscription(
                     inner.touch();
                     inner.to_persisted()
                 };
-                let subscribed_groups = groups.subscribed;
+                let mut subscribed = subscribed;
+                let mut subscribed_groups = groups.subscribed;
 
                 let mut store = state.store.clone();
                 if let Err(err) = save_session(&mut store, session_id, &persisted) {
                     error!(%session_id, %err, "Failed to persist session subscriptions");
                 }
                 drop(_persist);
+
+                // A withdrawal that committed after the gates above read the
+                // store found nothing here to drop yet, so ask again now the ids
+                // are in place.
+                super::events::re_derive(session_id, &state, &session).await;
+                {
+                    let inner = session.inner.read().await;
+                    subscribed.retain(|id| inner.subscriptions.contains(id));
+                    subscribed_groups.retain(|id| inner.group_subscriptions.contains(id));
+                }
 
                 // Seed this session's connection with each context's CURRENT
                 // presence, now that the subscription is live and deltas are
@@ -1907,58 +1918,85 @@ mod tests {
     /// never sees a revocation made for the namespace: a subgroup answers as if
     /// the device were live.
     mod revoked_device_read_tests {
+        use std::time::Duration;
+
         use calimero_account::AccountId;
+        use calimero_context_client::local_governance::GroupOp;
         use calimero_context_config::types::ContextGroupId;
-        use calimero_governance_store::{
-            AccountBindingRepository, MembershipRepository, NamespaceRepository,
+        use calimero_governance_store::test_fixtures::root_for;
+        use calimero_governance_store::AccountBindingRepository;
+        use calimero_primitives::events::{
+            ContextEvent, ContextEventPayload, NodeEvent, StateMutationPayload,
         };
-        use calimero_primitives::context::GroupMemberRole;
-        use calimero_primitives::identity::DeviceId;
+        use calimero_primitives::hash::Hash;
+        use calimero_primitives::identity::{DeviceId, PrivateKey};
+        use tokio::sync::broadcast;
+        use tokio::task::JoinHandle;
 
         use super::*;
         use crate::admin::caller_scope::{list_scope, ListScope};
+        use crate::test_support::{
+            apply_through_governance, descope_by_root, revoke_through_governance,
+            seed_device_members, withdrawal_by_root,
+        };
         use crate::ws::{authorize_group_subscriptions, caller_may_observe_context};
 
         struct Fixture {
             state: Arc<ServiceState>,
+            events: broadcast::Sender<NodeEvent>,
             _blob_dir: TempDir,
             ns: ContextGroupId,
             sub: ContextGroupId,
             context: ContextId,
             account: AccountId,
             device: DeviceId,
+            /// The signing key `device` is bound with, which speaks for `account`.
+            device_sk: PrivateKey,
+            /// A second member's live device, which nothing ever withdraws.
+            peer: (AccountId, DeviceId),
         }
 
-        /// A namespace with a subgroup context, and an account that is a member
-        /// of both, holding one bound device.
+        /// A namespace with a subgroup context, and two accounts that are
+        /// members of both, each holding one bound device.
         async fn fixture() -> Fixture {
-            let (state, _events, blob_dir) = sse_state_authed().await;
-            let store = &state.store;
+            let (state, events, blob_dir) = sse_state_authed().await;
             let ns = ContextGroupId::from([0xD0; 32]);
             let sub = ContextGroupId::from([0xD1; 32]);
             let context = ContextId::from([0xD2; 32]);
-
-            let device_key = PublicKey::from([0x5D; 32]);
-            let account = calimero_context::test_support::enrol(store, &ns, &device_key);
-            let device = DeviceId::from(*device_key);
-            NamespaceRepository::new(store).nest(&ns, &sub).unwrap();
-            for group in [&ns, &sub] {
-                MembershipRepository::new(store)
-                    .add_member(group, &account, GroupMemberRole::Member)
-                    .unwrap();
-            }
-            calimero_governance_store::register_context_in_group(store, &sub, &context).unwrap();
+            let device_sk = PrivateKey::from([0x5D; 32]);
+            let [(account, device), peer] = seed_device_members(
+                &state.store,
+                &ns,
+                &sub,
+                &context,
+                [
+                    device_sk.public_key(),
+                    PrivateKey::from([0x5E; 32]).public_key(),
+                ],
+            );
 
             Fixture {
                 state,
+                events,
                 _blob_dir: blob_dir,
                 ns,
                 sub,
                 context,
                 account,
                 device,
+                device_sk,
+                peer,
             }
         }
+
+        /// The account's root, which signs its own withdrawals and scopes.
+        fn root(f: &Fixture) -> PrivateKey {
+            root_for(&f.device_sk.public_key())
+        }
+
+        /// A second device of the account that was never bound in the namespace,
+        /// as a thin client's device is: it subscribes on the account's standing.
+        const THIN_DEVICE: [u8; 32] = [0x7D; 32];
 
         fn revoke_in_the_namespace(f: &Fixture) {
             AccountBindingRepository::new(&f.state.store)
@@ -1967,7 +2005,25 @@ mod tests {
         }
 
         async fn subscribe(f: &Fixture, session_id: ConnectionId) -> Vec<ContextId> {
-            let (session, _tx, _rx) = session_with_connection();
+            let subscribed = subscribe_as(f, session_id, f.account, f.device).await;
+            let subscriptions = subscribed.session.inner.read().await.subscriptions.clone();
+            subscriptions.into_iter().collect()
+        }
+
+        /// A session subscribed to the fixture's context, with its connection
+        /// bound, and no event task yet: a client between connections.
+        struct Subscribed {
+            session: SessionState,
+            _bound: (mpsc::Sender<Command>, mpsc::Receiver<Command>),
+        }
+
+        async fn subscribe_as(
+            f: &Fixture,
+            session_id: ConnectionId,
+            account: AccountId,
+            device: DeviceId,
+        ) -> Subscribed {
+            let (session, tx, rx) = session_with_connection();
             drop(
                 f.state
                     .sessions
@@ -1979,8 +2035,8 @@ mod tests {
                 Extension(Arc::clone(&f.state)),
                 None,
                 None,
-                Some(Extension(AuthenticatedAccount(f.account))),
-                Some(Extension(AuthenticatedDevice(f.device))),
+                Some(Extension(AuthenticatedAccount(account))),
+                Some(Extension(AuthenticatedDevice(device))),
                 None,
                 Json(
                     serde_json::from_value(serde_json::json!({
@@ -1995,8 +2051,78 @@ mod tests {
             .into_response()
             .into_parts();
             assert_eq!(parts.status, StatusCode::OK);
-            let subscribed = session.inner.read().await.subscriptions.clone();
-            subscribed.into_iter().collect()
+            Subscribed {
+                session,
+                _bound: (tx, rx),
+            }
+        }
+
+        /// A subscribed session with its event task running, as a connected
+        /// client has it; `delivered` is what the task writes to the client.
+        struct OpenStream {
+            subscribed: Subscribed,
+            delivered: mpsc::Receiver<Command>,
+            task: JoinHandle<()>,
+        }
+
+        impl Drop for OpenStream {
+            fn drop(&mut self) {
+                self.task.abort();
+            }
+        }
+
+        fn connect(f: &Fixture, session_id: ConnectionId, subscribed: Subscribed) -> OpenStream {
+            let (tx, delivered) = mpsc::channel::<Command>(16);
+            let task = tokio::spawn(crate::sse::events::handle_node_events(
+                session_id,
+                Arc::clone(&f.state),
+                subscribed.session.clone(),
+                tx,
+                f.state.node_client.receive_events(),
+            ));
+            OpenStream {
+                subscribed,
+                delivered,
+                task,
+            }
+        }
+
+        async fn open_stream(
+            f: &Fixture,
+            session_id: ConnectionId,
+            (account, device): (AccountId, DeviceId),
+        ) -> OpenStream {
+            let subscribed = subscribe_as(f, session_id, account, device).await;
+            connect(f, session_id, subscribed)
+        }
+
+        /// Whether `session` lost every subscription within five seconds.
+        async fn drops_its_subscriptions(session: &SessionState) -> bool {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !session.inner.read().await.subscriptions.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+
+        fn publish_state_change(f: &Fixture) {
+            let _receivers = f
+                .events
+                .send(NodeEvent::Context(ContextEvent {
+                    context_id: f.context,
+                    payload: ContextEventPayload::StateMutation(
+                        StateMutationPayload::with_root_and_events(Hash::default(), vec![]),
+                    ),
+                }))
+                .expect("the open streams are listening");
+        }
+
+        async fn receives(stream: &mut OpenStream, within: Duration) -> bool {
+            tokio::time::timeout(within, stream.delivered.recv())
+                .await
+                .is_ok_and(|command| matches!(command, Some(Command::Send(_))))
         }
 
         #[actix::test]
@@ -2157,6 +2283,136 @@ mod tests {
                 Some(&caller),
                 &f.context,
             ));
+        }
+
+        #[actix::test]
+        async fn a_device_revoked_through_governance_loses_its_open_stream() {
+            let f = fixture().await;
+            let mut revoked = open_stream(&f, 1, (f.account, f.device)).await;
+            let mut live = open_stream(&f, 2, f.peer).await;
+            publish_state_change(&f);
+            for stream in [&mut revoked, &mut live] {
+                assert!(
+                    receives(stream, Duration::from_secs(5)).await,
+                    "precondition: both streams are live and listening"
+                );
+            }
+
+            revoke_through_governance(&f.state.store, &f.ns, f.account, f.device);
+
+            assert!(
+                drops_its_subscriptions(&revoked.subscribed.session).await,
+                "an open stream must stop serving a device the namespace revoked"
+            );
+            publish_state_change(&f);
+            assert!(
+                receives(&mut live, Duration::from_secs(5)).await,
+                "an unrelated live device keeps its stream"
+            );
+            assert!(
+                !receives(&mut revoked, Duration::from_millis(500)).await,
+                "the revoked device must receive nothing further"
+            );
+        }
+
+        #[actix::test]
+        async fn a_device_descoped_out_of_the_namespace_loses_its_open_stream() {
+            let f = fixture().await;
+            let mut stream = open_stream(&f, 1, (f.account, f.device)).await;
+            publish_state_change(&f);
+            assert!(
+                receives(&mut stream, Duration::from_secs(5)).await,
+                "precondition: the stream is live and listening"
+            );
+
+            apply_through_governance(
+                &f.state.store,
+                &f.ns,
+                &f.device_sk,
+                descope_by_root(&root(&f), f.device),
+            );
+            assert!(
+                AccountBindingRepository::new(&f.state.store)
+                    .raw_binding(&f.ns, f.device)
+                    .unwrap()
+                    .is_none(),
+                "precondition: the descope unbound the device"
+            );
+
+            assert!(
+                drops_its_subscriptions(&stream.subscribed.session).await,
+                "an open stream must stop serving a device descoped out of the namespace"
+            );
+        }
+
+        /// The account withdraws or descopes a device bound nowhere in the
+        /// namespace, published by its own bound device, which is no admin.
+        async fn assert_withdrawing_a_device_bound_nowhere_ends_its_stream(
+            withdraw: fn(&PrivateKey, DeviceId) -> GroupOp,
+        ) {
+            let f = fixture().await;
+            let thin = DeviceId::from(THIN_DEVICE);
+            let mut stream = open_stream(&f, 1, (f.account, thin)).await;
+            publish_state_change(&f);
+            assert!(
+                receives(&mut stream, Duration::from_secs(5)).await,
+                "precondition: a device bound nowhere is served on its account's standing"
+            );
+
+            apply_through_governance(
+                &f.state.store,
+                &f.ns,
+                &f.device_sk,
+                withdraw(&root(&f), thin),
+            );
+
+            assert!(
+                drops_its_subscriptions(&stream.subscribed.session).await,
+                "an open stream must stop serving a withdrawn device"
+            );
+        }
+
+        #[actix::test]
+        async fn a_device_bound_nowhere_loses_its_open_stream_when_its_account_withdraws_it() {
+            assert_withdrawing_a_device_bound_nowhere_ends_its_stream(withdrawal_by_root).await;
+        }
+
+        #[actix::test]
+        async fn a_device_bound_nowhere_loses_its_open_stream_when_its_account_descopes_it() {
+            assert_withdrawing_a_device_bound_nowhere_ends_its_stream(descope_by_root).await;
+        }
+
+        /// The op names an account, but a revocation tombstones the device id
+        /// itself, so a stream on that device stops whichever account is named.
+        #[actix::test]
+        async fn a_device_revoked_under_another_accounts_name_loses_its_open_stream() {
+            let f = fixture().await;
+            let mut stream = open_stream(&f, 1, (f.account, f.device)).await;
+            publish_state_change(&f);
+            assert!(
+                receives(&mut stream, Duration::from_secs(5)).await,
+                "precondition: the stream is live and listening"
+            );
+
+            revoke_through_governance(&f.state.store, &f.ns, f.peer.0, f.device);
+
+            assert!(
+                drops_its_subscriptions(&stream.subscribed.session).await,
+                "a revocation naming another account still spends this device"
+            );
+        }
+
+        /// The session outlives its connection, and nothing listens for it
+        /// in between: the revocation is only seen when the client reconnects.
+        #[actix::test]
+        async fn a_stream_reconnecting_after_a_revocation_it_missed_is_re_derived() {
+            let f = fixture().await;
+            let subscribed = subscribe_as(&f, 1, f.account, f.device).await;
+
+            revoke_through_governance(&f.state.store, &f.ns, f.account, f.device);
+            let stream = connect(&f, 1, subscribed);
+
+            assert!(drops_its_subscriptions(&stream.subscribed.session).await);
         }
 
         #[actix::test]

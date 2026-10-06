@@ -3233,12 +3233,14 @@ impl<S: StorageAdaptor> Interface<S> {
     /// every peer rejects an incoming `DeleteRef` for it (see the
     /// `StorageType::Frozen` arm in [`apply_action`](Self::apply_action)), so
     /// a local delete would diverge the deleter from the rest of the network.
+    /// A subtree holding Frozen data, or a `Public` child holding owned or
+    /// writer-set data, is refused for the same reason: peers keep that data.
     /// The re-key migration that relocates entries under new deterministic ids
     /// must use [`relocate_child_from`](Self::relocate_child_from) instead.
     ///
     /// # Errors
-    /// Returns error if parent or child doesn't exist, or if the child is
-    /// `Frozen`.
+    /// Returns error if parent or child doesn't exist, or if the delete would
+    /// remove data every peer keeps.
     ///
     pub fn remove_child_from(parent_id: Id, child_id: Id) -> Result<bool, StorageError> {
         Self::remove_child_from_inner(parent_id, child_id, RemoveMode::Delete)
@@ -3263,8 +3265,8 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Shared implementation behind [`remove_child_from`](Self::remove_child_from)
     /// and [`relocate_child_from`](Self::relocate_child_from).
     ///
-    /// `mode` selects whether the Frozen-deletion guard applies: it does for
-    /// [`RemoveMode::Delete`], but not for [`RemoveMode::Relocate`] re-keys.
+    /// `mode` selects whether the guards against removing kept data apply: they
+    /// do for [`RemoveMode::Delete`], but not for [`RemoveMode::Relocate`] re-keys.
     fn remove_child_from_inner(
         parent_id: Id,
         child_id: Id,
@@ -3302,17 +3304,13 @@ impl<S: StorageAdaptor> Interface<S> {
             ));
         }
 
-        // A genuine subtree delete must not strand Frozen data buried deeper in
-        // the tree either. Scan descendants BEFORE mutating any state; if any
-        // Frozen entity exists, reject so the operator relocates it out of the
-        // subtree first. Same split-brain avoidance as the direct-child guard
-        // above: we never tombstone the subtree or broadcast a `DeleteRef` that
-        // would leave the frozen data detached on every peer.
+        // Nor anything deeper that every peer's replay keeps (Frozen data, and
+        // under a Public child anything owned or writer-guarded), for the same reason.
         if mode == RemoveMode::Delete {
-            if let Some(frozen_id) = <Index<S>>::find_frozen_descendant(child_id)? {
+            if let Some((kept, kind)) = <Index<S>>::find_kept_descendant(child_id)? {
                 return Err(StorageError::ActionNotAllowed(format!(
-                    "cannot delete subtree {child_id}: it contains Frozen data at {frozen_id}; \
-                     relocate the frozen entity out of the subtree before deleting"
+                    "cannot delete subtree {child_id}: it contains {kind} data at {kept}, \
+                     which every peer would keep"
                 )));
             }
         }

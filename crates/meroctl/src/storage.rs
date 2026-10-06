@@ -3,12 +3,34 @@ use calimero_client::storage::JwtToken as ClientJwtToken;
 use calimero_client::ClientStorage;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 // Keep the old JwtToken for backward compatibility during migration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct JwtToken {
     pub access_token: String,
     pub refresh_token: Option<String>,
+}
+
+impl std::fmt::Debug for JwtToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JwtToken")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+impl Drop for JwtToken {
+    fn drop(&mut self) {
+        self.access_token.zeroize();
+        if let Some(refresh) = self.refresh_token.as_mut() {
+            refresh.zeroize();
+        }
+    }
 }
 
 /// File-based implementation of ClientStorage for meroctl
@@ -112,5 +134,23 @@ impl ClientStorage for FileTokenStorage {
         // Load config and return list of node names
         let config = crate::config::Config::load().await?;
         Ok(config.nodes.keys().cloned().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JwtToken;
+
+    #[test]
+    fn debug_omits_the_tokens() {
+        let tokens = JwtToken {
+            access_token: "access-secret".to_owned(),
+            refresh_token: Some("refresh-secret".to_owned()),
+        };
+        let shown = format!("{tokens:?}");
+
+        assert!(!shown.contains("access-secret"), "{shown}");
+        assert!(!shown.contains("refresh-secret"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }

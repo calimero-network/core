@@ -245,6 +245,17 @@ pub enum AccountError {
         /// Which link: `request` or `session`.
         part: &'static str,
     },
+    /// A timestamped link's window is longer than a node accepts for it.
+    ///
+    /// The window is what bounds replay of a captured link, so the caller does
+    /// not get to choose an arbitrarily long one.
+    #[error("the {part} in this proof is valid for longer than {max} seconds")]
+    ProofLifetimeTooLong {
+        /// Which link: `request` or `session`.
+        part: &'static str,
+        /// The longest window accepted for that link, in seconds.
+        max: u64,
+    },
     /// The session statement delegates from a key the certificate does not
     /// certify.
     ///

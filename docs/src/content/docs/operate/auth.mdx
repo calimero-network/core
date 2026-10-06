@@ -78,7 +78,8 @@ Access-token claims:
 
 | Claim | Meaning |
 | --- | --- |
-| `sub` | Subject — the key ID the token was issued for. |
+| `sub` | Subject: an opaque user ID, stable across logins and refreshes; a password reset issues a new one. Forwarded as `X-Auth-User`. |
+| `key_id` | The key the token authenticates with. A client key's ID changes on every refresh. |
 | `iss` | Issuer (`jwt.issuer`). |
 | `aud` | Audience — the client ID. |
 | `exp` / `iat` | Expiry and issued-at, as Unix timestamps. |

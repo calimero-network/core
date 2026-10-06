@@ -25,12 +25,12 @@
 //! retry bolted on here.
 
 use core::time::Duration;
-use std::collections::BTreeSet;
-use std::sync::{Mutex, PoisonError};
+use std::collections::BTreeMap;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::get_group_for_context;
-use calimero_network_primitives::blob_types::{BlobAnnouncement, BlobRequest};
+use calimero_network_primitives::blob_types::{BlobAnnouncement, BlobRequest, ByteBudget};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
@@ -38,6 +38,7 @@ use calimero_primitives::identity::{MemberIdentity, PublicKey};
 use futures_util::StreamExt;
 use libp2p::PeerId;
 use tokio::sync::Semaphore;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::handlers::blob_protocol::is_signed_context_member;
@@ -61,32 +62,70 @@ const MAX_PREFETCH_SIZE_BYTES: u64 = 500 * 1024 * 1024;
 /// in-flight fetch, so this is a backstop against a fetch wedged below that.
 const PREFETCH_TIMEOUT: Duration = Duration::from_secs(600);
 
+const MEMBER_PREFETCH_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024; // per member per window
+const MEMBER_PREFETCH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60); // how long a charge counts
+const MIN_PREFETCH_CHARGE_BYTES: u64 = 1024 * 1024; // so a failed or empty fetch is not free
+const MIN_PREFETCH_SUCCESS_COST_BYTES: u64 = 64 * 1024; // probes, headers and a stored file per blob
+const PREFETCH_FRAMING_BYTES: u64 = 64 * 1024; // headers and chunk framing over a transfer's payload
+
 /// Global prefetch budget, shared by every inbound announcement.
 static PREFETCH_SLOTS: Semaphore = Semaphore::const_new(PREFETCH_CONCURRENCY);
 
-/// Members with a prefetch running for one of their announcements.
-static PREFETCHING_FOR: Mutex<BTreeSet<MemberIdentity>> = Mutex::new(BTreeSet::new());
+/// What each announcing member has caused this node to prefetch.
+static MEMBER_SPEND: Mutex<BTreeMap<MemberIdentity, MemberSpend>> = Mutex::new(BTreeMap::new());
 
-/// One announcing member's single prefetch, released when the fetch ends, so
-/// one member cannot take every global slot.
-struct MemberPrefetch(MemberIdentity);
+struct MemberSpend {
+    running: bool,
+    window_start: Instant,
+    bytes: u64,
+}
+
+/// One announcing member's single prefetch, charged to its byte budget and
+/// released when the fetch ends, so one member cannot take every global slot.
+struct MemberPrefetch {
+    member: MemberIdentity,
+    charge: u64,
+}
 
 impl MemberPrefetch {
-    fn claim(member: MemberIdentity) -> Option<Self> {
-        let mut busy = PREFETCHING_FOR
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        busy.insert(member).then(|| Self(member))
+    /// `None` while the member has a prefetch running or `charge` would take it
+    /// past its budget for the current window.
+    fn claim(member: MemberIdentity, charge: u64) -> Option<Self> {
+        let now = Instant::now();
+        let mut spend = member_spend();
+        spend.retain(|_, s| s.running || now - s.window_start < MEMBER_PREFETCH_WINDOW);
+        let entry = spend.entry(member).or_insert(MemberSpend {
+            running: false,
+            window_start: now,
+            bytes: 0,
+        });
+        let bytes = entry.bytes.saturating_add(charge);
+        if entry.running || bytes > MEMBER_PREFETCH_BUDGET_BYTES {
+            return None;
+        }
+        entry.running = true;
+        entry.bytes = bytes;
+        Some(Self { member, charge })
+    }
+
+    /// Replace the claimed charge with what the prefetch actually cost.
+    fn settle(self, cost: u64) {
+        if let Some(entry) = member_spend().get_mut(&self.member) {
+            entry.bytes = entry.bytes.saturating_sub(self.charge).saturating_add(cost);
+        }
     }
 }
 
 impl Drop for MemberPrefetch {
     fn drop(&mut self) {
-        let _was_busy = PREFETCHING_FOR
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.0);
+        if let Some(entry) = member_spend().get_mut(&self.member) {
+            entry.running = false;
+        }
     }
+}
+
+fn member_spend() -> MutexGuard<'static, BTreeMap<MemberIdentity, MemberSpend>> {
+    MEMBER_SPEND.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// How long an inbound announce stream may stay silent before it is dropped.
@@ -202,11 +241,14 @@ async fn prefetch_announced_blob(
         return Ok(());
     }
 
+    // Every holder's transfer counts into one budget of this charge, and the member
+    // is settled to what arrived, so junk any holder sends costs the announcer.
+    let charge = size.max(MIN_PREFETCH_CHARGE_BYTES);
     let announcer = announcing_member(context_client.datastore(), &context_id, auth.public_key);
-    let Some(_member_prefetch) = MemberPrefetch::claim(announcer) else {
+    let Some(member_prefetch) = MemberPrefetch::claim(announcer, charge) else {
         debug!(
-            %peer_id, %blob_id, %context_id, signer = %auth.public_key,
-            "a prefetch for this member is already running, skipping this announcement"
+            %peer_id, %blob_id, %context_id, signer = %auth.public_key, charge,
+            "this member has a prefetch running or has spent its prefetch budget, skipping"
         );
         return Ok(());
     };
@@ -216,6 +258,7 @@ async fn prefetch_announced_blob(
     // recoverable — the blob is still findable by probing its holder — so
     // shedding beats queueing.
     let Ok(_permit) = PREFETCH_SLOTS.try_acquire() else {
+        member_prefetch.settle(0);
         debug!(
             %blob_id, %context_id,
             concurrency = PREFETCH_CONCURRENCY,
@@ -224,26 +267,32 @@ async fn prefetch_announced_blob(
         return Ok(());
     };
 
+    let budget = ByteBudget::new(charge.saturating_add(PREFETCH_FRAMING_BYTES));
     info!(%peer_id, %blob_id, %context_id, size, "prefetching announced blob");
 
     // Fetch through the ordinary discovery path rather than straight from the
     // announcer: it signs the request with this node's own context identity,
     // verifies the content hash, stores the result, and falls back to another
     // holder if the announcer has since gone away.
-    match tokio::time::timeout(
+    let outcome = tokio::time::timeout(
         PREFETCH_TIMEOUT,
-        node_client.fetch_blob_for_context(&blob_id, &context_id),
+        node_client.fetch_blob_for_context_within(&blob_id, &context_id, budget.clone()),
     )
-    .await
-    {
+    .await;
+    // The framing allowance is headroom for the transfer, not a discount.
+    let received = budget.received();
+    let cost = match outcome {
         Ok(Ok(Some(_))) => {
-            info!(%blob_id, %context_id, size, "prefetched announced blob");
+            info!(%blob_id, %context_id, size, received, "prefetched announced blob");
+            received.max(MIN_PREFETCH_SUCCESS_COST_BYTES)
         }
         Ok(Ok(None)) => {
             warn!(%blob_id, %context_id, "announced blob could not be fetched from any holder");
+            received.max(MIN_PREFETCH_CHARGE_BYTES)
         }
         Ok(Err(err)) => {
             warn!(%blob_id, %context_id, %err, "failed to prefetch announced blob");
+            received.max(MIN_PREFETCH_CHARGE_BYTES)
         }
         Err(_elapsed) => {
             warn!(
@@ -251,8 +300,11 @@ async fn prefetch_announced_blob(
                 timeout_secs = PREFETCH_TIMEOUT.as_secs(),
                 "prefetch of announced blob timed out"
             );
+            // Its transfer may still be running, so the whole claim stands.
+            received.max(charge)
         }
-    }
+    };
+    member_prefetch.settle(cost);
 
     Ok(())
 }
@@ -347,6 +399,7 @@ fn is_availability_member(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -356,7 +409,9 @@ mod tests {
     use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload};
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::stream::Message;
-    use calimero_node_primitives::test_fixtures::node_client_over;
+    use calimero_node_primitives::test_fixtures::{
+        network_of_one_peer, network_of_peers, node_client_over,
+    };
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -373,6 +428,17 @@ mod tests {
     const TEE: [u8; 32] = [0x11; 32];
     const MEMBER: [u8; 32] = [0x21; 32];
     const OTHER_MEMBER: [u8; 32] = [0x22; 32];
+    const HEAVY_UPLOADER: [u8; 32] = [0x23; 32];
+    const DAILY_UPLOADER: [u8; 32] = [0x24; 32];
+    const UNDERSTATING_UPLOADER: [u8; 32] = [0x25; 32];
+    const EMPTY_ANNOUNCER: [u8; 32] = [0x26; 32];
+    const SHED_UPLOADER: [u8; 32] = [0x27; 32];
+    const MANY_HOLDERS_UPLOADER: [u8; 32] = [0x28; 32];
+    const SMALL_UPLOADER: [u8; 32] = [0x29; 32];
+    const UNREACHABLE_UPLOADER: [u8; 32] = [0x2A; 32];
+    const PARTIAL_UPLOADER: [u8; 32] = [0x2B; 32];
+    const TINY_UPLOADER: [u8; 32] = [0x2C; 32];
+    const SIZED_UPLOADER: [u8; 32] = [0x2D; 32];
     const STRANGER: [u8; 32] = [0x99; 32];
     /// Shorter than the node's own 1 s local-blob lookup, where a fetch first waits.
     const FETCH_WINDOW: Duration = Duration::from_millis(100);
@@ -504,18 +570,32 @@ mod tests {
     /// An availability node for the test context whose node manager and peers
     /// never answer, so a fetch it starts stays waiting. Tests share its slots.
     async fn availability_node() -> (NodeClient, ContextClient, TempDir, TempDir) {
+        availability_node_over(NetworkClient::new(LazyRecipient::new())).await
+    }
+
+    async fn availability_node_over(
+        network: NetworkClient,
+    ) -> (NodeClient, ContextClient, TempDir, TempDir) {
         let tee = PrivateKey::from(TEE);
-        let store = namespace_with_members(&[
-            (GroupMemberRole::ReadOnlyTee, tee.public_key()),
-            (
-                GroupMemberRole::Member,
-                PrivateKey::from(MEMBER).public_key(),
-            ),
-            (
-                GroupMemberRole::Member,
-                PrivateKey::from(OTHER_MEMBER).public_key(),
-            ),
-        ]);
+        let mut members = vec![(GroupMemberRole::ReadOnlyTee, tee.public_key())];
+        for key in [
+            MEMBER,
+            OTHER_MEMBER,
+            HEAVY_UPLOADER,
+            DAILY_UPLOADER,
+            UNDERSTATING_UPLOADER,
+            EMPTY_ANNOUNCER,
+            SHED_UPLOADER,
+            MANY_HOLDERS_UPLOADER,
+            SMALL_UPLOADER,
+            UNREACHABLE_UPLOADER,
+            PARTIAL_UPLOADER,
+            TINY_UPLOADER,
+            SIZED_UPLOADER,
+        ] {
+            members.push((GroupMemberRole::Member, PrivateKey::from(key).public_key()));
+        }
+        let store = namespace_with_members(&members);
         store
             .handle()
             .put(
@@ -525,8 +605,7 @@ mod tests {
                 },
             )
             .expect("store identity");
-        let (node_client, data_dir, blob_dir) =
-            node_client_over(store.clone(), NetworkClient::new(LazyRecipient::new())).await;
+        let (node_client, data_dir, blob_dir) = node_client_over(store.clone(), network).await;
         let context_client = ContextClient::new(store, node_client.clone(), LazyRecipient::new());
         (node_client, context_client, data_dir, blob_dir)
     }
@@ -540,6 +619,34 @@ mod tests {
     ) -> bool {
         let handled = prefetch_announced_blob(&node.0, &node.1, peer, announcement);
         tokio::time::timeout(FETCH_WINDOW, handled).await.is_err()
+    }
+
+    /// `member` announces `BLOB` at `size`, signed for `peer`.
+    fn announcement_sized(member: &PrivateKey, peer: PeerId, size: u64) -> BlobAnnouncement {
+        BlobAnnouncement {
+            size,
+            ..announcement_signed_by(member, peer, now_secs())
+        }
+    }
+
+    /// `member` announces `bytes` in blobs no larger than the size cap, and
+    /// every one of them starts a fetch.
+    async fn spend(
+        node: &(NodeClient, ContextClient),
+        peer: PeerId,
+        member: &PrivateKey,
+        bytes: u64,
+    ) {
+        let mut left = bytes;
+        while left > 0 {
+            let size = left.min(MAX_PREFETCH_SIZE_BYTES);
+            let announcement = announcement_sized(member, peer, size);
+            assert!(
+                starts_a_fetch(node, peer, announcement).await,
+                "{left} bytes left to spend"
+            );
+            left -= size;
+        }
     }
 
     /// Announcements read off the wire make an availability node fetch only
@@ -614,6 +721,384 @@ mod tests {
         );
 
         running.abort();
+    }
+
+    /// A member that has caused its whole budget of prefetch bytes gets no
+    /// more prefetches, not even of one byte, while another member is served.
+    #[tokio::test(start_paused = true)]
+    #[serial(blob_prefetch_slots)]
+    async fn a_member_over_its_byte_budget_gets_no_more_prefetches() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let node = (node_client, context_client);
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(HEAVY_UPLOADER);
+
+        spend(&node, peer, &uploader, MEMBER_PREFETCH_BUDGET_BYTES).await;
+
+        let over = announcement_sized(&uploader, peer, 1);
+        assert!(
+            !starts_a_fetch(&node, peer, over).await,
+            "the budget is spent"
+        );
+        let other = announcement_sized(&PrivateKey::from(OTHER_MEMBER), peer, 1);
+        assert!(
+            starts_a_fetch(&node, peer, other).await,
+            "another member still fetches"
+        );
+    }
+
+    /// The budget is per window: once it has passed, the member is served again.
+    #[tokio::test(start_paused = true)]
+    #[serial(blob_prefetch_slots)]
+    async fn a_member_is_served_again_once_its_window_has_passed() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let node = (node_client, context_client);
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(DAILY_UPLOADER);
+
+        spend(&node, peer, &uploader, MEMBER_PREFETCH_BUDGET_BYTES).await;
+        let refused = announcement_sized(&uploader, peer, 1);
+        assert!(
+            !starts_a_fetch(&node, peer, refused).await,
+            "the budget is spent"
+        );
+
+        tokio::time::advance(MEMBER_PREFETCH_WINDOW).await;
+        let next_day = announcement_sized(&uploader, peer, 1);
+        assert!(starts_a_fetch(&node, peer, next_day).await, "a new window");
+    }
+
+    /// A peer serving more than the advertised size is cut off, not stored, and
+    /// the same bytes announced at their size are. Real time: peers answer from another thread.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn an_announcement_fetches_no_more_than_it_advertised() {
+        let served = vec![0x5A; 2 * MIN_PREFETCH_CHARGE_BYTES as usize];
+        let (node_client, context_client, _data, _blobs) =
+            availability_node_over(network_of_one_peer(Some(served.clone()))).await;
+        let (blob, _size) = node_client
+            .add_blob(served.as_slice(), None, None)
+            .await
+            .expect("hash the served bytes");
+        let _deleted = node_client.delete_blob(blob).await.expect("forget them");
+        let peer = PeerId::random();
+
+        let understated = BlobAnnouncement {
+            size: 1,
+            ..announcement_of(
+                blob,
+                &PrivateKey::from(UNDERSTATING_UPLOADER),
+                peer,
+                now_secs(),
+            )
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, understated)
+            .await
+            .expect("prefetch");
+        assert!(
+            !node_client.has_blob(&blob).expect("read"),
+            "nothing past the advertised size is kept"
+        );
+
+        let honest = BlobAnnouncement {
+            size: served.len() as u64,
+            ..announcement_of(blob, &PrivateKey::from(OTHER_MEMBER), peer, now_secs())
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, honest)
+            .await
+            .expect("prefetch");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "the advertised size is fetched"
+        );
+    }
+
+    /// Every holder tried for one announcement draws on the same charge, so
+    /// peers sending bytes that do not match cannot multiply it.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn holders_of_one_announcement_share_its_charge() {
+        let junk = vec![0x5A; 600 * 1024];
+        let (network, sent) = network_of_peers(4, Some(junk.clone()));
+        let (node_client, context_client, _data, _blobs) = availability_node_over(network).await;
+        let peer = PeerId::random();
+
+        let announced = announcement_sized(
+            &PrivateKey::from(MANY_HOLDERS_UPLOADER),
+            peer,
+            MIN_PREFETCH_CHARGE_BYTES,
+        );
+        prefetch_announced_blob(&node_client, &context_client, peer, announced)
+            .await
+            .expect("prefetch");
+
+        // The transfer that overdraws the charge and its framing allowance has arrived
+        // by the time it is refused, so one holder's bytes may pass it, and no more.
+        let sent = sent.load(Ordering::SeqCst);
+        assert!(
+            sent <= MIN_PREFETCH_CHARGE_BYTES + PREFETCH_FRAMING_BYTES + junk.len() as u64,
+            "{sent} bytes sent for one charge"
+        );
+    }
+
+    /// A prefetch that finds no holder is charged the minimum, not the size it
+    /// advertised, so an unreachable uploader does not spend the budget.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_failed_fetch_is_charged_the_minimum() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _empty_data, _empty_blobs) =
+            availability_node_over(network_of_one_peer(None)).await;
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(UNREACHABLE_UPLOADER);
+
+        let unreachable = announcement_sized(&uploader, peer, MAX_PREFETCH_SIZE_BYTES);
+        prefetch_announced_blob(&node_client, &context_client, peer, unreachable)
+            .await
+            .expect("prefetch");
+
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - MIN_PREFETCH_CHARGE_BYTES,
+        )
+        .await;
+        let spent = announcement_sized(&uploader, peer, 1);
+        assert!(
+            !starts_a_fetch(&waiting, peer, spent).await,
+            "the budget is spent"
+        );
+    }
+
+    /// A prefetch that fails after receiving bytes is charged what it received,
+    /// so a holder sending junk short of the charge still costs the member.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_failed_fetch_is_charged_what_it_received() {
+        let junk = vec![0x5C; 2 * MIN_PREFETCH_CHARGE_BYTES as usize];
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _junk_data, _junk_blobs) =
+            availability_node_over(network_of_peers(1, Some(junk.clone())).0).await;
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(PARTIAL_UPLOADER);
+
+        let announced = announcement_sized(&uploader, peer, 3 * MIN_PREFETCH_CHARGE_BYTES);
+        prefetch_announced_blob(&node_client, &context_client, peer, announced)
+            .await
+            .expect("prefetch");
+
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - junk.len() as u64 - PREFETCH_FRAMING_BYTES,
+        )
+        .await;
+        let spent = announcement_sized(&uploader, peer, 1);
+        assert!(
+            !starts_a_fetch(&waiting, peer, spent).await,
+            "the junk received was charged"
+        );
+    }
+
+    /// A tiny blob still costs the minimum success cost, so a member cannot have
+    /// this node store blobs without bound by making each one small.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_tiny_fetched_blob_costs_at_least_the_minimum_success_cost() {
+        let tiny = vec![0x5D; 16];
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _serving_data, _serving_blobs) =
+            availability_node_over(network_of_one_peer(Some(tiny.clone()))).await;
+        let (blob, _size) = node_client
+            .add_blob(tiny.as_slice(), None, None)
+            .await
+            .expect("hash the served bytes");
+        let _deleted = node_client.delete_blob(blob).await.expect("forget them");
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(TINY_UPLOADER);
+
+        let left = MIN_PREFETCH_CHARGE_BYTES + MIN_PREFETCH_SUCCESS_COST_BYTES / 2;
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - left,
+        )
+        .await;
+        let fetched = BlobAnnouncement {
+            size: tiny.len() as u64,
+            ..announcement_of(blob, &uploader, peer, now_secs())
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, fetched)
+            .await
+            .expect("prefetch");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "the tiny blob is fetched"
+        );
+
+        let next = announcement_sized(&uploader, peer, 1);
+        assert!(
+            !starts_a_fetch(&waiting, peer, next).await,
+            "the tiny blob cost the minimum"
+        );
+    }
+
+    /// A fetched blob costs at least its own size: the framing allowance is
+    /// headroom for the transfer, not a discount.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_fetched_blob_costs_at_least_its_size() {
+        let sized = vec![0x5E; 256 * 1024];
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _serving_data, _serving_blobs) =
+            availability_node_over(network_of_one_peer(Some(sized.clone()))).await;
+        let (blob, _size) = node_client
+            .add_blob(sized.as_slice(), None, None)
+            .await
+            .expect("hash the served bytes");
+        let _deleted = node_client.delete_blob(blob).await.expect("forget them");
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(SIZED_UPLOADER);
+
+        let left = MIN_PREFETCH_CHARGE_BYTES + 300 * 1024;
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - left,
+        )
+        .await;
+        let fetched = BlobAnnouncement {
+            size: 0,
+            ..announcement_of(blob, &uploader, peer, now_secs())
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, fetched)
+            .await
+            .expect("prefetch");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "the blob is fetched"
+        );
+
+        let next = announcement_sized(&uploader, peer, MIN_PREFETCH_CHARGE_BYTES + 50 * 1024);
+        assert!(
+            !starts_a_fetch(&waiting, peer, next).await,
+            "the blob's whole size was charged"
+        );
+    }
+
+    /// A fetch that succeeds is charged the bytes it took, not the minimum, so
+    /// small blobs do not run the budget down by announcement count.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_fetched_blob_is_charged_what_it_took() {
+        let small = vec![0x5B; 256 * 1024];
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _serving_data, _serving_blobs) =
+            availability_node_over(network_of_one_peer(Some(small.clone()))).await;
+        let (blob, _size) = node_client
+            .add_blob(small.as_slice(), None, None)
+            .await
+            .expect("hash the served bytes");
+        let _deleted = node_client.delete_blob(blob).await.expect("forget them");
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(SMALL_UPLOADER);
+
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - 2 * MIN_PREFETCH_CHARGE_BYTES + 1,
+        )
+        .await;
+        let fetched = BlobAnnouncement {
+            size: 0,
+            ..announcement_of(blob, &uploader, peer, now_secs())
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, fetched)
+            .await
+            .expect("prefetch");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "the small blob is fetched"
+        );
+
+        let settled = announcement_sized(&uploader, peer, 0);
+        assert!(
+            starts_a_fetch(&waiting, peer, settled).await,
+            "only what it took was charged, not the claimed minimum"
+        );
+        let spent = announcement_sized(&uploader, peer, 0);
+        assert!(
+            !starts_a_fetch(&waiting, peer, spent).await,
+            "the budget is spent"
+        );
+    }
+
+    /// An announcement costs at least the minimum charge, even when it
+    /// advertises nothing, so repeating failed fetches is not free.
+    #[tokio::test(start_paused = true)]
+    #[serial(blob_prefetch_slots)]
+    async fn an_announcement_is_charged_at_least_the_minimum() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let node = (node_client, context_client);
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(EMPTY_ANNOUNCER);
+
+        spend(
+            &node,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - MIN_PREFETCH_CHARGE_BYTES + 1,
+        )
+        .await;
+
+        let empty = announcement_sized(&uploader, peer, 0);
+        assert!(
+            !starts_a_fetch(&node, peer, empty).await,
+            "less than the minimum is left"
+        );
+    }
+
+    /// An announcement shed because every slot is busy costs its member nothing.
+    #[tokio::test(start_paused = true)]
+    #[serial(blob_prefetch_slots)]
+    async fn an_announcement_shed_for_busy_slots_is_not_charged() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let node = (node_client, context_client);
+        let peer = PeerId::random();
+        let running: Vec<_> = [MEMBER, OTHER_MEMBER]
+            .into_iter()
+            .map(|key| {
+                let (node_client, context_client) = node.clone();
+                let busy = announcement_signed_by(&PrivateKey::from(key), peer, now_secs());
+                tokio::spawn(async move {
+                    prefetch_announced_blob(&node_client, &context_client, peer, busy).await
+                })
+            })
+            .collect();
+        tokio::task::yield_now().await;
+
+        let uploader = PrivateKey::from(SHED_UPLOADER);
+        let shed = announcement_sized(&uploader, peer, MAX_PREFETCH_SIZE_BYTES);
+        assert!(
+            !starts_a_fetch(&node, peer, shed).await,
+            "every slot is busy"
+        );
+        for task in running {
+            task.abort();
+            let _aborted = task.await;
+        }
+
+        spend(&node, peer, &uploader, MEMBER_PREFETCH_BUDGET_BYTES).await;
     }
 
     /// Bytes this node holds only for another context are fetched for this

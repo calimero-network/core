@@ -217,3 +217,133 @@ pub(crate) fn seed_namespace_with_restricted_subgroup(
         account,
     )
 }
+
+/// Nest `subgroup` under `namespace` with `context` in it, and make each key a
+/// member of both under its own account, bound as one device of that account.
+pub(crate) fn seed_device_members<const N: usize>(
+    store: &Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+    subgroup: &calimero_context_config::types::ContextGroupId,
+    context: &calimero_primitives::context::ContextId,
+    keys: [PublicKey; N],
+) -> [(
+    calimero_account::AccountId,
+    calimero_primitives::identity::DeviceId,
+); N] {
+    use calimero_governance_store::test_fixtures::enrol_member;
+    use calimero_governance_store::{MembershipRepository, NamespaceRepository};
+    use calimero_primitives::context::GroupMemberRole;
+
+    NamespaceRepository::new(store)
+        .nest(namespace, subgroup)
+        .unwrap();
+    calimero_governance_store::register_context_in_group(store, subgroup, context).unwrap();
+    keys.map(|key| {
+        let account = enrol_member(store, namespace, &key);
+        for group in [namespace, subgroup] {
+            MembershipRepository::new(store)
+                .add_member(group, &account, GroupMemberRole::Member)
+                .unwrap();
+        }
+        (account, calimero_primitives::identity::DeviceId::from(*key))
+    })
+}
+
+/// Apply `op` to `namespace`, signed by `signer`, through the governance apply path.
+pub(crate) fn apply_through_governance(
+    store: &Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+    signer: &calimero_primitives::identity::PrivateKey,
+    op: calimero_context_client::local_governance::GroupOp,
+) {
+    use calimero_governance_store::test_fixtures::test_meta;
+
+    calimero_governance_store::MetaRepository::new(store)
+        .save(namespace, &test_meta())
+        .unwrap();
+    let _applied =
+        calimero_governance_store::sign_apply_local_group_op_borsh(store, namespace, signer, op)
+            .expect("the op applies");
+}
+
+/// Withdraw `device` from `namespace` the way a peer's revocation lands: an
+/// admin's signed `AccountDeviceUnlinked`, applied through the governance path.
+pub(crate) fn revoke_through_governance(
+    store: &Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+    account: calimero_account::AccountId,
+    device: calimero_primitives::identity::DeviceId,
+) {
+    use calimero_governance_store::test_fixtures::enrol_member;
+    use calimero_governance_store::MembershipRepository;
+    use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::identity::PrivateKey;
+
+    let admin_sk = PrivateKey::from([0xAD; 32]);
+    let admin = enrol_member(store, namespace, &admin_sk.public_key());
+    MembershipRepository::new(store)
+        .add_member(namespace, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    apply_through_governance(
+        store,
+        namespace,
+        &admin_sk,
+        calimero_context_client::local_governance::GroupOp::AccountDeviceUnlinked {
+            account,
+            device,
+            proof: None,
+        },
+    );
+}
+
+/// The account whose root is `root` withdrawing its own `device`, by root-signed proof.
+pub(crate) fn withdrawal_by_root(
+    root: &calimero_primitives::identity::PrivateKey,
+    device: calimero_primitives::identity::DeviceId,
+) -> calimero_context_client::local_governance::GroupOp {
+    let genesis = calimero_account::AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    calimero_context_client::local_governance::GroupOp::AccountDeviceUnlinked {
+        account,
+        device,
+        proof: Some(calimero_account::SignedDeviceRevocation {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceRevocation::sign(root, account, device, 0)
+                .expect("the root signs its own revocation"),
+        }),
+    }
+}
+
+/// The account whose root is `root` narrowing `device` to an application the
+/// fixture namespace does not target.
+pub(crate) fn descope_by_root(
+    root: &calimero_primitives::identity::PrivateKey,
+    device: calimero_primitives::identity::DeviceId,
+) -> calimero_context_client::local_governance::GroupOp {
+    let genesis = calimero_account::AccountGenesis::new(root.public_key());
+    let account = genesis.account_id();
+    let elsewhere = calimero_primitives::application::ApplicationId::from([0x11; 32]);
+    calimero_context_client::local_governance::GroupOp::AccountDeviceDescoped {
+        account,
+        device,
+        application: Some(
+            calimero_governance_store::test_fixtures::test_meta()
+                .target
+                .application_id,
+        ),
+        scope: Box::new(calimero_account::AccountProof {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceScope::sign(
+                root,
+                account,
+                device,
+                vec![elsewhere],
+                1,
+                0,
+            )
+            .expect("the root signs its own device's scope"),
+        }),
+    }
+}

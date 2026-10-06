@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.11.0-rc.81"
+version = "0.11.0-rc.82"
 exclude = [
     "./crates/git-hooks",
     "./apps/abi_conformance",
@@ -473,6 +473,11 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.wasmer-compiler-cranelift]
+opt-level = 3
+
+# Every password login and provisioning runs a full PBKDF2 hash in ring; built
+# optimized, the auth tests hash at release speed.
+[profile.dev.package.ring]
 opt-level = 3
 
 [profile.release]

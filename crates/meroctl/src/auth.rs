@@ -23,19 +23,47 @@ use crate::connection::ConnectionInfo;
 use crate::output::{InfoLine, Output, WarnLine};
 use crate::storage::FileTokenStorage;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct AuthCallback {
     access_token: Option<String>,
     refresh_token: Option<String>,
 }
 
+impl std::fmt::Debug for AuthCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthCallback")
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
 /// What the callback page posts: the tokens it read from the URL fragment and
 /// the state nonce from the callback URL's query.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CallbackBody {
     access_token: String,
     refresh_token: Option<String>,
     state: Option<String>,
+}
+
+impl std::fmt::Debug for CallbackBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackBody")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("state", &self.state.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
@@ -827,7 +855,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use url::Url;
 
-    use super::{build_auth_url, generate_state, stays_on_host};
+    use super::{build_auth_url, generate_state, stays_on_host, AuthCallback, CallbackBody};
     use crate::config::{Config, NodeConnection};
     use crate::storage::JwtToken;
 
@@ -1134,5 +1162,24 @@ mod tests {
             !page.contains("window.location.href"),
             "the page must not navigate with the tokens in the URL"
         );
+    }
+
+    #[test]
+    fn callback_debug_omits_the_tokens() {
+        let callback = AuthCallback {
+            access_token: Some("access-secret".to_owned()),
+            refresh_token: Some("refresh-secret".to_owned()),
+        };
+        let body = CallbackBody {
+            access_token: "access-secret".to_owned(),
+            refresh_token: Some("refresh-secret".to_owned()),
+            state: Some("state-nonce".to_owned()),
+        };
+
+        for shown in [format!("{callback:?}"), format!("{body:?}")] {
+            assert!(!shown.contains("access-secret"), "{shown}");
+            assert!(!shown.contains("refresh-secret"), "{shown}");
+            assert!(shown.contains("redacted"), "{shown}");
+        }
     }
 }

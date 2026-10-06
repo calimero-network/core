@@ -175,7 +175,8 @@ primitives/                   # calimero-network-primitives
     ├── client.rs             # NetworkClient (async API)
     ├── stream.rs             # Stream wrapper, protocols
     ├── stream/
-    │   └── codec.rs          # MessageCodec (length-delimited framing)
+    │   ├── codec.rs          # MessageCodec (length-delimited framing)
+    │   └── metered.rs        # Counts a stream's reads into a ByteBudget
     ├── blob_types.rs         # Blob-related types
     ├── specialized_node_invite.rs  # SpecializedNodeType (fleet TEE classification)
     └── autonat_v2/           # AutoNAT v2 behaviour
@@ -237,7 +238,7 @@ impl NetworkClient {
     pub async fn query_blob(&self, blob_id, context_id) -> eyre::Result<Vec<PeerId>>;
     pub async fn probe_blob(&self, blob_id, context_id, peer_id, auth) -> eyre::Result<BlobProbe>;
     pub async fn announce_blob_to_peer(&self, peer_id, blob_id, context_id, size, auth) -> eyre::Result<()>;
-    pub async fn request_blob(&self, blob_id, context_id, peer_id, auth) -> eyre::Result<Option<Vec<u8>>>;
+    pub async fn request_blob(&self, blob_id, context_id, peer_id, auth, budget) -> eyre::Result<Option<Vec<u8>>>;
 }
 ```
 

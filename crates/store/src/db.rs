@@ -200,6 +200,11 @@ pub enum Column {
     /// context's own run created. Reading one as the other would widen
     /// either what an account-scoped caller reads or what peers are served.
     BlobOwner,
+    /// A snapshot being installed, keyed `context_id(32) ‖ state_key(33)` like
+    /// `State`: it is checked here as a tree and only then moved into `State`,
+    /// so an unchecked snapshot is never read as the context's state. Node-local,
+    /// not synchronized, empty between installs.
+    SnapshotStage,
 }
 
 /// Table-file accounting for a whole store, summed over every column family

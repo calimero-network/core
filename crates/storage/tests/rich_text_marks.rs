@@ -337,6 +337,32 @@ fn apply_delta__a_delete_past_the_end_clamps_like_the_text_layer_does() {
     assert_eq!(text_of(&store), "a");
 }
 
+#[test]
+fn apply_delta__a_delete_of_the_largest_length_clamps_too() {
+    let store = seeded("abc");
+    let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
+        let _undo = doc
+            .apply_delta(&[DeltaOp::retain(1), DeltaOp::Delete { delete: usize::MAX }])
+            .unwrap();
+    });
+    assert_eq!(text_of(&store), "a");
+}
+
+#[test]
+fn apply_delta__a_delete_after_a_retain_past_the_end_clamps_too() {
+    let store = seeded("abc");
+    let _delta = edit::<Doc>(&store, device(ALICE), |doc| {
+        let _undo = doc
+            .apply_delta(&[
+                DeltaOp::insert("x"),
+                DeltaOp::retain(99),
+                DeltaOp::Delete { delete: 1 },
+            ])
+            .unwrap();
+    });
+    assert_eq!(text_of(&store), "xabc");
+}
+
 // ── boundaries ──────────────────────────────────────────────────────────
 
 /// `(span text, whether that span carries `key`)` for the character at `at`.

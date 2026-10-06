@@ -21,7 +21,10 @@ pub use providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerif
 pub struct AuthResponse {
     /// Whether the authentication is valid
     pub is_valid: bool,
-    /// The identifier of the authenticated user
+    /// Opaque, stable id of the user the session belongs to: the JWT `sub` and
+    /// `X-Auth-User`. A provider answers with a root key, which is its own user.
+    pub user_id: String,
+    /// The key the caller authenticated with
     pub key_id: String,
     /// The permissions granted to the authenticated user
     pub permissions: Vec<String>,

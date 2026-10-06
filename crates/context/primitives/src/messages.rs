@@ -3,7 +3,7 @@ use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::{DeviceId, PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
@@ -93,6 +93,21 @@ impl Message for PrecompileApplicationRequest {
     type Result = eyre::Result<usize>;
 }
 
+/// Whom a delegated **read** runs as: the authenticated session's account, and
+/// the device that opened the session when the auth layer knows which.
+///
+/// Both halves come from the session (a request-carried proof, a token's
+/// claims, or the proxy's identity headers), never from a request body. The
+/// device is a [`DeviceId`] rather than a key because that is all a session
+/// carries; the execute handler resolves it to the device's certified signing
+/// key through the namespace's bindings, so what the method observes as
+/// `env::device_id()` is the same key a warrant for that device would carry.
+#[derive(Clone, Copy, Debug)]
+pub struct ReadAs {
+    pub account: calimero_account::AccountId,
+    pub device: Option<DeviceId>,
+}
+
 #[derive(Debug)]
 pub struct ExecuteRequest {
     pub context: ContextId,
@@ -121,8 +136,10 @@ pub struct ExecuteRequest {
     /// run observes is derived from this bundle after it verifies, not read from
     /// a field a caller could set.
     pub delegation: Option<Box<calimero_account::Delegation>>,
-    /// The authenticated caller's account, when this is a **read** performed on
-    /// behalf of somebody who runs no node.
+    /// The authenticated caller — account, and device when the session names
+    /// one — when this is a **read** performed on behalf of somebody who runs no
+    /// node. The run observes that account and that device's certified key, as
+    /// a warranted write observes the warrant's author; see [`ReadAs`].
     ///
     /// `None` is every other call, self-authored or delegated.
     ///
@@ -144,7 +161,7 @@ pub struct ExecuteRequest {
     /// A write still needs a warrant, and that is not an oversight: a warrant
     /// proves to peers who never saw the HTTP request that the author consented.
     /// A read has no peer to convince, because it publishes nothing.
-    pub read_as: Option<calimero_account::AccountId>,
+    pub read_as: Option<ReadAs>,
     /// The trigger this run fires, when the node's TEE scheduler fires it as
     /// the TEE authority.
     ///

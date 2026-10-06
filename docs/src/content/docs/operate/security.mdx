@@ -122,8 +122,9 @@ to seal them under:
 | `409` | `stale_transport_key` | The node restarted. Attest again; never take a key from this response. |
 | `403` | `sealed_required` | The node requires sealing and the request was not sealed (see below). |
 | `403` (inside the envelope) | `sealed_route_unguarded` | The node leaves auth to a proxy, and the sealed request named a route that proxy guards (see below). |
-| `503` | `busy` | Too many sessions are being opened. Retry after `Retry-After`. |
+| `503` | `busy` | Too many sessions are being opened, or the node already holds as many sealed request bytes as it allows. Retry after `Retry-After`. |
 | `409` | `unknown_session` | The session expired or the node restarted. Open a new session. Nothing in the request ran, so it is safe to send again. |
+| `408` | `timeout` | The request body did not arrive within two minutes, which a 64 MiB body needs about 4.5 Mbit/s to meet. Nothing in it ran. |
 | `400` | `malformed`, `undecryptable`, `replayed_request`, `unsupported_version` | The envelope was refused. |
 
 **Streams.** Server-sent events are sealed frame by frame like any other
@@ -132,15 +133,16 @@ expires is cut off without an end frame, and the client reconnects under a new
 session. WebSockets cannot cross a POST; the node answers a sealed upgrade with
 a `501` inside the envelope, so subscribe over SSE instead.
 
-**Limits.** A sealed request body is capped at 64 MiB, and the node buffers it
-before it can tell whether the request opens. It checks the session named in the
-header first: a body for no open session is refused, and the rest of it is read
-and discarded rather than held. A `Content-Length` over
-the cap is refused before any of the body is read. A session needs no
-credential, so any client can still send a 64 MiB body: size your proxy's
-concurrency and body limits for that. Responses have no cap: they stream in
-frames of at most 64 KiB. Session and request ids travel in the clear, so a
-proxy can tell which requests share a session, though not what they contain.
+**Limits.** A sealed request body is capped at 64 MiB, and the node buffers it before it can tell whether the request opens.
+It checks the session named in the header first: a body for no open session is refused, and the rest of it is read and discarded rather than held.
+A `Content-Length` over the cap is refused before any of the body is read.
+A session needs no credential, so the node also caps the buffers all sealed requests hold together at 256 MiB, four of the largest: a request that would take it past that is refused with `503 busy` and the rest of its body is discarded.
+A body must arrive within two minutes, or it is refused with `408 timeout` and its share is released.
+That cap protects the node's memory, not the sealed transport's availability.
+One client with one session can fill it with four large uploads, hold it for up to two minutes, and fill it again, and while it is full every sealed request is refused, however small; with `required` set that is nearly the whole API.
+Put per-client concurrency and rate limits on your proxy.
+Responses have no cap: they stream in frames of at most 64 KiB.
+Session and request ids travel in the clear, so a proxy can tell which requests share a session, though not what they contain.
 
 **Behind `NODE_PATH_PREFIX`.** The envelope is served both at the root
 (`/sealed/v2`) and under the prefix (`{prefix}/sealed/v2`), and a request opened
@@ -226,7 +228,7 @@ Metrics, on the node's Prometheus registry:
 | --- | --- |
 | `sealed_handshakes_total` | Sessions opened. |
 | `sealed_requests_total` | Sealed requests opened and dispatched. |
-| `sealed_refusals_total{code}` | Refusals, by code: of the envelope, of a handshake over the limit (`busy`), of an unsealed request while sealing is required (`sealed_required`). |
+| `sealed_refusals_total{code}` | Refusals, by code: of the envelope, of a handshake over the limit or a request over the in-flight budget (`busy`), of an unsealed request while sealing is required (`sealed_required`). |
 | `sealed_sessions` | Sessions whose keys the node holds. |
 
 In mero-js, hand the sealing fetch to the client, with a verifier that checks
