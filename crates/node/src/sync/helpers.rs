@@ -900,15 +900,16 @@ pub enum LeafDisposition {
 /// and runs inside `with_runtime_env`, so it cannot call into the runtime.
 /// Applying it anyway falls through to last-write-wins, which contradicts the
 /// in-WASM delta path and leaves the two replicas settling the same conflict
-/// differently depending on which path delivered it.
+/// differently depending on which path delivered it. A signed custom entry is
+/// the exception: no signature covers a merge this node computes, so it applies
+/// through `apply_action`'s checks and settles by last-write-wins.
 ///
 /// The app-state entry defers and the root collection applies as a shell whatever
 /// type the peer names, since the wire type is the peer's claim.
 ///
 /// A custom entry defers only when `stored_custom_type` names the rule of a public
-/// custom entry this node stores, and carries that rule: `crdt_type` is the peer's
-/// unsigned claim, and a signed entry changes only through `apply_action`'s checks.
-/// With nothing stored there is nothing to merge, and the
+/// custom entry this node stores, and carries that rule, since `crdt_type` is the
+/// peer's unsigned claim. With nothing stored there is nothing to merge, and the
 /// deferred pass skips such an entry ([`dispatch_deferred_custom_merges`]
 /// leaves it "to the plain apply path"), so deferring it would deliver it
 /// nowhere: a receiver that missed the entry — its delta's signed actions were

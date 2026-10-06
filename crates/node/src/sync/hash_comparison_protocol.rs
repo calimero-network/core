@@ -528,6 +528,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                             // skip the bidirectional push-back too.
                             continue;
                         }
+                        HcLeafGateOutcome::Refused => continue,
                         HcLeafGateOutcome::Applied => {}
                     }
                     stats.entities_merged += 1;
@@ -1878,6 +1879,8 @@ enum HcLeafGateOutcome {
     /// The loaded reader could not be resolved (store error). Fail CLOSED: the
     /// leaf was NOT applied; the DFS skips it and it is re-pushed next cycle.
     SkippedStoreError,
+    /// Storage refused the leaf; the DFS skips it, as the push path does.
+    Refused,
 }
 
 /// Apply (or decline+buffer) a single HC sync-repair leaf, gating on the
@@ -1919,18 +1922,23 @@ fn apply_hc_leaf_gated(
         }
     };
 
-    match loaded_bytecode_id {
-        Some(loaded) => Ok(
-            match apply_leaf_with_crdt_merge_gated(store, folded, context_id, leaf, loaded)? {
+    let applied = match loaded_bytecode_id {
+        Some(loaded) => apply_leaf_with_crdt_merge_gated(store, folded, context_id, leaf, loaded)
+            .map(|outcome| match outcome {
                 LeafOutcome::Applied => HcLeafGateOutcome::Applied,
                 LeafOutcome::Buffered => HcLeafGateOutcome::Buffered,
-            },
-        ),
-        None => {
-            apply_leaf_with_crdt_merge(context_id, leaf)?;
-            Ok(HcLeafGateOutcome::Applied)
-        }
-    }
+            }),
+        None => apply_leaf_with_crdt_merge(context_id, leaf).map(|()| HcLeafGateOutcome::Applied),
+    };
+    Ok(applied.unwrap_or_else(|err| {
+        warn!(
+            %context_id,
+            key = %hex::encode(leaf.key),
+            error = %err,
+            "HC merge skipped: storage refused the leaf"
+        );
+        HcLeafGateOutcome::Refused
+    }))
 }
 
 /// A stand-in account for tests that build a runtime env directly. Distinct from

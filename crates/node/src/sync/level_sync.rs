@@ -760,12 +760,19 @@ async fn merge_remote_row(
             }
         }
     })
-    .await?;
+    .await;
     match outcome {
-        LeafOutcome::Applied => stats.entities_merged += 1,
-        LeafOutcome::Buffered => {
+        Ok(LeafOutcome::Applied) => stats.entities_merged += 1,
+        Ok(LeafOutcome::Buffered) => {
             // Declined: buffered, not applied. A later drain replays it.
         }
+        // As the push path does: one refused row must not leave the rest unrepaired.
+        Err(err) => warn!(
+            %context_id,
+            key = %hex::encode(leaf_data.key),
+            error = %err,
+            "LevelWise merge skipped: storage refused the row"
+        ),
     }
 
     Ok(())

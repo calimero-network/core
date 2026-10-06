@@ -4216,13 +4216,13 @@ impl<S: StorageAdaptor> Interface<S> {
     ) -> Result<Option<[u8; 32]>, StorageError> {
         let _mutation_guard = crate::index::index_mutation_guard();
         let now = <Index<S>>::get_metadata(id)?;
-        if S::storage_read(Key::Entry(id)).as_ref() != Some(&request.existing)
-            || now.as_ref().map(|metadata| metadata.updated_at) != Some(stored.updated_at)
-        {
+        let Some(mut metadata) = now.filter(|now| now.updated_at == stored.updated_at) else {
+            return Ok(None);
+        };
+        if S::storage_read(Key::Entry(id)).as_ref() != Some(&request.existing) {
             return Ok(None);
         }
-        refuse_custom_merge_into(&now.unwrap_or_default(), request.type_id)?;
-        let mut metadata = stored.clone();
+        refuse_custom_merge_into(&metadata, request.type_id)?;
         metadata.updated_at = (*stored.updated_at).max(incoming_ts).into();
         Self::write_pre_merged_root_state(id, merged, metadata).map(Some)
     }
