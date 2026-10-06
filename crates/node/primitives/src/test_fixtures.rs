@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use calimero_blobstore::config::BlobStoreConfig;
@@ -14,6 +15,9 @@ use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_network_primitives::blob_types::BlobProbe;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::messages::NetworkMessage;
+use calimero_network_primitives::network_status::{
+    AutonatEntry, NetworkStatusSnapshot, ReachabilityKind,
+};
 use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
@@ -123,7 +127,17 @@ pub fn network_accepting_announces() -> NetworkClient {
 /// A network of one context peer that holds `blob` (or nothing) and answers
 /// every probe and fetch for it; it accepts announces and drops anything else.
 pub fn network_of_one_peer(blob: Option<Vec<u8>>) -> NetworkClient {
-    struct Serves(Option<Vec<u8>>);
+    network_of_peers(1, blob).0
+}
+
+/// [`network_of_one_peer`] with `peers` context peers that all hold `blob`, and
+/// a count of the bytes they have served.
+pub fn network_of_peers(peers: usize, blob: Option<Vec<u8>>) -> (NetworkClient, Arc<AtomicU64>) {
+    struct Serves {
+        peers: usize,
+        blob: Option<Vec<u8>>,
+        served: Arc<AtomicU64>,
+    }
 
     impl actix::Actor for Serves {
         type Context = actix::Context<Self>;
@@ -135,11 +149,12 @@ pub fn network_of_one_peer(blob: Option<Vec<u8>>) -> NetworkClient {
         fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) {
             match msg {
                 NetworkMessage::SubscribedPeers { outcome, .. } => {
-                    let _ignored = outcome.send(vec![PeerId::random()]);
+                    let _ignored =
+                        outcome.send((0..self.peers).map(|_| PeerId::random()).collect());
                 }
                 NetworkMessage::ProbeBlob { outcome, .. } => {
                     let probe =
-                        self.0
+                        self.blob
                             .as_ref()
                             .map_or(BlobProbe::Absent, |bytes| BlobProbe::Held {
                                 size: Some(bytes.len() as u64),
@@ -147,17 +162,46 @@ pub fn network_of_one_peer(blob: Option<Vec<u8>>) -> NetworkClient {
                     let _ignored = outcome.send(Ok(probe));
                 }
                 NetworkMessage::RequestBlob { outcome, .. } => {
-                    let _ignored = outcome.send(Ok(self.0.clone()));
+                    if let Some(bytes) = &self.blob {
+                        let _before = self.served.fetch_add(bytes.len() as u64, Ordering::SeqCst);
+                    }
+                    let _ignored = outcome.send(Ok(self.blob.clone()));
                 }
                 NetworkMessage::AnnounceBlob { outcome, .. } => {
                     let _ignored = outcome.send(Ok(()));
+                }
+                NetworkMessage::NetworkStatus { outcome, .. } => {
+                    let _ignored = outcome.send(network_status());
                 }
                 _ => {}
             }
         }
     }
 
-    network_on_own_system(move || Serves(blob))
+    let served = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&served);
+    let network = network_on_own_system(move || Serves {
+        peers,
+        blob,
+        served: counted,
+    });
+    (network, served)
+}
+
+/// What a node signing a blob request reads to learn its own peer id.
+fn network_status() -> NetworkStatusSnapshot {
+    NetworkStatusSnapshot {
+        local_peer_id: PeerId::random(),
+        listen_addrs: Vec::new(),
+        external_addrs: Vec::new(),
+        relays: Vec::new(),
+        rendezvous: Vec::new(),
+        direct_upgrades: Vec::new(),
+        autonat: AutonatEntry {
+            reachability: ReachabilityKind::Unknown,
+            last_test: None,
+        },
+    }
 }
 
 /// Binds a network to `actor` on an actix system of its own thread, so a caller
