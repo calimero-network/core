@@ -19,6 +19,9 @@ use crate::connection::NETWORK_BOUND_REQUEST_TIMEOUT;
 #[serde(rename_all = "camelCase")]
 struct CreateGroupInNamespaceApiRequest {
     group_name: Option<String>,
+    /// `"open"` or `"restricted"`; absent, the node creates the group Open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visibility: Option<String>,
 }
 
 impl<A, S> super::Client<A, S>
@@ -303,12 +306,16 @@ where
         &self,
         namespace_id: &str,
         group_name: Option<String>,
+        visibility: Option<String>,
     ) -> Result<serde_json::Value> {
         let response = self
             .connection
             .post(
                 &format!("admin-api/namespaces/{namespace_id}/groups"),
-                CreateGroupInNamespaceApiRequest { group_name },
+                CreateGroupInNamespaceApiRequest {
+                    group_name,
+                    visibility,
+                },
             )
             .await?;
         Ok(response)
