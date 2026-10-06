@@ -3,20 +3,27 @@
 //! `deleted_children` changes nothing a replica can observe.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+
+use calimero_account::AccountId;
 
 use super::*;
 use crate::action::Action;
-use crate::collections::{Authored, Root, UnorderedMap};
+use crate::collections::{cell_value_id, Authored, Root, UnorderedMap};
 use crate::delta::{clear_pending_delta, StorageDelta};
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
 use crate::index::{EntityIndex, Index};
 use crate::interface::{ApplyContext, Interface};
+use crate::logical_clock::HybridTimestamp;
 use crate::row::{encode, Row};
 use crate::store::{Key, MainStorage, KEY_LEN};
-use crate::tests::common::{account_of_key, apply_ctx_for, map_entry_bytes};
+use crate::tests::common::{
+    account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
+    build_signed_shared_action, build_signed_shared_delete, cell_at, map_entry_bytes,
+    setup_root_for_main,
+};
 use crate::tests::owned_rules::{delete, key, signed};
 
 type Rows = Rc<RefCell<BTreeMap<[u8; KEY_LEN], Vec<u8>>>>;
@@ -31,6 +38,10 @@ const NOTES: &str = "notes";
 
 /// When the owner's first write was made; a fixed past instant.
 const WRITTEN_AT: u64 = 1_700_000_000_000_000_000;
+
+/// Between a cell test's writes, so its last (step 9) stays within the
+/// future-drift tolerance of the clock it starts from.
+const CELL_STEP_NANOS: u64 = 500_000_000;
 
 /// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded
 /// from the first context id any test on the process reads.
@@ -309,6 +320,110 @@ fn a_replayed_signed_write_does_not_bring_back_a_collected_entry() {
 
     apply(write("rewritten", deleted_at + 1)).unwrap();
     assert_eq!(read(), Some("rewritten".to_owned()));
+}
+
+/// The same for a cell and for an entry in a cell: a writer's signed write,
+/// replayed after GC collected what it wrote, does not bring it back.
+#[test]
+fn a_replayed_cell_write_does_not_bring_back_a_collected_entity() {
+    let writer_key = key(0xB1);
+    let writer = account_of_key(&writer_key);
+    let writers: BTreeSet<AccountId> = [writer].into_iter().collect();
+    let cell = cell_at(0xB1, &writers);
+    let anchor = cell_at(0xB2, &writers);
+    let member = cell_value_id(anchor);
+    // Stamped from the clock, which also stamps a cell's rotation-log entry: a
+    // delete older than that entry would keep it, and the cell, alive.
+    let start = crate::env::time_now();
+    let at = |step: u8| start + u64::from(step) * CELL_STEP_NANOS;
+
+    let rows: Rows = Rc::default();
+    let apply = |action: Action, delta: u8| {
+        let ctx = ApplyContext {
+            effective_writers: None,
+            delta_id: Some([delta; 32]),
+            delta_hlc: Some(HybridTimestamp::from_unix_nanos(at(delta))),
+            signer_account: Some(writer),
+        };
+        on(&rows, 1, || {
+            Interface::<MainStorage>::apply_action(action, &ctx)
+        })
+    };
+    let stored = |id: Id| on(&rows, 1, || Index::<MainStorage>::get_index(id).unwrap());
+    let root = on(&rows, 1, setup_root_for_main);
+
+    let cell_write = |value: &[u8], step: u8| {
+        let ancestors = vec![root.clone()];
+        build_signed_shared_action(
+            true,
+            cell,
+            value.to_vec(),
+            writers.clone(),
+            at(step),
+            &writer_key,
+            ancestors,
+        )
+    };
+    let member_write = |value: &[u8], step: u8| {
+        let ancestors = vec![
+            ChildInfo::new(anchor, [0; 32], Metadata::default()),
+            root.clone(),
+        ];
+        build_signed_member_action(
+            true,
+            member,
+            anchor,
+            value.to_vec(),
+            at(step),
+            &writer_key,
+            ancestors,
+        )
+    };
+    let anchor_write = build_signed_shared_action(
+        true,
+        anchor,
+        b"anchor".to_vec(),
+        writers.clone(),
+        at(1),
+        &writer_key,
+        vec![root.clone()],
+    );
+    apply(anchor_write, 1).unwrap();
+    apply(cell_write(b"cell", 2), 2).unwrap();
+    apply(member_write(b"member", 3), 3).unwrap();
+    assert!(stored(cell).is_some() && stored(member).is_some());
+
+    apply(
+        build_signed_shared_delete(cell, writers.clone(), &writer_key, at(4)),
+        4,
+    )
+    .unwrap();
+    apply(
+        build_signed_member_delete(member, anchor, &writer_key, at(5)),
+        5,
+    )
+    .unwrap();
+    gc_pass(&rows, true);
+    assert!(
+        stored(cell).is_none() && stored(member).is_none(),
+        "GC left a tombstone in place"
+    );
+
+    // Refused or dropped as stale: either way nothing is stored.
+    let _replayed = apply(cell_write(b"cell", 2), 6);
+    let _replayed = apply(member_write(b"member", 3), 7);
+    assert!(
+        stored(cell).is_none(),
+        "a replayed write brought back a deleted cell"
+    );
+    assert!(
+        stored(member).is_none(),
+        "a replayed write brought back a deleted cell entry"
+    );
+
+    apply(cell_write(b"cell again", 8), 8).unwrap();
+    apply(member_write(b"member again", 9), 9).unwrap();
+    assert!(stored(cell).is_some() && stored(member).is_some());
 }
 
 fn tombstone(id: Id, deleted_at: u64) -> EntityIndex {
