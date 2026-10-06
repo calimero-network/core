@@ -9,6 +9,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
+use crate::config::ServerConfig;
+
 static FIRST_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// The fetch-metadata header that marks a request as a browser's. A same-origin
@@ -25,14 +27,18 @@ const HOST_HEADERS: [&str; 2] = ["host", "x-forwarded-host"];
 
 #[derive(Clone, Debug)]
 pub(crate) struct OriginGuard {
-    enforce: bool,
     allowed: Arc<[String]>,
     /// Lowercase hosts, without a port, of the `allowed` origins.
     allowed_hosts: Arc<[String]>,
 }
 
 impl OriginGuard {
-    pub(crate) fn new(callers_authenticated: bool, allowed_origins: Option<&[String]>) -> Self {
+    /// The router-wide guard: `None` where this process or its proxy authenticates callers.
+    pub(crate) fn router_wide(config: &ServerConfig) -> Option<Self> {
+        (!config.authenticates_callers()).then(|| Self::new(config.cors.allowed_origins.as_deref()))
+    }
+
+    pub(crate) fn new(allowed_origins: Option<&[String]>) -> Self {
         let allowed: Arc<[String]> = allowed_origins.unwrap_or_default().into();
         let allowed_hosts = allowed
             .iter()
@@ -40,14 +46,9 @@ impl OriginGuard {
             .map(|authority| authority.host().to_ascii_lowercase())
             .collect();
         Self {
-            enforce: !callers_authenticated,
             allowed,
             allowed_hosts,
         }
-    }
-
-    pub(crate) const fn enforced(&self) -> bool {
-        self.enforce
     }
 
     pub(crate) fn is_listed(&self, origin: &HeaderValue) -> bool {
@@ -98,7 +99,7 @@ impl OriginGuard {
             }
         }
         if hosts.is_empty() {
-            // HTTP/2 carries the host in `:authority`, which lands in the URI.
+            // A request in absolute form names its host in the URI.
             hosts.extend(uri_authority.cloned());
         }
         if hosts.is_empty() || !hosts.iter().all(|host| self.is_own_host(host.host())) {
@@ -171,36 +172,41 @@ fn is_loopback_host(host: &str) -> bool {
         .is_ok_and(|ip| ip.is_loopback())
 }
 
+/// The router-wide guard of a node whose callers neither it nor its proxy
+/// authenticates; `None` leaves every request to the auth layer and CORS.
 pub(crate) async fn refuse_foreign_origins(
-    State(guard): State<OriginGuard>,
+    State(guard): State<Option<OriginGuard>>,
     request: Request,
     next: Next,
 ) -> Response {
-    if guard.enforce && !guard.admits(request.headers(), request.uri().authority()) {
-        let origin = request.headers().get(header::ORIGIN);
-        let host = request.headers().get(header::HOST);
-        if FIRST_REFUSAL_LOGGED.swap(true, Ordering::Relaxed) {
-            debug!(?origin, ?host, path = %request.uri().path(), "refused a browser request");
-        } else {
-            warn!(
-                ?origin,
-                ?host,
-                path = %request.uri().path(),
-                "refused a browser request: this node does not authenticate callers itself \
-                 (auth mode proxy), so it serves browser pages only from its own origin, \
-                 named by a loopback name, an IP address or a host in [server.cors] \
-                 allowed_origins; list the origin it is served under there"
-            );
-        }
-        return (
-            StatusCode::FORBIDDEN,
-            "browser request refused: this node does not authenticate callers itself; \
-             list the origin in [server.cors] allowed_origins",
-        )
-            .into_response();
+    if guard.is_some_and(|guard| !guard.admits(request.headers(), request.uri().authority())) {
+        return refusal(request.headers(), request.uri().path());
     }
 
     next.run(request).await
+}
+
+/// The `403` for a browser request `admits` refuses, logged loudly once.
+pub(crate) fn refusal(headers: &HeaderMap, path: &str) -> Response {
+    let origin = headers.get(header::ORIGIN);
+    let host = headers.get(header::HOST);
+    if FIRST_REFUSAL_LOGGED.swap(true, Ordering::Relaxed) {
+        debug!(?origin, ?host, path, "refused a browser request");
+    } else {
+        warn!(
+            ?origin,
+            ?host,
+            path,
+            "refused a browser request: its origin is not listed, not a loopback page and \
+             not this node's own, named by a loopback name, an IP address or a host in \
+             [server.cors] allowed_origins; list the origin it is served under there"
+        );
+    }
+    (
+        StatusCode::FORBIDDEN,
+        "browser request refused: list the origin in [server.cors] allowed_origins",
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -227,7 +233,7 @@ mod tests {
         guard.admits(&headers(&[("origin", origin), ("host", host)]), None)
     }
 
-    fn guard_for(auth_mode: AuthMode, proxy_identity: bool) -> OriginGuard {
+    fn guard_for(auth_mode: AuthMode, proxy_identity: bool) -> Option<OriginGuard> {
         let mut config = ServerConfig::with_auth(
             vec![],
             Keypair::generate_ed25519(),
@@ -241,10 +247,7 @@ mod tests {
             None,
         );
         config.proxy_identity = proxy_identity;
-        OriginGuard::new(
-            config.authenticates_callers(),
-            config.cors.allowed_origins.as_deref(),
-        )
+        OriginGuard::router_wide(&config)
     }
 
     /// The guard stands in for an authenticating layer only where there is
@@ -254,14 +257,14 @@ mod tests {
     /// under embedded auth. Plain proxy mode keeps it.
     #[test]
     fn a_node_whose_proxy_names_callers_is_not_guarded() {
-        assert!(!guard_for(AuthMode::Embedded, false).enforced());
-        assert!(!guard_for(AuthMode::Proxy, true).enforced());
-        assert!(guard_for(AuthMode::Proxy, false).enforced());
+        assert!(guard_for(AuthMode::Embedded, false).is_none());
+        assert!(guard_for(AuthMode::Proxy, true).is_none());
+        assert!(guard_for(AuthMode::Proxy, false).is_some());
     }
 
     #[test]
     fn unauthenticated_node_admits_only_its_own_origin_loopback_and_listed_origins() {
-        let guard = OriginGuard::new(false, None);
+        let guard = OriginGuard::new(None);
 
         assert!(admits(&guard, "http://127.0.0.1:2528", "127.0.0.1:2528"));
         assert!(admits(&guard, "http://localhost:5173", "127.0.0.1:2528"));
@@ -300,14 +303,14 @@ mod tests {
         ));
 
         let listed = ["https://app.example".to_owned()];
-        let guard = OriginGuard::new(false, Some(&listed));
+        let guard = OriginGuard::new(Some(&listed));
         assert!(admits(&guard, "https://app.example", "127.0.0.1:2528"));
         assert!(!admits(&guard, "https://other.example", "127.0.0.1:2528"));
 
         // A node served under a name of its own lists that name; then its own
         // pages, which send it as both Origin and Host, are admitted.
         let listed = ["https://node.example.com".to_owned()];
-        let guard = OriginGuard::new(false, Some(&listed));
+        let guard = OriginGuard::new(Some(&listed));
         assert!(admits(
             &guard,
             "https://node.example.com",
@@ -324,7 +327,7 @@ mod tests {
     /// name as Origin AND as Host. The two agree, so only the host can refuse it.
     #[test]
     fn a_rebound_page_is_refused_though_its_origin_equals_its_host() {
-        let guard = OriginGuard::new(false, None);
+        let guard = OriginGuard::new(None);
 
         assert!(!admits(
             &guard,
@@ -342,7 +345,7 @@ mod tests {
     /// metadata still says a browser sent it, so its host is checked all the same.
     #[test]
     fn a_rebound_page_reading_without_an_origin_is_refused() {
-        let guard = OriginGuard::new(false, None);
+        let guard = OriginGuard::new(None);
 
         assert!(!guard.admits(
             &headers(&[
@@ -366,7 +369,7 @@ mod tests {
     /// among them and the proxy in front decides who they are.
     #[test]
     fn a_client_that_is_not_a_browser_is_not_judged_by_its_host() {
-        let guard = OriginGuard::new(false, None);
+        let guard = OriginGuard::new(None);
 
         assert!(guard.admits(&headers(&[("host", "my-node.example:2528")]), None));
         assert!(guard.admits(&HeaderMap::new(), None));
@@ -377,7 +380,7 @@ mod tests {
     /// name it calls the node by.
     #[test]
     fn node_fetch_is_not_judged_as_a_browser() {
-        let guard = OriginGuard::new(false, None);
+        let guard = OriginGuard::new(None);
 
         assert!(guard.admits(
             &headers(&[
@@ -394,7 +397,7 @@ mod tests {
     /// origin.
     #[test]
     fn a_loopback_page_reaches_a_node_named_by_any_host() {
-        let guard = OriginGuard::new(false, None);
+        let guard = OriginGuard::new(None);
 
         for origin in [
             "http://localhost:5173",
@@ -410,7 +413,7 @@ mod tests {
     /// naming this node does not vouch for another that does not.
     #[test]
     fn a_page_cannot_name_the_node_in_a_forwarded_host_it_sets() {
-        let guard = OriginGuard::new(false, None);
+        let guard = OriginGuard::new(None);
 
         assert!(!guard.admits(
             &headers(&[
@@ -422,10 +425,10 @@ mod tests {
         ));
     }
 
-    /// HTTP/2 names the host in `:authority`, which reaches the URI, not a header.
+    /// A request in absolute form names its host in the URI, not in a header.
     #[test]
     fn the_uri_authority_names_the_host_when_no_header_does() {
-        let guard = OriginGuard::new(false, None);
+        let guard = OriginGuard::new(None);
         let own = "127.0.0.1:2528".parse().unwrap();
         let rebound = "attacker.example:2528".parse().unwrap();
 
@@ -447,16 +450,16 @@ mod tests {
             ])
         };
 
-        let unlisted = OriginGuard::new(false, None);
+        let unlisted = OriginGuard::new(None);
         assert!(!unlisted.admits(&forwarded("https://node.example.com"), None));
 
         let listed = ["https://node.example.com".to_owned()];
-        let guard = OriginGuard::new(false, Some(&listed));
+        let guard = OriginGuard::new(Some(&listed));
         assert!(guard.admits(&forwarded("https://node.example.com"), None));
         assert!(!guard.admits(&forwarded("https://site.example"), None));
     }
 
-    fn app(guard: OriginGuard) -> Router {
+    fn app(guard: Option<OriginGuard>) -> Router {
         Router::new()
             .route(
                 "/admin-api/install-application",
@@ -491,7 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn unauthenticated_node_refuses_foreign_pages_before_the_handler_runs() {
-        let guarded = app(OriginGuard::new(false, None));
+        let guarded = app(Some(OriginGuard::new(None)));
 
         for path in ["/admin-api/install-application", "/jsonrpc"] {
             assert_eq!(
@@ -522,7 +525,7 @@ mod tests {
     /// browser still reaches it.
     #[tokio::test]
     async fn a_rebound_page_cannot_read_through_the_guard() {
-        let guarded = app(OriginGuard::new(false, None));
+        let guarded = app(Some(OriginGuard::new(None)));
         let get = |sec_fetch: bool| {
             let mut request = Request::builder()
                 .method("GET")
@@ -542,7 +545,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_node_that_authenticates_callers_is_left_to_cors() {
-        let open = app(OriginGuard::new(true, None));
+        let open = app(None);
 
         assert_eq!(
             status(
