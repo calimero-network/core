@@ -340,3 +340,35 @@ impl Drop for Stage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::layer::{ReadLayer, WriteLayer};
+
+    use super::*;
+
+    /// A resync replaces a context's state with a snapshot's, which carries no
+    /// record of a collected delete, so this node's own records must outlive it.
+    #[test]
+    fn a_resync_keeps_the_records_of_collected_deletes() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context_id = ContextId::from([7; 32]);
+        let mut record = [0; STATE_KEY_LEN];
+        record[0] = 4;
+        let key = ContextStateKey::new(context_id, record);
+        let mut handle = store.clone();
+        handle.put(&key, Slice::from(vec![1; 8])).unwrap();
+
+        let stage = Stage::open(store.clone(), context_id).unwrap();
+        let _moved = stage
+            .promote(&HashSet::from([record]), &HashSet::new())
+            .unwrap();
+        assert!(
+            store.get(&key).unwrap().is_some(),
+            "a resync deleted the record of a collected delete"
+        );
+    }
+}

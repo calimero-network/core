@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use calimero_account::AccountId;
+use ed25519_dalek::SigningKey;
 
 use super::*;
 use crate::action::Action;
@@ -15,7 +16,7 @@ use crate::delta::{clear_pending_delta, StorageDelta};
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env::{take_last_artifact, with_runtime_env, RuntimeEnv};
 use crate::index::{EntityIndex, Index};
-use crate::interface::{ApplyContext, Interface};
+use crate::interface::{ApplyContext, Interface, StorageError};
 use crate::logical_clock::HybridTimestamp;
 use crate::row::{encode, Row};
 use crate::store::{Key, MainStorage, KEY_LEN};
@@ -36,12 +37,21 @@ const FIELD: &str = "reclaimed";
 /// The owned collection's field name and deterministic id seed.
 const NOTES: &str = "notes";
 
+/// The key of the owned entry the replay tests write and delete.
+const ENTRY_KEY: &str = "k";
+
 /// When the owner's first write was made; a fixed past instant.
 const WRITTEN_AT: u64 = 1_700_000_000_000_000_000;
 
-/// Between a cell test's writes, so its last (step 9) stays within the
+/// When the owner deleted that entry.
+const DELETED_AT: u64 = WRITTEN_AT + 1;
+
+/// Between a cell test's writes, so its last (step 6) stays within the
 /// future-drift tolerance of the clock it starts from.
 const CELL_STEP_NANOS: u64 = 500_000_000;
+
+/// How far behind a collected delete a re-inserting owner's clock reads.
+const CLOCK_LAG_NANOS: u64 = 60_000_000_000;
 
 /// Must be the native default: `ROOT_ID` is a process-global `LazyLock` seeded
 /// from the first context id any test on the process reads.
@@ -244,94 +254,225 @@ fn a_late_write_behaves_the_same_with_the_parent_pruned() {
     );
 }
 
-/// GC has collected an owned entry's tombstone: a peer replaying the owner's
-/// original signed write must not bring it back, while a later owner write lands.
-#[test]
-fn a_replayed_signed_write_does_not_bring_back_a_collected_entry() {
-    let owner_key = key(0xA1);
-    let owner = account_of_key(&owner_key);
-    let entry_key = "k".to_owned();
+/// An owner's entry that a peer's signed actions wrote and deleted, and whose
+/// tombstone GC has since collected.
+struct CollectedEntry {
+    rows: Rows,
+    owner_key: SigningKey,
+    owner: AccountId,
+    parent: Id,
+    id: Id,
+    rules: EntryRules,
+    /// The first write's bytes, as a peer that relayed it still holds them.
+    original: Vec<u8>,
+}
 
-    let rows: Rows = Rc::default();
-    let (parent, id, rules) = on(&rows, 1, || {
-        let notes = Root::new(|| {
-            let mut notes = Notes::new_with_field_name(NOTES);
-            notes.reassign_deterministic_id(NOTES);
-            notes
+impl CollectedEntry {
+    fn new() -> Self {
+        let owner_key = key(0xA1);
+        let owner = account_of_key(&owner_key);
+        let rows: Rows = Rc::default();
+        let (parent, id, rules) = on(&rows, 1, || {
+            let notes = Root::new(|| {
+                let mut notes = Notes::new_with_field_name(NOTES);
+                notes.reassign_deterministic_id(NOTES);
+                notes
+            });
+            let inner: &UnorderedMap<String, String> = &notes;
+            let parent = inner.id();
+            let id = notes.entry_id_of(&owner, &ENTRY_KEY.to_owned());
+            let rules = notes.entry_rules();
+            notes.commit();
+            (parent, id, rules)
         });
-        let inner: &UnorderedMap<String, String> = &notes;
-        let parent = inner.id();
-        let id = notes.entry_id_of(&owner, &entry_key);
-        let rules = notes.entry_rules();
-        notes.commit();
-        (parent, id, rules)
-    });
-    let write = |value: &str, at: u64| {
-        let data = map_entry_bytes(id, &entry_key, &value.to_owned());
-        let ancestors = vec![ChildInfo::new(parent, [0; 32], Metadata::default())];
+        let mut entry = Self {
+            rows,
+            owner_key,
+            owner,
+            parent,
+            id,
+            rules,
+            original: Vec::new(),
+        };
+        entry.original = borsh::to_vec(&entry.write("deleted", WRITTEN_AT)).unwrap();
+        entry
+            .apply(borsh::from_slice(&entry.original).unwrap())
+            .unwrap();
+        assert_eq!(entry.read(), Some("deleted".to_owned()));
+
+        let removal = signed(
+            delete(id, DELETED_AT),
+            owner,
+            rules,
+            &entry.owner_key,
+            DELETED_AT,
+        );
+        entry.apply(removal).unwrap();
+        assert_eq!(entry.read(), None);
+
+        gc_pass(&entry.rows, true);
+        let collected = on(&entry.rows, 1, || {
+            Index::<MainStorage>::get_index(id).unwrap()
+        });
+        assert!(collected.is_none(), "GC left the tombstone in place");
+        entry
+    }
+
+    /// The owner's signed write of `value` at `at`.
+    fn write(&self, value: &str, at: u64) -> Action {
+        let (id, parent) = (self.id, self.parent);
+        let data = map_entry_bytes(id, &ENTRY_KEY.to_owned(), &value.to_owned());
         let add = move |metadata| Action::Add {
             id,
             data,
-            ancestors,
+            ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
             metadata,
         };
-        signed(add, owner, rules, &owner_key, at)
-    };
-    let apply = |action: Action| {
-        on(&rows, 1, || {
-            Interface::<MainStorage>::apply_action(action, &apply_ctx_for(owner))
+        signed(add, self.owner, self.rules, &self.owner_key, at)
+    }
+
+    fn apply(&self, action: Action) -> Result<(), StorageError> {
+        on(&self.rows, 1, || {
+            Interface::<MainStorage>::apply_action(action, &apply_ctx_for(self.owner))
         })
-    };
-    let read = || {
-        on(&rows, 1, || {
+    }
+
+    fn read(&self) -> Option<String> {
+        on(&self.rows, 1, || {
             Root::<Notes>::fetch()
                 .unwrap()
-                .get_by(&owner, &entry_key)
+                .get_by(&self.owner, &ENTRY_KEY.to_owned())
                 .unwrap()
         })
-    };
+    }
+}
 
-    let original = borsh::to_vec(&write("deleted", WRITTEN_AT)).unwrap();
-    apply(borsh::from_slice(&original).unwrap()).unwrap();
-    assert_eq!(read(), Some("deleted".to_owned()));
+/// A peer replaying the owner's original signed write must not bring a
+/// collected entry back, while a later owner write lands.
+#[test]
+fn a_replayed_signed_write_does_not_bring_back_a_collected_entry() {
+    let entry = CollectedEntry::new();
 
-    let deleted_at = WRITTEN_AT + 1;
-    apply(signed(
-        delete(id, deleted_at),
-        owner,
-        rules,
-        &owner_key,
-        deleted_at,
-    ))
-    .unwrap();
-    assert_eq!(read(), None);
-
-    gc_pass(&rows, true);
-    let collected = on(&rows, 1, || Index::<MainStorage>::get_index(id).unwrap());
-    assert!(collected.is_none(), "GC left the tombstone in place");
-
-    // Refused or dropped as stale: either way nothing is stored.
-    let _replayed = apply(borsh::from_slice(&original).unwrap());
+    // Dropped as stale, as the tombstone would have it, not refused as an error.
+    entry
+        .apply(borsh::from_slice(&entry.original).unwrap())
+        .unwrap();
     assert_eq!(
-        read(),
+        entry.read(),
         None,
         "a replayed write brought back a deleted entry"
     );
 
-    apply(write("rewritten", deleted_at + 1)).unwrap();
-    assert_eq!(read(), Some("rewritten".to_owned()));
+    entry
+        .apply(entry.write("rewritten", DELETED_AT + 1))
+        .unwrap();
+    assert_eq!(entry.read(), Some("rewritten".to_owned()));
 }
 
-/// The same for a cell and for an entry in a cell: a writer's signed write,
-/// replayed after GC collected what it wrote, does not bring it back.
+/// The delete wins a tie, collected or not: a write stamped with the delete's
+/// own time stays deleted.
 #[test]
-fn a_replayed_cell_write_does_not_bring_back_a_collected_entity() {
+fn a_write_stamped_at_a_collected_delete_stays_deleted() {
+    let entry = CollectedEntry::new();
+    entry.apply(entry.write("tied", DELETED_AT)).unwrap();
+    assert_eq!(
+        entry.read(),
+        None,
+        "a write no newer than the collected delete brought it back"
+    );
+}
+
+/// The owner re-inserts a key after GC collected its delete, on a clock behind
+/// that delete: the write must still be stamped after it, or peers drop it.
+#[test]
+fn a_re_insert_after_collection_is_stamped_past_the_delete() {
+    let rows: Rows = Rc::default();
+    let entry_key = ENTRY_KEY.to_owned();
+    let id = on(&rows, 1, || {
+        let mut notes = Root::new(|| {
+            let mut notes = Notes::new_with_field_name(NOTES);
+            notes.reassign_deterministic_id(NOTES);
+            notes
+        });
+        notes.insert(entry_key.clone(), "first".to_owned()).unwrap();
+        let id = notes.entry_id(&entry_key);
+        notes.commit();
+        id
+    });
+    on(&rows, 1, || {
+        let mut notes = Root::<Notes>::fetch().unwrap();
+        drop(notes.remove(&entry_key).unwrap());
+        notes.commit();
+    });
+    let deleted_at = on(&rows, 1, || {
+        Index::<MainStorage>::get_index(id)
+            .unwrap()
+            .and_then(|index| index.deleted_at)
+            .unwrap()
+    });
+    gc_pass(&rows, true);
+    let collected = on(&rows, 1, || Index::<MainStorage>::get_index(id).unwrap());
+    assert!(collected.is_none(), "GC left the tombstone in place");
+
+    let nonce = on(&rows, 1, || {
+        let previous = crate::env::begin_execution_for_testing(deleted_at - CLOCK_LAG_NANOS);
+        let mut notes = Root::<Notes>::fetch().unwrap();
+        notes.insert(entry_key.clone(), "again".to_owned()).unwrap();
+        notes.commit();
+        crate::env::restore_wall_clock_for_testing(previous);
+        signed_nonce_in_last_delta(id)
+    });
+    assert!(
+        nonce > deleted_at,
+        "a re-insert on a lagging clock was signed at {nonce}, not after the collected delete at {deleted_at}"
+    );
+}
+
+/// The nonce the last committed delta signs `id`'s write with.
+fn signed_nonce_in_last_delta(id: Id) -> u64 {
+    let delta = take_last_artifact().unwrap();
+    let actions = match borsh::from_slice::<StorageDelta>(&delta).unwrap() {
+        StorageDelta::Actions(actions) | StorageDelta::CausalActions { actions, .. } => actions,
+    };
+    actions
+        .into_iter()
+        .find_map(|action| match action {
+            Action::Add {
+                id: written,
+                metadata,
+                ..
+            }
+            | Action::Update {
+                id: written,
+                metadata,
+                ..
+            } if written == id => match metadata.storage_type {
+                StorageType::User {
+                    signature_data: Some(signature),
+                    ..
+                } => Some(signature.nonce),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap()
+}
+
+/// Which entity a cell test deletes, has GC collect, and replays.
+enum Target {
+    Cell,
+    CellEntry,
+}
+
+/// Deletes a writer's `target`, has GC collect it, replays its original write,
+/// then writes it afresh: what is stored after the replay, and after that write.
+fn replay_after_collection(target: Target) -> (Option<EntityIndex>, Option<EntityIndex>) {
     let writer_key = key(0xB1);
     let writer = account_of_key(&writer_key);
     let writers: BTreeSet<AccountId> = [writer].into_iter().collect();
     let cell = cell_at(0xB1, &writers);
     let anchor = cell_at(0xB2, &writers);
-    let member = cell_value_id(anchor);
+    let entry = cell_value_id(anchor);
     // Stamped from the clock, which also stamps a cell's rotation-log entry: a
     // delete older than that entry would keep it, and the cell, alive.
     let start = crate::env::time_now();
@@ -352,26 +493,25 @@ fn a_replayed_cell_write_does_not_bring_back_a_collected_entity() {
     let stored = |id: Id| on(&rows, 1, || Index::<MainStorage>::get_index(id).unwrap());
     let root = on(&rows, 1, setup_root_for_main);
 
-    let cell_write = |value: &[u8], step: u8| {
-        let ancestors = vec![root.clone()];
+    let shared_write = |id: Id, value: &[u8], step: u8| {
         build_signed_shared_action(
             true,
-            cell,
+            id,
             value.to_vec(),
             writers.clone(),
             at(step),
             &writer_key,
-            ancestors,
+            vec![root.clone()],
         )
     };
-    let member_write = |value: &[u8], step: u8| {
+    let entry_write = |value: &[u8], step: u8| {
         let ancestors = vec![
             ChildInfo::new(anchor, [0; 32], Metadata::default()),
             root.clone(),
         ];
         build_signed_member_action(
             true,
-            member,
+            entry,
             anchor,
             value.to_vec(),
             at(step),
@@ -379,51 +519,56 @@ fn a_replayed_cell_write_does_not_bring_back_a_collected_entity() {
             ancestors,
         )
     };
-    let anchor_write = build_signed_shared_action(
-        true,
-        anchor,
-        b"anchor".to_vec(),
-        writers.clone(),
-        at(1),
-        &writer_key,
-        vec![root.clone()],
-    );
-    apply(anchor_write, 1).unwrap();
-    apply(cell_write(b"cell", 2), 2).unwrap();
-    apply(member_write(b"member", 3), 3).unwrap();
-    assert!(stored(cell).is_some() && stored(member).is_some());
+    apply(shared_write(anchor, b"anchor", 1), 1).unwrap();
+    apply(shared_write(cell, b"cell", 2), 2).unwrap();
+    apply(entry_write(b"entry", 3), 3).unwrap();
 
-    apply(
-        build_signed_shared_delete(cell, writers.clone(), &writer_key, at(4)),
-        4,
-    )
-    .unwrap();
-    apply(
-        build_signed_member_delete(member, anchor, &writer_key, at(5)),
-        5,
-    )
-    .unwrap();
+    let (id, original, delete, fresh) = match target {
+        Target::Cell => (
+            cell,
+            shared_write(cell, b"cell", 2),
+            build_signed_shared_delete(cell, writers.clone(), &writer_key, at(4)),
+            shared_write(cell, b"cell again", 6),
+        ),
+        Target::CellEntry => (
+            entry,
+            entry_write(b"entry", 3),
+            build_signed_member_delete(entry, anchor, &writer_key, at(4)),
+            entry_write(b"entry again", 6),
+        ),
+    };
+    apply(delete, 4).unwrap();
     gc_pass(&rows, true);
-    assert!(
-        stored(cell).is_none() && stored(member).is_none(),
-        "GC left a tombstone in place"
-    );
+    assert!(stored(id).is_none(), "GC left the tombstone in place");
 
-    // Refused or dropped as stale: either way nothing is stored.
-    let _replayed = apply(cell_write(b"cell", 2), 6);
-    let _replayed = apply(member_write(b"member", 3), 7);
+    // Dropped as stale, as the tombstone would have it, not refused as an error.
+    apply(original, 5).unwrap();
+    let replayed = stored(id);
+    apply(fresh, 6).unwrap();
+    (replayed, stored(id))
+}
+
+/// A writer's replayed signed write does not bring back a collected cell.
+#[test]
+fn a_replayed_cell_write_does_not_bring_back_a_collected_cell() {
+    let (replayed, rewritten) = replay_after_collection(Target::Cell);
     assert!(
-        stored(cell).is_none(),
+        replayed.is_none(),
         "a replayed write brought back a deleted cell"
     );
+    assert!(rewritten.is_some(), "a later write did not land");
+}
+
+/// A writer's replayed signed write does not bring back a collected entry of
+/// a cell.
+#[test]
+fn a_replayed_cell_entry_write_does_not_bring_back_a_collected_entry() {
+    let (replayed, rewritten) = replay_after_collection(Target::CellEntry);
     assert!(
-        stored(member).is_none(),
+        replayed.is_none(),
         "a replayed write brought back a deleted cell entry"
     );
-
-    apply(cell_write(b"cell again", 8), 8).unwrap();
-    apply(member_write(b"member again", 9), 9).unwrap();
-    assert!(stored(cell).is_some() && stored(member).is_some());
+    assert!(rewritten.is_some(), "a later write did not land");
 }
 
 fn tombstone(id: Id, deleted_at: u64) -> EntityIndex {
