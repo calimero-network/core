@@ -2363,6 +2363,8 @@ pub struct SignedNamespaceOp {
 /// and `GroupOp::TeeAuthorityEvidence` gained the credential its quote was made
 /// for. Layout changes to existing variants, so a v22 or older peer must reject
 /// at the gate rather than mis-decode. A coordinated upgrade.
+/// - core#4465: a join never replaces a standing role, and a namespace leave folds
+///   onto every subgroup. Nothing moves on the wire, but a v22 node folds otherwise.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 23;
 
 /// The first schema whose apply refuses owner-level ops that carry no root

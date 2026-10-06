@@ -251,7 +251,7 @@ fn apply_auth_requirement(
 /// A JOIN belongs here as much as an admin-push add does. `MemberJoinedWithDevice`
 /// is what every invitation join folds to (membership and the joiner's device
 /// credential as one indivisible fact), and the projection folds its membership
-/// through the same `fold_member_added` an add uses — so the two planes are just
+/// into the same `(group, member)` slot an add writes - so the two planes are just
 /// as comparable. Leaving this arm out meant no invitation join was ever compared,
 /// on any scenario, for as long as the shadow has existed: the gate has been
 /// checking admin-push adds and removals only, which is why a whole e2e suite
@@ -275,7 +275,8 @@ fn membership_touched(
         calimero_op::OpPayload::MemberJoinedWithDevice { group, member, .. } => {
             Some((*group, *member, MembershipOpKind::Join))
         }
-        calimero_op::OpPayload::MemberRemoved { group, member } => {
+        calimero_op::OpPayload::MemberRemoved { group, member }
+        | calimero_op::OpPayload::MemberLeft { group, member } => {
             Some((*group, *member, MembershipOpKind::Remove))
         }
         _ => None,
@@ -881,8 +882,8 @@ mod tests {
 
     /// Which payloads the gate can compare, pinned — because the answer was
     /// silently wrong for as long as the shadow existed. A join carries
-    /// membership exactly as an add does and folds through the same
-    /// `fold_member_added`, so omitting it did not make joins unfoldable, only
+    /// membership as an add does and folds into the same slot, so omitting
+    /// it did not make joins unfoldable, only
     /// unchecked: an entire e2e suite concluded 15 comparisons, none of them a
     /// join.
     #[test]

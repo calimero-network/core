@@ -1671,7 +1671,7 @@ impl ScopeProjections {
             .filter(|c| view.is_member_at_cut(*group, c, root, default_cap_base))
             // Namespace-leave cascade: every (sub)group member must also be a
             // namespace-ROOT member (live has no subgroup member who isn't one; the
-            // folded single `MemberLeft` doesn't carry the descendant-row cascade).
+            // fold cascades a namespace leave, but not a root TEE eviction).
             // For `group == root_group` this filter is a no-op on purpose — the
             // FIRST filter above (`is_member_at_cut(*group, …)` with `*group ==
             // root_group`) already decides root membership directly, and the root's

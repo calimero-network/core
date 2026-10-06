@@ -1273,6 +1273,16 @@ pub fn signed_invitation_for(
     group_id: ContextGroupId,
     nonce: [u8; 32],
 ) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    signed_invitation_with_role(admin_sk, group_id, nonce, 1)
+}
+
+/// [`signed_invitation_for`], granting `invited_role` (0 admin, 1 member, 2 read-only).
+pub fn signed_invitation_with_role(
+    admin_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    nonce: [u8; 32],
+    invited_role: u8,
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
     use calimero_context_config::types::{
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -1283,7 +1293,7 @@ pub fn signed_invitation_for(
         group_id,
         expiration_timestamp: 0,
         invitation_nonce: nonce,
-        invited_role: 1,
+        invited_role,
         // The inviter names itself, which is what the mint's default would
         // produce for an admin issuing its own invitation.
         admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],
