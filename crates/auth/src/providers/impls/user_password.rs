@@ -1030,4 +1030,22 @@ mod tests {
         assert_eq!(pw.chars().count(), 8);
         assert!(validate_password_length(pw, 8, 128).is_ok());
     }
+
+    #[test]
+    fn debug_omits_the_password() {
+        let data = UserPasswordAuthData {
+            username: "alice".to_owned(),
+            password: "password-secret".to_owned(),
+        };
+        let request = UserPasswordRequest {
+            username: "alice".to_owned(),
+            password: "password-secret".to_owned(),
+        };
+
+        for shown in [format!("{data:?}"), format!("{request:?}")] {
+            assert!(!shown.contains("password-secret"), "{shown}");
+            assert!(shown.contains("alice"), "{shown}");
+            assert!(shown.contains("redacted"), "{shown}");
+        }
+    }
 }

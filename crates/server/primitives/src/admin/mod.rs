@@ -4819,6 +4819,21 @@ mod tests {
         let json = serde_json::to_value(&req).expect("serialize");
         assert_eq!(json["applications"][0], application);
     }
+
+    #[test]
+    fn create_context_request_debug_omits_the_identity_secret() {
+        let req = CreateContextRequest::new(
+            ApplicationId::from([0x99; 32]),
+            None,
+            Vec::new(),
+            "group".to_owned(),
+            Some("identity-secret".to_owned()),
+        );
+        let shown = format!("{req:?}");
+
+        assert!(!shown.contains("identity-secret"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }
 
 // ---------------------------------------------------------------------------
