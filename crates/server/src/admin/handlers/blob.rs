@@ -1705,7 +1705,7 @@ mod passive_cross_site_tests {
             let _ = sent.insert(*name, HeaderValue::from_static(value));
         }
         if headers == NAVIGATION {
-            assert!(OriginGuard::new(false, None).admits(&sent, None));
+            assert!(OriginGuard::new(None).admits(&sent, None));
         }
 
         let path = Path(node.blob_id.to_string());
