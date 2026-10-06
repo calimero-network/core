@@ -65,6 +65,7 @@ const MEMBER_PREFETCH_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024; // per member 
 const MEMBER_PREFETCH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60); // how long a charge counts
 const MIN_PREFETCH_CHARGE_BYTES: u64 = 1024 * 1024; // so a failed or empty fetch is not free
 const MIN_PREFETCH_SUCCESS_COST_BYTES: u64 = 64 * 1024; // probes, headers and a stored file per blob
+const PREFETCH_FRAMING_BYTES: u64 = 64 * 1024; // headers and chunk framing over a transfer's payload
 
 /// Global prefetch budget, shared by every inbound announcement.
 static PREFETCH_SLOTS: Semaphore = Semaphore::const_new(PREFETCH_CONCURRENCY);
@@ -391,6 +392,7 @@ mod tests {
     const UNREACHABLE_UPLOADER: [u8; 32] = [0x2A; 32];
     const PARTIAL_UPLOADER: [u8; 32] = [0x2B; 32];
     const TINY_UPLOADER: [u8; 32] = [0x2C; 32];
+    const SIZED_UPLOADER: [u8; 32] = [0x2D; 32];
     const STRANGER: [u8; 32] = [0x99; 32];
     /// Shorter than the node's own 1 s local-blob lookup, where a fetch first waits.
     const FETCH_WINDOW: Duration = Duration::from_millis(100);
@@ -543,6 +545,7 @@ mod tests {
             UNREACHABLE_UPLOADER,
             PARTIAL_UPLOADER,
             TINY_UPLOADER,
+            SIZED_UPLOADER,
         ] {
             members.push((GroupMemberRole::Member, PrivateKey::from(key).public_key()));
         }
@@ -783,11 +786,11 @@ mod tests {
             .await
             .expect("prefetch");
 
-        // The transfer that overdraws the charge has arrived by the time it is
-        // refused, so one holder's bytes may pass it, and no holder after that.
+        // The transfer that overdraws the charge and its framing allowance has arrived
+        // by the time it is refused, so one holder's bytes may pass it, and no more.
         let sent = sent.load(Ordering::SeqCst);
         assert!(
-            sent <= MIN_PREFETCH_CHARGE_BYTES + junk.len() as u64,
+            sent <= MIN_PREFETCH_CHARGE_BYTES + PREFETCH_FRAMING_BYTES + junk.len() as u64,
             "{sent} bytes sent for one charge"
         );
     }
@@ -845,7 +848,7 @@ mod tests {
             &waiting,
             peer,
             &uploader,
-            MEMBER_PREFETCH_BUDGET_BYTES - junk.len() as u64,
+            MEMBER_PREFETCH_BUDGET_BYTES - junk.len() as u64 - PREFETCH_FRAMING_BYTES,
         )
         .await;
         let spent = announcement_sized(&uploader, peer, 1);
@@ -900,12 +903,57 @@ mod tests {
         );
     }
 
+    /// A fetched blob costs at least its own size: the framing allowance is
+    /// headroom for the transfer, not a discount.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_fetched_blob_costs_at_least_its_size() {
+        let sized = vec![0x5E; 256 * 1024];
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _serving_data, _serving_blobs) =
+            availability_node_over(network_of_one_peer(Some(sized.clone()))).await;
+        let (blob, _size) = node_client
+            .add_blob(sized.as_slice(), None, None)
+            .await
+            .expect("hash the served bytes");
+        let _deleted = node_client.delete_blob(blob).await.expect("forget them");
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(SIZED_UPLOADER);
+
+        let left = MIN_PREFETCH_CHARGE_BYTES + 300 * 1024;
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - left,
+        )
+        .await;
+        let fetched = BlobAnnouncement {
+            size: 0,
+            ..announcement_of(blob, &uploader, peer, now_secs())
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, fetched)
+            .await
+            .expect("prefetch");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "the blob is fetched"
+        );
+
+        let next = announcement_sized(&uploader, peer, MIN_PREFETCH_CHARGE_BYTES + 50 * 1024);
+        assert!(
+            !starts_a_fetch(&waiting, peer, next).await,
+            "the blob's whole size was charged"
+        );
+    }
+
     /// A fetch that succeeds is charged the bytes it took, not the minimum, so
     /// small blobs do not run the budget down by announcement count.
     #[tokio::test]
     #[serial(blob_prefetch_slots)]
     async fn a_fetched_blob_is_charged_what_it_took() {
-        let small = vec![0x5B; 4096];
+        let small = vec![0x5B; 256 * 1024];
         let (node_client, context_client, _data, _blobs) = availability_node().await;
         let waiting = (node_client, context_client);
         let (node_client, context_client, _serving_data, _serving_blobs) =
@@ -940,7 +988,7 @@ mod tests {
         let settled = announcement_sized(&uploader, peer, 0);
         assert!(
             starts_a_fetch(&waiting, peer, settled).await,
-            "only 4 KiB was charged"
+            "only what it took was charged, not the claimed minimum"
         );
         let spent = announcement_sized(&uploader, peer, 0);
         assert!(
