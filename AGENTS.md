@@ -1,10 +1,6 @@
 # Calimero Core - AI Agent Guidance
 
-Peer-to-peer platform for building collaborative apps with automatic conflict-free (CRDT) sync, encrypted P2P networking, and group-based access control. Apps are written in Rust or JavaScript and compiled to WASM; every node runs the same logic over state that converges automatically. (See the [documentation site](docs/) — source under `docs/src/content/docs/`, published to <https://calimero-network.github.io/core/> — for the authoritative definition.)
-
-- **Type**: Rust monorepo (Cargo workspace)
-- **Stack**: Rust 1.98.0, wasmer (WASM), libp2p (P2P), RocksDB
-- **Sub-package AGENTS.md**: See [crates/](crates/AGENTS.md), [apps/](apps/AGENTS.md), [tools/](tools/AGENTS.md)
+Peer-to-peer platform for building collaborative apps with automatic conflict-free (CRDT) sync, encrypted P2P networking, and group-based access control. Apps are written in Rust or JavaScript and compiled to WASM; every node runs the same logic over state that converges automatically.
 
 ## Two layers of docs: WHAT vs WHY
 
@@ -14,8 +10,8 @@ Read them in this order when you land in an unfamiliar area:
    documentation site (source under `docs/src/content/docs/`, published to
    <https://calimero-network.github.io/core/>) explains the system as a whole:
    the philosophy, the end-to-end flows, and how the crates interconnect. Start
-   at the [protocol overview](docs/src/content/docs/protocol/overview.mdx) — the
-   life of one operation — then the rest of the protocol reference: the
+   at the [protocol overview](docs/src/content/docs/protocol/overview.mdx) - the
+   life of one operation - then the rest of the protocol reference: the
    [write path](docs/src/content/docs/protocol/write-path.mdx),
    [receive & apply path](docs/src/content/docs/protocol/receive-path.mdx),
    [operations & the causal DAG](docs/src/content/docs/protocol/operations.mdx),
@@ -34,32 +30,6 @@ Read them in this order when you land in an unfamiliar area:
    AGENTS-aware tools auto-load the same guidance.
 
 ## Setup Commands
-
-```bash
-# Install dependencies & build
-cargo build
-
-# Build all (release)
-cargo build --release
-
-# Typecheck all
-cargo check --workspace
-
-# Test all
-cargo test
-
-# Format check
-cargo fmt --check
-
-# Lint, exactly as CI runs it. `-D warnings` is the gate; `-A warnings` allows
-# every lint, so it passes locally and then fails in CI.
-cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
-
-# Every job behind CI's required `Rust` check, read from the workflow itself.
-./scripts/check-like-ci.py --list          # what CI runs, in order
-./scripts/check-like-ci.py                 # run all of it
-./scripts/check-like-ci.py --only clippy   # or a subset, by name
-```
 
 A pre-commit hook (`cargo fmt --check` on staged Rust files) installs itself on
 any `cargo build`/`cargo test` via the `calimero-git-hooks` build script - no
@@ -121,7 +91,6 @@ README documents `cargo mero build`, not the path to itself.
 ### No Dead Code
 
 - **All code in PRs must be used** - no unused functions, variables, imports, or types
-- Remove commented-out code blocks before submitting
 - If code is for future use, don't include it yet - add it when needed
 - Use `#[allow(dead_code)]` only with a comment explaining why (e.g., FFI, test fixtures)
 - For detecting and removing dead code: use the **dead-code-cleanup** skill (`.cursor/skills/dead-code-cleanup/SKILL.md`) – it verifies no references before removal and produces a structured report
@@ -139,7 +108,6 @@ README documents `cargo mero build`, not the path to itself.
 
 Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `build`, `ci`, `style`, `revert`
 
-- Imperative present tense ("add" not "added")
 - No period, no capitalization
 
 ### Filing Issues
@@ -172,9 +140,7 @@ Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero
 
 ### Secrets
 
-- **NEVER** commit tokens, keys, or credentials
 - Secrets: `~/.calimero/node/config.toml` (local only)
-- No `.env` files in repo
 
 ## JIT Index (what to open, not what to paste)
 
@@ -202,39 +168,14 @@ Every crate has its own `AGENTS.md`; [crates/AGENTS.md](crates/AGENTS.md) is the
 | `apps/`              | Example WASM apps             | [apps/AGENTS.md](apps/AGENTS.md)                           |
 | `tools/`             | Dev tools (merodb, abi)       | [tools/AGENTS.md](tools/AGENTS.md)                         |
 
-### Quick Find Commands
-
-```bash
-# Search for a function across crates
-rg -n "fn function_name" crates/
-
-# Find a struct definition
-rg -n "pub struct StructName" crates/
-
-# Find trait implementations
-rg -n "impl.*TraitName.*for" crates/
-
-# Find tests for a module
-rg -n "#\[test\]" crates/module_name/
-
-# Find all entry points (main.rs)
-rg -l "fn main" crates/*/src/
-
-# Find host functions (WASM imports)
-rg -n "fn " crates/runtime/src/logic/imports.rs
-# Or find implementations:
-rg -n "pub fn " crates/runtime/src/logic/host_functions/
-```
-
 ## Testing & Verifying a Fix
 
 Two layers. Use both - a green `cargo test` does not prove a networked flow works, and a green E2E does not localize a logic bug.
 
 ### 1. Unit & integration tests (`cargo test`)
 
-Fast, in-process, no network. Run per crate: `cargo test -p calimero-<crate>`.
+Fast, in-process, no network.
 
-- Unit tests live beside the code (`#[cfg(test)]` / `src/**/tests.rs`).
 - `crates/node/tests/` holds heavier integration binaries, including deterministic multi-node simulations (`sync_sim`, `sync_scenarios`, `network_simulation`, `dag_*`) that exercise sync/DAG/readiness convergence in one process without Docker - the fastest way to reproduce a sync or ordering bug.
 - `fuzz/` holds coverage-guided fuzz targets over inbound bytes; run one with `scripts/fuzz.sh <target> [seconds]` (see [fuzz/README.md](fuzz/README.md)).
 
@@ -242,14 +183,14 @@ Fast, in-process, no network. Run per crate: `cargo test -p calimero-<crate>`.
 
 merobox boots **real `merod` nodes as Docker containers** and drives them through declarative YAML scenarios. It exercises the actual built binaries over the network - the layer that validates real product flows: context create, member invite, group-key delivery, state/blob sync, partitions, leave/rejoin.
 
-- Scenarios: `apps/scaffolding-e2e/workflows/*.yml` (~49 - group membership, key delivery, kick/rejoin, subgroups, leave, late-joiner, sync-resilience/partition, mesh-soak, etc.), plus `apps/blobs/workflows/`, `workflows/sync-tests/`, `workflows/app-migration/`.
+- Scenarios: `apps/scaffolding-e2e/workflows/*.yml` (group membership, key delivery, kick/rejoin, subgroups, leave, late-joiner, sync-resilience/partition, mesh-soak, etc.), plus `apps/blobs/workflows/`, `workflows/sync-tests/`, `workflows/app-migration/`.
 - Run one locally: `merobox bootstrap run <scenario.yml>` (then `merobox stop --all`). See [apps/AGENTS.md](apps/AGENTS.md) for the YAML format.
 - A new scenario for `e2e-rust-apps.yml` is an entry in `.github/e2e-scenarios.yml`; CI packs the entries into groups, one runner each. A failed group re-runs all its scenarios; its step summary names the one that failed, and its logs are under `docker-logs/<scenario>/` in the group's `logs-*` artifact.
 - Nodes are built **from the PR's own code** (`.github/actions/build-local-merod` → `merod:local`), so a green E2E means your actual code passed.
 
 ### Reading logs (to reproduce & validate)
 
-`merod` logs via `tracing` to stdout. Default filter is `merod=info,calimero_=info`; override with `RUST_LOG` and target a subsystem to see the flow you're debugging:
+`merod` logs via `tracing` to stdout; target a subsystem with `RUST_LOG` to see the flow you're debugging:
 
 ```bash
 RUST_LOG=debug merod --node node1 run
@@ -280,9 +221,8 @@ Every node in a merobox run is the **same build against fresh state**. So it val
 ### How to confirm a fix actually works
 
 1. **Reproduce first, end to end.** Write the failing case at the layer a user hits it - a `sync_sim`/integration test for logic/ordering bugs, a merobox scenario for networked flows - and watch it fail.
-2. Apply the fix.
-3. Confirm the same test now passes, and keep it as the regression test.
-4. For anything touching on-disk formats or wire encoding, also reason about old-data/mixed-version cases explicitly - E2E won't.
+2. Confirm the same test now passes, and keep it as the regression test.
+3. For anything touching on-disk formats or wire encoding, also reason about old-data/mixed-version cases explicitly - E2E won't.
 
 ## Definition of Done
 
@@ -292,14 +232,13 @@ A hand-kept copy of the list drifts toward running less than CI.
 
 Before creating a PR:
 
-1. `cargo fmt --check` passes
-2. `cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings` passes.
+1. `cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings` passes.
    Run it with `-D`, the way CI does: `-A warnings` allows every lint, so it can only ever pass.
    `merod` also gets a second pass under `--features mock-attestation`, which CI runs separately.
-3. `cargo nextest run --workspace` and `cargo test --workspace --doc` pass (CI runs the tests under nextest)
-4. `cargo deny check licenses sources` passes (if modifying dependencies)
-5. **Update relevant documentation** at the end of changes – README, AGENTS.md, crate docs, or API docs as needed; docs must be updated no later than one day after merge
-6. **Prove it works.** For a bug fix, the PR description must show the fix works: the reproduction (command / test / merobox scenario), and before→after evidence (the failing log line or test output before, the passing result after). A fix with no reproduction and no regression test is not done.
+2. `cargo nextest run --workspace` and `cargo test --workspace --doc` pass (CI runs the tests under nextest)
+3. `cargo deny check licenses sources` passes (if modifying dependencies)
+4. **Update relevant documentation** at the end of changes – README, AGENTS.md, crate docs, or API docs as needed; docs must be updated no later than one day after merge
+5. **Prove it works.** For a bug fix, the PR description must show the fix works: the reproduction (command / test / merobox scenario), and before→after evidence (the failing log line or test output before, the passing result after). A fix with no reproduction and no regression test is not done.
 
 ### Review & merge gate
 
@@ -343,26 +282,23 @@ Grounded in the [Concepts & Scopes](docs/src/content/docs/protocol/concepts.mdx)
 # `init` defaults to `--auth-mode proxy`: any page served from localhost can reach the admin API,
 # so use it only on a development machine.
 # Initialize and run first node. `--mdns` only matters once a second node has to
-# find it — see below — but it is set here so the pair works as written.
+# find it (see below), but it is set here so the pair works as written.
 merod --node node1 init --server-port 2428 --swarm-port 2528 --mdns
 merod --node node1 run
 
-# Second node connecting to first. BOTH need `--mdns`: it is off by default since
-# #3620, and two nodes with no bootstrap peer and no rendezvous have NO other way
-# to find each other. The failure is indirect — the join reports a key-delivery
-# timeout, not "no peer" — so it reads as a broken join rather than as discovery.
+# Second node connecting to first. BOTH need `--mdns`: it is off by default, and two
+# nodes with no bootstrap peer and no rendezvous have NO other way
+# to find each other. The failure is indirect: the join reports a key-delivery
+# timeout, not "no peer", so it reads as a broken join rather than as discovery.
 merod --node node2 init --server-port 2429 --swarm-port 2529 --mdns
 merod --node node2 run
 
-# Or an explicit bootstrap, which needs node1's PEER ID — a bare
+# Or an explicit bootstrap, which needs node1's PEER ID; a bare
 # /ip4/../tcp/.. is rejected at startup ("Failed to parse peer id from addr").
 # Read it from a running node1:
 #   curl -s localhost:2428/admin-api/network/status | jq -r .localPeerId
 merod --node node2 init --server-port 2429 --swarm-port 2529 \
   --boot-nodes /ip4/127.0.0.1/tcp/2528/p2p/<node1-peer-id>
-
-# Debug logging
-RUST_LOG=debug merod --node node1 run
 ```
 
 ## Building WASM Apps
@@ -370,14 +306,3 @@ RUST_LOG=debug merod --node node1 run
 `cargo mero build` emits the app's ABI and embeds it as the `calimero_abi_v1`
 section. A bare `cargo build` does neither, leaving a wasm the node cannot
 introspect.
-
-```bash
-# Add WASM target
-rustup target add wasm32-unknown-unknown
-
-# Build specific app
-cargo mero build --manifest-path apps/kv-store/Cargo.toml
-
-# Build all apps
-./scripts/build-all-apps.sh
-```
