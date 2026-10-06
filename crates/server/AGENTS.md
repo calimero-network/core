@@ -154,6 +154,10 @@ context served (`NodeClient::get_blob`), **never** by an announce or an app host
 call, which only name an id. If you add a path that records it, it must prove the
 bytes entered for that context. `DELETE` stays on the node-wide `blob:remove`.
 
+`GET`/`HEAD /admin-api/blobs/{id}?context_id=` asks the context's peers on a local miss, and the `GET` stores what it fetches.
+A navigation or a subresource load carries no `Origin`, so the origin guard admits one from any site when it names the node's own host.
+`peers_of` therefore drops the context for a request with `Sec-Fetch-Site: cross-site` and a `Sec-Fetch-Mode` other than `cors`: it is served a local hit and never causes a probe, a fetch or a store write.
+
 ```
 GET  /admin-api/contexts              # List contexts (caller-scoped)
 POST /admin-api/contexts              # Create context
