@@ -1729,4 +1729,53 @@ mod tests {
         assert_eq!(stats.requests_sent, 3);
         assert!(stats.root_hash_verified);
     }
+
+    /// A row storage refuses is skipped, as the push path skips it, so one bad row
+    /// does not leave every row after it unrepaired.
+    #[tokio::test]
+    async fn a_row_storage_refuses_does_not_end_the_session() {
+        use std::sync::Arc;
+
+        use calimero_node_primitives::sync::LeafMetadata;
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_store::db::InMemoryDB;
+
+        let context_id = ContextId::from([0xCB; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(
+            &store,
+            context_id,
+            PublicKey::from([0u8; 32]),
+            calimero_account::AccountId::from([0xAC; 32]),
+        );
+        // Only an owned entry may live at an owner-derived id, so storage refuses
+        // this public row there.
+        let owned = calimero_storage::tests::common::owned_entry_id(
+            Id::new([0x48; 32]),
+            &calimero_account::AccountId::from([0xA1; 32]),
+        );
+        let leaf = TreeLeafData::new(
+            *owned.as_bytes(),
+            b"public".to_vec(),
+            LeafMetadata::new(CrdtType::lww_register(), 100, [0; 32]),
+        );
+        let mut stats = LevelWiseStats::default();
+
+        let merged = merge_remote_row(
+            &store,
+            &calimero_governance_store::NotFolded,
+            context_id,
+            &runtime_env,
+            None,
+            None,
+            &leaf,
+            &mut stats,
+        )
+        .await;
+
+        assert!(merged.is_ok(), "got {merged:?}");
+        assert_eq!(stats.entities_merged, 0);
+        let stored = with_runtime_env(runtime_env, || Index::<MainStorage>::get_index(owned));
+        assert!(stored.expect("index").is_none());
+    }
 }

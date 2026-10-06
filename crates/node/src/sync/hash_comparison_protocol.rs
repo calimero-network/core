@@ -2477,6 +2477,109 @@ mod tests {
         );
     }
 
+    /// A signed custom entry is repaired through `apply_action`, never the app's
+    /// merge, and a leaf that fails its checks is skipped rather than ending the session.
+    mod signed_custom_leaf {
+        use calimero_primitives::crdt::CustomTypeId;
+        use calimero_storage::entities::StorageType;
+        use calimero_storage::tests::common::{
+            account_of_key, apply_ctx_for, create_signed_user_add_action, owned_entry_id,
+        };
+        use ed25519_dalek::SigningKey;
+
+        use super::*;
+        use crate::sync::helpers::{classify_leaf, stored_custom_type};
+
+        const RULE: &str = "app::Stats";
+
+        fn context() -> ContextId {
+            ContextId::from([0xCF; 32])
+        }
+
+        /// A node holding Alice's signed entry tagged with the app rule `RULE`: its
+        /// env, the entry's id and the authorization stored with it.
+        fn holding_alices_entry(
+            store: &Store,
+        ) -> (calimero_storage::env::RuntimeEnv, Id, StorageType) {
+            let runtime_env = create_runtime_env(
+                store,
+                context(),
+                PublicKey::from([0u8; 32]),
+                test_env_account(),
+            );
+            let alice = SigningKey::from_bytes(&[0xA1; 32]);
+            let owner = account_of_key(&alice);
+            let id = owned_entry_id(Id::new([0x47; 32]), &owner);
+            let authorization = with_runtime_env(runtime_env.clone(), || {
+                Interface::<MainStorage>::apply_action(
+                    calimero_storage::action::Action::Update {
+                        id: Id::root(),
+                        data: vec![],
+                        ancestors: vec![],
+                        metadata: calimero_storage::entities::Metadata::default(),
+                    },
+                    &calimero_storage::interface::ApplyContext::empty(),
+                )
+                .expect("create root");
+                let mut action =
+                    create_signed_user_add_action(&alice, owner, id, b"alice".to_vec(), 1);
+                let calimero_storage::action::Action::Add { metadata, .. } = &mut action else {
+                    unreachable!("an add")
+                };
+                metadata.crdt_type = Some(CrdtType::Custom(CustomTypeId::of(RULE)));
+                let authorization = metadata.storage_type.clone();
+                Interface::<MainStorage>::apply_action(action, &apply_ctx_for(owner))
+                    .expect("alice's entry is stored");
+                authorization
+            });
+            (runtime_env, id, authorization)
+        }
+
+        #[test]
+        fn a_leaf_naming_custom_for_a_signed_entry_is_applied() {
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let (runtime_env, id, _) = holding_alices_entry(&store);
+
+            let disposition = classify_leaf(id, &CrdtType::Custom(CustomTypeId::of(RULE)), || {
+                with_runtime_env(runtime_env.clone(), || stored_custom_type(id))
+            });
+
+            assert_eq!(disposition, LeafDisposition::Apply);
+        }
+
+        /// The bytes an app merge produced, under Alice's signature, which does not
+        /// cover them: storage refuses the leaf, and the session goes on.
+        #[test]
+        fn a_leaf_storage_refuses_is_skipped_not_fatal() {
+            let store = Store::new(Arc::new(InMemoryDB::owned()));
+            let (runtime_env, id, authorization) = holding_alices_entry(&store);
+            let leaf = TreeLeafData::new(
+                *id.as_bytes(),
+                b"merged".to_vec(),
+                LeafMetadata::new(CrdtType::Custom(CustomTypeId::of(RULE)), 100, [0; 32])
+                    .with_authorization(authorization),
+            );
+
+            let outcome = with_runtime_env(runtime_env.clone(), || {
+                apply_hc_leaf_gated(
+                    &store,
+                    &calimero_governance_store::NotFolded,
+                    context(),
+                    &leaf,
+                    Ok(None),
+                )
+            });
+
+            assert!(
+                outcome.is_ok(),
+                "a refused leaf must not end the session, got {outcome:?}"
+            );
+            let stored =
+                with_runtime_env(runtime_env, || Interface::<MainStorage>::find_by_id_raw(id));
+            assert_eq!(stored.as_deref(), Some(&b"alice"[..]));
+        }
+    }
+
     /// A collection container's `Key::Entry` row is the only source of its
     /// `own_hash`, so the push leg has to emit it alongside its children; the
     /// app root is the one entity left out, being merged by the app.
