@@ -13,7 +13,7 @@ use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::{Config, NodeConnection};
 use crate::output::Output;
 
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 pub struct AddNodeCommand {
     /// Name of the node
     #[arg(value_parser = valid_node_name)]
@@ -32,6 +32,23 @@ pub struct AddNodeCommand {
     /// `file:PATH`, `-` (stdin), or the raw token (discouraged).
     #[arg(long)]
     pub refresh_token: Option<String>,
+}
+
+impl std::fmt::Debug for AddNodeCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddNodeCommand")
+            .field("name", &self.name)
+            .field("location", &self.location)
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -289,4 +306,25 @@ async fn determine_auth_tokens(
 
     // Otherwise, use automatic authentication for remote nodes
     check_authentication(url, node_description, output).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AddNodeCommand;
+
+    #[test]
+    fn add_node_debug_omits_the_tokens() {
+        let command = AddNodeCommand {
+            name: "relay-node".to_owned(),
+            location: "http://relay.example".to_owned(),
+            access_token: Some("access-secret".to_owned()),
+            refresh_token: Some("refresh-secret".to_owned()),
+        };
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains("access-secret"), "{shown}");
+        assert!(!shown.contains("refresh-secret"), "{shown}");
+        assert!(shown.contains("relay-node"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }

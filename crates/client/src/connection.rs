@@ -851,13 +851,13 @@ where
             refresh_token: String,
         }
 
-        #[derive(serde::Deserialize, Debug)]
+        #[derive(serde::Deserialize)]
         struct RefreshResponse {
             access_token: String,
             refresh_token: String,
         }
 
-        #[derive(serde::Deserialize, Debug)]
+        #[derive(serde::Deserialize)]
         struct WrappedResponse {
             data: RefreshResponse,
         }

@@ -166,12 +166,21 @@ fn validate_password_for_auth(password: &str, max_length: usize) -> eyre::Result
 /// Older clients may still send a `bootstrap_secret` field (the removed
 /// first-login setup-code flow); serde ignores unknown fields, so those
 /// payloads keep parsing and the value is simply discarded.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct UserPasswordAuthData {
     /// Username
     pub username: String,
     /// Password (will be hashed)
     pub password: String,
+}
+
+impl std::fmt::Debug for UserPasswordAuthData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserPasswordAuthData")
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Username/password auth data type for the registry
@@ -393,7 +402,7 @@ impl Clone for UserPasswordProvider {
 }
 
 /// Username/password specific request data
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Clone, Serialize, Deserialize, Validate)]
 pub struct UserPasswordRequest {
     /// Username
     #[validate(length(min = 1, message = "Username is required"))]
@@ -402,6 +411,15 @@ pub struct UserPasswordRequest {
     /// Password
     #[validate(length(min = 1, message = "Password is required"))]
     pub password: String,
+}
+
+impl std::fmt::Debug for UserPasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserPasswordRequest")
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
 }
 
 #[async_trait]
@@ -1029,5 +1047,23 @@ mod tests {
         let pw = "áéíóúñçü"; // 8 chars, > 8 bytes
         assert_eq!(pw.chars().count(), 8);
         assert!(validate_password_length(pw, 8, 128).is_ok());
+    }
+
+    #[test]
+    fn debug_omits_the_password() {
+        let data = UserPasswordAuthData {
+            username: "alice".to_owned(),
+            password: "password-secret".to_owned(),
+        };
+        let request = UserPasswordRequest {
+            username: "alice".to_owned(),
+            password: "password-secret".to_owned(),
+        };
+
+        for shown in [format!("{data:?}"), format!("{request:?}")] {
+            assert!(!shown.contains("password-secret"), "{shown}");
+            assert!(shown.contains("alice"), "{shown}");
+            assert!(shown.contains("redacted"), "{shown}");
+        }
     }
 }

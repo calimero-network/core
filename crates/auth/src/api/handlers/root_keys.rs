@@ -15,7 +15,7 @@ use crate::server::AppState;
 use crate::storage::models::KeyType;
 
 /// Create key request
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct CreateKeyRequest {
     /// Public key
@@ -31,6 +31,17 @@ pub struct CreateKeyRequest {
 
     /// Target node URL for which to create the root key
     pub target_node_url: Option<String>,
+}
+
+impl std::fmt::Debug for CreateKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateKeyRequest")
+            .field("public_key", &self.public_key)
+            .field("auth_method", &self.auth_method)
+            .field("provider_data", &"[redacted]")
+            .field("target_node_url", &self.target_node_url)
+            .finish()
+    }
 }
 
 /// Key list handler
@@ -235,4 +246,24 @@ pub async fn delete_key_handler(
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CreateKeyRequest;
+
+    #[test]
+    fn create_key_request_debug_omits_the_provider_data() {
+        let req: CreateKeyRequest = serde_json::from_value(serde_json::json!({
+            "public_key": "public-key",
+            "auth_method": "user_password",
+            "provider_data": { "username": "alice", "password": "password-secret" },
+        }))
+        .expect("a well-formed request");
+        let shown = format!("{req:?}");
+
+        assert!(!shown.contains("password-secret"), "{shown}");
+        assert!(shown.contains("user_password"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }
