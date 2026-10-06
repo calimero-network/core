@@ -131,12 +131,12 @@ pub fn network_of_one_peer(blob: Option<Vec<u8>>) -> NetworkClient {
 }
 
 /// [`network_of_one_peer`] with `peers` context peers that all hold `blob`, and
-/// a count of the bytes they have served.
+/// a count of the bytes they have sent.
 pub fn network_of_peers(peers: usize, blob: Option<Vec<u8>>) -> (NetworkClient, Arc<AtomicU64>) {
     struct Serves {
         peers: usize,
         blob: Option<Vec<u8>>,
-        served: Arc<AtomicU64>,
+        sent: Arc<AtomicU64>,
     }
 
     impl actix::Actor for Serves {
@@ -163,7 +163,7 @@ pub fn network_of_peers(peers: usize, blob: Option<Vec<u8>>) -> (NetworkClient, 
                 }
                 NetworkMessage::RequestBlob { outcome, .. } => {
                     if let Some(bytes) = &self.blob {
-                        let _before = self.served.fetch_add(bytes.len() as u64, Ordering::SeqCst);
+                        let _before = self.sent.fetch_add(bytes.len() as u64, Ordering::SeqCst);
                     }
                     let _ignored = outcome.send(Ok(self.blob.clone()));
                 }
@@ -178,14 +178,14 @@ pub fn network_of_peers(peers: usize, blob: Option<Vec<u8>>) -> (NetworkClient, 
         }
     }
 
-    let served = Arc::new(AtomicU64::new(0));
-    let counted = Arc::clone(&served);
+    let sent = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&sent);
     let network = network_on_own_system(move || Serves {
         peers,
         blob,
-        served: counted,
+        sent: counted,
     });
-    (network, served)
+    (network, sent)
 }
 
 /// What a node signing a blob request reads to learn its own peer id.

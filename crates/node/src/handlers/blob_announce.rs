@@ -386,6 +386,7 @@ mod tests {
     const SHED_UPLOADER: [u8; 32] = [0x27; 32];
     const MANY_HOLDERS_UPLOADER: [u8; 32] = [0x28; 32];
     const SMALL_UPLOADER: [u8; 32] = [0x29; 32];
+    const UNREACHABLE_UPLOADER: [u8; 32] = [0x2A; 32];
     const STRANGER: [u8; 32] = [0x99; 32];
     /// Shorter than the node's own 1 s local-blob lookup, where a fetch first waits.
     const FETCH_WINDOW: Duration = Duration::from_millis(100);
@@ -535,6 +536,7 @@ mod tests {
             SHED_UPLOADER,
             MANY_HOLDERS_UPLOADER,
             SMALL_UPLOADER,
+            UNREACHABLE_UPLOADER,
         ] {
             members.push((GroupMemberRole::Member, PrivateKey::from(key).public_key()));
         }
@@ -757,12 +759,12 @@ mod tests {
     }
 
     /// Every holder tried for one announcement draws on the same charge, so
-    /// peers serving bytes that do not match cannot multiply it.
+    /// peers sending bytes that do not match cannot multiply it.
     #[tokio::test]
     #[serial(blob_prefetch_slots)]
     async fn holders_of_one_announcement_share_its_charge() {
         let junk = vec![0x5A; 600 * 1024];
-        let (network, served) = network_of_peers(3, Some(junk));
+        let (network, sent) = network_of_peers(4, Some(junk.clone()));
         let (node_client, context_client, _data, _blobs) = availability_node_over(network).await;
         let peer = PeerId::random();
 
@@ -775,10 +777,43 @@ mod tests {
             .await
             .expect("prefetch");
 
-        let served = served.load(std::sync::atomic::Ordering::SeqCst);
+        // The transfer that overdraws the charge has arrived by the time it is
+        // refused, so one holder's bytes may pass it, and no holder after that.
+        let sent = sent.load(std::sync::atomic::Ordering::SeqCst);
         assert!(
-            served <= MIN_PREFETCH_CHARGE_BYTES,
-            "{served} bytes served for one charge"
+            sent <= MIN_PREFETCH_CHARGE_BYTES + junk.len() as u64,
+            "{sent} bytes sent for one charge"
+        );
+    }
+
+    /// A prefetch that finds no holder is charged the minimum, not the size it
+    /// advertised, so an unreachable uploader does not spend the budget.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_failed_fetch_is_charged_the_minimum() {
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _empty_data, _empty_blobs) =
+            availability_node_over(network_of_one_peer(None)).await;
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(UNREACHABLE_UPLOADER);
+
+        let unreachable = announcement_sized(&uploader, peer, MAX_PREFETCH_SIZE_BYTES);
+        prefetch_announced_blob(&node_client, &context_client, peer, unreachable)
+            .await
+            .expect("prefetch");
+
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - MIN_PREFETCH_CHARGE_BYTES,
+        )
+        .await;
+        let spent = announcement_sized(&uploader, peer, 1);
+        assert!(
+            !starts_a_fetch(&waiting, peer, spent).await,
+            "the budget is spent"
         );
     }
 
