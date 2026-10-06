@@ -1,6 +1,5 @@
 //! Tests for delegated authorship: the warrant, and the bundle that carries it.
 
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{domain_hash, DeviceId, PrivateKey, PublicKey};
 
@@ -9,12 +8,12 @@ use crate::account::AccountGenesis;
 use crate::device::DeviceCert;
 use crate::error::AccountError;
 use crate::signed::AccountProof;
-use crate::warrant::{Delegation, Warrant, WarrantTerms};
+use crate::warrant::{Delegation, Warrant, WarrantTerms, MAX_WARRANT_RELEASE_VERSION_LEN};
 
 const CTX: [u8; 32] = [0x11; 32];
 const OTHER_CTX: [u8; 32] = [0x12; 32];
 const INTENT: [u8; 32] = [0xab; 32];
-const APP: [u8; 32] = [0x33; 32];
+const RELEASE: [u8; 32] = [0x33; 32];
 const METHOD: &str = "set";
 const ACCOUNT_HEAD: [u8; 32] = [0x44; 32];
 const GOVERNANCE_HEAD: [u8; 32] = [0x55; 32];
@@ -94,7 +93,8 @@ fn terms(author: &Party, executor: &Party) -> WarrantTerms {
         author_account: author.account(),
         executor: executor.account(),
         executor_key: executor.device_key(),
-        app_version: ApplicationId::from(APP),
+        release_bytecode_id: RELEASE,
+        release_version: "1.0.0".to_owned(),
         method: METHOD.to_owned(),
         intent_hash: INTENT,
         account_heads: vec![ACCOUNT_HEAD],
@@ -178,9 +178,16 @@ fn every_field_is_covered_by_the_signature() {
             },
         ),
         (
-            "app_version",
+            "release_bytecode_id",
             Warrant {
-                app_version: ApplicationId::from([0x99; 32]),
+                release_bytecode_id: [0x99; 32],
+                ..warrant.clone()
+            },
+        ),
+        (
+            "release_version",
+            Warrant {
+                release_version: "1.0.1".to_owned(),
                 ..warrant.clone()
             },
         ),
@@ -526,7 +533,8 @@ fn a_warrant_signed_under_the_old_domain_does_not_verify() {
         AsRef::<[u8; 32]>::as_ref(&warrant.author_device_key),
         warrant.executor.as_bytes(),
         AsRef::<[u8; 32]>::as_ref(&warrant.executor_key),
-        AsRef::<[u8; 32]>::as_ref(&warrant.app_version),
+        &warrant.release_bytecode_id,
+        warrant.release_version.as_bytes(),
         warrant.method.as_bytes(),
         &warrant.intent_hash,
         &account_len,
@@ -553,4 +561,44 @@ fn a_warrant_signed_under_the_old_domain_does_not_verify() {
         "a warrant signed under the v1 domain must be refused outright, not left \
          to borsh to reject by accident"
     );
+}
+
+/// A release version is untrusted bytes every replica stores, so an oversized one
+/// is refused at mint and on receipt, before any signature work.
+#[test]
+fn a_release_version_over_the_cap_is_refused_at_mint_and_on_receipt() {
+    let author = party(1, 2, 0x01);
+    let executor = party(3, 4, 0x02);
+    let long = "9".repeat(MAX_WARRANT_RELEASE_VERSION_LEN + 1);
+    let too_long = AccountError::WarrantReleaseVersionTooLong {
+        len: MAX_WARRANT_RELEASE_VERSION_LEN + 1,
+        max: MAX_WARRANT_RELEASE_VERSION_LEN,
+    };
+
+    let minted = Warrant::sign(
+        &author.device_sk,
+        WarrantTerms {
+            release_version: long.clone(),
+            ..terms(&author, &executor)
+        },
+    );
+    assert_eq!(minted.expect_err("refused at mint"), too_long);
+
+    let mut received =
+        Warrant::sign(&author.device_sk, terms(&author, &executor)).expect("signing must succeed");
+    received.release_version = long;
+    assert_eq!(
+        received.verify_signature().expect_err("refused on receipt"),
+        too_long
+    );
+
+    let at_cap = Warrant::sign(
+        &author.device_sk,
+        WarrantTerms {
+            release_version: "9".repeat(MAX_WARRANT_RELEASE_VERSION_LEN),
+            ..terms(&author, &executor)
+        },
+    )
+    .expect("a version at the cap is minted");
+    at_cap.verify_signature().expect("and verifies");
 }

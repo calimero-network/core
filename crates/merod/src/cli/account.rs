@@ -227,7 +227,8 @@ pub struct SignCertCommand {
 ///
 /// **`--executor` and `--executor-key` must be the relay that will actually run
 /// it.** A warrant naming another account or device is refused, and nothing here
-/// can check it: the relay's `GET .../intents` reports both.
+/// can check it: the relay's `GET .../intents` reports both, and the release
+/// `--release-bytecode-id` must pin.
 ///
 /// **`--nonce` is the caller's to manage.** The named relay refuses a nonce it
 /// already spent for this device with a `403`, before running anything; one
@@ -260,22 +261,15 @@ pub struct WarrantCommand {
     #[arg(long, value_name = "HEX")]
     executor_key: String,
 
-    /// The application build this warrant is signed against, 64 hex chars.
-    ///
-    /// Pins the code rather than a version string, so a relay cannot wait for an
-    /// upgrade that widens what `--method` does and then spend a warrant signed
-    /// against the narrower one. Read it from the context
-    /// (`meroctl context get <id>`); `meroctl context intent` reads it for you,
-    /// which is the reason to prefer that command where a node is reachable.
-    ///
-    /// Defaults to all-zeros because this command is deliberately offline and
-    /// has nothing to read it from. Nothing verifies the field yet (#3933 lands
-    /// the field set ahead of its enforcement, so a client builds against the
-    /// final signed bytes once) — but a warrant minted with the default will be
-    /// refused once pinning lands, so pass the real value for anything meant to
-    /// outlive this release.
-    #[arg(long, value_name = "HEX", default_value_t = String::new())]
-    app_version: String,
+    /// The blob id of the release the context runs, 64 hex chars: the relay's
+    /// `GET .../intents` reports it as `releaseBytecodeId`. Any other is refused.
+    #[arg(long, value_name = "HEX")]
+    release_bytecode_id: String,
+
+    /// That release's semver (`releaseVersion`), for whoever reads the warrant;
+    /// signed, never compared.
+    #[arg(long, value_name = "SEMVER", default_value_t = String::new())]
+    release_version: String,
 
     /// Monotonic per device.
     #[arg(long)]
@@ -370,14 +364,7 @@ impl WarrantCommand {
                 .saturating_add(self.valid_for)
         });
 
-        let app_version = if self.app_version.trim().is_empty() {
-            calimero_primitives::application::ApplicationId::from([0u8; 32])
-        } else {
-            calimero_primitives::application::ApplicationId::from(parse_key(
-                &self.app_version,
-                "app-version",
-            )?)
-        };
+        let release_bytecode_id = parse_key(&self.release_bytecode_id, "release-bytecode-id")?;
 
         let warrant = calimero_account::Warrant::sign(
             &secret,
@@ -386,7 +373,8 @@ impl WarrantCommand {
                 author_account: credential.statement.account,
                 executor,
                 executor_key,
-                app_version,
+                release_bytecode_id,
+                release_version: self.release_version.clone(),
                 method: self.method.clone(),
                 intent_hash: calimero_account::Warrant::intent_hash(&self.method, &args_bytes),
                 // An offline minter cites nothing: it has no log to read heads
@@ -1848,6 +1836,8 @@ mod tests {
             &"22".repeat(32),
             "--executor-key",
             &"44".repeat(32),
+            "--release-bytecode-id",
+            &"55".repeat(32),
             "--nonce",
             "1",
             "--device-secret",
@@ -1886,6 +1876,8 @@ mod tests {
             &"22".repeat(32),
             "--executor-key",
             &"44".repeat(32),
+            "--release-bytecode-id",
+            &"55".repeat(32),
             "--nonce",
             "1",
             "--device-secret",

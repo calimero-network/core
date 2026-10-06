@@ -77,7 +77,8 @@ fn module_with(init_signs: bool) -> String {
         (func (export "set_owned")
             (call $account_id (i64.const 0))
             (drop (call $read_register (i64.const 0) (i64.const 96)))
-            (call $commit (i64.const 64) (i64.const 128))))
+            (call $commit (i64.const 64) (i64.const 128)))
+        (func (export "noop")))
 "#,
         descriptor = escape(&descriptor),
         artifact = escape(&artifact),
@@ -331,6 +332,16 @@ impl Fixture {
             .await
     }
 
+    /// The release the group names, which its contexts run.
+    fn release(&self) -> [u8; 32] {
+        MetaRepository::new(&self.store)
+            .load(&self.group)
+            .expect("read the group meta")
+            .expect("the group meta exists")
+            .target
+            .bytecode_id
+    }
+
     fn context_id(&self) -> ContextId {
         ContextId::from_seed(SEED)
     }
@@ -449,6 +460,31 @@ async fn through_a_granted_relay(
     [u8; 32],
     [u8; 32],
 ) {
+    delegated_write(method, Pin::Running, u64::MAX).await
+}
+
+/// The release a test warrant pins.
+#[derive(Clone, Copy, Debug)]
+enum Pin {
+    /// The release the context runs: its group's named one.
+    Running,
+    /// A release the group never named.
+    Other,
+}
+
+/// [`through_a_granted_relay`], under a warrant pinning `pin` and expiring at `not_after`.
+async fn delegated_write(
+    method: &str,
+    pin: Pin,
+    not_after: u64,
+) -> (
+    Result<
+        calimero_context_client::messages::ExecuteResponse,
+        calimero_context_client::messages::ExecuteError,
+    >,
+    [u8; 32],
+    [u8; 32],
+) {
     let fx = fixture(Standing::RelayTee, true).await;
     let created = fx.create(fx.delegation()).await.expect("create");
     let root = fx.root();
@@ -463,6 +499,10 @@ async fn through_a_granted_relay(
         )
         .expect("still holding the authorship bit, which the warrant gate honours");
 
+    let release = match pin {
+        Pin::Running => fx.release(),
+        Pin::Other => [0xEE; 32],
+    };
     let args = br#"{}"#.to_vec();
     let warrant = calimero_account::Warrant::sign(
         &fx.author_sk,
@@ -471,13 +511,14 @@ async fn through_a_granted_relay(
             author_account: fx.author,
             executor: fx.relay,
             executor_key: fx.relay_pk,
-            app_version: fx.application_id,
+            release_bytecode_id: release,
+            release_version: "1.0.0".to_owned(),
             method: method.to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash(method, &args),
             account_heads: vec![],
             governance_floor: vec![],
             nonce: 2,
-            not_after: u64::MAX,
+            not_after,
         },
     )
     .expect("sign");
@@ -534,6 +575,68 @@ async fn a_delegated_write_that_signs_an_entry_through_a_relay_that_is_not_a_rel
 async fn a_delegated_write_that_signs_nothing_lands_through_a_granted_relay() {
     let (outcome, _, _) = through_a_granted_relay("set").await;
     let _response = outcome.expect("a plain write lands");
+}
+
+/// A warrant pins the release its author signed against, so a relay running any
+/// other refuses it before it runs rather than spending it on different code.
+#[actix::test]
+async fn a_delegated_write_pinned_to_a_release_the_context_does_not_run_is_refused() {
+    use calimero_context_client::messages::{DelegatedWriteRefusal, ExecuteError};
+
+    let (outcome, before, after) = delegated_write("set", Pin::Other, u64::MAX).await;
+    let err = outcome.expect_err("refused before it runs");
+    assert!(
+        matches!(
+            err,
+            ExecuteError::DelegatedWriteRefused {
+                reason: DelegatedWriteRefusal::ReleaseNotRunning,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(after, before, "nothing committed");
+}
+
+/// Peers judge expiry on the delta's own stamp, so the relay commits nothing it
+/// would stamp past the warrant's deadline.
+#[actix::test]
+async fn a_delegated_write_stamped_past_its_warrant_commits_nothing() {
+    use calimero_context_client::messages::{DelegatedWriteRefusal, ExecuteError};
+
+    let (outcome, before, after) = delegated_write("set", Pin::Running, 1).await;
+    let err = outcome.expect_err("refused before it commits");
+    assert!(
+        matches!(
+            err,
+            ExecuteError::DelegatedWriteRefused {
+                reason: DelegatedWriteRefusal::WarrantExpired,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(after, before, "nothing committed");
+}
+
+/// A run that writes nothing makes no delta, yet is still refused past the
+/// warrant's deadline rather than spending it.
+#[actix::test]
+async fn a_delegated_run_that_writes_nothing_past_its_warrant_is_refused() {
+    use calimero_context_client::messages::{DelegatedWriteRefusal, ExecuteError};
+
+    let (outcome, _, _) = delegated_write("noop", Pin::Running, 1).await;
+    let err = outcome.expect_err("refused past the deadline");
+    assert!(
+        matches!(
+            err,
+            ExecuteError::DelegatedWriteRefused {
+                reason: DelegatedWriteRefusal::WarrantExpired,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
 }
 
 /// Published, not just applied locally: peers learn of the context from the
@@ -740,7 +843,8 @@ async fn the_first_delegated_write_after_a_delegated_creation_lands_immediately(
             author_account: fx.author,
             executor: fx.relay,
             executor_key: fx.relay_pk,
-            app_version: fx.application_id,
+            release_bytecode_id: fx.release(),
+            release_version: "1.0.0".to_owned(),
             method: "set".to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash("set", &args),
             account_heads: vec![],
@@ -793,7 +897,8 @@ async fn a_write_reusing_the_creation_nonce_is_refused() {
             author_account: fx.author,
             executor: fx.relay,
             executor_key: fx.relay_pk,
-            app_version: fx.application_id,
+            release_bytecode_id: fx.release(),
+            release_version: "1.0.0".to_owned(),
             method: "set".to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash("set", &args),
             account_heads: vec![],

@@ -404,9 +404,8 @@ pub enum ExecuteError {
     /// question.
     #[error("account is not a member of the group owning context '{context_id}'")]
     NotAMember { context_id: ContextId },
-    /// A delegated write refused before it ran, because of a ROLE rather than
-    /// a warrant defect: the writes would otherwise have been discarded (or
-    /// refused by every peer), and the caller told it succeeded.
+    /// A delegated write refused before it committed: its writes would otherwise
+    /// have been discarded (or refused by every peer), and the caller told it succeeded.
     #[error("delegated write refused on context '{context_id}': {reason}")]
     DelegatedWriteRefused {
         context_id: ContextId,
@@ -499,6 +498,16 @@ pub enum DelegatedWriteRefusal {
          member's behalf"
     )]
     ExecutorIsNotARelay,
+    /// The warrant pins a release this context is not running.
+    #[error(
+        "the warrant pins a release this context is not running; if GET .../intents names that \
+         release, an upgrade is still applying and the same warrant can be retried, otherwise \
+         mint a fresh one"
+    )]
+    ReleaseNotRunning,
+    /// The run would be stamped after the warrant's deadline, which every peer refuses.
+    #[error("the warrant expired before its write could be stamped; mint a fresh one")]
+    WarrantExpired,
 }
 
 #[derive(Copy, Clone, Debug)]

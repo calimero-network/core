@@ -189,6 +189,15 @@ pub enum AccountError {
         /// The cap.
         max: usize,
     },
+    /// A warrant's `release_version` is over
+    /// [`MAX_WARRANT_RELEASE_VERSION_LEN`](crate::MAX_WARRANT_RELEASE_VERSION_LEN) bytes.
+    #[error("warrant carries a {len}-byte release version, over the {max} allowed")]
+    WarrantReleaseVersionTooLong {
+        /// The version's length.
+        len: usize,
+        /// The cap.
+        max: usize,
+    },
     /// The context creation warrant is not validly signed by the device key it
     /// names.
     #[error("context creation warrant has an invalid signature for the device key it names")]

@@ -29,7 +29,6 @@ use calimero_governance_store::test_fixtures::{
 use calimero_governance_store::{
     AdmissionCut, CapabilitiesRepository, MembershipRepository, MetaRepository,
 };
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -157,7 +156,8 @@ fn seed() -> (Store, Delegation) {
             author_account: author,
             executor: relay,
             executor_key: relay_pk,
-            app_version: ApplicationId::from([0u8; 32]),
+            release_bytecode_id: [0u8; 32],
+            release_version: String::new(),
             method: "send_message".to_owned(),
             intent_hash: Warrant::intent_hash("send_message", b"{}"),
             account_heads: vec![],

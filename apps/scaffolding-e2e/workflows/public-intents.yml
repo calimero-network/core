@@ -183,6 +183,15 @@ steps:
     member_id: '{{relay_account}}'
     capabilities: 512
 
+  # The release a warrant pins: the bytecode id the group names, which
+  # `GET .../intents` also reports as `releaseBytecodeId`.
+  - name: Read the release the warrant pins
+    type: get_group_info
+    node: public-intents-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      release: appKey # wire-pin: the field name group info still emits
+
   - name: The author mints a warrant
     type: node_exec
     node: public-intents-node-2
@@ -197,6 +206,8 @@ steps:
       - '{{relay_account}}'
       - --executor-key
       - '{{relay_key}}'
+      - --release-bytecode-id
+      - '{{release}}'
       - --method
       - set
       # Byte-identical to what the script POSTs. The warrant commits to a hash
@@ -233,6 +244,7 @@ steps:
       - '{{warrant}}'
       - '{{author_credential}}'
       - '{{relay_key}}'
+      - '{{release}}'
 
   # The write has to be real, not merely accepted: a relay could answer 200 and
   # produce a delta the network drops.

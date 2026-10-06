@@ -37,7 +37,6 @@ use calimero_governance_store::{
 use calimero_node_primitives::sync::delta_auth::{
     delegated_delta_signature_payload, verify_delta_envelope, VerifiedEnvelope,
 };
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
@@ -176,7 +175,8 @@ fn world(nonce: u64) -> World {
             author_account: author.account,
             executor: relay.account,
             executor_key: relay.device_sk.public_key(),
-            app_version: ApplicationId::from([0u8; 32]),
+            release_bytecode_id: [0u8; 32],
+            release_version: String::new(),
             method: "send_message".to_owned(),
             intent_hash: Warrant::intent_hash("send_message", br#"{"text":"on my way"}"#),
             account_heads: vec![],
@@ -556,7 +556,8 @@ fn a_delta_in_a_subgroup_its_author_created_is_admitted_at_the_cut() {
             author_account: author.account,
             executor: relay.account,
             executor_key: relay_key,
-            app_version: ApplicationId::from([0u8; 32]),
+            release_bytecode_id: [0u8; 32],
+            release_version: String::new(),
             method: "send_message".to_owned(),
             intent_hash: Warrant::intent_hash("send_message", br#"{"text":"hi"}"#),
             account_heads: vec![],

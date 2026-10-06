@@ -147,7 +147,6 @@ fn audiences_with_equal_payloads_do_not_share_a_preimage() {
 /// payloads they produce, which is what actually reaches a verifier.
 #[test]
 fn a_login_payload_is_not_a_warrant_payload() {
-    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::AccountId;
 
@@ -168,7 +167,8 @@ fn a_login_payload_is_not_a_warrant_payload() {
         author_device_key: key(3).public_key(),
         executor: AccountId::from([0u8; 32]),
         executor_key: key(3).public_key(),
-        app_version: ApplicationId::from([0u8; 32]),
+        release_bytecode_id: [0u8; 32],
+        release_version: String::new(),
         method: String::new(),
         intent_hash: [0u8; 32],
         account_heads: vec![],
