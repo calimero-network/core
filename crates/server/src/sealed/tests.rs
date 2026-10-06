@@ -1,6 +1,6 @@
 use core::time::Duration;
 
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, ORIGIN};
 use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::Router;
@@ -41,6 +41,7 @@ async fn echo(headers: HeaderMap, uri: Uri, body: Bytes) -> impl IntoResponse {
             ("x-echo-auth", header(AUTHORIZATION)),
             ("x-echo-uri", uri.to_string()),
             ("x-echo-host", header(HOST)),
+            ("x-echo-origin", header(ORIGIN)),
         ],
         body,
     )
@@ -290,6 +291,41 @@ async fn a_sealed_request_reaches_the_router_and_its_response_comes_back_sealed(
         Some("tee-node.example"),
         "the host auth checks a node-bound token against is the outer hop's"
     );
+}
+
+async fn echoed_origin(stated: &[(&str, &str)], outer_origin: Option<&str>) -> String {
+    let transport = transport();
+    let mut client = Client::open(&transport).await;
+    let (id, sealed) = client.seal(&head("POST", "/echo", stated), b"");
+    let mut request = Request::post(SEALED_PATH)
+        .header(HOST, "tee-node.example")
+        .header(CONTENT_TYPE, SEALED_CONTENT_TYPE);
+    if let Some(origin) = outer_origin {
+        request = request.header(ORIGIN, origin);
+    }
+    let response = app(Arc::clone(&transport))
+        .oneshot(request.body(Body::from(sealed)).unwrap())
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let (head, _, _) = client.open_response(id, &body);
+    response_header(&head, "x-echo-origin").unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn a_sealed_request_carries_the_page_origin_of_the_outer_hop() {
+    let origin = echoed_origin(
+        &[("origin", "http://localhost")],
+        Some("https://app.example"),
+    )
+    .await;
+    assert_eq!(origin, "https://app.example");
+}
+
+#[tokio::test]
+async fn a_sealed_request_from_a_hop_without_an_origin_has_none() {
+    let origin = echoed_origin(&[("origin", "http://localhost")], None).await;
+    assert_eq!(origin, "none");
 }
 
 #[tokio::test]
@@ -1231,3 +1267,21 @@ const SEALED_RESPONSE_VECTOR: &str =
     a76188b81887eb83cfccd2981229af48a3820df924261b3ff12d4b29340ca07c392ed4e0ee4bed0000001cfa\
     20a7633655179808da19e2fcbc81bc219262fc4f5406582834f549000000111426897864d7a92eec9261fe29\
     93415592";
+
+const SEVERAL_INNER_ORIGINS: [(&str, &str); 3] = [
+    ("Origin", "http://localhost"),
+    ("ORIGIN", "http://other.example"),
+    ("origin", "null"),
+];
+
+#[tokio::test]
+async fn every_inner_origin_is_replaced_by_the_outer_hops() {
+    let origin = echoed_origin(&SEVERAL_INNER_ORIGINS, Some("https://app.example")).await;
+    assert_eq!(origin, "https://app.example");
+}
+
+#[tokio::test]
+async fn every_inner_origin_is_dropped_when_the_outer_hop_has_none() {
+    let origin = echoed_origin(&SEVERAL_INNER_ORIGINS, None).await;
+    assert_eq!(origin, "none");
+}
