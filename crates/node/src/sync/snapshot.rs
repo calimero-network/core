@@ -4424,9 +4424,11 @@ mod snapshot_trust_tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use calimero_account::{AccountId, DeviceId};
+    use calimero_account::AccountId;
     use calimero_context_config::types::ContextGroupId;
-    use calimero_governance_store::test_fixtures::{enrol_member, sample_meta_with_admin};
+    use calimero_governance_store::test_fixtures::{
+        enrol_member, real_join_account, sample_meta_with_admin,
+    };
     use calimero_governance_store::{
         register_context_in_group, AccountBindingRepository, MembershipRepository, MetaRepository,
     };
@@ -4489,10 +4491,9 @@ mod snapshot_trust_tests {
             account
         }
 
-        /// Revoke the device `enrol_member` bound `key` under; it derives the
-        /// device id from the signing key.
+        /// Revoke the device `enrol_member` bound `key` under.
         fn revoke(&self, key: &PublicKey) {
-            let device = DeviceId::from(*AsRef::<[u8; 32]>::as_ref(key));
+            let device = real_join_account(key).statement.device;
             AccountBindingRepository::new(&self.store)
                 .apply_revocation(&self.namespace, device)
                 .unwrap();

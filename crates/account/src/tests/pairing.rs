@@ -187,8 +187,9 @@ fn the_confirmation_code_is_wide_enough_to_resist_grinding() {
     // to the derivation is a change to the wire and has to be deliberate.
     // It moved once, when the genesis dropped its nonce: the code covers the
     // account id, and the account id is a different value under a preimage
-    // that no longer has a nonce in it. The derivation itself is untouched.
-    assert_eq!(code, "F3B3-B5FB-450D-DF9E", "code derivation is stable");
+    // that no longer has a nonce in it. It moved again when a device id began
+    // carrying its account binding. The derivation itself is untouched.
+    assert_eq!(code, "C503-4AAB-F654-2972", "code derivation is stable");
 }
 
 #[test]

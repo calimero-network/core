@@ -89,6 +89,8 @@ mod recorded_before_the_refactor {
     use crate::root_key::RootKeyHandoff;
     use crate::signed::AccountProof;
 
+    const RECORDED_DEVICE: &str =
+        "95c18ffae8a7c7c574f96d8330403377f9e699e8958573846a4d73ced987d65f";
     const GENESIS: &str = "028a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c";
     const HANDOFF: &str = "04cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b0000000008139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b39413b4e37f05d61bed2409074f3e070a83d6f4482d4b526cca5adcd694dd572d83fb308a9d29d52bc17d4ee47935fadf42e267770ab97e168a370a38c784466f08";
     const CERT: &str = "04cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b095c18ffae8a7c7c574f96d8330403377f9e699e8958573846a4d73ced987d65f6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf10909090909090909090909090909090909090909090909090909090909090909000000000000000025181b9e3f23b28442300db328ac443f522c40cc1387bb60ea9ff9ff22bc0003c1cfc938d700c839df21920eff48ed454cc00b97f10c69dbb06055c12f98ef09";
@@ -105,7 +107,10 @@ mod recorded_before_the_refactor {
         );
         let genesis = AccountGenesis::new(root.public_key());
         let account = genesis.account_id();
-        let device = DeviceId::mint(account, [3u8; 16]);
+        // The id the bytes were recorded with, minted before ids carried their nonce.
+        let device = DeviceId::from(
+            <[u8; 32]>::try_from(hex::decode(RECORDED_DEVICE).expect("hex")).expect("32 bytes"),
+        );
         let kem = KemPublicKey::from([9u8; 32]);
 
         let handoff =

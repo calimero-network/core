@@ -79,6 +79,12 @@ pub enum AccountError {
     /// epoch.
     #[error("certificate has an invalid signature for its claimed key epoch")]
     CertSignatureInvalid,
+    /// The certificate names a device id that was not minted for its account.
+    #[error("certificate names device {device}, which was not minted for its account")]
+    CertDeviceNotMinted {
+        /// The device the certificate names.
+        device: DeviceId,
+    },
     /// The signing key refused to produce a signature.
     #[error("signing failed")]
     SigningFailed,

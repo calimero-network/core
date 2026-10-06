@@ -175,12 +175,10 @@ mod tests {
     use super::collect;
 
     const NAMESPACE: [u8; 32] = [0x11; 32];
-    // Device ids must differ in their first 16 bytes: that prefix is the HLC
-    // seed, and colliding seeds leave only the lower device live.
-    const LAPTOP: DeviceId = DeviceId::from_raw([0xA1; 32]);
-    const PHONE: DeviceId = DeviceId::from_raw([0xB2; 32]);
-    const PEER_DEVICE: DeviceId = DeviceId::from_raw([0xC3; 32]);
-    const OUTSIDER_DEVICE: DeviceId = DeviceId::from_raw([0xD4; 32]);
+    const LAPTOP: [u8; 16] = [0xA1; 16];
+    const PHONE: [u8; 16] = [0xB2; 16];
+    const PEER_DEVICE: [u8; 16] = [0xC3; 16];
+    const OUTSIDER_DEVICE: [u8; 16] = [0xD4; 16];
     const NODE_ROOT: [u8; 32] = [0x33; 32];
     const LAPTOP_KEY: [u8; 32] = [0x44; 32];
 
@@ -188,13 +186,13 @@ mod tests {
         ContextGroupId::from(NAMESPACE)
     }
 
-    /// Bind `sign_pk` as `device` of the account rooted at `root_sk`.
-    fn link(store: &Store, root_sk: &PrivateKey, device: DeviceId, sign_pk: &PublicKey) {
+    /// Bind `sign_pk` as the device `nonce` mints for the account rooted at `root_sk`.
+    fn link(store: &Store, root_sk: &PrivateKey, nonce: [u8; 16], sign_pk: &PublicKey) {
         let genesis = AccountGenesis::new(root_sk.public_key());
         let cert = DeviceCert::sign(
             root_sk,
             genesis.account_id(),
-            device,
+            DeviceId::mint(genesis.account_id(), nonce),
             sign_pk,
             &KemPublicKey::from([0x2B; 32]),
             0,
@@ -285,7 +283,13 @@ mod tests {
             .map(|device| device.device_id)
             .collect();
         devices.sort_by_key(|device| *device.as_bytes());
-        assert_eq!(devices, vec![LAPTOP, PHONE]);
+        assert_eq!(
+            devices,
+            vec![
+                DeviceId::mint(node_account, LAPTOP),
+                DeviceId::mint(node_account, PHONE)
+            ]
+        );
     }
 
     #[test]

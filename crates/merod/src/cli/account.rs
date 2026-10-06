@@ -157,10 +157,10 @@ impl AccountCommand {
 /// therefore does not matter who publishes or presents it, and with `--from` the
 /// root never has to reach a node at all — no home, no store, no init.
 ///
-/// **It cannot check that the device id matches the keys.** `DeviceId` is
-/// `H(account ‖ nonce)` and deliberately excludes the keys, so a device survives
-/// a re-key. Nothing here can tell a mistyped id from a real one; a certificate
-/// naming a device the holder does not have is inert rather than dangerous.
+/// **It cannot check that the device id matches the keys.** A `DeviceId` is
+/// minted from the account and a nonce and excludes the keys, so a device survives
+/// a re-key. It does refuse an id not minted for this account, which catches a
+/// mistyped one; a well-formed id nobody holds is inert rather than dangerous.
 ///
 /// **Epoch 0 only**, exactly as `revoke-proof` is: the certificate is signed at
 /// key epoch 0 with an empty handoff chain. An account whose root has rotated
@@ -786,6 +786,11 @@ impl SignCertCommand {
                 parse_key(self.kem_pk.as_deref().unwrap_or_default(), "kem-pk")?,
             )
         };
+        eyre::ensure!(
+            device.is_minted_for(account),
+            "device {device} was not minted for account {account}, so no verifier would \
+             accept a certificate for it. Check --device, or the account it was minted for"
+        );
 
         let cert = calimero_account::DeviceCert::sign(
             root.signing_key(),
@@ -1326,6 +1331,50 @@ mod tests {
     use calimero_account::{Audience, DeviceId};
 
     use super::*;
+
+    /// `sign-cert` refuses a device id no verifier would accept for this root's
+    /// account, rather than printing a credential that can never be used.
+    #[tokio::test]
+    async fn sign_cert_refuses_a_device_not_minted_for_the_roots_account() {
+        use clap::Parser;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let phrase = camino::Utf8PathBuf::from_path_buf(dir.path().join("phrase"))
+            .expect("the temp path is utf-8");
+        std::fs::write(&phrase, PHRASE).expect("write the phrase");
+        let account = root().account();
+        let other =
+            calimero_account::AccountGenesis::new(PrivateKey::from([0x42; 32]).public_key())
+                .account_id();
+        let root_args = RootArgs::try_parse_from(["merod"]).expect("no flags needed");
+        let key = "44".repeat(32);
+        let sign_cert = |device: DeviceId| {
+            SignCertCommand::try_parse_from([
+                "sign-cert",
+                "--device",
+                &device.to_string(),
+                "--sign-pk",
+                &key,
+                "--kem-pk",
+                &key,
+                "--from",
+                phrase.as_str(),
+            ])
+            .expect("parse")
+        };
+
+        sign_cert(DeviceId::mint(account, [0x43; 16]))
+            .run(&root_args)
+            .await
+            .expect("a device minted for this account is certified");
+        assert!(
+            sign_cert(DeviceId::mint(other, [0x43; 16]))
+                .run(&root_args)
+                .await
+                .is_err(),
+            "a device minted for another account must not be certified"
+        );
+    }
 
     /// `--session` without `--credential` is refused at parse time.
     ///

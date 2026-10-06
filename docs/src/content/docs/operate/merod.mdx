@@ -295,39 +295,18 @@ intent` invocation that consumes it.
 
 #### Three limits, all deliberate
 
-- **It cannot check the device id — for two separate reasons.** The signer *does*
-  know the account: it derives it from the root it holds, and prints it on the
-  `Account:` line, so an operator can at least confirm the account is the intended one.
-  What it cannot confirm is the `--device` value.
+- **It cannot check the device id against the keys.** The signer derives the account from the root it holds and prints it on the `Account:` line, so an operator can confirm the account is the intended one.
+  The id deliberately **excludes the keys** so that a device survives a re-key, so it cannot be checked against `--sign-pk` / `--kem-pk`.
 
-  `DeviceId` is `H(account ‖ nonce)` where the nonce is **16 random bytes chosen by
-  whoever minted the device**, and the client sends only `deviceId`, `signPk` and
-  `kemPk` — never the nonce. So the signer cannot recompute the id to compare it.
-  Separately, the id deliberately **excludes the keys** so that a device survives a
-  re-key, which means the id cannot be checked against `--sign-pk` / `--kem-pk`
-  either.
+  What every verifier does check is that the id was minted for this account: a `DeviceId` is the 16-byte nonce followed by the first 16 bytes of `H(account ‖ nonce)`.
+  `sign-cert` refuses a `--device` that fails it, which catches a mistyped id.
+  A well-formed id nobody holds is **inert rather than dangerous**: there is no matching secret, so it authorises no one.
 
-  Consequence: nothing here can tell a mistyped id from a real one. A certificate
-  naming a device nobody holds is **inert rather than dangerous** — there is no
-  matching secret, so it authorises no one. The failure mode is a wasted certificate,
-  not a forged one.
-
-  <Aside type="note" title="Why the certificate does not carry the nonce">
-  It would make the derivation checkable — but the check buys nothing, because the
-  **root's signature is the authorization**. A verifier asks "did this account's root
-  vouch for this device and these keys?", not "was the id derived correctly." A root
-  is free to sign any device id, and one nobody holds authorises nobody.
-
-  The attack this seems to invite — one account certifying a device id another account
-  already uses — is refused where it matters: a link whose device already has a
-  binding naming a different account is rejected as `AccountReassignment`. Genuine
-  collisions are anticipated too; the first-link path deliberately stores both and
-  lets `live_bindings` decide which is live, so arrival order cannot decide it.
-
-  So adding the nonce would cost a signing-payload change (a replicated-wire break)
-  and 16 bytes per binding, to catch operator typos that are already inert. If the
-  typo check is wanted, the cheap version is CLI-only: have `pair-init` also emit its
-  nonce and let `sign-cert` take it to verify locally, with no wire change at all.
+  <Aside type="note" title="Why the id carries its account">
+  A root is free to sign any device id.
+  If the id did not commit to its account, one account could certify a member's device id and link it first, and the member's own link would then be refused as `AccountReassignment`.
+  Binding the account into the id closes that with no field on the certificate: the check needs only the id and the account the certificate already names.
+  Nothing keys devices on a prefix of the id, since any account may reuse a nonce.
   </Aside>
 - **Epoch 0 only.** The certificate is signed at key epoch 0 with an empty handoff
   chain. An account whose *root* has rotated needs the chain up to the signing epoch,

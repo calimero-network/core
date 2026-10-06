@@ -12,7 +12,8 @@
 //! that can drift, and a drift here is not a bug in one credential kind: it is one
 //! kind quietly accepting what the other refuses. [`RootSigned`] exists so the
 //! steps are written once and each statement kind supplies only what genuinely
-//! differs — its fields, and which two [`AccountError`] variants it reports.
+//! differs - its fields, which two [`AccountError`] variants it reports, and any
+//! rule its fields owe each other ([`RootSigned::check_fields`]).
 //!
 //! Factoring the same body into a plain helper does not work: the parameters
 //! would be account, epoch, payload, signature and two error variants, six
@@ -85,6 +86,11 @@ pub trait RootSigned {
     fn payload(&self) -> [u8; 32];
     /// The signature itself.
     fn signature(&self) -> &[u8; 64];
+
+    /// Refuses a statement whose fields contradict each other, whoever signed it.
+    fn check_fields(&self) -> Result<(), AccountError> {
+        Ok(())
+    }
 }
 
 /// A [`RootSigned`] statement about one particular device: what
@@ -201,8 +207,9 @@ impl<T: RootSigned + Clone> AccountProof<T> {
 /// Verify any [`RootSigned`] statement against a self-certifying genesis.
 ///
 /// Checks, in order: the genesis addresses `claimed_account`; the statement is
-/// for that same account; the handoff chain is valid and reaches the statement's
-/// epoch; and the statement is signed by the root key at that epoch.
+/// for that same account; its fields agree with each other; the handoff chain is
+/// valid and reaches the statement's epoch; and the statement is signed by the
+/// root key at that epoch.
 ///
 /// Takes the three pieces separately rather than an [`AccountProof`] so a caller
 /// holding a borrowed chain it does not own — the apply paths, which read theirs
@@ -211,9 +218,9 @@ impl<T: RootSigned + Clone> AccountProof<T> {
 /// # Errors
 /// [`AccountError::GenesisMismatch`] if the genesis does not address
 /// `claimed_account`; `T::ACCOUNT_MISMATCH` if the statement names another
-/// account; whatever [`root_key_at_epoch`] reports for an unusable chain; and
-/// `T::SIGNATURE_INVALID` if the signature does not verify under the key at the
-/// claimed epoch.
+/// account; whatever [`RootSigned::check_fields`] reports; whatever
+/// [`root_key_at_epoch`] reports for an unusable chain; and `T::SIGNATURE_INVALID`
+/// if the signature does not verify under the key at the claimed epoch.
 pub(crate) fn verify_root_signed<T: RootSigned>(
     claimed_account: AccountId,
     genesis: &AccountGenesis,
@@ -230,6 +237,7 @@ pub(crate) fn verify_root_signed<T: RootSigned>(
     if statement.account() != derived {
         return Err(T::ACCOUNT_MISMATCH);
     }
+    statement.check_fields()?;
 
     let signer = root_key_at_epoch(genesis, chain, statement.key_epoch())?;
 

@@ -173,7 +173,9 @@ async fn fixture() -> Fixture {
     // join as an account writes. `enrol` derives the device id from the key.
     let caller_key = PrivateKey::from([0x44; 32]).public_key();
     let caller = enrol(&store, &group_id, &caller_key);
-    let caller_device = DeviceId::from(*caller_key);
+    let caller_device = crate::test_support::credential(&caller_key)
+        .statement
+        .device;
     MembershipRepository::new(&store)
         .add_member(&group_id, &caller, GroupMemberRole::Member)
         .expect("seat the caller");
@@ -290,7 +292,11 @@ async fn a_device_bound_to_another_account_is_not_the_sessions() {
     let device = fx
         .who_am_i(ReadAs {
             account: fx.caller,
-            device: Some(DeviceId::from(*fx.admin_key)),
+            device: Some(
+                crate::test_support::credential(&fx.admin_key)
+                    .statement
+                    .device,
+            ),
         })
         .await
         .expect("a member's read runs");

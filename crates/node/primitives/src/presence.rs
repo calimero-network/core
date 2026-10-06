@@ -251,7 +251,7 @@ mod tests {
         let cert = DeviceCert::sign(
             &root_sk,
             genesis.account_id(),
-            DeviceId::from([0x77u8; 32]),
+            DeviceId::mint(genesis.account_id(), [0x77u8; 16]),
             &device_sk.public_key(),
             &KemPublicKey::from([0x88u8; 32]),
             0,
@@ -328,7 +328,7 @@ mod tests {
             PresenceUpdate::signed(&device_sk, ctx(), 7, SENT_AT, typing(), Some(proof)).unwrap();
         let verified = update.verify(ctx()).expect("verifies");
         assert_eq!(verified.account, Some(account));
-        assert_eq!(verified.device, Some(DeviceId::from([0x77u8; 32])));
+        assert_eq!(verified.device, Some(DeviceId::mint(account, [0x77u8; 16])));
     }
 
     #[test]

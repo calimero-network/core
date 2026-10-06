@@ -228,6 +228,18 @@ pub(crate) fn require_not_revoked(store: &Store, device: DeviceId) -> EyreResult
     .into())
 }
 
+/// Was `device` minted for `account`? A certificate for any other id verifies nowhere.
+fn require_minted_for(account: AccountId, device: DeviceId) -> EyreResult<()> {
+    if device.is_minted_for(account) {
+        return Ok(());
+    }
+    Err(ContextError::PairingDeviceNotMinted {
+        device: device.to_string(),
+        account: account.to_string(),
+    }
+    .into())
+}
+
 /// Does this node hold a current scope key in any of `namespaces`?
 ///
 /// One is enough. Pairing publishes an encrypted group op and delivers that same
@@ -324,6 +336,7 @@ impl Handler<PairDeviceCompleteRequest> for ContextManager {
 
                 // Before signing: a revoked id is spent everywhere, not just where it was revoked.
                 require_not_revoked(&store, device)?;
+                require_minted_for(account, device)?;
 
                 // Both ops need a current key; one anywhere is enough, the fan-out skips the rest.
                 require_a_scope_key(&store, &targets)?;
@@ -864,7 +877,7 @@ mod tests {
             .expect("this node's root")
             .account();
         let device_sk = PrivateKey::from([0x71; 32]);
-        let device = DeviceId::from([0x72; 32]);
+        let device = DeviceId::mint(account, [0x72; 16]);
         let kem_pk = calimero_account::KemPublicKey::from([0x73; 32]);
         let (offer, statement) = PairingOffer::signed(
             &device_sk,
@@ -910,6 +923,63 @@ mod tests {
                 .expect("read")
                 .is_none(),
             "no registry entry may exist for a device refused before it could be certified"
+        );
+    }
+
+    /// A device id minted for another account could never be linked, so it is
+    /// refused before anything is signed, stored or published.
+    #[actix::test]
+    async fn a_device_not_minted_for_the_account_is_refused_before_a_certificate_is_minted() {
+        let store = a_node_that_can_pair_in_one_namespace();
+        let account = NodeDeviceRepository::new(&store)
+            .require_account_root()
+            .expect("this node's root")
+            .account();
+        let other = AccountGenesis::new(PrivateKey::from([0x74; 32]).public_key()).account_id();
+        let device = DeviceId::mint(other, [0x75; 16]);
+        let device_sk = PrivateKey::from([0x76; 32]);
+        let kem_pk = calimero_account::KemPublicKey::from([0x77; 32]);
+        let (offer, statement) = PairingOffer::signed(
+            &device_sk,
+            account,
+            device,
+            kem_pk,
+            unix_now().expect("clock"),
+        )
+        .expect("mint the offer");
+
+        let harness = actor::over(store.clone()).await;
+        let refused = harness
+            .manager
+            .send(PairDeviceCompleteRequest {
+                applications: vec![],
+                device,
+                kem_pk,
+                sign_pk: device_sk.public_key(),
+                statement,
+                confirmation_code: offer.confirmation_code(),
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("no peer would accept a certificate for this id");
+
+        assert!(
+            matches!(
+                refused.downcast_ref::<ContextError>(),
+                Some(ContextError::PairingDeviceNotMinted { .. })
+            ),
+            "the refusal has to be typed, not a generic bail; got: {refused}"
+        );
+        let namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("this node holds the account root, so it names its own namespace");
+        assert!(
+            AccountDeviceRegistry::new(&store, namespace)
+                .device(device)
+                .expect("read")
+                .is_none(),
+            "nothing may be recorded for a device refused before it could be certified"
         );
     }
 

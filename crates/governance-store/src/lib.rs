@@ -99,7 +99,7 @@ pub use self::authorizer::{
 pub use self::capabilities::CapabilitiesRepository;
 
 pub use self::account_bindings::{
-    member_account_in_namespace, signer_account_in_namespace, AccountBindingRepository,
+    member_account_in_namespace, signer_accounts_in_namespace, AccountBindingRepository,
     BindingRejected, DeviceBinding, JOIN_SCOPE_EPOCH,
 };
 pub use self::account_devices::AccountDeviceRegistry;

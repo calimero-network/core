@@ -51,8 +51,8 @@ This crate splits the identity half in two:
      ▼                                                    │
    AccountId ─────────────────────────────────────────────┴──▶ DeviceId
      ▲            (the only authz subject)                       │
-     │                                                           └─▶ hlc_seed()  = first 16 bytes
-     │ covers                                                           (CRDT replica id + HLC seed)
+     │                                                           └─▶ nonce_16 ‖ H(account ‖ nonce)[..16]
+     │ covers                                                           (CRDT replica id; is_minted_for(account))
    AccountMemberEndorsement  ◀── signed by a GRANTED MEMBER key, never by the root
      └── .verify() ──▶ VerifiedEndorsement   (a gate reads `member` from HERE, not from the
                                               unchecked struct — that is the point of it)
@@ -93,7 +93,6 @@ This crate splits the identity half in two:
  ═════════════════════════▼══════════ crate boundary ══════════════════════════════
  calimero-projection / calimero-authz answer what only the causal cut can:
    is key_epoch superseded?   is the device revoked?   is the endorser a member here?
-   of two devices sharing an hlc_seed, which is live?  (lower DeviceId, decided on read)
 ```
 
 **Module map.** Dependencies run one way, so a change to the anchor cannot be shadowed by a change to a credential:
@@ -135,7 +134,7 @@ and a `Verified<T>` is one that has been checked.
 | `AccountId` | struct (`[u8; 32]`) | Content address of an `AccountGenesis`; the only authorization subject |
 | `DeviceId` | struct (`[u8; 32]`) | One installation; the CRDT replica id |
 | `DeviceId::mint(account, nonce)` | fn | Mint a device id once per installation |
-| `DeviceId::hlc_seed()` | fn | First 16 bytes - the HLC instance seed for this replica |
+| `DeviceId::is_minted_for(account)` | fn | Whether `mint` made this id for `account`; `verify_device_cert` refuses a cert whose device fails it |
 | `KemPublicKey` | struct (`[u8; 32]`) | X25519 scope-key delivery recipient; a distinct type from `PublicKey` |
 | `AccountGenesis` | struct | `{version, root_sign_pk}`; hashing it yields the `AccountId`. No per-scope salt - one root key is one account everywhere |
 | `AccountGenesis::account_id()` | fn | The id this genesis addresses |
@@ -280,7 +279,7 @@ the fifth producer, and is what the e2e presents.
 - **The end-to-end verifiers take a BORROWED chain on purpose.** `verify_device_cert` / `verify_device_revocation` are called from apply paths that hold a `&[RootKeyHandoff]`; making them methods on `AccountProof` would force those callers to allocate a proof per check just to discard it. A caller that already *has* a proof should use `AccountProof::verify`.
 - **The endorser is inside the signed payload.** Without it, swapping the `member` field would leave a signature verifying against a key that never signed - a member could be shown to have endorsed an account it never touched.
 - **`DeviceId` is minted from a nonce, not from the device's keys**, so rotating a device's keypair keeps its replica identity - and therefore its counter slots and HLC lineage - intact.
-- **HLC-seed collisions are resolved on READ, never at link time.** At most one of two devices sharing an `hlc_seed()` may be live in a scope (lower id wins), but which one cannot be decided as each link arrives: "is there a lower colliding id" reads only what has folded so far, so the live set would depend on delivery order. `ScopeState::live_devices` (and `AccountBindingRepository::live_bindings` on the governance path) apply the rule over the whole folded set instead.
+- **A `DeviceId` carries its own account binding.** It is the nonce followed by `H(account ‖ nonce)[..16]`, so `is_minted_for` checks it from the id alone and `DeviceCert::check_fields` refuses a cert naming an id minted for another account. Without it any root could certify a member's device id and claim it first. The nonce half is public and any account may reuse it, so nothing may key or de-duplicate devices on a prefix of the id.
 - **The device's signing key and KEM key are separate types.** Reusing one Ed25519 key for both a signature scheme and a Diffie-Hellman is a known footgun with no compensating benefit; the type split makes passing one for the other impossible.
 - **There is no derivation from a bare key to an account here, deliberately.** The transitional bridge needs one, and it lives private to `calimero-op-adapter` - the crate deleted at cutover. Offering it here would make a value with none of an account's properties (no rotatable root, no revocable devices) look first-class, quietly reintroducing the id-equals-key conflation this crate exists to remove.
 

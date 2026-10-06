@@ -20,9 +20,9 @@ use strum::IntoEnumIterator;
 
 use super::ActorState;
 use crate::test_fixtures::{
-    apply_member_joined, device_kem_secret, dummy_member_removed_op, group_created,
+    apply_member_joined, device_for, device_kem_secret, dummy_member_removed_op, group_created,
     namespace_genesis_v2_for, real_join_account, root_for, seal_for_test, signed_invitation_for,
-    test_store, GENESIS_SALT,
+    test_store, FOUNDER_DEVICE_SEED, GENESIS_SALT,
 };
 use crate::{
     apply_signed_namespace_op, sign_apply_local_group_op_borsh, AccountBindingRepository,
@@ -43,6 +43,8 @@ pub struct Actor {
     pub account: AccountId,
     /// The device the actor speaks as.
     pub device: DeviceId,
+    /// The seed the device's agreement key pair derives from.
+    pub kem_seed: [u8; 32],
     /// Another device of the same account, live unless the actor is that account's
     /// only live one.
     pub peer: DeviceId,
@@ -68,7 +70,7 @@ impl Actor {
         let envelope: KeyEnvelope = borsh::from_slice(envelope).ok()?;
         let device = DeviceSecret {
             device: self.device,
-            kem_secret: device_kem_secret(*self.device.as_bytes()),
+            kem_secret: device_kem_secret(self.kem_seed),
         };
         GroupKeyring::unwrap_any(
             &self.sign_sk,
@@ -90,7 +92,7 @@ impl Actor {
                 self.account,
                 self.device,
                 &self.sign_pk(),
-                &kem_public(&self.device),
+                &kem_public(self.kem_seed),
                 0,
                 0,
             )
@@ -130,12 +132,8 @@ fn sk(seed: u8) -> PrivateKey {
     PrivateKey::from([seed; 32])
 }
 
-fn kem_public(device: &DeviceId) -> KemPublicKey {
-    KemPublicKey::from(
-        *device_kem_secret(*device.as_bytes())
-            .public_key()
-            .as_bytes(),
-    )
+fn kem_public(seed: [u8; 32]) -> KemPublicKey {
+    KemPublicKey::from(*device_kem_secret(seed).public_key().as_bytes())
 }
 
 fn apply_root_op(store: &Store, namespace: &ContextGroupId, signer: &PrivateKey, op: RootOp) {
@@ -228,7 +226,7 @@ fn link_sibling(
         seat.account,
         device,
         &device_sk.public_key(),
-        &kem_public(&device),
+        &kem_public(*device.as_bytes()),
         0,
         0,
     )
@@ -255,15 +253,22 @@ fn link_sibling(
 }
 
 fn primary_actor(state: ActorState, seat: &Seat, peer: DeviceId) -> Actor {
-    let device = DeviceId::from(*seat.primary.public_key());
     Actor {
         state,
         sign_sk: PrivateKey::from(*seat.primary.as_bytes()),
         account: seat.account,
-        device,
+        device: primary_device(seat),
+        kem_seed: *seat.primary.public_key(),
         peer,
         root: PrivateKey::from(*seat.root.as_bytes()),
     }
+}
+
+/// The device the seat's join certified for its primary key.
+fn primary_device(seat: &Seat) -> DeviceId {
+    real_join_account(&seat.primary.public_key())
+        .statement
+        .device
 }
 
 fn sibling_actor(state: ActorState, seat: &Seat, sibling: (PrivateKey, DeviceId)) -> Actor {
@@ -273,7 +278,8 @@ fn sibling_actor(state: ActorState, seat: &Seat, sibling: (PrivateKey, DeviceId)
         sign_sk: device_sk,
         account: seat.account,
         device,
-        peer: DeviceId::from(*seat.primary.public_key()),
+        kem_seed: *device.as_bytes(),
+        peer: primary_device(seat),
         root: PrivateKey::from(*seat.root.as_bytes()),
     }
 }
@@ -401,9 +407,9 @@ impl World {
         };
         let owner_sibling = link_sibling(&store, &namespace, &owner_sk, &owner_seat, 0x11);
         // The founder's device is the one its genesis credential certifies.
-        let founder_device = DeviceId::from([0x3E; 32]);
         actors.push(Actor {
-            device: founder_device,
+            device: device_for(owner_account, FOUNDER_DEVICE_SEED),
+            kem_seed: FOUNDER_DEVICE_SEED,
             ..primary_actor(ActorState::Owner, &owner_seat, owner_sibling.1)
         });
 
