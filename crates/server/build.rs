@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::{env, fs};
 
 use bytes::Bytes;
-use calimero_build_utils::fetch_and_extract;
+use calimero_build_utils::{expected_sha256, fetch_and_extract};
 use eyre::{bail, Context, OptionExt};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
@@ -53,7 +53,7 @@ fn try_main() -> eyre::Result<()> {
 
     let mut is_local_dir = false;
 
-    let mut expected_sha256 = sha256_override;
+    let mut pinned_sha256 = None;
 
     let src = if let Some(src) = option_env!("CALIMERO_WEBUI_SRC") {
         match reqwest::Url::parse(src) {
@@ -81,8 +81,8 @@ fn try_main() -> eyre::Result<()> {
             && version == CALIMERO_WEBUI_VERSION
             && asset.is_none_or(|asset| asset == CALIMERO_WEBUI_DEFAULT_ASSET);
 
-        if is_default && expected_sha256.is_none() {
-            expected_sha256 = Some(CALIMERO_WEBUI_SHA256);
+        if is_default {
+            pinned_sha256 = Some(CALIMERO_WEBUI_SHA256);
         }
 
         if let Some(asset) = asset {
@@ -136,6 +136,13 @@ fn try_main() -> eyre::Result<()> {
         }
     };
 
+    let expected_sha256 = expected_sha256(
+        &src,
+        pinned_sha256,
+        sha256_override,
+        "CALIMERO_WEBUI_SHA256",
+    )?;
+
     let webui_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
@@ -158,12 +165,6 @@ fn try_main() -> eyre::Result<()> {
             .map_or(false, |c| matches!(c, "1" | "true" | "yes"));
 
         let cache_dir = target_dir()?.join("cache").join("webui");
-
-        if expected_sha256.is_none() {
-            println!(
-                "cargo:warning=webui from {src} is NOT hash-verified; set CALIMERO_WEBUI_SHA256 to pin it"
-            );
-        }
 
         let workdir = fetch_with_retry(&client, &src, &cache_dir, force, expected_sha256)?;
 

@@ -32,12 +32,13 @@ cargo test -p calimero-build-utils git_details_or_unknown_returns_unknown_outsid
 | `GitInfo` | struct | `{ describe: String, commit: String }` |
 | `run_command(cmd, args, cwd)` | fn | Thin wrapper over `std::process::Command`; returns stdout as `String`, error includes stderr on non-zero exit |
 | `fetch_and_extract(client, src, cache_dir, freshness, force, expected_sha256)` | fn | `fetch` feature. Downloads (or reads, for a local path) a zip and returns the directory it was extracted into; reuses a cached extraction younger than `freshness` unless `force`. With `Some(hex)`, refuses an archive whose sha256 differs. A remote `src` must be `https` (plain `http` only for a loopback host, also after redirects), and a download over 128 MiB is refused |
+| `expected_sha256(src, pinned, override_sha256, sha256_var)` | fn | `fetch` feature. The sha256 to pass to `fetch_and_extract`: `override_sha256`, else `pinned` (given only for the default source); errors naming `sha256_var` when a remote `src` has neither, so only a local path goes unverified |
 
 `read_workspace_version_for_dir` and `parse_workspace_metadata_version` are private helpers used only by `read_workspace_version` and the test suite.
 
 ## Mental Model
 
-`set_version_env_vars` is called by the `merod` and `meroctl` binaries (`crates/merod/build.rs`, `crates/meroctl/build.rs`) as `calimero_build_utils::set_version_env_vars("MEROD")` / `"MEROCTL"`, `.expect()`-ing the result - a build.rs failing hard here is intentional, not a bug to soften. `fetch_and_extract` is called by `crates/server/build.rs` and `crates/auth/build.rs`, which enable the `fetch` feature to pull the admin dashboard and auth frontend bundles.
+`set_version_env_vars` is called by the `merod` and `meroctl` binaries (`crates/merod/build.rs`, `crates/meroctl/build.rs`) as `calimero_build_utils::set_version_env_vars("MEROD")` / `"MEROCTL"`, `.expect()`-ing the result - a build.rs failing hard here is intentional, not a bug to soften. `fetch_and_extract` and `expected_sha256` are called by `crates/server/build.rs` and `crates/auth/build.rs`, which enable the `fetch` feature to pull the admin dashboard and auth frontend bundles.
 
 `set_version_env_vars` composes the other three: it reads the workspace release version (from the workspace-root `[workspace.metadata.workspaces].version`, not the placeholder `0.0.0` in each crate's own `Cargo.toml`), resolves git info relative to `CARGO_MANIFEST_DIR` (falling back to `"unknown"` rather than failing if the crate is built outside a git checkout, e.g. from a source tarball), and reads the active `rustc` version. It then prints four `cargo:rustc-env=...` lines, which downstream code reads via `env!(...)` at compile time (see `crates/merod/src/version.rs`, `crates/merod/src/cli.rs`, `crates/meroctl/src/version.rs`, `crates/meroctl/src/cli.rs`).
 

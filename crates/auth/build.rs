@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
+use calimero_build_utils::expected_sha256;
 use calimero_build_utils::fetch_and_extract;
 use eyre::bail;
 use eyre::OptionExt;
@@ -23,7 +24,8 @@ const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 /// one core commit could embed different auth-frontend bundles, and the resolution
 /// itself was a live GitHub round-trip on every build - outside the download cache
 /// below, so a warm cache did not spare it. Bumping is a deliberate edit here.
-/// `CALIMERO_AUTH_FRONTEND_VERSION=latest` still opts back in per build.
+/// `CALIMERO_AUTH_FRONTEND_VERSION=latest` still opts back in per build, given the
+/// archive's sha256 in `CALIMERO_AUTH_FRONTEND_SHA256`.
 const CALIMERO_AUTH_FRONTEND_VERSION: &str = "v1.3.6";
 const CALIMERO_AUTH_FRONTEND_SHA256: &str =
     "2f70a88913f94ef0be74df6a649c8fd148ff21a5834f234fd48db0b7bde9ce39";
@@ -44,7 +46,7 @@ fn try_main() -> eyre::Result<()> {
 
     let mut is_local_dir = false;
 
-    let mut expected_sha256 = sha256_override;
+    let mut pinned_sha256 = None;
 
     let src = match option_env!("CALIMERO_AUTH_FRONTEND_SRC") {
         Some(src) => {
@@ -78,8 +80,8 @@ fn try_main() -> eyre::Result<()> {
                 && version == CALIMERO_AUTH_FRONTEND_VERSION
                 && asset.is_none();
 
-            if is_default && expected_sha256.is_none() {
-                expected_sha256 = Some(CALIMERO_AUTH_FRONTEND_SHA256);
+            if is_default {
+                pinned_sha256 = Some(CALIMERO_AUTH_FRONTEND_SHA256);
             }
 
             let release_url = if let Some(asset) = asset {
@@ -102,6 +104,13 @@ fn try_main() -> eyre::Result<()> {
         }
     };
 
+    let expected_sha256 = expected_sha256(
+        &src,
+        pinned_sha256,
+        sha256_override,
+        "CALIMERO_AUTH_FRONTEND_SHA256",
+    )?;
+
     let frontend_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
@@ -119,12 +128,6 @@ fn try_main() -> eyre::Result<()> {
             .map_or(false, |c| matches!(c, "1" | "true" | "yes"));
 
         let cache_dir = target_dir()?.join("cache").join("auth-frontend");
-
-        if expected_sha256.is_none() {
-            println!(
-                "cargo:warning=auth-frontend from {src} is NOT hash-verified; set CALIMERO_AUTH_FRONTEND_SHA256 to pin it"
-            );
-        }
 
         let workdir = fetch_with_retry(&client, &src, &cache_dir, force, expected_sha256)?;
 

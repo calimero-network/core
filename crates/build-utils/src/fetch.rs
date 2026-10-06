@@ -44,16 +44,20 @@ pub fn fetch_and_extract(
 }
 
 /// The sha256 an archive from `src` must match: `override_sha256` when set, else
-/// `pinned` (passed only for the default source).
+/// `pinned` (passed only for the default source). Only a local `src` may go unverified.
 pub fn expected_sha256<'a>(
     src: &str,
     pinned: Option<&'a str>,
     override_sha256: Option<&'a str>,
     sha256_var: &str,
 ) -> Result<Option<&'a str>> {
-    let _ = (src, sha256_var);
+    let expected = override_sha256.or(pinned);
 
-    Ok(override_sha256.or(pinned))
+    if expected.is_none() && is_remote(src) {
+        bail!("{sha256_var} is required: {src} is not the pinned archive");
+    }
+
+    Ok(expected)
 }
 
 fn fetch_and_extract_with_limit(
