@@ -36,7 +36,7 @@ use eyre::{Result, WrapErr};
 
 use crate::cli::Environment;
 
-#[derive(Clone, Debug, Parser)]
+#[derive(Clone, Parser)]
 #[command(about = "Ask a node to run a method on your behalf, under a warrant you sign")]
 pub struct IntentCommand {
     #[clap(name = "CONTEXT_ID", help = "The context to run in")]
@@ -90,6 +90,24 @@ pub struct IntentCommand {
         help = "How long the warrant stays spendable. Checked by the node, never by peers"
     )]
     pub valid_for: u64,
+}
+
+impl std::fmt::Debug for IntentCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntentCommand")
+            .field("context_id", &self.context_id)
+            .field("method", &self.method)
+            .field("args", &self.args)
+            .field("device_secret_file", &self.device_secret_file)
+            .field(
+                "device_secret",
+                &self.device_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("credential", &self.credential)
+            .field("nonce", &self.nonce)
+            .field("valid_for", &self.valid_for)
+            .finish()
+    }
 }
 
 impl IntentCommand {
@@ -343,5 +361,16 @@ mod tests {
         let inline = resolve_device_secret(Some(&hex), None, &mut std::io::empty())
             .expect("the inline form keeps working");
         assert_eq!(inline, [0xab; 32]);
+    }
+
+    #[test]
+    fn debug_omits_the_device_secret() {
+        let inline = "11".repeat(32);
+        let command = parse(["--device-secret", &inline]).expect("a valid command");
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains(&inline), "{shown}");
+        assert!(shown.contains("\"set\""), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }
