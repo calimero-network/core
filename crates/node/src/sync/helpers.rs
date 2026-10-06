@@ -133,8 +133,8 @@ pub(crate) fn scope_verdict(
 }
 
 /// `env` with a cell's writers read as every writer it has had by the current governance heads.
-/// A repair leaf has no cut, and a removed writer's earlier write must still reach this node;
-/// the cost is that a removed writer can re-push their own signed leaf through an admitted source.
+/// A repair leaf has no cut, and a removed writer's earlier write must still reach this node; the
+/// cost is that a void step's `new` set counts too, so a removed admin's backdated grant is admitted.
 pub(crate) fn with_repair_cell_writers(
     env: calimero_storage::env::RuntimeEnv,
     context_client: Option<&ContextClient>,
@@ -680,7 +680,7 @@ pub(crate) enum SnapshotAuthorship {
 ///   (`SyncManager::ensure_snapshot_server_admitted`).
 /// * Whether a `Shared` signer was a writer *when* it signed. A leaf has no
 ///   cut, so this admits a removed writer's own signed leaf served by an
-///   admitted source.
+///   admitted source, and the leaf of any account a void step's `new` set names.
 pub(crate) fn snapshot_leaf_authorship(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,

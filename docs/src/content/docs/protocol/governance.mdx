@@ -354,7 +354,10 @@ And a pending delta that has no stored row (it arrived without events and is sti
 A delta's cut is chosen by whoever signs its envelope, so the stale rule bounds honest lag only.
 It does not stop a removed writer who colludes with a member that still vouches for an old cut: the model is forward-only, and a removal holds for what is signed at a cut that includes it.
 
-A repair or a pushed leaf has no cut of its own, so the host answers for its cells with every writer the cell has had by this node's current governance heads: the set the cell id commits to, plus the `new` set of each counted step, void or not, since a delta could be signed at any of those cuts. A since-removed writer's earlier write therefore still reaches a node that repairs; the cost is that a removed writer can push their own signed leaf again through an admitted source. A cell it cannot read has no writers, so the write is refused and a later repair retries it.
+A repair or a pushed leaf has no cut of its own, so the host answers for its cells with every writer the cell has had by this node's current governance heads: the set the cell id commits to, plus the `new` set of each counted step, void or not, since a delta could be signed at any of those cuts.
+A since-removed writer's earlier write therefore still reaches a node that repairs.
+The cost is larger than a removed writer pushing their own signed leaf again: a removed cell admin who is still a member can sign a rotation backdated to a cut before their removal whose `new` set names other accounts, and while the fold voids that step, its `new` set still counts here, so the leaves of the accounts it names are admitted on repair too.
+A cell it cannot read has no writers, so the write is refused and a later repair retries it.
 
 ## The algorithm: authorization at the cut
 
