@@ -392,9 +392,12 @@ mod tests {
             "other namespace"
         );
 
-        let asked_for = requested(&book, peer);
+        let later = Instant::now() + MIN_REISSUE;
+        let asked_for = book
+            .issue_at(NS, peer, Some(key(1)), later)
+            .expect("issued");
         assert!(
-            !book.consume(&asked_for, NS, peer, &key(2)),
+            !book.consume_at(&asked_for, NS, peer, &key(2), later),
             "a challenge asked for by one key is not answered for another"
         );
 
