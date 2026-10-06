@@ -104,12 +104,14 @@ steps:
 
   # --- The trigger: a Restricted subgroup with a sealed op, then flipped Open ---
 
-  - name: Node-1 creates `before`, born Restricted
+  # Visibility is set in steps of their own, not `visibility:` on the create:
+  # merobox's born-visibility create sends no auth header. Restricted before
+  # anything is sealed in it, so the result is the same as born Restricted.
+  - name: Node-1 creates `before`
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
     group_name: before
-    visibility: restricted
     outputs:
       before_sub: groupId
 
@@ -117,6 +119,12 @@ steps:
     type: assert
     statements:
       - "is_set({{before_sub}})"
+
+  - name: Node-1 marks `before` Restricted
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{before_sub}}'
+    visibility: restricted
 
   # Sealed under `before`'s own key: node-2, outside `before`, can never read it.
   - name: Node-1 names `before` (an op sealed under the subgroup key)
@@ -140,12 +148,11 @@ steps:
     group_id: '{{before_sub}}'
 
   # Causally after the flip: on a stalled node-2 this never applies.
-  - name: Node-1 creates `after`, born Open
+  - name: Node-1 creates `after`
     type: create_group_in_namespace
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
     group_name: after
-    visibility: open
     outputs:
       after_sub: groupId
 
@@ -153,6 +160,14 @@ steps:
     type: assert
     statements:
       - "is_set({{after_sub}})"
+
+  # Explicit, so the scenario holds whichever visibility a subgroup is born
+  # with by default. Nothing is sealed in `after`, so node-2 can authorize it.
+  - name: Node-1 marks `after` Open
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{after_sub}}'
+    visibility: open
 
   # --- node-2 comes back ---
 
