@@ -426,6 +426,9 @@ split.
 | HEAD | `/admin-api/blobs/:blob_id` | Get blob info/metadata (headers only). Optional `?context_id=<id>`: see below. |
 | DELETE | `/admin-api/blobs/:blob_id` | Delete a blob. |
 
+A `GET` or `HEAD` that a page on another site caused without a script, such as a link, a navigation or an `<img>` (`Sec-Fetch-Site: cross-site` with a `Sec-Fetch-Mode` other than `cors`), is answered from this node's own store only: `context_id` does not make the node ask its peers, and a blob it does not hold is `404`.
+A `fetch` from an admitted origin, a page the node serves and a client that is not a browser are unaffected.
+
 ### `HEAD` with `?context_id=`
 
 Without the parameter, `HEAD` answers only about blobs this node holds — one
