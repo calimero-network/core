@@ -14870,7 +14870,14 @@ mod account_plane_apply {
         .unwrap();
 
         assert_eq!(live_for(&store, &gid, genesis.account_id()).len(), 1);
-        assert_eq!(events, vec![]);
+        // Only the signer's own slot may be announced withdrawn, never the owner's device.
+        assert!(
+            events.iter().all(|event| matches!(
+                event,
+                crate::op_events::OpEvent::DeviceWithdrawn { account, .. } if *account == other
+            )),
+            "{events:?}"
+        );
     }
 
     /// The apply pipeline re-runs a mutation before the op-log dedup gate, so a
