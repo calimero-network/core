@@ -2403,6 +2403,28 @@ impl ScopeProjections {
         )
     }
 
+    /// If the cut holds a revocation of `account`'s `device`, or a narrowing past every
+    /// link, the widest link epoch folded for it there. `None` on incomplete ancestry.
+    #[must_use]
+    pub fn device_withdrawn_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        device: &calimero_account::DeviceId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<u32>> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        let withdrawn = view.revoked_devices.contains(device)
+            || view.descoped_devices.contains(&(*account, *device));
+        Some(withdrawn.then(|| {
+            view.device_link_epochs
+                .get(&(*account, *device))
+                .copied()
+                .unwrap_or(0)
+        }))
+    }
+
     /// Is `author` an admin of `group` OR a holder of any bit in `capability` at
     /// the cut — the apply-auth analogue of live's `is_authorized_with_capability`.
     /// Same authoritative `None`-on-incomplete-ancestry contract as

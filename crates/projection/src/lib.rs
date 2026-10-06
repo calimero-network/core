@@ -155,9 +155,9 @@ pub struct ScopeState {
     /// grow-only — see `AclView::revoked_devices` for why revocation lives in
     /// its own set instead of as a flag on the binding.
     revoked_devices: BTreeSet<DeviceId>,
-    /// Highest scope epoch any folded link for a device was minted under. A max
-    /// beside the binding, since a re-link under a wider scope never rewrites one.
-    device_scope_epoch: BTreeMap<DeviceId, u32>,
+    /// Highest scope epoch any folded link for an `(account, device)` was minted under,
+    /// keyed like the floor so another account's certificate lifts no narrowing.
+    device_scope_epoch: BTreeMap<(AccountId, DeviceId), u32>,
     /// Per-`(account, device)` floor: the highest epoch a narrowing took this
     /// device out at, recorded whether or not anything is bound.
     device_scope_floor: BTreeMap<(AccountId, DeviceId), u32>,
@@ -878,7 +878,10 @@ impl ScopeState {
             admitted,
             Err(calimero_authz::Rejected::CredentialInvalid { .. })
         ) {
-            let recorded = self.device_scope_epoch.entry(cert.device).or_default();
+            let recorded = self
+                .device_scope_epoch
+                .entry((cert.account, cert.device))
+                .or_default();
             *recorded = (*recorded).max(scope_epoch);
         }
         let Ok(verified) = admitted else {
@@ -992,16 +995,27 @@ impl ScopeState {
         by_seed.into_values().collect()
     }
 
+    /// Every `(account, device)` whose floor outranks the widest link folded for it,
+    /// the same threshold [`Self::is_descoped`] applies to a binding.
+    fn descoped_devices(&self) -> BTreeSet<(AccountId, DeviceId)> {
+        self.device_scope_floor
+            .iter()
+            .filter(|(key, floor)| {
+                self.device_scope_epoch.get(*key).copied().unwrap_or(0) <= **floor
+            })
+            .map(|(key, _)| *key)
+            .collect()
+    }
+
     /// Has a narrowing withdrawn this binding? Read here rather than at fold time,
     /// like supersession, so the answer is a function of the op set, not its order.
     ///
     /// A link AT the floor is under it, the threshold the live apply refuses at.
     fn is_descoped(&self, device: DeviceId, binding: &DeviceBinding) -> bool {
+        let key = (binding.account, device);
         self.device_scope_floor
-            .get(&(binding.account, device))
-            .is_some_and(|floor| {
-                self.device_scope_epoch.get(&device).copied().unwrap_or(0) <= *floor
-            })
+            .get(&key)
+            .is_some_and(|floor| self.device_scope_epoch.get(&key).copied().unwrap_or(0) <= *floor)
     }
 
     /// Resolve every known account's current root key by walking its handoff
@@ -1128,6 +1142,8 @@ impl ScopeState {
             devices,
             accounts,
             revoked_devices: self.revoked_devices.clone(),
+            descoped_devices: self.descoped_devices(),
+            device_link_epochs: self.device_scope_epoch.clone(),
             tee_authoring_policy: self
                 .tee_authoring_policy
                 .as_ref()
@@ -1677,7 +1693,8 @@ impl ScopeState {
         }
         // A narrowing changes who may write without touching an entity, so leaving
         // it unhashed would let sync report "converged" over that disagreement.
-        for (device, epoch) in &self.device_scope_epoch {
+        for ((account, device), epoch) in &self.device_scope_epoch {
+            hasher.update(account.as_bytes());
             hasher.update(device.as_bytes());
             hasher.update(epoch.to_le_bytes());
         }
