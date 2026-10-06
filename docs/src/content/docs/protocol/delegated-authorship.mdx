@@ -46,9 +46,10 @@ A **warrant** is the author's signed statement that a specific request may be ru
 | `author_device_key` | which replica | The CRDT replica the change is attributed to, and the key whose signature this is. |
 | `executor` | who may run it | An **account**: the subject the relay's authorship capability is granted to. |
 | `executor_key` | which device may run it | One device of `executor`. Each relay node spends nonces in its own ledger, so a warrant any device of the operator could present would be spendable once per device. A relay that re-keys voids the warrants it has not spent. |
+| `release_bytecode_id` | on which code | The blob id of the release the context's group names. The relay refuses a warrant pinning any release but the one it is about to run, so an honest relay never spends a warrant on code an upgrade widened. Peers cannot check which code ran, so a dishonest relay is not stopped by it. `release_version` carries its semver beside it, signed for readability and never compared. |
 | `intent_hash` | what | `H(method ‖ args)`. The hash, never the plaintext — see below. |
 | `nonce` | once | Monotonic per author **device**, spent in the ledger of the executor device the warrant names. Per device rather than per account because two devices of one account are independent replicas and cannot coordinate on a shared counter. Per executor device because each ledger then has one producer, so every replica reaches the same verdict: one nonce on warrants for two relays is two warrants, each spendable once. |
-| `not_after` | until when | Checked by the relay at admission. Deliberately *not* checked by peers at apply — see below. |
+| `not_after` | until when | Checked by the relay at admission against its clock, and by every peer against the delta's own signed stamp, never a clock; see below. |
 | `governance_floor` | no earlier than | Governance heads the author had seen. The cut the change is authorized at must reach every one of them, or every peer refuses it — see [the cut a delegated change is judged at](#the-cut-a-delegated-change-is-judged-at). |
 
 The intent travels in the clear to the relay, and that is the whole point of the hop: it has to read the method and arguments to run them. What must not travel in the clear is the intent on the **gossip** wire, and it does not — the warrant commits to `H(method ‖ args)`, and the detail stays sealed beside the operations like any other delta.
@@ -157,7 +158,9 @@ GET /admin-api/contexts/:context_id/intents
       "executorKey": "…",
       "canAuthorOnBehalf": false,
       "groupId": "…",
-      "grantedOnGroupId": "…"   // optional
+      "grantedOnGroupId": "…",  // optional
+      "releaseBytecodeId": "…",
+      "releaseVersion": "…"
   } }
 ```
 
@@ -179,7 +182,9 @@ That third row is the one worth having. Contexts routinely live in subgroups whi
 
 Asking before signing is not politeness. A nonce is spent from a monotonic per-device sequence to mint a warrant, and one naming the wrong executor is unspendable: the number is gone and the write never happened.
 
-`meroctl context intent` makes this read itself, before it signs anything: it takes `executor` and `executor_key` from the answer rather than from `/admin-api/identity`, and refuses outright when `canAuthorOnBehalf` is false, naming the group and the account so the message is the grant command to ask an admin for. So the nonce is only ever spent on a warrant the relay can actually run.
+`releaseBytecodeId` and `releaseVersion` are the release a warrant for this context must pin: the one its group names, which the context runs once any pending upgrade has applied.
+
+`meroctl context intent` makes this read itself, before it signs anything: it takes `executor`, `executor_key` and the release from the answer rather than from `/admin-api/identity`, and refuses outright when `canAuthorOnBehalf` is false, naming the group and the account so the message is the grant command to ask an admin for. So the nonce is only ever spent on a warrant the relay can actually run.
 
 ## Reaching a relay you have no account on
 
@@ -430,7 +435,13 @@ The ledger is a **sliding window** (64 wide), not a strictly-increasing counter,
 
 Both are divergence. The fix that would close them was studied and not landed. A node could ship its ledger with the snapshot, merged as a join (the higher mark, the union of spent nonces). But the snapshot channel deliberately refuses every record it can't authenticate per record, and a ledger row can't be authenticated that way. A malicious snapshot source could then mark nonces spent that never were, and the receiving node would refuse writes its peers accept. The sound fix records the spend **in the context's replicated state**. Each delegated delta would write its nonce into a reserved entry, so the ledger is covered by the state root a snapshot is verified against. That is a storage-layer change, and it is left as the next step.
 
-The same reasoning explains `not_after`. It is checked by the **relay**, at admission, against its own clock — and never by peers at apply. Wall-clock at apply time would make acceptance node-dependent: the same delta arriving either side of an expiry would be applied by one peer and refused by another, which is divergence rather than security. Expiry limits how long a *relay* will spend a warrant; the nonce ledger is what bounds it on the network.
+The same reasoning explains `not_after`. The **relay** checks it at admission against its own clock, and commits nothing it would stamp past it. Peers never read a clock at apply, which would make acceptance node-dependent: the same delta arriving either side of an expiry would be applied by one peer and refused by another. They compare `not_after` with the delta's own HLC stamp, which the relay signs and every receiver reads the same. The stamp is the relay's to choose, so this holds an honest relay to the deadline and does not stop a dishonest one backdating; the nonce ledger is what bounds a warrant on the network.
+
+The release pin is the relay's alone for the same kind of reason. Peers apply the delta's actions and never run the method, so only the node that ran it knows which code produced them.
+
+A warrant pinning another release is refused with a `403` before it runs, and its nonce stays unspent.
+When `GET .../intents` names the pinned release, the context has not yet moved to it after an upgrade, and the same warrant can be retried; otherwise the author mints a fresh one.
+Peers cannot re-check the pin at the delta's governance cut either: during an upgrade the group already names the new release while the relay still runs the old one, so the cut would disagree with the code that actually ran.
 
 ## What this is not
 

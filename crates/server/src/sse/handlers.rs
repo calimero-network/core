@@ -1244,7 +1244,7 @@ mod tests {
             .route("/sse", get(sse_handler))
             .layer(Extension(Arc::clone(&state)))
             .layer(axum::middleware::from_fn_with_state(
-                OriginGuard::new(false, None),
+                Some(OriginGuard::new(None)),
                 refuse_foreign_origins,
             ));
         let mut request = AxumRequest::builder()

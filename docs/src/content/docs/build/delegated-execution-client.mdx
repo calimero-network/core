@@ -18,15 +18,15 @@ still due to change says so where it appears.
 <Aside type="caution" title="Read the status markers">
 **Live** means implemented and callable on a node today. Every exchange on this page
 is live, and so is the warrant's field set: #3933 landed it, so the bytes below are
-the bytes to build against. What is *not* yet live is enforcement of three of those
-fields — said where they appear rather than left for you to discover from a
+the bytes to build against. What is *not* yet live is enforcement of `account_heads`,
+said where it appears rather than left for you to discover from a
 verification failure.
 </Aside>
 
 | Contract | Status | Tracking |
 |---|---|---|
 | Discovery — where to write and as whom | **Live** | — |
-| Warrant and delegated write | **Live**; `app_version` and cited heads signed but not enforced | [#3933](https://github.com/calimero-network/core/issues/3933) |
+| Warrant and delegated write | **Live**; `account_heads` signed but not enforced | [#3933](https://github.com/calimero-network/core/issues/3933) |
 | Session — challenge and `LoginStatement` | **Live** | [#3930](https://github.com/calimero-network/core/issues/3930) |
 | Read — an authenticated account reads a context | **Live** | [#3931](https://github.com/calimero-network/core/issues/3931) |
 
@@ -110,9 +110,15 @@ GET /admin-api/contexts/{context_id}/intents
   "executorKey": "…",
   "canAuthorOnBehalf": false,
   "groupId": "…",
-  "grantedOnGroupId": null
+  "grantedOnGroupId": null,
+  "releaseBytecodeId": "…",
+  "releaseVersion": "1.2.0"
 }
 ```
+
+`releaseBytecodeId` and `releaseVersion` are the release this context's group names,
+which a warrant pins (below). Read them here rather than from the application: the
+relay refuses a warrant pinning any other release.
 
 `canAuthorOnBehalf: false` is the **default state of every context** — authorship is
 implied by neither membership nor admin, and is never granted implicitly. A client
@@ -137,7 +143,8 @@ pub struct Warrant {
     pub author_device_key: PublicKey,
     pub executor: AccountId,
     pub executor_key: PublicKey,           // the one relay device that may spend it
-    pub app_version: ApplicationId,        // the exact build, not a version string
+    pub release_bytecode_id: [u8; 32],     // the release the relay must run
+    pub release_version: String,           // its semver, readability only; at most 256 bytes
     pub method: String,                    // in the clear
     pub intent_hash: [u8; 32],             // H(method ‖ args)
     pub account_heads: Vec<[u8; 32]>,      // at most 64
@@ -165,7 +172,8 @@ signature = sign(domain_hash(b"calimero.warrant.v2", &[
     author_device_key,                      // 32 bytes
     executor.as_bytes(),
     executor_key,                           // 32 bytes
-    app_version,                            // 32 bytes
+    release_bytecode_id,                    // 32 bytes
+    release_version.as_bytes(),             // variable length
     method.as_bytes(),                      // variable length
     intent_hash,                            // 32 bytes
     &(account_heads.len() as u64).to_le_bytes(),
@@ -190,10 +198,12 @@ There is no backwards compatibility and none is planned: a warrant signed under 
 is refused outright rather than left to borsh to reject by accident. Keep the field
 list and the domain constant in one place in your builder.
 
-Not everything is enforced yet. `app_version` and the two head lists are signed but
-not checked: pinning the build at the cut and selecting write-sets by `method` are
-follow-on work. They are in the signed bytes *now* so a client builds against the
-final encoding once, rather than rewriting its signer when enforcement lands.
+Not everything is enforced yet. `account_heads` is signed but not checked, and
+selecting write-sets by `method` is follow-on work. The relay refuses a warrant
+whose `release_bytecode_id` is not the release it is about to run, so an honest
+relay never spends it on code an upgrade widened (peers cannot see which code ran,
+so this does not bind a dishonest relay); `release_version` is
+signed for whoever reads the warrant and never compared.
 </Aside>
 
 <Aside type="note" title="Where governance_floor comes from matters">
@@ -204,12 +214,12 @@ operator; sourcing it from the relay detects an honest relay's staleness and doe
 constrain a dishonest one. This is an accepted risk today, not a guarantee.
 </Aside>
 
-<Aside type="note" title="Why not_after is not checked at apply">
-`not_after` is a wall clock, and a wall clock must never gate an apply. Peers apply at
-different times, so a warrant that expired between two receivers would be accepted by
-one and refused by the other, and authorization would stop converging. The bound is
-checked by the relay at the API boundary, where one clock decides and nothing has
-converged yet.
+<Aside type="note" title="How not_after is checked">
+A wall clock must never gate an apply: peers apply at different times, so a warrant
+that expired between two receivers would be accepted by one and refused by the other.
+So the relay checks `not_after` against its clock at the API boundary, and every
+replica checks it only against the delta's own signed HLC stamp, which every receiver
+reads the same. The relay commits nothing it would stamp past the deadline.
 </Aside>
 
 ### Submitting it
@@ -677,7 +687,7 @@ shares nothing.
 4.  POST /auth/token  (auth_method=account_proof)  → session token
 5.  GET  /admin-api/namespaces                     → my namespaces
     GET  /admin-api/contexts                       → my contexts, with groupId
-6.  GET  /admin-api/contexts/{ctx}/intents         → executorKey, canAuthorOnBehalf?
+6.  GET  /admin-api/contexts/{ctx}/intents         → executorKey, releaseBytecodeId, canAuthorOnBehalf?
     ├── false → stop; ask an admin of groupId for the grant
     └── true  → continue
 7.  READ   POST /admin-api/contexts/{ctx}/query    (token; no warrant)
@@ -722,18 +732,19 @@ The last two rows are the whole reason the prefixes exist: both hash the letters
 `crates/account/src/tests/warrant_wire_fixture.rs`
 
 Inputs: `context` = `0x11`×32, `author_account` = `0x22`×32, `executor` =
-`0x33`×32, `executor_key` = `0x77`×32, `app_version` = `0x44`×32, `method` = `"set"`, `args` =
+`0x33`×32, `executor_key` = `0x77`×32, `release_bytecode_id` = `0x44`×32,
+`release_version` = `"1.0.0"`, `method` = `"set"`, `args` =
 `{"key":"k","value":"v"}` (exactly those bytes, no whitespace), `account_heads` =
 `[0x55`×32`]`, `governance_floor` = `[0x66`×32`]`, `nonce` = 42, `not_after` =
 1700000000, author device secret = `0x07` seeded.
 
 ```text
 intent_hash       dc066cc8524c74dc21714174009df536376e3151f5b92f0a676defde599dbae5
-signing preimage  f7ebb6c7645c551a7148866d7b2268f7e62fe79685e05ae82d131a2fbde75e34
+signing preimage  f38e2c9eb7e78025f8797bb34168fe48da95a20320fc62fc2da41e3efd30607c
 author_device_key ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
 ```
 
-The full 383-byte encoding, field by field:
+The full 392-byte encoding, field by field:
 
 ```text
 offset  field              bytes  value
@@ -742,23 +753,26 @@ offset  field              bytes  value
     64  author_device_key     32  ea4a6c63…
     96  executor              32  3333…33
    128  executor_key          32  7777…77
-   160  app_version           32  4444…44
-   192  method len             4  03000000           (3, little-endian)
-   196  method                 3  736574             ("set")
-   199  intent_hash           32  dc066cc8…
-   231  account_heads len      4  01000000           (1, little-endian)
-   235  account_heads[0]      32  5555…55
-   267  governance_floor len   4  01000000           (1, little-endian)
-   271  governance_floor[0]   32  6666…66
-   303  nonce                  8  2a00000000000000   (42, little-endian)
-   311  not_after              8  00f1536500000000   (1700000000, little-endian)
-   319  signature             64  317e0f84…
+   160  release_bytecode_id   32  4444…44
+   192  release_version len    4  05000000           (5, little-endian)
+   196  release_version        5  312e302e30         ("1.0.0")
+   201  method len             4  03000000           (3, little-endian)
+   205  method                 3  736574             ("set")
+   208  intent_hash           32  dc066cc8…
+   240  account_heads len      4  01000000           (1, little-endian)
+   244  account_heads[0]      32  5555…55
+   276  governance_floor len   4  01000000           (1, little-endian)
+   280  governance_floor[0]   32  6666…66
+   312  nonce                  8  2a00000000000000   (42, little-endian)
+   320  not_after              8  00f1536500000000   (1700000000, little-endian)
+   328  signature             64  e42f753e…
 ```
 
 v1 was pure fixed-width concatenation — no length prefixes, no tags — and v2 gives
-that up on purpose: `method` is a `String` and the two head lists are `Vec`s, so
-three `u32` little-endian counts now sit inside the encoding. The offsets above hold
-only for these inputs; a `method` of another length moves everything after it.
+that up on purpose: `release_version` and `method` are `String`s and the two head
+lists are `Vec`s, so four `u32` little-endian counts now sit inside the encoding. The
+offsets above hold only for these inputs; a string of another length moves everything
+after it.
 
 Note the two widths. The counts **inside the borsh encoding** are `u32`; the counts
 the **signing preimage** hashes (above) are `u64`. They are different serializations

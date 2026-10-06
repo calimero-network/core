@@ -28,10 +28,14 @@
 //! stop converging. This is the same reason `calimero-account` has no
 //! certificate expiry at all, recorded there as a deliberate absence. The bound
 //! belongs where a single clock decides and nothing has converged yet: the relay
-//! refusing a stale warrant at the API boundary, before it executes.
+//! refusing a stale warrant at the API boundary, before it executes. A replica
+//! compares it only with the delta's own signed stamp, in `verify_delta_envelope`.
 //!
 //! Checking it here would look like defence in depth and would actually be a
 //! convergence bug.
+//!
+//! **The release the warrant pins.** Only the relay runs the method, so only it
+//! can tell which code ran; it refuses another release before executing.
 
 use calimero_account::{AccountId, Delegation};
 use calimero_context_config::types::ContextGroupId;
@@ -322,7 +326,6 @@ mod tests {
     use calimero_account::{Delegation, Warrant, WarrantTerms};
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::VisibilityMode;
-    use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::ContextId;
 
     const GROUP: [u8; 32] = [0xC0; 32];
@@ -386,7 +389,8 @@ mod tests {
                 author_account: author,
                 executor: relay,
                 executor_key: relay_pk,
-                app_version: ApplicationId::from([0u8; 32]),
+                release_bytecode_id: [0u8; 32],
+                release_version: String::new(),
                 method: "send_message".to_owned(),
                 intent_hash: Warrant::intent_hash("send_message", b"{}"),
                 account_heads: vec![],
@@ -817,7 +821,8 @@ mod tests {
                 author_account: w.delegation.warrant.author_account,
                 executor: relay,
                 executor_key: relay_pk,
-                app_version: ApplicationId::from([0u8; 32]),
+                release_bytecode_id: [0u8; 32],
+                release_version: String::new(),
                 method: "send_message".to_owned(),
                 intent_hash: Warrant::intent_hash("send_message", b"{}"),
                 account_heads: vec![],
@@ -1077,7 +1082,8 @@ mod tests {
                 author_account: author,
                 executor: relay,
                 executor_key: relay_pk,
-                app_version: ApplicationId::from([0u8; 32]),
+                release_bytecode_id: [0u8; 32],
+                release_version: String::new(),
                 method: "send_message".to_owned(),
                 intent_hash: Warrant::intent_hash("send_message", b"{}"),
                 account_heads: vec![],
@@ -1237,7 +1243,8 @@ mod tests {
                 author_account: first.delegation.warrant.author_account,
                 executor: first.delegation.warrant.executor,
                 executor_key: first.delegation.warrant.executor_key,
-                app_version: ApplicationId::from([0u8; 32]),
+                release_bytecode_id: [0u8; 32],
+                release_version: String::new(),
                 method: "send_message".to_owned(),
                 intent_hash: Warrant::intent_hash("send_message", b"{\"n\":2}"),
                 account_heads: vec![],

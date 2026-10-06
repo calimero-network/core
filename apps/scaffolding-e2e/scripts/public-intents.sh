@@ -14,7 +14,7 @@
 # node with the flag and 401 on the node without it proves the flag is what
 # opened the route.
 #
-# Usage: public-intents.sh <open_node> <closed_node> <context_id> <warrant> <credential> <relay_key>
+# Usage: public-intents.sh <open_node> <closed_node> <context_id> <warrant> <credential> <relay_key> <release>
 #
 # Uses curl rather than meroctl for the same reason account-api.sh does: the
 # merod image ships no CLI, so a `target: local` script has none to call. It also
@@ -31,13 +31,15 @@ CONTEXT="$3"
 WARRANT="$4"
 CREDENTIAL="$5"
 MINTED_KEY="$6"
+MINTED_RELEASE="$7"
 
-[ -n "${OPEN_NODE}" ] || fail "usage: public-intents.sh <open_node> <closed_node> <context> <warrant> <credential> <relay_key>"
+[ -n "${OPEN_NODE}" ] || fail "usage: public-intents.sh <open_node> <closed_node> <context> <warrant> <credential> <relay_key> <release>"
 [ -n "${CLOSED_NODE}" ] || fail "no closed node given — the control is not optional here"
 [ -n "${CONTEXT}" ] || fail "no context id given"
 [ -n "${WARRANT}" ] || fail "no warrant given"
 [ -n "${CREDENTIAL}" ] || fail "no author credential given"
 [ -n "${MINTED_KEY}" ] || fail "no relay key given; the warrant was minted for one"
+[ -n "${MINTED_RELEASE}" ] || fail "no release given; the warrant pins one"
 
 OPEN_URL=$(node_url "${OPEN_NODE}") || fail "could not resolve ${OPEN_NODE}'s URL"
 CLOSED_URL=$(node_url "${CLOSED_NODE}") || fail "could not resolve ${CLOSED_NODE}'s URL"
@@ -94,6 +96,12 @@ RELAY_KEY=$(echo "${DISCOVERY}" \
 [ "${RELAY_KEY}" = "${MINTED_KEY}" ] \
     || fail "discovery names executor key '${RELAY_KEY}', not the ${MINTED_KEY} the warrant was minted for"
 echo "ok   discovery names the executor key the warrant was minted for (${RELAY_KEY})"
+PASS=$((PASS + 1))
+RELEASE=$(echo "${DISCOVERY}" \
+    | sed -n 's/.*"releaseBytecodeId"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')
+[ "${RELEASE}" = "${MINTED_RELEASE}" ] \
+    || fail "discovery names release '${RELEASE}', not the ${MINTED_RELEASE} the warrant pins"
+echo "ok   discovery names the release the warrant pins (${RELEASE})"
 PASS=$((PASS + 1))
 
 # --- 2. The write itself, unauthenticated ------------------------------------

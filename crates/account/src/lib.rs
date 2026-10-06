@@ -141,6 +141,7 @@ pub use crate::scope::{scope_covers, DeviceScope, SignedDeviceScope, VerifiedDev
 pub use crate::signed::{AccountProof, DeviceBound, RootSigned, Verified};
 pub use crate::warrant::{
     Delegation, VerifiedWarrant, Warrant, WarrantTerms, MAX_WARRANT_CITED_HEADS,
+    MAX_WARRANT_RELEASE_VERSION_LEN,
 };
 
 // The two end-to-end verifiers keep free-function form: each takes an anchor and a
