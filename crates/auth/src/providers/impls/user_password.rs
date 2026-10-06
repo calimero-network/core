@@ -166,12 +166,21 @@ fn validate_password_for_auth(password: &str, max_length: usize) -> eyre::Result
 /// Older clients may still send a `bootstrap_secret` field (the removed
 /// first-login setup-code flow); serde ignores unknown fields, so those
 /// payloads keep parsing and the value is simply discarded.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct UserPasswordAuthData {
     /// Username
     pub username: String,
     /// Password (will be hashed)
     pub password: String,
+}
+
+impl std::fmt::Debug for UserPasswordAuthData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserPasswordAuthData")
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Username/password auth data type for the registry
@@ -393,7 +402,7 @@ impl Clone for UserPasswordProvider {
 }
 
 /// Username/password specific request data
-#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[derive(Clone, Serialize, Deserialize, Validate)]
 pub struct UserPasswordRequest {
     /// Username
     #[validate(length(min = 1, message = "Username is required"))]
@@ -402,6 +411,15 @@ pub struct UserPasswordRequest {
     /// Password
     #[validate(length(min = 1, message = "Password is required"))]
     pub password: String,
+}
+
+impl std::fmt::Debug for UserPasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserPasswordRequest")
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
 }
 
 #[async_trait]

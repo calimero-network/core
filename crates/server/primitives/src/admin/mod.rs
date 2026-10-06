@@ -201,7 +201,7 @@ impl GetApplicationAbiResponse {
     }
 }
 // -------------------------------------------- Context API --------------------------------------------
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateContextRequest {
     pub application_id: ApplicationId,
@@ -214,6 +214,23 @@ pub struct CreateContextRequest {
     pub identity_secret: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+impl std::fmt::Debug for CreateContextRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateContextRequest")
+            .field("application_id", &self.application_id)
+            .field("service_name", &self.service_name)
+            .field("context_seed", &self.context_seed)
+            .field("initialization_params", &self.initialization_params)
+            .field("group_id", &self.group_id)
+            .field(
+                "identity_secret",
+                &self.identity_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("name", &self.name)
+            .finish()
+    }
 }
 
 impl CreateContextRequest {
