@@ -425,6 +425,26 @@ mod tests {
     }
 
     #[test]
+    fn spending_a_challenge_does_not_earn_a_new_one_sooner() {
+        let book = TeeChallenges::default();
+        let peer = PeerId::random();
+        let now = Instant::now();
+
+        for identity in [Some(key(1)), None] {
+            let namespace = if identity.is_some() { NS } else { [0x22; 32] };
+            let challenge = book
+                .issue_at(namespace, peer, identity, now)
+                .expect("issued");
+            assert!(book.consume_at(&challenge, namespace, peer, &key(1), now));
+            assert_eq!(
+                book.issue_at(namespace, peer, identity, now + Duration::from_secs(1)),
+                Err(IssueRefusal::TooSoon),
+                "a spent challenge still holds off the next one"
+            );
+        }
+    }
+
+    #[test]
     fn one_peer_cannot_fill_the_book() {
         let book = TeeChallenges::default();
         let greedy = PeerId::random();
