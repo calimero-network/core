@@ -2842,14 +2842,14 @@ async fn internal_execute(
                 let mut verified_parents = Vec::new();
                 for head in &context.dag_heads {
                     if *head == [0u8; 32] {
-                        verified_parents.push(*head);
+                        verified_parents.push((Default::default(), *head));
                         continue;
                     }
 
                     // Check if this parent is actually in RocksDB
                     let db_key = key::ContextDagDelta::new(context.id, *head);
-                    if store.handle().get(&db_key).is_ok_and(|v| v.is_some()) {
-                        verified_parents.push(*head);
+                    if let Ok(Some(row)) = store.handle().get(&db_key) {
+                        verified_parents.push((row.hlc, *head));
                     } else {
                         warn!(
                             context_id = %context.id,
@@ -2858,6 +2858,15 @@ async fn internal_execute(
                         );
                     }
                 }
+
+                // Receivers refuse more parents. Keep the newest heads, whose
+                // ancestry most likely holds the writer sets this write relies on.
+                if verified_parents.len() > calimero_dag::MAX_DELTA_PARENTS {
+                    verified_parents.sort_unstable_by_key(|&(hlc, _)| std::cmp::Reverse(hlc));
+                    verified_parents.truncate(calimero_dag::MAX_DELTA_PARENTS);
+                }
+                let verified_parents: Vec<[u8; 32]> =
+                    verified_parents.into_iter().map(|(_, head)| head).collect();
 
                 // If NO parents verified, use genesis
                 if verified_parents.is_empty() {
