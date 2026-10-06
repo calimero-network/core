@@ -351,6 +351,7 @@ fn is_availability_member(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -387,6 +388,7 @@ mod tests {
     const MANY_HOLDERS_UPLOADER: [u8; 32] = [0x28; 32];
     const SMALL_UPLOADER: [u8; 32] = [0x29; 32];
     const UNREACHABLE_UPLOADER: [u8; 32] = [0x2A; 32];
+    const PARTIAL_UPLOADER: [u8; 32] = [0x2B; 32];
     const STRANGER: [u8; 32] = [0x99; 32];
     /// Shorter than the node's own 1 s local-blob lookup, where a fetch first waits.
     const FETCH_WINDOW: Duration = Duration::from_millis(100);
@@ -537,6 +539,7 @@ mod tests {
             MANY_HOLDERS_UPLOADER,
             SMALL_UPLOADER,
             UNREACHABLE_UPLOADER,
+            PARTIAL_UPLOADER,
         ] {
             members.push((GroupMemberRole::Member, PrivateKey::from(key).public_key()));
         }
@@ -779,7 +782,7 @@ mod tests {
 
         // The transfer that overdraws the charge has arrived by the time it is
         // refused, so one holder's bytes may pass it, and no holder after that.
-        let sent = sent.load(std::sync::atomic::Ordering::SeqCst);
+        let sent = sent.load(Ordering::SeqCst);
         assert!(
             sent <= MIN_PREFETCH_CHARGE_BYTES + junk.len() as u64,
             "{sent} bytes sent for one charge"
@@ -814,6 +817,38 @@ mod tests {
         assert!(
             !starts_a_fetch(&waiting, peer, spent).await,
             "the budget is spent"
+        );
+    }
+
+    /// A prefetch that fails after receiving bytes is charged what it received,
+    /// so a holder sending junk short of the charge still costs the member.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_failed_fetch_is_charged_what_it_received() {
+        let junk = vec![0x5C; 2 * MIN_PREFETCH_CHARGE_BYTES as usize];
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _junk_data, _junk_blobs) =
+            availability_node_over(network_of_peers(1, Some(junk.clone())).0).await;
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(PARTIAL_UPLOADER);
+
+        let announced = announcement_sized(&uploader, peer, 3 * MIN_PREFETCH_CHARGE_BYTES);
+        prefetch_announced_blob(&node_client, &context_client, peer, announced)
+            .await
+            .expect("prefetch");
+
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - junk.len() as u64,
+        )
+        .await;
+        let spent = announcement_sized(&uploader, peer, 1);
+        assert!(
+            !starts_a_fetch(&waiting, peer, spent).await,
+            "the junk received was charged"
         );
     }
 
