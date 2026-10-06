@@ -1616,7 +1616,7 @@ fn write_migration_state(
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
     let result = with_runtime_env(runtime_env, || -> Result<_, StorageError> {
         let write_result = (|| -> Result<Option<[u8; 32]>, StorageError> {
-            // Pre-flight LWW check. `write_pre_merged_root_state` has a
+            // Pre-flight LWW check. `write_migrated_root_state` has a
             // built-in LWW guard: if the locally-stored root entry already
             // has `updated_at > metadata.updated_at`, it silently returns
             // the existing hash and does NOT apply our migrated bytes.
@@ -1640,7 +1640,7 @@ fn write_migration_state(
             }
 
             // Capture the intended updated_at before `metadata` is moved
-            // into write_pre_merged_root_state below — the post-write
+            // into write_migrated_root_state below — the post-write
             // verification compares against this.
             let intended_updated_at = metadata.updated_at;
 
@@ -1655,7 +1655,7 @@ fn write_migration_state(
             // because save_raw expects a registered Mergeable for
             // root-class entries — that's the #2433 regression this
             // function existed to trigger.
-            let _entry_own_hash = Interface::<MainStorage>::write_pre_merged_root_state(
+            let _entry_own_hash = Interface::<MainStorage>::write_migrated_root_state(
                 root_entry_id,
                 &entry_bytes,
                 metadata,
@@ -1674,7 +1674,7 @@ fn write_migration_state(
                 }
             }
 
-            // Read the Merkle tree root hash — write_pre_merged_root_state
+            // Read the Merkle tree root hash — write_migrated_root_state
             // returns the *entry node's* full_hash, but the migration
             // caller (system.rs's normal execution flow analogue) needs
             // the tree root hash for ContextMeta.root_hash.
@@ -2690,7 +2690,7 @@ mod tests {
     ///
     /// The whole-root migrate path writes the root through exactly one seam —
     /// `write_migration_state`, the sole caller of
-    /// `Interface::write_pre_merged_root_state` in this file. Everything before
+    /// `Interface::write_migrated_root_state` in this file. Everything before
     /// that is pure computation against a still-v1 store, so "abort" is simply
     /// not reaching that single writer; there is no byte snapshot to restore
     /// because the v1 root was never overwritten.
@@ -2708,10 +2708,10 @@ mod tests {
             .next()
             .expect("file should contain a #[cfg(test)] mod tests boundary");
 
-        let write_sites = source.matches("write_pre_merged_root_state(").count();
+        let write_sites = source.matches("write_migrated_root_state(").count();
         assert_eq!(
             write_sites, 1,
-            "expected exactly one `write_pre_merged_root_state(` call site (the sole \
+            "expected exactly one `write_migrated_root_state(` call site (the sole \
              root writer, inside `write_migration_state`) so a pre-commit logical abort \
              leaves the v1 root untouched; found {write_sites}. A new root-write site \
              breaks the clean-rollback guarantee."
@@ -2724,11 +2724,11 @@ mod tests {
             .find("fn write_migration_state(")
             .expect("write_migration_state should be defined in this file");
         let write_call = source
-            .find("write_pre_merged_root_state(")
+            .find("write_migrated_root_state(")
             .expect("the root writer call should exist in this file");
         assert!(
             write_call > writer_fn,
-            "the sole `write_pre_merged_root_state` call must sit inside \
+            "the sole `write_migrated_root_state` call must sit inside \
              `write_migration_state` (the seam a logical abort skips)"
         );
     }

@@ -5291,12 +5291,38 @@ mod stale_write_to_a_merging_entry {
         let far = u64::MAX / 2;
         let root = crate::collections::ROOT_ENTRY_ID;
 
-        let outcome =
-            MainInterface::write_pre_merged_root_state(root, b"v2", Metadata::new(1, far));
+        let outcome = MainInterface::write_migrated_root_state(root, b"v2", Metadata::new(1, far));
 
         assert!(outcome.is_ok(), "{outcome:?}");
         let stored = <Index<MainStorage>>::get_metadata(root).unwrap().unwrap();
         assert_eq!(*stored.updated_at, far);
+    }
+
+    /// After a migration the root's own stamp is far ahead, so a merge for a peer's
+    /// root is bounded by the peer's stamp, not by the stamp the merge keeps.
+    #[test]
+    fn a_root_merge_after_a_migration_bounds_only_the_peer_stamp() {
+        env::reset_for_testing();
+        let far = u64::MAX / 2;
+        let root = crate::collections::ROOT_ENTRY_ID;
+        MainInterface::write_migrated_root_state(root, b"v2", Metadata::new(1, far)).unwrap();
+
+        let forged =
+            MainInterface::write_pre_merged_root_state(root, b"forged", Metadata::new(1, far), far);
+        assert!(
+            matches!(forged, Err(StorageError::InvalidTimestamp(..))),
+            "{forged:?}"
+        );
+        assert_eq!(stored(root).as_deref(), Some(&b"v2"[..]));
+
+        let merged = MainInterface::write_pre_merged_root_state(
+            root,
+            b"merged",
+            Metadata::new(1, far),
+            env::time_now(),
+        );
+        assert!(merged.is_ok(), "{merged:?}");
+        assert_eq!(stored(root).as_deref(), Some(&b"merged"[..]));
     }
 
     /// A merge for a peer's leaf is written back with its unsigned stamp; one past
@@ -5310,7 +5336,7 @@ mod stale_write_to_a_merging_entry {
 
         let mut far = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
         far.updated_at = u64::MAX.into();
-        let outcome = MainInterface::write_pre_merged_root_state(member, b"merged", far);
+        let outcome = MainInterface::write_pre_merged_root_state(member, b"merged", far, u64::MAX);
         assert!(
             matches!(outcome, Err(StorageError::InvalidTimestamp(..))),
             "{outcome:?}"

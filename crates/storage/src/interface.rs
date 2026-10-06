@@ -4006,14 +4006,32 @@ impl<S: StorageAdaptor> Interface<S> {
     /// divergence delegate the merge itself to WASM, then call this to
     /// commit the result.
     ///
+    /// `peer_stamp` is the stamp of the peer's leaf, which nothing signs; the
+    /// merge keeps `metadata`, which may also carry this node's own stamp.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidTimestamp` if `peer_stamp` is past the drift bound, else as
+    /// [`write_migrated_root_state`](Self::write_migrated_root_state).
+    pub fn write_pre_merged_root_state(
+        id: Id,
+        merged: &[u8],
+        metadata: Metadata,
+        peer_stamp: u64,
+    ) -> Result<[u8; 32], StorageError> {
+        verify_remote_timestamp(peer_stamp)?;
+        Self::write_migrated_root_state(id, merged, metadata)
+    }
+
+    /// Writes app root state a local app-update migration produced. Its stamp is
+    /// not bounded: the migration dates the root past every prior write on purpose.
+    ///
     /// # Errors
     ///
     /// Returns `StorageError` if the index update fails or the storage
     /// write fails. Does NOT enforce I5 — the caller IS the source of
     /// the merged bytes and is responsible for I5 compliance.
-    /// `InvalidTimestamp` if `metadata.updated_at` is past the drift bound: the
-    /// sync paths write a merge with the peer's unsigned stamp.
-    pub fn write_pre_merged_root_state(
+    pub fn write_migrated_root_state(
         id: Id,
         merged: &[u8],
         metadata: Metadata,
@@ -4043,7 +4061,6 @@ impl<S: StorageAdaptor> Interface<S> {
         // if it regresses write throughput.
         let _mutation_guard = crate::index::index_mutation_guard();
 
-        verify_remote_timestamp(*metadata.updated_at)?;
         let last_metadata = <Index<S>>::get_metadata(id)?;
 
         // LWW guard — same shape as `save_internal`'s LWW-by-HLC
@@ -4069,7 +4086,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     %id,
                     existing_ts = %*existing.updated_at,
                     incoming_ts = %*metadata.updated_at,
-                    "write_pre_merged_root_state: local state is newer, skipping (LWW)"
+                    "pre-merged root write: local state is newer, skipping (LWW)"
                 );
                 return Ok(existing_full);
             }
@@ -4191,7 +4208,7 @@ impl<S: StorageAdaptor> Interface<S> {
         }
         let mut metadata = stored.clone();
         metadata.updated_at = (*stored.updated_at).max(incoming_ts).into();
-        Self::write_pre_merged_root_state(id, merged, metadata).map(Some)
+        Self::write_pre_merged_root_state(id, merged, metadata, incoming_ts).map(Some)
     }
 
     /// Writes the app's `merged` entry, or with no merge the incoming one by LWW (`created_at`
@@ -4221,7 +4238,8 @@ impl<S: StorageAdaptor> Interface<S> {
         };
         let mut metadata = stored.unwrap_or_else(|| Metadata::new(created_at, updated_at));
         metadata.updated_at = updated_at.into();
-        Self::write_pre_merged_root_state(ROOT_ENTRY_ID, entry, metadata).map(Some)
+        Self::write_pre_merged_root_state(ROOT_ENTRY_ID, entry, metadata, request.incoming_ts)
+            .map(Some)
     }
 
     /// Attempt to merge two versions of data using CRDT semantics.
