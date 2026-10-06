@@ -247,7 +247,7 @@ mod tests {
         tee_vault_keys, TeeVaultDelivery,
     };
     use crate::local_state::persist_group_op_log_entry;
-    use crate::tee::tests::{mock_quote_for, MOCK_MRTD};
+    use crate::tee::tests::{admission_quote_for, MOCK_MRTD};
     use crate::test_fixtures::{enrol_member, nest_for_test, test_store};
     use crate::{apply_local_signed_group_op, MembershipRepository};
 
@@ -342,9 +342,10 @@ mod tests {
             self.log(GroupOp::TeeAuthorityEvidence {
                 member: self.account_of(tee),
                 attested_key: tee.public_key(),
-                quote: mock_quote_for(&tee.public_key()),
+                quote: admission_quote_for(&self.root, &tee.public_key()),
                 collateral: None,
                 attested_at,
+                account: crate::test_fixtures::real_join_account(&tee.public_key()),
             });
         }
 
@@ -485,9 +486,10 @@ mod tests {
         ns.log(GroupOp::TeeAuthorityEvidence {
             member: ns.account_of(&outsider),
             attested_key: ns.tee.public_key(),
-            quote: mock_quote_for(&ns.tee.public_key()),
+            quote: admission_quote_for(&ns.root, &ns.tee.public_key()),
             collateral: None,
             attested_at: crate::now_secs(),
+            account: crate::test_fixtures::real_join_account(&ns.tee.public_key()),
         });
         let vault = PrivateKey::random(&mut rand::rng());
         ns.deliver(ns.root, &outsider, &vault, &ns.tee.public_key())

@@ -143,6 +143,7 @@ impl Network {
             seed: SEED,
             author_account: self.author,
             executor: self.relay,
+            executor_key: self.relay_sk.public_key(),
             application_id: ApplicationId::from(APP),
             service_name: None,
             name: Some("general".to_owned()),

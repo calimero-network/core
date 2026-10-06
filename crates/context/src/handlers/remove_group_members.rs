@@ -49,7 +49,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         let node_client = preflight.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
         let context_client = self.context_client.clone();
-        let sk = preflight.signer_sk();
+        let sk = preflight.signing_key;
         let signer = preflight.signer;
         let members = members.clone();
 

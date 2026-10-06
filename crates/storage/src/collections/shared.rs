@@ -1,9 +1,10 @@
 //! Group-writable storage with an authenticated, mutable writer set.
 //!
 //! `WriterSetCell<T>` wraps a single value writable by any signer in the
-//! current writer set. The writer set itself is rotatable by a current writer
-//! (unless `frozen`). Trust mirrors `UserStorage<T>`: the runtime signs each
-//! write, peers verify the signature against the writer set at merge time.
+//! current writer set. The writer set itself is rotatable by a current admin
+//! (unless `frozen`), by a governance op the node publishes; the cell only asks
+//! for it. Trust mirrors `UserStorage<T>`: the runtime signs each write, peers
+//! verify the signature against the writer set at merge time.
 //!
 //! # Why this is a handle, not an inline value
 //!
@@ -15,37 +16,23 @@
 //! syncs as a per-entity `Update` action, verified at merge against the writer
 //! set (the same path that guards a collection's child entries).
 //!
-//! This is what makes writer-set rotation *authenticated*. The earlier design
-//! kept `value` inline in the wrapper struct, so it rode in the enclosing
-//! `#[app::state]` root-state blob, and writer-set convergence was an LWW on a
-//! `writers_nonce` that did **not** verify who rotated — any context member
-//! could hand-craft a root-state delta swapping the writer set. By moving the
-//! value out of root state, the rotation can ride a signed per-entity action
-//! instead, and a non-writer's forged rotation is rejected at merge.
+//! This is what makes writer-set rotation *authenticated*: a rotation is not a
+//! write to the cell at all, so no root-state delta can swap the writer set.
 //!
 //! # Where the current writer set comes from
 //!
-//! - **At apply time on a peer** (the security boundary): the node resolves the
-//!   writer set from the entity's *rotation log* via
-//!   `rotation_log_reader::writers_at(delta.parents)` and verifies the action's
-//!   signature against it. A forged rotation from a non-writer never updates the
-//!   log, so it is rejected — see the node sync layer.
-//! - **During local execution** (this module): there is no DAG/`happens_before`
-//!   context and the local rotation log is only appended for *received* deltas,
-//!   so the authoritative local source is the wrapper entity's **rotation log**
-//!   (latest entry) falling back to its **index metadata**
-//!   ([`Index::get_metadata`]) — both of which are only ever written by a
-//!   signature-verified action (apply) or the local node's own committed
-//!   write/rotation. It deliberately does NOT fall back to the in-memory
-//!   `Element` metadata, which is deserialized from the unverified root-state
-//!   blob; trusting it would reintroduce the forgeable writer-set source this
-//!   change removes.
+//! From the host, through [`env::shared_writers`]: the governance fold of the
+//! cell's rotations at the run's governance position (on a peer, the delta's).
+//! A cell no rotation touched has the genesis set stored with its anchor. A cell
+//! the host cannot resolve has no writers. A rotation this run asked for is read
+//! back at once. The in-memory `Element` metadata is never consulted: it is
+//! deserialized from the unverified root-state blob.
 //!
 //! # Merge semantics
 //!
 //! The wrapper carries no CRDT value to merge at root-state time: the value is a
-//! separate entity (merged per-entity) and the writer set converges via the
-//! rotation log + ADR 0001 on the node side, not an LWW on root-state bytes.
+//! separate entity (merged per-entity) and the writer set converges through the
+//! governance fold on the node side, not an LWW on root-state bytes.
 //! `frozen` is genesis-immutable (set in `new`, no setter) — it rides root-state
 //! borsh so joiners see it, but the merge deliberately does **not** adopt the
 //! peer's `frozen`, so a forged root-state delta cannot freeze rotation on an
@@ -64,6 +51,7 @@ use crate::entities::{ChildInfo, Data, Element, OpMask, SignatureData, StorageTy
 use crate::env;
 use crate::index::Index;
 use crate::interface::{Interface, StorageError};
+use crate::shared_writers::SharedRotation;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 /// Fixed sub-key under which a `TeeOnly` cell's value entry is stored, at
@@ -74,7 +62,7 @@ pub(crate) const VALUE_KEY: &[u8] = b"__calimero_shared_value__";
 /// Group-writable storage with an authenticated, mutable writer set.
 ///
 /// A handle over a [`Collection`]: the wrapper entity is the `Shared` **anchor**
-/// that owns the writer set + rotation log, and the value is held as one
+/// that names the genesis writer set, and the value is held as one
 /// `SharedMember`-stamped child entry pointing back at that anchor. Borsh = the
 /// inner collection's `Element` (a reference) plus the monotonic `frozen` flag;
 /// the value body never rides root state.
@@ -518,7 +506,7 @@ where
     /// Returns whether the current executor is in the authoritative writer set.
     /// Gates whether `migrate_my_entries()` may re-write the shared value (a
     /// writer-signed update, not single-owner). Resolves via the same
-    /// rotation-log-aware path as the write gate.
+    /// host-resolved path as the write gate.
     pub fn writable_by_me(&self) -> bool {
         // The GATE resolves the account, not the device. This is the whole point of
         // account-keying the writer set: a person with two devices is one principal
@@ -533,51 +521,15 @@ where
         self.current_writers().contains_key(&executor)
     }
 
-    /// The current writer set, resolved only from **verified** local sources.
+    /// The current writer set, as the host resolves it at this run's cut.
     ///
-    /// Resolution order:
-    /// 1. **Rotation log** (`rotation_log::load`), resolved via
-    ///    [`rotation_log::resolve_local`]. On a node that *received* rotations,
-    ///    the apply path appends every signature-verified rotation here.
-    ///    `resolve_local` picks the live entry that is **max by
-    ///    `(delta_hlc, signer)`** (falling back to the compaction snapshot when
-    ///    there are no live entries).
-    ///
-    ///    This is the local-execution gate (core#2673). It has no DAG context,
-    ///    so it cannot run the full causal `writers_at(parents)` the merge-time
-    ///    verifier uses — but because the HLC is causally monotonic since #2635
-    ///    (a rotation made after applying another carries a greater HLC), the
-    ///    `(delta_hlc, signer)` max coincides with the causal latest for any
-    ///    well-formed log, and — unlike the old `entries.last()` — it is
-    ///    **insertion-order invariant**, so two nodes that applied the same
-    ///    concurrent rotations gate against the *same* set. The merge check
-    ///    (`writers_at`) remains the security boundary for the pathological
-    ///    HLC-skew case; this gate is never weaker than `entries.last()` was.
-    /// 2. **Index `storage_type`** — written by `add_child_to` at construction,
-    ///    by `apply_action` for a received bootstrap/write, and by
-    ///    [`Index::set_storage_type`] on the *originating* node's own rotation
-    ///    (whose log stays empty because it does not self-apply).
-    ///
-    /// It deliberately does **not** fall back to the in-memory `Element`
-    /// metadata: that is populated from the borsh-deserialized root-state blob,
-    /// which is unverified — trusting it would reintroduce the forgeable
-    /// writer-set source this change exists to remove (a forged root-state delta
-    /// could influence the local gate). Any wrapper a writer can legitimately
-    /// act on has an index entry (construction and sync-apply both write one);
-    /// if neither source has a writer set, fail closed with the empty set rather
-    /// than trust unverified bytes.
+    /// The one resolver shared with the merge path
+    /// (`Interface::resolve_anchor_writers`): a rotated set as the host gives it
+    /// (including one this run asked for), else the genesis set stored with the
+    /// anchor's index entry, else empty. It deliberately does **not** read the
+    /// in-memory `Element` metadata, which comes from the unverified root-state
+    /// blob, so a forged root-state delta cannot influence the local gate.
     fn current_writers(&self) -> BTreeMap<AccountId, OpMask> {
-        // Delegate to the SINGLE resolver shared with the merge/verify path
-        // (`Interface::resolve_anchor_writers`): it unions the hashed child
-        // collection AND the side store, then runs the order-invariant
-        // `resolve_local`. Using one function here is load-bearing — when this
-        // gate's resolve diverged from the merge-time resolver (this used
-        // `or_else`/collection-first while the other unioned), two nodes
-        // resolved DIFFERENT writer sets for the same anchor (collection on the
-        // originator, side store on a reconcile-only receiver), so a value
-        // signed against one set failed verification on the other
-        // (`StorageError::InvalidSignature`) and the cluster split-brained on the
-        // value entry under concurrent rotation. One resolver ⇒ one writer set.
         crate::interface::Interface::<S>::resolve_anchor_writers(self.inner.id())
     }
 
@@ -600,9 +552,9 @@ where
         self.frozen
     }
 
-    /// Returns the signature attached to the most recently applied rotation of
-    /// the wrapper entity, if any. Reads the wrapper's index metadata first
-    /// (the applied, verified state), then the in-memory `Element`.
+    /// Returns the signature on the wrapper entity's stamp (its genesis write;
+    /// a rotation does not re-stamp it), if any. Reads the wrapper's index
+    /// metadata first (the applied, verified state), then the in-memory `Element`.
     pub fn signature(&self) -> Option<SignatureData> {
         if let Ok(Some(metadata)) = <Index<S>>::get_metadata(self.inner.id()) {
             if let StorageType::Shared { signature_data, .. } = metadata.storage_type {
@@ -637,7 +589,7 @@ where
         let value_id = self.value_id();
         // The value entry is a member anchored to the wrapper; it carries no
         // writer set, so there is nothing to keep consistent with a rotation —
-        // the anchor's rotation log is the single source. (This is why the
+        // the host is the single source. (This is why the
         // old value-entry `set_storage_type` writer-patch is gone: a member's
         // `update_signature_in_place` matches on the anchor, which never
         // changes on rotation.)
@@ -652,31 +604,27 @@ where
         Ok(Some(old))
     }
 
-    /// Rotate the writer set. Must be called by a current writer; rejected if
-    /// `frozen` or if `new_writers` is empty.
+    /// Rotate the writer set. Must be called by a current admin; rejected if
+    /// `frozen` or if the node could not publish it.
     ///
-    /// Re-stamps the **wrapper entity** with `Shared{new_writers}` and persists
-    /// it, emitting a signed per-entity `Update` for the wrapper. On a peer the
-    /// action is verified against the *old* writer set (resolved from the
-    /// rotation log at the delta's causal point), and on success the rotation is
-    /// appended to the wrapper's rotation log — so a forged rotation from a
-    /// non-writer is rejected and never updates the log.
+    /// This only records the request: a rotation takes effect when the node
+    /// publishes it as a governance op, and every node reads the result from the
+    /// governance fold. This run reads the new set at once, from the env.
     ///
     /// # Errors
-    /// Returns `ActionNotAllowed` if `frozen`, if `new_writers` is empty, or if
-    /// the executor is not currently in the writer set.
+    /// Returns `ActionNotAllowed` if `frozen`, if the executor does not hold `ADMIN` in the
+    /// writer set, or if the node could not publish the rotation (`SharedRotation::refusal`).
     pub fn rotate_writers(&mut self, new_writers: BTreeSet<AccountId>) -> Result<(), StoreError> {
         // Convenience: every writer gets `OpMask::FULL` (today's behaviour).
         self.rotate_writers_scoped(new_writers.into_iter().map(|w| (w, OpMask::FULL)).collect())
     }
 
-    /// Rotate the writer set with explicit per-writer [`OpMask`]s. Same rules and
-    /// merge semantics as [`rotate_writers`](Self::rotate_writers); the masks are
-    /// committed into the signed rotation and enforced at merge.
+    /// Rotate the writer set with explicit per-writer [`OpMask`]s. Same rules as
+    /// [`rotate_writers`](Self::rotate_writers).
     ///
     /// # Errors
-    /// Returns `ActionNotAllowed` if `frozen`, if `new_writers` is empty, or if
-    /// the executor is not currently in the writer set.
+    /// Returns `ActionNotAllowed` if `frozen`, if the executor does not hold `ADMIN` in the
+    /// writer set, or if the node could not publish the rotation (`SharedRotation::refusal`).
     pub fn rotate_writers_scoped(
         &mut self,
         new_writers: BTreeMap<AccountId, OpMask>,
@@ -686,47 +634,32 @@ where
                 "Cannot rotate writers of frozen WriterSetCell".to_owned(),
             )));
         }
-        if new_writers.is_empty() {
-            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
-                "Cannot rotate to an empty writer set".to_owned(),
-            )));
-        }
         let executor: AccountId = env::account_id().into();
-        let writers = self.current_writers();
-        if !writers.contains_key(&executor) {
+        let prior = self.current_writers();
+        // Fail fast; the governance op is what is checked when it is applied.
+        if !prior
+            .get(&executor)
+            .is_some_and(|mask| mask.contains(OpMask::ADMIN))
+        {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
-                "Executor is not a current writer".to_owned(),
+                "Executor is not an admin of the writer set".to_owned(),
             )));
         }
 
-        let wrapper_id = self.inner.id();
-        let new_shared = StorageType::Shared {
-            writers: new_writers.clone(),
-            signature_data: None,
+        let rotation = SharedRotation {
+            cell: self.inner.id(),
+            prior,
+            new: new_writers,
         };
+        if let Some(refusal) = rotation.refusal() {
+            return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+                refusal.to_string(),
+            )));
+        }
 
-        // Stamp the wrapper entity with the new set and persist. This emits a
-        // signed per-entity `Update` for the wrapper; a receiver verifies it
-        // against the *old* writer set (its rotation log at the delta's causal
-        // point) and appends the new set to the wrapper's rotation log.
-        self.inner
-            .element_mut()
-            .set_shared_domain_scoped(new_writers);
-        let _saved = <Interface<S>>::save(&mut self.inner)?;
-
-        // Members are NOT re-stamped. The value entry and every collection
-        // child are `SharedMember`s pointing at this wrapper; their writer set
-        // is resolved from the wrapper's rotation log at verify time, so the
-        // single append above retroactively revokes (and grants) access for the
-        // entire subtree at once. No per-entity `Update` storm — every member's
-        // bytes are unchanged — so the rotation cannot diverge the root hash.
-        // This is exactly why the variant was split: rotation is O(1) and
-        // split-brain-safe by construction.
-
-        // Originating-node fallback: persist the new set on the wrapper's index
-        // (the rotation log is only appended on receivers, so this node's own
-        // log stays empty and `current_writers` reads the index).
-        let _ignored = <Index<S>>::set_storage_type(wrapper_id, new_shared);
+        // Members and the wrapper are not re-stamped: their writers are read from
+        // the host, so a rotation leaves every stored byte alone.
+        env::record_shared_rotation(&rotation);
 
         // Invalidate the lazy cache so the next access reloads the value fresh.
         *self.value.borrow_mut() = None;
@@ -756,7 +689,7 @@ where
 
 // Mergeable: invoked at root-state merge time. Nothing rides this merge — the
 // value is a separate entity (merged per-entity), the writer set converges via
-// the rotation log, and `frozen` is genesis-immutable and deliberately not
+// the governance fold, and `frozen` is genesis-immutable and deliberately not
 // adopted from the peer (so a forged root-state delta can't freeze rotation).
 // RekeyTarget supertrait. The cell's value is a separate, per-entity
 // synced entity and the wrapper id is deterministic at construction, so there
@@ -777,8 +710,8 @@ where
 {
     fn merge(&mut self, _other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
         // Nothing to merge. The value is a separate entity (synced + merged
-        // per-entity) and the writer set converges via the verified rotation log
-        // (ADR 0001) on the node side — neither rides this merge.
+        // per-entity) and the writer set converges through the governance fold
+        // on the node side, and neither rides this merge.
         //
         // `frozen` is intentionally NOT merged from `other`. It is set once at
         // construction and has no setter, so it is genesis-immutable; joiners
@@ -907,12 +840,10 @@ mod tests {
     #[serial]
     fn value_entry_is_member_anchored_and_untouched_by_rotation() {
         // The value entry is a `SharedMember` pointing at the wrapper (anchor).
-        // It carries NO writer set and is NOT re-stamped on rotation — the
-        // wrapper's rotation log is the single source. This is the invariant
-        // that makes rotation O(1) and split-brain-safe: a member's bytes never
-        // change, so a rotation can't diverge the root hash. (The newly-added
-        // writer can still write afterward because authorization resolves from
-        // the anchor, not from a stale inline copy.)
+        // It carries NO writer set and is NOT re-stamped on rotation: the writers
+        // come from the host. This keeps a rotation from touching any stored byte,
+        // so it cannot diverge the root hash. The newly-added writer can still
+        // write afterward because authorization resolves from the anchor.
         use crate::collections::cell_value_id;
         use crate::entities::{Data, StorageType};
         use crate::index::Index;
@@ -926,7 +857,7 @@ mod tests {
 
         let wrapper_id = s.element().id();
         let value_id = cell_value_id(wrapper_id);
-        let storage_type_of = |id| {
+        let stored_of = |id| {
             <Index<MainStorage>>::get_metadata(id)
                 .unwrap()
                 .unwrap()
@@ -936,31 +867,122 @@ mod tests {
             StorageType::SharedMember { anchor, .. } => assert_eq!(anchor, wrapper_id),
             other => panic!("value entry must be SharedMember, got {other:?}"),
         };
-        let anchor_writers = |st: StorageType| match st {
-            StorageType::Shared { writers, .. } => writers,
-            other => panic!("wrapper must be a Shared anchor, got {other:?}"),
-        };
+        let genesis = crate::entities::full_mask(writers(&[ALICE]));
 
-        // Value entry anchors to the wrapper; the wrapper (anchor) holds writers.
-        assert_member_of(storage_type_of(value_id));
+        assert_member_of(stored_of(value_id));
         assert_eq!(
-            anchor_writers(storage_type_of(wrapper_id)),
-            crate::entities::full_mask(writers(&[ALICE]))
+            stored_of(wrapper_id),
+            StorageType::Shared {
+                writers: genesis.clone(),
+                signature_data: stored_signature(wrapper_id),
+            }
         );
 
-        // Rotation updates the anchor only; the value entry is byte-untouched.
         s.rotate_writers(writers(&[ALICE, BOB])).unwrap();
-        assert_member_of(storage_type_of(value_id));
-        assert_eq!(
-            anchor_writers(storage_type_of(wrapper_id)),
-            crate::entities::full_mask(writers(&[ALICE, BOB]))
+        let stored_after = stored_of(wrapper_id);
+        assert!(
+            matches!(&stored_after, StorageType::Shared { writers, .. } if *writers == genesis),
+            "a rotation is a request to the host: the stored anchor keeps its genesis set, got {stored_after:?}"
         );
+        assert_member_of(stored_of(value_id));
+        assert_eq!(s.writers(), writers(&[ALICE, BOB]));
 
-        // The newly-added writer can write — authorization resolves from the
-        // anchor's (rotated) writer set, and the entry stays an anchored member.
         env::set_account_id(BOB);
         s.insert(TestVal(2)).unwrap();
-        assert_member_of(storage_type_of(value_id));
+        assert_member_of(stored_of(value_id));
+    }
+
+    fn stored_signature(id: crate::address::Id) -> Option<crate::entities::SignatureData> {
+        match <crate::index::Index<crate::store::MainStorage>>::get_metadata(id)
+            .unwrap()
+            .unwrap()
+            .storage_type
+        {
+            crate::entities::StorageType::Shared { signature_data, .. } => signature_data,
+            other => panic!("expected a Shared anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn a_rotation_is_recorded_for_the_host_with_the_set_it_started_from() {
+        use crate::entities::{full_mask, Data};
+        use crate::shared_writers::SharedRotation;
+
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        s.rotate_writers(writers(&[BOB, CAROL])).unwrap();
+        s.rotate_writers(writers(&[BOB])).unwrap_err();
+
+        assert_eq!(
+            env::take_recorded_rotations(),
+            vec![SharedRotation {
+                cell: s.element().id(),
+                prior: full_mask(writers(&[ALICE, BOB])),
+                new: full_mask(writers(&[BOB, CAROL])),
+            }],
+            "one request, stepping from the genesis set; the refused one records nothing"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_rotation_writes_nothing_to_the_store() {
+        use crate::entities::Data;
+        use crate::store::{Key, MainStorage, StorageAdaptor as _};
+
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE, BOB]), false));
+        s.insert(TestVal(1)).unwrap();
+        let id = s.element().id();
+        let before = (
+            MainStorage::storage_read(Key::Entry(id)),
+            MainStorage::storage_read(Key::Index(id)),
+            env::take_last_artifact(),
+        );
+
+        s.rotate_writers(writers(&[ALICE])).unwrap();
+
+        assert_eq!(MainStorage::storage_read(Key::Entry(id)), before.0);
+        assert_eq!(MainStorage::storage_read(Key::Index(id)), before.1);
+        assert_eq!(
+            env::take_last_artifact(),
+            None,
+            "no wrapper update rides the delta"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn rotation_takes_an_admin_not_a_mere_writer() {
+        use crate::entities::OpMask;
+
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+
+        let mut s = Root::new(|| WriterSetCell::<TestVal>::new(writers(&[ALICE]), false));
+        s.rotate_writers_scoped(
+            [(pk(ALICE), OpMask::FULL), (pk(BOB), OpMask::WRITE)]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        let _ = env::take_recorded_rotations();
+
+        env::set_account_id(BOB);
+        assert!(s.writable_by_me(), "bob writes");
+        let err = s
+            .rotate_writers(writers(&[BOB]))
+            .expect_err("a writer without ADMIN may not rotate");
+        assert!(
+            err.to_string().to_lowercase().contains("admin"),
+            "error should say admin, got: {err}"
+        );
+        assert!(env::take_recorded_rotations().is_empty());
     }
 
     #[test]
@@ -989,7 +1011,7 @@ mod tests {
         // The entry must be anchored to the wrapper — the whole subtree is
         // guarded at merge, not just the WriterSetCell wrapper entity. It
         // carries no inline writer set: the anchor pointer is the domain, and
-        // writers resolve from the anchor's rotation log.
+        // writers resolve from the host.
         let wrapper_id = guarded.element().id();
         let map_id = <Map as Data>::id(guarded.get().expect("get"));
         let child = compute_id(map_id, "k".as_bytes());

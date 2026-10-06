@@ -29,13 +29,13 @@ use crate::test_support::{actor, credential, enrol, enrol_holder};
 
 /// `init` reads the executing account (`account_id`) into memory and commits
 /// it as the root hash, with an empty artifact; `set` does the same with a
-/// one-byte artifact, as a method run must carry one, and writes no signed
+/// `StorageDelta::Actions` of nothing, as a method run must carry one, and writes no signed
 /// entry. `set_owned` commits [`owned_artifact`] instead: one `User` entry still
 /// carrying the placeholder signature, which the node signs for the author.
-/// Layout: the account at 0, the artifact byte at 32, the root descriptor at 64
+/// Layout: the account at 0, the empty `Actions` at 32, the root descriptor at 64
 /// (`{ptr: 0, len: 32}`), the empty-artifact descriptor at 80 (`{ptr: 32, len:
-/// 0}`), the register-read descriptor at 96 (`{ptr: 0, len: 32}`), the one-byte
-/// artifact descriptor at 112 (`{ptr: 32, len: 1}`), the owned-artifact
+/// 0}`), the register-read descriptor at 96 (`{ptr: 0, len: 32}`), the `Actions`
+/// artifact descriptor at 112 (`{ptr: 32, len: 5}`), the owned-artifact
 /// descriptor at 128 (`{ptr: 512, len}`) and the owned artifact at 512.
 ///
 /// With `init_signs`, `init` commits [`owned_artifact`] instead: an `init`
@@ -62,10 +62,10 @@ fn module_with(init_signs: bool) -> String {
             "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
             "\20\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"
             "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
-            "\20\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
+            "\20\00\00\00\00\00\00\00\05\00\00\00\00\00\00\00")
         (data (i32.const 128) "{descriptor}")
         (data (i32.const 512) "{artifact}")
-        (data (i32.const 32) "\01")
+        (data (i32.const 32) "\00\00\00\00\00")
         (func (export "init")
             (call $account_id (i64.const 0))
             (drop (call $read_register (i64.const 0) (i64.const 96)))
@@ -293,6 +293,7 @@ impl Fixture {
             seed: SEED,
             author_account: self.author,
             executor: self.relay,
+            executor_key: self.relay_pk,
             application_id: self.application_id,
             service_name: None,
             name: Some("general".to_owned()),
@@ -469,6 +470,7 @@ async fn through_a_granted_relay(
             context: created.context_id,
             author_account: fx.author,
             executor: fx.relay,
+            executor_key: fx.relay_pk,
             app_version: fx.application_id,
             method: method.to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash(method, &args),
@@ -737,6 +739,7 @@ async fn the_first_delegated_write_after_a_delegated_creation_lands_immediately(
             context: created.context_id,
             author_account: fx.author,
             executor: fx.relay,
+            executor_key: fx.relay_pk,
             app_version: fx.application_id,
             method: "set".to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash("set", &args),
@@ -789,6 +792,7 @@ async fn a_write_reusing_the_creation_nonce_is_refused() {
             context: created.context_id,
             author_account: fx.author,
             executor: fx.relay,
+            executor_key: fx.relay_pk,
             app_version: fx.application_id,
             method: "set".to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash("set", &args),
@@ -882,6 +886,7 @@ async fn a_member_chooses_the_first_application_through_the_relay_then_creates()
                     kind: GovernanceOpKind::Group,
                     author_account: fx.author,
                     executor: fx.relay,
+                    executor_key: fx.relay_pk,
                     op_hash: calimero_account::GovernanceWarrant::op_hash(
                         GovernanceOpKind::Group,
                         &form,

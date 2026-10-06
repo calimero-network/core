@@ -250,7 +250,8 @@ pub fn infer_schema_from_database(
                                     inner_type: None,
                                 },
                                 CrdtType::RotationLog | CrdtType::FugueTextBlock => {
-                                    // Internal book-keeping children, never
+                                    // Internal book-keeping children (and the
+                                    // legacy rotation-log tag), never
                                     // user-facing root fields.
                                     TypeRef::Collection {
                                         collection: CollectionType::Record { fields: Vec::new() },

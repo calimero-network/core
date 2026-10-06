@@ -488,13 +488,6 @@ pub(crate) fn random_entry_id(parent: Id) -> Id {
     derived_id(Some(parent), *Id::random().as_bytes(), CELL_ENTRY_ID_TAG)
 }
 
-/// [`compute_id`] without the TEE-only mark, for book-keeping that sits
-/// beside a cell's value rather than in it: a `Shared` anchor's rotation log,
-/// which is not the TEE's to write.
-pub(crate) fn compute_unmarked_id(parent: Id, key: &[u8]) -> Id {
-    Id::new(entry_hash(parent, key))
-}
-
 fn entry_hash(parent: Id, key: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(parent.as_bytes());
@@ -1005,30 +998,6 @@ impl<T: BorshDeserialize> BorshDeserialize for Entry<T> {
     }
 }
 
-/// Decode the stored VALUE bytes of a rotation-log map child back into the
-/// [`RotationLogEntry`](crate::rotation_log::RotationLogEntry) it holds (P3 of
-/// core#2716).
-///
-/// A rotation-log map child is an ordinary [`UnorderedMap`] entry, so its stored
-/// value is `borsh(Entry<(RotationLogEntry, [u8; 32])>)` — NOT a bare
-/// `RotationLog` blob. The node-side direct reader (`delta_store`) reads child
-/// bytes straight from RocksDB outside a storage env, so it cannot go through
-/// the `UnorderedMap` handle; this exposes the exact borsh layout the collection
-/// writes (`item` then the `#[storage]` `Element`, whose only serialized field
-/// is its id). Returns `None` if the bytes are not a valid map entry.
-///
-/// Note the tuple is VALUE-first: a map entry stores `(V, K)` so the value sits
-/// at offset 0 whatever the key type. This is the one reader that spells the
-/// layout out, so it moves in lockstep with
-/// [`UnorderedMap::inner`](unordered_map::UnorderedMap).
-pub fn decode_rotation_log_entry_child(
-    bytes: &[u8],
-) -> Option<crate::rotation_log::RotationLogEntry> {
-    borsh::from_slice::<Entry<(crate::rotation_log::RotationLogEntry, [u8; 32])>>(bytes)
-        .ok()
-        .map(|entry| entry.item.0)
-}
-
 #[expect(unused_qualifications, reason = "AtomicUnit macro is unsanitized")]
 type StoreResult<T> = std::result::Result<T, StoreError>;
 
@@ -1055,7 +1024,7 @@ static ROOT_ID: LazyLock<Id> = LazyLock::new(Id::root);
 /// In short: `[118; 32]` cannot be reached unintentionally; an attacker
 /// who *could* synthesise an entity at this id would already have a
 /// hash-collision primitive on the entity-id space.
-pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
+pub const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 
 /// Whether `id` addresses the app's root state — either the canonical
 /// `ROOT_ID` (system root) or the `Root<T>` entry (the WASM app's
@@ -1073,6 +1042,12 @@ pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 #[inline]
 pub fn is_app_root_entry(id: Id) -> bool {
     id.is_root() || id == ROOT_ENTRY_ID
+}
+
+/// Whether `data` is the root collection as a `Root<T>` stores it: an untyped collection at the root id.
+pub(crate) fn is_root_collection_bytes(data: &[u8]) -> bool {
+    borsh::from_slice::<Collection<()>>(data)
+        .is_ok_and(|root| root.storage.id.is_root() && root.storage.metadata.crdt_type.is_none())
 }
 
 impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
@@ -1187,35 +1162,6 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             _priv: PhantomData,
         }
         // Note: No Interface::save or add_child_to call - this collection is completely detached
-    }
-
-    /// Open a *handle* to a collection that already lives in storage at a known
-    /// `id`, WITHOUT creating or re-registering it.
-    ///
-    /// Unlike [`new`](Self::new) / `new_with_field_name_*`, this does NOT call
-    /// `add_child_to(ROOT, ..)` — the caller owns the parent linkage (e.g. the
-    /// rotation-log map is a child of its `Shared` anchor, not of ROOT). Unlike
-    /// [`new_detached`](Self::new_detached), `children_ids` is left `None` so the
-    /// first access lazily loads the existing children from the index — a
-    /// detached collection pre-seeds an EMPTY child set and would therefore read
-    /// back as empty even when the entity has children on disk.
-    ///
-    /// The element is stamped with `crdt_type` (matching how the entity was
-    /// created) and marked clean (`is_dirty = false`): opening must not, on its
-    /// own, re-emit an `Add` for an entity that already exists.
-    fn open_existing(id: Id, crdt_type: CrdtType) -> Self {
-        let mut storage = Element::new(Some(id));
-        storage.metadata.crdt_type = Some(crdt_type);
-        storage.is_dirty = false;
-
-        Self {
-            children_ids: RefCell::new(None),
-            storage,
-            materialized: core::cell::Cell::new(true),
-            slot_key: None,
-            stamped_value: None,
-            _priv: PhantomData,
-        }
     }
 
     /// Creates a new collection with deterministic ID, field name, and CRDT type.

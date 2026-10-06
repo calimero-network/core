@@ -88,6 +88,8 @@ pub fn generate_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageError>
                     trie_rows.push((id, data));
                 }
             }
+            // This node's record of its own GC, not state.
+            Key::Collected(_) => {}
         }
     }
 
@@ -140,6 +142,8 @@ pub fn generate_full_snapshot<S: IterableStorage>() -> Result<Snapshot, StorageE
                     trie_rows.push((id, data));
                 }
             }
+            // This node's record of its own GC, not state.
+            Key::Collected(_) => {}
         }
     }
 
@@ -204,8 +208,12 @@ pub fn apply_snapshot<S: IterableStorage>(snapshot: &Snapshot) -> Result<(), Sto
 fn clear_all_storage<S: IterableStorage>() -> Result<(), StorageError> {
     let mut keys_to_delete = Vec::new();
 
+    // A snapshot carries no record of a collected delete, so this node keeps
+    // its own: without one, a replay of the deleted entity's old write lands.
     for key in S::storage_iter_keys() {
-        keys_to_delete.push(key);
+        if !matches!(key, Key::Collected(_)) {
+            keys_to_delete.push(key);
+        }
     }
 
     for key in keys_to_delete {

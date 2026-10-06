@@ -111,7 +111,7 @@ Every leaf type resolves a same-id collision with a fixed, node-independent rule
 | `Vector<T>` | indexed entries, each `Id::random()` at push | element-wise by index, then append the longer tail |
 | `RGA` (text) | `UnorderedMap<CharId, { content, left }>` | union of immutable chars; delete = tombstone |
 | `Frozen` | `UnorderedMap` keyed by `SHA-256(value)` | first-write-wins (keep existing) |
-| `Shared` / `SharedMember` | LWW per writer | per-writer LWW; rotation-log children union regardless of timestamp |
+| `Shared` / `SharedMember` | LWW per writer | per-writer LWW; the writer set is not merged here but read from the governance fold |
 
 A little more on each:
 
@@ -280,8 +280,8 @@ So every new stamp is taken against the version it replaces:
 - **A register** (`LwwRegister::set`, `value_mut`) takes `hlc.after(previous)`: the
   current HLC, or the tick after the previous stamp when the HLC is not later.
 
-Replays keep the stamps their writers gave them (`Root::sync` re-saves the root
-document through `save_raw_replayed`), and merge mode stamps nothing. Concurrent
+Replays keep the stamps their writers gave them (`Root::sync` applies each action
+through `apply_action`, which stamps nothing), and merge mode stamps nothing. Concurrent
 writes, which did not see each other, resolve exactly as before: the newer stamp
 wins, then the tiebreak below. `crates/storage/src/tests/entity_clock.rs` steps the
 clock back between two writes for each case.
@@ -312,12 +312,6 @@ last it keeps A — and the two replicas are now permanently split-brained on th
 heads, with neither ever moving. Breaking the tie by `SHA-256(value)` makes the choice a
 property of the *data*, not of arrival order: both nodes compute the same winner, so they
 converge. Equal data is a true no-op.
-
-<Aside type="note">
-The same reasoning drives the rotation-log merge, which is an order-invariant union by
-`delta_id` with a deterministic byte-tiebreak on collision — so two nodes that apply each
-other's logs in opposite orders produce byte-identical results and the same hash.
-</Aside>
 
 Two nodes write the *same* entity concurrently, gossip their deltas, and each
 runs the identical `lww_pick` — equal HLC, broken by `SHA-256(value)` — so both
@@ -394,11 +388,11 @@ issued timestamp always sorts strictly after any event it causally follows.
 
 The rules above cover the common path. Three further mechanisms close gaps that only surface under writer rotation, runtime nesting, and schema migration — each one a small reuse of machinery you have already seen.
 
-### The rotation log is just add-wins children
+### A writer-set rotation writes nothing to the tree
 
-A `Shared` set tracks who may write it through a per-entity **writer-rotation log**. Rather than invent a side channel, the log is materialised as an ordinary `UnorderedMap<delta_id, RotationLogEntry>` child of the `Shared` anchor entity, keyed by `delta_id` (`crates/storage/src/rotation_log.rs:17-22`, `crates/storage/src/interface.rs:388-416`). Each rotation is therefore one more hashed Merkle child — a content-addressed leaf — and converges through the very same add-wins entity-tree comparison that reconciles any other map.
+A `Shared` set's writer set changes by a signed **governance op** (`SharedWritersRotated`), not by a write to the data tree. The guest reads the current set from the host (`env::shared_writers`), which answers from `shared_writers::fold` over those ops: the genesis set the cell id commits to, then each counted rotation step in causal order. A rotation re-stamps neither the anchor nor any member, stores no entity beside the cell, and ships no state delta, so a cell's anchor hashes the same on the node that created it and on every node that applied its delta. A data-plane `Update` that names a different writer set than the stored one is refused. See [Governance](/protocol/governance/) for the fold's rules.
 
-A single blob holding the whole log would *not* converge: its custom merge re-runs every sync round and never settles. Per-`delta_id` leaves reconcile individually via the proven structural path, and insertion order does not matter — causal precedence between concurrent rotations is resolved at read time, not baked into storage order.
+Older nodes kept a per-cell rotation log as child entities of the anchor, stamped with `CrdtType::RotationLog` (borsh tag 13). Nothing writes or reads those entities for a writer set now. The tag stays decodable, so a store or a snapshot from an older peer that carries them still loads and merges (last-write-wins by timestamp, the content hash only breaking an equal-timestamp tie), and the tag number is never reused.
 
 ### Runtime id rekey and the `DeleteRef` tombstone
 

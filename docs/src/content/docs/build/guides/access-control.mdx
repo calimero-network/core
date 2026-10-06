@@ -33,7 +33,8 @@ public collection to identity fields a writer can forge, are collected in
 ## SharedStorage — a writer set
 
 A group-writable value. Only public keys in the writer set may `insert`; a
-current writer can `rotate_writers` to change the set. This is
+current admin can `rotate_writers` to change the set (the request is published
+as a governance op, and your own run reads the new set at once). This is
 `apps/kv-store-with-shared-storage`:
 
 ```rust
@@ -175,7 +176,7 @@ impl TeamDoc {
         Ok(())
     }
 
-    // grant edit rights to another teammate (only a current writer can rotate)
+    // grant edit rights to another teammate (only a current admin can rotate)
     pub fn add_owner(&mut self, who: Vec<AccountId>) -> app::Result<()> {
         let mut writers = self.title.writers();
         writers.extend(who);

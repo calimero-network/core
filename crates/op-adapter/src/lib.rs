@@ -4,16 +4,15 @@
 //!
 //! **Encoders** map each per-plane operation onto the one `OpPayload`, so we
 //! can prove the unified projection faithfully represents the current system
-//! across all four planes: data (`Action` → `Put`/`Delete`), access-control
-//! (`RotationLogEntry` → `SetWriters`), membership (`GroupOp` →
-//! `MemberAdded`/`MemberRemoved`), and admin (`RootOp` →
+//! across the planes it still bridges: data (`Action` → `Put`/`Delete`),
+//! membership (`GroupOp` → `MemberAdded`/`MemberRemoved`), and admin (`RootOp` →
 //! `AdminChanged`/`PolicyUpdated`/`SubgroupCreated`/open-join). In-model vs
-//! out-of-model coverage is documented per encoder.
+//! out-of-model coverage is documented per encoder. A cell's writer set has no
+//! encoder: it rides governance as `SharedWritersRotated`.
 //!
 //! The proof of faithfulness is deterministic **fold-equivalence**: the unified
-//! projection resolves the same writer set and the same membership as the
-//! current resolvers over the same op sequence (`acl_plane_matches_resolve_local_*`
-//! in `src/tests/acl.rs`, plus the membership-fold property test in
+//! projection resolves the same membership as the current resolvers over the
+//! same op sequence (the membership-fold property test in
 //! `calimero-governance-store`).
 //!
 //! # Where things live
@@ -25,16 +24,14 @@
 //! | Module | What it holds |
 //! | --- | --- |
 //! | `data` | Data plane: [`payload_from_action`] |
-//! | `acl` | Access-control plane: [`set_writers_payload`] |
 //! | `group` | Membership plane: [`payload_from_group_op`] |
 //! | `root` | Admin/namespace plane: [`payload_from_root_op`] |
 //! | `guard` | Owner-level ops: a `RootGuarded` wrapper and its proof's op-local check |
-//! | `credential` | [`join_credential_binds`] / [`join_credential_certifies`] — the op-local admission predicates the apply path shares |
+//! | `credential` | [`join_credential_binds`] / [`join_credential_certifies`] — the op-local admission predicates the apply path shares — and [`tee_quote_binds_credential`], which every peer repeats on a TEE admission |
 //!
 //! Every public item is re-exported here, so `calimero_op_adapter::payload_from_root_op`
 //! keeps working regardless of which module it moved to.
 
-mod acl;
 mod credential;
 mod data;
 mod group;
@@ -44,8 +41,10 @@ mod root;
 #[cfg(test)]
 mod tests;
 
-pub use crate::acl::set_writers_payload;
-pub use crate::credential::{join_credential_binds, join_credential_certifies};
+pub use crate::credential::{
+    join_credential_binds, join_credential_certifies, tee_admission_binding,
+    tee_quote_binds_credential,
+};
 pub use crate::data::payload_from_action;
 pub use crate::group::{payload_from_group_op, payload_from_pre_guard_group_op};
 pub use crate::root::{payload_from_pre_guard_root_op, payload_from_root_op};

@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use async_stream::try_stream;
-use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
+use calimero_context_config::types::{
+    ContextGroupId, GovernanceParentEdge, InvitationFromMember, SignedOpenInvitation,
+};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::common::DIGEST_SIZE;
@@ -55,14 +57,17 @@ use crate::messages::{
     AcquireContextLockRequest, ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest,
     ContextMessage, CreateContextRequest, CreateContextResponse, DeleteContextRequest,
     DeleteContextResponse, ExecuteError, ExecuteRequest, ExecuteResponse, InternalErrorKind,
-    MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest, ReadAs,
-    UpdateApplicationRequest, WriteSource,
+    MethodNotExported, MigrationParams, NamespaceApplyOutcome, PrecompileApplicationRequest,
+    ReadAs, UpdateApplicationRequest, WriteSource,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
+mod cell_writers;
 mod context_api;
 pub mod crypto;
 mod sync;
+
+pub use cell_writers::{CurrentCellWriters, CurrentCellWritersSlot};
 
 /// A registry of context metadata backed by a key-value store.
 ///
@@ -900,6 +905,9 @@ pub struct ContextClient {
     /// so acks routed here reach the awaiter without an actor mailbox
     /// hop. See `calimero_governance_store::governance_broadcast`.
     ack_router: Arc<AckRouter>,
+    /// Where a path with no governance cut of its own asks a cell's writers. Filled in by
+    /// the node once the governance projection exists; shared by every clone.
+    cell_writers: CurrentCellWritersSlot,
 }
 
 /// Generates a simple async send method on `ContextClient` that forwards a request
@@ -936,7 +944,14 @@ impl ContextClient {
             node_client,
             context_manager,
             ack_router: Arc::new(AckRouter::default()),
+            cell_writers: CurrentCellWritersSlot::default(),
         }
+    }
+
+    /// Where a path with no governance cut of its own asks a cell's writers.
+    #[must_use]
+    pub fn cell_writers(&self) -> &CurrentCellWritersSlot {
+        &self.cell_writers
     }
 
     /// Shared `AckRouter` for the three-phase governance contract. The
@@ -1350,6 +1365,7 @@ impl ContextClient {
                 tee_trigger: Some(trigger),
                 event_handler: false,
                 write_source: WriteSource::Local,
+                governance_position: None,
             },
             "TEE trigger",
         )
@@ -1415,6 +1431,7 @@ impl ContextClient {
                 tee_trigger: None,
                 event_handler: false,
                 write_source: WriteSource::Local,
+                governance_position: None,
             },
             "execute",
         )
@@ -1437,12 +1454,15 @@ impl ContextClient {
     ///
     /// `executor` is this node's own identity in the context; `artifact` is
     /// the borsh `StorageDelta` the applier built from the delta.
+    /// `governance_position` is the cut the delta's author signed it at, where
+    /// the run reads a cell's writers.
     pub async fn apply_remote_delta(
         &self,
         context_id: &ContextId,
         executor: &PublicKey,
         artifact: Vec<u8>,
         atomic: Option<ContextAtomic>,
+        governance_position: Option<GovernanceParentEdge>,
     ) -> Result<ExecuteResponse, ExecuteError> {
         self.send_execute(
             ExecuteRequest {
@@ -1458,6 +1478,7 @@ impl ContextClient {
                 tee_trigger: None,
                 event_handler: false,
                 write_source: WriteSource::RemoteDelta,
+                governance_position,
             },
             "delta apply",
         )
@@ -1505,6 +1526,7 @@ impl ContextClient {
                 tee_trigger: None,
                 event_handler: false,
                 write_source: WriteSource::Local,
+                governance_position: None,
             },
             "query",
         )
@@ -1537,6 +1559,7 @@ impl ContextClient {
                 tee_trigger: None,
                 event_handler: true,
                 write_source: WriteSource::Local,
+                governance_position: None,
             },
             "event handler",
         )
@@ -1652,31 +1675,14 @@ impl ContextClient {
         Ok(Some(live))
     }
 
-    /// Invoke the app's typed root-state CRDT merge inside WASM and return
-    /// the merged bytes.
-    ///
-    /// The host can't deserialize the app's root state (it doesn't have
-    /// the type at compile time), so any sync path that needs to merge
-    /// two root-state byte blobs sends them into the WASM module via the
-    /// macro-generated `__calimero_merge_root_state` export, which knows
-    /// the type and dispatches `Mergeable::merge`. This is the
-    /// receive-side counterpart to per-action signature verification:
-    /// where signatures verify "did this writer authorize this byte
-    /// blob," `merge_root_state` answers "what does the app's CRDT say
-    /// these two byte blobs combine to."
-    ///
-    /// Returns the merged bytes on success. Returns
-    /// `ExecuteError::InternalError` if the WASM merge function returned
-    /// an error variant, the payload didn't round-trip through the wire
-    /// format, or the WASM module doesn't export the entry point (which
-    /// means the app didn't use `#[app::state]` — an upgrade gate
-    /// concern, not a runtime sync concern).
+    /// Asks the app's `__calimero_merge_root_state` to merge the app-state entry; a
+    /// module without the export answers `Err`, and any other failure is `InternalError`.
     pub async fn merge_root_state(
         &self,
         context_id: &ContextId,
         executor: &PublicKey,
         request: calimero_storage::merge::MergeRootStateRequest,
-    ) -> Result<Vec<u8>, ExecuteError> {
+    ) -> Result<calimero_storage::merge::MergeRootStateResponse, ExecuteError> {
         let payload = borsh::to_vec(&request).map_err(|err| {
             tracing::error!(
                 %context_id,
@@ -1700,6 +1706,11 @@ impl ContextClient {
 
         let return_bytes = match response.returns {
             Ok(Some(bytes)) => bytes,
+            Err(err) if err.downcast_ref::<MethodNotExported>().is_some() => {
+                return Ok(calimero_storage::merge::MergeRootStateResponse::Err(
+                    "the module exports no root-state merge".to_owned(),
+                ));
+            }
             Ok(None) => {
                 tracing::error!(
                     %context_id,
@@ -1721,31 +1732,16 @@ impl ContextClient {
             }
         };
 
-        let response: calimero_storage::merge::MergeRootStateResponse =
-            borsh::from_slice(&return_bytes).map_err(|err| {
-                tracing::error!(
-                    %context_id,
-                    %err,
-                    "merge_root_state: failed to deserialize MergeRootStateResponse"
-                );
-                ExecuteError::InternalError {
-                    kind: InternalErrorKind::Merge,
-                }
-            })?;
-
-        match response {
-            calimero_storage::merge::MergeRootStateResponse::Ok(bytes) => Ok(bytes),
-            calimero_storage::merge::MergeRootStateResponse::Err(msg) => {
-                tracing::error!(
-                    %context_id,
-                    error = %msg,
-                    "merge_root_state: WASM Mergeable::merge returned an error"
-                );
-                Err(ExecuteError::InternalError {
-                    kind: InternalErrorKind::Merge,
-                })
+        borsh::from_slice(&return_bytes).map_err(|err| {
+            tracing::error!(
+                %context_id,
+                %err,
+                "merge_root_state: failed to deserialize MergeRootStateResponse"
+            );
+            ExecuteError::InternalError {
+                kind: InternalErrorKind::Merge,
             }
-        }
+        })
     }
 
     /// Invoke the app's merge for one custom-typed collection ENTRY and return

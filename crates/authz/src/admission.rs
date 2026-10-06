@@ -43,8 +43,9 @@ impl AclView {
     ///
     /// The checks, in order:
     /// 1. the credential is internally valid — the genesis addresses the claimed
-    ///    account and the handoff chain carries valid signatures up to the
-    ///    certificate's epoch (`calimero-account`);
+    ///    account, the device id was minted for that account, and the handoff
+    ///    chain carries valid signatures up to the certificate's epoch
+    ///    (`calimero-account`);
     /// 2. the signing epoch has not been superseded at this cut, so rotating the
     ///    root key actually withdraws the old key's authority instead of merely
     ///    adding a new key beside it;
@@ -52,10 +53,7 @@ impl AclView {
     ///    which is what makes a revocation that folds *before* its link still win;
     /// 4. a device is never reassigned to another account;
     /// 5. a re-link strictly advances the device's rotation epoch, so an old
-    ///    certificate cannot be replayed to reinstate a retired key;
-    /// 6. on first link, no other device in the scope already claims the same
-    ///    replica seed prefix — which turns RGA id uniqueness from a birthday
-    ///    argument into a checked invariant.
+    ///    certificate cannot be replayed to reinstate a retired key.
     ///
     /// Deliberately **not** checked here: whether the account is a member of the
     /// scope. That is policy rather than credential validity, it only bears on the
@@ -148,27 +146,15 @@ pub fn fold_device_link(
         });
     }
 
-    match devices.get(&verified.device) {
-        Some(existing) => {
-            if existing.account != verified.account {
-                return Err(Rejected::DeviceAccountReassignment);
-            }
-            if verified.device_epoch <= existing.device_epoch {
-                return Err(Rejected::DeviceEpochNotAdvanced {
-                    offered: verified.device_epoch,
-                    folded: existing.device_epoch,
-                });
-            }
+    if let Some(existing) = devices.get(&verified.device) {
+        if existing.account != verified.account {
+            return Err(Rejected::DeviceAccountReassignment);
         }
-        None => {
-            // No seed-collision check here. On a prefix collision the LOWER
-            // device id wins, but *which* device that is cannot be decided as
-            // each link folds: rejecting the newcomer only when an already-folded
-            // device compares lower is order-dependent in the direction it does
-            // not check, so low-then-high left one device live while
-            // high-then-low left both. `ScopeState::live_devices` applies the
-            // rule over the folded set instead, where it is a function of the op
-            // set and every replica reaches the same view.
+        if verified.device_epoch <= existing.device_epoch {
+            return Err(Rejected::DeviceEpochNotAdvanced {
+                offered: verified.device_epoch,
+                folded: existing.device_epoch,
+            });
         }
     }
 

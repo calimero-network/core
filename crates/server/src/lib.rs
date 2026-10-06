@@ -237,9 +237,8 @@ pub async fn start(
         .as_ref()
         .map(|auth| Arc::new(auth.auth_service()));
 
-    // A TEE replica re-announces itself while its authority evidence is
-    // missing; idle on every other node. Spawned here because the announcement
-    // it sends is the one fleet-join builds.
+    // A TEE replica prompts again while its authority evidence is missing or
+    // due; idle on every other node. The prompt is the one fleet-join builds.
     drop(tokio::spawn(admin::handlers::tee::evidence_retry::run(
         datastore.clone(),
         node_client.clone(),
@@ -329,11 +328,8 @@ pub async fn start(
     // The sealed envelope wraps the router from outside, so the request it opens
     // is routed afresh. CORS goes outside that, so the envelope's own response —
     // the only one a browser sees for a sealed call — carries the CORS headers.
-    let origin_guard = origin_guard::OriginGuard::new(
-        config.authenticates_callers(),
-        config.cors.allowed_origins.as_deref(),
-    );
-    if origin_guard.enforced() {
+    let origin_guard = origin_guard::OriginGuard::router_wide(&config);
+    if origin_guard.is_some() {
         info!(
             "Auth mode is proxy and no proxy identity is taken: browser requests from origins \
              other than this node's own, loopback pages and [server.cors] allowed_origins are \
@@ -341,7 +337,7 @@ pub async fn start(
         );
     }
     let app = ServiceBuilder::new()
-        .layer(build_cors_layer(&config.cors, &origin_guard))
+        .layer(build_cors_layer(&config.cors, origin_guard.as_ref()))
         .layer(axum::middleware::from_fn_with_state(
             origin_guard,
             origin_guard::refuse_foreign_origins,
@@ -409,7 +405,7 @@ pub async fn start(
 /// advertised only alongside an explicit `allowed_origins` list.
 fn build_cors_layer(
     cors: &crate::config::CorsConfig,
-    origin_guard: &origin_guard::OriginGuard,
+    origin_guard: Option<&origin_guard::OriginGuard>,
 ) -> CorsLayer {
     use tower_http::cors::{AllowOrigin, AllowPrivateNetwork};
 
@@ -428,7 +424,7 @@ fn build_cors_layer(
             axum::http::HeaderName::from_static("x-auth-permissions"),
         ]);
 
-    if origin_guard.enforced() {
+    if let Some(origin_guard) = origin_guard {
         let guard = origin_guard.clone();
         let layer = layer.allow_origin(AllowOrigin::predicate(move |_origin, parts| {
             guard.admits(&parts.headers, parts.uri.authority())
@@ -526,7 +522,7 @@ mod cors_tests {
             .route("/x", get(handler))
             .layer(build_cors_layer(
                 &crate::config::CorsConfig::default(),
-                &OriginGuard::new(true, None),
+                None,
             ))
     }
 
@@ -662,10 +658,10 @@ mod cors_tests {
         cors: &crate::config::CorsConfig,
         origin: &'static str,
     ) -> axum::http::HeaderMap {
-        let guard = OriginGuard::new(false, cors.allowed_origins.as_deref());
+        let guard = OriginGuard::new(cors.allowed_origins.as_deref());
         let app = Router::new()
             .route("/admin-api/install-application", get(ok_handler))
-            .layer(build_cors_layer(cors, &guard));
+            .layer(build_cors_layer(cors, Some(&guard)));
 
         app.oneshot(
             Request::builder()
@@ -739,7 +735,7 @@ mod cors_tests {
         };
         let app = Router::new()
             .route("/x", get(ok_handler))
-            .layer(build_cors_layer(&cors, &OriginGuard::new(true, None)));
+            .layer(build_cors_layer(&cors, None));
 
         // Allowlisted origin → echoed back.
         let resp = app

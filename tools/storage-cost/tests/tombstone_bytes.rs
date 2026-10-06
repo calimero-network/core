@@ -3,11 +3,13 @@
 //! cannot see the second: the map is one row however many ids it lists, and
 //! every write to the map rewrites the list.
 
-use calimero_storage::collections::{Root, UnorderedMap};
+use calimero_storage::collections::{AuthoredMap, Root, UnorderedMap};
+use calimero_storage::reclaim::COLLECTED_RECORD_LEN;
 use calimero_storage::store::MainStorage;
 use storage_cost::{collect_garbage, measure, reset_counters, resident};
 
 type Map = UnorderedMap<String, String, MainStorage>;
+type Owned = AuthoredMap<String, String>;
 
 const FIELD: &str = "tombstones";
 const FEW: usize = 10; // entries deleted before the measured write
@@ -17,6 +19,7 @@ const MAX_GROWTH: f64 = 1.5; // trie-shape headroom; listing MANY ids costs 300x
 /// varint of every insert it has ever ordered (`next_order`), which a thousand
 /// inserts take from one byte to two.
 const NEXT_ORDER_GROWTH: u64 = 1;
+const SIGNED_DELETES: u64 = 1_000; // signed entries the record gate inserts and deletes
 
 /// Builds a map holding one live entry, inserts `n` more and deletes them,
 /// each phase its own commit, as separate calls are.
@@ -65,6 +68,37 @@ fn deleted_entries_hold_no_bytes_once_collected() {
         collected.0 == built.0 && collected.1 <= built.1 + NEXT_ORDER_GROWTH,
         "1000 entries inserted and deleted still hold rows or bytes after GC \
          ({built:?} before, {deleted:?} deleted, {collected:?} collected)"
+    );
+}
+
+/// A signed entry is the exception: its delete leaves a record, which keeps a
+/// replay of an older signed write dropped once the tombstone is gone.
+#[test]
+fn collected_signed_entries_hold_only_their_records() {
+    let ((built, collected), _) = measure(|| {
+        let mut map = Root::new(|| Owned::new_with_field_name(FIELD));
+        drop(map.insert("kept".to_owned(), "kept".to_owned()));
+        map.commit();
+        let built = resident();
+        let mut map = Root::<Owned>::fetch().expect("map should exist");
+        for i in 0..SIGNED_DELETES {
+            drop(map.insert(format!("key-{i}"), format!("value-{i}")));
+        }
+        map.commit();
+        let mut map = Root::<Owned>::fetch().expect("map should exist");
+        for i in 0..SIGNED_DELETES {
+            drop(map.remove(&format!("key-{i}")));
+        }
+        map.commit();
+        collect_garbage();
+        (built, resident())
+    });
+    let records = (SIGNED_DELETES, SIGNED_DELETES * COLLECTED_RECORD_LEN as u64);
+    assert!(
+        collected.0 == built.0 + records.0
+            && collected.1 <= built.1 + NEXT_ORDER_GROWTH + records.1,
+        "{SIGNED_DELETES} signed entries inserted and deleted hold more than their records \
+         after GC ({built:?} before, {collected:?} collected)"
     );
 }
 

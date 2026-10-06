@@ -25,7 +25,6 @@ use std::borrow::Cow;
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_crypto::Nonce;
-use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -107,10 +106,9 @@ pub const MAX_COMPRESSED_PAYLOAD_SIZE: usize = 8 * 1024 * 1024;
 /// 3. Reject any tampered or unsigned entity record before
 ///    `handle.put` lands the bytes.
 ///
-/// Non-entity records (per-entity rotation log, local sync-state
-/// pointers) ship as [`SnapshotRecord::Auxiliary`] — they're
-/// either implicit-from-the-signed-entity (rotation log) or
-/// local-state-ish (sync state) and not individually verifiable.
+/// Non-entity records (local sync-state pointers) ship as
+/// [`SnapshotRecord::Auxiliary`] - they're local-state-ish and not
+/// individually verifiable.
 /// A hand-written [`BorshDeserialize`] (not the derive) keeps the trailing
 /// `Entity.schema_bytecode_id` field backward-compatible: a peer running the
 /// pre-#2539 binary serialises `Entity` as `{id, entry, index}` and stops, so
@@ -155,16 +153,14 @@ pub enum SnapshotRecord {
         schema_bytecode_id: Option<[u8; 32]>,
     },
     /// Auxiliary state keyed under the same context but not
-    /// signature-verifiable per record. Currently used for:
+    /// signature-verifiable per record. No kind is in use, and the receiver
+    /// refuses every one:
     ///
-    /// * `kind = 3`: `Key::RotationLog(id)` — per-entity writer
-    ///   rotation history. Its authenticity is implicit from the
-    ///   signed entity's writer set (the rotation log just records
-    ///   transitions between writer-set-signed states).
+    /// * `kind = 2` named a sync-state key nothing ever wrote.
+    /// * `kind = 3` was a per-entity rotation log that older peers shipped. It
+    ///   is retired: a cell's writers come from the governance fold.
     ///
-    /// The receiver re-derives the storage key via
-    /// `Key::RotationLog(id).to_bytes()` and writes through. Any other
-    /// kind is refused.
+    /// Neither number is reused.
     Auxiliary {
         /// Discriminator byte from `calimero_storage::store::Key`.
         kind: u8,
@@ -237,8 +233,6 @@ pub mod snapshot_record_kind {
     /// `Key::Entry(id)` — not used in `Auxiliary` (Entry is shipped
     /// inside `Entity`); kept here for completeness.
     pub const ENTRY: u8 = 1;
-    /// `Key::RotationLog(id)` — per-entity writer rotation history.
-    pub const ROTATION_LOG: u8 = 3;
 }
 
 /// Cursor for resuming snapshot pagination.
@@ -854,28 +848,14 @@ pub enum BroadcastMessage<'a> {
         dag_heads: Vec<[u8; 32]>,
     },
 
-    /// TEE node announces its attestation to join a group.
-    /// Broadcast on the group gossip topic by fleet nodes after being assigned by the gatekeeper.
-    TeeAttestationAnnounce {
-        /// TDX attestation quote bytes
-        quote_bytes: Vec<u8>,
-        /// The announcing node's identity public key
-        public_key: PublicKey,
-        /// Group DAG head hash for freshness binding
-        nonce: [u8; 32],
-        /// Type of specialized node
-        node_type: SpecializedNodeType,
-        /// The announcing node's account credential, so the verifier can put it
-        /// on the admission op and bind the device in the same apply as the
-        /// membership.
-        ///
-        /// Unauthenticated on its own, and it does not need to be: the quote
-        /// binds `report_data` to `public_key`, and the verifier refuses any
-        /// credential whose certificate does not name that same key. A
-        /// credential lifted from another announcement therefore fails the same
-        /// guard every other join uses.
-        account: Box<calimero_governance_types::JoinAccountCredential>,
-    },
+    /// A TEE node asks the members of a namespace for admission.
+    ///
+    /// Broadcast on the namespace topic by a fleet node that wants to be admitted,
+    /// or to have its attestation evidence refreshed. It carries nothing to
+    /// verify and admits nobody: a member that may vouch answers the node that
+    /// published it (the gossip source) with a fresh challenge, and only a quote
+    /// over that challenge can be admitted.
+    TeeAdmissionPrompt,
 
     /// Signed namespace governance operation (Phase 2 rewrite).
     ///
@@ -913,28 +893,6 @@ pub enum BroadcastMessage<'a> {
         ciphertext: Cow<'a, [u8]>,
     },
 
-    /// [`Self::TeeAttestationAnnounce`] plus the mero-tee node release the
-    /// announcer runs, for namespaces that admit TEEs by signed release.
-    ///
-    /// A new variant rather than a new field, because a field would change
-    /// the old variant's encoding. The release is a claim: the admitter fetches
-    /// that release's signed measurements and refuses a quote that matches
-    /// none of them. A fleet node sends both announcements, so an admitter
-    /// that predates this variant, and cannot decode it, still sees the old
-    /// one.
-    ///
-    /// **Borsh ordering**: appended at the tail so every existing variant
-    /// discriminant is unchanged.
-    TeeReleaseAttestationAnnounce {
-        quote_bytes: Vec<u8>,
-        public_key: PublicKey,
-        nonce: [u8; 32],
-        node_type: SpecializedNodeType,
-        account: Box<calimero_governance_types::JoinAccountCredential>,
-        /// The node release, e.g. `2.3.72`.
-        release_version: String,
-    },
-
     /// A TEE authority ran `trigger` and the run wrote nothing, so no delta
     /// carries its TEE envelope. Every TEE that receives this
     /// records the trigger as fired and stands down.
@@ -944,8 +902,7 @@ pub enum BroadcastMessage<'a> {
     /// context topic in the clear; it names a delta id or a tick and a method
     /// name, nothing a member could not already see.
     ///
-    /// **Borsh ordering**: appended at the tail so every existing variant
-    /// discriminant is unchanged. An older node drops it as undecodable.
+    /// An older node drops it as undecodable.
     TeeFired {
         context_id: ContextId,
         /// The attested key of the TEE that ran it.
@@ -1711,7 +1668,7 @@ mod tests {
 
         // Auxiliary is unaffected by the new trailing field.
         let aux = SnapshotRecord::Auxiliary {
-            kind: snapshot_record_kind::ROTATION_LOG,
+            kind: 3,
             id: [3u8; 32],
             value: vec![1],
         };

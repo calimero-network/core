@@ -619,10 +619,31 @@ pub fn writers_of(accounts: impl IntoIterator<Item = AccountId>) -> BTreeMap<Acc
 pub fn apply_ctx_for(account: AccountId) -> crate::interface::ApplyContext {
     crate::interface::ApplyContext {
         effective_writers: None,
-        delta_id: None,
-        delta_hlc: None,
         signer_account: Some(account),
     }
+}
+
+/// A [`RuntimeEnv`](crate::env::RuntimeEnv) over this thread's own mock store,
+/// identities unchanged, that answers every cell's writers with `resolver`: the
+/// governance fold, played by a test.
+#[must_use]
+pub fn env_resolving(
+    resolver: impl Fn(Id) -> Option<crate::shared_writers::CellWriters> + 'static,
+) -> crate::env::RuntimeEnv {
+    use std::rc::Rc;
+
+    use crate::store::{Key, MockedStorage, StorageAdaptor};
+
+    type Mock = MockedStorage<{ usize::MAX }>;
+    crate::env::RuntimeEnv::new(
+        Rc::new(|key: &Key| Mock::storage_read(*key)),
+        Rc::new(|key: Key, value: &[u8]| Mock::storage_write(key, value)),
+        Rc::new(|key: &Key| Mock::storage_remove(*key)),
+        env::context_id(),
+        env::device_id(),
+        env::account_id(),
+    )
+    .with_shared_writers(Rc::new(resolver))
 }
 
 /// Returns the `PublicKey` corresponding to a `SigningKey`.
@@ -783,6 +804,22 @@ pub fn build_signed_member_action(
     action
 }
 
+/// Build a signed `Shared` `DeleteRef` for the cell `id`, claiming `writers` (the
+/// set stored with the cell) and signed by `signer_sk`.
+pub fn build_signed_shared_delete(
+    id: Id,
+    writers: BTreeSet<AccountId>,
+    signer_sk: &SigningKey,
+    deleted_at: u64,
+) -> Action {
+    let signature_data = Some(placeholder_signature(signer_sk, deleted_at));
+    let storage_type = StorageType::Shared {
+        writers: crate::entities::full_mask(writers),
+        signature_data,
+    };
+    build_signed_delete(id, storage_type, signer_sk, deleted_at)
+}
+
 /// Build a signed `SharedMember` `DeleteRef`, signed by `signer_sk`. The
 /// member's writers are resolved from `anchor` at apply time (no inline set).
 pub fn build_signed_member_delete(
@@ -791,18 +828,35 @@ pub fn build_signed_member_delete(
     signer_sk: &SigningKey,
     deleted_at: u64,
 ) -> Action {
+    let signature_data = Some(placeholder_signature(signer_sk, deleted_at));
+    let storage_type = StorageType::SharedMember {
+        anchor,
+        signature_data,
+    };
+    build_signed_delete(id, storage_type, signer_sk, deleted_at)
+}
+
+fn placeholder_signature(signer_sk: &SigningKey, nonce: u64) -> SignatureData {
+    SignatureData {
+        signature: [0; 64],
+        nonce,
+        signer: Some(pubkey_of(signer_sk)),
+        on_behalf: None,
+    }
+}
+
+/// A `DeleteRef` of `id` under `storage_type`, whose placeholder signature is
+/// replaced by `signer_sk`'s.
+fn build_signed_delete(
+    id: Id,
+    storage_type: StorageType,
+    signer_sk: &SigningKey,
+    deleted_at: u64,
+) -> Action {
     let metadata = Metadata {
         created_at: env::time_now(),
         updated_at: deleted_at.into(),
-        storage_type: StorageType::SharedMember {
-            anchor,
-            signature_data: Some(SignatureData {
-                signature: [0; 64],
-                nonce: deleted_at,
-                signer: Some(pubkey_of(signer_sk)),
-                on_behalf: None,
-            }),
-        },
+        storage_type,
         crdt_type: None,
         field_name: None,
         schema_version: None,
@@ -818,7 +872,11 @@ pub fn build_signed_member_delete(
         ref mut metadata, ..
     } = action
     {
-        if let StorageType::SharedMember {
+        if let StorageType::Shared {
+            signature_data: Some(sd),
+            ..
+        }
+        | StorageType::SharedMember {
             signature_data: Some(sd),
             ..
         } = &mut metadata.storage_type

@@ -29,6 +29,7 @@ pub(super) fn may_void_others(op: &Op) -> bool {
     matches!(
         op.payload,
         OpPayload::MemberRemoved { .. }
+            | OpPayload::MemberLeft { .. }
             | OpPayload::MemberAdded { .. }
             | OpPayload::MemberCapabilitySet { .. }
             | OpPayload::DeviceRevoked { .. }
@@ -346,6 +347,7 @@ fn payload_written_group(payload: &OpPayload) -> Option<ContextGroupId> {
     match payload {
         OpPayload::MemberAdded { group, .. }
         | OpPayload::MemberRemoved { group, .. }
+        | OpPayload::MemberLeft { group, .. }
         | OpPayload::MemberCapabilitySet { group, .. }
         | OpPayload::DefaultCapabilitiesSet { group, .. } => Some(*group),
         _ => None,
@@ -354,7 +356,9 @@ fn payload_written_group(payload: &OpPayload) -> Option<ContextGroupId> {
 
 fn record_write(entry: &mut Written, payload: &OpPayload) {
     match payload {
-        OpPayload::MemberAdded { member, .. } | OpPayload::MemberRemoved { member, .. } => {
+        OpPayload::MemberAdded { member, .. }
+        | OpPayload::MemberRemoved { member, .. }
+        | OpPayload::MemberLeft { member, .. } => {
             let _ = entry.members.insert(*member);
         }
         OpPayload::MemberCapabilitySet { member, .. } => {

@@ -39,14 +39,15 @@ The account plane separates those jobs.
 | CRDT replica id  | never                        | yes                      |
 | KEM recipient    | no                           | yes                      |
 
-Neither is a public key. Both are content addresses:
+Neither is a public key:
 
 ```
 AccountId = H( genesis(root_pk) )
-DeviceId  = H( account ‖ nonce )
+DeviceId  = nonce ‖ H( account ‖ nonce )[..16]
 ```
 
-Because the id is a hash rather than a key, the keys underneath can rotate without the identity moving.
+Because neither id is a key, the keys underneath can rotate without the identity moving.
+The second half of a `DeviceId` binds it to its account, so a certificate naming an id minted for another account is refused, and no account can claim another's device.
 
 **The non-goal is as important as the goal.** Accounts never reach below authorization. Nothing that needs per-writer uniqueness (counter slots, HLC seeds), per-key revocability (KEM recipients), or cryptographic attribution (operation signatures) may be re-keyed onto `AccountId`. The test for any future change: *if two devices of the same account did this concurrently, is the result still correct?* If correctness depends on them being distinct, it stays device-keyed, and per-user aggregation happens **above** storage.
 
@@ -119,7 +120,7 @@ FROM THE ROOT KEY (deterministic, recomputable)
   AccountId  = H( genesis(root_pk) )
 
 RANDOM AT CREATION (generated once, stored, unrecoverable)
-  DeviceId   = H(account ‖ random 16 bytes)
+  DeviceId   = nonce ‖ H(account ‖ nonce)[..16], nonce = random 16 bytes
   KEM secret = X25519, random
   device signing keypair = Ed25519, random
 ```
@@ -192,7 +193,7 @@ Nothing in building the credential publishes or encrypts. `ensure_enrolled` mint
 
 ### The one join somebody else publishes
 
-A fleet replica cannot admit itself — an existing member has to check its attestation quote against the namespace policy first — so `MemberJoinedViaTeeAttestation` is signed by that **verifier**, not by the joiner. The credential still belongs to the replica, so it travels to the verifier on the attestation announcement, and the verifier checks it against the key the quote binds to before admitting.
+A fleet replica cannot admit itself — an existing member has to check its attestation quote against the namespace policy first — so `MemberJoinedViaTeeAttestation` is signed by that **verifier**, not by the joiner. The credential still belongs to the replica, so it travels to the verifier in the node's answer to its challenge, and the verifier checks it against the key the quote binds to before admitting.
 
 That is why the apply path does not assert `op.signer == member` for this one op, the way it does for the other three. The verifier-membership gate stands in its place.
 
@@ -254,7 +255,7 @@ Anything that records a binding must move **both** planes. "Does this change wha
   ]}
   steps={[
     { from: 0, to: 0, label: 'generate account root (once per node)' },
-    { from: 0, to: 0, label: 'account = H(root_pk); device = H(account, random)' },
+    { from: 0, to: 0, label: 'account = H(root_pk); device = nonce ‖ H(account, nonce)[..16]' },
     { from: 0, to: 0, label: 'cert signed by ACCOUNT ROOT; endorsement signed by MEMBER KEY' },
     { from: 0, to: 1, label: 'AccountDeviceLinked (encrypted GroupOp)', color: '#a5ff11' },
     { from: 1, to: 2, label: 'verify cert + endorsement; is endorser a member at the cut?' },
@@ -296,7 +297,7 @@ Pairing is a **two-way exchange**, and the ordering is forced rather than stylis
   ]}
 />
 
-**Two things gate the certificate, and they answer different questions.** The new device signs a statement over the account, its own id and both keys, so the values arrive as a statement by the device that minted them rather than as claims by whoever relayed them. But a signature only proves the payload agrees with itself, and an attacker holding both keys can arrange that — so `pair-complete` also **requires** the confirmation code, and refuses if it does not describe the key material that arrived. The account holder gets that code from whoever is at the pairing device; it is the one value an attacker rewriting the payload cannot produce.
+**Two things gate the certificate, and they answer different questions.** The new device signs a statement over the account, its own id and both keys, so the values arrive as a statement by the device that minted them rather than as claims by whoever relayed them. But a signature only proves the payload agrees with itself, and an attacker holding both keys can arrange that, so `pair-complete` also **requires** the confirmation code, and refuses if it does not describe the key material that arrived. The account holder gets that code from whoever is at the pairing device; it is the one value an attacker rewriting the payload cannot produce. It also refuses a device id not minted for the account, since no peer would accept a certificate for it.
 
 Requiring it rather than printing it for comparison is the point: an advisory step is one an operator in a hurry skips. What the requirement cannot do is force the code to travel *separately* from the keys — pasted along with them it proves nothing, since whoever rewrote the payload rewrote the code too. That part is the operator's channel, and it is the whole security assumption of pairing. See [Known limits](#known-limits) for why the code is 64 bits rather than a friendlier six digits.
 
@@ -971,7 +972,7 @@ than just the key round trip.
 
   A writer set names accounts while a signature can only name a key, so the two are bridged by `ApplyContext.signer_account`: the account the signing key speaks for, resolved by the applying node at the governance cut the delta cites, through the same at-cut fold the membership check uses. `None` means "cannot resolve yet" and the write is deferred, not refused — a not-yet-folded device binding is a timing gap, and collapsing it into "that key speaks for nobody" would turn it into permanent data loss.
 
-  Two limits remain, both closed by the unified-log cutover. The *writer set* half still resolves from the per-object rotation log at the data-DAG cut, because rotation operations bridged into the ACL plane carry no causal parents and are therefore unreachable from any cut. And a historical rotation's author is checked against the bindings at the cut the **current** write cites, not the cut the rotation happened at — every replica resolves the cited cut identically, so it converges, but it is not causal honour for rotations.
+  The *writer set* half resolves from the governance fold at the delta's own governance position, not from a per-object log at the data-DAG cut: a rotation is a signed governance op, and it counts only if its signer was a member with a bound device at the op's own parents (see [shared writer-set rotations](/protocol/governance/#shared-writer-set-rotations)). Every replica folding the same cut reaches the same set.
 
   The networked half of both planes is pinned by a scenario each, and they are
   deliberately separate: `account-device-revoke-lockout` covers **membership**
@@ -983,4 +984,4 @@ than just the key round trip.
   guarded write refused — that was a real bug, from the two account spaces above
   — so passing one scenario says nothing about the other.
 
-- **A snapshot leaf is checked by authorship, not by current authority.** It is state, not an operation: it has no causal parents, so "was this account a writer *then*" has nothing to resolve against. Asking whether the author may write *now*, as tree comparison does, would drop from every cold joiner the state of anyone who has since left or lost a device, and nothing would repair it, because the root check reads the shipped root. So the receiver asks only whose key signed the leaf: the signature must verify, and the key must have been certified for the entry's owner (`User`) or for an account in its writer set (`Shared`, or the anchor's set for a `SharedMember`). The key is resolved through every device certificate the node has ever folded (`GroupSignerAccount`), not the live binding, which a revocation, descope or device-key rotation removes. A leaf signed by some other account's key is dropped, except a `Shared` leaf whose signer removed themselves from its writer set: its last write was that rotation, and the anchor's rotation log (delivered by the same snapshot) shows the signer was a writer before it. Likewise a `SharedMember` whose signer a later rotation removed from its anchor's writers: rotations do not re-sign members, so it is kept when the signer was in the set in effect at the member's own timestamp. A leaf whose key no certificate names fails the snapshot for retry, since that usually means the joiner has not folded that far yet. What else holds a snapshot together: the sender proves it is an admitted member, the delivered contents hash to the root it claims, and every subsequent operation is authorized at its own cut.
+- **A snapshot leaf is checked by authorship, not by current authority.** It is state, not an operation: it has no causal parents, so "was this account a writer *then*" has nothing to resolve against. Asking whether the author may write *now*, as tree comparison does, would drop from every cold joiner the state of anyone who has since left or lost a device, and nothing would repair it, because the root check reads the shipped root. So the receiver asks only whose key signed the leaf: the signature must verify, and the key must have been certified for the entry's owner (`User`) or for an account among the cell's writers (`Shared`, or the anchor's for a `SharedMember`): its genesis set, which the leaf carries, or any writer a governance rotation put in it, read as the cell's ever-writers at the node's current governance heads. The key is resolved through every device certificate the node has ever folded (`GroupSignerAccount`), not the live binding, which a revocation, descope or device-key rotation removes. A writer a later rotation removed keeps what they wrote, since they stay among the ever-writers. A leaf signed by some other account's key is dropped. A leaf whose key no certificate names, or whose cell's writers cannot be read yet, fails the snapshot for retry, since that usually means the joiner has not folded that far yet. What else holds a snapshot together: the sender proves it is an admitted member, the delivered contents hash to the root it claims, and every subsequent operation is authorized at its own cut.

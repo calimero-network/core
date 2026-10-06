@@ -1,4 +1,4 @@
-//! A credential produced by the TypeScript SDK, verified here.
+//! The credential the TypeScript SDK must produce for the inputs below, verified here.
 //!
 //! This exists because its absence let a non-functional feature ship. mero-js
 //! grew an offline device-certification path whose own tests assert the
@@ -11,7 +11,11 @@
 //! The bytes below are checked in deliberately rather than generated. A fixture
 //! that regenerates from the current SDK would agree with whatever the SDK now
 //! does, which is the property that failed to hold; agreeing with a recorded
-//! artifact is the point.
+//! artifact is the point. The current bytes were regenerated outside the SDK when
+//! `DeviceId::mint` changed layout, so they pin what the SDK has to produce.
+//!
+//! The recipe below reproduces them only with a mero-js whose `mintDeviceId`
+//! writes that layout; an older one writes an id core refuses.
 //!
 //! Regenerating (only when the credential format changes on purpose, and the
 //! change is intended to be breaking):
@@ -32,7 +36,7 @@
 
 /// Inputs: root secret `5c`×32, device secret `6d`×32, kem pk `3a`×32,
 /// device-id nonce `a1`×16, `device_epoch` 0.
-const SDK_CREDENTIAL_HEX: &str = "02ed6a47a39da869b5446155e40b2d93f1e3f0167be26732bae7a3ef9d8e3a3fd300000000ca999783990fd7f4ea0c192135f78c17ac77745bf580b2ed20fea455a8133845044305da225179a277d6d96e07ff21ea2b3905c7e22b0b3625350f15c6f432938b237d788e8eaaef550c6d125823fa45f1fd5fc29b2c88bdf871119471fc13123a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a000000000000000058b84a4124014258b6548e2bc323bc6f42ea5dedfcc721f2501e22cfd3fc3e2e36ab9d76e648726379000a66f1061838673133a31b5516861811fcb0adaafe07";
+const SDK_CREDENTIAL_HEX: &str = "02ed6a47a39da869b5446155e40b2d93f1e3f0167be26732bae7a3ef9d8e3a3fd300000000ca999783990fd7f4ea0c192135f78c17ac77745bf580b2ed20fea455a8133845a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1044305da225179a277d6d96e07ff21ea8b237d788e8eaaef550c6d125823fa45f1fd5fc29b2c88bdf871119471fc13123a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a00000000000000004ba6c450e21f28d01b03c2fcb10a5c188a388ef6298fcb1ec23d381b7acc8f3386f08d81672c9089d2ad7bf0ff180ccad61163baa852a021c6773e625aed8a00";
 
 /// The account that credential's genesis names.
 const SDK_ACCOUNT_HEX: &str = "ca999783990fd7f4ea0c192135f78c17ac77745bf580b2ed20fea455a8133845";
@@ -42,7 +46,7 @@ const SDK_ACCOUNT_HEX: &str = "ca999783990fd7f4ea0c192135f78c17ac77745bf580b2ed2
 const SDK_SIGN_PK_HEX: &str = "8b237d788e8eaaef550c6d125823fa45f1fd5fc29b2c88bdf871119471fc1312";
 
 #[test]
-fn a_credential_from_the_typescript_sdk_verifies() {
+fn the_credential_the_typescript_sdk_must_produce_verifies() {
     let bytes = hex::decode(SDK_CREDENTIAL_HEX).expect("fixture is hex");
     let credential: crate::AccountProof<crate::DeviceCert> =
         borsh::from_slice(&bytes).expect("fixture decodes as AccountProof<DeviceCert>");
@@ -61,7 +65,7 @@ fn a_credential_from_the_typescript_sdk_verifies() {
     // over the device certificate.
     credential
         .verify(account)
-        .expect("core must accept a credential the SDK produced");
+        .expect("core must accept the credential the SDK is pinned to produce");
 }
 
 #[test]

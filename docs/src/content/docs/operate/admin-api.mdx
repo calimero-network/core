@@ -112,6 +112,7 @@ in `allowed_origins`**, or its own pages are refused.
 
 Any other browser request gets `403` before a handler runs, on every route
 including `/jsonrpc`, `/ws` and `/sse`, and CORS does not answer it.
+A WebSocket upgrade is held to this rule with embedded auth as well; see [WebSocket](#websocket).
 Private-network access is advertised only to origins listed in
 `allowed_origins`. Requests with neither an `Origin` nor `Sec-Fetch-Site` (curl,
 meroctl, SDKs outside a browser, Node's `fetch`) are unaffected, whatever host
@@ -206,6 +207,19 @@ in this order:
 If the `Authorization` header is present, the `?token=` query parameter is
 ignored entirely.
 
+A WebSocket has no CORS, so the node judges a browser's upgrade by its origin itself, in every auth mode, by the same rule that proxy auth mode applies to every route (see [CORS and browser / Tauri clients](#cors-and-browser--tauri-clients)).
+With embedded auth the token is checked first: an upgrade without a valid token gets `401` whatever its origin, and a page the origin rule does not admit gets `403` only when it carries a valid token.
+So an app hosted on another origin must be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
+A `GET /ws` that is not a WebSocket upgrade gets `400`.
+A client that sends neither `Origin` nor `Sec-Fetch-Site` is not a browser and is unaffected.
+
+:::caution[Proxy auth mode: a loopback page always gets a socket]
+In proxy auth mode a page on a loopback origin (`http://localhost:<port>`, `tauri://localhost`) is admitted a socket, whatever proxy is in front of the node.
+If that proxy authenticates callers by something a browser attaches by itself (a cookie, HTTP Basic, a client certificate), any page on a loopback origin on the operator's machine gets an authenticated socket.
+A proxy that authenticates by a token the client must present, as mero-auth does, is not affected.
+If your proxy authenticates by ambient credentials, have it check `Origin` on `/ws` itself.
+:::
+
 The upgrade needs `context:subscribe`. Each `execute` message is then checked
 against the same token for `context:execute` on its context (and method, for a
 method-scoped grant), so a subscribe-only token can subscribe but its `execute`
@@ -220,6 +234,10 @@ the proxy forwards; see [Where a scope is checked](/operate/auth/#where-a-scope-
 | GET | `/sse` | Open an SSE event stream. |
 | GET | `/sse/session/:session_id` | Fetch/attach to an existing SSE session. |
 | POST | `/sse/subscription` | Manage subscriptions for an SSE session. |
+
+Open the stream with `EventSource` or `fetch`.
+A browser request that no script opened, such as navigating to `/sse` or loading it as an image or a frame (`Sec-Fetch-Mode` other than `cors` or `same-origin`), gets `403` and creates no session.
+Clients that are not browsers (curl, SDKs on a server) send no `Sec-Fetch-Mode` and are unaffected.
 
 ### SSE durability and reconnection
 
@@ -286,7 +304,7 @@ rather than assume the event stream is a complete, gap-free log.
 | DELETE | `/admin-api/contexts/:context_id` | Delete a context. |
 | POST | `/admin-api/contexts/:context_id/application` | Update the context's application. |
 | POST | `/admin-api/contexts/:context_id/resync` | Force a resync of the context. |
-| GET | `/admin-api/contexts/:context_id/intents` | Relay descriptor: whether this node relays delegated writes for the context (`canAuthorOnBehalf`). See [delegated authorship](/protocol/delegated-authorship/). |
+| GET | `/admin-api/contexts/:context_id/intents` | Relay descriptor: the account and signing key a warrant must name (`executorAccount`, `executorKey`), and whether this node relays delegated writes for the context (`canAuthorOnBehalf`). See [delegated authorship](/protocol/delegated-authorship/). |
 | POST | `/admin-api/contexts/:context_id/intents` | Execute a member's signed intent under their warrant; `403` if this node may not relay. See [delegated authorship](/protocol/delegated-authorship/). |
 | GET | `/admin-api/contexts/for-application/:application_id` | List contexts for an application. |
 | GET | `/admin-api/contexts/with-executors/for-application/:application_id` | List contexts with their executors for an application. |

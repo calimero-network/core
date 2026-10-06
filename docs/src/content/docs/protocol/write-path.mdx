@@ -39,7 +39,7 @@ The landing page promised to follow one operation from birth to convergence. Thi
 
 1. **Request and lock.** — A request (HTTP/RPC) names a context and a method. The node takes an execution lock on that context so concurrent writes don't interleave. Read-only calls take a shared lock and skip everything below — they produce no operation.
 
-2. **Execute.** — The WASM application runs the method against current state ([execution](/protocol/execution/)). It produces an **outcome**: a new root hash and an artifact of committed writes, plus events and any queued cross-calls. If it traps, the lock releases and nothing is written.
+2. **Execute.** — The WASM application runs the method against current state ([execution](/protocol/execution/)). It produces an **outcome**: a new root hash and an artifact of committed writes, plus events and any queued cross-calls. If it traps, the lock releases and nothing is written. If the run asked to rotate a shared cell's writers, the node publishes each rotation as a governance op now, before anything below, so the operation's governance position includes it ([governance](/protocol/governance/)).
 
 3. **Build the operation.** — The committed writes become data-plane operations in the context scope. Each takes the scope's **current heads as parents**, a fresh **hybrid timestamp**, the executor's **member identity** as author, and a content-addressed **id**, all as defined by the [operations](/protocol/operations/) model.
 

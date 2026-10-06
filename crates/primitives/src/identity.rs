@@ -351,32 +351,32 @@ impl DeviceId {
     /// Derived from the account and a fresh nonce rather than from the device's
     /// keys, so rotating a device's keypair keeps its replica identity — and
     /// therefore its counter slots and HLC lineage — intact.
+    ///
+    /// The nonce is the first half and a hash binding it to the account the
+    /// second, so [`Self::is_minted_for`] can check the account from the id alone.
     #[must_use]
     pub fn mint(account: AccountId, nonce: [u8; 16]) -> Self {
-        Self::from(domain_hash(DEVICE_ID_DOMAIN, &[account.as_bytes(), &nonce]))
+        let mut id = [0u8; 32];
+        id[..16].copy_from_slice(&nonce);
+        id[16..].copy_from_slice(&device_id_binding(account, &nonce));
+        Self(id)
     }
 
-    /// The 16-byte prefix used as this device's HLC instance seed.
-    ///
-    /// RGA character ids are minted from this seed, and two replicas sharing a
-    /// seed mint colliding ids — which loses characters silently. So at most one
-    /// of a colliding pair may be live in a scope, and the **lower** device id is
-    /// the arbitrary-but-fixed winner. (Scope-local is sufficient: character ids
-    /// only need to be unique within the scope that stores them.)
-    ///
-    /// That rule is applied when the device set is **read**, not when a link is
-    /// admitted — see `ScopeState::live_devices`. Deciding it per link cannot
-    /// work: "is there a lower colliding id" reads only what has folded so far,
-    /// so the live set would depend on arrival order. Minting the id from a fresh
-    /// nonce makes a collision vanishingly unlikely in any case; the rule is
-    /// there so that a deliberate one is resolved identically everywhere rather
-    /// than corrupting the CRDT planes.
+    /// Whether [`Self::mint`] made this id for `account`. A certificate naming an
+    /// id minted for another account must be refused, or it could claim that id.
     #[must_use]
-    pub fn hlc_seed(&self) -> [u8; 16] {
-        let mut seed = [0u8; 16];
-        seed.copy_from_slice(&self.as_bytes()[..16]);
-        seed
+    pub fn is_minted_for(&self, account: AccountId) -> bool {
+        let (nonce, binding) = self.0.split_at(16);
+        binding == device_id_binding(account, nonce)
     }
+}
+
+/// The half of a [`DeviceId`] that ties its nonce to `account`.
+fn device_id_binding(account: AccountId, nonce: &[u8]) -> [u8; 16] {
+    let hash = domain_hash(DEVICE_ID_DOMAIN, &[account.as_bytes(), nonce]);
+    let mut binding = [0u8; 16];
+    binding.copy_from_slice(&hash[..16]);
+    binding
 }
 
 // Needed for `DeviceId` to be aliasable: the alias store layer copies the

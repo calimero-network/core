@@ -76,7 +76,7 @@
 //!   captured delta the way `calimero-context` does before a peer applies it.
 //!   What it still does NOT model is the causal cut — `effective_writers` is
 //!   always `None`, so writer sets resolve from settled local state rather than
-//!   from the rotation log at the delta's parents. A test about rotation
+//!   from the governance fold at the delta's parents. A test about rotation
 //!   ORDERING still belongs in merobox.
 //!
 //!   Until 2026-09 this was not covered at all, and the way it failed is worth
@@ -206,7 +206,7 @@ const SHARED_ACCOUNT: [u8; 32] = {
 /// a signature the receiver verifies against the key the action names
 /// (`Interface::apply_action`'s `resolve_signer`), so a device id that is not
 /// a verifying key cannot verify — and a rejected action is *dropped*, not
-/// raised (`apply_child_action_lenient`). The harness therefore used to
+/// raised (`apply_action_lenient`). The harness therefore used to
 /// exchange deltas that every replica silently refused, leaving each holding its
 /// own local write: values individually correct, roots different. That is
 /// core#3965.
@@ -652,7 +652,7 @@ where
             hashes.push(env::root_hash());
 
             // A dropped action is a silent no-op that LOOKS like divergence.
-            // `apply_child_action_lenient` refuses an unverifiable, unauthorized
+            // `apply_action_lenient` refuses an unverifiable, unauthorized
             // or stale action and continues the batch — right for a production
             // merge, fatal for a test, because the replica then keeps only its
             // own local write. Every value-level invariant still passes (the

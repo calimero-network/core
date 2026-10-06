@@ -14,7 +14,7 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::Store;
 use core::num::NonZeroU64;
 
-const DEVICE: [u8; 32] = [0x7D; 32];
+const DEVICE_NONCE: [u8; 16] = [0x7D; 16];
 
 struct Namespace {
     store: Store,
@@ -38,12 +38,12 @@ impl Namespace {
         }
     }
 
-    /// A certificate binding `DEVICE` to `key` at `device_epoch`.
+    /// A certificate binding the account's device to `key` at `device_epoch`.
     fn cert(&self, key: &PublicKey, device_epoch: u32) -> DeviceCert {
         DeviceCert::sign(
             &self.root_sk,
             self.genesis.account_id(),
-            DeviceId::from(DEVICE),
+            DeviceId::mint(self.genesis.account_id(), DEVICE_NONCE),
             key,
             &KemPublicKey::from([0x2B; 32]),
             0,
@@ -52,7 +52,7 @@ impl Namespace {
         .expect("sign the device cert")
     }
 
-    /// Fold a join that binds `DEVICE` to `key` at `device_epoch`; returns its id.
+    /// Fold a join that binds the account's device to `key` at `device_epoch`; returns its id.
     fn join(&mut self, parent: Option<[u8; 32]>, key: &PublicKey, device_epoch: u32) -> [u8; 32] {
         let payload = OpPayload::MemberJoinedWithDevice {
             group: self.ns,
@@ -65,7 +65,7 @@ impl Namespace {
         self.fold(parent, key, payload)
     }
 
-    /// Fold a link of `DEVICE` to `key` under `scope_epoch`; returns its id.
+    /// Fold a link of the account's device to `key` under `scope_epoch`; returns its id.
     fn link(&mut self, parent: [u8; 32], key: &PublicKey, scope_epoch: u32) -> [u8; 32] {
         let payload = OpPayload::DeviceLinked {
             genesis: self.genesis,
@@ -76,7 +76,7 @@ impl Namespace {
         self.fold(Some(parent), key, payload)
     }
 
-    /// Fold `payload`, authored by this account's `DEVICE` under `key`; returns its id.
+    /// Fold `payload`, authored by this account's device under `key`; returns its id.
     fn fold(&mut self, parent: Option<[u8; 32]>, key: &PublicKey, payload: OpPayload) -> [u8; 32] {
         self.clock += 1;
         let op = Op::new(
@@ -84,7 +84,7 @@ impl Namespace {
             parent.into_iter().collect(),
             Authorship {
                 account: self.genesis.account_id(),
-                device: DeviceId::from(DEVICE),
+                device: DeviceId::mint(self.genesis.account_id(), DEVICE_NONCE),
                 device_key: *key,
             },
             HybridTimestamp::new(Timestamp::new(
@@ -104,7 +104,7 @@ impl Namespace {
             &self.store,
             self.ns,
             &self.genesis.account_id(),
-            &DeviceId::from(DEVICE),
+            &DeviceId::mint(self.genesis.account_id(), DEVICE_NONCE),
             &[cut],
         )
     }
@@ -123,7 +123,7 @@ impl Namespace {
             &self.store,
             self.ns,
             account,
-            &DeviceId::from(DEVICE),
+            &DeviceId::mint(self.genesis.account_id(), DEVICE_NONCE),
             device_epoch,
             &[cut],
         )
@@ -168,7 +168,7 @@ fn a_device_is_withdrawn_only_at_cuts_that_hold_its_withdrawal() {
         &key,
         OpPayload::DeviceRevoked {
             account,
-            device: DeviceId::from(DEVICE),
+            device: DeviceId::mint(account, DEVICE_NONCE),
         },
     );
 
@@ -183,7 +183,7 @@ fn a_device_is_withdrawn_only_at_cuts_that_hold_its_withdrawal() {
             &key,
             OpPayload::DeviceDescoped {
                 account,
-                device: DeviceId::from(DEVICE),
+                device: DeviceId::mint(account, DEVICE_NONCE),
                 scope_epoch,
             },
         )

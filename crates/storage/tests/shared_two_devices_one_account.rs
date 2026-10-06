@@ -4,7 +4,7 @@
 //! the same value, and the root hashes still differed. It was not one. The
 //! convergence harness had no signing identity, so every `SharedMember` delta it
 //! exchanged failed signature verification — and a verification failure is
-//! *dropped* by the sync merge (`apply_child_action_lenient`), not raised. Each
+//! *dropped* by the sync merge (`apply_action_lenient`), not raised. Each
 //! replica therefore kept only its own local write: individually valid, so the
 //! value invariant passed, and the roots differed because nothing had merged.
 //!
@@ -26,7 +26,7 @@
 //! first test above — before the harness could sign, it failed.
 //!
 //! What this does NOT cover: the causal cut. The harness resolves writers from
-//! settled local state, never from the rotation log at a delta's parents, so
+//! settled local state, never from the governance fold at a delta's parents, so
 //! rotation ORDERING lives in merobox — see
 //! `apps/scaffolding-e2e/workflows/shared-storage-account-writers-concurrent.yml`
 //! for the same two-devices-of-one-account story over the real wire, where the

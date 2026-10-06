@@ -172,7 +172,7 @@ mod tests {
     ) -> DeviceId {
         let genesis = AccountGenesis::new(root_sk.public_key());
         let account = genesis.account_id();
-        let device = DeviceId::from([seed; 32]);
+        let device = DeviceId::mint(account, [seed; 16]);
         let proof = AccountProof {
             genesis,
             chain: vec![],

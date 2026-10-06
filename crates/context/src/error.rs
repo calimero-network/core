@@ -270,6 +270,20 @@ pub enum ContextError {
         cause: String,
     },
 
+    /// The device id offered for pairing was not minted for the account, so no
+    /// peer would accept a certificate for it. A `400`: the payload is wrong.
+    #[error(
+        "refusing to certify device {device}: its id was not minted for account \
+         {account}, so no peer would accept the certificate. Re-run \
+         `account pair-init` with a client that mints the current device id"
+    )]
+    PairingDeviceNotMinted {
+        /// The device being certified (for the message only).
+        device: String,
+        /// The account the pairing certifies into.
+        account: String,
+    },
+
     /// The confirmation code does not describe the key material that arrived.
     ///
     /// Never carries the expected code: an attacker able to drive the endpoint

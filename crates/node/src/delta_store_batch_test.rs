@@ -52,7 +52,7 @@ async fn add_deltas_batch_empty_is_noop() {
     let (delta_store, _tmp, _rx) = build_delta_store().await;
 
     let result = delta_store
-        .add_deltas_batch(Vec::new())
+        .add_deltas_batch(Vec::new(), |_| {})
         .await
         .expect("empty batch succeeds");
 
@@ -69,7 +69,7 @@ async fn add_deltas_batch_classifies_all_pending() {
     let inputs: Vec<BatchDeltaInput> = ids.iter().map(|id| pending_input(*id)).collect();
 
     let result = delta_store
-        .add_deltas_batch(inputs)
+        .add_deltas_batch(inputs, |_| {})
         .await
         .expect("pending batch succeeds");
 
@@ -112,7 +112,7 @@ async fn add_deltas_batch_matches_single_path_for_pending() {
     let (store_b, _tmp_b, _rx_b) = build_delta_store().await;
     let inputs: Vec<BatchDeltaInput> = ids.iter().map(|id| pending_input(*id)).collect();
     let result = store_b
-        .add_deltas_batch(inputs)
+        .add_deltas_batch(inputs, |_| {})
         .await
         .expect("batch add succeeds");
     assert_eq!(result.pending.len(), ids.len());
@@ -188,14 +188,17 @@ async fn every_ingest_entry_point_refuses_a_delta_naming_too_many_parents() {
     let in_batch = [0x03u8; 32];
     let honest = [0x01u8; 32];
     let result = delta_store
-        .add_deltas_batch(vec![
-            BatchDeltaInput {
-                delta: make_delta(in_batch, flood_parents),
-                events: Some(b"events".to_vec()),
-                ..pending_input(in_batch)
-            },
-            pending_input(honest),
-        ])
+        .add_deltas_batch(
+            vec![
+                BatchDeltaInput {
+                    delta: make_delta(in_batch, flood_parents),
+                    events: Some(b"events".to_vec()),
+                    ..pending_input(in_batch)
+                },
+                pending_input(honest),
+            ],
+            |_| {},
+        )
         .await
         .expect("the rest of the batch goes on");
     assert_eq!(result.failed, vec![in_batch]);

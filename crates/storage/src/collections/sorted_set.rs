@@ -269,6 +269,11 @@ where
                 .is_some_and(|stored| stored.borrow() == value))
     }
 
+    /// This collection's own id; two handles holding it name the same entries.
+    pub(crate) fn collection_id(&self) -> Id {
+        self.inner.id()
+    }
+
     /// The deterministic storage entity id this `value` maps to — lets the
     /// add-wins merge consult `Index::is_deleted` without re-deriving
     /// `compute_id`. See [`UnorderedSet::entry_id`](super::UnorderedSet::entry_id).

@@ -24,7 +24,7 @@
 
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::AccountId;
+use calimero_primitives::identity::{AccountId, PublicKey};
 
 use super::support::key;
 use crate::account::borsh_bytes;
@@ -43,6 +43,7 @@ fn terms() -> WarrantTerms {
         context: ContextId::from([0x11; 32]),
         author_account: AccountId::from([0x22; 32]),
         executor: AccountId::from([0x33; 32]),
+        executor_key: PublicKey::from([0x77; 32]),
         app_version: ApplicationId::from([0x44; 32]),
         method: METHOD.to_owned(),
         intent_hash: Warrant::intent_hash(METHOD, ARGS),
@@ -78,7 +79,7 @@ fn the_intent_hash_is_stable() {
 fn the_signing_preimage_is_stable() {
     assert_eq!(
         hex::encode(fixture().signing_payload()),
-        "cd03cfaad8fb5f5aa143c76f35f39363b6608b820ab318a53ed01be901c7c6c7",
+        "f7ebb6c7645c551a7148866d7b2268f7e62fe79685e05ae82d131a2fbde75e34",
         "the signing preimage changed; every warrant signed elsewhere now \
          verifies nowhere",
     );
@@ -99,8 +100,8 @@ fn the_wire_encoding_is_stable() {
 
     assert_eq!(
         bytes.len(),
-        351,
-        "32*6 ids and hashes + (4 + 3) method + 2*(4 + 32) cited heads + 8 + 8 \
+        383,
+        "32*7 ids and hashes + (4 + 3) method + 2*(4 + 32) cited heads + 8 + 8 \
          + 64. A different length means a field changed shape, and a signer in \
          another language is now wrong",
     );
@@ -117,6 +118,8 @@ fn the_wire_encoding_is_stable() {
             "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
             // executor
             "3333333333333333333333333333333333333333333333333333333333333333",
+            // executor_key
+            "7777777777777777777777777777777777777777777777777777777777777777",
             // app_version
             "4444444444444444444444444444444444444444444444444444444444444444",
             // method: u32 LE length 3, then "set" in ASCII
@@ -135,8 +138,8 @@ fn the_wire_encoding_is_stable() {
             // not_after 1_700_000_000, u64 little-endian
             "00f1536500000000",
             // signature
-            "4007d4164a6a15f4b6b251b45e9afad623c274451127afc1453e35667d4ec6fe",
-            "7aa8daa223c5320823c61612058c8053dcff9b361ced58bed5f05f4114099a06",
+            "317e0f841ded54b75e227d66abd819b95892218a6c70cb92d6a94fb0fb74ea81",
+            "cf0063bc163f528c67a3a4ed68278152985f6d14afa2024c33932f23d61ea006",
         ),
     );
 }

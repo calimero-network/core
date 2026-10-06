@@ -21,7 +21,7 @@ use crate::cli::Environment;
 use crate::client::Client;
 use crate::output::{ErrorLine, InfoLine};
 
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 #[command(about = "Create a new context")]
 pub struct CreateCommand {
     #[clap(
@@ -83,6 +83,25 @@ pub struct CreateCommand {
         help = "Human-readable name for the context within the group"
     )]
     pub group_name: Option<String>,
+}
+
+impl std::fmt::Debug for CreateCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateCommand")
+            .field("application_id", &self.application_id)
+            .field("params", &self.params)
+            .field("watch", &self.watch)
+            .field("context_seed", &self.context_seed)
+            .field("context", &self.context)
+            .field("service", &self.service)
+            .field("group_id", &self.group_id)
+            .field(
+                "identity_secret",
+                &self.identity_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("group_name", &self.group_name)
+            .finish()
+    }
 }
 
 impl CreateCommand {
@@ -294,4 +313,29 @@ pub struct CreateContextArgs {
     pub group_id: String,
     pub identity_secret: Option<String>,
     pub group_name: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CreateCommand;
+
+    #[test]
+    fn debug_omits_the_identity_secret() {
+        let command = CreateCommand {
+            application_id: None,
+            params: None,
+            watch: None,
+            context_seed: None,
+            context: None,
+            service: None,
+            group_id: "group".to_owned(),
+            identity_secret: Some("identity-secret".to_owned()),
+            group_name: Some("team-notes".to_owned()),
+        };
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains("identity-secret"), "{shown}");
+        assert!(shown.contains("team-notes"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }

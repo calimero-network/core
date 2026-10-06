@@ -38,7 +38,6 @@ calimero-node-primitives.workspace = true
 calimero-authz.workspace = true
 calimero-account.workspace = true
 calimero-op.workspace = true
-calimero-op-adapter.workspace = true
 calimero-prelude.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-projection.workspace = true
@@ -66,6 +65,8 @@ camino.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 # Hand-written wasm modules for the execute-gate tests.
 wat.workspace = true
+# Ids of a cell's members and owned entries, for tests that play a run writing them.
+calimero-storage = { workspace = true, features = ["testing"] }
 
 [features]
 profiling = ["calimero-runtime/profiling"]

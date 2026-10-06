@@ -12,6 +12,12 @@
 //! [`prune_deleted_children`] drops it. Both records then go in the same
 //! sweep.
 //!
+//! What collecting must not forget is the delete itself: a peer that kept the
+//! entity's older signed write could replay it and bring the entity back. So
+//! the sweep replaces a signed entity's tombstone with a `Key::Collected` record
+//! of its `deleted_at` ([`collected_record`]), in the same atomic write, and
+//! apply drops a signed write to that id no newer than it, as the tombstone did.
+//!
 //! These functions read and produce whole physical entity rows
 //! ([`crate::row`]), so a node can call them on its store without running the
 //! storage layer.
@@ -20,6 +26,9 @@ use borsh::to_vec;
 
 use crate::address::Id;
 use crate::row::{decode, encode, Row};
+
+/// Bytes in a `Key::Collected` record: one `deleted_at`.
+pub const COLLECTED_RECORD_LEN: usize = size_of::<u64>();
 
 /// The `deleted_at` of the row of entity `id`, if it is a tombstone GC may
 /// collect once every member has applied the delete.
@@ -72,6 +81,30 @@ pub fn prune_deleted_children(
         data: row.data,
     };
     Some(encode(id, &pruned))
+}
+
+/// The `deleted_at` to keep a record of when collecting entity `id`'s tombstone
+/// row: only an entity whose writes apply judges by their signed nonce has one.
+#[must_use]
+pub fn deleted_at_to_record(id: Id, tombstone: &[u8]) -> Option<u64> {
+    let index = decode(id, tombstone)?.entity_index()?;
+    index
+        .deleted_at
+        .filter(|_| index.metadata.storage_type.is_signed())
+}
+
+/// The `Key::Collected` record of a delete at `deleted_at`, never below the
+/// `kept` record, so a delete that reached this node late cannot lower it.
+#[must_use]
+pub fn collected_record(deleted_at: u64, kept: Option<&[u8]>) -> [u8; COLLECTED_RECORD_LEN] {
+    let kept = kept.and_then(collected_deleted_at).unwrap_or(0);
+    deleted_at.max(kept).to_le_bytes()
+}
+
+/// The `deleted_at` a `Key::Collected` record holds.
+#[must_use]
+pub fn collected_deleted_at(record: &[u8]) -> Option<u64> {
+    Some(u64::from_le_bytes(record.try_into().ok()?))
 }
 
 /// Whether the row of entity `id` lists any deleted children, so a GC pass

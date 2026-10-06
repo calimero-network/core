@@ -14,7 +14,8 @@ use calimero_store::Store;
 use super::test_fixtures::{
     account_for, apply_member_joined, dummy_member_removed_op, enrol_member, enrolled,
     nest_for_test, nest_for_test_unchecked, real_join_account, sample_meta_with_admin,
-    sealed_join_for_test, signed_invitation_for, test_group_id, test_meta, test_store,
+    sealed_join_for_test, signed_invitation_for, signed_invitation_with_role, test_group_id,
+    test_meta, test_store,
 };
 use super::*;
 
@@ -4249,8 +4250,7 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 /// Replica-side TEE bootstrap regression guard (PR #2473, finding B).
 ///
 /// This is the REPLICA counterpart to the owner-side coverage in
-/// `crates/node/src/local_governance_node_e2e.rs::
-/// ns_announce_admits_announcer_as_read_only_tee_member`. It exercises the
+/// `crates/node/src/local_governance_node_e2e.rs::a_challenge_admits_once`. It exercises the
 /// exact apply path a freshly-admitted ReadOnlyTee fleet node (B) takes when
 /// its post-KeyDelivery retry batch replays the namespace's governance ops
 /// that it did NOT author: a `TeeAdmissionPolicySet` (nonce 1) followed by a
@@ -6922,7 +6922,7 @@ fn revoked_device_key_is_denied_until_a_live_binding_speaks_for_it() {
         "precondition: a bound key is not a revoked signer"
     );
 
-    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    let laptop = real_join_account(&laptop_pk).statement.device;
     bindings.apply_revocation(&ns_gid, laptop).unwrap();
     assert!(
         denied(),
@@ -6993,7 +6993,7 @@ fn narrowed_device_key_is_denied_until_a_newer_scope_binds_it_again() {
         "precondition: the bound device writes"
     );
 
-    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    let laptop = real_join_account(&laptop_pk).statement.device;
     assert!(bindings.narrow(&ns_gid, account, laptop, 1).unwrap());
     assert!(
         denied(),
@@ -7016,22 +7016,21 @@ fn narrowed_device_key_is_denied_until_a_newer_scope_binds_it_again() {
     assert!(!revoked(), "on either path");
 }
 
-/// A device id another account binds after this account narrowed it out is still
-/// withdrawn for this account: the row left is not this account's binding.
+/// A device another account mints from the same nonce, bound after this account
+/// narrowed its own out, leaves this account's device withdrawn.
 #[test]
-fn a_device_id_bound_by_another_account_stays_withdrawn_for_the_first() {
+fn a_device_sharing_its_nonce_bound_by_another_account_stays_withdrawn_for_the_first() {
     let store = test_store();
     let ns = ContextGroupId::from([0xD4; 32]);
     let alice_pk = PublicKey::from([0xD5; 32]);
     let alice = account_for(&alice_pk);
     let device = *AsRef::<[u8; 32]>::as_ref(&alice_pk);
     let bindings = AccountBindingRepository::new(&store);
-    let _dropped = bindings
-        .narrow(&ns, alice, calimero_account::DeviceId::from(device), 1)
-        .unwrap();
+    let alice_device = super::test_fixtures::device_for(alice, device);
+    let _dropped = bindings.narrow(&ns, alice, alice_device, 1).unwrap();
     let withdrawn = || {
         bindings
-            .device_is_withdrawn(&ns, alice, calimero_account::DeviceId::from(device))
+            .device_is_withdrawn(&ns, alice, alice_device)
             .unwrap()
     };
     assert!(withdrawn(), "precondition: narrowed out");
@@ -7047,10 +7046,10 @@ fn a_device_id_bound_by_another_account_stays_withdrawn_for_the_first() {
     let _bound = bindings
         .apply_link(&ns, &mallory.genesis, &mallory.chain, &mallory.statement, 0)
         .unwrap()
-        .expect("an unbound device id links under another account");
+        .expect("a device minted from the same nonce links under another account");
     assert!(
         withdrawn(),
-        "another account's binding of the same id does not re-admit this account's device"
+        "another account's device sharing the nonce does not re-admit this account's device"
     );
 }
 
@@ -7085,7 +7084,7 @@ fn a_link_refused_by_an_earlier_withdrawal_denies_its_key() {
     };
 
     let laptop_pk = PublicKey::from([0xEA; 32]);
-    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
+    let laptop = real_join_account(&laptop_pk).statement.device;
     assert!(!bindings
         .narrow(&ns_gid, account_for(&laptop_pk), laptop, 1)
         .unwrap());
@@ -7104,7 +7103,7 @@ fn a_link_refused_by_an_earlier_withdrawal_denies_its_key() {
     );
 
     let phone_pk = PublicKey::from([0xEB; 32]);
-    let phone = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&phone_pk));
+    let phone = real_join_account(&phone_pk).statement.device;
     bindings.apply_revocation(&ns_gid, phone).unwrap();
     assert!(matches!(
         link(&phone_pk, 0),
@@ -7154,7 +7153,7 @@ fn admission_ignores_role_but_not_revocation_or_membership() {
         "a key the namespace has no binding for is not"
     );
 
-    let reader_device = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&reader_pk));
+    let reader_device = real_join_account(&reader_pk).statement.device;
     AccountBindingRepository::new(&store)
         .apply_revocation(&ns_gid, reader_device)
         .unwrap();
@@ -7538,10 +7537,8 @@ fn an_invited_join_signed_by_a_revoked_device_is_refused() {
     let (ns_id, ns_gid, subgroup, _admin) = reentry_fixture(&store, &admin_sk.public_key());
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    // `real_join_account` certifies the device whose id is the signing key's bytes.
-    let device: [u8; 32] = *member_pk.as_ref();
     crate::AccountBindingRepository::new(&store)
-        .apply_revocation(&ns_gid, calimero_account::DeviceId::from(device))
+        .apply_revocation(&ns_gid, real_join_account(&member_pk).statement.device)
         .unwrap();
 
     let invitation = signed_invitation_for(&admin_sk, subgroup, [0xA7; 32]);
@@ -7650,9 +7647,9 @@ fn a_device_is_withdrawn_only_where_the_cut_and_the_rows_agree() {
     let ns = ContextGroupId::from([0xE4; 32]);
     let laptop_pk = PublicKey::from([0xE5; 32]);
     let account = account_for(&laptop_pk);
-    let laptop = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&laptop_pk));
-    let phone = calimero_account::DeviceId::from([0xE6; 32]);
-    let tablet = calimero_account::DeviceId::from([0xE7; 32]);
+    let laptop = real_join_account(&laptop_pk).statement.device;
+    let phone = calimero_account::DeviceId::mint(account, [0xE6; 16]);
+    let tablet = calimero_account::DeviceId::mint(account, [0xE7; 16]);
     let bindings = AccountBindingRepository::new(&store);
     let withdrawn = |device: &calimero_account::DeviceId, at_cut: Option<u32>| {
         PermissionChecker::new(&store, ns)
@@ -7699,14 +7696,15 @@ fn a_device_is_withdrawn_only_where_the_cut_and_the_rows_agree() {
 #[test]
 fn a_device_withdrawal_at_an_unfolded_cut_is_undecidable() {
     let store = test_store();
+    let account = AccountId::from([0xE9; 32]);
     let err = PermissionChecker::new(&store, ContextGroupId::from([0xE8; 32]))
         .with_apply_auth(
             &crate::test_fixtures::TEST_CUT,
             &crate::test_fixtures::UnresolvableAuthorizer,
         )
         .device_withdrawn(
-            &AccountId::from([0xE9; 32]),
-            &calimero_account::DeviceId::from([0xEA; 32]),
+            &account,
+            &calimero_account::DeviceId::mint(account, [0xEA; 16]),
         )
         .unwrap_err();
     assert!(matches!(
@@ -7780,6 +7778,115 @@ fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
             .unwrap(),
         "being re-invited is exactly how a voluntary leaver comes back"
     );
+}
+
+/// The apply deletes a namespace leaver's row in every subgroup, and the
+/// projection folds the same: after every step both name one role per group.
+#[test]
+fn the_projection_agrees_with_the_apply_across_a_namespace_leave() {
+    use calimero_context_client::local_governance::RootOp;
+    use calimero_op::{Authorship, Op, OpPayload, ScopeId};
+    use calimero_projection::ScopeState;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    // How the member is first seated in the subgroup (an admin's add of Admin,
+    // or a Member invitation), and the invitation it later rejoins on.
+    for (seated_by_add, rejoin_role, rejoined_as) in [
+        (true, 2, GroupMemberRole::ReadOnly),
+        (false, 0, GroupMemberRole::Admin),
+    ] {
+        let store = test_store();
+        let admin_sk = PrivateKey::from([0x91u8; 32]);
+        let (ns_id, ns_gid, subgroup, admin) = reentry_fixture(&store, &admin_sk.public_key());
+        MetaRepository::new(&store)
+            .save(&ns_gid, &sample_meta_with_admin(admin))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        let member_sk = PrivateKey::from([0x92u8; 32]);
+        let member_pk = member_sk.public_key();
+        let member = account_for(&member_pk);
+
+        let mut folded = ScopeState::default();
+        let mut step = 0u8;
+        let mut agree_after = |payload: Option<OpPayload>| {
+            step += 1;
+            let op = Op::new(
+                ScopeId::from(ns_id),
+                vec![],
+                Authorship::unattributed(member_pk),
+                HybridTimestamp::default(),
+                payload.expect("the op folds"),
+                [0u8; 32],
+                [0u8; 64],
+            );
+            folded.apply_with_generation(&op, u32::from(step));
+            let groups = folded.acl_view().groups;
+            for group in [ns_gid, subgroup] {
+                assert_eq!(
+                    groups.get(&group).and_then(|members| members.get(&member)),
+                    MembershipRepository::new(&store)
+                        .role_of(&group, &member)
+                        .unwrap()
+                        .as_ref(),
+                    "step {step}, seated by add: {seated_by_add}"
+                );
+            }
+        };
+        let join = |group: ContextGroupId, invited_role: u8, nonce: u8| {
+            let invitation =
+                signed_invitation_with_role(&admin_sk, group, [nonce; 32], invited_role);
+            apply_member_joined(
+                &store,
+                ns_id,
+                &member_sk,
+                invitation.clone(),
+                u64::from(nonce),
+                &admin_sk,
+            )
+            .expect("apply the join");
+            calimero_op_adapter::payload_from_root_op(&RootOp::MemberJoinedAt {
+                member,
+                signed_invitation: invitation,
+                joined_at: 1,
+                account: real_join_account(&member_pk),
+            })
+        };
+        let group_op = |signer: &PrivateKey, group: ContextGroupId, op: GroupOp| {
+            let signed =
+                SignedGroupOp::sign(signer, group.to_bytes().into(), vec![], 9, op.clone())
+                    .expect("sign the group op");
+            apply_local_signed_group_op(&store, &signed).expect("apply the group op");
+            calimero_op_adapter::payload_from_group_op(group, &op)
+        };
+
+        agree_after(join(ns_gid, 1, 1));
+        agree_after(if seated_by_add {
+            let role = GroupMemberRole::Admin;
+            group_op(&admin_sk, subgroup, GroupOp::MemberAdded { member, role })
+        } else {
+            join(subgroup, 1, 2)
+        });
+        agree_after(group_op(
+            &member_sk,
+            ns_gid,
+            GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0u8; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        ));
+        agree_after(join(ns_gid, 1, 3));
+        agree_after(join(subgroup, rejoin_role, 4));
+
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&subgroup, &member)
+                .unwrap(),
+            Some(rejoined_as)
+        );
+    }
 }
 
 #[test]
@@ -13289,7 +13396,7 @@ mod account_plane_apply {
         crate::contexts::register_context_in_group(&store, &group, &context).unwrap();
 
         // The second device: certified by the account's root, linked nowhere.
-        let device = DeviceId::from([0x5D; 32]);
+        let device = DeviceId::mint(account, [0x5D; 16]);
         let second_sk = key(0x5E);
         let cert = DeviceCert::sign(
             &root,
@@ -13307,6 +13414,7 @@ mod account_plane_apply {
                 context,
                 author_account: account,
                 executor: relay,
+                executor_key: relay_pk,
                 app_version: ApplicationId::from([0u8; 32]),
                 method: "send_message".to_owned(),
                 intent_hash: Warrant::intent_hash("send_message", b"{}"),
@@ -14022,7 +14130,7 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x71; 32]);
+        let device = DeviceId::mint(root.account(), [0x71; 16]);
         let app = ApplicationId::from([0x33; 32]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![app], 0);
 
@@ -14074,7 +14182,7 @@ mod account_plane_apply {
             .add_member(&gid, &stranger, GroupMemberRole::Admin)
             .unwrap();
 
-        let device = DeviceId::from([0x72; 32]);
+        let device = DeviceId::mint(root.account(), [0x72; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         sign_apply_local_group_op_borsh(
@@ -14109,7 +14217,7 @@ mod account_plane_apply {
             .add_member(&gid, &root.account(), GroupMemberRole::Member)
             .unwrap();
 
-        let device = DeviceId::from([0x77; 32]);
+        let device = DeviceId::mint(root.account(), [0x77; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         sign_apply_local_group_op_borsh(
@@ -14141,7 +14249,7 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x78; 32]);
+        let device = DeviceId::mint(root.account(), [0x78; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         let (_handled, _divergence, events) = crate::apply_group_op_mutations(
@@ -14181,7 +14289,7 @@ mod account_plane_apply {
             .add_member(&gid, &root.account(), GroupMemberRole::Member)
             .unwrap();
 
-        let device = DeviceId::from([0x79; 32]);
+        let device = DeviceId::mint(root.account(), [0x79; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         let (handled, _divergence, events) = crate::apply_group_op_mutations(
@@ -14220,7 +14328,10 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let _root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x73; 32]);
+        let device = DeviceId::mint(
+            AccountGenesis::new(key(6).public_key()).account_id(),
+            [0x73; 16],
+        );
         let (certificate, scope) = certified(&key(6), device, vec![], 0);
 
         sign_apply_local_group_op_borsh(
@@ -14250,7 +14361,7 @@ mod account_plane_apply {
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
         let owner = root.account();
 
-        let device = DeviceId::from([0x76; 32]);
+        let device = DeviceId::mint(owner, [0x76; 16]);
         let stranger_sk = key(6);
         let certificate = AccountProof {
             genesis: AccountGenesis::new(stranger_sk.public_key()),
@@ -14301,7 +14412,7 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x74; 32]);
+        let device = DeviceId::mint(root.account(), [0x74; 16]);
         let app_one = ApplicationId::from([0x11; 32]);
         let app_two = ApplicationId::from([0x22; 32]);
         let (certificate, widened) =
@@ -14347,7 +14458,7 @@ mod account_plane_apply {
         let owner_sk = key(1);
         let root = account_namespace_owned_by_this_node(&store, &gid, &owner_sk);
 
-        let device = DeviceId::from([0x75; 32]);
+        let device = DeviceId::mint(root.account(), [0x75; 16]);
         let (certificate, scope) = certified(root.signing_key(), device, vec![], 0);
 
         let err = crate::apply_group_op_mutations(
@@ -16288,6 +16399,51 @@ mod invite_capability {
                 .has_direct_member(&self.subgroup, &account_for(&sk.public_key()))
                 .unwrap()
         }
+    }
+
+    /// `invitation` for the role `role`, signed again by its inviter.
+    fn with_role(
+        inviter_sk: &PrivateKey,
+        mut invitation: SignedGroupOpenInvitation,
+        role: u8,
+    ) -> SignedGroupOpenInvitation {
+        use sha2::{Digest, Sha256};
+
+        invitation.invitation.invited_role = role;
+        let signature = inviter_sk
+            .sign(&Sha256::digest(
+                borsh::to_vec(&invitation.invitation).unwrap(),
+            ))
+            .unwrap();
+        invitation.inviter_signature = hex::encode(signature.to_bytes());
+        invitation
+    }
+
+    /// Only an admin's invitation may admit an admin: a member holding the invite
+    /// capability can mint a member's, and a peer refuses the rest on apply.
+    #[test]
+    fn a_peer_refuses_an_admin_invitation_from_a_member_who_may_invite() {
+        let f = fixture(INVITE);
+        let joiner_sk = PrivateKey::from([0xD6u8; 32]);
+        let plain_sk = PrivateKey::from([0xD7u8; 32]);
+        let invitation = |role| {
+            with_role(
+                &f.member_sk,
+                sign_off_node(&f.member_sk, f.subgroup, vec![f.admin]),
+                role,
+            )
+        };
+
+        apply_member_joined(&f.store, f.ns_id, &plain_sk, invitation(1), 1, &f.admin_sk)
+            .expect("control: the same inviter admits a member");
+        let err = apply_member_joined(&f.store, f.ns_id, &joiner_sk, invitation(0), 2, &f.admin_sk)
+            .expect_err("an admin invitation from a non-admin must be refused");
+
+        assert!(
+            format!("{err:#}").contains("only admins can invite new admins"),
+            "expected the admin-invitation refusal, got: {err:#}"
+        );
+        assert!(!f.is_member(&joiner_sk));
     }
 
     /// An invitation signed off-node: what a keyholder with no node of its own

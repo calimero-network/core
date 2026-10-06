@@ -318,10 +318,18 @@ mod interface__apply_actions {
         assert_eq!(retrieved_page.title, "New Title");
     }
 
+    /// A paragraph saved as a child of a root page (the root itself cannot be deleted).
+    fn saved_child(text: &str) -> Paragraph {
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+        let mut para = Paragraph::new_from_element(text, Element::new(None));
+        assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+        para
+    }
+
     #[test]
     fn apply_action__delete() {
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let page = saved_child("Test Page");
 
         let action = Action::DeleteRef {
             id: page.id(),
@@ -332,7 +340,7 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was deleted
-        let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        let retrieved_page = MainInterface::find_by_id::<Paragraph>(page.id()).unwrap();
         assert!(retrieved_page.is_none());
     }
 
@@ -340,8 +348,7 @@ mod interface__apply_actions {
     fn apply_action__delete_ref() {
         use crate::env::time_now;
 
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let page = saved_child("Test Page");
 
         let action = Action::DeleteRef {
             id: page.id(),
@@ -352,7 +359,7 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was deleted (tombstone)
-        let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        let retrieved_page = MainInterface::find_by_id::<Paragraph>(page.id()).unwrap();
         assert!(retrieved_page.is_none());
 
         // Verify tombstone exists
@@ -362,11 +369,10 @@ mod interface__apply_actions {
     #[test]
     fn delete_ref_conflict_resolution() {
         crate::tests::common::register_test_merge_functions();
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let mut page = saved_child("Test Page");
 
         // Update page (newer timestamp)
-        page.title = "Updated Page".to_owned();
+        page.text = "Updated Page".to_owned();
         page.element_mut().update();
         assert!(MainInterface::save(&mut page).unwrap());
 
@@ -382,9 +388,9 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(old_delete, &ApplyContext::empty()).is_ok());
 
         // Page should still exist (update wins)
-        let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        let retrieved = MainInterface::find_by_id::<Paragraph>(page.id()).unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().title, "Updated Page");
+        assert_eq!(retrieved.unwrap().text, "Updated Page");
 
         // Now delete with newer timestamp
         let new_delete = Action::DeleteRef {
@@ -396,8 +402,17 @@ mod interface__apply_actions {
         assert!(MainInterface::apply_action(new_delete, &ApplyContext::empty()).is_ok());
 
         // Page should be deleted (deletion wins)
-        let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
+        let retrieved = MainInterface::find_by_id::<Paragraph>(page.id()).unwrap();
         assert!(retrieved.is_none());
+    }
+
+    /// A child paragraph of the root page, saved and then updated outside merge mode.
+    fn updated_child(text: &str) -> Paragraph {
+        let mut para = saved_child(text);
+        para.text = format!("{text} updated");
+        para.element_mut().update();
+        assert!(MainInterface::save(&mut para).unwrap());
+        para
     }
 
     /// The equal-timestamp case, which `apply_delete_ref_action` calls "the
@@ -411,24 +426,19 @@ mod interface__apply_actions {
     #[test]
     fn an_equal_timestamp_delete_wins_over_the_update() {
         crate::tests::common::register_test_merge_functions();
-        let mut page = Page::new_from_element("Test Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
+        let para = updated_child("Test Paragraph");
 
-        page.title = "Updated Page".to_owned();
-        page.element_mut().update();
-        assert!(MainInterface::save(&mut page).unwrap());
-
-        let update_time = *page.element().metadata.updated_at;
+        let update_time = *para.element().metadata.updated_at;
 
         let tie = Action::DeleteRef {
-            id: page.id(),
+            id: para.id(),
             deleted_at: update_time, // exactly equal
             metadata: Metadata::default(),
         };
         assert!(MainInterface::apply_action(tie, &ApplyContext::empty()).is_ok());
 
         assert!(
-            MainInterface::find_by_id::<Page>(page.id())
+            MainInterface::find_by_id::<Paragraph>(para.id())
                 .unwrap()
                 .is_none(),
             "an equal-HLC delete must win: the guard is `deleted_at < updated_at`, strict"
@@ -461,32 +471,30 @@ mod interface__apply_actions {
 
         // Constructed INSIDE merge mode: this is what makes updated_at 0.
         // Updating inside merge mode would not — `update` preserves.
-        // `Element::root()` rather than `Element::new(None)`: a non-root element
-        // has no parent to link to yet and `save` refuses the orphan. Root goes
-        // through the same `timestamp_for_operation`, which is the field under
-        // test.
-        let page = crate::env::with_merge_mode(|| {
-            let mut page = Page::new_from_element("Merged Page", Element::root());
-            assert!(MainInterface::save(&mut page).unwrap());
-            page
+        let mut page = Page::new_from_element("Parent", Element::root());
+        assert!(MainInterface::save(&mut page).unwrap());
+        let para = crate::env::with_merge_mode(|| {
+            let mut para = Paragraph::new_from_element("Merged", Element::new(None));
+            assert!(MainInterface::add_child_to(page.id(), &mut para).unwrap());
+            para
         });
 
         assert_eq!(
-            *page.element().metadata.updated_at,
+            *para.element().metadata.updated_at,
             0,
             "merge mode must suppress the timestamp; the rest of this test rests on it"
         );
 
         // The weakest possible delete: timestamp 0.
         let earliest = Action::DeleteRef {
-            id: page.id(),
+            id: para.id(),
             deleted_at: 0,
             metadata: Metadata::default(),
         };
         assert!(MainInterface::apply_action(earliest, &ApplyContext::empty()).is_ok());
 
         assert!(
-            MainInterface::find_by_id::<Page>(page.id())
+            MainInterface::find_by_id::<Paragraph>(para.id())
                 .unwrap()
                 .is_none(),
             "a merge-stamped entity loses to a delete at timestamp 0, because the \
@@ -503,26 +511,22 @@ mod interface__apply_actions {
     fn an_entity_stamped_outside_merge_survives_the_same_delete() {
         crate::tests::common::register_test_merge_functions();
 
-        let mut page = Page::new_from_element("Live Page", Element::root());
-        assert!(MainInterface::save(&mut page).unwrap());
-        page.title = "Live Update".to_owned();
-        page.element_mut().update();
-        assert!(MainInterface::save(&mut page).unwrap());
+        let para = updated_child("Live Paragraph");
 
         assert!(
-            *page.element().metadata.updated_at > 0,
+            *para.element().metadata.updated_at > 0,
             "outside merge mode the timestamp must be real"
         );
 
         let earliest = Action::DeleteRef {
-            id: page.id(),
+            id: para.id(),
             deleted_at: 0,
             metadata: Metadata::default(),
         };
         assert!(MainInterface::apply_action(earliest, &ApplyContext::empty()).is_ok());
 
         assert!(
-            MainInterface::find_by_id::<Page>(page.id())
+            MainInterface::find_by_id::<Paragraph>(para.id())
                 .unwrap()
                 .is_some(),
             "a delete at 0 must lose to a real update timestamp"
@@ -1582,11 +1586,11 @@ mod shared_storage_replay_protection {
 /// Tests for `SharedStorage` writer-set rotation authentication.
 ///
 /// A writer-set rotation propagates as a signed per-entity action and is
-/// verified at merge against the *current* writer set (resolved from the
-/// rotation log / `effective_writers`, with the stored writers as the
-/// fallback). A rotation forged by a non-writer must be rejected — this is the
-/// merge-time backstop behind the local writer gate, and the property that
-/// makes the writer set unforgeable.
+/// verified at merge against the *current* writer set (the fold's answer in
+/// `effective_writers`, with the stored writers as the fallback). A rotation
+/// forged by a non-writer must be rejected - this is the merge-time backstop
+/// behind the local writer gate, and the property that makes the writer set
+/// unforgeable.
 #[cfg(test)]
 mod shared_storage_rotation_authentication {
     use std::collections::BTreeSet;
@@ -1600,7 +1604,7 @@ mod shared_storage_rotation_authentication {
     use crate::env;
     use crate::index::Index;
     use crate::interface::{ApplyContext, MainInterface, StorageError};
-    use crate::store::MainStorage;
+    use crate::store::{MainStorage, StorageAdaptor as _};
     use crate::tests::common::{
         account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
         build_signed_shared_action, cell_at, member_at, pubkey_of, setup_root_for_main,
@@ -1742,8 +1746,6 @@ mod shared_storage_rotation_authentication {
         // unresolvable signer, which would pass this assertion for free.
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers.clone())),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(account_of_key(&mallory_sk)),
         };
         let result = MainInterface::apply_action(forged, &ctx);
@@ -1807,8 +1809,6 @@ mod shared_storage_rotation_authentication {
         );
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers.clone())),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(account_of_key(&member_sk)),
         };
         let result = MainInterface::apply_action(forged, &ctx);
@@ -1829,8 +1829,6 @@ mod shared_storage_rotation_authentication {
         );
         let ctx = ApplyContext {
             effective_writers: Some(crate::entities::full_mask(writers)),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(AccountId::TEE_AUTHORITY),
         };
         MainInterface::apply_action(next, &ctx).unwrap();
@@ -1982,8 +1980,6 @@ mod shared_storage_rotation_authentication {
             effective_writers: Some(crate::entities::full_mask(
                 [AccountId::TEE_AUTHORITY].into_iter().collect(),
             )),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(AccountId::TEE_AUTHORITY),
         };
         MainInterface::apply_action(hand, &ctx).expect("the TEE's value entry lands");
@@ -2218,7 +2214,7 @@ mod shared_storage_rotation_authentication {
         // path where the apply context carries NO `effective_writers` (empty
         // ctx). The verifier must then fall back to the entity's *stored* writer
         // set and still reject a non-writer's forged rotation — covering the
-        // case where rotation-log resolution yielded nothing.
+        // case where the node resolved no rotated set.
         env::reset_for_testing();
         let root = setup_root_for_main();
 
@@ -2269,71 +2265,121 @@ mod shared_storage_rotation_authentication {
         }
     }
 
-    #[test]
-    fn authentic_rotation_by_current_writer_accepted() {
-        env::reset_for_testing();
+    fn bootstrapped_cell() -> (
+        crate::entities::ChildInfo,
+        SigningKey,
+        SigningKey,
+        crate::address::Id,
+        u64,
+    ) {
         let root = setup_root_for_main();
-
         let alice_sk = make_signing_key(0xA1);
-        let alice = account_of_key(&alice_sk);
         let bob_sk = make_signing_key(0xB0);
-        let bob = account_of_key(&bob_sk);
-
-        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let writers: BTreeSet<_> = [account_of_key(&alice_sk)].into_iter().collect();
         let id = cell_at(0x5E, &writers);
-
-        let nonce1 = env::time_now();
+        let nonce = env::time_now();
         let bootstrap = build_signed_shared_action(
             true,
             id,
             b"v0".to_vec(),
-            writers.clone(),
-            nonce1,
+            writers,
+            nonce,
             &alice_sk,
-            vec![root],
+            vec![root.clone()],
         );
         MainInterface::apply_action(bootstrap, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
+        (root, alice_sk, bob_sk, id, nonce)
+    }
 
-        // Alice (a current writer) rotates the set to {alice, bob}. Verified
-        // against the current set {alice}; alice's signature is valid.
-        let new_writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+    #[test]
+    fn an_update_that_changes_a_cells_writers_is_refused_even_from_a_writer() {
+        env::reset_for_testing();
+        let (_root, alice_sk, bob_sk, id, nonce) = bootstrapped_cell();
+        let alice = account_of_key(&alice_sk);
+        let bob = account_of_key(&bob_sk);
+
+        // Alice holds the cell, yet a data-plane update is not how its set changes:
+        // only a governance op is, so every node refuses it whatever the fold says.
         let rotation = build_signed_shared_action(
             false,
             id,
             b"v0".to_vec(),
-            new_writers.clone(),
-            nonce1 + 1_000_000,
+            [alice, bob].into_iter().collect(),
+            nonce + 1_000_000,
             &alice_sk,
             vec![],
         );
-        // Populate delta_id/delta_hlc so the rotation-log write hook fires and we
-        // can assert the rotation actually took effect (not just that it was
-        // accepted). The writer set is persisted to the rotation log, not the
-        // index `storage_type` (apply does not patch a child's own metadata) — so
-        // the log is what we assert.
-        use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-        let delta_hlc = HybridTimestamp::new(Timestamp::new(
-            NTP64(nonce1 + 1_000_000),
-            ID::from(core::num::NonZeroU64::new(1).unwrap()),
-        ));
         let ctx = ApplyContext {
-            effective_writers: Some(crate::entities::full_mask(writers.clone())),
-            delta_id: Some([0xD1; 32]),
-            delta_hlc: Some(delta_hlc),
-            signer_account: Some(account_of_key(&alice_sk)),
+            effective_writers: Some(crate::entities::full_mask([alice].into_iter().collect())),
+            signer_account: Some(alice),
         };
-        MainInterface::apply_action(rotation, &ctx)
-            .expect("authentic rotation by a current writer must be accepted");
+        let result = MainInterface::apply_action(rotation, &ctx);
+        assert!(
+            matches!(result, Err(StorageError::ActionNotAllowed(_))),
+            "a writer-set change by update must be refused, got {result:?}"
+        );
 
-        // The rotation must be recorded in the wrapper's rotation-log collection
-        // with the new writer set. `resolve_local` picks the causally-latest
-        // entry (the collection is unordered by id, so don't use `.last()`).
-        let log = MainInterface::load_rotation_log_child(id)
-            .expect("rotation log must exist after an accepted rotation");
+        let stored = <Index<MainStorage>>::get_metadata(id).unwrap().unwrap();
+        assert!(
+            matches!(
+                stored.storage_type,
+                StorageType::Shared { ref writers, .. }
+                    if *writers == crate::entities::full_mask([alice].into_iter().collect())
+            ),
+            "the stored writers must not move"
+        );
+    }
+
+    #[test]
+    fn an_update_naming_the_stored_writers_is_accepted() {
+        env::reset_for_testing();
+        let (_root, alice_sk, _bob_sk, id, nonce) = bootstrapped_cell();
+        let alice = account_of_key(&alice_sk);
+
+        let rewrite = build_signed_shared_action(
+            false,
+            id,
+            b"v1".to_vec(),
+            [alice].into_iter().collect(),
+            nonce + 1_000_000,
+            &alice_sk,
+            vec![],
+        );
+        MainInterface::apply_action(rewrite, &apply_ctx_for(alice))
+            .expect("an update that keeps the writers is an ordinary write");
         assert_eq!(
-            crate::rotation_log::resolve_local(&log).expect("resolved writers"),
-            crate::entities::full_mask(new_writers.clone()),
-            "accepted rotation must record the new writer set in the rotation log"
+            MainStorage::storage_read(crate::store::Key::Entry(id)),
+            Some(b"v1".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_writer_the_fold_added_writes_with_the_stored_writers_named() {
+        env::reset_for_testing();
+        let (_root, alice_sk, bob_sk, id, nonce) = bootstrapped_cell();
+        let (alice, bob) = (account_of_key(&alice_sk), account_of_key(&bob_sk));
+
+        // Bob is a writer at this cut only because a governance op added him; the
+        // anchor still names its genesis set, and his write names it too.
+        let write = build_signed_shared_action(
+            false,
+            id,
+            b"by-bob".to_vec(),
+            [alice].into_iter().collect(),
+            nonce + 1_000_000,
+            &bob_sk,
+            vec![],
+        );
+        let ctx = ApplyContext {
+            effective_writers: Some(crate::entities::full_mask(
+                [alice, bob].into_iter().collect(),
+            )),
+            signer_account: Some(bob),
+        };
+        MainInterface::apply_action(write, &ctx).expect("a rotated-in writer writes");
+        assert_eq!(
+            MainStorage::storage_read(crate::store::Key::Entry(id)),
+            Some(b"by-bob".to_vec())
         );
     }
 
@@ -2343,10 +2389,9 @@ mod shared_storage_rotation_authentication {
     /// writer becomes un-writable by Bob the instant the anchor rotates him out,
     /// even though the member entity itself is byte-identical throughout.
     ///
-    /// We model the rotation by the writer set the node's `writers_at` would
-    /// resolve from the anchor's rotation log at the delta's causal cut, passed
-    /// as `effective_writers`. The member carries only its anchor pointer, so
-    /// the SAME stored member is verified against {alice, bob} before the
+    /// We model the rotation by the writer set the governance fold would give
+    /// for the anchor at the delta's causal cut, passed as `effective_writers`.
+    /// The member carries only its anchor pointer, so the SAME stored member is verified against {alice, bob} before the
     /// rotation and {alice} after — no per-member re-stamp involved.
     #[test]
     fn rotating_anchor_retroactively_revokes_member_writes() {
@@ -2381,14 +2426,10 @@ mod shared_storage_rotation_authentication {
         // the whole point of the assertions below is WHO is being refused.
         let pre_ctx = |signer: &SigningKey| ApplyContext {
             effective_writers: Some(crate::entities::full_mask(pre.clone())),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(account_of_key(signer)),
         };
         let post_ctx = |signer: &SigningKey| ApplyContext {
             effective_writers: Some(crate::entities::full_mask(post.clone())),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(account_of_key(signer)),
         };
 
@@ -2543,10 +2584,8 @@ mod shared_storage_rotation_authentication {
         MainInterface::apply_action(member_add, &apply_ctx_for(account_of_key(&alice_sk))).unwrap();
 
         // Alice's resolved capability is WRITE-only (no DELETE).
-        let write_only = |id, hlc| crate::interface::ApplyContext {
+        let write_only = || crate::interface::ApplyContext {
             effective_writers: Some([(alice, OpMask::WRITE)].into_iter().collect()),
-            delta_id: id,
-            delta_hlc: hlc,
             // Alice signs every action in this test, and she IS the granted
             // account — so a refusal below can only be the op-mask gate, which is
             // what it is testing.
@@ -2563,12 +2602,12 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![root.clone()],
         );
-        MainInterface::apply_action(member_update, &write_only(None, None))
+        MainInterface::apply_action(member_update, &write_only())
             .expect("a WRITE-capable writer's update must be accepted");
 
         // The same writer's (validly-signed) delete is refused at the op-gate.
         let del = build_signed_member_delete(member, anchor, &alice_sk, n0 + 3_000_000);
-        let result = MainInterface::apply_action(del, &write_only(None, None));
+        let result = MainInterface::apply_action(del, &write_only());
         assert!(
             matches!(result, Err(StorageError::ActionNotAllowed(_))),
             "a writer lacking DELETE must be refused at the op-gate, got {result:?}"
@@ -2577,8 +2616,6 @@ mod shared_storage_rotation_authentication {
         // With FULL capability, the delete is accepted.
         let full = crate::interface::ApplyContext {
             effective_writers: Some([(alice, OpMask::FULL)].into_iter().collect()),
-            delta_id: None,
-            delta_hlc: None,
             signer_account: Some(alice),
         };
         let del2 = build_signed_member_delete(member, anchor, &alice_sk, n0 + 4_000_000);
@@ -4401,70 +4438,6 @@ mod owner_driven_convert {
 
         calimero_sdk::app::register_schema_version::<Unversioned>();
     }
-
-    /// P3 (core#2716): the rotation log stored as a hashed child entity
-    /// (`crdt_type: RotationLog`) UNIONS divergent saves rather than LWW-
-    /// overwriting — proving the relocated log converges on ordinary sync. This
-    /// exercises the whole foundation end to end: `save_rotation_log_child` →
-    /// `save_raw` → `save_internal`'s always-union dispatch → `merge_rotation_log`.
-    #[test]
-    fn rotation_log_child_unions_divergent_saves() {
-        use core::num::NonZeroU64;
-        use std::collections::BTreeMap;
-
-        use calimero_primitives::identity::PublicKey;
-
-        use crate::address::Id;
-        use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-        use crate::rotation_log::{RotationLog, RotationLogEntry};
-
-        type S = MockedStorage<7411>;
-        let anchor = Id::new([0x55; 32]);
-
-        // SIGNED entries: `append_rotation_to_child` skips unsigned
-        // (`signer == None`) entries — they carry no authoritative writer-set
-        // fact and would diverge the collection hash across nodes (only the
-        // originator self-logs the unsigned bootstrap). This test exercises the
-        // collection's UNION behaviour, so its entries must be signed to land.
-        let entry = |d: u8| RotationLogEntry {
-            delta_id: [d; 32],
-            delta_hlc: HybridTimestamp::new(Timestamp::new(
-                NTP64(u64::from(d)),
-                ID::from(NonZeroU64::new(1).unwrap()),
-            )),
-            signer: Some(PublicKey::from([d; 32])),
-            signature: Some([d; 64]),
-            signed_payload: Some([d; 32]),
-            new_writers: BTreeMap::new(),
-            writers_nonce: u64::from(d),
-        };
-
-        // Local log {1,2} → child entity.
-        let a = RotationLog {
-            snapshot: None,
-            entries: vec![entry(1), entry(2)],
-        };
-        Interface::<S>::save_rotation_log_child(anchor, &a).expect("save A");
-        let loaded = Interface::<S>::load_rotation_log_child(anchor).expect("load A");
-        let ids: Vec<u8> = loaded.entries.iter().map(|e| e.delta_id[0]).collect();
-        assert_eq!(ids, vec![1, 2], "child holds the saved log");
-
-        // A divergent peer log {2,3} merges in — must UNION to {1,2,3}, NOT
-        // LWW-overwrite to {2,3} (which is what the old timestamp branches did).
-        let b = RotationLog {
-            snapshot: None,
-            entries: vec![entry(2), entry(3)],
-        };
-        Interface::<S>::save_rotation_log_child(anchor, &b).expect("merge B");
-        let merged = Interface::<S>::load_rotation_log_child(anchor).expect("load merged");
-        let mut ids: Vec<u8> = merged.entries.iter().map(|e| e.delta_id[0]).collect();
-        ids.sort_unstable();
-        assert_eq!(
-            ids,
-            vec![1, 2, 3],
-            "divergent save must union (always-union dispatch), not LWW-overwrite"
-        );
-    }
 }
 
 /// Subtree tombstoning must converge: the node that performs a local delete
@@ -4581,8 +4554,6 @@ mod tee_only_tamper_resistance {
             apply_ctx_for(account_of_key(member)),
             ApplyContext {
                 effective_writers: Some(crate::entities::full_mask(tee_writers())),
-                delta_id: None,
-                delta_hlc: None,
                 signer_account: Some(account_of_key(member)),
             },
         ]
@@ -5004,6 +4975,326 @@ mod stale_write_to_a_merging_entry {
         let after = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
         assert_eq!(after.updated_at, before.updated_at);
         assert_eq!(after.crdt_type, None);
+    }
+}
+
+/// A cell's writers come from the host, never from entities under the cell.
+#[cfg(test)]
+mod shared_writers_from_the_host {
+    use std::collections::BTreeSet;
+
+    use crate::entities::full_mask;
+    use crate::env;
+    use crate::interface::MainInterface;
+    use crate::shared_writers::{CellWriters, SharedRotation};
+    use crate::tests::common::{
+        account_of_key, apply_ctx_for, build_signed_shared_action, cell_at, env_resolving,
+        setup_root_for_main,
+    };
+    use ed25519_dalek::SigningKey;
+
+    fn cell_with_genesis() -> (crate::address::Id, calimero_account::AccountId) {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let alice = account_of_key(&alice_sk);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = cell_at(0x5E, &writers);
+        let bootstrap = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers,
+            env::time_now(),
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(bootstrap, &apply_ctx_for(alice)).unwrap();
+        (id, alice)
+    }
+
+    fn bob() -> calimero_account::AccountId {
+        account_of_key(&SigningKey::from_bytes(&[0xB0; 32]))
+    }
+
+    #[test]
+    fn a_cell_at_genesis_reads_the_writers_stored_with_it() {
+        let (id, alice) = cell_with_genesis();
+        let resolve = env_resolving(|_| Some(CellWriters::Genesis));
+        let writers = env::with_runtime_env(resolve, || MainInterface::resolve_anchor_writers(id));
+        assert_eq!(writers, full_mask([alice].into_iter().collect()));
+    }
+
+    #[test]
+    fn a_rotated_cell_reads_the_set_the_host_resolved() {
+        let (id, alice) = cell_with_genesis();
+        let rotated = full_mask([alice, bob()].into_iter().collect());
+        let answer = rotated.clone();
+        let resolve = env_resolving(move |_| Some(CellWriters::Rotated(answer.clone())));
+        let writers = env::with_runtime_env(resolve, || MainInterface::resolve_anchor_writers(id));
+        assert_eq!(writers, rotated);
+    }
+
+    #[test]
+    fn a_cell_the_host_cannot_resolve_has_no_writers() {
+        let (id, _alice) = cell_with_genesis();
+        let resolve = env_resolving(|_| None);
+        let writers = env::with_runtime_env(resolve, || MainInterface::resolve_anchor_writers(id));
+        assert!(writers.is_empty(), "unresolvable means fail closed");
+    }
+
+    #[test]
+    fn a_rotation_this_run_recorded_is_the_set_it_reads_back() {
+        let (id, alice) = cell_with_genesis();
+        let new = full_mask([bob()].into_iter().collect());
+        env::record_shared_rotation(&SharedRotation {
+            cell: id,
+            prior: full_mask([alice].into_iter().collect()),
+            new: new.clone(),
+        });
+        assert_eq!(MainInterface::resolve_anchor_writers(id), new);
+    }
+
+    #[test]
+    fn a_member_write_is_checked_against_the_writers_the_host_resolved() {
+        use crate::tests::common::{build_signed_member_action, member_at};
+
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let bob_sk = SigningKey::from_bytes(&[0xB0; 32]);
+        let (alice, bob) = (account_of_key(&alice_sk), account_of_key(&bob_sk));
+        let writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let anchor = cell_at(0xA0, &writers);
+        let member = member_at(anchor, 0x3E);
+        let n0 = env::time_now();
+        let genesis = build_signed_shared_action(
+            true,
+            anchor,
+            b"anchor".to_vec(),
+            writers,
+            n0,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(genesis, &apply_ctx_for(alice)).unwrap();
+
+        // The fold has since removed Bob; the anchor's stored set still names him.
+        let rotated = full_mask([alice].into_iter().collect());
+        let write_as = |sk: &SigningKey, add: bool, at: u64| {
+            let action = build_signed_member_action(
+                add,
+                member,
+                anchor,
+                b"v".to_vec(),
+                n0 + at,
+                sk,
+                if add { vec![root.clone()] } else { vec![] },
+            );
+            let resolve = env_resolving({
+                let rotated = rotated.clone();
+                move |_| Some(CellWriters::Rotated(rotated.clone()))
+            });
+            env::with_runtime_env(resolve, || {
+                MainInterface::apply_action(action, &apply_ctx_for(account_of_key(sk)))
+            })
+        };
+        assert!(
+            matches!(
+                write_as(&bob_sk, true, 1_000_000),
+                Err(crate::interface::StorageError::InvalidSignature)
+            ),
+            "a writer the fold removed is refused although the anchor still names him"
+        );
+        write_as(&alice_sk, true, 2_000_000).expect("a writer the fold kept is accepted");
+    }
+
+    /// A write applied with no cut of its own (a repair, a pushed leaf) is judged by the
+    /// host's answer for the cell, not by the set stored with it.
+    #[test]
+    fn a_write_with_no_cut_is_checked_against_the_writers_the_host_resolved() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let bob_sk = SigningKey::from_bytes(&[0xB0; 32]);
+        let (alice, bob) = (account_of_key(&alice_sk), account_of_key(&bob_sk));
+        let writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let id = cell_at(0x5F, &writers);
+        let n0 = env::time_now();
+        let genesis = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers.clone(),
+            n0,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(genesis, &apply_ctx_for(alice)).unwrap();
+
+        let write_as = |sk: &SigningKey, at: u64, host: Option<CellWriters>| {
+            let action = build_signed_shared_action(
+                false,
+                id,
+                b"v".to_vec(),
+                writers.clone(),
+                n0 + at,
+                sk,
+                vec![],
+            );
+            env::with_runtime_env(env_resolving(move |_| host.clone()), || {
+                MainInterface::apply_action(action, &apply_ctx_for(account_of_key(sk)))
+            })
+        };
+        let rotated = Some(CellWriters::Rotated(full_mask(
+            [alice].into_iter().collect(),
+        )));
+        assert!(
+            matches!(
+                write_as(&bob_sk, 1_000_000, rotated.clone()),
+                Err(crate::interface::StorageError::InvalidSignature)
+            ),
+            "a writer the fold removed is refused although the cell's stored set names him"
+        );
+        write_as(&alice_sk, 2_000_000, rotated).expect("a writer the fold kept is accepted");
+        assert!(
+            matches!(
+                write_as(&alice_sk, 3_000_000, None),
+                Err(crate::interface::StorageError::InvalidSignature)
+            ),
+            "a cell the host cannot resolve has no writers"
+        );
+        write_as(&bob_sk, 4_000_000, Some(CellWriters::Genesis))
+            .expect("at genesis the stored set stands");
+    }
+
+    /// A cell created for {alice, bob} and rotated by the host to {alice, carol}.
+    struct RotatedWrapper {
+        id: crate::address::Id,
+        genesis: BTreeSet<calimero_account::AccountId>,
+        rotated: std::collections::BTreeMap<calimero_account::AccountId, crate::entities::OpMask>,
+        bob_sk: SigningKey,
+        carol_sk: SigningKey,
+        n0: u64,
+    }
+
+    fn rotated_wrapper() -> RotatedWrapper {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
+        let bob_sk = SigningKey::from_bytes(&[0xB0; 32]);
+        let carol_sk = SigningKey::from_bytes(&[0xC3; 32]);
+        let (alice, bob, carol) = (
+            account_of_key(&alice_sk),
+            account_of_key(&bob_sk),
+            account_of_key(&carol_sk),
+        );
+        let genesis: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let id = cell_at(0x60, &genesis);
+        let n0 = env::time_now();
+        let create = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            genesis.clone(),
+            n0,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(create, &apply_ctx_for(alice)).unwrap();
+        RotatedWrapper {
+            id,
+            genesis,
+            rotated: full_mask([alice, carol].into_iter().collect()),
+            bob_sk,
+            carol_sk,
+            n0,
+        }
+    }
+
+    fn delete_as(
+        cell: &RotatedWrapper,
+        sk: &SigningKey,
+    ) -> Result<(), crate::interface::StorageError> {
+        let action = crate::tests::common::build_signed_shared_delete(
+            cell.id,
+            cell.genesis.clone(),
+            sk,
+            cell.n0 + 1_000_000,
+        );
+        let rotated = cell.rotated.clone();
+        env::with_runtime_env(
+            env_resolving(move |_| Some(CellWriters::Rotated(rotated.clone()))),
+            || MainInterface::apply_action(action, &apply_ctx_for(account_of_key(sk))),
+        )
+    }
+
+    #[test]
+    fn a_removed_writer_cannot_delete_a_rotated_wrapper() {
+        let cell = rotated_wrapper();
+        assert!(
+            matches!(
+                delete_as(&cell, &cell.bob_sk),
+                Err(crate::interface::StorageError::InvalidSignature)
+            ),
+            "the stored set still names Bob, the fold removed him"
+        );
+    }
+
+    #[test]
+    fn an_added_writer_can_delete_a_rotated_wrapper() {
+        let cell = rotated_wrapper();
+        delete_as(&cell, &cell.carol_sk).expect("the fold added Carol");
+    }
+
+    /// Whether the DeleteRef this executor's local delete ships carries its own stamp.
+    fn local_delete_is_stamped(cell: &RotatedWrapper, sk: &SigningKey) -> bool {
+        use crate::action::Action;
+        use crate::entities::StorageType;
+
+        crate::delta::reset_delta_context();
+        let account = *account_of_key(sk).as_bytes();
+        let rotated = cell.rotated.clone();
+        let stamped = env::with_account_id(account, || {
+            let resolve = env_resolving(move |_| Some(CellWriters::Rotated(rotated.clone())));
+            env::with_runtime_env(resolve, || {
+                MainInterface::remove_child_from(crate::address::Id::root(), cell.id).unwrap();
+                env::device_id()
+            })
+        });
+        crate::delta::set_current_heads(vec![[0; 32]]);
+        let delta = crate::delta::commit_causal_delta(&[1; 32])
+            .unwrap()
+            .unwrap();
+        let shipped = delta
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::DeleteRef { id, metadata, .. } if *id == cell.id => {
+                    Some(metadata.storage_type.clone())
+                }
+                _ => None,
+            })
+            .expect("the delete ships a DeleteRef");
+        match shipped {
+            StorageType::Shared {
+                signature_data: Some(sd),
+                ..
+            } => sd.signer == Some(stamped.into()),
+            other => panic!("expected a Shared stamp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_removed_writer_does_not_stamp_a_local_delete_of_a_rotated_wrapper() {
+        let cell = rotated_wrapper();
+        assert!(!local_delete_is_stamped(&cell, &cell.bob_sk));
+    }
+
+    #[test]
+    fn an_added_writer_stamps_a_local_delete_of_a_rotated_wrapper() {
+        let cell = rotated_wrapper();
+        assert!(local_delete_is_stamped(&cell, &cell.carol_sk));
     }
 }
 

@@ -18,7 +18,7 @@ Comprehensive checklist for Calimero core PR reviews. Align with AGENTS.md conve
 - [ ] Variable names are descriptive
 - [ ] No code duplication
 
-## Calimero Conventions (AGENTS.md)
+## Calimero Conventions (CODING_STANDARDS.md)
 
 - [ ] **No dead code** – all functions, variables, imports, types are used
 - [ ] No commented-out code blocks
@@ -33,7 +33,5 @@ Comprehensive checklist for Calimero core PR reviews. Align with AGENTS.md conve
 
 ## Definition of Done
 
-- [ ] `cargo fmt --check` passes
-- [ ] `cargo clippy -- -A warnings` passes
-- [ ] `cargo test` passes
+- [ ] `./scripts/check-like-ci.py` passes
 - [ ] PR has Test plan and Documentation update sections filled

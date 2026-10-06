@@ -11,9 +11,11 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
+use calimero_storage::collections::ROOT_ENTRY_ID;
 use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{Action, ApplyContext, Interface};
+use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
 use calimero_storage::store::MainStorage;
 use calimero_store::Store;
 use eyre::{bail, Result};
@@ -127,6 +129,20 @@ pub(crate) fn scope_verdict(
         // on a partially-warmed node. This is the pre-C1 check — don't "fix" it.
         _ if local_entity_root == peer_entity_root => ScopeVerdict::Converged,
         _ => ScopeVerdict::DataDiverged,
+    }
+}
+
+/// `env` with a cell's writers read as every writer it has had by the current governance heads.
+/// A repair leaf has no cut, and a removed writer's earlier write must still reach this node; the
+/// cost is that a void step's `new` set counts too, so a removed admin's backdated grant is admitted.
+pub(crate) fn with_repair_cell_writers(
+    env: calimero_storage::env::RuntimeEnv,
+    context_client: Option<&ContextClient>,
+    context_id: ContextId,
+) -> calimero_storage::env::RuntimeEnv {
+    match context_client {
+        Some(client) => env.with_shared_writers(client.cell_writers().ever_resolver(context_id)),
+        None => env,
     }
 }
 
@@ -426,17 +442,6 @@ fn authorless_write_allowed(
     }
 }
 
-/// Detect the synthetic "opaque" CRDT type sync senders attach to leaves
-/// whose stored metadata has no `crdt_type` (typically the `Root<T>`
-/// entry for apps that don't use `#[app::state]`, plus test fixtures).
-/// The sender wraps these in `CrdtType::opaque_leaf()` so the wire never carries an absent
-/// type; the receiver uses this helper to recognise them and route to a
-/// direct LWW write rather than expecting WASM-side merge dispatch
-/// (which doesn't exist for entities without a `Mergeable` impl).
-fn is_opaque_crdt_type(crdt_type: &calimero_primitives::crdt::CrdtType) -> bool {
-    crdt_type.is_opaque_leaf()
-}
-
 /// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
 ///
 /// This function must be called within a `with_runtime_env` scope.
@@ -527,8 +532,8 @@ pub enum LeafOutcome {
 /// AccountReassignment`). Two nodes that both know a binding therefore always
 /// agree, whatever their fold depth; the only variance is knowing versus not
 /// knowing yet. That is unlike the writer SET, which genuinely changes over
-/// time — and which storage already resolves deterministically, as of the
-/// leaf's own HLC, from the anchor's rotation log.
+/// time, and which the host resolves from the governance fold (see
+/// [`with_repair_cell_writers`]).
 ///
 /// `None` means the binding has not folded here yet. Storage refuses on `None`,
 /// which is the right answer: the leaf is re-driven by the next repair round
@@ -630,15 +635,16 @@ fn tee_only_leaf_admitted<W>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SnapshotAuthorship {
     /// The signer's account is the leaf's owner or one of its writers, or the
-    /// leaf names no account to check against (Public, Frozen, a rotation-log
-    /// child, or a context in no group).
+    /// leaf names no account to check against (Public, Frozen, or a context in
+    /// no group).
     Authored,
     /// The signer's account is known and is neither the owner nor a writer. The
     /// leaf is a forgery by whoever signed it; drop it.
     Forged,
-    /// No certificate for the signer has been folded here, so the question
-    /// cannot be answered yet. Fail the snapshot and retry; dropping would leave
-    /// a hole the shipped root hides from repair.
+    /// The question cannot be answered yet: no certificate for the signer has
+    /// been folded here, or a shared cell's writers cannot be read. Fail the
+    /// snapshot and retry; dropping would leave a hole the shipped root hides
+    /// from repair.
     Unknown,
 }
 
@@ -652,29 +658,34 @@ pub(crate) enum SnapshotAuthorship {
 ///
 /// This closes that with the part of the question that has no timing in it:
 /// whose key signed the leaf. The key is resolved through every certificate
-/// ever folded here ([`calimero_governance_store::signer_account_in_namespace`]),
+/// ever folded here ([`calimero_governance_store::signer_accounts_in_namespace`]),
 /// not the live binding, so a member who has since left, been downgraded, or had
 /// the signing device revoked keeps the state they wrote. Asking whether the
 /// author may write *now*, as HashComparison does, would silently drop all of
 /// that from every cold joiner, because the root check reads the shipped root
 /// index and would still pass.
 ///
-/// `anchor_writers` is the writer set of a `SharedMember`'s anchor; `None` for
-/// every other storage type.
+/// A shared cell's writers are the genesis set its id commits to, which the leaf
+/// carries, plus whoever a governance rotation put in it; `ever_writers` reads the
+/// second half at this node's current heads. The signer need only have been a
+/// writer at some cut, so a writer a later rotation removed keeps what they wrote.
+///
+/// `anchor_writers` is the genesis writer set of a `SharedMember`'s anchor;
+/// `None` for every other storage type. `leaf_id` is the leaf's own id, the cell
+/// of a `Shared` leaf.
 ///
 /// Not checked here, deliberately:
 /// * `Public` / `Frozen` leaves carry no signer. The source vouches for them,
 ///   and it has proved it is admitted to the context
 ///   (`SyncManager::ensure_snapshot_server_admitted`).
-/// * Whether a `Shared` signer was in the writer set when it signed rather than
-///   in the set the leaf carries now. A writer who removed themselves in their
-///   last write signs a leaf whose set no longer names them, so this reports
-///   it `Forged`; snapshot apply then consults the anchor's rotation log
-///   ([`rotation_removed_the_signer`]) before dropping it.
+/// * Whether a `Shared` signer was a writer *when* it signed. A leaf has no
+///   cut, so this admits a removed writer's own signed leaf served by an
+///   admitted source, and the leaf of any account a void step's `new` set names.
 pub(crate) fn snapshot_leaf_authorship(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
+    leaf_id: Id,
     metadata: &Metadata,
     anchor_writers: Option<
         &std::collections::BTreeMap<
@@ -682,29 +693,63 @@ pub(crate) fn snapshot_leaf_authorship(
             calimero_storage::entities::OpMask,
         >,
     >,
+    ever_writers: &dyn Fn(Id) -> Result<CellWriters, WritersUnavailable>,
 ) -> SnapshotAuthorship {
     let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
         Ok(Some(group_id)) => group_id,
         Ok(None) => return SnapshotAuthorship::Authored,
         Err(_) => return SnapshotAuthorship::Unknown,
     };
-    authorship_verdict(
-        &metadata.storage_type,
-        anchor_writers,
-        |signer| {
-            calimero_governance_store::signer_account_in_namespace(store, &group_id, signer)
-                .ok()
-                .flatten()
-        },
-        // The TEE-authority mapping `signer_account_for` applies, so a TEE's
-        // leaf in a TEE-only entry names the writer the set holds. A lookup
-        // error keeps the signer's own account, which can only refuse.
-        |signer, account| {
-            calimero_governance_store::writer_account(store, folded, &group_id, signer, account)
-                .unwrap_or(account)
-        },
-        |relay, on_behalf| snapshot_relay_may_write_for(store, folded, &group_id, relay, on_behalf),
-    )
+    let verdict = |account: Option<calimero_account::AccountId>| {
+        authorship_verdict(
+            &metadata.storage_type,
+            leaf_id,
+            anchor_writers,
+            |_| account,
+            // The TEE-authority mapping `signer_account_for` applies, so a TEE's
+            // leaf in a TEE-only entry names the writer the set holds. A lookup
+            // error keeps the signer's own account, which can only refuse.
+            |signer, account| {
+                calimero_governance_store::writer_account(store, folded, &group_id, signer, account)
+                    .unwrap_or(account)
+            },
+            |relay, on_behalf| {
+                snapshot_relay_may_write_for(store, folded, &group_id, relay, on_behalf)
+            },
+            |cell| {
+                ever_writers(cell).inspect_err(|unavailable| {
+                    if *unavailable == WritersUnavailable::OverBudget {
+                        tracing::warn!(
+                            %context_id,
+                            cell = %hex::encode(cell.as_bytes()),
+                            "a shared cell has more rotations than the fold takes, so its snapshot \
+                             leaves cannot be authorized"
+                        );
+                    }
+                })
+            },
+        )
+    };
+    let Some(signer) = extract_author_from_leaf_authorization(Some(&metadata.storage_type)) else {
+        return verdict(None);
+    };
+    let Ok(accounts) =
+        calimero_governance_store::signer_accounts_in_namespace(store, &group_id, &signer)
+    else {
+        return SnapshotAuthorship::Unknown;
+    };
+    // A certificate does not prove its account holds the key, so the leaf stands
+    // if any account that certified the key may have written it.
+    let verdicts: Vec<_> = accounts.into_iter().map(|a| verdict(Some(a))).collect();
+    if verdicts.is_empty() {
+        verdict(None)
+    } else if verdicts.contains(&SnapshotAuthorship::Authored) {
+        SnapshotAuthorship::Authored
+    } else if verdicts.contains(&SnapshotAuthorship::Unknown) {
+        SnapshotAuthorship::Unknown
+    } else {
+        SnapshotAuthorship::Forged
+    }
 }
 
 /// Whether a relay may have written a snapshot leaf for `on_behalf`: its account is
@@ -729,198 +774,40 @@ fn snapshot_relay_may_write_for(
     }
 }
 
-/// Whether a `Shared` snapshot leaf that [`snapshot_leaf_authorship`] found
-/// [`Forged`](SnapshotAuthorship::Forged) was in fact written by the rotation
-/// that removed its signer from the writer set.
-///
-/// A writer may remove themselves. Their rotation is the entry's last write, so
-/// the stored leaf carries the new set, which no longer names them, and their
-/// signature. Checked only against the set it carries, that honest leaf reads as
-/// a forgery and every cold joiner drops it. The anchor's rotation log settles
-/// it: the leaf is rescued when the log's latest authenticated rotation was
-/// signed by the leaf's signer, produced exactly the writer set the leaf
-/// carries, and the signer's account was a writer in the set before it.
-///
-/// `entries` are the anchor's rotation-log entries as delivered by the same
-/// snapshot. They are untrusted in transit; an entry counts only if its own
-/// signature verifies ([`crate::delta_store::verify_rotation_entry`]).
-pub(crate) fn rotation_removed_the_signer(
-    store: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
-    context_id: &ContextId,
-    metadata: &Metadata,
-    entries: &[calimero_storage::rotation_log::RotationLogEntry],
-) -> bool {
-    let StorageType::Shared { writers, .. } = &metadata.storage_type else {
-        return false;
-    };
-    let Some((signer, account, writer)) =
-        snapshot_signer_accounts(store, folded, context_id, metadata)
-    else {
-        return false;
-    };
-    latest_rotation_removed(
-        entries,
-        writers,
-        &signer,
-        |prior| prior.contains_key(&account) || prior.contains_key(&writer),
-        crate::delta_store::verify_rotation_entry,
-    )
+/// A snapshot leaf's signer as a writer set names it: by its account, or by the account the
+/// TEE-authority mapping gives it. The mapping is read only when the account itself is not named.
+struct SignerAccounts<F> {
+    account: calimero_account::AccountId,
+    mapped: std::cell::OnceCell<calimero_account::AccountId>,
+    map: F,
 }
 
-/// Whether a `SharedMember` snapshot leaf's signer was one of its anchor's
-/// writers when the member was written, though no longer.
-///
-/// A rotation re-signs the anchor it changes, not the anchor's members. So a
-/// member written by a writer whom a later rotation removed, whether they
-/// removed themselves or another writer removed them, still carries that
-/// writer's signature, and [`snapshot_leaf_authorship`] finds it
-/// [`Forged`](SnapshotAuthorship::Forged) against the anchor's current set. The
-/// anchor's rotation log answers the question it cannot: the member is kept when
-/// its signer's account is in the set in effect at the member's own timestamp
-/// ([`rotation_log::resolve_local_as_of`](calimero_storage::rotation_log::resolve_local_as_of),
-/// the resolver HashComparison uses for the same case).
-///
-/// `entries` are the anchor's rotation-log entries as delivered by the same
-/// snapshot, untrusted in transit; only those whose own signature verifies are
-/// considered. The timestamp is the author's, so a removed writer could backdate
-/// a member past their removal. The same holds on the HashComparison path, and
-/// the member still has to be served by an admitted source.
-pub(crate) fn member_signer_was_a_writer_then(
-    store: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
-    context_id: &ContextId,
-    metadata: &Metadata,
-    entries: &[calimero_storage::rotation_log::RotationLogEntry],
-) -> bool {
-    if !matches!(metadata.storage_type, StorageType::SharedMember { .. }) {
-        return false;
+impl<F: Fn() -> calimero_account::AccountId> SignerAccounts<F> {
+    fn is_in<W>(
+        &self,
+        writers: &std::collections::BTreeMap<calimero_account::AccountId, W>,
+    ) -> bool {
+        writers.contains_key(&self.account)
+            || writers.contains_key(self.mapped.get_or_init(&self.map))
     }
-    let Some((_, account, writer)) = snapshot_signer_accounts(store, folded, context_id, metadata)
-    else {
-        return false;
-    };
-    writer_when_written(
-        entries,
-        *metadata.updated_at,
-        |set| set.contains_key(&account) || set.contains_key(&writer),
-        crate::delta_store::verify_rotation_entry,
-    )
-}
-
-/// A snapshot leaf's signer, the account it was certified for, and that
-/// account as a writer set names it (the TEE-authority mapping). `None` when
-/// the leaf names no signer, its context is in no group, or no certificate for
-/// the key has been folded.
-fn snapshot_signer_accounts(
-    store: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
-    context_id: &ContextId,
-    metadata: &Metadata,
-) -> Option<(
-    PublicKey,
-    calimero_account::AccountId,
-    calimero_account::AccountId,
-)> {
-    let signer = extract_author_from_leaf_authorization(Some(&metadata.storage_type))?;
-    let group_id = calimero_governance_store::get_group_for_context(store, context_id)
-        .ok()
-        .flatten()?;
-    let account = calimero_governance_store::signer_account_in_namespace(store, &group_id, &signer)
-        .ok()
-        .flatten()?;
-    // Written on an account's behalf by a relay that may write for it: the leaf
-    // is that account's, as `snapshot_leaf_authorship` decides it.
-    if let Some(on_behalf) = on_behalf_of_leaf(Some(&metadata.storage_type)) {
-        return snapshot_relay_may_write_for(store, folded, &group_id, account, on_behalf)
-            .filter(|may| *may)
-            .map(|_| (signer, on_behalf, on_behalf));
-    }
-    let writer =
-        calimero_governance_store::writer_account(store, folded, &group_id, &signer, account)
-            .unwrap_or(account);
-    Some((signer, account, writer))
-}
-
-/// [`member_signer_was_a_writer_then`] with the account check and the entry
-/// signature check passed in, so the rule can be tested without a store.
-fn writer_when_written(
-    entries: &[calimero_storage::rotation_log::RotationLogEntry],
-    written_at: u64,
-    is_writer: impl Fn(
-        &std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
-    ) -> bool,
-    verify: impl Fn(&calimero_storage::rotation_log::RotationLogEntry) -> bool,
-) -> bool {
-    let authenticated = calimero_storage::rotation_log::RotationLog {
-        snapshot: None,
-        entries: entries
-            .iter()
-            .filter(|entry| verify(entry))
-            .cloned()
-            .collect(),
-    };
-    calimero_storage::rotation_log::resolve_local_as_of(&authenticated, written_at)
-        .is_some_and(|set| is_writer(&set))
-}
-
-/// [`rotation_removed_the_signer`] with the account lookup and the entry
-/// signature check passed in, so the rule can be tested without a store.
-fn latest_rotation_removed(
-    entries: &[calimero_storage::rotation_log::RotationLogEntry],
-    leaf_writers: &std::collections::BTreeMap<
-        calimero_account::AccountId,
-        calimero_storage::entities::OpMask,
-    >,
-    signer: &PublicKey,
-    signer_was_a_writer_in: impl Fn(
-        &std::collections::BTreeMap<calimero_account::AccountId, calimero_storage::entities::OpMask>,
-    ) -> bool,
-    verify: impl Fn(&calimero_storage::rotation_log::RotationLogEntry) -> bool,
-) -> bool {
-    use core::cmp::Ordering;
-
-    // The order `rotation_log::resolve_local` resolves the current set by: HLC,
-    // then the smaller signer, with an unsigned entry losing ties.
-    fn order(
-        a: &calimero_storage::rotation_log::RotationLogEntry,
-        b: &calimero_storage::rotation_log::RotationLogEntry,
-    ) -> Ordering {
-        a.delta_hlc
-            .cmp(&b.delta_hlc)
-            .then_with(|| match (&a.signer, &b.signer) {
-                (Some(sa), Some(sb)) => sb.digest().cmp(sa.digest()),
-                (Some(_), None) => Ordering::Greater,
-                (None, Some(_)) => Ordering::Less,
-                (None, None) => Ordering::Equal,
-            })
-    }
-
-    let mut authenticated: Vec<_> = entries.iter().filter(|entry| verify(entry)).collect();
-    authenticated.sort_by(|a, b| order(a, b));
-    let [.., prior, latest] = authenticated.as_slice() else {
-        // No rotation, or only the one that created the set: nothing records a
-        // set the signer was in before.
-        return false;
-    };
-    latest.signer.as_ref() == Some(signer)
-        && latest.new_writers == *leaf_writers
-        && signer_was_a_writer_in(&prior.new_writers)
 }
 
 /// [`snapshot_leaf_authorship`] with the governance reads passed in, so the rule
 /// can be tested without a store. `signer_account` returns `None` when the key
-/// has no certified account here.
+/// has no certified account here; `ever_writers` is asked for a cell only when its
+/// genesis writers do not already name the signer.
 ///
 /// `may_write_for(signer_account, on_behalf)` answers for a leaf written on an
 /// account's behalf, `None` when it cannot be read; such a leaf is the account's
 /// when it does, and a forgery when it does not.
 fn authorship_verdict<W>(
     storage_type: &StorageType,
+    leaf_id: Id,
     anchor_writers: Option<&std::collections::BTreeMap<calimero_account::AccountId, W>>,
     signer_account: impl FnOnce(&PublicKey) -> Option<calimero_account::AccountId>,
-    writer_account: impl FnOnce(&PublicKey, calimero_account::AccountId) -> calimero_account::AccountId,
+    writer_account: impl Fn(&PublicKey, calimero_account::AccountId) -> calimero_account::AccountId,
     may_write_for: impl FnOnce(calimero_account::AccountId, calimero_account::AccountId) -> Option<bool>,
+    ever_writers: impl FnOnce(Id) -> Result<CellWriters, WritersUnavailable>,
 ) -> SnapshotAuthorship {
     let Some(signer) = extract_author_from_leaf_authorization(Some(storage_type)) else {
         return SnapshotAuthorship::Authored;
@@ -939,26 +826,54 @@ fn authorship_verdict<W>(
     };
     // A direct write may also name the writer as the TEE authority; an
     // on-behalf one is its account's and nobody else's.
-    let writer = || {
-        on_behalf
-            .is_none()
-            .then(|| writer_account(&signer, account))
+    let signer_as = SignerAccounts {
+        account: author,
+        mapped: std::cell::OnceCell::new(),
+        map: || {
+            if on_behalf.is_none() {
+                writer_account(&signer, account)
+            } else {
+                author
+            }
+        },
     };
-    let authored = match storage_type {
-        StorageType::User { owner, .. } => *owner == author,
-        StorageType::Shared { writers, .. } => {
-            writers.contains_key(&author) || writer().is_some_and(|w| writers.contains_key(&w))
+    // The genesis writers a leaf carries settle the question when they name the signer;
+    // otherwise the cell's ever-writers do, since a rotation may have added it.
+    let (cell, genesis_names_signer) = match storage_type {
+        StorageType::User { owner, .. } => {
+            return if *owner == author {
+                SnapshotAuthorship::Authored
+            } else {
+                SnapshotAuthorship::Forged
+            }
         }
-        StorageType::SharedMember { .. } => anchor_writers.is_some_and(|writers| {
-            writers.contains_key(&author) || writer().is_some_and(|w| writers.contains_key(&w))
-        }),
+        // A wrapper carries the writers its id commits to, which the storage verifier has
+        // checked; a set the id does not commit to is no genesis, whoever signed it.
+        StorageType::Shared { writers, .. } => {
+            if calimero_storage::collections::is_cell_id(leaf_id)
+                && !calimero_storage::collections::cell_id_binds(leaf_id, writers)
+            {
+                return SnapshotAuthorship::Forged;
+            }
+            (leaf_id, signer_as.is_in(writers))
+        }
+        StorageType::SharedMember { anchor, .. } => (
+            *anchor,
+            anchor_writers.is_some_and(|writers| signer_as.is_in(writers)),
+        ),
         // No signer, so returned above.
-        StorageType::Public | StorageType::Frozen => true,
+        StorageType::Public | StorageType::Frozen => return SnapshotAuthorship::Authored,
     };
-    if authored {
-        SnapshotAuthorship::Authored
-    } else {
-        SnapshotAuthorship::Forged
+    if genesis_names_signer {
+        return SnapshotAuthorship::Authored;
+    }
+    match ever_writers(cell) {
+        Ok(CellWriters::Rotated(ever)) if signer_as.is_in(&ever) => SnapshotAuthorship::Authored,
+        Ok(_) => SnapshotAuthorship::Forged,
+        // Not readable yet, or past the fold's budget: an honest hole, never a verdict.
+        Err(WritersUnavailable::Cut | WritersUnavailable::OverBudget) => {
+            SnapshotAuthorship::Unknown
+        }
     }
 }
 
@@ -971,7 +886,7 @@ fn authorship_verdict<W>(
 pub enum LeafDisposition {
     /// Apply it here and now; the storage layer can merge this itself.
     Apply,
-    /// An app root: defer for `__calimero_merge_root_state`.
+    /// The app-state entry: defer for `__calimero_merge_root_state`.
     DeferRoot,
     /// A custom-typed entry: defer for `__calimero_merge_custom`, carrying the
     /// id the entry declares.
@@ -983,13 +898,12 @@ pub enum LeafDisposition {
 /// Neither deferral is an optimisation. A leaf whose merge rule lives in the
 /// app's module cannot be merged from the DFS at all: the apply is synchronous
 /// and runs inside `with_runtime_env`, so it cannot call into the runtime.
-/// Applying it anyway falls through to last-write-wins, which for a custom type
-/// contradicts the in-WASM delta path and leaves the two replicas settling the
-/// same conflict differently depending on which path delivered it.
+/// Applying it anyway falls through to last-write-wins, which contradicts the
+/// in-WASM delta path and leaves the two replicas settling the same conflict
+/// differently depending on which path delivered it.
 ///
-/// An **opaque** root is the exception and applies directly: the synthetic
-/// `Opaque` marker means there is no `Mergeable` to dispatch to, so LWW is the
-/// only rule available and also the right one.
+/// The app-state entry defers and the root collection applies as a shell whatever
+/// type the peer names, since the wire type is the peer's claim.
 ///
 /// A custom entry defers only when `stored_locally` says this node holds a value
 /// to merge it with. With nothing stored there is nothing to merge, and the
@@ -1008,8 +922,11 @@ pub fn classify_leaf(
     crdt_type: &CrdtType,
     stored_locally: impl FnOnce() -> bool,
 ) -> LeafDisposition {
-    if calimero_storage::collections::is_app_root_entry(entity_id) && !crdt_type.is_opaque_leaf() {
+    if entity_id == ROOT_ENTRY_ID {
         return LeafDisposition::DeferRoot;
+    }
+    if entity_id.is_root() {
+        return LeafDisposition::Apply;
     }
 
     if let CrdtType::Custom(type_id) = crdt_type {
@@ -1031,6 +948,14 @@ pub fn stores_value(entity_id: Id) -> bool {
     .is_some()
 }
 
+/// The schema `leaf` was written under, when the loaded reader is another one and
+/// so cannot read it.
+pub(crate) fn unreadable_schema(leaf: &TreeLeafData, loaded: [u8; 32]) -> Option<[u8; 32]> {
+    leaf.metadata
+        .schema_bytecode_id
+        .filter(|schema| *schema != loaded)
+}
+
 pub fn apply_leaf_with_crdt_merge_gated(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
@@ -1038,32 +963,30 @@ pub fn apply_leaf_with_crdt_merge_gated(
     leaf: &TreeLeafData,
     loaded_bytecode_id: [u8; 32],
 ) -> Result<LeafOutcome> {
-    if let Some(schema) = leaf.metadata.schema_bytecode_id {
-        if schema != loaded_bytecode_id {
-            // The receiver's loaded reader can't read this leaf — buffer it
-            // verbatim instead of storing unreadable bytes. Keyed by the leaf
-            // key (idempotent overwrite on re-delivery), under the *sender's*
-            // schema so the drain only re-applies once this node advances to it.
-            let leaf_bytes = borsh::to_vec(leaf)?;
-            let record =
-                calimero_governance_store::AbsorbRecord::from_leaf(leaf.key, leaf_bytes, schema);
-            calimero_governance_store::AbsorbRepository::new(store).save(
-                &context_id,
-                schema,
-                &record,
-            )?;
-            crate::node_metrics::record_delta_outcome("absorbed_leaf_future_schema");
-            tracing::warn!(
-                %context_id,
-                key = %hex::encode(leaf.key),
-                ?schema,
-                ?loaded_bytecode_id,
-                "sync-repair leaf authored under a newer schema than the loaded \
-                 reader — buffered into the absorb buffer instead of storing \
-                 unreadable bytes (will replay once the reader advances)"
-            );
-            return Ok(LeafOutcome::Buffered);
-        }
+    if let Some(schema) = unreadable_schema(leaf, loaded_bytecode_id) {
+        // The receiver's loaded reader can't read this leaf — buffer it
+        // verbatim instead of storing unreadable bytes. Keyed by the leaf
+        // key (idempotent overwrite on re-delivery), under the *sender's*
+        // schema so the drain only re-applies once this node advances to it.
+        let leaf_bytes = borsh::to_vec(leaf)?;
+        let record =
+            calimero_governance_store::AbsorbRecord::from_leaf(leaf.key, leaf_bytes, schema);
+        calimero_governance_store::AbsorbRepository::new(store).save(
+            &context_id,
+            schema,
+            &record,
+        )?;
+        crate::node_metrics::record_delta_outcome("absorbed_leaf_future_schema");
+        tracing::warn!(
+            %context_id,
+            key = %hex::encode(leaf.key),
+            ?schema,
+            ?loaded_bytecode_id,
+            "sync-repair leaf authored under a newer schema than the loaded \
+             reader — buffered into the absorb buffer instead of storing \
+             unreadable bytes (will replay once the reader advances)"
+        );
+        return Ok(LeafOutcome::Buffered);
     }
     let signer_account = repair_signer_account(store, folded, &context_id, leaf);
     apply_leaf_with_crdt_merge_as(context_id, leaf, signer_account)?;
@@ -1083,8 +1006,9 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
 ///
 /// The account is the node's half of the writer check: storage verifies the
 /// signature under the key the leaf names, then checks that account against the
-/// writer set resolved as of the leaf's own HLC. Passing `None` leaves storage
-/// unable to name the writer, so it refuses — see [`repair_signer_account`].
+/// writers the host resolves for the cell (every writer it has had by this node's
+/// governance heads). Passing `None` leaves storage unable to name the writer, so
+/// it refuses, see [`repair_signer_account`].
 pub fn apply_leaf_with_crdt_merge_as(
     context_id: ContextId,
     leaf: &TreeLeafData,
@@ -1093,45 +1017,25 @@ pub fn apply_leaf_with_crdt_merge_as(
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
 
-    // App root state — `ROOT_ID` or the `Root<T>` entry — needs the
-    // app's typed `Mergeable::merge`, which only exists inside the
-    // WASM module. The host's `merge_root_state` consults a
-    // `MERGE_REGISTRY` static that's never populated in production
-    // (the macro's `__calimero_register_merge` export writes the
-    // WASM module's copy, not the host's — separate address spaces).
-    // Two cases:
-    //
-    // * Root entity with `crdt_type: Some(_)` — real app state. Skip
-    //   here; the caller (HC initiator's DFS, `handle_entity_push`)
-    //   accumulates the bytes in `deferred_root_merges` and dispatches
-    //   via `ContextClient::merge_root_state` after the sync loop.
-    // * Root entity with `crdt_type: None` — opaque (no `Mergeable`
-    //   available). WASM dispatch can't help — there's no
-    //   `__calimero_merge_root_state` to invoke on a type with no
-    //   `Mergeable` impl. The only sensible behavior is direct LWW
-    //   write, which is what the old `AllFunctionsFailed` branch in
-    //   `merge_root_state` did. Fires in test fixtures and apps that
-    //   don't use `#[app::state]`; real apps always have a crdt_type
-    //   and take the deferred-dispatch path.
-    if calimero_storage::collections::is_app_root_entry(entity_id) {
-        if is_opaque_crdt_type(&leaf.metadata.crdt_type) {
-            let mut md = Metadata::default();
-            md.created_at = leaf.metadata.created_at;
-            md.updated_at = leaf.metadata.hlc_timestamp.into();
-            calimero_storage::interface::Interface::<MainStorage>::write_pre_merged_root_state(
-                entity_id,
-                &leaf.value,
-                md,
-            )?;
-            return Ok(());
-        }
-        // Crdt-bearing root entity — caller defers.
-        tracing::warn!(
+    // The app-state entry merges in the app's module, so its callers defer it.
+    if entity_id == ROOT_ENTRY_ID {
+        tracing::debug!(
             %context_id,
-            entity_id = %entity_id,
-            "HC apply: skipping root-entity merge on host (no host-side merge dispatch); \
-             caller dispatches via ContextClient::merge_root_state"
+            "HC apply: the app-state entry is merged by the deferred root dispatch"
         );
+        return Ok(());
+    }
+    if entity_id.is_root() {
+        let mut metadata = Metadata::default();
+        metadata.created_at = leaf.metadata.created_at;
+        metadata.updated_at = leaf.metadata.hlc_timestamp.into();
+        let shell = Action::Update {
+            id: entity_id,
+            data: leaf.value.clone(),
+            ancestors: vec![],
+            metadata,
+        };
+        Interface::<MainStorage>::apply_remote_action(shell, &ApplyContext::empty())?;
         return Ok(());
     }
 
@@ -1343,11 +1247,8 @@ pub fn apply_leaf_with_crdt_merge_as(
         }
     };
 
-    // No `CausalDelta` in scope (#2266): a repair carries state, not an op, so
-    // there are no parents and `effective_writers` stays `None` — storage then
-    // resolves the writer set as of this leaf's own HLC. What the node supplies
-    // is the other half, the account its signer speaks for, without which the
-    // writer check cannot run at all.
+    // A repair carries state, not an op, so `effective_writers` stays `None` and the host
+    // answers for the cell. The node supplies the account the leaf's signer speaks for.
     let ctx = ApplyContext {
         signer_account,
         ..ApplyContext::empty()
@@ -1474,7 +1375,7 @@ fn push_batches(leaves: &[TreeLeafData]) -> impl Iterator<Item = &[TreeLeafData]
 /// Outcome of an EntityPush batch.
 ///
 /// `applied` is the count of leaves successfully written via the host
-/// CRDT apply path. `deferred_root_merges` collects root-entity leaves
+/// CRDT apply path. `deferred_root_merges` collects app-state entry leaves
 /// the host can't merge by itself (same rationale as
 /// [`HashComparisonStats::deferred_root_merges`](crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges)) —
 /// the caller dispatches each through `ContextClient::merge_root_state`
@@ -1482,11 +1383,9 @@ fn push_batches(leaves: &[TreeLeafData]) -> impl Iterator<Item = &[TreeLeafData]
 #[derive(Debug, Default)]
 pub struct EntityPushOutcome {
     pub applied: u32,
-    /// `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)` — same
-    /// shape as [`crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges`].
-    /// Carrying the leaf's HLC timestamp lets the dispatcher use the
-    /// actual remote write time instead of a synthetic value.
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+    /// App-state entry leaves, as in
+    /// [`crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges`].
+    pub deferred_root_merges: Vec<TreeLeafData>,
 }
 
 /// Handle an incoming `EntityPush` by applying CRDT merge for each entity.
@@ -1503,7 +1402,7 @@ pub struct EntityPushOutcome {
 /// HC EntityPush authorization back door (gossip rejects a now-removed
 /// author's delta, but HC would re-import the same entity unverified).
 ///
-/// Root-entity leaves are surfaced in `deferred_root_merges` for the
+/// App-state entry leaves are surfaced in `deferred_root_merges` for the
 /// caller to dispatch via `ContextClient::merge_root_state` — the host
 /// has no dispatch table for app-typed root state.
 pub fn handle_entity_push(
@@ -1586,7 +1485,7 @@ fn apply_entity_push_batch(
         let mut applied = 0u32;
         let mut dropped_unauthorized = 0u32;
         let mut buffered = 0u32;
-        let mut deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)> = Vec::new();
+        let mut deferred_root_merges: Vec<TreeLeafData> = Vec::new();
         for leaf in entities {
             if !leaf.is_valid() {
                 tracing::warn!(
@@ -1606,36 +1505,12 @@ fn apply_entity_push_batch(
                 );
                 continue;
             }
-            // Root-entity leaves can't be merged on the host (same
-            // reason as the HC / LevelWise initiator paths — see
-            // `dispatch_deferred_root_merges` in `protocol_selector`).
-            // Defer to the caller, which has the `ContextClient` needed
-            // to invoke `__calimero_merge_root_state` inside WASM.
-            //
-            // Exception: a root-entity leaf with `crdt_type: None`
-            // (no app-defined `Mergeable`) has nothing for WASM to
-            // dispatch to — `__calimero_merge_root_state` would error
-            // out, the deferred merge would be dropped, and the bytes
-            // would never land. For these opaque entities the only
-            // sensible behavior is LWW direct-write (matches the
-            // pre-rewrite `AllFunctionsFailed` fallback in
-            // `merge_root_state`). Fires in test fixtures + apps that
-            // don't use `#[app::state]`; real apps always have a
-            // `crdt_type` and go through the proper deferred dispatch.
-            // Root entities with a real `crdt_type` get deferred for
-            // WASM dispatch; opaque root entities (synthetic LWW marker
-            // tagged `LwwKind::Opaque`) are handled
-            // internally by `apply_leaf_with_crdt_merge` via direct LWW
-            // write — see the comment there.
-            let entity_id = Id::new(leaf.key);
-            if calimero_storage::collections::is_app_root_entry(entity_id)
-                && !is_opaque_crdt_type(&leaf.metadata.crdt_type)
+            // The app-state entry merges in the app's module; the caller, which
+            // holds the `ContextClient`, dispatches it.
+            if classify_leaf(Id::new(leaf.key), &leaf.metadata.crdt_type, || false)
+                == LeafDisposition::DeferRoot
             {
-                deferred_root_merges.push((
-                    leaf.key,
-                    leaf.value.clone(),
-                    leaf.metadata.hlc_timestamp,
-                ));
+                deferred_root_merges.push(leaf.clone());
                 continue;
             }
             let apply_result = match loaded_bytecode_id {
@@ -1877,6 +1752,32 @@ pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use calimero_primitives::application::ApplicationId;
+
+    fn leaf_under(schema: Option<[u8; 32]>) -> TreeLeafData {
+        let mut metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [0; 32]);
+        if let Some(schema) = schema {
+            metadata = metadata.with_schema_bytecode_id(schema);
+        }
+        TreeLeafData::new([1; 32], b"value".to_vec(), metadata)
+    }
+
+    #[test]
+    fn a_leaf_naming_no_schema_is_read_by_any_reader() {
+        assert_eq!(unreadable_schema(&leaf_under(None), [7; 32]), None);
+    }
+
+    #[test]
+    fn a_leaf_under_the_loaded_schema_is_read() {
+        assert_eq!(unreadable_schema(&leaf_under(Some([7; 32])), [7; 32]), None);
+    }
+
+    #[test]
+    fn a_leaf_under_another_schema_is_not_read() {
+        assert_eq!(
+            unreadable_schema(&leaf_under(Some([8; 32])), [7; 32]),
+            Some([8; 32])
+        );
+    }
 
     fn leaf(len: usize) -> TreeLeafData {
         let metadata = LeafMetadata::new(CrdtType::lww_register(), 1, [0; 32]);
@@ -2223,8 +2124,8 @@ mod tests {
         );
     }
 
-    /// A leaf's label is not evidence of who wrote it, so a rotation-log label
-    /// does not waive its authorship check.
+    /// A leaf's label is not evidence of who wrote it, so the legacy
+    /// rotation-log label (tag 13) does not waive its authorship check.
     #[test]
     fn a_leaf_labelled_rotation_log_still_needs_its_author() {
         use calimero_context_config::types::ContextGroupId;
@@ -2252,8 +2153,10 @@ mod tests {
                 &store,
                 &calimero_governance_store::NotFolded,
                 &context_id,
+                Id::new([0; 32]),
                 metadata,
                 None,
+                &|_| Ok(CellWriters::Genesis),
             )
         };
         assert_eq!(verdict(&metadata), SnapshotAuthorship::Forged, "control");
@@ -2381,6 +2284,7 @@ mod empty_chain_placement_tests {
 mod classify_leaf_tests {
     use calimero_primitives::crdt::{CrdtType, CustomTypeId};
     use calimero_storage::address::Id;
+    use calimero_storage::collections::ROOT_ENTRY_ID;
 
     use super::{classify_leaf, LeafDisposition};
 
@@ -2451,39 +2355,27 @@ mod classify_leaf_tests {
         }
     }
 
-    /// An app root goes to the root dispatcher, not the custom one, even though
-    /// both defer — they call different exports.
+    /// The wire type is the peer's claim, so the app-state entry goes to the root
+    /// dispatcher whatever it names, and the root collection never does.
     #[test]
-    fn an_app_root_defers_as_a_root() {
-        assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::lww_register(), || true),
-            LeafDisposition::DeferRoot
-        );
-    }
-
-    /// The exception that keeps sync working for opaque roots: no `Mergeable`
-    /// exists to dispatch to, so LWW is the only available rule and applying
-    /// directly is correct. Deferring here would send the root to an export
-    /// that cannot resolve it, and the entity would never settle.
-    #[test]
-    fn an_opaque_root_applies_rather_than_deferring() {
-        assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::opaque_leaf(), || true),
-            LeafDisposition::Apply
-        );
-    }
-
-    /// Root wins over custom when a root somehow carries a `Custom` tag: the
-    /// root export dispatches through the app's registered root `Mergeable`,
-    /// which is the rule that owns the whole state.
-    #[test]
-    fn a_root_stamped_custom_still_defers_as_a_root() {
-        assert_eq!(
-            classify_leaf(Id::root(), &CrdtType::Custom(CustomTypeId::of("x")), || {
-                true
-            }),
-            LeafDisposition::DeferRoot
-        );
+    fn the_app_state_entry_defers_whatever_type_the_peer_names() {
+        for crdt_type in [
+            CrdtType::lww_register(),
+            CrdtType::opaque_leaf(),
+            CrdtType::js_root(),
+            CrdtType::Custom(CustomTypeId::of("x")),
+        ] {
+            assert_eq!(
+                classify_leaf(ROOT_ENTRY_ID, &crdt_type, || true),
+                LeafDisposition::DeferRoot,
+                "{crdt_type:?}"
+            );
+            assert_eq!(
+                classify_leaf(Id::root(), &crdt_type, || true),
+                LeafDisposition::Apply,
+                "{crdt_type:?}"
+            );
+        }
     }
 }
 
@@ -2535,11 +2427,25 @@ mod snapshot_authorship_tests {
     use calimero_storage::address::Id;
     use calimero_storage::entities::{SignatureData, StorageType};
 
+    use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
+
     use super::{authorship_verdict, SnapshotAuthorship};
 
     const SIGNER: [u8; 32] = [0x51; 32];
     const ALICE: [u8; 32] = [0xA1; 32];
     const BOB: [u8; 32] = [0xB0; 32];
+    const CELL: Id = Id::new([0x0A; 32]);
+
+    /// The id a leaf of `storage_type` lives at: a wrapper's id commits to its writers, and a
+    /// member's anchor is [`CELL`].
+    fn leaf_of(storage_type: &StorageType) -> Id {
+        match storage_type {
+            StorageType::Shared { writers, .. } => {
+                calimero_storage::collections::cell_id(CELL, writers)
+            }
+            _ => CELL,
+        }
+    }
 
     fn signed() -> Option<SignatureData> {
         Some(SignatureData {
@@ -2554,13 +2460,38 @@ mod snapshot_authorship_tests {
         accounts.iter().map(|a| (AccountId::from(*a), ())).collect()
     }
 
+    fn ever(accounts: &[[u8; 32]]) -> Result<CellWriters, WritersUnavailable> {
+        Ok(CellWriters::Rotated(
+            accounts
+                .iter()
+                .map(|a| (AccountId::from(*a), Default::default()))
+                .collect(),
+        ))
+    }
+
+    fn never_asked(_: Id) -> Result<CellWriters, WritersUnavailable> {
+        panic!("the genesis writers already settle this")
+    }
+
     fn verdict(
         storage_type: &StorageType,
         anchor: Option<&BTreeMap<AccountId, ()>>,
         signer_is: Option<[u8; 32]>,
     ) -> SnapshotAuthorship {
+        verdict_with(storage_type, anchor, signer_is, |_| {
+            Ok(CellWriters::Genesis)
+        })
+    }
+
+    fn verdict_with(
+        storage_type: &StorageType,
+        anchor: Option<&BTreeMap<AccountId, ()>>,
+        signer_is: Option<[u8; 32]>,
+        ever_writers: impl FnOnce(Id) -> Result<CellWriters, WritersUnavailable>,
+    ) -> SnapshotAuthorship {
         authorship_verdict(
             storage_type,
+            leaf_of(storage_type),
             anchor,
             |key| {
                 assert_eq!(*key, PublicKey::from(SIGNER));
@@ -2568,7 +2499,25 @@ mod snapshot_authorship_tests {
             },
             |_, account| account,
             |_, _| panic!("a direct write is not asked the on-behalf rule"),
+            ever_writers,
         )
+    }
+
+    fn shared(genesis: &[[u8; 32]]) -> StorageType {
+        StorageType::Shared {
+            writers: genesis
+                .iter()
+                .map(|a| (AccountId::from(*a), Default::default()))
+                .collect(),
+            signature_data: signed(),
+        }
+    }
+
+    fn member() -> StorageType {
+        StorageType::SharedMember {
+            anchor: CELL,
+            signature_data: signed(),
+        }
     }
 
     #[test]
@@ -2579,11 +2528,11 @@ mod snapshot_authorship_tests {
             signature_data: signed(),
         };
         assert_eq!(
-            verdict(&entry, None, Some(ALICE)),
+            verdict_with(&entry, None, Some(ALICE), never_asked),
             SnapshotAuthorship::Authored
         );
         assert_eq!(
-            verdict(&entry, None, Some(BOB)),
+            verdict_with(&entry, None, Some(BOB), never_asked),
             SnapshotAuthorship::Forged,
             "another account's key must not be able to write alice's entry"
         );
@@ -2591,38 +2540,104 @@ mod snapshot_authorship_tests {
 
     #[test]
     fn a_shared_entry_must_be_signed_by_one_of_its_writers() {
-        let entry = StorageType::Shared {
-            writers: [(AccountId::from(ALICE), Default::default())]
-                .into_iter()
-                .collect(),
-            signature_data: signed(),
-        };
+        let entry = shared(&[ALICE]);
         assert_eq!(
-            verdict(&entry, None, Some(ALICE)),
-            SnapshotAuthorship::Authored
+            verdict_with(&entry, None, Some(ALICE), never_asked),
+            SnapshotAuthorship::Authored,
+            "a genesis writer needs no governance read"
         );
         assert_eq!(verdict(&entry, None, Some(BOB)), SnapshotAuthorship::Forged);
     }
 
     #[test]
+    fn a_writer_a_rotation_added_or_removed_is_still_an_author() {
+        let entry = shared(&[ALICE]);
+        assert_eq!(
+            verdict_with(&entry, None, Some(BOB), |cell| {
+                assert_eq!(cell, leaf_of(&entry), "the cell is the leaf itself");
+                ever(&[ALICE, BOB])
+            }),
+            SnapshotAuthorship::Authored,
+            "bob was added by a rotation, and the leaf carries only the genesis set"
+        );
+        assert_eq!(
+            verdict_with(&entry, None, Some(BOB), |_| ever(&[ALICE])),
+            SnapshotAuthorship::Forged,
+            "a signer no rotation ever admitted is a forgery"
+        );
+    }
+
+    #[test]
+    fn a_cell_whose_writers_cannot_be_read_yet_is_unknown_not_forged() {
+        let entry = shared(&[ALICE]);
+        for unavailable in [WritersUnavailable::Cut, WritersUnavailable::OverBudget] {
+            assert_eq!(
+                verdict_with(&entry, None, Some(BOB), |_| Err(unavailable)),
+                SnapshotAuthorship::Unknown,
+                "{unavailable:?}: an honest hole, never a verdict against the signer"
+            );
+            assert_eq!(
+                verdict_with(&member(), Some(&writers(&[ALICE])), Some(BOB), |_| Err(
+                    unavailable
+                )),
+                SnapshotAuthorship::Unknown,
+                "{unavailable:?}, for a member"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrapper_whose_writers_its_id_does_not_commit_to_is_forged() {
+        let entry = shared(&[ALICE]);
+        let foreign = calimero_storage::collections::cell_id(CELL, &Default::default());
+        assert_eq!(
+            authorship_verdict::<()>(
+                &entry,
+                foreign,
+                None,
+                |_| Some(AccountId::from(ALICE)),
+                |_, account| account,
+                |_, _| panic!("a direct write is not asked the on-behalf rule"),
+                never_asked,
+            ),
+            SnapshotAuthorship::Forged,
+            "the signer is in the set the leaf names, but the id commits to another"
+        );
+    }
+
+    #[test]
     fn a_member_is_checked_against_its_anchors_writers() {
-        let member = StorageType::SharedMember {
-            anchor: Id::new([0x0A; 32]),
-            signature_data: signed(),
-        };
         let anchor = writers(&[ALICE]);
         assert_eq!(
-            verdict(&member, Some(&anchor), Some(ALICE)),
+            verdict_with(&member(), Some(&anchor), Some(ALICE), never_asked),
             SnapshotAuthorship::Authored
         );
         assert_eq!(
-            verdict(&member, Some(&anchor), Some(BOB)),
+            verdict(&member(), Some(&anchor), Some(BOB)),
             SnapshotAuthorship::Forged
         );
         assert_eq!(
-            verdict(&member, None, Some(ALICE)),
+            verdict(&member(), None, Some(ALICE)),
             SnapshotAuthorship::Forged,
             "a member with no writer set to check against is not authored"
+        );
+    }
+
+    #[test]
+    fn a_member_written_by_an_anchors_former_or_later_writer_is_authored() {
+        let anchor = writers(&[ALICE]);
+        assert_eq!(
+            verdict_with(&member(), Some(&anchor), Some(BOB), |cell| {
+                assert_eq!(cell, CELL, "the anchor's ever-writers");
+                ever(&[ALICE, BOB])
+            }),
+            SnapshotAuthorship::Authored,
+            "rotations do not re-sign members, so a removed writer's member stands"
+        );
+        assert_eq!(
+            verdict_with(&member(), None, Some(BOB), |_| ever(&[ALICE, BOB])),
+            SnapshotAuthorship::Authored,
+            "the ever-writers already hold the genesis set"
         );
     }
 
@@ -2646,10 +2661,12 @@ mod snapshot_authorship_tests {
         };
         let verdict = authorship_verdict::<()>(
             &entry,
+            leaf_of(&entry),
             None,
             |_| Some(AccountId::from(ALICE)),
             |_, _| AccountId::TEE_AUTHORITY,
             |_, _| panic!("a direct write is not asked the on-behalf rule"),
+            never_asked,
         );
         assert_eq!(verdict, SnapshotAuthorship::Authored);
     }
@@ -2658,10 +2675,12 @@ mod snapshot_authorship_tests {
     fn unsigned_leaves_are_not_resolved() {
         let verdict = authorship_verdict::<()>(
             &StorageType::Public,
+            CELL,
             None,
             |_| panic!("a leaf with no signer must not be resolved"),
             |_, _| panic!("a leaf with no signer must not be resolved"),
             |_, _| panic!("a leaf with no signer must not be resolved"),
+            |_| panic!("a leaf with no signer must not be resolved"),
         );
         assert_eq!(verdict, SnapshotAuthorship::Authored);
     }
@@ -2685,6 +2704,7 @@ mod snapshot_authorship_tests {
     ) -> SnapshotAuthorship {
         authorship_verdict(
             storage_type,
+            leaf_of(storage_type),
             anchor,
             |_| Some(AccountId::from(RELAY)),
             |_, _| AccountId::TEE_AUTHORITY,
@@ -2696,6 +2716,7 @@ mod snapshot_authorship_tests {
                 );
                 may
             },
+            |_| Ok(CellWriters::Genesis),
         )
     }
 
@@ -2775,159 +2796,6 @@ mod snapshot_authorship_tests {
     }
 }
 
-#[cfg(test)]
-mod rotation_rescue_tests {
-    use std::collections::BTreeMap;
-
-    use calimero_account::AccountId;
-    use calimero_primitives::identity::PublicKey;
-    use calimero_storage::entities::OpMask;
-    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-    use calimero_storage::rotation_log::RotationLogEntry;
-    use core::num::NonZeroU64;
-
-    use super::latest_rotation_removed;
-
-    const ALICE: [u8; 32] = [0xA1; 32];
-    const BOB: [u8; 32] = [0xB0; 32];
-
-    fn key(seed: [u8; 32]) -> PublicKey {
-        PublicKey::from(seed)
-    }
-
-    fn set(accounts: &[[u8; 32]]) -> BTreeMap<AccountId, OpMask> {
-        accounts
-            .iter()
-            .map(|a| (AccountId::from(*a), OpMask::FULL))
-            .collect()
-    }
-
-    fn rotation(at: u64, by: [u8; 32], to: &[[u8; 32]]) -> RotationLogEntry {
-        RotationLogEntry {
-            delta_id: [at as u8; 32],
-            delta_hlc: HybridTimestamp::new(Timestamp::new(
-                NTP64(at),
-                ID::from(NonZeroU64::new(1).unwrap()),
-            )),
-            signer: Some(key(by)),
-            signature: Some([0x5A; 64]),
-            signed_payload: Some([0x5B; 32]),
-            new_writers: set(to),
-            writers_nonce: at,
-        }
-    }
-
-    /// Alice is a writer whenever the set names her account.
-    fn verdict(entries: &[RotationLogEntry], leaf_writers: &[[u8; 32]], signer: [u8; 32]) -> bool {
-        latest_rotation_removed(
-            entries,
-            &set(leaf_writers),
-            &key(signer),
-            |prior| prior.contains_key(&AccountId::from(signer)),
-            |_| true,
-        )
-    }
-
-    #[test]
-    fn a_writer_who_removed_themselves_is_rescued() {
-        let log = [
-            rotation(1, ALICE, &[ALICE, BOB]),
-            rotation(2, ALICE, &[BOB]),
-        ];
-        assert!(verdict(&log, &[BOB], ALICE));
-    }
-
-    #[test]
-    fn the_leaf_must_carry_the_set_that_rotation_produced() {
-        let log = [
-            rotation(1, ALICE, &[ALICE, BOB]),
-            rotation(2, ALICE, &[BOB]),
-        ];
-        assert!(!verdict(&log, &[ALICE], BOB));
-        assert!(!verdict(&log, &[], ALICE));
-    }
-
-    #[test]
-    fn only_the_latest_rotation_counts() {
-        // Alice's removal was later superseded by Bob's own rotation, so the
-        // leaf's last write is Bob's, not the one that removed Alice.
-        let log = [
-            rotation(1, ALICE, &[ALICE, BOB]),
-            rotation(2, ALICE, &[BOB]),
-            rotation(3, BOB, &[BOB]),
-        ];
-        assert!(!verdict(&log, &[BOB], ALICE));
-    }
-
-    #[test]
-    fn the_signer_must_have_been_a_writer_before_it() {
-        let log = [rotation(1, BOB, &[BOB]), rotation(2, ALICE, &[BOB])];
-        assert!(!verdict(&log, &[BOB], ALICE));
-    }
-
-    #[test]
-    fn a_log_with_only_the_creating_rotation_rescues_nothing() {
-        assert!(!verdict(&[rotation(1, ALICE, &[BOB])], &[BOB], ALICE));
-    }
-
-    fn member_verdict(entries: &[RotationLogEntry], written_at: u64, signer: [u8; 32]) -> bool {
-        super::writer_when_written(
-            entries,
-            written_at,
-            |set| set.contains_key(&AccountId::from(signer)),
-            |_| true,
-        )
-    }
-
-    #[test]
-    fn a_member_written_before_its_author_was_removed_is_kept() {
-        // Bob removed Alice at 5; her member was written at 3.
-        let log = [rotation(1, BOB, &[ALICE, BOB]), rotation(5, BOB, &[BOB])];
-        assert!(member_verdict(&log, 3, ALICE));
-    }
-
-    #[test]
-    fn a_member_written_after_its_author_was_removed_is_not() {
-        let log = [rotation(1, BOB, &[ALICE, BOB]), rotation(5, BOB, &[BOB])];
-        assert!(!member_verdict(&log, 7, ALICE));
-    }
-
-    #[test]
-    fn a_member_older_than_every_rotation_has_no_set_to_check() {
-        let log = [rotation(5, BOB, &[ALICE, BOB])];
-        assert!(!member_verdict(&log, 3, ALICE));
-    }
-
-    #[test]
-    fn a_forged_rotation_cannot_make_its_signer_a_past_writer() {
-        // A fabricated entry naming Alice at 2 does not verify, so only the
-        // genuine set without her counts.
-        let log = [rotation(1, BOB, &[BOB]), rotation(2, ALICE, &[ALICE, BOB])];
-        assert!(!super::writer_when_written(
-            &log,
-            3,
-            |set| set.contains_key(&AccountId::from(ALICE)),
-            |entry| entry.writers_nonce != 2,
-        ));
-    }
-
-    #[test]
-    fn an_entry_whose_signature_does_not_verify_does_not_count() {
-        let log = [
-            rotation(1, ALICE, &[ALICE, BOB]),
-            rotation(2, ALICE, &[BOB]),
-        ];
-        let forged_latest = latest_rotation_removed(
-            &log,
-            &set(&[BOB]),
-            &key(ALICE),
-            |prior| prior.contains_key(&AccountId::from(ALICE)),
-            |entry| entry.writers_nonce != 2,
-        );
-        assert!(!forged_latest);
-    }
-}
-
 /// How the node resolves a leaf a relay wrote on an account's behalf, on the
 /// repair and snapshot paths, against real governance rows.
 #[cfg(test)]
@@ -2935,15 +2803,21 @@ mod on_behalf_resolution_tests {
     use calimero_account::AccountId;
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::MemberCapabilities;
-    use calimero_governance_store::test_fixtures::{enrolled, sample_meta_with_admin, test_store};
+    use calimero_governance_store::test_fixtures::{
+        enrol_member, enrolled, join_account_for, sample_meta_with_admin, test_account_root,
+        test_store,
+    };
     use calimero_governance_store::{
-        CapabilitiesRepository, MembershipRepository, MetaRepository, NotFolded,
+        AccountBindingRepository, CapabilitiesRepository, MembershipRepository, MetaRepository,
+        NotFolded,
     };
     use calimero_node_primitives::sync::{LeafMetadata, TreeLeafData};
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::crdt::CrdtType;
     use calimero_primitives::identity::PublicKey;
+    use calimero_storage::address::Id;
     use calimero_storage::entities::{EntryRules, Metadata, SignatureData, StorageType};
+    use calimero_storage::shared_writers::CellWriters;
     use calimero_store::Store;
 
     use super::{
@@ -3035,7 +2909,36 @@ mod on_behalf_resolution_tests {
     fn snapshot(w: &World, storage_type: StorageType) -> SnapshotAuthorship {
         let mut metadata = Metadata::new(1, 1);
         metadata.storage_type = storage_type;
-        snapshot_leaf_authorship(&w.store, &NotFolded, &w.context, &metadata, None)
+        snapshot_leaf_authorship(
+            &w.store,
+            &NotFolded,
+            &w.context,
+            Id::new([0x01; 32]),
+            &metadata,
+            None,
+            &|_| Ok(CellWriters::Genesis),
+        )
+    }
+
+    /// Another account certifying a member's signing key first must not make the
+    /// member's own entries look forged to a cold joiner.
+    #[test]
+    fn a_key_another_account_certified_first_still_authors_its_owners_entries() {
+        let w = world();
+        let victim_pk = PublicKey::from([0x4A; 32]);
+        let (attacker_root, attacker_genesis) = test_account_root();
+        let claim = join_account_for(&attacker_root, attacker_genesis, &victim_pk, [0; 32], 0);
+        let _attacker = AccountBindingRepository::new(&w.store)
+            .apply_link(&w.group, &claim.genesis, &claim.chain, &claim.statement, 0)
+            .expect("store the attacker's link")
+            .expect("the attacker's own device links");
+        let victim = enrol_member(&w.store, &w.group, &victim_pk);
+
+        assert_eq!(
+            snapshot(&w, owned(*victim.as_bytes(), victim_pk, None)),
+            SnapshotAuthorship::Authored,
+            "the victim's own entry was judged against the attacker's account"
+        );
     }
 
     /// A relay's entry for alice resolves to alice, so storage judges it as

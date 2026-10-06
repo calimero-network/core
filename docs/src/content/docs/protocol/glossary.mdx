@@ -32,7 +32,7 @@ The reference reuses a small, load-bearing vocabulary. This page collects those 
 
 **Payload** — The change an operation carries, a single enum spanning the four planes (plus the trivial `Noop`). The payload is what says which plane the operation belongs to. See [Operations & the Causal DAG](/protocol/operations/).
 
-**The four planes** — The kinds of change a payload expresses, all folded by the same projection: **data** (`state` — `Put` / `Delete`), **access-control** (`acl` — writer sets and capability masks), **membership** (`who` — `MemberAdded` / `MemberRemoved`), and **admin / structure** (`gov` — admin, policy, subgroup, and capability changes). See [Operations & the Causal DAG](/protocol/operations/).
+**The four planes** — The kinds of change a payload expresses, all folded by the same projection: **data** (`state` — `Put` / `Delete`), **access-control** (`acl` — writer sets and capability masks), **membership** (`who` — `MemberAdded` / `MemberRemoved` / `MemberLeft`), and **admin / structure** (`gov` — admin, policy, subgroup, and capability changes). See [Operations & the Causal DAG](/protocol/operations/).
 
 **Parents** — An operation's causal predecessors and the edges of the DAG — the heads its author had already seen. Parents are sorted before hashing, so the *set* (not the order) fixes the id; an op may also list its parent governance scope's head. See [Operations & the Causal DAG](/protocol/operations/).
 

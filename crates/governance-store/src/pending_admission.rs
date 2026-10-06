@@ -38,9 +38,9 @@ pub fn pending_standing(
     op: &SignedNamespaceOp,
 ) -> EyreResult<PendingStanding> {
     let namespace = ContextGroupId::from(op.namespace_id.to_bytes());
-    if AccountBindingRepository::new(store)
-        .signer_account(&namespace, &op.signer)?
-        .is_some()
+    if !AccountBindingRepository::new(store)
+        .signer_accounts(&namespace, &op.signer)?
+        .is_empty()
     {
         return Ok(PendingStanding::Certified);
     }

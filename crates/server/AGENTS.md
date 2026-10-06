@@ -64,9 +64,9 @@ src/
 │   │   ├── network/           # Network status handlers
 │   │   ├── tee.rs             # TEE handlers parent
 │   │   ├── tee/
-│   │   │   ├── announce.rs       # The TeeAttestationAnnounce a replica publishes
+│   │   │   ├── prompt.rs         # The TeeAdmissionPrompt a replica publishes, with the parameters it answers a challenge from
 │   │   │   ├── attest.rs
-│   │   │   ├── evidence_retry.rs # Re-announces a TEE whose authority evidence is missing
+│   │   │   ├── evidence_retry.rs # Prompts again for a TEE whose authority evidence is missing or due
 │   │   │   ├── fleet_join.rs
 │   │   │   ├── info.rs
 │   │   │   └── registration_attest.rs # Quote with the registration binding (protected)
@@ -464,23 +464,26 @@ request re-stamps it.
 - Admin API requires authentication
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
-- A WebSocket upgrade from a browser (`Origin` present) is refused with `403` unless the
-  origin is listed in `[server.cors] allowed_origins`, or equals a `Host` / `X-Forwarded-Host`
-  that names this node (`BrowserOrigins`: loopback, the listen addresses, every address when
-  it listens on an unspecified one, and the hosts of `allowed_origins`). A browser's `Host`
-  is whatever name it resolved, so it proves nothing until the node recognises it. Clients
-  that send no `Origin` are not browsers and are unaffected.
+- A WebSocket has no CORS, so `ws_handler` asks `OriginGuard::admits` itself, in every auth mode.
+  There is one origin rule for the node; never give a transport its own.
+  With embedded auth the auth layer answers first: an upgrade without a valid token (header, `?token=` or proof) gets `401` whatever its origin, so the origin check refuses (`403`) only a page that carries one.
+  A hosted app must therefore be listed in `[server.cors] allowed_origins` to open a socket, as well as hold a token.
+  The handler answers a `GET /ws` that is not an upgrade with `400` before it looks at the origin.
+  In proxy mode a loopback page is admitted a socket whatever host it names, so a proxy that authenticates by something a browser attaches by itself (a cookie, HTTP Basic, a client certificate) hands any loopback page an authenticated socket.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never
   count `Sec-Fetch-Mode` alone: Node's built-in `fetch` sends it on every request, so it would
   judge server-side SDK clients as browsers. It is admitted when the origin is listed or is a
   loopback page (any host), or when every `Host` / `X-Forwarded-Host` (or the URI authority,
-  for HTTP/2) is a loopback name, an IP address or an `allowed_origins` host and the origin
+  when no header names a host) is a loopback name, an IP address or an `allowed_origins` host and the origin
   matches one of them or is absent. Never admit a request because its
   `Origin` equals its `Host`: under DNS rebinding the two are the attacker's name together. A
   node served under a host name of its own must list that origin. The CORS layer calls the same
   `admits`, so the two cannot disagree.
 - SSE streams are per-context
+- `GET /sse` creates and persists a session, so `sse_handler` refuses (`403`) a browser request no script opened before it creates one: a `Sec-Fetch-Mode` other than `cors` or `same-origin`.
+  A navigation or an `<img>` carries no `Origin`, so the origin guard admits one from any site when it names the node's own host.
+  `EventSource` and `fetch` send `cors`; a client that is not a browser sends no `Sec-Fetch-Mode` and is unaffected.
 - The `/sse/subscription` 200 is the client's readiness signal: once it lists a
   context, live events for it reach the stream. That holds only because
   `sse_handler` joins the node-event broadcast (`receive_events`) before it

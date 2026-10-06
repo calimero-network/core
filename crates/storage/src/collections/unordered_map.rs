@@ -170,20 +170,6 @@ where
         }
     }
 
-    /// Open a handle to an `UnorderedMap` that already exists in storage at
-    /// `id`, without creating or re-registering it.
-    ///
-    /// Used by the interface layer to read/write a map whose id is computed
-    /// out-of-band and whose parent linkage is owned by the caller (the
-    /// rotation-log map under a `Shared` anchor — core#2716 P3). The element is
-    /// stamped `CrdtType::UnorderedMap` so the merge dispatch and the per-entry
-    /// children behave identically to a map created via `new_with_field_name`.
-    pub(crate) fn open_existing(id: crate::address::Id) -> Self {
-        Self {
-            inner: Collection::open_existing(id, CrdtType::UnorderedMap).stamp_values_of::<V>(),
-        }
-    }
-
     /// Create a new map collection with deterministic ID (internal)
     pub(super) fn new_with_field_name_internal(
         parent_id: Option<crate::address::Id>,
@@ -678,6 +664,11 @@ where
             // 3. If it doesn't exist, no `EntryMut` was created.
             Ok(Entry::Vacant(VacantEntry { map: self, key }))
         }
+    }
+
+    /// This collection's own id; two handles holding it name the same entries.
+    pub(crate) fn collection_id(&self) -> Id {
+        self.inner.id()
     }
 
     /// The storage entity id this `key` maps to for the calling account: the

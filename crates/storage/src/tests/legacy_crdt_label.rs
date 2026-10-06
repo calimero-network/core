@@ -1,5 +1,5 @@
-//! Who may change a cell's writer set: entries planted in its rotation log,
-//! and snapshot leaves that call themselves rotation-log book-keeping.
+//! A snapshot leaf stamped with the retired rotation-log type (tag 13) is
+//! verified like any other: the label is no evidence of who wrote it.
 
 use std::collections::BTreeSet;
 
@@ -32,8 +32,8 @@ fn alices_cell() -> (Id, Id) {
     (cell.anchor(), cell.value_id())
 }
 
-/// A leaf's rotation-log label does not waive its signature check, for a writer
-/// set or for a value.
+/// A leaf's legacy rotation-log label does not waive its signature check, for a
+/// writer set or for a value.
 #[test]
 #[serial]
 fn a_snapshot_leaf_labelled_rotation_log_is_still_verified() {

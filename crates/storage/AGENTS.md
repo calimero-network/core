@@ -30,7 +30,7 @@ cargo test -p calimero-storage merge_dispatch -- --nocapture
 | -------------------------- | ------------------------ | --------------------------------- | ---------- |
 | `GCounter`                 | Grow-only counter        | Max per executor                  | Blob       |
 | `PnCounter`                | Positive-negative counter| Max per executor (pos & neg maps) | Blob       |
-| `LwwRegister<T>`           | Last-write-wins register | Timestamp-based (later wins)      | Blob       |
+| `LwwRegister<T>`           | Last-write-wins register | Later stamp wins (drift-bounded)  | Blob       |
 | `ReplicatedGrowableArray`  | Collaborative text (RGA) | Union of characters               | Blob       |
 | `FugueText`                | Collaborative text (Fugue)| Union of run-length blocks       | Structured |
 | `FugueTextBlock`           | One block of a `FugueText`| In-bounds block first, then tombstone OR + longer text wins | Structured |
@@ -95,8 +95,9 @@ switching a field between the two types needs no migration.
   identical. The nonce has no lower bound, so the owner can replace its own
   entry with a backdated write; no one else can. `tests/write_once_devices.rs`
   and `tests/converge_write_once.rs` pin it. A `moderators` delete is checked
-  with `resolve_anchor_writers_as_of(anchor, nonce)` for `DELETE`, so revoking
-  a moderator never undoes their earlier removals. A collection reads only
+  with `resolve_anchor_writers(anchor)` for `DELETE`: the host resolves the
+  moderators at the delete's causal cut, so a moderator removed later does not
+  undo their earlier removals. A collection reads only
   entries whose rules equal its own (`Domain::admits`): an entry written with
   weaker rules is stored and never returned.
 - **Deleting an `immutable` entry is terminal** (only a moderator can: the owner
@@ -482,7 +483,7 @@ last-write-wins and wrong for an app's rule: the node that saw the newer write
 first never took the older in, and a "keep the lower" rule read 9 on one node
 and 3 on the other. `stale_write_still_merges` exempts an entry whose STORED
 `crdt_type` is one `save_internal` merges before comparing timestamps
-(`merges_whatever_the_order`: `Custom` and `RotationLog` off the root, and
+(`merges_whatever_the_order`: `Custom` and the legacy `RotationLog` leaf off the root, and
 `FugueTextBlock` on applied bytes), and only when the write names that same type,
 because `crdt_type` is not signed. Every signature, writer-set, mask and owner
 check runs before the skip and is unchanged, so a non-writer's stale write is
@@ -511,6 +512,19 @@ The Mergeable trait implementations in crdt_impls.rs provide **recursive merge**
 
 **I5 Enforcement**: `merge_root_state()` requires explicit registration. If no merge
 function is registered, it returns an error rather than silently falling back to LWW.
+
+The `Root<T>` entry (`ROOT_ENTRY_ID`) is `borsh(T)` followed by the entry id.
+A remote write of it, in a build holding the merger (a Rust app in WASM), goes to `merge_root_entry`: the id is split off, the registered merger runs over the two values whatever the order of the writes, and the id goes back on.
+An incoming value no registered type reads is refused as `InvalidData`, which the sync batch drops; a stored value that does not read loses to one that does.
+A local write takes its own value, since it descends from the stored one.
+A repair leaf for the entry (HashComparison or LevelWise) is never written where it lands: the node defers it whatever `crdt_type` the peer names, `Interface::root_entry_merge_request` checks its stamp, and the module's `__calimero_merge_root_state` export runs `merge_root_state_typed`, which takes the same split, refusal and merge rules as `merge_root_entry`.
+A conflict therefore settles the same whichever path delivered it.
+A module that answers `Err` (built before `Refused`, or a JS guest) or exports no `__calimero_merge_root_state` holds no such merge, and the entry resolves by last-writer-wins, as a host-side delta applies it: the greater stamp wins and an equal stamp the greater bytes, so two nodes never trade entries.
+The root collection (`Id::root()`) holds only its shell (an untyped collection at the root id for a `Root<T>`, nothing for a JS root), and every remote write of it, from `Root::sync` or a repair leaf, goes through `Interface::apply_remote_action`: a write that is not the stored shell is refused, and one that restates it is skipped, so once a shell is stored, only local writes move its stamp.
+No remote delete of the root or the app-state entry is applied: `Interface::apply_action` refuses it on every path.
+A collection merged with a handle to itself returns at once, so an inline field change does not walk and rewrite every entry of the root's collections.
+A register stamp further ahead than the drift tolerance (`DRIFT_TOLERANCE_NANOS`) loses to one within it on either side of a merge.
+The bound reads the local clock, so the merge is commutative only at a given local time: a stamp inside the window between two nodes' clocks can resolve differently for a while, and the next repair converges it once the stamp is in the past.
 
 ### Merge Decision Tree (Corrected)
 
@@ -638,7 +652,7 @@ src/
 ├── child_trie.rs             # A parent's children as a hash trie (bounded-cost link/unlink)
 ├── admitted_count.rs         # Node-local count of the children a guarded collection admits
 ├── domain.rs                 # Domain: what nested collections inherit from a guarded entry
-├── env.rs                    # RuntimeEnv (storage backend injection)
+├── env.rs                    # RuntimeEnv (storage backend injection), shared_writers / record_shared_rotation (host-resolved writer sets)
 ├── js.rs                     # JS bindings
 ├── logical_clock.rs          # HLC (Hybrid Logical Clock)
 ├── constants.rs              # Constants
@@ -715,14 +729,13 @@ refused. A User refusal names which check fired: `bad-signature`,
 `author-unresolved` or `wrong-author`. `tests/on_behalf.rs` pins every arm.
 
 **Known limitation: a writer-set rotation cannot be made on someone's behalf.**
-`RotationLogEntry` records the key that signed a rotation (`signer`) and carries
-no `on_behalf`, and rotation-log authentication checks that key's account against
-the prior writer set's `ADMIN` bit. A rotation a relay signs for an account is
-therefore attributed to the relay, which is not in the set, and is refused by
-every peer that authenticates the log. Delegated runs can write `Shared` and
-`SharedMember` entries for an account but cannot change a writer set for it.
-Deferred: closing it means an `on_behalf` on the rotation entry, covered by its
-signature, and the same rule at rotation authentication.
+A rotation is a `GroupOp::SharedWritersRotated` governance op signed by the
+executing node, whose account must hold `ADMIN` in the prior set, and the execute
+path refuses one recorded by a delegated, TEE or relay run
+(`SharedRotationRefused`). Delegated runs can write `Shared` and `SharedMember`
+entries for an account but cannot change a writer set for it. Closing it means
+an op that names the account it rotates for, covered by its signature, and the
+same rule in the fold.
 
 Writing a test here? Derive the account from a different domain than the key (see
 `tests::common::account_of_key`). A test where the two are equal cannot tell an
@@ -911,8 +924,8 @@ struct MyType {
   clock can read earlier than a stored stamp (an NTP step back, a peer up to 5s
   ahead), and the guest HLC restarts every execution, so a plain `time_now()`
   stamp dropped the write. Do not add a write path that stamps from the clock
-  alone; a replay that must keep its writer's stamp goes through
-  `save_raw_replayed`. `tests/entity_clock.rs` steps the clock back for each case.
+  alone; a replay that must keep its writer's stamp is applied through
+  `apply_action`, which stamps nothing. `tests/entity_clock.rs` steps the clock back for each case.
 - **A register that is an `UnorderedMap` or `SortedMap` entry's whole value is stored
   without its stamp.** The entry's `updated_at` is its stamp
   (`lww_register::entry_stamp`): the collection names its value type on its `Collection` (`stamp_values_of`), the entry offers it to
@@ -946,10 +959,8 @@ struct MyType {
   collection's id (`is_tee_only_collection_id`: `compute_collection_id` beneath a TEE-only
   parent tags it `\xCAtee\x00col`), the collection's own `Public` entity. Refuse that
   entity and every entry of a collection inside the cell is refused with it, as its
-  ancestor: a `Registry<_, _, Tee>`'s verdicts reached no member. The anchor's
-  rotation log is derived with `compute_unmarked_id`, because the node writes it, not the
-  TEE. Do not derive an id beneath a TEE-only one by any other function, or it escapes
-  the rule.
+  ancestor: a `Registry<_, _, Tee>`'s verdicts reached no member. Do not derive an id
+  beneath a TEE-only one by any other function, or it escapes the rule.
   Apply also checks every ancestor it would create, because a missing ancestor is
   created from the stamp the action claims for it, which nobody signs.
 - **A `SharedStorage` cell's ids say what may hold them.** A node keeps the first entity
@@ -963,9 +974,11 @@ struct MyType {
   and binding to every id beneath it (collections take their own tag, since their entity
   is `Public`). `refuse_foreign_entity_at_cell_id` (in `apply_action`, for the action and
   its missing ancestors, and in both snapshot verifiers) refuses anything else there.
-  A snapshot carries today's writer set, so it holds a wrapper only to being `Shared`;
-  a first apply of a rotated wrapper (a HashComparison repair on a node that never had
-  genesis) is refused until genesis arrives. `TeeOnly` keeps its own ids and rule.
+  A rotation never rewrites a wrapper, so a snapshot leaf carries the genesis set its id
+  commits to and both snapshot verifiers hold it to `cell_id_binds` (a leaf whose writers
+  the id does not commit to is refused, signed or not). A wrapper an earlier version's
+  rotation rewrote no longer binds and is not carried by a snapshot: this is breaking, as
+  the schema bump says. `TeeOnly` keeps its own ids and rule.
   `tests/shared_occupation.rs` replays each forgery on a group and a joiner.
 - **Every `Shared` entity is at a cell id and every `SharedMember` at an id bound to its
   anchor** (`shared_stamp_fits`), TEE-only ids aside, so apply refuses either anywhere
@@ -994,9 +1007,9 @@ struct MyType {
   the parent the write names; a writer standing at another account's id would need a
   parent meeting a 96-bit hash. Such an entry is admitted only when its signer speaks
   for the owner (the `User` rule) AND the owner holds `WRITE` in the cell's writer set:
-  `Interface::refuse_cell_owner_without_write`, in `apply_action`'s `User` arm, as of
-  the write's HLC (`resolve_anchor_writers_as_of`, since the node resolves no writer set
-  for a `User` action), and on the local path (`add_child_to`, `save_raw`) against the
+  `Interface::refuse_cell_owner_without_write`, in `apply_action`'s `User` arm, against
+  the writers the host resolves for the cell (`resolve_anchor_writers`, since the node resolves
+  no writer set for a `User` action), and on the local path (`add_child_to`, `save_raw`) against the
   current writers. The cell is found from the parent's id: `cell_value_id` is
   `value_id_for_binding(anchor binding)`, so `bound_value_id(parent)` names the value,
   whose `SharedMember` stamp names the anchor (the index tree is flat, so no ancestor
@@ -1011,6 +1024,22 @@ struct MyType {
   a written-once delete);
   `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
   the layout store-wide.
+- **Collecting a signed entity's tombstone leaves a record of its delete**
+  (`Key::Collected(id)`, 8 bytes of `deleted_at`, never lowered;
+  `reclaim::collected_record`). The node's GC writes it in the same atomic write
+  that deletes the tombstone, only for `StorageType::is_signed` entities. Apply
+  drops a signed write to an id it does not hold whose nonce or stamp is at or below the
+  record (`predates_collected_delete`), which is what the tombstone refused, and
+  refuses an action whose signed ancestor stamp would re-create a collected id.
+  A local first write of that id is stamped after the record
+  (`stamp_after_stored`). Each costs one read: per signed first write, per
+  signed remote write to an id not held, per missing signed ancestor. The record
+  is node-local and kept for good: snapshots neither carry nor clear it (a
+  resync keeps it, a joiner lacks it, as it lacks tombstones, and stays apart
+  from the nodes that have it if a replay reaches it). The ancestor refusal also
+  holds back an honestly re-created entity named only as an ancestor until its
+  own write arrives. `tests/reclaim.rs` pins each replay, the tie, a lagging
+  re-insert and an ancestor stamp.
 - **No entity is its own ancestor.** `apply_action` refuses an upsert whose links (the
   entity under its first ancestor, each missing ancestor under the next) would put an
   entity under itself, give it more than `MAX_PARENT_CHAIN` ancestors, or link one id
@@ -1028,7 +1057,8 @@ struct MyType {
   Nested collections link under the root, so only a collection's own container holds such entries.
   `tests/owned_rules.rs` and `tests/index.rs` `subtree_tombstoning` pin it.
 
-- **A cell's writer set is the fold of its governance rotation steps** (`shared_writers::fold`, the rules are in the governance chapter of the docs). It takes the steps and their causal pasts and nothing else, so its answer cannot depend on arrival order or on this node's store. It takes at most `MAX_STEPS_PER_CELL` steps and has no answer past that, which bounds its cost without dropping history, and treats two identical concurrent rotations as one so a step built on either still counts. Its `Ok(None)` means no step took effect and `Err(OverBudget)` that there is no answer; the reader, not this crate, knows whether the cut could be read at all.
+- **A cell's writers come from the host, and a rotation is a request.** `Interface::resolve_anchor_writers(anchor)` asks `env::shared_writers(anchor)`: `Some(Rotated(w))` is `w`, `Some(Genesis)` is the `Shared { writers }` stored with the anchor, and `None` is the empty set (every caller refuses). The per-cell rotation log (child entities under the cell, with its `rotation_log.rs` module and merge) is deleted: nothing writes or reads one, and a new cell hashes the same on every node. `CrdtType::RotationLog` (tag 13) stays as a decode-only marker, because stores and snapshots written by older nodes carry entities stamped with it; `Interface` still merges such a leaf by last-write-wins (content-hash tiebreak) and `merge_by_crdt_type` has an arm only to complete the match. `WriterSetCell::rotate_writers_scoped` requires `ADMIN` in the current set, refuses a rotation the node could not publish (`SharedRotation::refusal`: an empty set on either side, a cell that is not a cell id, or a set over `MAX_WRITERS_PER_ROTATION`; the wasm host function applies the same rule), then calls `env::record_shared_rotation(&SharedRotation { cell, prior, new })` and invalidates its value cache: it does not re-stamp the wrapper, save anything or touch the index, so a rotation writes no byte and ships no delta (the node publishes the request from the run's `Outcome` as a governance op). The env keeps a per-run overlay, so the run that rotated reads the new set back at once (on wasm the instance is one run; on native `with_runtime_env` clears the overlay on entry and puts the outer run's back on exit). Native `mocked` answers `Some(Genesis)` with no resolver and keeps unsunk requests for `env::take_recorded_rotations()` (tests); `RuntimeEnv::with_shared_writers` and `with_rotation_sink` install the host's. `tests::common::env_resolving` plays the governance fold in a test. `apply_action`'s `Shared` arm refuses an update to an existing anchor whose claimed `writers` differ from the stored set (`ActionNotAllowed`), after the signature and mask checks; writer sets change by governance op alone. The same arm reads the writers it checks from `ApplyContext::effective_writers` when the node resolved a rotated set at the delta's position, and otherwise from the host exactly as `resolve_anchor_writers` does (the stored set at genesis, the empty set when the host cannot resolve), so a write with no cut of its own (a repair, a pushed leaf) is judged by the host's answer for repairs: every writer the cell has had by the node's current heads (`shared_writers::ever_writers`), so a since-removed writer's earlier write still reaches a repairing node. A `Shared` wrapper delete (`DeleteRef`) is judged the same way, by `ctx.effective_writers` else `resolve_anchor_writers`, and so is the local stamp (`authorize_local_shared_stamp`), never by the stored set alone. `tests/shared_cell_creator_and_applier.rs` pins that the node that writes a cell and a node that applies its deltas hold the same anchor hash and root hash through creation, a member entry, an update, a rotation (which writes nothing), and both deletes.
+- **A cell's writer set is the fold of its governance rotation steps** (`shared_writers::fold`, the rules are in the governance chapter of the docs). It takes the steps and their causal pasts and nothing else, so its answer cannot depend on arrival order or on this node's store. It takes at most `MAX_STEPS_PER_CELL` steps and has no answer past that, which bounds its cost without dropping history, and treats two identical concurrent rotations as one so a step built on either still counts. Its `Ok(None)` means no step took effect and `Err(OverBudget)` that there is no answer; the reader, not this crate, knows whether the cut could be read at all. `ever_writers` shares the counting loop (`count_steps`) and returns the genesis set unioned (accounts; `OpMask` bits OR-ed) with the `new` set of every counted step, void or not, because each was a real writer set at some cut.
 
 ## Further Documentation
 

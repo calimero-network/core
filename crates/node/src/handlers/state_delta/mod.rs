@@ -984,15 +984,15 @@ pub(crate) async fn apply_authorized_state_delta(
 /// the `write()` inside would deadlock against the read held by this same thread.
 /// Arm the delta store's key→account resolver for the cut this delta cites.
 ///
-/// The gossip path has just resolved the author's *membership* at this cut; the
-/// writer plane needs the same cut to answer a different question — which account
-/// a signing key speaks for — for the delta's author and for every rotation-log
-/// entry the writer-set fold walks. Arming one resolver means all of those are
-/// placed against one folded view instead of three.
+/// Every path that adds a peer's delta (gossip, parent fetch, DAG catch-up, buffered
+/// replay) arms it for that delta's own cut, each having just resolved the author's
+/// *membership* there; the writer plane needs the same cut to answer a different question,
+/// which account a signing key speaks for, for the delta's author. The same folded view judges
+/// the delta's shared cells, so the two cannot disagree about the cut.
 ///
 /// A resolver that cannot answer returns `None`, and the apply refuses rather than
 /// guessing, so the delta is retried once the cited ancestry folds.
-fn arm_signer_resolver_for_cut(
+pub(crate) fn arm_signer_resolver_for_cut(
     delta_store: &crate::delta_store::DeltaStore,
     node_state: &crate::NodeState,
     datastore: &calimero_store::Store,
@@ -1007,7 +1007,7 @@ fn arm_signer_resolver_for_cut(
         //
         // The slot is only ever replaced, so an early return would leave the
         // resolver armed for a PREVIOUS delta — a different cut, possibly a
-        // different context — and this delta's author and rotation entries would be
+        // different context — and this delta's author would be
         // resolved against it. That is exactly the "one view of the bindings"
         // invariant this function exists to uphold, so failing to arm has to mean
         // armed-with-nothing, which refuses and retries, and never means
@@ -2083,6 +2083,23 @@ async fn request_missing_deltas(
             // DAG-catchup serves from this node include the claim
             // (responder filters out rows without an author claim, see
             // `crates/node/src/sync/delta_request.rs`).
+            // The resolver answers at the cut this delta was signed at, not the last one armed.
+            arm_signer_resolver_for_cut(
+                &delta_store,
+                node_state,
+                &datastore,
+                &context_id,
+                governance_position_blob
+                    .as_deref()
+                    .and_then(|blob| {
+                        borsh::from_slice::<calimero_context_config::types::GovernanceParentEdge>(
+                            blob,
+                        )
+                        .ok()
+                    })
+                    .as_ref(),
+                calimero_storage::logical_clock::physical_time_secs(&dag_delta.hlc),
+            );
             record_accepted_events_hash(&datastore, &context_id, &delta_id, events_hash.as_ref());
             match delta_store
                 .add_delta_with_events(
@@ -2606,6 +2623,14 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             .governance_position
             .as_ref()
             .and_then(|gp| borsh::to_vec(gp).ok());
+        arm_signer_resolver_for_cut(
+            &delta_store,
+            &node_state,
+            context_client.datastore(),
+            &context_id,
+            buffered.governance_position.as_ref(),
+            calimero_storage::logical_clock::physical_time_secs(&delta.hlc),
+        );
         delta_store
             .add_delta_with_events(
                 delta.clone(),
@@ -2803,7 +2828,7 @@ mod tests {
             let cert = DeviceCert::sign(
                 root,
                 account,
-                DeviceId::from([seed ^ 0x0F; 32]),
+                DeviceId::mint(account, [seed ^ 0x0F; 16]),
                 &device_sk.public_key(),
                 &KemPublicKey::from([seed ^ 0xF0; 32]),
                 0,
@@ -2829,6 +2854,7 @@ mod tests {
                     context: ContextId::from([0x76; 32]),
                     author_account: author.statement.account,
                     executor: relay_account,
+                    executor_key: relay_sk.public_key(),
                     app_version: ApplicationId::from([0u8; 32]),
                     method: "send_message".to_owned(),
                     intent_hash: Warrant::intent_hash("send_message", b"{}"),

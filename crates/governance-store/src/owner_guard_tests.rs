@@ -416,7 +416,9 @@ fn a_proof_whose_chain_stops_below_the_recorded_epoch_is_refused() {
         .expect("the rotation continues the chain");
     // And re-certifies the device under the new root, so it still speaks for
     // the account: a binding signed by a superseded epoch is filtered out.
-    let device = calimero_account::DeviceId::from(*AsRef::<[u8; 32]>::as_ref(&owner_pk));
+    let device = crate::test_fixtures::real_join_account(&owner_pk)
+        .statement
+        .device;
     let recert = calimero_account::DeviceCert::sign(
         &root1,
         f.owner,

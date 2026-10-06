@@ -3442,8 +3442,9 @@ fn test_nested_pncounter_single_writer_converges() {
             .map(|(full, _)| full)
             .unwrap_or([0; 32])
     };
-    let capture = |data: Vec<u8>| -> Vec<Action> {
-        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+    let root_shell = || Interface::<S>::find_by_id_raw(Id::root()).unwrap_or_default();
+    let capture = |_data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), root_shell(), Metadata::default()).unwrap();
         commit_causal_delta(&root_hash())
             .unwrap()
             .expect("op must produce a delta")
@@ -4044,6 +4045,38 @@ fn opaque_root_local_write_falls_back_to_lww_when_unregistered() {
     );
 }
 
+/// Two nodes holding different opaque roots with one stamp converge on the same bytes.
+#[test]
+#[serial]
+fn opaque_roots_with_an_equal_stamp_converge() {
+    use crate::address::Id;
+    use crate::entities::Metadata;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    type NodeA = MockedStorage<991>;
+    type NodeB = MockedStorage<992>;
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    let root = Id::root();
+    Interface::<NodeA>::save_raw(root, b"v1".to_vec(), Metadata::new(100, 100)).expect("create");
+    Interface::<NodeA>::save_raw(root, b"va".to_vec(), Metadata::new(100, 200)).expect("write");
+    Interface::<NodeB>::save_raw(root, b"v1".to_vec(), Metadata::new(100, 100)).expect("create");
+    Interface::<NodeB>::save_raw(root, b"vb".to_vec(), Metadata::new(100, 200)).expect("write");
+
+    Interface::<NodeA>::save_raw(root, b"vb".to_vec(), Metadata::new(100, 200))
+        .expect("A merges B");
+    Interface::<NodeB>::save_raw(root, b"va".to_vec(), Metadata::new(100, 200))
+        .expect("B merges A");
+
+    assert_eq!(
+        Interface::<NodeA>::find_by_id_raw(root),
+        Interface::<NodeB>::find_by_id_raw(root),
+        "an equal stamp must pick one winner on both nodes, not swap them"
+    );
+}
+
 /// I5 (No Silent Data Loss) preserved for a NON-opaque root: a root whose
 /// stored metadata carries a real `crdt_type` is an app-state root expected to
 /// merge field-by-field via a registered `Mergeable`. Silently overwriting it
@@ -4375,4 +4408,344 @@ fn save_root_entry_links_leaf_child_of_root() {
         Some(b"v2".as_slice()),
         "read_root_entry must reflect the updated document"
     );
+}
+
+/// An app state of two registers, so concurrent writers can each set a different one.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug)]
+struct TwoFields {
+    a: LwwRegister<String>,
+    b: LwwRegister<String>,
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for TwoFields {
+    const DISPATCHED: bool = false;
+}
+
+impl Mergeable for TwoFields {
+    fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        Mergeable::merge(&mut self.a, &other.a)?;
+        Mergeable::merge(&mut self.b, &other.b)
+    }
+}
+
+impl crate::collections::rekey::RekeyTarget for TwoFields {
+    fn rekey_relative_to(&mut self, _parent_id: crate::address::Id) {}
+}
+
+/// Two peers set different fields of one state; applying their app-state
+/// entries in either order keeps both fields and lands on the same bytes.
+#[test]
+#[serial]
+fn concurrent_remote_root_writes_to_different_fields_both_survive() {
+    use crate::action::Action;
+    use crate::collections::ROOT_ENTRY_ID;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+
+    env::reset_for_testing();
+    let genesis = TwoFields {
+        a: LwwRegister::new("a0".to_owned()),
+        b: LwwRegister::new("b0".to_owned()),
+    };
+    let mut sets_a = genesis.clone();
+    sets_a.a.set("a1".to_owned());
+    let mut sets_b = genesis.clone();
+    sets_b.b.set("b1".to_owned());
+    let at = env::time_now() + 1_000_000_000;
+
+    let replay = |writes: [(&TwoFields, u64); 2]| {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<TwoFields>();
+        let _genesis = Root::new(|| genesis.clone());
+        for (state, updated_at) in writes {
+            let mut metadata = Index::<MainStorage>::get_metadata(ROOT_ENTRY_ID)
+                .unwrap()
+                .unwrap();
+            metadata.updated_at = updated_at.into();
+            let mut data = borsh::to_vec(state).unwrap();
+            data.extend_from_slice(ROOT_ENTRY_ID.as_bytes());
+            let update = Action::Update {
+                id: ROOT_ENTRY_ID,
+                data,
+                ancestors: Index::<MainStorage>::get_ancestors_of(ROOT_ENTRY_ID).unwrap(),
+                metadata,
+            };
+            Interface::<MainStorage>::apply_action(update, &ApplyContext::empty()).unwrap();
+        }
+        let app = Root::<TwoFields>::fetch().unwrap();
+        (
+            (app.a.get().clone(), app.b.get().clone()),
+            MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap(),
+        )
+    };
+
+    let (in_order, in_order_bytes) = replay([(&sets_a, at), (&sets_b, at + 1)]);
+    let (reversed, reversed_bytes) = replay([(&sets_b, at + 1), (&sets_a, at)]);
+
+    let both = ("a1".to_owned(), "b1".to_owned());
+    assert_eq!(in_order, both, "in order, both writes must survive");
+    assert_eq!(
+        reversed, both,
+        "the older write applied last must still merge"
+    );
+    assert_eq!(in_order_bytes, reversed_bytes, "both orders must converge");
+    clear_merge_registry();
+}
+
+/// How a node receives a peer's app-state entry.
+#[derive(Clone, Copy)]
+enum Delivery {
+    Delta,
+    Repair,
+}
+
+/// Two peers set different fields of one state. Whether a node takes each write
+/// by delta or by repair, it lands on the same bytes with both fields.
+#[test]
+#[serial]
+fn concurrent_root_field_writes_converge_by_delta_or_by_repair() {
+    use crate::action::Action;
+    use crate::collections::ROOT_ENTRY_ID;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::merge::{merge_root_state_typed, MergeRootStateResponse};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+
+    env::reset_for_testing();
+    let genesis = TwoFields {
+        a: LwwRegister::new("a0".to_owned()),
+        b: LwwRegister::new("b0".to_owned()),
+    };
+    let mut sets_a = genesis.clone();
+    sets_a.a.set("a1".to_owned());
+    let mut sets_b = genesis.clone();
+    sets_b.b.set("b1".to_owned());
+    let at = env::time_now() + 1_000_000_000;
+
+    let replay = |writes: [(Delivery, &TwoFields, u64); 2]| {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<TwoFields>();
+        let _genesis = Root::new(|| genesis.clone());
+        for (delivery, state, updated_at) in writes {
+            let mut entry = borsh::to_vec(state).unwrap();
+            entry.extend_from_slice(ROOT_ENTRY_ID.as_bytes());
+            match delivery {
+                Delivery::Delta => {
+                    let mut metadata = Index::<MainStorage>::get_metadata(ROOT_ENTRY_ID)
+                        .unwrap()
+                        .unwrap();
+                    metadata.updated_at = updated_at.into();
+                    let update = Action::Update {
+                        id: ROOT_ENTRY_ID,
+                        data: entry,
+                        ancestors: Index::<MainStorage>::get_ancestors_of(ROOT_ENTRY_ID).unwrap(),
+                        metadata,
+                    };
+                    Interface::<MainStorage>::apply_action(update, &ApplyContext::empty()).unwrap();
+                }
+                Delivery::Repair => {
+                    let request =
+                        Interface::<MainStorage>::root_entry_merge_request(entry, updated_at)
+                            .unwrap();
+                    let MergeRootStateResponse::Ok(merged) =
+                        merge_root_state_typed::<TwoFields>(&request)
+                    else {
+                        panic!("the app's merge must take a readable entry");
+                    };
+                    Interface::<MainStorage>::write_root_entry_merge(&request, Some(&merged), 0)
+                        .unwrap()
+                        .expect("nothing wrote the entry during the merge");
+                }
+            }
+        }
+        let app = Root::<TwoFields>::fetch().unwrap();
+        (
+            (app.a.get().clone(), app.b.get().clone()),
+            MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap(),
+        )
+    };
+
+    let (by_delta, by_delta_bytes) = replay([
+        (Delivery::Delta, &sets_a, at),
+        (Delivery::Delta, &sets_b, at + 1),
+    ]);
+    let (a_repaired, a_repaired_bytes) = replay([
+        (Delivery::Delta, &sets_b, at + 1),
+        (Delivery::Repair, &sets_a, at),
+    ]);
+    let (b_repaired, b_repaired_bytes) = replay([
+        (Delivery::Delta, &sets_a, at),
+        (Delivery::Repair, &sets_b, at + 1),
+    ]);
+
+    let both = ("a1".to_owned(), "b1".to_owned());
+    assert_eq!(by_delta, both, "control: two deltas keep both fields");
+    assert_eq!(
+        a_repaired, both,
+        "the older write repaired must still merge"
+    );
+    assert_eq!(
+        b_repaired, both,
+        "the newer write repaired must still merge"
+    );
+    assert_eq!(
+        by_delta_bytes, a_repaired_bytes,
+        "delta and repair must converge"
+    );
+    assert_eq!(
+        by_delta_bytes, b_repaired_bytes,
+        "delta and repair must converge"
+    );
+    clear_merge_registry();
+}
+
+/// A remote app-state entry that restates the stored one merges nothing, so the
+/// root's collections are not re-walked and no entry is rewritten.
+#[test]
+#[serial]
+fn a_remote_root_entry_restating_the_stored_one_rewrites_no_entry() {
+    use crate::action::Action;
+    use crate::collections::ROOT_ENTRY_ID;
+    use crate::delta::{commit_causal_delta, reset_delta_context};
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    register_crdt_merge::<TestApp>();
+    let mut app = Root::new(|| TestApp {
+        counter: Counter::new(),
+        metadata: UnorderedMap::new(),
+    });
+    for i in 0..3 {
+        app.metadata
+            .insert(format!("k{i}"), LwwRegister::new("v".to_owned()))
+            .unwrap();
+    }
+    drop(app);
+    reset_delta_context();
+
+    let mut metadata = Index::<MainStorage>::get_metadata(ROOT_ENTRY_ID)
+        .unwrap()
+        .unwrap();
+    metadata.updated_at = (env::time_now() + 1_000_000_000).into();
+    let update = Action::Update {
+        id: ROOT_ENTRY_ID,
+        data: MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap(),
+        ancestors: Index::<MainStorage>::get_ancestors_of(ROOT_ENTRY_ID).unwrap(),
+        metadata,
+    };
+    Interface::<MainStorage>::apply_action(update, &ApplyContext::empty()).unwrap();
+
+    let rewritten = commit_causal_delta(&[0; 32])
+        .unwrap()
+        .map_or(0, |delta| delta.actions.len());
+    assert_eq!(
+        rewritten, 0,
+        "restating the stored entry must rewrite nothing"
+    );
+    clear_merge_registry();
+}
+
+/// An app state with an inline field beside one collection of each kind.
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+struct InlineAndCollections {
+    name: LwwRegister<String>,
+    map: UnorderedMap<String, LwwRegister<String>>,
+    list: Vector<LwwRegister<String>>,
+    tags: UnorderedSet<String>,
+}
+
+#[diagnostic::do_not_recommend]
+impl MergeStrategy for InlineAndCollections {
+    const DISPATCHED: bool = false;
+}
+
+impl Mergeable for InlineAndCollections {
+    fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        Mergeable::merge(&mut self.name, &other.name)?;
+        self.map.merge(&other.map)?;
+        self.list.merge(&other.list)?;
+        self.tags.merge(&other.tags)
+    }
+}
+
+impl crate::collections::rekey::RekeyTarget for InlineAndCollections {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        use crate::collections::rekey::field_child_id;
+        crate::rekey_field_if_supported!(&mut self.map, field_child_id(parent_id, "map"));
+        crate::rekey_field_if_supported!(&mut self.list, field_child_id(parent_id, "list"));
+        crate::rekey_field_if_supported!(&mut self.tags, field_child_id(parent_id, "tags"));
+    }
+}
+
+/// A remote app-state entry that changes only an inline field names the same
+/// collections as the stored one, so the merge rewrites none of their entries.
+#[test]
+#[serial]
+fn a_remote_root_entry_changing_an_inline_field_rewrites_no_entry() {
+    use crate::action::Action;
+    use crate::collections::ROOT_ENTRY_ID;
+    use crate::delta::{commit_causal_delta, reset_delta_context};
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::{Key, MainStorage, StorageAdaptor};
+
+    env::reset_for_testing();
+    clear_merge_registry();
+    register_crdt_merge::<InlineAndCollections>();
+    let mut app = Root::new(|| InlineAndCollections {
+        name: LwwRegister::new("local".to_owned()),
+        map: UnorderedMap::new(),
+        list: Vector::new(),
+        tags: UnorderedSet::new(),
+    });
+    for i in 0..3 {
+        app.map
+            .insert(format!("k{i}"), LwwRegister::new("v".to_owned()))
+            .unwrap();
+        app.list.push(LwwRegister::new(format!("v{i}"))).unwrap();
+        app.tags.insert(format!("t{i}")).unwrap();
+    }
+    drop(app);
+    reset_delta_context();
+
+    let stored = MainStorage::storage_read(Key::Entry(ROOT_ENTRY_ID)).unwrap();
+    let value = stored
+        .strip_suffix(ROOT_ENTRY_ID.as_bytes().as_slice())
+        .unwrap();
+    let mut peer: InlineAndCollections = borsh::from_slice(value).unwrap();
+    peer.name = LwwRegister::new("peer".to_owned());
+    let mut data = borsh::to_vec(&peer).unwrap();
+    data.extend_from_slice(ROOT_ENTRY_ID.as_bytes());
+    let mut metadata = Index::<MainStorage>::get_metadata(ROOT_ENTRY_ID)
+        .unwrap()
+        .unwrap();
+    metadata.updated_at = (env::time_now() + 1_000_000_000).into();
+    let update = Action::Update {
+        id: ROOT_ENTRY_ID,
+        data,
+        ancestors: Index::<MainStorage>::get_ancestors_of(ROOT_ENTRY_ID).unwrap(),
+        metadata,
+    };
+    Interface::<MainStorage>::apply_action(update, &ApplyContext::empty()).unwrap();
+
+    let rewritten = commit_causal_delta(&[0; 32])
+        .unwrap()
+        .map_or(0, |delta| delta.actions.len());
+    assert_eq!(
+        Root::<InlineAndCollections>::fetch().unwrap().name.get(),
+        "peer",
+        "control: the inline field merged"
+    );
+    assert_eq!(
+        rewritten, 0,
+        "a shared collection must not be walked and rewritten"
+    );
+    clear_merge_registry();
 }

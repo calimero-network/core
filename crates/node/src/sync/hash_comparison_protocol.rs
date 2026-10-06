@@ -28,7 +28,7 @@
 //! ).await?;
 //!
 //! // Responder side (manager extracts first request data)
-//! let first_request = HashComparisonFirstRequest { node_id, max_depth: Some(1) };
+//! let first_request = HashComparisonFirstRequest { node_id, max_depth: Some(1), context_client: None };
 //! HashComparisonProtocol::run_responder(
 //!     &mut transport,
 //!     &store,
@@ -43,8 +43,8 @@ use std::collections::HashSet;
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, apply_leaf_with_crdt_merge_gated, apply_under_context_lock,
     generate_nonce, get_local_root_hash_for_context, handle_entity_delete_push_locked,
-    handle_entity_push, is_leaf_currently_authorized, LeafDisposition, LeafOutcome,
-    MAX_ENTITIES_PER_PUSH,
+    handle_entity_push, is_leaf_currently_authorized, with_repair_cell_writers, LeafDisposition,
+    LeafOutcome, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_context_client::client::ContextClient;
@@ -130,6 +130,9 @@ pub struct HashComparisonFirstRequest {
     pub node_id: [u8; 32],
     /// Maximum depth to return children.
     pub max_depth: Option<u8>,
+    /// Client whose cell-writers seam answers for the pushes this responder applies. `None`
+    /// in the single-threaded sync-sim harness, where every cell stands at genesis.
+    pub context_client: Option<ContextClient>,
 }
 
 /// Statistics from a HashComparison sync session.
@@ -151,20 +154,9 @@ pub struct HashComparisonStats {
     /// merge did not converge the two peers — see #2407 for the
     /// failure mode this guards against.
     pub root_hash_verified: bool,
-    /// Root-state byte blobs the DFS encountered on remote leaves
-    /// that the host can't merge by itself (separate-address-space
-    /// merge registry — see [`crate::sync::helpers::apply_leaf_with_crdt_merge`]).
-    /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
-    /// The caller (`ProtocolSelector`) dispatches each one through
-    /// `ContextClient::merge_root_state` after the sync completes,
-    /// closing the loop on root-entity divergence that HC would
-    /// otherwise silently drop. Storing the entity id lets the caller
-    /// distinguish `ROOT_ID` from the `Root<T>` entry (both treated
-    /// as root by `is_app_root_entry`, both possible in HC leaves);
-    /// the timestamp is the leaf's wire-carried `hlc_timestamp` so
-    /// the dispatch uses the actual remote write time instead of a
-    /// synthetic value.
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+    /// App-state entry leaves the DFS met, which only the app's module can merge;
+    /// `ProtocolSelector` dispatches each after the session.
+    pub deferred_root_merges: Vec<TreeLeafData>,
 
     /// Custom-typed ENTRIES deferred for the same reason, with the id the
     /// entry declares so the dispatch does not have to re-read it.
@@ -213,7 +205,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
         context_id: ContextId,
         identity: PublicKey,
         first_request: Self::ResponderInit,
-    ) -> Result<()> {
+    ) -> Result<Vec<TreeLeafData>> {
         run_responder_impl(
             transport,
             store,
@@ -221,6 +213,7 @@ impl SyncProtocolExecutor for HashComparisonProtocol {
             identity,
             first_request.node_id,
             first_request.max_depth,
+            first_request.context_client.as_ref(),
         )
         .await
     }
@@ -250,7 +243,11 @@ async fn run_initiator_impl<T: SyncTransport>(
 
     // Set up storage bridge
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
-    let runtime_env = create_runtime_env(store, context_id, identity, account);
+    let runtime_env = with_repair_cell_writers(
+        create_runtime_env(store, context_id, identity, account),
+        context_client,
+        context_id,
+    );
 
     // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
     // leaf we emit so a peer on an older reader can decline+buffer a
@@ -452,21 +449,8 @@ async fn run_initiator_impl<T: SyncTransport>(
                         continue;
                     }
 
-                    // Root entity leaves can't be merged on the host
-                    // (the host's `merge_root_state` consults a registry
-                    // that's only populated inside WASM). Hand them off
-                    // to the caller, which dispatches each through
-                    // `ContextClient::merge_root_state` after the sync
-                    // session completes. `apply_leaf_with_crdt_merge`
-                    // also short-circuits root entities — we check here
-                    // too so we can record the incoming bytes (the helper
-                    // is sync and inside `with_runtime_env`, so it can't
-                    // call into the runtime to do the merge itself).
-                    // Defer root entities with a real `crdt_type` for
-                    // WASM dispatch; opaque root entities (synthetic
-                    // `Opaque` LWW marker) fall through to
-                    // `apply_leaf_with_crdt_merge` which LWW-writes
-                    // them directly (no Mergeable to dispatch).
+                    // Only the app's module merges the app-state entry, so it is
+                    // handed to the caller, which dispatches it after the session.
                     let entity_id = calimero_storage::address::Id::new(leaf_data.key);
                     match crate::sync::helpers::classify_leaf(
                         entity_id,
@@ -478,11 +462,14 @@ async fn run_initiator_impl<T: SyncTransport>(
                         },
                     ) {
                         LeafDisposition::DeferRoot => {
-                            stats.deferred_root_merges.push((
-                                leaf_data.key,
-                                leaf_data.value.clone(),
-                                leaf_data.metadata.hlc_timestamp,
-                            ));
+                            stats.deferred_root_merges.push(leaf_data.clone());
+                            // The peer merges ours as we merge theirs, so one session converges both.
+                            pending_local_leaf_pushes.extend(local_leaf_to_push_back(
+                                context_id,
+                                &runtime_env,
+                                &remote_node,
+                                schema_bytecode_id,
+                            )?);
                             continue;
                         }
                         LeafDisposition::DeferCustom(type_id) => {
@@ -565,35 +552,12 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // chunked batch after the DFS so an N-leaf
                     // divergence is N entities over O(N/batch) round-
                     // trips, not N round-trips inline.
-                    let local_node = with_runtime_env(runtime_env.clone(), || {
-                        get_local_tree_node(context_id, &remote_node.id, false, schema_bytecode_id)
-                    })?;
-                    if let Some(local) = local_node {
-                        if local.is_leaf() && local.hash != remote_node.hash {
-                            if let Some(local_leaf) = local.leaf_data {
-                                // Same guard `collect_local_leaves`
-                                // applies on the snapshot-push path:
-                                // an oversized leaf is rejected by
-                                // the peer's `TreeLeafData::is_valid`
-                                // check inside `handle_entity_push`,
-                                // so queuing it here would silently
-                                // fail and re-enter the sticky loop
-                                // this fix exists to eliminate.
-                                if local_leaf.value.len() > MAX_LEAF_VALUE_SIZE {
-                                    warn!(
-                                        %context_id,
-                                        key = %hex::encode(local_leaf.key),
-                                        len = local_leaf.value.len(),
-                                        max = MAX_LEAF_VALUE_SIZE,
-                                        "leaf value exceeds MAX_LEAF_VALUE_SIZE, \
-                                         skipping bidirectional push"
-                                    );
-                                } else {
-                                    pending_local_leaf_pushes.push(local_leaf);
-                                }
-                            }
-                        }
-                    }
+                    pending_local_leaf_pushes.extend(local_leaf_to_push_back(
+                        context_id,
+                        &runtime_env,
+                        &remote_node,
+                        schema_bytecode_id,
+                    )?);
                 }
             } else {
                 // Internal node: compare with local version
@@ -808,10 +772,8 @@ async fn run_initiator_impl<T: SyncTransport>(
     // and a transport error is non-fatal here — preserving prior behaviour
     // for mixed-version clusters.
     //
-    // (S2.3: the end-of-session rotation-log reconcile was removed — the
-    // rotation log is a hashed `UnorderedMap` child of its anchor now, so it
-    // converges through HC's ordinary tree traversal like any other entity; no
-    // separate writer-set reconcile is needed.)
+    // A rotation writes no data, so writer sets converge through governance sync and need
+    // no reconcile at the end of this session.
     let (peer_current_root, peer_scope_root) =
         match query_peer_current_root(transport, context_id, identity, init_pop).await {
             Ok(Some((root, scope_root))) => (root, scope_root),
@@ -1115,7 +1077,8 @@ async fn run_responder_impl<T: SyncTransport>(
     identity: PublicKey,
     first_node_id: [u8; 32],
     first_max_depth: Option<u8>,
-) -> Result<()> {
+    context_client: Option<&ContextClient>,
+) -> Result<Vec<TreeLeafData>> {
     info!(%context_id, "Starting HashComparison sync (responder)");
 
     // Defense in depth: validate first request parameters
@@ -1132,7 +1095,11 @@ async fn run_responder_impl<T: SyncTransport>(
 
     // Set up storage bridge (reused across all requests)
     let account = calimero_governance_store::account_for_context(store, &context_id)?;
-    let runtime_env = create_runtime_env(store, context_id, identity, account);
+    let runtime_env = with_repair_cell_writers(
+        create_runtime_env(store, context_id, identity, account),
+        context_client,
+        context_id,
+    );
 
     // PR-6b Task 6b.7: the sender's loaded-reader schema, stamped onto every
     // leaf we emit (see `run_initiator_impl`).
@@ -1152,6 +1119,7 @@ async fn run_responder_impl<T: SyncTransport>(
 
     let mut sequence_id = 0u64;
     let mut requests_handled = 0u64;
+    let mut deferred_root_merges = Vec::new();
 
     // Handle the first request (already parsed by the manager)
     {
@@ -1282,25 +1250,8 @@ async fn run_responder_impl<T: SyncTransport>(
 
                 let outcome = handle_entity_push(store, &runtime_env, context_id, &entities, None);
                 let applied = outcome.applied;
-
-                // This responder runs without a `ContextClient` in
-                // scope (trait signature limitation — see
-                // `SyncProtocolExecutor`), so it can't dispatch
-                // deferred root merges itself. The production
-                // responder in `hash_comparison.rs` does have
-                // `ContextClient` and dispatches. Surface the gap as
-                // a warn so persistent occurrences are visible; in
-                // practice the initiator's DFS catches the same root
-                // divergence and dispatches from there.
-                if !outcome.deferred_root_merges.is_empty() {
-                    warn!(
-                        %context_id,
-                        deferred = outcome.deferred_root_merges.len(),
-                        "EntityPush responder: dropped root-entity deferred merges \
-                         (protocol-trait responder lacks ContextClient — initiator-side \
-                         dispatch will pick up root divergence on next sync round)"
-                    );
-                }
+                let deferred = outcome.deferred_root_merges.len();
+                deferred_root_merges.extend(outcome.deferred_root_merges);
 
                 let msg = StreamMessage::Message {
                     sequence_id,
@@ -1317,7 +1268,7 @@ async fn run_responder_impl<T: SyncTransport>(
                 info!(
                     %context_id,
                     applied,
-                    deferred_root_merges = outcome.deferred_root_merges.len(),
+                    deferred_root_merges = deferred,
                     total = entity_count,
                     "Applied pushed entities via CRDT merge"
                 );
@@ -1396,7 +1347,7 @@ async fn run_responder_impl<T: SyncTransport>(
     }
 
     info!(%context_id, requests_handled, "HashComparison responder complete");
-    Ok(())
+    Ok(deferred_root_merges)
 }
 
 /// Build a TreeNodeResponse from a local node.
@@ -1621,6 +1572,40 @@ fn collect_leaves_recursive(
     }
 
     Ok(())
+}
+
+/// Our copy of a leaf the peer holds with another hash, for the peer to merge
+/// in the same session; `None` when we hold no such leaf.
+fn local_leaf_to_push_back(
+    context_id: ContextId,
+    runtime_env: &calimero_storage::env::RuntimeEnv,
+    remote_node: &TreeNode,
+    schema_bytecode_id: Option<[u8; 32]>,
+) -> Result<Option<TreeLeafData>> {
+    let local_node = with_runtime_env(runtime_env.clone(), || {
+        get_local_tree_node(context_id, &remote_node.id, false, schema_bytecode_id)
+    })?;
+    let Some(local_leaf) = local_node
+        .filter(|local| local.is_leaf() && local.hash != remote_node.hash)
+        .and_then(|local| local.leaf_data)
+    else {
+        return Ok(None);
+    };
+    // Same guard `collect_local_leaves` applies on the snapshot-push path:
+    // an oversized leaf is rejected by the peer's `TreeLeafData::is_valid`
+    // check inside `handle_entity_push`, so queuing it here would silently
+    // fail and re-enter the sticky loop this fix exists to eliminate.
+    if local_leaf.value.len() > MAX_LEAF_VALUE_SIZE {
+        warn!(
+            %context_id,
+            key = %hex::encode(local_leaf.key),
+            len = local_leaf.value.len(),
+            max = MAX_LEAF_VALUE_SIZE,
+            "leaf value exceeds MAX_LEAF_VALUE_SIZE, skipping bidirectional push"
+        );
+        return Ok(None);
+    }
+    Ok(Some(local_leaf))
 }
 
 /// Push local-only subtrees to the peer.
@@ -1995,9 +1980,9 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let runtime_env = create_runtime_env(&store, context_id, identity, test_env_account());
 
-        // `Id::new([118; 32])` == `Root::<T>::entry_id()` — an opaque leaf.
+        // The `Root<T>` app-state entry, an opaque leaf.
         let root_id = Id::new(*context_id.as_ref());
-        let opaque_id = Id::new([118u8; 32]);
+        let opaque_id = calimero_storage::collections::ROOT_ENTRY_ID;
 
         with_runtime_env(runtime_env.clone(), || {
             // Create the context root.
@@ -2489,164 +2474,6 @@ mod tests {
         assert!(
             stored.is_some(),
             "Ok(None) no-gate case must store the leaf"
-        );
-    }
-
-    /// Rotation-log convergence (core#2716): the originator records its OWN
-    /// rotation via `self_log_own_rotations` (the execute pipeline's post-delta
-    /// step), the receiver via `apply_action`. Both build the *same*
-    /// rotation-log entry for the delta, so the anchor's `full_hash` (which
-    /// includes the hashed rotation-log collection child) must match —
-    /// otherwise the author of a rotation never converges with the peers it
-    /// ships the rotation to.
-    #[test]
-    fn originator_self_log_matches_receiver_apply_action() {
-        use core::num::NonZeroU64;
-        use std::collections::BTreeSet;
-        use std::sync::Arc;
-
-        use calimero_storage::action::Action;
-        use calimero_storage::entities::{full_mask, ChildInfo, Metadata};
-        use calimero_storage::interface::ApplyContext;
-        use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-        use calimero_storage::tests::common::{account_of_key, build_signed_shared_action};
-        use calimero_store::db::InMemoryDB;
-        use calimero_store::Store;
-        use ed25519_dalek::SigningKey;
-
-        fn hlc(ns: u64) -> HybridTimestamp {
-            HybridTimestamp::new(Timestamp::new(
-                NTP64(ns),
-                ID::from(NonZeroU64::new(1).unwrap()),
-            ))
-        }
-
-        let context_id = ContextId::from([0xC8; 32]);
-        let identity = PublicKey::from([0u8; 32]);
-        let rotation_delta_id = [0xE1; 32];
-
-        let alice_sk = SigningKey::from_bytes(&[0xA1; 32]);
-        let alice = account_of_key(&alice_sk);
-        let bob = account_of_key(&SigningKey::from_bytes(&[0xB2; 32]));
-        let carol = account_of_key(&SigningKey::from_bytes(&[0xC3; 32]));
-        let genesis: BTreeSet<calimero_account::AccountId> = [alice, bob].into_iter().collect();
-        let anchor_id = calimero_storage::tests::common::cell_at(0x88, &genesis);
-        let rotated: BTreeSet<calimero_account::AccountId> = [alice, carol].into_iter().collect();
-
-        // Bootstrap a `Shared` anchor {Alice,Bob} under the context root.
-        let bootstrap = |store: &Store| {
-            let env = create_runtime_env(store, context_id, identity, test_env_account());
-            with_runtime_env(env, || {
-                let root_id = Id::new(*context_id.as_ref());
-                Interface::<MainStorage>::apply_action(
-                    Action::Update {
-                        id: root_id,
-                        data: vec![],
-                        ancestors: vec![],
-                        metadata: Metadata::default(),
-                    },
-                    &ApplyContext::empty(),
-                )
-                .expect("create root");
-                let (root_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)
-                    .ok()
-                    .flatten()
-                    .unwrap_or(([0; 32], [0; 32]));
-                let root_meta = Index::<MainStorage>::get_index(root_id)
-                    .ok()
-                    .flatten()
-                    .map(|idx| idx.metadata.clone())
-                    .unwrap_or_default();
-                Interface::<MainStorage>::apply_action(
-                    build_signed_shared_action(
-                        true,
-                        anchor_id,
-                        b"v0".to_vec(),
-                        genesis.clone(),
-                        10,
-                        &alice_sk,
-                        vec![ChildInfo::new(root_id, root_hash, root_meta)],
-                    ),
-                    &ApplyContext {
-                        effective_writers: Some(full_mask(genesis.clone())),
-                        delta_id: Some([0xE0; 32]),
-                        delta_hlc: Some(hlc(10)),
-                        signer_account: Some(alice),
-                    },
-                )
-                .expect("bootstrap shared anchor");
-            });
-        };
-
-        let anchor_full_hash = |store: &Store| -> [u8; 32] {
-            let env = create_runtime_env(store, context_id, identity, test_env_account());
-            with_runtime_env(env, || {
-                Index::<MainStorage>::get_hashes_for(anchor_id)
-                    .unwrap()
-                    .unwrap()
-                    .0
-            })
-        };
-
-        // The rotation {Alice,Bob} -> {Alice,Carol}, identical on both sides.
-        let rotation = || {
-            build_signed_shared_action(
-                false,
-                anchor_id,
-                b"v0".to_vec(),
-                rotated.clone(),
-                30,
-                &alice_sk,
-                vec![],
-            )
-        };
-
-        // Receiver: applies the rotation as a delta via `apply_action`, which
-        // appends the entry to the hashed rotation-log collection.
-        let receiver = Store::new(Arc::new(InMemoryDB::owned()));
-        bootstrap(&receiver);
-        with_runtime_env(
-            create_runtime_env(&receiver, context_id, identity, test_env_account()),
-            || {
-                Interface::<MainStorage>::apply_action(
-                    rotation(),
-                    &ApplyContext {
-                        effective_writers: Some(full_mask(genesis.clone())),
-                        delta_id: Some(rotation_delta_id),
-                        delta_hlc: Some(hlc(30)),
-                        signer_account: Some(alice),
-                    },
-                )
-                .expect("receiver applies rotation");
-            },
-        );
-
-        // Originator: records the SAME rotation via the post-delta self-log
-        // primitive (the local write predates this delta_id, so the
-        // originator's own rotation isn't in its log yet).
-        let originator = Store::new(Arc::new(InMemoryDB::owned()));
-        bootstrap(&originator);
-        with_runtime_env(
-            create_runtime_env(&originator, context_id, identity, test_env_account()),
-            || {
-                let changed = Interface::<MainStorage>::self_log_own_rotations(
-                    &[rotation()],
-                    rotation_delta_id,
-                    hlc(30),
-                )
-                .expect("originator self-log");
-                assert!(
-                    changed,
-                    "self-log must register the originator's own rotation"
-                );
-            },
-        );
-
-        assert_eq!(
-            anchor_full_hash(&originator),
-            anchor_full_hash(&receiver),
-            "originator (self_log_own_rotations) and receiver (apply_action) must land \
-             the same anchor full_hash via the rotation-log collection child"
         );
     }
 

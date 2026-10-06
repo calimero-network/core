@@ -44,7 +44,7 @@ description: >
 
        Pairing is a two-way exchange, which is why it needs a real flow rather
        than one command: node-3 cannot mint its `DeviceId` until it knows the
-       account (`DeviceId = H(account ‖ nonce)`), and node-2 cannot sign node-3's
+       account (a `DeviceId` is minted for an account), and node-2 cannot sign node-3's
        certificate until it knows node-3's device id and KEM key. So node-2 hands
        over Alice's genesis, node-3 returns its device id and KEM key, node-2
        signs the certificate with the account root key it holds and publishes the
