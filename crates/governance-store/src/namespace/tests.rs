@@ -9043,14 +9043,23 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
 /// parked it for good, and every namespace op after it with it. It is now kept
 /// unapplied - the head moves past it, its effect waits for the key - while a
 /// cut undecidable for any other reason still parks.
-#[test]
-fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
+/// A namespace with a Restricted subgroup, and that subgroup's Open flip signed
+/// by the owner but not yet applied: the shape of core#4511.
+struct HeldFlipSetup {
+    store: Store,
+    owner_sk: PrivateKey,
+    owner_account: AccountId,
+    namespace_id: [u8; 32],
+    subgroup: ContextGroupId,
+    flip: calimero_context_client::local_governance::SignedNamespaceOp,
+}
+
+fn held_flip_setup() -> HeldFlipSetup {
     use calimero_context_client::local_governance::{GroupOp, SignedNamespaceOp};
     use calimero_context_config::VisibilityMode;
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
-    use super::super::test_fixtures::{SealedHistoryAuthorizer, UnresolvableAuthorizer, TEST_CUT};
     use super::NamespaceGovernance;
 
     let store = test_store();
@@ -9118,6 +9127,35 @@ fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
     )
     .expect("owner signs the Open flip");
 
+    HeldFlipSetup {
+        store,
+        owner_sk,
+        owner_account,
+        namespace_id,
+        subgroup,
+        flip,
+    }
+}
+
+#[test]
+fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use calimero_context_config::VisibilityMode;
+
+    use super::super::test_fixtures::{SealedHistoryAuthorizer, UnresolvableAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let HeldFlipSetup {
+        store,
+        owner_sk,
+        owner_account,
+        namespace_id,
+        subgroup,
+        flip,
+    } = held_flip_setup();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let head = gov.read_head_record().expect("read head");
+
     // Undecidable for another reason (say, history not yet synced): still parks.
     let err = NamespaceGovernance::new(&store, namespace_id.into())
         .with_apply_auth(&TEST_CUT, &UnresolvableAuthorizer)
@@ -9166,6 +9204,60 @@ fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
     .expect("owner signs a sibling GroupCreated");
     gov.apply_signed_op(&sibling)
         .expect("an op after the held one must apply");
+}
+
+/// The other half of the hold: a held op is not lost. Once this node can read
+/// the group's history - the key arrives, as when the node is added to the
+/// subgroup - the key-arrival replay re-feeds the held flip and it applies.
+#[test]
+fn a_held_group_op_applies_once_its_groups_key_arrives() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::super::test_fixtures::{SealedHistoryAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let HeldFlipSetup {
+        store,
+        namespace_id,
+        subgroup,
+        flip,
+        ..
+    } = held_flip_setup();
+
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &SealedHistoryAuthorizer)
+        .apply_signed_op(&flip)
+        .expect("the flip is held");
+    assert_ne!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&subgroup)
+            .expect("read visibility"),
+        VisibilityMode::Open,
+        "held, not applied"
+    );
+
+    // The key arrives: the history now reads, so the cut is decidable.
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .retry_encrypted_ops_for_group(subgroup.to_bytes())
+        .expect("the key-arrival replay runs");
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&subgroup)
+            .expect("read visibility"),
+        VisibilityMode::Open,
+        "the replay must apply the held flip once its group's history reads"
+    );
+
+    // Applied once: a second key arrival finds its nonce spent and changes nothing.
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .retry_encrypted_ops_for_group(subgroup.to_bytes())
+        .expect("a second replay runs");
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&subgroup)
+            .expect("read visibility"),
+        VisibilityMode::Open,
+    );
 }
 
 #[test]
