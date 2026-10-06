@@ -68,6 +68,7 @@ fn terms(author: &Party, executor: &Party) -> GovernanceTerms {
         kind: GovernanceOpKind::Group,
         author_account: author.account(),
         executor: executor.account(),
+        executor_key: executor.device_key(),
         op_hash: GovernanceWarrant::op_hash(GovernanceOpKind::Group, OP),
         account_heads: vec![[0x44; 32]],
         governance_floor: vec![[0x55; 32]],
@@ -145,6 +146,13 @@ fn every_field_is_covered_by_the_signature() {
             },
         ),
         (
+            "executor_key",
+            GovernanceWarrant {
+                executor_key: other.device_key(),
+                ..w.clone()
+            },
+        ),
+        (
             "op_hash",
             GovernanceWarrant {
                 op_hash: [0xcd; 32],
@@ -215,6 +223,7 @@ fn consent_to_create_is_not_consent_to_govern() {
             seed: [0; 32],
             author_account: author.account(),
             executor: executor.account(),
+            executor_key: governance.executor_key,
             application_id: [0; 32].into(),
             service_name: None,
             name: None,

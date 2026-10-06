@@ -58,6 +58,8 @@ pub struct GovernanceWarrant {
     pub author_device_key: PublicKey,
     /// The operator authorized to publish it.
     pub executor: AccountId,
+    /// The one device of [`Self::executor`] that may publish it.
+    pub executor_key: PublicKey,
     /// `H(kind ‖ delegable op bytes)`, see [`Self::op_hash`].
     pub op_hash: [u8; 32],
     /// The account-log heads the author saw when signing.
@@ -83,6 +85,8 @@ pub struct GovernanceTerms {
     pub author_account: AccountId,
     /// See [`GovernanceWarrant::executor`].
     pub executor: AccountId,
+    /// See [`GovernanceWarrant::executor_key`].
+    pub executor_key: PublicKey,
     /// See [`GovernanceWarrant::op_hash`].
     pub op_hash: [u8; 32],
     /// See [`GovernanceWarrant::account_heads`].
@@ -107,12 +111,13 @@ impl GovernanceWarrant {
         let not_after = self.not_after.to_le_bytes();
 
         let mut parts: Vec<&[u8]> =
-            Vec::with_capacity(12 + self.account_heads.len() + self.governance_floor.len());
+            Vec::with_capacity(13 + self.account_heads.len() + self.governance_floor.len());
         parts.push(&self.scope);
         parts.push(&kind);
         parts.push(self.author_account.as_bytes());
         parts.push(AsRef::<[u8; 32]>::as_ref(&self.author_device_key));
         parts.push(self.executor.as_bytes());
+        parts.push(AsRef::<[u8; 32]>::as_ref(&self.executor_key));
         parts.push(&self.op_hash);
         parts.push(&account_len);
         for head in &self.account_heads {
@@ -158,6 +163,7 @@ impl GovernanceWarrant {
             author_account: terms.author_account,
             author_device_key: author_device_sk.public_key(),
             executor: terms.executor,
+            executor_key: terms.executor_key,
             op_hash: terms.op_hash,
             account_heads: terms.account_heads,
             governance_floor: terms.governance_floor,
@@ -218,6 +224,10 @@ impl WarrantStatement for GovernanceWarrant {
 
     fn executor(&self) -> AccountId {
         self.executor
+    }
+
+    fn executor_key(&self) -> PublicKey {
+        self.executor_key
     }
 
     fn nonce(&self) -> u64 {

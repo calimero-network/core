@@ -748,6 +748,7 @@ mod tests {
         context: ContextId,
         author_account: calimero_account::AccountId,
         executor: calimero_account::AccountId,
+        executor_key: PublicKey,
         intent_hash: [u8; 32],
         nonce: u64,
         not_after: u64,
@@ -756,6 +757,7 @@ mod tests {
             context,
             author_account,
             executor,
+            executor_key,
             app_version: ApplicationId::from([0u8; 32]),
             method: "send_message".to_owned(),
             intent_hash,
@@ -812,6 +814,7 @@ mod tests {
                 context_id,
                 author.account,
                 executor.account,
+                executor.device_sk.public_key(),
                 [0xab; 32],
                 7,
                 1_755_903_600,
@@ -968,6 +971,7 @@ mod tests {
                 ctx,
                 author.account,
                 executor.account,
+                executor.device_sk.public_key(),
                 [0xcd; 32],
                 8,
                 d.warrant.not_after,
@@ -1109,7 +1113,7 @@ mod tests {
         )
         .expect("the payload must encode");
 
-        assert_eq!(hex::encode(&payload), "01070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a400000000000000000000000000000000000000000000000000000000000000000c00000073656e645f6d657373616765abababababababababababababababababababababababababababababababab0000000000000000070000000000000070f6a868000000009ed5be9e0252f5e8c67b4fb325ffc76b6316f0917fcdeba47b3d11f46f23a11f4fdd56e870e63911c40da917585efd7f29f10f7501e3b6c65d292b493211b50c0000000000000000000100000000000000");
+        assert_eq!(hex::encode(&payload), "01070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a4ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c00000000000000000000000000000000000000000000000000000000000000000c00000073656e645f6d657373616765abababababababababababababababababababababababababababababababab0000000000000000070000000000000070f6a86800000000cf536d46c051635d52d327caaad1a854b3c1cef1b5b61487ee037a3eea9ae1ecd34576120fdb68c4c86574677cf011be9f3c69bd6638d4c41cd047fd606a5e090000000000000000000100000000000000");
 
         // A different first byte from the self-authored preimage, so neither can
         // ever be the other — which is what stops a self-authored signature

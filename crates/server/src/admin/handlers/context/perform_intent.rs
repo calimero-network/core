@@ -156,7 +156,7 @@ impl IntentRefusal {
 /// call site — they used to be bare `eyre!` strings, which fell through to a 500.
 /// That was invisible while no real client sent an undecodable warrant, and it
 /// is the single most common refusal the moment one does: warrant v2 (#3933)
-/// changed the layout, so a signer still emitting v1 sends 240 bytes where 351+
+/// changed the layout, so a signer still emitting v1 sends 240 bytes where 383+
 /// are expected, and "Internal server error" points it at the node rather than
 /// at its own encoder.
 fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> {
@@ -170,8 +170,8 @@ fn decode_warrant(hex_warrant: &str) -> eyre::Result<calimero_account::Warrant> 
         eyre::eyre!(IntentRefusal::Malformed(format!(
             "warrant is not a valid statement ({} bytes): {err}. A warrant signed \
              under the v1 layout no longer decodes — the signing domain is now \
-             calimero.warrant.v2 and the encoding carries app_version, a plaintext \
-             method and two cited-head lists",
+             calimero.warrant.v2 and the encoding carries executor_key, app_version, a \
+             plaintext method and two cited-head lists",
             bytes.len()
         )))
     })
@@ -249,19 +249,15 @@ pub(crate) fn held_context_group(
         .ok_or_else(|| eyre::eyre!(IntentRefusal::ContextNotHeld(*context_id)))
 }
 
-/// This node's own signing identity in the context.
-async fn local_signer(
+/// This node's own signing identity in the context, the key a warrant spent
+/// here must name.
+pub(crate) async fn local_signer(
     ctx_client: &ContextClient,
     context_id: &ContextId,
-) -> eyre::Result<calimero_primitives::identity::PublicKey> {
+) -> eyre::Result<Option<calimero_primitives::identity::PublicKey>> {
     let members = ctx_client.get_context_members(context_id, Some(true));
     let mut members = std::pin::pin!(members);
-    members
-        .next()
-        .await
-        .transpose()?
-        .map(|(key, _)| key)
-        .ok_or_else(|| eyre::eyre!("this node owns no identity in this context"))
+    Ok(members.next().await.transpose()?.map(|(key, _)| key))
 }
 
 async fn perform(
@@ -273,12 +269,12 @@ async fn perform(
 
     let author_proof = decode_author_proof(&req.author_proof)?;
 
-    // The node attaches its OWN half. The author authorized an operator account
-    // and never has to learn which of its processes runs the intent — that is
-    // what `Warrant::executor` being an account buys, and asking a client for
-    // this node's process key would give it back.
+    // The node attaches its OWN half; `Delegation::verify` refuses it unless
+    // this signer is the executor key the author named.
     let group_id = held_context_group(ctx_client, &context_id)?;
-    let signer = local_signer(ctx_client, &context_id).await?;
+    let signer = local_signer(ctx_client, &context_id)
+        .await?
+        .ok_or_else(|| eyre::eyre!("this node owns no identity in this context"))?;
     let executor_proof =
         calimero_context::join_credential::build(ctx_client.datastore(), &group_id, &signer)
             .wrap_err("this node could not present its own credential")?;
@@ -489,6 +485,7 @@ mod tests {
                 PrivateKey::from([9u8; 32]).public_key(),
             )
             .account_id(),
+            executor_key: PrivateKey::from([10u8; 32]).public_key(),
             app_version: calimero_primitives::application::ApplicationId::from([0u8; 32]),
             method: METHOD.to_owned(),
             intent_hash: Warrant::intent_hash(METHOD, ARGS),

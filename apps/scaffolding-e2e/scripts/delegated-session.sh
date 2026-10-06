@@ -101,13 +101,15 @@ INTENT_ARGS='{"key":"delegated","value":"written-by-a-keyholder"}'
 # and signing domain live in one place, and a harness carrying its own copy
 # passes its own checks while every real client is refused.
 #
-# `--executor` is node-1's own account -- the node this session is talking to is
-# the node that spends the warrant. The scenario granted it
-# `CAN_AUTHOR_ON_BEHALF` one step up; without that the POST below is refused,
-# which is exactly what `delegated-authorship.yml` asserts separately.
+# `--executor` and `--executor-key` are node-1's own account and signing key --
+# the node this session is talking to is the node that spends the warrant. The
+# scenario granted it `CAN_AUTHOR_ON_BEHALF` one step up; without that the POST
+# below is refused, which is exactly what `delegated-authorship.yml` asserts
+# separately.
 WARRANT=$(offline_merod account warrant \
     --context "${CONTEXT}" \
     --executor "${RELAY_ACCOUNT}" \
+    --executor-key "${NODE_KEY}" \
     --method set \
     --args "${INTENT_ARGS}" \
     --nonce 1 \

@@ -94,6 +94,8 @@ pub trait WarrantStatement {
     fn author_device_key(&self) -> PublicKey;
     /// The operator authorized to act.
     fn executor(&self) -> AccountId;
+    /// The one device of [`Self::executor`] that may spend this warrant.
+    fn executor_key(&self) -> PublicKey;
     /// Monotonic per author device; what the replay ledger spends.
     fn nonce(&self) -> u64;
     /// Wall-clock bound in seconds — checked by the executor, never at apply.
@@ -139,13 +141,8 @@ pub struct Delegated<W> {
     pub executor_proof: Box<AccountProof<DeviceCert>>,
     /// The key that actually signed the change this bundle travelled with.
     ///
-    /// Carried here rather than supplied by the caller, and it is safe despite
-    /// looking like a credential nominating its own verifier: the chain closes
-    /// it. The warrant names the executor ACCOUNT and is signed by the author,
-    /// and `executor_proof` must show this key is a device of that account. So
-    /// substituting a key means holding a root-signed certificate for it under
-    /// the operator the author actually authorized — which is that operator
-    /// acting, not an impersonation of it.
+    /// Must equal the key the author signed into the warrant, and
+    /// `executor_proof` must certify it under the warrant's executor account.
     pub executor_key: PublicKey,
 }
 
@@ -187,13 +184,21 @@ impl<W: WarrantStatement + Clone> Delegated<W> {
     /// device it names; whatever [`AccountProof::verify`] returns if either
     /// certificate is not genuinely root-signed for the account claimed; and
     /// [`AccountError::WarrantProofKeyMismatch`] if a certificate verifies but
-    /// certifies a key other than the one it is supposed to vouch for.
+    /// certifies a key other than the one it is supposed to vouch for; and
+    /// [`AccountError::WarrantExecutorKeyMismatch`] if the bundle's executor
+    /// key is not the one the warrant names.
     pub fn verify(&self) -> Result<Verified<W>, AccountError> {
         Self::verify_author(&self.warrant, &self.author_proof)?;
 
         let executor_cert = self.executor_proof.verify(self.warrant.executor())?;
         if executor_cert.sign_pk != self.executor_key {
             return Err(AccountError::WarrantProofKeyMismatch);
+        }
+        if self.executor_key != self.warrant.executor_key() {
+            return Err(AccountError::WarrantExecutorKeyMismatch {
+                named: self.warrant.executor_key(),
+                presented: self.executor_key,
+            });
         }
 
         // Cloned rather than moved: every statement kind owns `Vec`s (and two

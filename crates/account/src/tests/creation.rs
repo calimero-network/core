@@ -77,6 +77,7 @@ fn terms(author: &Party, executor: &Party) -> ContextCreationTerms {
         seed: SEED,
         author_account: author.account(),
         executor: executor.account(),
+        executor_key: executor.device_key(),
         application_id: ApplicationId::from(APP),
         service_name: Some("chat".to_owned()),
         name: Some("general".to_owned()),
@@ -159,6 +160,13 @@ fn every_field_is_covered_by_the_signature() {
             "executor",
             ContextCreationWarrant {
                 executor: other.account(),
+                ..warrant.clone()
+            },
+        ),
+        (
+            "executor_key",
+            ContextCreationWarrant {
+                executor_key: other.device_key(),
                 ..warrant.clone()
             },
         ),
@@ -380,6 +388,7 @@ fn a_method_warrant_signature_does_not_verify_as_a_creation_warrant() {
             context: calimero_primitives::context::ContextId::from(SEED),
             author_account: author.account(),
             executor: executor.account(),
+            executor_key: creation.executor_key,
             app_version: ApplicationId::from(APP),
             method: "init".to_owned(),
             intent_hash: creation.init_hash,

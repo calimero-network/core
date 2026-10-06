@@ -30,7 +30,9 @@ use eyre::WrapErr as _;
 use reqwest::StatusCode;
 use tracing::{debug, error, warn};
 
-use crate::admin::handlers::context::create_context_intent::{internal, parse_group_id};
+use crate::admin::handlers::context::create_context_intent::{
+    internal, node_signing_key, parse_group_id,
+};
 use crate::admin::handlers::context::perform_intent::{
     decode_author_proof, now_secs, IntentRefusal,
 };
@@ -249,7 +251,7 @@ fn refuse_unless_founded_by_author(
 }
 
 /// Refuses a warrant whose author half does not verify, or that names another
-/// executor, before anything is installed or recorded for it.
+/// executor account or device key, before anything is installed or recorded for it.
 fn refuse_unless_authentic_for_this_node(
     store: &calimero_store::Store,
     warrant: &GovernanceWarrant,
@@ -261,6 +263,15 @@ fn refuse_unless_authentic_for_this_node(
     if executor != Some(warrant.executor) {
         eyre::bail!(IntentRefusal::NotAuthorized(
             "this governance warrant names an executor other than this node's account".to_owned()
+        ));
+    }
+    let signer = calimero_governance_store::NamespaceRepository::new(store)
+        .node_identity()?
+        .map(|identity| identity.public_key);
+    if signer != Some(warrant.executor_key) {
+        eyre::bail!(IntentRefusal::NotAuthorized(
+            "this governance warrant names an executor key other than this node's signing key"
+                .to_owned()
         ));
     }
     Ok(())
@@ -317,7 +328,7 @@ async fn resolve_bundle(
     ))
 }
 
-/// `GET` — the executor account to name, and whether this node may act for
+/// `GET`: the executor account and key to name, and whether this node may act for
 /// members in the group at all. Signs nothing, spends nothing.
 pub async fn describe_handler(
     Path(group_id_str): Path<String>,
@@ -357,6 +368,10 @@ pub async fn describe_handler(
             return internal("Failed to read this node's identity");
         }
     };
+    let executor_key = match node_signing_key(store) {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
     let can_act_on_behalf =
         match calimero_governance_store::warrant_gate::executor_refusal_for_group(
             store,
@@ -373,6 +388,7 @@ pub async fn describe_handler(
         payload: GovernanceIntentRelayApiResponse {
             data: GovernanceIntentRelayApiResponseData {
                 executor_account: hex::encode(executor_account.as_bytes()),
+                executor_key,
                 group_id: hex::encode(group_id.to_bytes()),
                 can_act_on_behalf,
             },
@@ -421,6 +437,7 @@ mod tests {
                 kind,
                 author_account: AccountId::from([0x22; 32]),
                 executor: AccountId::from([0x33; 32]),
+                executor_key: PrivateKey::from([0x34; 32]).public_key(),
                 op_hash: GovernanceWarrant::op_hash(kind, form),
                 account_heads: vec![],
                 governance_floor: vec![],
@@ -674,7 +691,7 @@ mod tests {
     fn signed(
         scope: [u8; 32],
         executor: AccountId,
-        _executor_key: PublicKey,
+        executor_key: PublicKey,
         kind: GovernanceOpKind,
         op: &[u8],
     ) -> GovernanceWarrant {
@@ -686,6 +703,7 @@ mod tests {
                 kind,
                 author_account: proof.genesis.account_id(),
                 executor,
+                executor_key,
                 op_hash: GovernanceWarrant::op_hash(kind, op),
                 account_heads: vec![],
                 governance_floor: vec![],

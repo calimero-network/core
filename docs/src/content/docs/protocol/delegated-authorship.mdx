@@ -44,7 +44,8 @@ A **warrant** is the author's signed statement that a specific request may be ru
 | `context` | where | Otherwise it authorizes the same request in every context at once. |
 | `author_account` | who it is *for* | The [authorization subject](/protocol/accounts/), carried rather than re-derived: re-deriving at apply time asks a different question than the author answered, so a disagreement has to be refusable instead of silently resolved. |
 | `author_device_key` | which replica | The CRDT replica the change is attributed to, and the key whose signature this is. |
-| `executor` | who may run it | An **account**, not a key — so one of the operator's processes re-keying does not void warrants already issued to it. |
+| `executor` | who may run it | An **account**: the subject the relay's authorship capability is granted to. |
+| `executor_key` | which device may run it | One device of `executor`. Each relay node spends nonces in its own ledger, so a warrant any device of the operator could present would be spendable once per device. A relay that re-keys voids the warrants it has not spent. |
 | `intent_hash` | what | `H(method ‖ args)`. The hash, never the plaintext — see below. |
 | `nonce` | once | Monotonic per author **device**. Per device rather than per account because two devices of one account are independent replicas and cannot coordinate on a shared counter. |
 | `not_after` | until when | Checked by the relay at admission. Deliberately *not* checked by peers at apply — see below. |
@@ -66,7 +67,7 @@ A delegated delta carries two independent signatures at different layers, and ke
     { label: 'Peer', color: '#a371f7' },
   ]}
   steps={[
-    { from: 0, to: 0, label: 'sign warrant: context, intent_hash, executor, nonce', color: '#a5ff11' },
+    { from: 0, to: 0, label: 'sign warrant: context, intent_hash, executor, executor_key, nonce', color: '#a5ff11' },
     { from: 0, to: 1, label: 'POST intents { method, args, warrant, author_proof }' },
     { from: 1, to: 1, label: 'verify warrant + covers(method,args) + not_after' },
     { from: 1, to: 1, label: 'refuse (403) a TEE replica, a read-only author, or a relay without the grant', color: '#ff7b72' },
@@ -141,16 +142,17 @@ The mask is **replaced**, not merged, so re-pass any other flag the member alrea
 
 `<GROUP_ID>` may be the namespace root rather than each context's own group. The gate honours a grant found at the ancestor the relay inherits its membership through, so a relay fleet needs **one** grant and not one per channel. A `Restricted` subgroup is a wall here as it is everywhere: it required its own admission, so it needs its own grant.
 
-Note the subject: an **account**, not a key. That is what lets the relay rotate the key one of its processes signs with without the grant — or any warrant already issued against it — having to be reissued.
+Note the subject: an **account**, not a key. That is what lets the relay rotate the key one of its processes signs with without the grant having to be reissued. Warrants name the key as well, so those not yet spent are minted again.
 
 ## Discovery: what the author has to be told first
 
-Every input to a warrant is something the author already holds, with one exception. `executor` names the *relay's* account, which is a content address the client cannot derive, and whether that relay may execute a delegated write here is a row in the owning group's capabilities the client cannot read. So the relay answers both, on the path the intent will be presented to:
+Every input to a warrant is something the author already holds, with one exception. `executor` and `executor_key` name the *relay's* account and signing key, which the client cannot derive, and whether that relay may execute a delegated write here is a row in the owning group's capabilities the client cannot read. So the relay answers both, on the path the intent will be presented to:
 
 ```http
 GET /admin-api/contexts/:context_id/intents
 → { "data": {
       "executorAccount": "…",
+      "executorKey": "…",
       "canAuthorOnBehalf": false,
       "groupId": "…",
       "grantedOnGroupId": "…"   // optional
@@ -175,7 +177,7 @@ That third row is the one worth having. Contexts routinely live in subgroups whi
 
 Asking before signing is not politeness. A nonce is spent from a monotonic per-device sequence to mint a warrant, and one naming the wrong executor is unspendable: the number is gone and the write never happened.
 
-`meroctl context intent` makes this read itself, before it signs anything: it takes `executor` from the answer rather than from `/admin-api/identity`, and refuses outright when `canAuthorOnBehalf` is false — naming the group and the account so the message is the grant command to ask an admin for. So the nonce is only ever spent on a warrant the relay can actually run.
+`meroctl context intent` makes this read itself, before it signs anything: it takes `executor` and `executor_key` from the answer rather than from `/admin-api/identity`, and refuses outright when `canAuthorOnBehalf` is false, naming the group and the account so the message is the grant command to ask an admin for. So the nonce is only ever spent on a warrant the relay can actually run.
 
 ## Reaching a relay you have no account on
 
@@ -282,7 +284,7 @@ It pins everything that shapes the new context, so the relay chooses none of it:
 | `group` | the group the author's `CAN_CREATE_CONTEXT` is checked in |
 | `seed` | the context id is derived from it (`ContextId::from_seed`), so one warrant names exactly one context |
 | `author_account`, `author_device_key` | whose context this is, and who runs `init` |
-| `executor` | the relay account that may carry it out |
+| `executor`, `executor_key` | the relay account, and the one device of it, that may carry it out |
 | `application_id`, `service_name` | the code the context runs — never swapped for the group's target |
 | `name` | recorded on the context's metadata as part of the registration |
 | `init_hash` | `domain_hash("calimero.context-creation.init.v1", [init_args])` |
@@ -292,7 +294,7 @@ The relay serves it next to the intents route, on the same (optionally unauthent
 
 ```text
 GET  /admin-api/groups/<group>/context-intents[?author=<account>]
-     → { executorAccount, groupId, canCreateOnBehalf, authorMayCreate? }
+     → { executorAccount, executorKey, groupId, canCreateOnBehalf, authorMayCreate? }
 POST /admin-api/groups/<group>/context-intents
      { warrant: <hex>, authorProof: <hex>, initArgs: {...} }
      → { contextId, groupId, memberPublicKey }
@@ -302,7 +304,7 @@ It checks what only it can (the group, the `init` arguments against `init_hash`,
 
 Every peer applying that op (`crates/governance-store/src/creation_gate.rs`) re-verifies the bundle and then asks every question of the **author** that a self-signed registration asks of its signer:
 
-- the op is signed by the executor key the bundle certifies;
+- the op is signed by the executor key the bundle certifies and the warrant names;
 - the context id is the one the seed derives, and the application, service and name are the signed ones;
 - neither device is revoked in the group;
 - the author is a member (or the genesis admin), not read-only, and holds admin or `CAN_CREATE_CONTEXT` — **at the op's cut**, like every governance gate;
@@ -369,7 +371,7 @@ otherwise seat the author as that group's admin.
 
 ## Founding a namespace on a member's behalf
 
-A member with no node can found a namespace through a relay. They sign a `GovernanceWarrant` (kind `Root`, scope the new namespace id) over the exact `NamespaceCreatedV2` genesis: the id is `founded_namespace_id(author, salt)`, so the author computes it and the relay cannot choose another. The relay posts it to `POST /admin-api/groups/{namespace_id}/governance-intents`, takes an identity in the new namespace, mints its key, and publishes the genesis in the clear, as every genesis travels.
+A member with no node can found a namespace through a relay. They sign a `GovernanceWarrant` (kind `Root`, scope the new namespace id) over the exact `NamespaceCreatedV2` genesis: the id is `founded_namespace_id(author, salt)`, so the author computes it and the relay cannot choose another. The relay posts it to `POST /admin-api/groups/{namespace_id}/governance-intents`, takes an identity in the new namespace, and publishes the genesis in the clear, as every genesis travels. The warrant's `executor_key` is the relay's signing key, which the author reads from `GET /admin-api/identity` (`publicKey`) because a namespace that does not exist yet has no discovery route; the relay refuses a warrant naming another key before it enlists.
 
 Every peer applies it **as the author**: the author becomes the namespace's founder, owner and admin, bound by the credential in the genesis, exactly as if they had founded it from a node of their own. The relay is then seated in the namespace as a `Member` holding `CAN_AUTHOR_ON_BEHALF`, with its device bound from the executor certificate the warrant carries, and recorded as the namespace's **founding relay**. A founding that names an existing namespace is refused (`409`).
 

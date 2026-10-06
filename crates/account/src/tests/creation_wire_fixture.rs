@@ -8,7 +8,7 @@
 //! format is deliberately changing.
 
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::identity::AccountId;
+use calimero_primitives::identity::{AccountId, PublicKey};
 
 use super::support::key;
 use crate::account::borsh_bytes;
@@ -22,6 +22,7 @@ fn terms() -> ContextCreationTerms {
         seed: [0x12; 32],
         author_account: AccountId::from([0x22; 32]),
         executor: AccountId::from([0x33; 32]),
+        executor_key: PublicKey::from([0x77; 32]),
         application_id: ApplicationId::from([0x44; 32]),
         service_name: None,
         name: Some("general".to_owned()),
@@ -51,7 +52,7 @@ fn the_init_hash_is_stable() {
 fn the_signing_preimage_is_stable() {
     assert_eq!(
         hex::encode(fixture().signing_payload()),
-        "f838cd94995573a7fea9768a82b6207632c4a89ce37c860e0d05febf5609644f",
+        "7e1126b215a794e565bb59c630cb1a36e43590c4bd8f62c6111792f77c231598",
         "the signing preimage changed; every creation warrant signed elsewhere \
          now verifies nowhere",
     );
@@ -63,8 +64,8 @@ fn the_wire_encoding_is_stable() {
 
     assert_eq!(
         bytes.len(),
-        389,
-        "32*6 ids + 1 (service None) + (1 + 4 + 7) name + 32 init_hash + \
+        421,
+        "32*7 ids + 1 (service None) + (1 + 4 + 7) name + 32 init_hash + \
          2*(4 + 32) cited heads + 8 + 8 + 64",
     );
     assert_eq!(
@@ -80,6 +81,8 @@ fn the_wire_encoding_is_stable() {
             "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
             // executor
             "3333333333333333333333333333333333333333333333333333333333333333",
+            // executor_key
+            "7777777777777777777777777777777777777777777777777777777777777777",
             // application_id
             "4444444444444444444444444444444444444444444444444444444444444444",
             // service_name: None
@@ -101,8 +104,8 @@ fn the_wire_encoding_is_stable() {
             // not_after 1_700_000_000, u64 LE
             "00f1536500000000",
             // signature
-            "7e47c0655b1b0ef65a420ef301f6888328579abc153b122d9e7f6396c8757aa5",
-            "14d8a4e65ff85912dfb20f6858fcdbfc60818214ca2e6adcbfbf4dae3d9fd906",
+            "19103d73752d052f747911b4b36e423221d89d120bf6f4d32122d3c4fd1fb030",
+            "9add40f3f3b80a5e5d6fefa02de5f4d6bb914c85c5c8b10a3a0e3a0e22c08400",
         ),
     );
 }

@@ -3027,6 +3027,7 @@ fn context_registered_on_behalf_is_appended_and_round_trips() {
             seed: [0x12; 32],
             author_account: account,
             executor: account,
+            executor_key: author.public_key(),
             application_id: calimero_primitives::application::ApplicationId::from([0x13; 32]),
             service_name: None,
             name: Some("general".to_owned()),

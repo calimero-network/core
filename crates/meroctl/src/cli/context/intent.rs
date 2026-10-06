@@ -19,10 +19,8 @@
 //!   stops the node running one authorization twice; a gap in the sequence is
 //!   also how you find out it dropped a request.
 //!
-//! You do **not** supply the node's own key. The warrant authorizes an operator
-//! account and the node attaches its own credential — so which of its processes
-//! runs the intent is not your problem, and a re-key on its side does not
-//! invalidate a warrant you already signed.
+//! You do **not** supply the node's account or key: both are read from the node,
+//! and the warrant names them so that only this node can spend it.
 
 use std::io::Read;
 
@@ -129,8 +127,8 @@ impl IntentCommand {
         let args_bytes = serde_json::to_vec(&args).wrap_err("--args could not be re-encoded")?;
 
         // Which operator is being authorized is read from the node, not asserted
-        // here: the warrant has to name the account that will actually run it,
-        // and a client guessing that would mint warrants nothing can spend.
+        // here: the warrant has to name the account and key that will actually
+        // run it, and a client guessing them would mint warrants nothing can spend.
         //
         // Read from the relay descriptor rather than from `identity`, because the
         // descriptor answers the other half too — whether this node may author at
@@ -197,6 +195,7 @@ impl IntentCommand {
                 context: context_id,
                 author_account,
                 executor,
+                executor_key: relay.data.executor_key,
                 app_version,
                 method: self.method.clone(),
                 intent_hash: Warrant::intent_hash(&self.method, &args_bytes),

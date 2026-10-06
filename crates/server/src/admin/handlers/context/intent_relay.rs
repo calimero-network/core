@@ -4,10 +4,10 @@
 //! # Why this is a read on the same path as the write
 //!
 //! Minting a warrant is an offline act, and every input to it is something the
-//! author already holds — except one. `Warrant::executor` names *this node's*
-//! account, which is a content address the client has no way to derive, and
-//! whether the node may act here at all is a row in the owning group's
-//! capabilities that the client cannot read either.
+//! author already holds, except this node's half. `Warrant::executor` and
+//! `Warrant::executor_key` name *this node's* account and signing key, which the
+//! client has no way to derive, and whether the node may act here at all is a
+//! row in the owning group's capabilities that the client cannot read either.
 //!
 //! Both facts belong to the same question — "can this relay run my intent, and
 //! whose name do I put in the warrant?" — so they are one answer, on the path
@@ -35,6 +35,7 @@ use calimero_server_primitives::admin::{IntentRelayApiResponse, IntentRelayApiRe
 use reqwest::StatusCode;
 use tracing::error;
 
+use crate::admin::handlers::context::perform_intent::local_signer;
 use crate::admin::handlers::identity::get_node_identity::node_identity;
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
@@ -104,6 +105,28 @@ pub async fn handler(
         }
     };
 
+    // The key `POST .../intents` signs with here, read the same way.
+    let executor_key = match local_signer(&state.ctx_client, &context_id).await {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            return ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "this node holds no identity in this context, so it can spend no \
+                          warrant here"
+                    .to_owned(),
+            }
+            .into_response()
+        }
+        Err(err) => {
+            error!(error = ?err, %context_id, "Failed to read this node's identity in the context");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to read this node's identity in the context".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     // The same question `POST .../intents` asks before it executes, and the same
     // one every peer asks at the cut — read here so a client learns the answer
     // before it signs rather than from a 403 after it has.
@@ -153,6 +176,7 @@ pub async fn handler(
         payload: IntentRelayApiResponse {
             data: IntentRelayApiResponseData {
                 executor_account: hex::encode(executor_account.as_bytes()),
+                executor_key,
                 can_author_on_behalf,
                 group_id: hex::encode(group_id.to_bytes()),
                 granted_on_group_id: granted_on.map(|g| hex::encode(g.to_bytes())),

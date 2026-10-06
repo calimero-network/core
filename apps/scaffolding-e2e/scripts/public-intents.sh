@@ -79,12 +79,18 @@ check "GET intents on the open node" 200 \
 check "GET intents on the closed node" 401 \
     "$(status_of GET "${CLOSED_URL}/admin-api/contexts/${CONTEXT}/intents")"
 
-# The body has to carry the executor account, not merely exist. A 200 with an
-# empty payload would satisfy the status check above and be useless to a client.
-RELAY_ACCOUNT=$(curl -s -m 15 "${OPEN_URL}/admin-api/contexts/${CONTEXT}/intents" \
+# The body has to carry the executor account and key, not merely exist. A 200 with
+# an empty payload would satisfy the status check above and be useless to a client.
+DISCOVERY=$(curl -s -m 15 "${OPEN_URL}/admin-api/contexts/${CONTEXT}/intents")
+RELAY_ACCOUNT=$(echo "${DISCOVERY}" \
     | sed -n 's/.*"executorAccount"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')
 [ -n "${RELAY_ACCOUNT}" ] || fail "the open node's discovery answer names no executor account"
 echo "ok   discovery names the executor account (${RELAY_ACCOUNT})"
+PASS=$((PASS + 1))
+RELAY_KEY=$(echo "${DISCOVERY}" \
+    | sed -n 's/.*"executorKey"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p')
+[ -n "${RELAY_KEY}" ] || fail "the open node's discovery answer names no executor key"
+echo "ok   discovery names the executor key (${RELAY_KEY})"
 PASS=$((PASS + 1))
 
 # --- 2. The write itself, unauthenticated ------------------------------------

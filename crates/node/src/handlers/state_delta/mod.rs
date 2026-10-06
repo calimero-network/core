@@ -2829,6 +2829,7 @@ mod tests {
                     context: ContextId::from([0x76; 32]),
                     author_account: author.statement.account,
                     executor: relay_account,
+                    executor_key: relay_sk.public_key(),
                     app_version: ApplicationId::from([0u8; 32]),
                     method: "send_message".to_owned(),
                     intent_hash: Warrant::intent_hash("send_message", b"{}"),

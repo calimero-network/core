@@ -93,6 +93,7 @@ fn terms(author: &Party, executor: &Party) -> WarrantTerms {
         context: ctx(CTX),
         author_account: author.account(),
         executor: executor.account(),
+        executor_key: executor.device_key(),
         app_version: ApplicationId::from(APP),
         method: METHOD.to_owned(),
         intent_hash: INTENT,
@@ -166,6 +167,13 @@ fn every_field_is_covered_by_the_signature() {
             "executor",
             Warrant {
                 executor: other.account(),
+                ..warrant.clone()
+            },
+        ),
+        (
+            "executor_key",
+            Warrant {
+                executor_key: other.device_key(),
                 ..warrant.clone()
             },
         ),
@@ -514,6 +522,7 @@ fn a_warrant_signed_under_the_old_domain_does_not_verify() {
         warrant.author_account.as_bytes(),
         AsRef::<[u8; 32]>::as_ref(&warrant.author_device_key),
         warrant.executor.as_bytes(),
+        AsRef::<[u8; 32]>::as_ref(&warrant.executor_key),
         AsRef::<[u8; 32]>::as_ref(&warrant.app_version),
         warrant.method.as_bytes(),
         &warrant.intent_hash,

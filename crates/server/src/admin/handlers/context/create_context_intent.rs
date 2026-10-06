@@ -190,7 +190,7 @@ async fn perform(
     })
 }
 
-/// `GET` — the executor account to name, and whether this node may carry a
+/// `GET`: the executor account and key to name, and whether this node may carry a
 /// member's creation here; with `?author=`, whether that account may create.
 pub async fn describe_handler(
     Path(group_id_str): Path<String>,
@@ -244,6 +244,10 @@ pub async fn describe_handler(
         }
     };
 
+    let executor_key = match node_signing_key(store) {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
     let can_create_on_behalf =
         match calimero_governance_store::warrant_gate::executor_refusal_for_group(
             store,
@@ -272,6 +276,7 @@ pub async fn describe_handler(
         payload: CreateContextIntentRelayApiResponse {
             data: CreateContextIntentRelayApiResponseData {
                 executor_account: hex::encode(executor_account.as_bytes()),
+                executor_key,
                 group_id: hex::encode(group_id.to_bytes()),
                 can_create_on_behalf,
                 author_may_create,
@@ -316,6 +321,27 @@ fn parse_account(raw: &str) -> Result<calimero_account::AccountId, ApiError> {
     Ok(calimero_account::AccountId::from(bytes))
 }
 
+/// The key this node signs with, the one a warrant for it must name as its
+/// `executor_key`, or the response saying why it cannot be read.
+pub(crate) fn node_signing_key(
+    store: &calimero_store::Store,
+) -> Result<calimero_primitives::identity::PublicKey, Box<axum::response::Response>> {
+    match calimero_governance_store::NamespaceRepository::new(store).node_identity() {
+        Ok(Some(identity)) => Ok(identity.public_key),
+        Ok(None) => Err(Box::new(
+            ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "this node holds no signing key yet".to_owned(),
+            }
+            .into_response(),
+        )),
+        Err(err) => {
+            error!(error = ?err, "Failed to read this node's signing key");
+            Err(Box::new(internal("Failed to read this node's signing key")))
+        }
+    }
+}
+
 pub(crate) fn internal(message: &str) -> axum::response::Response {
     ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -356,6 +382,7 @@ mod tests {
                 seed: [0x12; 32],
                 author_account: AccountId::from([0x22; 32]),
                 executor: AccountId::from([0x33; 32]),
+                executor_key: PrivateKey::from([0x34; 32]).public_key(),
                 application_id: ApplicationId::from([0x44; 32]),
                 service_name: None,
                 name: Some("general".to_owned()),
@@ -572,6 +599,7 @@ mod tests {
                 context: calimero_primitives::context::ContextId::from([0x12; 32]),
                 author_account: AccountId::from([0x22; 32]),
                 executor: AccountId::from([0x33; 32]),
+                executor_key: PrivateKey::from([0x34; 32]).public_key(),
                 app_version: ApplicationId::from([0x44; 32]),
                 method: "init".to_owned(),
                 intent_hash: [0u8; 32],
