@@ -59,6 +59,7 @@
 //!   resp head {"status": 200, "headers": [[name, value], ..]}
 //! ```
 
+use core::ops::Range;
 use core::time::Duration;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Instant;
@@ -86,9 +87,10 @@ use rand::Rng;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 pub use self::session::SESSION_LIFETIME;
 use self::session::{SessionId, SessionKeys, Sessions, MESSAGE_1_LEN, SESSION_ID_LEN};
@@ -112,9 +114,13 @@ const TAG_LEN: usize = 16;
 
 /// Largest sealed request accepted.
 const MAX_SEALED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SEALED_IN_FLIGHT: usize = 4 * MAX_SEALED_BYTES; // sealed bytes held at once, node-wide
+const SEALED_READ_TIME: Duration = Duration::from_secs(120); // a 64 MiB body at 4.5 Mbit/s
+const MAX_GROWTH: usize = 4 * 1024 * 1024; // unused capacity a request's buffer is charged for
 /// Most data sealed into one frame, a head or a piece of body, so a client can
 /// refuse a larger frame before holding any of it.
 const MAX_FRAME_DATA: usize = 64 * 1024;
+const MAX_HEAD_LEN: usize = MAX_FRAME_DATA; // an inner request's head, as large as a response's
 
 /// Handshakes answered per second, node-wide, once the burst is spent. A
 /// handshake needs no credential, so this is what bounds the work a stranger can
@@ -228,6 +234,8 @@ pub struct SealedTransport {
     public: [u8; 32],
     sessions: Mutex<Sessions>,
     handshakes: Mutex<HandshakeLimit>,
+    /// Bytes of [`MAX_SEALED_IN_FLIGHT`] not held by a request.
+    in_flight: Arc<Semaphore>,
     /// Where the envelope is served: the root, and the path prefix if any.
     mounts: Vec<String>,
     /// The unsealed paths still served when sealing is required; `None` when
@@ -279,6 +287,7 @@ impl SealedTransport {
             public,
             sessions: Mutex::default(),
             handshakes: Mutex::new(HandshakeLimit::full(Instant::now())),
+            in_flight: Arc::new(Semaphore::new(MAX_SEALED_IN_FLIGHT)),
             mounts,
             unsealed_allowed,
             inner_scope: options.inner_scope,
@@ -343,6 +352,36 @@ impl SealedTransport {
         self.unsealed_allowed
             .as_ref()
             .is_some_and(|allowed| !allowed.iter().any(|allowed| allowed == path))
+    }
+
+    /// Grow `sealed` to take `more` bytes, counting what it allocates into `held`,
+    /// or refuse once the node holds [`MAX_SEALED_IN_FLIGHT`] across all requests.
+    fn reserve(
+        &self,
+        held: &mut OwnedSemaphorePermit,
+        sealed: &mut Vec<u8>,
+        more: usize,
+    ) -> Result<(), Refusal> {
+        let needed = sealed.len() + more;
+        if needed <= sealed.capacity() {
+            return Ok(());
+        }
+        // Callers refuse a body past MAX_SEALED_BYTES first, so this covers `needed`.
+        let capacity = needed
+            .max(2 * sealed.capacity())
+            .min(needed + MAX_GROWTH)
+            .min(MAX_SEALED_BYTES);
+        let permit = u32::try_from(capacity - sealed.capacity())
+            .ok()
+            .and_then(|len| Arc::clone(&self.in_flight).try_acquire_many_owned(len).ok())
+            .ok_or(Refusal {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "busy",
+                message: "the node is holding too many sealed requests; retry shortly",
+            })?;
+        held.merge(permit);
+        sealed.reserve_exact(capacity - sealed.len());
+        Ok(())
     }
 
     fn refuse(&self, refusal: &Refusal) {
@@ -418,8 +457,8 @@ impl SealedMetrics {
         registry.register(
             "sealed_refusals",
             "Sealed-transport refusals, by code: of the envelope, of a handshake \
-             over the rate limit (busy), and of an unsealed request while sealing \
-             is required (sealed_required)",
+             over the rate limit or a request over the in-flight budget (busy), and \
+             of an unsealed request while sealing is required (sealed_required)",
             metrics.refusals.clone(),
         );
         registry.register(
@@ -545,15 +584,18 @@ async fn open_and_dispatch(
     next: Next,
 ) -> Result<Response, Refusal> {
     let (outer, body) = request.into_parts();
-    let sealed = read_envelope(transport, &outer.headers, body).await?;
+    // Held until the inner request has been answered: its body is this buffer.
+    let (sealed, _held) = read_envelope(transport, &outer.headers, body).await?;
+    let mut sealed = Zeroizing::new(sealed);
 
     let envelope = RequestEnvelope::parse(&sealed)?;
     let (keys, expires) = live_session(transport, &envelope.session_id)?;
-    let plaintext = open_request(&keys, &envelope)?;
+    let plaintext = open_request(&keys, &envelope, &mut sealed)?;
     transport
         .sessions()
         .admit(&envelope.session_id, envelope.request_id, Instant::now())?;
-    let (head, body) = split_inner(&plaintext)?;
+    let (head, body_start) = split_inner(&sealed[plaintext.clone()])?;
+    let body = plaintext.start + body_start..plaintext.end;
 
     let frames = FrameSealer::new(&keys, envelope.header, envelope.request_id);
     if head
@@ -568,7 +610,7 @@ async fn open_and_dispatch(
         return Ok(seal_response(frames, refused, expires));
     }
 
-    let mut inner = inner_request(head, body, mount)?;
+    let mut inner = inner_request(head, take_body(sealed, body), mount)?;
     // A sealed request that names the envelope again would only open another.
     if transport.route(inner.uri().path()).is_some() {
         return Err(malformed());
@@ -625,13 +667,13 @@ fn live_session(
     found
 }
 
-/// A sealed request's bytes, so a stranger's body is not held before its session
-/// is known: a header naming no open session is refused and the rest discarded.
+/// A sealed request's bytes, counted against the node-wide budget while the permit
+/// lives. A header naming no open session is refused and the rest discarded.
 async fn read_envelope(
     transport: &SealedTransport,
     headers: &HeaderMap,
     body: Body,
-) -> Result<Vec<u8>, Refusal> {
+) -> Result<(Vec<u8>, OwnedSemaphorePermit), Refusal> {
     let too_large = || Refusal {
         status: StatusCode::PAYLOAD_TOO_LARGE,
         code: "too_large",
@@ -647,33 +689,79 @@ async fn read_envelope(
 
     let mut chunks = body.into_data_stream();
     let mut sealed = Vec::new();
-    let mut session_checked = false;
-    while let Some(chunk) = chunks.next().await {
-        let chunk = chunk.map_err(|_| malformed())?;
-        if sealed.len() + chunk.len() > MAX_SEALED_BYTES {
+    let mut start = Vec::with_capacity(HEADER_LEN + TAG_LEN); // checked before anything is charged
+    let mut held = Arc::clone(&transport.in_flight)
+        .try_acquire_many_owned(0)
+        // SAFETY: the budget is never closed, and taking nothing always succeeds.
+        .expect("an empty permit");
+    let mut seen = 0;
+    // A body that stops arriving would otherwise hold its share of the budget forever.
+    let deadline = tokio::time::Instant::now() + SEALED_READ_TIME;
+    loop {
+        let chunk = match tokio::time::timeout_at(deadline, chunks.next()).await {
+            Ok(Some(chunk)) => chunk.map_err(|_| malformed())?,
+            Ok(None) => break,
+            Err(_) => {
+                return Err(Refusal {
+                    status: StatusCode::REQUEST_TIMEOUT,
+                    code: "timeout",
+                    message: "the sealed request did not arrive in time",
+                })
+            }
+        };
+        seen += chunk.len();
+        if seen > MAX_SEALED_BYTES {
             return Err(too_large());
         }
-        sealed.extend_from_slice(&chunk);
-        if !session_checked && sealed.len() >= HEADER_LEN + TAG_LEN {
-            let admitted = RequestEnvelope::parse(&sealed)
-                .and_then(|envelope| live_session(transport, &envelope.session_id));
-            if let Err(refusal) = admitted {
-                // Read the rest without keeping it, so a client mid-upload gets the
-                // refusal it acts on instead of a reset.
-                let mut seen = sealed.len();
-                drop((sealed, chunk));
-                while let Some(Ok(chunk)) = chunks.next().await {
-                    seen += chunk.len();
-                    if seen > MAX_SEALED_BYTES {
-                        break;
-                    }
+        let admitted = admit_start(transport, &mut start, &chunk).and_then(|taken| {
+            // The first bytes join the buffer, and are charged, once their session is known.
+            let first: &[u8] = if taken > 0 && start.len() == HEADER_LEN + TAG_LEN {
+                &start
+            } else {
+                &[]
+            };
+            let rest = &chunk[taken..];
+            transport
+                .reserve(&mut held, &mut sealed, first.len() + rest.len())
+                .map(|()| {
+                    sealed.extend_from_slice(first);
+                    sealed.extend_from_slice(rest);
+                })
+        });
+        if let Err(refusal) = admitted {
+            // Read the rest, within the read deadline, without keeping it, so a client
+            // mid-upload gets the refusal it acts on instead of a reset.
+            drop((sealed, held, chunk));
+            while let Ok(Some(Ok(chunk))) = tokio::time::timeout_at(deadline, chunks.next()).await {
+                seen += chunk.len();
+                if seen > MAX_SEALED_BYTES {
+                    break;
                 }
-                return Err(refusal);
             }
-            session_checked = true;
+            return Err(refusal);
         }
     }
-    Ok(sealed)
+    Ok((sealed, held))
+}
+
+/// Take a request's first bytes and check the session they name before anything is
+/// charged, so a full budget never hides an expired session. Returns the bytes taken.
+fn admit_start(
+    transport: &SealedTransport,
+    start: &mut Vec<u8>,
+    chunk: &[u8],
+) -> Result<usize, Refusal> {
+    let wanted = HEADER_LEN + TAG_LEN;
+    if start.len() == wanted {
+        return Ok(0);
+    }
+    let take = (wanted - start.len()).min(chunk.len());
+    start.extend_from_slice(&chunk[..take]);
+    if start.len() == wanted {
+        let envelope = RequestEnvelope::parse(start)?;
+        let _session = live_session(transport, &envelope.session_id)?;
+    }
+    Ok(take)
 }
 
 /// `/contexts/{id}/intents`, with `id` exactly 64 lowercase hex characters,
@@ -754,19 +842,18 @@ const fn malformed() -> Refusal {
     Refusal::bad_request("malformed", "the sealed request is malformed")
 }
 
-struct RequestEnvelope<'a> {
+struct RequestEnvelope {
     header: [u8; HEADER_LEN],
     session_id: SessionId,
     request_id: u64,
-    ciphertext: &'a [u8],
 }
 
-impl<'a> RequestEnvelope<'a> {
-    fn parse(bytes: &'a [u8]) -> Result<Self, Refusal> {
+impl RequestEnvelope {
+    fn parse(bytes: &[u8]) -> Result<Self, Refusal> {
         if bytes.len() < HEADER_LEN + TAG_LEN {
             return Err(malformed());
         }
-        let (header, ciphertext) = bytes
+        let (header, _) = bytes
             .split_first_chunk::<HEADER_LEN>()
             .ok_or_else(malformed)?;
         let (&[version], rest) = header.split_first_chunk::<1>().ok_or_else(malformed)?;
@@ -779,7 +866,6 @@ impl<'a> RequestEnvelope<'a> {
             header: *header,
             session_id: *session_id,
             request_id,
-            ciphertext,
         })
     }
 }
@@ -798,16 +884,18 @@ fn nonce(request_id: u64, index: u32) -> Nonce {
     Nonce::assume_unique_for_key(nonce)
 }
 
+/// Open the request `sealed` carries in place, returning where its plaintext lies.
 fn open_request(
     keys: &SessionKeys,
-    envelope: &RequestEnvelope<'_>,
-) -> Result<Zeroizing<Vec<u8>>, Refusal> {
-    let mut buffer = Zeroizing::new(envelope.ciphertext.to_vec());
+    envelope: &RequestEnvelope,
+    sealed: &mut [u8],
+) -> Result<Range<usize>, Refusal> {
+    let ciphertext = sealed.get_mut(HEADER_LEN..).ok_or_else(malformed)?;
     let len = aead_key(&keys.request)
         .open_in_place(
             nonce(envelope.request_id, 0),
             Aad::from(&envelope.header),
-            buffer.as_mut(),
+            ciphertext,
         )
         .map_err(|_| {
             Refusal::bad_request(
@@ -816,8 +904,16 @@ fn open_request(
             )
         })?
         .len();
-    buffer.truncate(len);
-    Ok(buffer)
+    Ok(HEADER_LEN..HEADER_LEN + len)
+}
+
+/// The inner body, handed on in the opened envelope's own buffer rather than a
+/// copy. Everything before it, the head and its credentials, is wiped first.
+fn take_body(mut sealed: Zeroizing<Vec<u8>>, body: Range<usize>) -> Bytes {
+    let mut buffer = core::mem::take(&mut *sealed);
+    buffer[..body.start].zeroize();
+    buffer.truncate(body.end);
+    Bytes::from(buffer).slice(body.start..)
 }
 
 /// Seals one response's frames, numbering them.
@@ -969,21 +1065,22 @@ struct ResponseHead {
     headers: Vec<(String, String)>,
 }
 
-fn split_inner(plaintext: &[u8]) -> Result<(RequestHead, &[u8]), Refusal> {
+/// The inner request's head, and where its body starts.
+fn split_inner(plaintext: &[u8]) -> Result<(RequestHead, usize), Refusal> {
     let (len, rest) = plaintext.split_first_chunk::<4>().ok_or_else(malformed)?;
     let len = usize::try_from(u32::from_be_bytes(*len)).map_err(|_| malformed())?;
-    if len > rest.len() {
+    if len > MAX_HEAD_LEN {
         return Err(malformed());
     }
-    let (head, body) = rest.split_at(len);
+    let head = rest.get(..len).ok_or_else(malformed)?;
     let head = serde_json::from_slice(head).map_err(|_| malformed())?;
-    Ok((head, body))
+    Ok((head, 4 + len))
 }
 
 /// The inner request, routed under `mount` — the prefix the envelope arrived
 /// under — so it reaches the router exactly as a direct request through the
 /// client's base URL would.
-fn inner_request(head: RequestHead, body: &[u8], mount: &str) -> Result<Request, Refusal> {
+fn inner_request(head: RequestHead, body: Bytes, mount: &str) -> Result<Request, Refusal> {
     let method = Method::from_bytes(head.method.as_bytes()).map_err(|_| malformed())?;
     // Origin-form only: the router must see a path.
     if !head.path.starts_with('/') {
@@ -992,7 +1089,8 @@ fn inner_request(head: RequestHead, body: &[u8], mount: &str) -> Result<Request,
     let uri: Uri = format!("{mount}{}", head.path)
         .parse()
         .map_err(|_| malformed())?;
-    let mut request = Request::new(Body::from(Bytes::copy_from_slice(body)));
+    let body_len = body.len();
+    let mut request = Request::new(Body::from(body));
     *request.method_mut() = method;
     *request.uri_mut() = uri;
     let headers = request.headers_mut();
@@ -1004,7 +1102,7 @@ fn inner_request(head: RequestHead, body: &[u8], mount: &str) -> Result<Request,
         let value = HeaderValue::from_str(&value).map_err(|_| malformed())?;
         let _previous = headers.append(name, value);
     }
-    let _previous = headers.insert(CONTENT_LENGTH, HeaderValue::from(body.len()));
+    let _previous = headers.insert(CONTENT_LENGTH, HeaderValue::from(body_len));
     Ok(request)
 }
 
