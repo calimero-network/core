@@ -5,7 +5,7 @@ description: Fixes a security finding in calimero-network/core - reproduce it th
 
 # Fix a security finding in calimero-network/core
 
-The rules a fix must satisfy are in the root [AGENTS.md](../../../AGENTS.md#security-trust-boundaries) ("Security: trust boundaries").
+The rules a fix must satisfy are in [CODING_STANDARDS.md](../../../CODING_STANDARDS.md#security-trust-boundaries) ("Security: trust boundaries").
 This skill is the workflow; it does not repeat them.
 
 ## Steps
