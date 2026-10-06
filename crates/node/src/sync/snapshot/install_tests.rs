@@ -829,6 +829,85 @@ async fn an_entry_written_through_a_key_that_was_never_a_relay_fails_the_snapsho
     assert!(message.contains("neither its owner"), "{message}");
 }
 
+/// A `User` entry under the root, signed by `writer` at `nonce` and shipped
+/// dated `updated_at`, which the signature does not cover.
+fn signed_at(writer: &PrivateKey, nonce: u64, updated_at: u64) -> (Id, Vec<u8>, IndexRow) {
+    let owner = AccountId::from([0xA2; 32]);
+    let id = owned_entry_id(Id::new([0x86; 32]), &owner);
+    let signed = |signature| StorageType::User {
+        rules: EntryRules::OWNED,
+        owner,
+        signature_data: Some(SignatureData {
+            signature,
+            nonce,
+            signer: Some(writer.public_key()),
+            on_behalf: None,
+        }),
+    };
+    let mut metadata = Metadata::new(1, 1);
+    metadata.storage_type = signed([0; 64]);
+    let payload = Action::Add {
+        id,
+        data: b"dated".to_vec(),
+        ancestors: vec![],
+        metadata,
+    }
+    .payload_for_signing();
+    let (id, entry, mut row) = child(
+        id,
+        b"dated",
+        b"dated",
+        signed(writer.sign(&payload).unwrap().to_bytes()),
+    );
+    row.metadata.updated_at = updated_at.into();
+    (id, entry, row)
+}
+
+/// `updated_at` is not signed, so the serving peer could re-date the entry.
+#[tokio::test]
+async fn a_signed_entry_is_installed_under_its_signed_date() {
+    let leaf = signed_at(&PrivateKey::from([0x63; 32]), 5, time_now());
+    let id = leaf.0;
+    let (records, claimed) = tree_over(&[leaf]);
+    let joiner = joiner().await;
+
+    joiner.installs(claimed, records).await.unwrap();
+
+    let stored = crate::delta_store::read_entity_index_direct(&joiner.store, context(), id)
+        .unwrap()
+        .map(|index| index.metadata.updated_at());
+    assert_eq!(stored, Some(5));
+}
+
+/// Dated by a nonce past the drift tolerance, every later write to the entry
+/// would look stale, so the snapshot holding it is refused.
+#[tokio::test]
+async fn an_entry_signed_ahead_of_the_clock_fails_the_snapshot() {
+    let ahead = time_now() + 60_000_000_000;
+    let (records, claimed) = tree_over(&[signed_at(&PrivateKey::from([0x64; 32]), ahead, 1)]);
+
+    let message = refused(&joiner().await, claimed, records).await;
+
+    assert!(message.contains("signed time"), "{message}");
+}
+
+/// A leaf held back for its schema is buffered, but its signed date does not
+/// depend on the schema, so it is checked now.
+#[tokio::test]
+async fn a_leaf_declined_for_its_schema_signed_ahead_of_the_clock_fails_the_snapshot() {
+    let ahead = time_now() + 60_000_000_000;
+    let leaf = signed_at(&PrivateKey::from([0x65; 32]), ahead, 1);
+    let id = leaf.0;
+    let (mut records, claimed) = tree_over(&[leaf]);
+    *entity(&mut records, id).2 = Some([2; 32]);
+    let joiner = joiner().await;
+    calimero_context::activation::record_activation(&joiner.store, &context(), [1; 32]);
+
+    let message = refused(&joiner, claimed, records).await;
+
+    assert!(message.contains("signed time"), "{message}");
+}
+
 fn nothing_stored(store: &Store) -> bool {
     store
         .handle()

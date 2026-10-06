@@ -852,7 +852,7 @@ mod tests {
     use super::*;
     use super::{ProtocolDispatch, ProtocolSelector, RootHashPair};
     use crate::sync::helpers::apply_leaf_with_crdt_merge;
-    use crate::test_node_harness::boot_test_node;
+    use crate::test_node_harness::{boot_test_node, collect_rs_sources};
     use async_trait::async_trait;
     use calimero_account::AccountId;
     use calimero_context_config::types::ContextGroupId;
@@ -878,6 +878,7 @@ mod tests {
     use serial_test::serial;
     /// Answers a DAG-heads catch-up and counts the requests; opens no other stream.
     use std::cell::Cell;
+    use std::path::Path;
     use std::sync::Arc;
 
     const STORED: &[u8] = b"stored entry";
@@ -1144,5 +1145,29 @@ mod tests {
                 "control: {walk:?} in a context no group governs"
             );
         }
+    }
+
+    /// The migration write takes no peer stamp and bounds none, so no sync path
+    /// may reach it: a merge for a peer's leaf goes through the bounded write.
+    #[test]
+    fn no_sync_path_writes_through_the_unbounded_migration_write() {
+        let needle = concat!("write_migrated_root_state", "(");
+        let mut sources = Vec::new();
+        collect_rs_sources(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut sources,
+        );
+        assert!(!sources.is_empty(), "found no sources to scan");
+
+        let offenders: Vec<_> = sources
+            .iter()
+            .filter(|path| {
+                std::fs::read_to_string(path)
+                    .expect("read source")
+                    .contains(needle)
+            })
+            .collect();
+
+        assert!(offenders.is_empty(), "{offenders:#?}");
     }
 }
