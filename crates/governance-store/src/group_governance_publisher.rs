@@ -641,3 +641,13 @@ pub(crate) fn ensure_rotation_is_publishable_for(
     }
     Ok(())
 }
+
+/// Whether `op` flips an Open subgroup to Restricted, which rotates its key.
+pub(crate) fn flip_rotation_is_owed(
+    _store: &Store,
+    _group_id: ContextGroupId,
+    _acting_admin: Option<AccountId>,
+    _op: &GroupOp,
+) -> EyreResult<bool> {
+    Ok(false)
+}

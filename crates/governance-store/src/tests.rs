@@ -11173,7 +11173,9 @@ mod apply_auth_at_cut {
 // key never rotate on removal, so a `MANAGE_MEMBERS` holder may still remove there.
 mod rotation_gate_alignment {
     use super::*;
-    use crate::group_governance_publisher::ensure_rotation_is_publishable_for;
+    use crate::group_governance_publisher::{
+        ensure_rotation_is_publishable_for, flip_rotation_is_owed,
+    };
     use calimero_context_config::VisibilityMode;
     use calimero_primitives::identity::PrivateKey;
     use rand::rand_core::UnwrapErr;
@@ -11275,6 +11277,80 @@ mod rotation_gate_alignment {
             "an Open-chain group never rotates on removal, so a non-admin removal must \
              still be permitted",
         );
+    }
+
+    const RESTRICT: GroupOp = GroupOp::SubgroupVisibilitySet {
+        mode: VisibilityMode::Restricted,
+    };
+
+    #[test]
+    fn an_open_to_restricted_flip_rotates_and_needs_an_admin() {
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+            .unwrap();
+
+        assert!(flip_rotation_is_owed(&store, sub_gid, None, &RESTRICT).unwrap());
+        assert!(
+            !flip_rotation_is_owed(
+                &store,
+                sub_gid,
+                None,
+                &GroupOp::SubgroupVisibilitySet {
+                    mode: VisibilityMode::Open
+                }
+            )
+            .unwrap(),
+            "opening a subgroup ends nobody's access"
+        );
+        assert!(
+            !flip_rotation_is_owed(&store, ns_gid, None, &RESTRICT).unwrap(),
+            "the root's visibility gates no inheritance"
+        );
+
+        let _non_admin = make_namespace_identity_a_non_admin(&store, &ns_gid);
+        let err = flip_rotation_is_owed(&store, sub_gid, None, &RESTRICT)
+            .expect_err("a flip whose rotation peers would reject must be refused");
+        assert!(
+            format!("{err:#}").contains("An admin of the group must make this change"),
+            "got: {err:#}"
+        );
+    }
+
+    /// A namespace admin is an admin of an Open subgroup only by inheritance,
+    /// which the flip itself ends.
+    #[test]
+    fn an_inherited_admin_may_not_flip_to_restricted() {
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub_gid, VisibilityMode::Open)
+            .unwrap();
+        let sk_bytes = [0x5E; 32];
+        let pk = PrivateKey::from(sk_bytes).public_key();
+        let account = enrol_member(&store, &ns_gid, &pk);
+        MembershipRepository::new(&store)
+            .add_member(&ns_gid, &account, GroupMemberRole::Admin)
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .replace_identity(&ns_gid, &pk, &sk_bytes)
+            .unwrap();
+        assert!(
+            PermissionChecker::new(&store, sub_gid)
+                .is_admin(&pk)
+                .unwrap(),
+            "precondition: the namespace admin administers the Open subgroup"
+        );
+
+        let _ = flip_rotation_is_owed(&store, sub_gid, None, &RESTRICT)
+            .expect_err("an admin the flip demotes must not mint the subgroup's next key");
+    }
+
+    #[test]
+    fn restricting_an_already_restricted_subgroup_rotates_nothing() {
+        let (store, ns_gid, sub_gid, _admin) = namespace_with_subgroup();
+        let _non_admin = make_namespace_identity_a_non_admin(&store, &ns_gid);
+
+        assert!(!flip_rotation_is_owed(&store, sub_gid, None, &RESTRICT).unwrap());
     }
 }
 

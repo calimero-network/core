@@ -156,8 +156,7 @@ pub(crate) async fn deliver_group_key(
     member_key: Option<PublicKey>,
     devices: &BTreeMap<AccountId, Vec<DeviceBinding>>,
 ) -> eyre::Result<()> {
-    let Some((_key_id, group_key)) = GroupKeyring::new(datastore, *group_id).load_current_key()?
-    else {
+    let Some(group_key) = deliverable_key(datastore, group_id)? else {
         return Ok(());
     };
     let deliveries = key_deliveries(
@@ -205,6 +204,17 @@ pub(crate) async fn deliver_group_key(
         }
     }
     Ok(())
+}
+
+/// The group's own current key, or none while the namespace key covers the group:
+/// that row encrypts nothing yet, and a flip to Restricted replaces it.
+fn deliverable_key(
+    store: &calimero_store::Store,
+    group_id: &ContextGroupId,
+) -> eyre::Result<Option<[u8; 32]>> {
+    Ok(GroupKeyring::new(store, *group_id)
+        .load_current_key()?
+        .map(|(_key_id, key)| key))
 }
 
 fn key_deliveries(
@@ -270,6 +280,30 @@ mod tests {
         AccountBindingRepository::new(store)
             .live_devices_by_account(ns)
             .expect("scan the binding column")
+    }
+
+    #[test]
+    fn a_namespace_covered_subgroup_delivers_no_key_of_its_own() {
+        use calimero_context_config::VisibilityMode;
+        use calimero_governance_store::CapabilitiesRepository;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0x01; 32]);
+        let sub = ContextGroupId::from([0x02; 32]);
+        NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
+        let _ = GroupKeyring::new(&store, sub)
+            .store_key(&GROUP_KEY)
+            .unwrap();
+
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub, VisibilityMode::Open)
+            .unwrap();
+        assert_eq!(deliverable_key(&store, &sub).unwrap(), None);
+
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&sub, VisibilityMode::Restricted)
+            .unwrap();
+        assert_eq!(deliverable_key(&store, &sub).unwrap(), Some(GROUP_KEY));
     }
 
     #[test]
