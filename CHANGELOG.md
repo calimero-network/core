@@ -20,6 +20,20 @@
   from 64 to 96 bytes with no migration; pairs with mero-js#250 and
   calimero-client-py#127) (#4505)
 
+- **A data warrant pins the release it was signed against, and expires on
+  the delta's stamp.** `Warrant` replaces the unread `app_version` with
+  `release_bytecode_id` and `release_version` (at most 256 bytes). The relay
+  refuses a warrant pinning another blob than the one it is about to run
+  (403 `ReleaseNotRunning`, nonce unspent) and a run whose delta stamp is past
+  `not_after` (403 `WarrantExpired`, nothing commits); every replica refuses a
+  delegated delta stamped after its warrant expired. `GET
+  /admin-api/contexts/{id}/intents` reports `releaseBytecodeId` and
+  `releaseVersion` and answers 404 while the group names no release; `merod
+  account warrant` requires `--release-bytecode-id`. (breaking: the data
+  warrant's signed preimage and borsh layout change, so warrants and stored
+  delegated deltas from earlier builds no longer decode; the paired mero-js
+  and calimero-client-py changes are to follow) (#4517)
+
 - **A fleet node that is refused admission is told why.** `fleet-join`
   answered only `admitted: false`. Each admitter's refusal reason (removed
   from the group, measurements outside the policy, a peer that may not vouch)
@@ -456,6 +470,29 @@
   [#3528])
 
 ### Fixed
+
+- **A served signed write is dated by its signature.** A signed `User`,
+  `Shared` or `SharedMember` write committed to its nonce but not to
+  `updated_at`, which last-writer-wins, the stale/replay check and the delete
+  check read, so a serving peer could re-date a genuine write. Snapshot,
+  HashComparison and LevelWise installs now store `User` and `SharedMember`
+  rows under the signed nonce, and bound the served date of the other kinds to
+  5 s ahead; a snapshot entry signed further ahead fails the snapshot, and a
+  sync merge write-back stamped further ahead is refused. (#4497)
+
+- **A repair merges a peer's bytes through the app's custom merge only into
+  a stored `Public` custom entry of the same type.** `crdt_type` is not
+  signed, so a peer could tag any stored entry `Custom` and have its bytes
+  written under the entry's signed metadata. A signed entry is now applied
+  through `apply_action`, which checks its signature, owner and writers, and a
+  leaf storage refuses is logged and skipped on HashComparison and LevelWise
+  pulls instead of ending the session. (#4519)
+
+- **A passive cross-site blob request asks no peer.** A blob `GET` or `HEAD`
+  caused by a navigation or subresource load from another site (which a
+  `proxy`-mode node's origin guard admits) is served only from what the node
+  holds, and answers 404 on a miss instead of fetching from the context's
+  peers. (#4477)
 
 - **A WebSocket upgrade is judged by the same origin rule as HTTP.** `GET /ws`
   had its own origin check, which refused a loopback page on another port, the
