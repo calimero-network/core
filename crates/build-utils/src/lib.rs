@@ -15,7 +15,7 @@ use toml::Value;
 mod fetch;
 
 #[cfg(feature = "fetch")]
-pub use fetch::fetch_and_extract;
+pub use fetch::{expected_sha256, fetch_and_extract};
 
 /// Read `[workspace.metadata.workspaces].version` from the workspace root Cargo.toml.
 /// Used so binaries and crates get the release version instead of the workspace

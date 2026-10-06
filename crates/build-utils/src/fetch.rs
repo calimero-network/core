@@ -43,6 +43,19 @@ pub fn fetch_and_extract(
     )
 }
 
+/// The sha256 an archive from `src` must match: `override_sha256` when set, else
+/// `pinned` (passed only for the default source).
+pub fn expected_sha256<'a>(
+    src: &str,
+    pinned: Option<&'a str>,
+    override_sha256: Option<&'a str>,
+    sha256_var: &str,
+) -> Result<Option<&'a str>> {
+    let _ = (src, sha256_var);
+
+    Ok(override_sha256.or(pinned))
+}
+
 fn fetch_and_extract_with_limit(
     client: &Client,
     src: &str,
@@ -563,5 +576,35 @@ mod tests {
             .expect_err("a missing archive should fail");
 
         assert!(err.to_string().contains(src));
+    }
+
+    #[test]
+    fn a_remote_override_without_a_sha256_is_refused() {
+        for src in ["https://example.com/a.zip", "http://127.0.0.1:8080/a.zip"] {
+            let err = expected_sha256(src, None, None, "X_SHA256")
+                .expect_err("an unpinned remote source must be refused");
+
+            assert!(err.to_string().contains("X_SHA256"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_pinned_or_local_source_resolves_its_sha256() {
+        let (pinned, given) = (Some("pinned"), Some("given"));
+        let remote = "https://example.com/a.zip";
+        let local = "/tmp/webui";
+
+        for (src, pinned, given, expected) in [
+            (remote, pinned, None, pinned),
+            (remote, pinned, given, given),
+            (remote, None, given, given),
+            (local, None, given, given),
+            (local, None, None, None),
+        ] {
+            let resolved = expected_sha256(src, pinned, given, "X_SHA256")
+                .expect("a pinned or local source must resolve");
+
+            assert_eq!(resolved, expected, "{src} {pinned:?} {given:?}");
+        }
     }
 }
