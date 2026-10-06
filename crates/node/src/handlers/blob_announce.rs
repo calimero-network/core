@@ -64,6 +64,7 @@ const PREFETCH_TIMEOUT: Duration = Duration::from_secs(600);
 const MEMBER_PREFETCH_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024; // per member per window
 const MEMBER_PREFETCH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60); // how long a charge counts
 const MIN_PREFETCH_CHARGE_BYTES: u64 = 1024 * 1024; // so a failed or empty fetch is not free
+const MIN_PREFETCH_SUCCESS_COST_BYTES: u64 = 64 * 1024; // probes, headers and a stored file per blob
 
 /// Global prefetch budget, shared by every inbound announcement.
 static PREFETCH_SLOTS: Semaphore = Semaphore::const_new(PREFETCH_CONCURRENCY);
@@ -389,6 +390,7 @@ mod tests {
     const SMALL_UPLOADER: [u8; 32] = [0x29; 32];
     const UNREACHABLE_UPLOADER: [u8; 32] = [0x2A; 32];
     const PARTIAL_UPLOADER: [u8; 32] = [0x2B; 32];
+    const TINY_UPLOADER: [u8; 32] = [0x2C; 32];
     const STRANGER: [u8; 32] = [0x99; 32];
     /// Shorter than the node's own 1 s local-blob lookup, where a fetch first waits.
     const FETCH_WINDOW: Duration = Duration::from_millis(100);
@@ -540,6 +542,7 @@ mod tests {
             SMALL_UPLOADER,
             UNREACHABLE_UPLOADER,
             PARTIAL_UPLOADER,
+            TINY_UPLOADER,
         ] {
             members.push((GroupMemberRole::Member, PrivateKey::from(key).public_key()));
         }
@@ -849,6 +852,51 @@ mod tests {
         assert!(
             !starts_a_fetch(&waiting, peer, spent).await,
             "the junk received was charged"
+        );
+    }
+
+    /// A tiny blob still costs the minimum success cost, so a member cannot have
+    /// this node store blobs without bound by making each one small.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_tiny_fetched_blob_costs_at_least_the_minimum_success_cost() {
+        let tiny = vec![0x5D; 16];
+        let (node_client, context_client, _data, _blobs) = availability_node().await;
+        let waiting = (node_client, context_client);
+        let (node_client, context_client, _serving_data, _serving_blobs) =
+            availability_node_over(network_of_one_peer(Some(tiny.clone()))).await;
+        let (blob, _size) = node_client
+            .add_blob(tiny.as_slice(), None, None)
+            .await
+            .expect("hash the served bytes");
+        let _deleted = node_client.delete_blob(blob).await.expect("forget them");
+        let peer = PeerId::random();
+        let uploader = PrivateKey::from(TINY_UPLOADER);
+
+        let left = MIN_PREFETCH_CHARGE_BYTES + MIN_PREFETCH_SUCCESS_COST_BYTES / 2;
+        spend(
+            &waiting,
+            peer,
+            &uploader,
+            MEMBER_PREFETCH_BUDGET_BYTES - left,
+        )
+        .await;
+        let fetched = BlobAnnouncement {
+            size: tiny.len() as u64,
+            ..announcement_of(blob, &uploader, peer, now_secs())
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, fetched)
+            .await
+            .expect("prefetch");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "the tiny blob is fetched"
+        );
+
+        let next = announcement_sized(&uploader, peer, 1);
+        assert!(
+            !starts_a_fetch(&waiting, peer, next).await,
+            "the tiny blob cost the minimum"
         );
     }
 
