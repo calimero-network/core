@@ -183,14 +183,14 @@ steps:
     member_id: '{{relay_account}}'
     capabilities: 512
 
-  # The release a warrant pins: the blob id the group names (`appKey`), which
+  # The release a warrant pins: the bytecode id the group names, which
   # `GET .../intents` also reports as `releaseBytecodeId`.
   - name: Read the release the warrant pins
     type: get_group_info
     node: public-intents-node-1
     group_id: '{{namespace_id}}'
     outputs:
-      release: appKey
+      release: appKey # wire-pin: the field name group info still emits
 
   - name: The author mints a warrant
     type: node_exec

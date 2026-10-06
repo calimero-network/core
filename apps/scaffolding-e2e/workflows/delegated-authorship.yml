@@ -162,14 +162,14 @@ steps:
       relay_account: accountId
       relay_key: publicKey
 
-  # The release a warrant pins: the blob id the group names (`appKey`), which
+  # The release a warrant pins: the bytecode id the group names, which
   # `GET .../intents` also reports as `releaseBytecodeId`.
   - name: Read the release both warrants pin
     type: get_group_info
     node: delegated-node-1
     group_id: '{{namespace_id}}'
     outputs:
-      release: appKey
+      release: appKey # wire-pin: the field name group info still emits
 
   # Minted once, presented three times below (refused, accepted, refused) — same
   # bytes each time, so only the grant can explain the different verdicts.
