@@ -24,11 +24,9 @@ description: >
   `sender_key` so node-2 can author state-DAG ops that node-3 can
   decrypt.
 
-  Default subgroup visibility is `Restricted`, so no
-  `set_subgroup_visibility` step is needed — relying on the default
-  also catches a future regression that flipped the default. The
-  default is an absent key collapsing to `Restricted`, so it is read
-  back and asserted rather than merely assumed.
+  The subgroup is created with `visibility: restricted` (the default
+  is Open), and its visibility is read back and asserted rather than
+  merely assumed.
 
   Mero-chat user-visible failure mode this guards against: "I
   added someone to a private channel via Members → Add, they
@@ -122,9 +120,8 @@ steps:
       identity_node3: memberIdentity
       account_node3: memberAccount
 
-  # Default visibility is Restricted; intentional that this test
-  # does NOT call `set_subgroup_visibility`. A regression that
-  # flipped the default would surface as node-3 being able to read
+  # Born Restricted, never flipped. A regression that dropped the
+  # requested visibility would surface as node-3 being able to read
   # the subgroup context before being explicitly added — which the
   # negative-control assertion below would catch.
   - name: Node-1 creates Restricted subgroup
@@ -132,6 +129,7 @@ steps:
     node: private-add-node-1
     namespace_id: '{{namespace_id}}'
     group_name: private-channel
+    visibility: restricted
     outputs:
       subgroup_id: groupId
 
@@ -193,10 +191,9 @@ steps:
     check_interval: 2
 
   # ── Phase 2: Negative control — node-3 must NOT have access ───────
-  # Confirms the subgroup is actually Restricted. If a regression
-  # flipped the default visibility to Open, node-3 (a namespace
-  # member with default capabilities) would inherit access and this
-  # call would unexpectedly succeed.
+  # Confirms the subgroup is actually Restricted. If it were Open,
+  # node-3 (a namespace member with default capabilities) would
+  # inherit access and this call would unexpectedly succeed.
   #
   # Important: node-3 must have already received the
   # `ContextRegistered` op before we make the negative-control call,
