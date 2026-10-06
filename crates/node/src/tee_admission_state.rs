@@ -60,6 +60,9 @@ struct Issued {
     /// challenge itself. `None` for one offered to a prompting peer.
     identity: Option<PublicKey>,
     at: Instant,
+    /// Presented already. Kept until it lapses, so spending a challenge does not
+    /// earn the peer a new one before [`MIN_REISSUE`].
+    spent: bool,
 }
 
 impl Issued {
@@ -184,6 +187,7 @@ impl TeeChallenges {
                 peer,
                 identity,
                 at: now,
+                spent: false,
             },
         );
         Ok(challenge)
@@ -213,9 +217,13 @@ impl TeeChallenges {
         identity: &PublicKey,
         now: Instant,
     ) -> bool {
-        let Some(entry) = lock(&self.issued).remove(challenge) else {
+        let mut issued = lock(&self.issued);
+        let Some(entry) = issued.get_mut(challenge) else {
             return false;
         };
+        if std::mem::replace(&mut entry.spent, true) {
+            return false;
+        }
         entry.namespace == namespace
             && entry.peer == peer
             && entry
