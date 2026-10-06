@@ -153,6 +153,7 @@ fn op_payload_discriminants_are_pinned() {
             nonce: 1,
             new: BTreeMap::new(),
         },
+        OpPayload::MemberLeft { group, member: pk },
     ];
 
     // Exhaustive: a new variant forces a new arm here.
@@ -183,10 +184,11 @@ fn op_payload_discriminants_are_pinned() {
             OpPayload::RelaySeated { .. } => 22,
             OpPayload::RootGuarded { .. } => 23,
             OpPayload::SharedWritersRotated { .. } => 24,
+            OpPayload::MemberLeft { .. } => 25,
         }
     }
 
-    assert_eq!(all.len(), 25, "every OpPayload variant must be listed");
+    assert_eq!(all.len(), 26, "every OpPayload variant must be listed");
     for payload in &all {
         let bytes = borsh::to_vec(payload).expect("serialize");
         assert_eq!(

@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{AdmitTeeNodeRequest, TeeAdmissionOutcome};
-use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
+use calimero_context_client::local_governance::{
+    AckRouter, GroupOp, JoinAccountCredential, RootOp,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
@@ -306,6 +308,7 @@ async fn publish_authority_evidence(
     member: calimero_account::AccountId,
     attested_key: PublicKey,
     evidence: calimero_context_client::group::TeeAuthorityEvidencePayload,
+    account: Box<JoinAccountCredential>,
 ) -> eyre::Result<()> {
     let root = NamespaceRepository::new(store).resolve(group_id)?;
     let report = calimero_governance_store::sign_apply_and_publish(
@@ -320,11 +323,34 @@ async fn publish_authority_evidence(
             quote: evidence.quote,
             collateral: evidence.collateral,
             attested_at: evidence.attested_at,
+            account,
         },
     )
     .await?;
     report.observe("admit_tee_node", "TeeAuthorityEvidence");
     debug!(%attested_key, "published TEE authority evidence");
+    Ok(())
+}
+
+/// The quote an admission or an evidence refresh presents must be the one
+/// `quote_hash` names and commit to `credential` admitted as `member`.
+fn check_binding(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+    credential: &JoinAccountCredential,
+    quote_hash: &[u8; 32],
+    quote: &[u8],
+) -> eyre::Result<()> {
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    calimero_governance_store::check_tee_admission_quote(
+        &namespace.to_bytes(),
+        group_id,
+        member,
+        credential,
+        quote_hash,
+        quote,
+    )?;
     Ok(())
 }
 
@@ -355,7 +381,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        // Every member node receives the announce, but only an admin or an
+        // Every member node that hears a prompt may be asked, but only an admin or an
         // already-admitted TEE may vouch for it — peers refuse the op from
         // anyone else (`require_tee_attestation_verifier`). Stand down here,
         // before publishing an op that could never apply anywhere. Not an
@@ -489,7 +515,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             .as_ref()
             .is_some_and(|role| role.is_tee() && *role != tee_role);
         if direct_role.is_some() && !needs_conversion {
-            // Admitted before. Its re-announcement is the chance to publish
+            // Admitted before. Its new quote is the chance to publish
             // evidence that never landed, or to replace evidence old enough to
             // be due for a refresh, so a TEE keeps its authority past the first
             // evidence's lifetime.
@@ -504,6 +530,21 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             let Some(evidence) = evidence.filter(|_| refresh_due) else {
                 return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
             };
+            // A refresh meets the admission's checks: its quote commits to the
+            // credential, names the release the policy asks for, and is unspent.
+            let Some(credential) = account.as_deref() else {
+                return ActorResponse::reply(Ok(TeeAdmissionOutcome::AlreadyMember));
+            };
+            if let Err(err) = check_binding(
+                &self.datastore,
+                &group_id,
+                &member,
+                credential,
+                &quote_hash,
+                &evidence.quote,
+            ) {
+                return ActorResponse::reply(Err(err));
+            }
             // A refresh meets the admission's checks; a mock quote has no
             // release, so no claim applies to it.
             let release_claim = match vet_quote(
@@ -521,6 +562,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             let datastore = self.datastore.clone();
             let node_client = self.node_client.clone();
             let ack_router = Arc::clone(&self.ack_router);
+            let credential = Box::new(credential.clone());
             return ActorResponse::r#async(
                 async move {
                     if let Some(claim) = &release_claim {
@@ -535,6 +577,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         member_account,
                         member,
                         evidence,
+                        credential,
                     )
                     .await?;
                     Ok(TeeAdmissionOutcome::AlreadyMember)
@@ -542,6 +585,32 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                 .into_actor(self),
             );
         }
+
+        // Check the quote's binding before anything is published; every peer
+        // repeats it when it applies the op.
+        let quote = match account.as_deref() {
+            Some(credential) => {
+                let Some(evidence) = evidence.as_ref() else {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "a TEE admission must carry the quote it admits on"
+                    )));
+                };
+                if let Err(err) = check_binding(
+                    &self.datastore,
+                    &group_id,
+                    &member,
+                    credential,
+                    &quote_hash,
+                    &evidence.quote,
+                ) {
+                    return ActorResponse::reply(Err(err));
+                }
+                evidence.quote.clone()
+            }
+            // A subgroup admission moves an existing member inward from a stored
+            // record; it has no quote of its own.
+            None => Vec::new(),
+        };
 
         // A replica/relay conversion is an admission again; a subgroup one
         // (`account` is `None`) was checked at the root, so no claim applies.
@@ -561,6 +630,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
+        let evidence_account = account.clone();
         // The fallback this used to have read the same key back out of a per-group
         // store that the line above had just written it into. One key, held here.
         let effective_signing_key = node_sk;
@@ -615,6 +685,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                             tcb_status,
                             role: tee_role.clone(),
                             account,
+                            quote,
                         },
                     )?;
                     // The namespace publisher always returns a report; the group
@@ -659,9 +730,9 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
                 // After the admission, so peers apply it first. A failure is
                 // logged, not returned: the TEE is admitted either way, and while
-                // authorship is on it keeps re-announcing until some admitter
+                // authorship is on it keeps prompting until some admitter
                 // publishes the evidence (the server's `tee::evidence_retry`).
-                if let Some(evidence) = evidence {
+                if let (Some(evidence), Some(evidence_account)) = (evidence, evidence_account) {
                     if let Err(err) = publish_authority_evidence(
                         &datastore,
                         &node_client,
@@ -671,6 +742,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                         member_account,
                         member,
                         evidence,
+                        evidence_account,
                     )
                     .await
                     {
@@ -678,7 +750,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                             %member,
                             ?err,
                             "TEE admitted, but publishing its authority evidence failed; the \
-                             TEE re-announces while authorship is on, which retries it"
+                             TEE prompts again while authorship is on, which retries it"
                         );
                     }
                 }

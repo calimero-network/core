@@ -237,6 +237,47 @@ pub fn attest_transport_binding(inner: &[u8; 32], transport_key: &[u8; 32]) -> [
     hasher.finalize().into()
 }
 
+/// Domain separator for [`admission_binding`].
+pub const TEE_ADMISSION_BINDING_DOMAIN: &[u8] = b"calimero.tee.admission.v1";
+
+/// The value an admission quote carries in report data bytes `32..64`: SHA-256
+/// over the domain and every field of the credential being admitted, in the
+/// order of the parameters.
+///
+/// The quote then commits to the namespace, the group, the identity key, the
+/// account, the key wrapped secrets are delivered to and the device, so it
+/// cannot be presented for a different credential or key. All fields are fixed
+/// width, so the concatenation is unambiguous. The domain keeps it distinct from
+/// the `/admin-api/tee/attest` bindings above. Client and verifier must compute
+/// it identically, so both use this function.
+#[must_use]
+pub fn admission_binding(
+    namespace_id: &[u8; 32],
+    group_id: &[u8; 32],
+    identity_pk: &[u8; 32],
+    account: &[u8; 32],
+    kem_pk: &[u8; 32],
+    device_id: &[u8; 32],
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(TEE_ADMISSION_BINDING_DOMAIN);
+    hasher.update(namespace_id);
+    hasher.update(group_id);
+    hasher.update(identity_pk);
+    hasher.update(account);
+    hasher.update(kem_pk);
+    hasher.update(device_id);
+    hasher.finalize().into()
+}
+
+/// The report data of an admission quote: the verifier's `challenge` followed by
+/// the [`admission_binding`].
+#[must_use]
+pub fn admission_report_data(challenge: &[u8; 32], binding: &[u8; 32]) -> [u8; 64] {
+    build_report_data(challenge, Some(binding))
+}
+
 /// Domain separator for [`attest_registration_binding`].
 pub const ATTEST_REGISTRATION_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.registration.v1";
 
@@ -275,8 +316,8 @@ pub fn build_report_data(nonce: &[u8; 32], app_hash: Option<&[u8; 32]>) -> [u8; 
 #[cfg(test)]
 mod tests {
     use super::{
-        attest_key_binding, attest_registration_binding, attest_transport_binding,
-        build_report_data,
+        admission_binding, admission_report_data, attest_key_binding, attest_registration_binding,
+        attest_transport_binding, build_report_data,
     };
 
     #[test]
@@ -354,6 +395,59 @@ mod tests {
             TRANSPORT_BINDING_VECTOR
         );
     }
+
+    fn fields() -> [[u8; 32]; 6] {
+        [
+            [0x01; 32], [0x02; 32], [0x03; 32], [0x04; 32], [0x05; 32], [0x06; 32],
+        ]
+    }
+
+    fn admission(fields: &[[u8; 32]; 6]) -> [u8; 32] {
+        admission_binding(
+            &fields[0], &fields[1], &fields[2], &fields[3], &fields[4], &fields[5],
+        )
+    }
+
+    #[test]
+    fn the_admission_binding_commits_to_every_field() {
+        let base = admission(&fields());
+        for index in 0..6 {
+            let mut changed = fields();
+            changed[index] = [0xEE; 32];
+            assert_ne!(
+                base,
+                admission(&changed),
+                "field {index} is not committed to"
+            );
+        }
+    }
+
+    #[test]
+    fn the_admission_binding_is_distinct_from_the_attest_endpoint_bindings() {
+        let key = [0x03; 32];
+        let admitted = admission(&fields());
+        assert_ne!(admitted, attest_key_binding(None, &key));
+        assert_ne!(admitted, attest_transport_binding(&[0u8; 32], &key));
+        assert_ne!(admitted, attest_registration_binding());
+    }
+
+    #[test]
+    fn the_admission_report_data_is_the_challenge_then_the_binding() {
+        let binding = admission(&fields());
+        let report_data = admission_report_data(&[0xAB; 32], &binding);
+        assert_eq!(report_data[..32], [0xAB; 32]);
+        assert_eq!(report_data[32..], binding);
+    }
+
+    /// Fixed vector, recomputed independently of this crate's hashing code: a
+    /// node image outside this workspace builds the same binding.
+    #[test]
+    fn the_admission_binding_matches_the_published_vector() {
+        assert_eq!(hex::encode(admission(&fields())), ADMISSION_BINDING_VECTOR);
+    }
+
+    const ADMISSION_BINDING_VECTOR: &str =
+        "022fb29f49a974379470a639b45ae8251f2d4b3c6653fae2ef5f79924b9cd58e";
 
     const REGISTRATION_BINDING_VECTOR: &str =
         "8a792de43625275167c058a10895de9c9303c56fe644903541b5f6b8656fb6b8";

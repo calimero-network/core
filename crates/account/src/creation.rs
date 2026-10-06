@@ -24,8 +24,7 @@
 //! **Everything that shapes the new context is signed.** Group, seed,
 //! application, service, name and the `init` arguments (as a hash) are all in
 //! the preimage, so the relay chooses none of them. The executor is named as an
-//! account, for the same reason as on a warrant: a relay that re-keys must not
-//! void creation warrants already in flight.
+//! account and one of its device keys, for the same reason as on a warrant.
 //!
 //! # What verification here does not settle
 //!
@@ -69,6 +68,8 @@ pub struct ContextCreationWarrant {
     pub author_device_key: PublicKey,
     /// The operator authorized to carry the creation out.
     pub executor: AccountId,
+    /// The one device of [`Self::executor`] that may carry it out.
+    pub executor_key: PublicKey,
     /// The application the context runs.
     pub application_id: ApplicationId,
     /// Which service of a multi-service bundle to run, `None` for a
@@ -104,6 +105,8 @@ pub struct ContextCreationTerms {
     pub author_account: AccountId,
     /// See [`ContextCreationWarrant::executor`].
     pub executor: AccountId,
+    /// See [`ContextCreationWarrant::executor_key`].
+    pub executor_key: PublicKey,
     /// See [`ContextCreationWarrant::application_id`].
     pub application_id: ApplicationId,
     /// See [`ContextCreationWarrant::service_name`].
@@ -140,12 +143,13 @@ impl ContextCreationWarrant {
         let not_after = self.not_after.to_le_bytes();
 
         let mut parts: Vec<&[u8]> =
-            Vec::with_capacity(16 + self.account_heads.len() + self.governance_floor.len());
+            Vec::with_capacity(17 + self.account_heads.len() + self.governance_floor.len());
         parts.push(&self.group);
         parts.push(&self.seed);
         parts.push(self.author_account.as_bytes());
         parts.push(AsRef::<[u8; 32]>::as_ref(&self.author_device_key));
         parts.push(self.executor.as_bytes());
+        parts.push(AsRef::<[u8; 32]>::as_ref(&self.executor_key));
         parts.push(AsRef::<[u8; 32]>::as_ref(&self.application_id));
         parts.push(&service_tag);
         parts.push(service);
@@ -199,6 +203,7 @@ impl ContextCreationWarrant {
             author_account: terms.author_account,
             author_device_key: author_device_sk.public_key(),
             executor: terms.executor,
+            executor_key: terms.executor_key,
             application_id: terms.application_id,
             service_name: terms.service_name,
             name: terms.name,
@@ -306,6 +311,10 @@ impl WarrantStatement for ContextCreationWarrant {
 
     fn executor(&self) -> AccountId {
         self.executor
+    }
+
+    fn executor_key(&self) -> PublicKey {
+        self.executor_key
     }
 
     fn nonce(&self) -> u64 {

@@ -20,7 +20,9 @@
 //! `deleted_children`, which exists only to point at the tombstone: the sync
 //! wire resolves each id to the child's tombstone and skips one whose tombstone
 //! is gone. So once a tombstone is collected, the sweep drops its id from the
-//! parent too ([`calimero_storage::reclaim`]), and nothing of the delete is left.
+//! parent too ([`calimero_storage::reclaim`]). A signed entity's delete leaves
+//! a record of its `deleted_at`, written in the tombstone's place in one atomic
+//! write, so a replayed older signed write to that id is still dropped.
 //! Rewriting the parent is a read-modify-write of a row the executor also
 //! writes, so a context's reclamation runs under its execution lock.
 //!
@@ -47,7 +49,8 @@ use calimero_store::db::Column;
 use calimero_store::key::{AsKeyParts, ContextState, STATE_KEY_LEN};
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::slice::Slice;
-use calimero_store::Store;
+use calimero_store::types::ContextState as ContextStateValue;
+use calimero_store::{Store, StoreBatch};
 use eyre::Result as EyreResult;
 use tracing::{debug, error, info, warn};
 
@@ -192,7 +195,7 @@ impl GarbageCollector {
                 capped: plan.capped,
                 ..GCStats::default()
             };
-            // Key and value bytes deleted, per context, for the compaction step.
+            // Key and value bytes freed, per context, for the compaction step.
             let mut reclaimed = BTreeMap::new();
             for (context_id, work) in plan.work {
                 // Held across the step, so no execution or sync apply writes
@@ -296,7 +299,7 @@ struct Plan {
 struct Reclaimed {
     tombstones_collected: usize,
     parents_pruned: usize,
-    /// Key and value bytes of the deleted tombstones.
+    /// Key and value bytes of the deleted tombstones, less the records kept.
     bytes: u64,
 }
 
@@ -452,27 +455,27 @@ impl Sweeper {
             let Some(id) = entity_id(key) else {
                 continue;
             };
-            let row_bytes = match self.store.get(key) {
-                Ok(Some(value)) => (reclaim::tombstone_deleted_at(id, value.as_ref())
-                    == Some(*deleted_at))
-                .then(|| (key.as_key().as_bytes().len() + value.len()) as u64),
-                Ok(None) => None, // already gone
+            let tombstone = match self.store.get(key) {
+                Ok(Some(value))
+                    if reclaim::tombstone_deleted_at(id, value.as_ref()) == Some(*deleted_at) =>
+                {
+                    value
+                }
+                Ok(_) => continue, // already gone, or no longer this tombstone
                 Err(e) => {
                     warn!(error = ?e, "GC failed to re-read a tombstone; will retry next cycle");
                     continue;
                 }
             };
-            let Some(row_bytes) = row_bytes else {
-                continue;
-            };
+            let row_bytes = (key.as_key().as_bytes().len() + tombstone.len()) as u64;
 
-            match store.delete(key) {
-                Ok(()) => {
+            match self.collect(context_id, id, key, tombstone.as_ref()) {
+                Ok(record_bytes) => {
                     done.tombstones_collected += 1;
-                    done.bytes += row_bytes;
+                    done.bytes += row_bytes.saturating_sub(record_bytes);
                 }
                 Err(e) => {
-                    warn!(error = ?e, "GC failed to delete a tombstone; will retry next cycle");
+                    warn!(error = ?e, "GC failed to collect a tombstone; will retry next cycle");
                 }
             }
         }
@@ -508,6 +511,30 @@ impl Sweeper {
         }
 
         done
+    }
+
+    /// Delete entity `id`'s `tombstone` row at `key`, keeping the record of its
+    /// delete in the same atomic write. Returns the record's key and value bytes.
+    fn collect(
+        &self,
+        context_id: ContextId,
+        id: Id,
+        key: &ContextState,
+        tombstone: &[u8],
+    ) -> EyreResult<u64> {
+        let mut batch = StoreBatch::new(&self.store);
+        let mut record_bytes = 0;
+        if let Some(deleted_at) = reclaim::deleted_at_to_record(id, tombstone) {
+            let record_key = ContextState::new(context_id, Key::Collected(id).to_bytes());
+            let kept = self.store.get(&record_key)?;
+            let record = reclaim::collected_record(deleted_at, kept.as_ref().map(|v| v.as_ref()));
+            let value = ContextStateValue::from(Slice::from(record.to_vec()));
+            let _batch = batch.put(&record_key, &value)?;
+            record_bytes = (record_key.as_key().as_bytes().len() + record.len()) as u64;
+        }
+        let _batch = batch.delete(key)?;
+        batch.commit()?;
+        Ok(record_bytes)
     }
 
     /// Compact the state-column slice of every context whose reclaimed bytes
@@ -830,6 +857,62 @@ mod tests {
         assert!(!exists(&store, &b));
         assert!(!exists(&store, &c));
         assert!(exists(&store, &live), "live row must survive");
+    }
+
+    /// Collecting a signed entity's tombstone keeps the record of its delete,
+    /// never lowered by an older one; a `Public` entity's leaves nothing.
+    #[test]
+    fn collecting_a_signed_tombstone_records_its_delete() {
+        let store = store();
+        let ctx = ContextId::from([30u8; 32]);
+        let tombstone = |id: [u8; 32], deleted_at: u64, signed: bool| {
+            let mut index = EntityIndex::minimal_for_test(Id::new(id));
+            index.deleted_at = Some(deleted_at);
+            if signed {
+                index.metadata.storage_type = StorageType::User {
+                    owner: [7; 32].into(),
+                    rules: EntryRules::OWNED,
+                    signature_data: None,
+                };
+            }
+            let key = ContextStateKey::new(ctx, entity_key(index.id()));
+            let mut handle = store.clone();
+            handle.put(&key, Slice::from(index_row(&index))).unwrap();
+            key
+        };
+        let record = |id: [u8; 32]| {
+            let key = ContextStateKey::new(ctx, Key::Collected(Id::new(id)).to_bytes());
+            store
+                .get(&key)
+                .unwrap()
+                .and_then(|value| reclaim::collected_deleted_at(value.as_ref()))
+        };
+        let signed = tombstone([31u8; 32], 2 * DAY_NANOS, true);
+        let public = tombstone([32u8; 32], 2 * DAY_NANOS, false);
+        let sweeper = gc(store.clone(), GC_MAX_DELETIONS_PER_RUN);
+
+        assert_eq!(
+            sweeper.sweep(3 * DAY_NANOS).unwrap().tombstones_collected,
+            0
+        );
+        assert_eq!(record([31u8; 32]), None, "nothing is collected yet");
+        assert_eq!(
+            sweeper.sweep(3 * DAY_NANOS).unwrap().tombstones_collected,
+            2
+        );
+        assert!(!exists(&store, &signed) && !exists(&store, &public));
+        assert_eq!(record([31u8; 32]), Some(2 * DAY_NANOS));
+        assert_eq!(
+            record([32u8; 32]),
+            None,
+            "no write to a public id is judged by it"
+        );
+
+        // The entity came back by a route that never read the record, and an
+        // older delete of it arrived: its collection keeps the later record.
+        let _again = tombstone([31u8; 32], DAY_NANOS, true);
+        assert_eq!(sweep_twice(&sweeper, 4 * DAY_NANOS).tombstones_collected, 1);
+        assert_eq!(record([31u8; 32]), Some(2 * DAY_NANOS));
     }
 
     /// The case behind core#4331: a member that never catches up, as a replica

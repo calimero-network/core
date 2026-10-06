@@ -812,18 +812,51 @@ pub fn build_signed_shared_delete(
     signer_sk: &SigningKey,
     deleted_at: u64,
 ) -> Action {
+    let signature_data = Some(placeholder_signature(signer_sk, deleted_at));
+    let storage_type = StorageType::Shared {
+        writers: crate::entities::full_mask(writers),
+        signature_data,
+    };
+    build_signed_delete(id, storage_type, signer_sk, deleted_at)
+}
+
+/// Build a signed `SharedMember` `DeleteRef`, signed by `signer_sk`. The
+/// member's writers are resolved from `anchor` at apply time (no inline set).
+pub fn build_signed_member_delete(
+    id: Id,
+    anchor: Id,
+    signer_sk: &SigningKey,
+    deleted_at: u64,
+) -> Action {
+    let signature_data = Some(placeholder_signature(signer_sk, deleted_at));
+    let storage_type = StorageType::SharedMember {
+        anchor,
+        signature_data,
+    };
+    build_signed_delete(id, storage_type, signer_sk, deleted_at)
+}
+
+fn placeholder_signature(signer_sk: &SigningKey, nonce: u64) -> SignatureData {
+    SignatureData {
+        signature: [0; 64],
+        nonce,
+        signer: Some(pubkey_of(signer_sk)),
+        on_behalf: None,
+    }
+}
+
+/// A `DeleteRef` of `id` under `storage_type`, whose placeholder signature is
+/// replaced by `signer_sk`'s.
+fn build_signed_delete(
+    id: Id,
+    storage_type: StorageType,
+    signer_sk: &SigningKey,
+    deleted_at: u64,
+) -> Action {
     let metadata = Metadata {
         created_at: env::time_now(),
         updated_at: deleted_at.into(),
-        storage_type: StorageType::Shared {
-            writers: crate::entities::full_mask(writers),
-            signature_data: Some(SignatureData {
-                signature: [0; 64],
-                nonce: deleted_at,
-                signer: Some(pubkey_of(signer_sk)),
-                on_behalf: None,
-            }),
-        },
+        storage_type,
         crdt_type: None,
         field_name: None,
         schema_version: None,
@@ -842,50 +875,8 @@ pub fn build_signed_shared_delete(
         if let StorageType::Shared {
             signature_data: Some(sd),
             ..
-        } = &mut metadata.storage_type
-        {
-            sd.signature = signature;
         }
-    }
-    action
-}
-
-/// Build a signed `SharedMember` `DeleteRef`, signed by `signer_sk`. The
-/// member's writers are resolved from `anchor` at apply time (no inline set).
-pub fn build_signed_member_delete(
-    id: Id,
-    anchor: Id,
-    signer_sk: &SigningKey,
-    deleted_at: u64,
-) -> Action {
-    let metadata = Metadata {
-        created_at: env::time_now(),
-        updated_at: deleted_at.into(),
-        storage_type: StorageType::SharedMember {
-            anchor,
-            signature_data: Some(SignatureData {
-                signature: [0; 64],
-                nonce: deleted_at,
-                signer: Some(pubkey_of(signer_sk)),
-                on_behalf: None,
-            }),
-        },
-        crdt_type: None,
-        field_name: None,
-        schema_version: None,
-        order: 0,
-    };
-    let mut action = Action::DeleteRef {
-        id,
-        deleted_at,
-        metadata,
-    };
-    let signature = sign_action(&action, signer_sk);
-    if let Action::DeleteRef {
-        ref mut metadata, ..
-    } = action
-    {
-        if let StorageType::SharedMember {
+        | StorageType::SharedMember {
             signature_data: Some(sd),
             ..
         } = &mut metadata.storage_type

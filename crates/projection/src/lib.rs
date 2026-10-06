@@ -81,6 +81,60 @@ struct SubgroupSlot {
     exists: Option<(Stamp, bool)>,
 }
 
+/// What the fold keeps of one member's invitation joins of one group. `first`
+/// and `least` cover every join ever folded, so no add or removal clears them.
+#[derive(Clone, Debug)]
+struct MemberJoins {
+    first: (Stamp, GroupMemberRole),
+    least: GroupMemberRole,
+    /// The latest joins above the member's clock, which no join writes.
+    standing: BTreeMap<Stamp, GroupMemberRole>,
+}
+
+impl MemberJoins {
+    fn record(&mut self, stamp: Stamp, role: &GroupMemberRole, clock: Option<&Stamp>) {
+        if stamp < self.first.0 {
+            self.first = (stamp, role.clone());
+        }
+        if invited_rank(role) < invited_rank(&self.least) {
+            self.least = role.clone();
+        }
+        if !wins(stamp, clock) {
+            return;
+        }
+        let _ = self.standing.insert(stamp, role.clone());
+        // Keeping the latest ones is what stays a function of the op set: a
+        // later removal only ever spends joins from the earliest end.
+        if self.standing.len() > MAX_STANDING_JOINS + 1 {
+            let _ = self.standing.pop_first();
+        }
+    }
+
+    /// The role these joins seat a member with whose latest add or removal is
+    /// the removal at `clock`: the earliest join's above it, or `least` if unknown.
+    fn role(&self, clock: Option<&Stamp>) -> Option<GroupMemberRole> {
+        if wins(self.first.0, clock) {
+            return Some(self.first.1.clone());
+        }
+        if self.standing.len() > MAX_STANDING_JOINS {
+            return Some(self.least.clone());
+        }
+        self.standing
+            .first_key_value()
+            .map(|(_, role)| role.clone())
+    }
+}
+
+/// An invited role's authority, least first. A TEE role never reaches a join,
+/// as its admission folds as an add, and ranks with the least.
+fn invited_rank(role: &GroupMemberRole) -> u8 {
+    match role {
+        GroupMemberRole::ReadOnly | GroupMemberRole::ReadOnlyTee | GroupMemberRole::RelayTee => 0,
+        GroupMemberRole::Member => 1,
+        GroupMemberRole::Admin => 2,
+    }
+}
+
 /// Candidate handoffs at one `(account, epoch)` slot, keyed by
 /// `(new_root_sign_pk, signature)` so no candidate can ever displace another —
 /// see `absorb_handoff` for why displacement was exploitable.
@@ -97,6 +151,7 @@ type HandoffCandidates = BTreeMap<([u8; 32], [u8; 64]), RootKeyHandoff>;
 /// A slot only ever holds genuinely concurrent rotations from the same epoch by
 /// devices sharing one root key, so this is far above any legitimate need.
 const MAX_HANDOFF_CANDIDATES: usize = 8;
+const MAX_STANDING_JOINS: usize = 64; // most joins above one member's removal that always resolve exactly
 
 /// The deterministic projection of one scope's op-log: values + ACL + groups,
 /// each slot resolved last-writer-wins by `(hlc, op_id)`.
@@ -111,6 +166,12 @@ pub struct ScopeState {
     // --- membership plane ---
     groups: GroupMembers,
     member_clock: BTreeMap<(ContextGroupId, AccountId), Stamp>,
+    /// Each member's invitation joins: see [`MemberJoins::role`] for the
+    /// membership they give while no add stands.
+    member_joins: BTreeMap<(ContextGroupId, AccountId), MemberJoins>,
+    /// Each member's latest leave of the scope's root group, which removes it
+    /// from every other group too, as the apply cascades a namespace leave.
+    namespace_left: BTreeMap<AccountId, Stamp>,
     // --- admin plane ---
     root_admin: Option<AccountId>,
     admin_clock: Option<Stamp>,
@@ -468,26 +529,12 @@ impl ScopeState {
                 role,
             } => self.fold_member_added(*group, *member, role, stamp),
             OpPayload::MemberRemoved { group, member } => {
-                let key = (*group, *member);
-                if wins(stamp, self.member_removed_clock.get(&key)) {
-                    let _ = self.member_removed_clock.insert(key, stamp);
-                }
-                if wins(stamp, self.member_clock.get(&key)) {
-                    if let Some(members) = self.groups.get_mut(group) {
-                        let _ = members.remove(member);
-                        // Drop the group entry once empty so "group never
-                        // existed" and "all members removed" are the SAME
-                        // materialized state — otherwise a phantom empty map
-                        // would perturb `governance_hash` and break
-                        // convergence between nodes that reached the empty
-                        // group via different op orders. The per-member LWW
-                        // bookkeeping in `member_clock` is retained so a later
-                        // re-add still has to beat this removal.
-                        if members.is_empty() {
-                            let _ = self.groups.remove(group);
-                        }
-                    }
-                    let _ = self.member_clock.insert(key, stamp);
+                self.fold_member_removed((*group, *member), stamp);
+            }
+            OpPayload::MemberLeft { group, member } => {
+                self.fold_member_removed((*group, *member), stamp);
+                if group.to_bytes() == *op.scope.as_bytes() {
+                    self.fold_namespace_left(*member, stamp);
                 }
             }
             OpPayload::AdminChanged { new_admin } => {
@@ -622,12 +669,10 @@ impl ScopeState {
                 *floor = (*floor).max(*scope_epoch);
             }
 
-            // Both halves of a join, folded by the very same code the separate
-            // `MemberAdded` and `DeviceLinked` arms run. Neither half is
-            // conditional on the other: a credential this scope cannot admit
-            // still leaves the membership standing, which is the same verdict
-            // the live apply path reaches, and the membership half carries no
-            // information the device half needs.
+            // Both halves of a join. Neither is conditional on the other: a
+            // credential this scope cannot admit still leaves the membership
+            // standing, and a join that changes no membership still links its
+            // device. The device half is the `DeviceLinked` arm's own code.
             OpPayload::MemberJoinedWithDevice {
                 group,
                 member,
@@ -636,7 +681,13 @@ impl ScopeState {
                 chain,
                 cert,
             } => {
-                self.fold_member_added(*group, *member, role, stamp);
+                // A TEE admission folds as a plain write: the apply's conversion of a
+                // TEE row, but not its refusal to touch a non-TEE one.
+                if role.is_tee() {
+                    self.fold_member_added(*group, *member, role, stamp);
+                } else {
+                    self.fold_member_joined(*group, *member, role, stamp);
+                }
                 // A join carries no scope statement: epoch 0, as the live apply writes.
                 self.fold_device_linked(genesis, chain, cert, 0);
             }
@@ -734,6 +785,7 @@ impl ScopeState {
                     self.fold_device_linked(&device.genesis, &device.chain, &device.cert, 0);
                 }
                 let key = (*group, *relay);
+                self.fold_namespace_leave_into(key);
                 if wins(stamp, self.relay_seats.get(&key).map(|seat| &seat.stamp)) {
                     let _ = self.relay_seats.insert(
                         key,
@@ -795,10 +847,8 @@ impl ScopeState {
             .cloned()
     }
 
-    /// LWW-set `member`'s role in `group`.
-    ///
-    /// Shared by the `MemberAdded` and `MemberJoinedWithDevice` arms so a join
-    /// and a plain add can never write the membership slot differently.
+    /// LWW-set `member`'s role in `group`: an admin's add or role change, or a
+    /// TEE admission. Every join it beats is spent.
     fn fold_member_added(
         &mut self,
         group: ContextGroupId,
@@ -807,6 +857,7 @@ impl ScopeState {
         stamp: Stamp,
     ) {
         let key = (group, member);
+        self.fold_namespace_leave_into(key);
         if wins(stamp, self.member_clock.get(&key)) {
             let _ = self
                 .groups
@@ -814,7 +865,109 @@ impl ScopeState {
                 .or_default()
                 .insert(member, role.clone());
             let _ = self.member_clock.insert(key, stamp);
+            let _ = self.joins_after(key, stamp);
         }
+    }
+
+    /// Remove `key`'s member from its group: an admin's removal or a leave.
+    fn fold_member_removed(&mut self, key: (ContextGroupId, AccountId), stamp: Stamp) {
+        self.fold_namespace_leave_into(key);
+        self.remove_member_at(key, stamp);
+    }
+
+    /// Record `member`'s leave of the root group, and remove the member from
+    /// every other group it has a membership write or a relay seat in.
+    fn fold_namespace_left(&mut self, member: AccountId, stamp: Stamp) {
+        if !wins(stamp, self.namespace_left.get(&member)) {
+            return;
+        }
+        let _ = self.namespace_left.insert(member, stamp);
+        let written: BTreeSet<(ContextGroupId, AccountId)> = self
+            .member_clock
+            .keys()
+            .chain(self.member_joins.keys())
+            .chain(self.relay_seats.keys())
+            .filter(|(_, account)| *account == member)
+            .copied()
+            .collect();
+        for key in written {
+            self.remove_member_at(key, stamp);
+        }
+    }
+
+    /// Fold the member's namespace leave into `key` ahead of a write to it, so
+    /// a slot first written after the leave folded loses to it all the same.
+    fn fold_namespace_leave_into(&mut self, key: (ContextGroupId, AccountId)) {
+        if let Some(left) = self.namespace_left.get(&key.1).copied() {
+            self.remove_member_at(key, left);
+        }
+    }
+
+    /// LWW-remove `key`'s member at `stamp`, leaving any join that follows it.
+    fn remove_member_at(&mut self, key: (ContextGroupId, AccountId), stamp: Stamp) {
+        let (group, member) = key;
+        if wins(stamp, self.member_removed_clock.get(&key)) {
+            let _ = self.member_removed_clock.insert(key, stamp);
+        }
+        if !wins(stamp, self.member_clock.get(&key)) {
+            return;
+        }
+        let _ = self.member_clock.insert(key, stamp);
+        if let Some(rejoined) = self.joins_after(key, stamp) {
+            let _ = self
+                .groups
+                .entry(group)
+                .or_default()
+                .insert(member, rejoined);
+        } else if let Some(members) = self.groups.get_mut(&group) {
+            let _ = members.remove(&member);
+            // Drop the entry once empty: "group never existed" and "all members
+            // removed" must hash alike, in whatever order they were reached.
+            if members.is_empty() {
+                let _ = self.groups.remove(&group);
+            }
+        }
+    }
+
+    /// Fold an invitation join, which the apply skips for an account that holds
+    /// a row: it grants its role only to a member no add or earlier join seats.
+    fn fold_member_joined(
+        &mut self,
+        group: ContextGroupId,
+        member: AccountId,
+        role: &GroupMemberRole,
+        stamp: Stamp,
+    ) {
+        let key = (group, member);
+        self.fold_namespace_leave_into(key);
+        let clock = self.member_clock.get(&key);
+        let joins = self.member_joins.entry(key).or_insert_with(|| MemberJoins {
+            first: (stamp, role.clone()),
+            least: role.clone(),
+            standing: BTreeMap::new(),
+        });
+        joins.record(stamp, role, clock);
+        // The clock is the latest add or removal, so an add stands unless it
+        // is the latest removal's (or nothing was ever written).
+        if clock != self.member_removed_clock.get(&key) {
+            return;
+        }
+        // Read again even below the clock: such a join can still lower `least`.
+        if let Some(role) = joins.role(clock) {
+            let _ = self.groups.entry(group).or_default().insert(member, role);
+        }
+    }
+
+    /// Drop the standing joins of `key` that a removal at `stamp` beats, and
+    /// return the role its joins seat the member with above it.
+    fn joins_after(
+        &mut self,
+        key: (ContextGroupId, AccountId),
+        stamp: Stamp,
+    ) -> Option<GroupMemberRole> {
+        let joins = self.member_joins.get_mut(&key)?;
+        joins.standing.retain(|at, _| *at > stamp);
+        joins.role(Some(&stamp))
     }
 
     /// Absorb a credential's account facts and bind its device, if admissible.
@@ -970,29 +1123,9 @@ impl ScopeState {
                 .is_none_or(|account| binding.key_epoch >= account.epoch)
                 && !self.is_descoped(**device, binding)
         });
-
-        // Replica-seed uniqueness, applied HERE for the same reason supersession
-        // is: the answer depends on the whole folded set, not on what had folded
-        // when each link arrived. Two devices sharing an HLC seed mint colliding
-        // RGA ids and lose characters silently, so at most one of a colliding
-        // pair may be live, and the lower id is the arbitrary-but-fixed winner.
-        //
-        // `admit_device_link` used to reject the newcomer when an already-folded
-        // device compared lower, which is order-dependent in the direction it did
-        // not check — high-then-low admitted both. As a filter over the folded
-        // set the rule cannot depend on arrival order.
-        let mut by_seed: BTreeMap<[u8; 16], (DeviceId, DeviceBinding)> = BTreeMap::new();
-        for (device, binding) in unsuperseded {
-            by_seed
-                .entry(device.hlc_seed())
-                .and_modify(|kept| {
-                    if *device < kept.0 {
-                        *kept = (*device, *binding);
-                    }
-                })
-                .or_insert((*device, *binding));
-        }
-        by_seed.into_values().collect()
+        unsuperseded
+            .map(|(device, binding)| (*device, *binding))
+            .collect()
     }
 
     /// Every `(account, device)` whose floor outranks the widest link folded for it,
@@ -2886,5 +3019,451 @@ mod tests {
 
         let reordered = ScopeState::from_ops([&readded, &removed, &granted, &added]);
         assert_eq!(with_removal.root(), reordered.root());
+    }
+
+    /// An invitation join of `group` by `member`; the credential is filler, as
+    /// only the membership half is under test.
+    fn joined(hlc_ns: u64, group: [u8; 32], member: AccountId, role: GroupMemberRole) -> Op {
+        let genesis = AccountGenesis::new([0x7A; 32].into());
+        op(
+            hlc_ns,
+            OpPayload::MemberJoinedWithDevice {
+                group: ContextGroupId::from(group),
+                member,
+                role,
+                genesis,
+                chain: vec![],
+                cert: DeviceCert {
+                    account: genesis.account_id(),
+                    device: DeviceId::from([0x3E; 32]),
+                    sign_pk: [0x55; 32].into(),
+                    kem_pk: [0x2B; 32].into(),
+                    key_epoch: 0,
+                    device_epoch: 0,
+                    signature: [0x11; 64],
+                },
+            },
+        )
+    }
+
+    /// Membership histories over a root group and two subgroups: adds, role
+    /// changes, removals, leaves, joins, grants, seats and subgroup creations,
+    /// at clocks that collide, folded in many orders to one state and one root.
+    #[test]
+    fn membership_histories_fold_alike_in_every_order() {
+        use calimero_context_config::MemberCapabilities;
+
+        use crate::testing::assert_converges_and_isolates;
+
+        const ROOT: [u8; 32] = [0u8; 32];
+        const GROUPS: [[u8; 32]; 3] = [ROOT, [0xA1; 32], [0xB1; 32]];
+        const ROLES: [GroupMemberRole; 4] = [
+            GroupMemberRole::Admin,
+            GroupMemberRole::Member,
+            GroupMemberRole::ReadOnly,
+            GroupMemberRole::RelayTee,
+        ];
+        let replicas = vec![BTreeSet::from([ScopeId::from(ROOT)]); 4];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move |below: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % below
+        };
+
+        for workload in 0..300u64 {
+            let ops: Vec<Op> = (0..24)
+                .map(|_| {
+                    let at = next(12);
+                    let group_bytes = GROUPS[next(3) as usize];
+                    let group = ContextGroupId::from(group_bytes);
+                    let member = AccountId::from([0x60 + next(2) as u8; 32]);
+                    let role = ROLES[next(4) as usize].clone();
+                    match next(9) {
+                        0 => member_added(at, group_bytes, member, role),
+                        1 => op(at, OpPayload::MemberRemoved { group, member }),
+                        2 => op(at, OpPayload::MemberLeft { group, member }),
+                        3 => {
+                            let group = ContextGroupId::from(ROOT);
+                            op(at, OpPayload::MemberLeft { group, member })
+                        }
+                        4 | 5 => joined(at, group_bytes, member, role),
+                        6 => op(
+                            at,
+                            OpPayload::MemberCapabilitySet {
+                                group,
+                                member,
+                                capabilities: MemberCapabilities::from_bits_truncate(1 << next(3)),
+                            },
+                        ),
+                        7 => op(
+                            at,
+                            OpPayload::RelaySeated {
+                                carried: Box::new(OpPayload::Noop),
+                                group,
+                                relay: member,
+                                capabilities: MemberCapabilities::from_bits_truncate(1 << next(3)),
+                                device: None,
+                                tee_role_from: (next(2) == 0).then(|| ContextGroupId::from(ROOT)),
+                            },
+                        ),
+                        _ => op(
+                            at,
+                            OpPayload::SubgroupCreated {
+                                child: ScopeId::from(GROUPS[1 + next(2) as usize]),
+                                parent: ScopeId::from(group_bytes),
+                                restricted: next(2) == 0,
+                                admin: member,
+                            },
+                        ),
+                    }
+                })
+                .collect();
+
+            let _ = folded_alike(&ops);
+            for seed in 0..4u64 {
+                assert_converges_and_isolates(workload * 4 + seed, &replicas, &ops);
+            }
+        }
+    }
+
+    const JOINED_GROUP: [u8; 32] = [0xA1; 32];
+
+    fn joiner() -> AccountId {
+        AccountId::from([0x60; 32])
+    }
+
+    /// One invitation re-signed without limit must not grow the state with it.
+    #[test]
+    fn a_flood_of_repeat_joins_keeps_a_bounded_number_of_them() {
+        let flood: Vec<Op> = (1..=2000)
+            .map(|at| joined(at, JOINED_GROUP, joiner(), GroupMemberRole::Member))
+            .collect();
+
+        let state = ScopeState::from_ops(&flood);
+
+        assert_eq!(joins_standing(&state), MAX_STANDING_JOINS + 1);
+    }
+
+    /// The joins `state` keeps above the joiner's clock in [`JOINED_GROUP`].
+    fn joins_standing(state: &ScopeState) -> usize {
+        state.member_joins[&(ContextGroupId::from(JOINED_GROUP), joiner())]
+            .standing
+            .len()
+    }
+
+    const LIMIT: u64 = MAX_STANDING_JOINS as u64;
+
+    /// `ops` folded as given, reversed and in seeded shuffles, which must all
+    /// reach one whole state and one root: that state.
+    fn folded_alike(ops: &[Op]) -> ScopeState {
+        let reference = ScopeState::from_ops(ops);
+        let mut order: Vec<&Op> = ops.iter().rev().collect();
+        for seed in 0..12u64 {
+            let state = ScopeState::from_ops(order.iter().copied());
+            assert_eq!(
+                format!("{state:?}"),
+                format!("{reference:?}"),
+                "the state must not depend on arrival order (shuffle {seed})"
+            );
+            assert_eq!(state.root(), reference.root());
+            crate::testing::shuffle(seed, &mut order);
+        }
+        reference
+    }
+
+    /// The joiner's role in [`JOINED_GROUP`] once `ops` fold, in any order.
+    fn joiner_role(ops: &[Op]) -> Option<GroupMemberRole> {
+        role_in(&folded_alike(ops).acl_view(), JOINED_GROUP, &joiner())
+    }
+
+    fn join_at(hlc_ns: u64, role: GroupMemberRole) -> Op {
+        joined(hlc_ns, JOINED_GROUP, joiner(), role)
+    }
+
+    fn removed_at(hlc_ns: u64) -> Op {
+        let group = ContextGroupId::from(JOINED_GROUP);
+        let member = joiner();
+        op(hlc_ns, OpPayload::MemberRemoved { group, member })
+    }
+
+    /// Joins at every clock in `clocks`, the first with `first` and the rest
+    /// with `rest`.
+    fn joins_at(
+        clocks: std::ops::RangeInclusive<u64>,
+        first: GroupMemberRole,
+        rest: GroupMemberRole,
+    ) -> Vec<Op> {
+        let start = *clocks.start();
+        clocks
+            .map(|at| {
+                join_at(
+                    at,
+                    if at == start {
+                        first.clone()
+                    } else {
+                        rest.clone()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The smallest history a rule keeping "the earliest join above the clock"
+    /// splits on by arrival order, as found, and at the size of the real limit.
+    #[test]
+    fn a_removal_between_joins_folds_alike_whenever_it_arrives() {
+        let mut smallest = joins_at(1..=2, GroupMemberRole::ReadOnly, GroupMemberRole::ReadOnly);
+        smallest.push(removed_at(3));
+        smallest.push(join_at(4, GroupMemberRole::Member));
+        assert_eq!(joiner_role(&smallest), Some(GroupMemberRole::Member));
+
+        let mut scaled = joins_at(1..=2, GroupMemberRole::ReadOnly, GroupMemberRole::ReadOnly);
+        scaled.push(removed_at(3));
+        scaled.extend(joins_at(
+            4..=3 + LIMIT,
+            GroupMemberRole::Member,
+            GroupMemberRole::Admin,
+        ));
+        assert_eq!(joiner_role(&scaled), Some(GroupMemberRole::Member));
+    }
+
+    /// Crossing the limit alone changes nothing: with no removal, the first
+    /// join seats the member however many repeat it.
+    #[test]
+    fn repeat_joins_alone_leave_the_first_joins_role() {
+        let mut flood = joins_at(1..=100, GroupMemberRole::Member, GroupMemberRole::Admin);
+        flood.extend(joins_at(
+            101..=201,
+            GroupMemberRole::ReadOnly,
+            GroupMemberRole::ReadOnly,
+        ));
+
+        assert_eq!(joiner_role(&flood), Some(GroupMemberRole::Member));
+    }
+
+    #[test]
+    fn a_leave_above_every_join_ends_the_role_and_a_rejoin_takes_its_own() {
+        let mut ops = joins_at(1..=200, GroupMemberRole::Member, GroupMemberRole::Admin);
+        let group = ContextGroupId::from(JOINED_GROUP);
+        let member = joiner();
+        ops.push(op(500, OpPayload::MemberLeft { group, member }));
+        assert_eq!(joiner_role(&ops), None);
+
+        ops.push(join_at(501, GroupMemberRole::Admin));
+        assert_eq!(joiner_role(&ops), Some(GroupMemberRole::Admin));
+    }
+
+    /// A removal above the first join with more joins above it than resolve
+    /// exactly: the least role the member ever joined with, a spent join's too.
+    #[test]
+    fn past_the_limit_above_a_removal_the_least_role_joined_with_stands() {
+        let above = |count: u64| {
+            let mut joins = joins_at(
+                3..=2 + count,
+                GroupMemberRole::Admin,
+                GroupMemberRole::Admin,
+            );
+            joins.push(join_at(1000, GroupMemberRole::Member));
+            joins.push(removed_at(2));
+            joins
+        };
+        let with_first = |first: GroupMemberRole, count: u64| {
+            let mut ops = above(count);
+            ops.push(join_at(1, first));
+            joiner_role(&ops)
+        };
+
+        assert_eq!(
+            with_first(GroupMemberRole::Admin, LIMIT - 1),
+            Some(GroupMemberRole::Admin),
+            "at the limit the earliest join above the removal is still known"
+        );
+        assert_eq!(
+            with_first(GroupMemberRole::Admin, LIMIT),
+            Some(GroupMemberRole::Member)
+        );
+        assert_eq!(
+            with_first(GroupMemberRole::ReadOnly, LIMIT),
+            Some(GroupMemberRole::ReadOnly)
+        );
+    }
+
+    /// A member whose every join carried one role resolves exactly past the limit.
+    #[test]
+    fn past_the_limit_a_member_who_only_ever_joined_with_one_role_keeps_it() {
+        for role in [GroupMemberRole::Admin, GroupMemberRole::Member] {
+            let mut ops = joins_at(3..=202, role.clone(), role.clone());
+            ops.push(join_at(1, role.clone()));
+            ops.push(removed_at(2));
+
+            assert_eq!(joiner_role(&ops), Some(role));
+        }
+    }
+
+    /// A removal among the latest joins leaves few enough above it to know the
+    /// earliest of them, whatever lower role an earlier join carried.
+    #[test]
+    fn a_removal_inside_the_kept_joins_resolves_to_the_join_that_follows_it() {
+        let mut ops = joins_at(1..=380, GroupMemberRole::ReadOnly, GroupMemberRole::Member);
+        ops.push(join_at(382, GroupMemberRole::Admin));
+        ops.extend(joins_at(
+            383..=400,
+            GroupMemberRole::Member,
+            GroupMemberRole::Member,
+        ));
+        ops.push(removed_at(381));
+
+        assert_eq!(joiner_role(&ops), Some(GroupMemberRole::Admin));
+    }
+
+    /// A TEE admission folds as an add, so its role is no role a join carried.
+    #[test]
+    fn a_tee_admission_is_not_among_the_roles_joined_with() {
+        let mut ops = joins_at(3..=202, GroupMemberRole::Admin, GroupMemberRole::Member);
+        ops.push(join_at(1, GroupMemberRole::Admin));
+        ops.push(join_at(2, GroupMemberRole::ReadOnlyTee));
+        ops.push(removed_at(3));
+        assert_eq!(joiner_role(&ops), Some(GroupMemberRole::Member));
+
+        ops.push(join_at(1000, GroupMemberRole::RelayTee));
+        assert_eq!(joiner_role(&ops), Some(GroupMemberRole::RelayTee));
+    }
+
+    /// A relay seat is read over the folded membership, so it seats the relay
+    /// above its removal whatever its joins resolve to, and not below it.
+    #[test]
+    fn a_relay_seat_stands_over_a_flood_of_joins_only_above_the_removal() {
+        let seat_at = |hlc_ns| {
+            op(
+                hlc_ns,
+                OpPayload::RelaySeated {
+                    carried: Box::new(OpPayload::Noop),
+                    group: ContextGroupId::from(JOINED_GROUP),
+                    relay: joiner(),
+                    capabilities: calimero_context_config::MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+                    device: None,
+                    tee_role_from: None,
+                },
+            )
+        };
+        let mut ops = joins_at(4..=203, GroupMemberRole::Admin, GroupMemberRole::ReadOnly);
+        ops.push(join_at(1, GroupMemberRole::Admin));
+        ops.push(removed_at(3));
+
+        ops.push(seat_at(2));
+        assert_eq!(joiner_role(&ops), Some(GroupMemberRole::ReadOnly));
+        ops.push(seat_at(1000));
+        assert_eq!(joiner_role(&ops), Some(GroupMemberRole::Member));
+    }
+
+    /// A namespace leave is one more removal of the subgroup slot, whether it
+    /// folds before the slot is first written or after its last join.
+    #[test]
+    fn a_namespace_leave_folds_alike_before_and_after_a_flood_of_joins() {
+        let leave_at = |hlc_ns| {
+            let group = ContextGroupId::from([0u8; 32]);
+            let member = joiner();
+            op(hlc_ns, OpPayload::MemberLeft { group, member })
+        };
+        let mut joins = joins_at(
+            3..=2 + LIMIT,
+            GroupMemberRole::Admin,
+            GroupMemberRole::Admin,
+        );
+        joins.push(join_at(1, GroupMemberRole::Admin));
+        joins.push(join_at(1000, GroupMemberRole::Member));
+
+        for (left_at, role) in [
+            (0, Some(GroupMemberRole::Admin)),
+            (2, Some(GroupMemberRole::Member)),
+            (999, Some(GroupMemberRole::Member)),
+            (1001, None),
+        ] {
+            let leave = leave_at(left_at);
+            let lazily = ScopeState::from_ops(std::iter::once(&leave).chain(&joins));
+            let eagerly = ScopeState::from_ops(joins.iter().chain([&leave]));
+            assert_eq!(format!("{lazily:?}"), format!("{eagerly:?}"));
+            assert_eq!(lazily.root(), eagerly.root());
+
+            let mut ops = joins.clone();
+            ops.push(leave);
+            assert_eq!(joiner_role(&ops), role, "left at {left_at}");
+        }
+    }
+
+    /// More joins than the fold keeps in the root group and a subgroup, with
+    /// removals, leaves of either, adds, TEE admissions and relay seats between
+    /// them at clocks that collide: every arrival order folds to one state.
+    #[test]
+    fn join_floods_fold_alike_in_every_order() {
+        use calimero_context_config::MemberCapabilities;
+
+        use crate::testing::assert_converges_and_isolates;
+
+        const ROOT: [u8; 32] = [0u8; 32];
+        const ROLES: [GroupMemberRole; 3] = [
+            GroupMemberRole::Admin,
+            GroupMemberRole::Member,
+            GroupMemberRole::ReadOnly,
+        ];
+        let replicas = vec![BTreeSet::from([ScopeId::from(ROOT)]); 4];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |below: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % below
+        };
+
+        let mut past_the_limit = 0;
+        for workload in 0..20u64 {
+            // Writes other than joins stay below this clock, so that some
+            // workloads leave more joins above them than resolve exactly.
+            let written_below = 1 + next(400);
+            let ops: Vec<Op> = (0..4 * MAX_STANDING_JOINS)
+                .map(|_| {
+                    let group_bytes = [ROOT, JOINED_GROUP][next(2) as usize];
+                    let group = ContextGroupId::from(group_bytes);
+                    let role = ROLES[next(3) as usize].clone();
+                    let member = joiner();
+                    let kind = next(60);
+                    let at = next(if kind < 7 { written_below } else { 400 });
+                    match kind {
+                        0 => member_added(at, group_bytes, member, role),
+                        1 | 2 => op(at, OpPayload::MemberRemoved { group, member }),
+                        3 => op(at, OpPayload::MemberLeft { group, member }),
+                        4 => {
+                            let group = ContextGroupId::from(ROOT);
+                            op(at, OpPayload::MemberLeft { group, member })
+                        }
+                        5 => joined(at, group_bytes, member, GroupMemberRole::ReadOnlyTee),
+                        6 => op(
+                            at,
+                            OpPayload::RelaySeated {
+                                carried: Box::new(OpPayload::Noop),
+                                group,
+                                relay: member,
+                                capabilities: MemberCapabilities::from_bits_truncate(1 << next(3)),
+                                device: None,
+                                tee_role_from: (next(2) == 0).then(|| ContextGroupId::from(ROOT)),
+                            },
+                        ),
+                        _ => joined(at, group_bytes, member, role),
+                    }
+                })
+                .collect();
+
+            let folded = folded_alike(&ops);
+            past_the_limit += usize::from(joins_standing(&folded) > MAX_STANDING_JOINS);
+            for seed in 0..4u64 {
+                assert_converges_and_isolates(workload * 4 + seed, &replicas, &ops);
+            }
+        }
+        assert!(
+            past_the_limit >= 8,
+            "only {past_the_limit} workloads crossed the limit"
+        );
     }
 }

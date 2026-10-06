@@ -189,6 +189,8 @@ mod tests {
                 "11111111111111111111111111111111",
                 "--executor",
                 &"b".repeat(64),
+                "--executor-key",
+                &"e".repeat(64),
                 "--method",
                 "set",
                 "--args",

@@ -6367,6 +6367,47 @@ fn ackable_members_fails_open_when_the_signer_is_unbound() {
     );
 }
 
+/// A key another account also certified names neither account, so the wait fails
+/// open rather than counting this node's own account as a peer.
+#[test]
+fn ackable_members_fails_open_when_another_account_certified_the_signer() {
+    let ns_id = [0xA8; 32];
+    let store = test_store();
+    let (admin_sk, _admin_pk) = bootstrap_namespace_with_admin(&store, ns_id);
+    let gid = ContextGroupId::from(ns_id);
+    let (attacker_root, attacker_genesis) = crate::test_fixtures::test_account_root();
+    let claim = crate::test_fixtures::join_account_for(
+        &attacker_root,
+        attacker_genesis,
+        &admin_sk.public_key(),
+        [0; 32],
+        0,
+    );
+    let _attacker = crate::AccountBindingRepository::new(&store)
+        .apply_link(
+            &gid,
+            &claim.genesis,
+            &claim.chain,
+            &claim.statement,
+            crate::JOIN_SCOPE_EPOCH,
+        )
+        .expect("store the attacker's link")
+        .expect("the attacker's own device links");
+    MembershipRepository::new(&store)
+        .add_member(
+            &gid,
+            &attacker_genesis.account_id(),
+            GroupMemberRole::Member,
+        )
+        .expect("seat the attacker");
+
+    assert_eq!(
+        super::governance::ackable_members(&store, ns_id.into(), &admin_sk.public_key(), 3),
+        3,
+        "a key two accounts certified must not resolve to either"
+    );
+}
+
 /// An offline member is still a member; with nobody on the topic the publish
 /// would only reach `NoPeersSubscribed`, so it must not wait.
 #[test]
@@ -9365,31 +9406,26 @@ fn a_refused_credential_leaves_the_membership_intact() {
 
     // A credential that is genuinely the joiner's — it certifies the joiner's
     // key and names the joiner's account, so the op itself is well formed — but
-    // whose DEVICE some other account already claimed here. `apply_link` refuses
-    // it as a reassignment: one device cannot speak for two accounts.
+    // at a device epoch this group already spent on another key of the same
+    // device. `apply_link` refuses it as not advancing the epoch.
     //
-    // This is the only way a credential gets refused now. A credential for
-    // somebody ELSE is rejected outright a step earlier (see
+    // A credential for somebody ELSE is rejected outright a step earlier (see
     // `a_credential_certified_for_another_key_is_refused`), because naming an
     // account means claiming to BE it.
-    let squatter_root = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
-    let squatter_genesis = calimero_account::AccountGenesis::new(squatter_root.public_key());
-    let squatter = crate::test_fixtures::join_account_for(
-        &squatter_root,
-        squatter_genesis,
+    let credential = crate::test_fixtures::real_join_account(&joiner);
+    let fork = calimero_account::DeviceCert::sign(
+        &PrivateKey::from(*joiner),
+        credential.statement.account,
+        credential.statement.device,
         &PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key(),
-        *joiner.as_ref(),
+        &credential.statement.kem_pk,
         0,
-    );
+        0,
+    )
+    .expect("sign the fork");
     let _ = crate::AccountBindingRepository::new(&store)
-        .apply_link(
-            &ns_gid,
-            &squatter.genesis,
-            &squatter.chain,
-            &squatter.statement,
-            0,
-        )
-        .expect("seed the conflicting device claim");
+        .apply_link(&ns_gid, &credential.genesis, &[], &fork, 0)
+        .expect("seed the conflicting key at the same epoch");
 
     apply_open_join_with(
         &store,
@@ -9509,7 +9545,10 @@ fn rejoining_reuses_the_device_rather_than_refusing_it() {
         "a rejoin must reuse its device, not mint a second replica id and strand \
          the CRDT state held under the first"
     );
-    assert_eq!(live[0].device, calimero_account::DeviceId::from(device));
+    assert_eq!(
+        live[0].device,
+        crate::test_fixtures::device_for(account_id, device)
+    );
     assert_eq!(live[0].account, account_id);
 }
 
@@ -9541,7 +9580,7 @@ fn withdrawn_joiner(
         &crate::AccountBindingRepository::new(&store),
         &ContextGroupId::from(namespace_id),
         account,
-        calimero_account::DeviceId::from(device),
+        crate::test_fixtures::device_for(account, device),
     );
     WithdrawnJoiner {
         store,
@@ -9782,6 +9821,7 @@ fn a_tee_admission_binds_the_replicas_device() {
     gov.apply_signed_op(&policy_ns_op)
         .expect("the policy op applies");
 
+    let quote = crate::tee::tests::admission_quote_with(&ns_gid, &replica, &account);
     let head = gov.read_head_record().expect("read head");
     let admit = SignedNamespaceOp::sign(
         &verifier_sk,
@@ -9794,7 +9834,7 @@ fn a_tee_admission_binds_the_replicas_device() {
             RootOp::MemberJoinedViaTeeAttestation {
                 group_id: ns_gid,
                 member: replica,
-                quote_hash: [0x11; 32],
+                quote_hash: crate::tee::sha256(&quote),
                 mrtd: "m1".to_owned(),
                 rtmr0: String::new(),
                 rtmr1: "r1".to_owned(),
@@ -9803,6 +9843,7 @@ fn a_tee_admission_binds_the_replicas_device() {
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,
                 account,
+                quote,
             },
         ),
     )
@@ -9921,6 +9962,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
                 tcb_status: "ok".to_owned(),
                 role: GroupMemberRole::ReadOnlyTee,
                 account: stolen,
+                quote: Vec::new(),
             },
         ),
     )
@@ -9960,6 +10002,296 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
             .expect("membership"),
         "and above all must not admit the replica under an account it cannot prove"
     );
+}
+
+/// A namespace with an admin verifier, an applied admission policy that accepts
+/// mock measurements, and a replica with its credential, ready for an admission.
+struct TeeAdmissionFixture {
+    store: Store,
+    namespace_id: [u8; 32],
+    ns_gid: ContextGroupId,
+    verifier_sk: PrivateKey,
+    replica: PublicKey,
+    account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
+}
+
+impl TeeAdmissionFixture {
+    fn new(ns_byte: u8) -> Self {
+        use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+        use super::NamespaceGovernance;
+
+        let store = test_store();
+        let namespace_id = [ns_byte; 32];
+        let ns_gid = ContextGroupId::from(namespace_id);
+        let (verifier_sk, _) = bootstrap_namespace_with_admin(&store, namespace_id);
+        let group_key = [0x9Au8; 32];
+        let key_id = GroupKeyring::new(&store, ns_gid)
+            .store_key(&group_key)
+            .expect("store the group key");
+        let replica =
+            PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
+        let account = crate::test_fixtures::real_join_account(&replica);
+
+        let gov = NamespaceGovernance::new(&store, namespace_id.into());
+        let policy_op = GroupKeyring::encrypt_op(
+            &group_key,
+            &crate::test_fixtures::guarded_group_op(
+                &store,
+                &ns_gid,
+                &verifier_sk.public_key(),
+                GroupOp::TeeAdmissionPolicySet {
+                    allowed_mrtd: vec!["m1".to_owned()],
+                    allowed_rtmr0: vec![],
+                    allowed_rtmr1: vec!["r1".to_owned()],
+                    allowed_rtmr2: vec!["r2".to_owned()],
+                    allowed_rtmr3: vec!["r3".to_owned()],
+                    allowed_tcb_statuses: vec!["ok".to_owned()],
+                    accept_mock: true,
+                },
+            ),
+        )
+        .expect("encrypt the policy op");
+        let head = gov.read_head_record().expect("read head");
+        let policy_ns_op = SignedNamespaceOp::sign(
+            &verifier_sk,
+            namespace_id.into(),
+            head.parent_hashes.clone(),
+            head.next_nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: policy_op,
+                key_rotation: None,
+            },
+        )
+        .expect("verifier signs the policy op");
+        gov.apply_signed_op(&policy_ns_op)
+            .expect("the policy op applies");
+        Self {
+            store,
+            namespace_id,
+            ns_gid,
+            verifier_sk,
+            replica,
+            account,
+        }
+    }
+
+    /// The honest joiner's quote for this replica's own credential.
+    fn honest_quote(&self) -> Vec<u8> {
+        crate::tee::tests::admission_quote_with(&self.ns_gid, &self.replica, &self.account)
+    }
+
+    /// Apply an admission of the replica carrying `quote`, recorded under
+    /// `quote_hash`.
+    fn admit(&self, quote: Vec<u8>, quote_hash: [u8; 32]) -> eyre::Result<()> {
+        self.admit_signed_by(&self.verifier_sk, quote, quote_hash)
+    }
+
+    fn admit_signed_by(
+        &self,
+        signer: &PrivateKey,
+        quote: Vec<u8>,
+        quote_hash: [u8; 32],
+    ) -> eyre::Result<()> {
+        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+
+        use super::NamespaceGovernance;
+
+        let gov = NamespaceGovernance::new(&self.store, self.namespace_id.into());
+        let head = gov.read_head_record().expect("read head");
+        let admit = SignedNamespaceOp::sign(
+            signer,
+            self.namespace_id.into(),
+            head.parent_hashes.clone(),
+            head.next_nonce,
+            seal_for_test(
+                &self.store,
+                self.ns_gid,
+                RootOp::MemberJoinedViaTeeAttestation {
+                    group_id: self.ns_gid,
+                    member: self.replica,
+                    quote_hash,
+                    mrtd: "m1".to_owned(),
+                    rtmr0: String::new(),
+                    rtmr1: "r1".to_owned(),
+                    rtmr2: "r2".to_owned(),
+                    rtmr3: "r3".to_owned(),
+                    tcb_status: "ok".to_owned(),
+                    role: GroupMemberRole::ReadOnlyTee,
+                    account: self.account.clone(),
+                    quote,
+                },
+            ),
+        )
+        .expect("verifier signs the admission");
+        gov.apply_signed_op(&admit).map(|_| ())
+    }
+
+    fn is_member(&self) -> bool {
+        MembershipRepository::new(&self.store)
+            .is_member(&self.ns_gid, &self.account.statement.account)
+            .expect("membership")
+    }
+}
+
+/// The honest admission still applies: a quote that commits to the credential
+/// the op carries, recorded under its own hash.
+#[test]
+fn a_tee_admission_whose_quote_commits_to_its_credential_applies() {
+    let f = TeeAdmissionFixture::new(0xD1);
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    f.admit(quote, quote_hash)
+        .expect("the honest admission applies");
+    assert!(f.is_member());
+}
+
+/// A quote made for one credential cannot admit another, whatever else about
+/// the op is right: the same account and identity key with a different device
+/// (and so a different delivery key) is a different credential.
+#[test]
+fn a_tee_admission_with_a_quote_for_another_credential_is_refused() {
+    let f = TeeAdmissionFixture::new(0xD2);
+    let genesis = f.account.genesis;
+    let root_sk = PrivateKey::from(*f.replica);
+    let other =
+        crate::test_fixtures::join_account_for(&root_sk, genesis, &f.replica, [0x99; 32], 0);
+    assert_eq!(other.statement.account, f.account.statement.account);
+    assert_ne!(other.statement.kem_pk, f.account.statement.kem_pk);
+    let quote = crate::tee::tests::admission_quote_with(&f.ns_gid, &f.replica, &other);
+    let quote_hash = crate::tee::sha256(&quote);
+
+    let err = f
+        .admit(quote, quote_hash)
+        .expect_err("a quote for another device and delivery key cannot admit this credential");
+    assert!(
+        format!("{err:#}").contains("does not commit to the credential"),
+        "unexpected refusal: {err:#}"
+    );
+    assert!(!f.is_member());
+}
+
+/// The quote commits to the namespace it was made for.
+#[test]
+fn a_tee_admission_with_a_quote_for_another_namespace_is_refused() {
+    let f = TeeAdmissionFixture::new(0xD3);
+    let elsewhere = ContextGroupId::from([0xD4; 32]);
+    let quote = crate::tee::tests::admission_quote_with(&elsewhere, &f.replica, &f.account);
+    let quote_hash = crate::tee::sha256(&quote);
+
+    let _refused = f
+        .admit(quote, quote_hash)
+        .expect_err("a quote made for another namespace cannot admit here");
+    assert!(!f.is_member());
+}
+
+/// The projection folds an admission only when the apply would accept it, so a
+/// membership the rows refuse is not one at any cut.
+#[test]
+fn the_projection_folds_a_tee_admission_only_for_a_quote_that_commits_to_its_credential() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_op::OpPayload;
+
+    let f = TeeAdmissionFixture::new(0xD6);
+    let fold = |quote: Vec<u8>| {
+        let op = RootOp::MemberJoinedViaTeeAttestation {
+            group_id: f.ns_gid,
+            member: f.replica,
+            quote_hash: crate::tee::sha256(&quote),
+            mrtd: "m1".to_owned(),
+            rtmr0: String::new(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+            account: f.account.clone(),
+            quote,
+        };
+        let signed = SignedNamespaceOp::sign(
+            &f.verifier_sk,
+            f.namespace_id.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(op),
+        )
+        .expect("sign");
+        crate::unified_op_decode::op_from_namespace_op(
+            &signed,
+            None,
+            [0x01; 32],
+            calimero_storage::logical_clock::HybridTimestamp::default(),
+            &[],
+        )
+        .payload
+    };
+
+    assert!(matches!(
+        fold(f.honest_quote()),
+        OpPayload::MemberJoinedWithDevice { .. }
+    ));
+    let elsewhere = crate::tee::tests::admission_quote_with(
+        &ContextGroupId::from([0xD7; 32]),
+        &f.replica,
+        &f.account,
+    );
+    assert_eq!(fold(elsewhere), OpPayload::Noop);
+}
+
+/// Bytes that are not a quote bind nothing, and parsing them must not take the
+/// applying node down: a header-only input is refused like any other mismatch.
+#[test]
+fn a_tee_admission_with_a_truncated_quote_is_refused() {
+    let f = TeeAdmissionFixture::new(0xD8);
+    let mut truncated = vec![4u8, 0, 2, 0, 0x81, 0, 0, 0];
+    truncated.resize(48, 0);
+    let quote_hash = crate::tee::sha256(&truncated);
+
+    let err = f
+        .admit(truncated, quote_hash)
+        .expect_err("a truncated quote commits to nothing");
+    assert!(
+        format!("{err:#}").contains("does not commit to the credential"),
+        "unexpected refusal: {err:#}"
+    );
+    assert!(!f.is_member());
+}
+
+/// Only a voucher's admission is judged on its quote: a plain signer is refused
+/// as a voucher before the quote is parsed.
+#[test]
+fn a_tee_admission_signed_by_a_non_voucher_is_refused_before_its_quote_is_read() {
+    let f = TeeAdmissionFixture::new(0xD9);
+    let stranger = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+    let mut garbage = vec![4u8, 0, 2, 0, 0x81, 0, 0, 0];
+    garbage.resize(48, 0);
+    let quote_hash = crate::tee::sha256(&garbage);
+
+    let err = f
+        .admit_signed_by(&stranger, garbage, quote_hash)
+        .expect_err("a non-voucher's admission is refused");
+    assert!(
+        !format!("{err:#}").contains("does not commit"),
+        "the voucher gate must come first: {err:#}"
+    );
+    assert!(!f.is_member());
+}
+
+/// The hash the op records is the hash of the quote it carries, so what is
+/// recorded against an admission is the evidence that produced it.
+#[test]
+fn a_tee_admission_recording_another_quotes_hash_is_refused() {
+    let f = TeeAdmissionFixture::new(0xD5);
+    let err = f
+        .admit(f.honest_quote(), [0x11; 32])
+        .expect_err("the recorded hash must be the hash of the quote carried");
+    assert!(
+        format!("{err:#}").contains("quote hash"),
+        "unexpected refusal: {err:#}"
+    );
+    assert!(!f.is_member());
 }
 
 // ---------------------------------------------------------------------------
@@ -12332,6 +12664,7 @@ fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
             kind,
             author_account: author,
             executor: account_for(&relay_sk.public_key()),
+            executor_key: relay_sk.public_key(),
             op_hash: GovernanceWarrant::op_hash(kind, &form),
             account_heads: vec![],
             governance_floor: vec![],

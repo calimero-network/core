@@ -282,7 +282,7 @@ impl Stage {
     }
 
     /// Moves the staged entities into the context's state, except `skip`, and
-    /// deletes the keys of `replaced` the snapshot does not carry.
+    /// deletes the keys of `replaced` the snapshot does not carry, bar records.
     ///
     /// Not atomic: the caller sets the sync-in-progress marker first, so a crash
     /// part way is recovered by the next attempt. Returns how many were moved.
@@ -318,6 +318,9 @@ impl Stage {
                 Some(StorageKey::Index(id)) if !skip.contains(&id) => {
                     self.get(StorageKey::Index(id))?.is_some()
                 }
+                // No snapshot carries this node's records of collected deletes,
+                // and without one a replayed older write brings its entity back.
+                Some(StorageKey::Collected(_)) => true,
                 _ => false,
             };
             if carried {
@@ -338,5 +341,36 @@ impl Drop for Stage {
         if let Err(e) = self.clear() {
             error!(context_id = %self.context_id, error = %e, "failed to clear the snapshot staging area");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::layer::{ReadLayer, WriteLayer};
+
+    use super::*;
+
+    /// A resync replaces a context's state with a snapshot's, which carries no
+    /// record of a collected delete, so this node's own records must outlive it.
+    #[test]
+    fn a_resync_keeps_the_records_of_collected_deletes() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context_id = ContextId::from([7; 32]);
+        let record = StorageKey::Collected(Id::new([9; 32])).to_bytes();
+        let key = ContextStateKey::new(context_id, record);
+        let mut handle = store.clone();
+        handle.put(&key, Slice::from(vec![1; 8])).unwrap();
+
+        let stage = Stage::open(store.clone(), context_id).unwrap();
+        let _moved = stage
+            .promote(&HashSet::from([record]), &HashSet::new())
+            .unwrap();
+        assert!(
+            store.get(&key).unwrap().is_some(),
+            "a resync deleted the record of a collected delete"
+        );
     }
 }

@@ -567,6 +567,11 @@ where
         Ok(self.inner.contains(self.entry_id(key))? && self.get(key)?.is_some())
     }
 
+    /// This collection's own id; two handles holding it name the same entries.
+    pub(crate) fn collection_id(&self) -> Id {
+        self.inner.id()
+    }
+
     /// The storage entity id this `key` maps to for the calling account — lets
     /// the add-wins merge consult `Index::is_deleted` without re-deriving
     /// `compute_id`. See [`UnorderedMap::entry_id`](super::UnorderedMap::entry_id).

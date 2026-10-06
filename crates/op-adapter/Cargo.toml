@@ -16,8 +16,10 @@ calimero-account.workspace = true
 calimero-op.workspace = true
 calimero-primitives.workspace = true
 calimero-storage.workspace = true
+calimero-tee-attestation.workspace = true
 
 [dev-dependencies]
+calimero-tee-attestation = { workspace = true, features = ["mock-attestation"] }
 calimero-authz.workspace = true
 calimero-primitives.workspace = true
 calimero-projection.workspace = true

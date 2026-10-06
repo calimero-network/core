@@ -162,13 +162,9 @@ pub struct LevelWiseStats {
     ///
     /// If true, the sync may be incomplete and a follow-up sync might be needed.
     pub truncation_occurred: bool,
-    /// Root-state byte blobs the level-by-level walk encountered on
-    /// remote leaves that the host can't merge itself. Same shape +
-    /// rationale as `HashComparisonStats::deferred_root_merges`; the
-    /// caller (`ProtocolSelector`) dispatches them through
-    /// `ContextClient::merge_root_state` after the sync completes.
-    /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+    /// App-state entry leaves the level-by-level walk met; same rationale as
+    /// `HashComparisonStats::deferred_root_merges`.
+    pub deferred_root_merges: Vec<TreeLeafData>,
 
     /// Custom-typed ENTRIES deferred for WASM dispatch; same rationale as
     /// `HashComparisonStats::deferred_custom_merges`. Applying one here would
@@ -223,7 +219,7 @@ impl SyncProtocolExecutor for LevelWiseProtocol {
         context_id: ContextId,
         identity: PublicKey,
         first_request: Self::ResponderInit,
-    ) -> Result<()> {
+    ) -> Result<Vec<TreeLeafData>> {
         run_responder_impl(
             transport,
             store,
@@ -729,19 +725,11 @@ async fn merge_remote_row(
         return Ok(());
     }
 
-    // Defer root entities with a real `crdt_type` for WASM dispatch; opaque
-    // root entities (synthetic `Opaque` LWW marker) fall through to
-    // `apply_leaf_with_crdt_merge` which LWW-writes them directly (no
-    // Mergeable to dispatch).
     let entity_id = Id::new(leaf_data.key);
     let stored_locally = || with_runtime_env(runtime_env.clone(), || stores_value(entity_id));
     match classify_leaf(entity_id, &leaf_data.metadata.crdt_type, stored_locally) {
         LeafDisposition::DeferRoot => {
-            stats.deferred_root_merges.push((
-                leaf_data.key,
-                leaf_data.value.clone(),
-                leaf_data.metadata.hlc_timestamp,
-            ));
+            stats.deferred_root_merges.push(leaf_data.clone());
             return Ok(());
         }
         LeafDisposition::DeferCustom(type_id) => {
@@ -801,7 +789,7 @@ async fn run_responder_impl<T: SyncTransport>(
     first_parent_ids: Option<Vec<[u8; 32]>>,
     context_client: Option<ContextClient>,
     session_peer: Option<PublicKey>,
-) -> Result<()> {
+) -> Result<Vec<TreeLeafData>> {
     info!(%context_id, "Starting LevelWise sync (responder)");
 
     // Defense in depth: validate first request parameters
@@ -950,8 +938,9 @@ async fn run_responder_loop<T: SyncTransport>(
     context_client: Option<&ContextClient>,
     schema_bytecode_id: Option<[u8; 32]>,
     session_peer: Option<PublicKey>,
-) -> Result<()> {
+) -> Result<Vec<TreeLeafData>> {
     let mut requests_handled = initial_requests_handled;
+    let mut deferred_root_merges = Vec::new();
 
     // Handle requests until stream closes or limit reached
     loop {
@@ -1031,19 +1020,7 @@ async fn run_responder_loop<T: SyncTransport>(
                     session_peer,
                 )
                 .await;
-
-                // This responder has no `ContextClient` in the trait signature's
-                // reach for app-typed root state, so it can't dispatch deferred
-                // root merges; the initiator's own walk picks that divergence up
-                // on the next round. Same gap, and same reasoning, as the
-                // HashComparison protocol responder.
-                if !outcome.deferred_root_merges.is_empty() {
-                    warn!(
-                        %context_id,
-                        deferred = outcome.deferred_root_merges.len(),
-                        "LevelWise EntityPush: dropped root-entity deferred merges"
-                    );
-                }
+                deferred_root_merges.extend(outcome.deferred_root_merges);
 
                 let response = StreamMessage::Message {
                     sequence_id,
@@ -1142,7 +1119,7 @@ async fn run_responder_loop<T: SyncTransport>(
     }
 
     info!(%context_id, requests_handled, "LevelWise responder complete");
-    Ok(())
+    Ok(deferred_root_merges)
 }
 
 // =============================================================================

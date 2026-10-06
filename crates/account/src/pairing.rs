@@ -12,8 +12,7 @@
 //!
 //! **The statement and the code cover different attacks, and neither replaces the
 //! other.** Without the statement, `pair-complete` certifies whatever keys arrive
-//! beside a [`DeviceId`]. An attacker cannot mint a `DeviceId` — it is
-//! `H(account ‖ nonce)` and the nonce never leaves the pairing node — but it can
+//! beside a [`DeviceId`]. An attacker need not mint a `DeviceId` of its own: it can
 //! substitute key material *under* a captured one, and the resulting certificate
 //! names the attacker's keys as a trusted device of somebody else's account.
 //!

@@ -16,4 +16,4 @@ Detect and remove dead code. Use the **dead-code-cleanup** skill for the full wo
 cargo clippy --workspace -- -W dead_code -W unused_imports -W unused_variables
 ```
 
-**Calimero rule (from AGENTS.md):** All code in PRs must be used. No dead code, no commented-out blocks. Use `#[allow(dead_code)]` only with a comment explaining why.
+**Calimero rule (from CODING_STANDARDS.md):** All code in PRs must be used. No dead code, no commented-out blocks. Use `#[allow(dead_code)]` only with a comment explaining why.

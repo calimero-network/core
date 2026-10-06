@@ -34,7 +34,9 @@ use std::rc::Rc;
 use calimero_storage::delta::clear_pending_delta;
 use calimero_storage::env::{with_deterministic_env, with_runtime_env, IndexCallbacks, RuntimeEnv};
 use calimero_storage::hash_meter;
-use calimero_storage::reclaim::{prune_deleted_children, tombstone_deleted_at};
+use calimero_storage::reclaim::{
+    collected_record, deleted_at_to_record, prune_deleted_children, tombstone_deleted_at,
+};
 use calimero_storage::store::Key;
 use serde::{Deserialize, Serialize};
 
@@ -318,10 +320,10 @@ pub fn resident() -> (u64, u64) {
 
 /// Run one node tombstone-GC sweep over the enclosing [`measure`]'s store, as
 /// `calimero-node`'s `gc.rs` runs it once every member has caught up past every
-/// tombstone: the tombstones go, then each parent drops the deleted children
-/// whose rows went with them. The decisions are `calimero_storage::reclaim`'s,
-/// the node's own. Not counted: GC is node work, not a write's. A no-op
-/// outside `measure`.
+/// tombstone: each tombstone goes, a signed entity's leaving the record of its
+/// delete, then each parent drops the deleted children whose rows went with
+/// them. The decisions are `calimero_storage::reclaim`'s, the node's own. Not
+/// counted: GC is node work, not a write's. A no-op outside `measure`.
 pub fn collect_garbage() {
     let entity = |key: &[u8; calimero_storage::store::KEY_LEN]| match Key::from_bytes(key) {
         Some(Key::Index(id)) => Some(id),
@@ -332,9 +334,22 @@ pub fn collect_garbage() {
             return;
         };
         let rows = &mut backing.borrow_mut().map;
-        rows.retain(|key, value| {
-            entity(key).is_none_or(|id| tombstone_deleted_at(id, value).is_none())
-        });
+        let collected: Vec<_> = rows
+            .iter()
+            .filter_map(|(key, value)| {
+                let id = entity(key)?;
+                let _deleted_at = tombstone_deleted_at(id, value)?;
+                Some((id, deleted_at_to_record(id, value)))
+            })
+            .collect();
+        for (id, deleted_at) in collected {
+            let _tombstone = rows.remove(&Key::Index(id).to_bytes());
+            if let Some(deleted_at) = deleted_at {
+                let record_key = Key::Collected(id).to_bytes();
+                let record = collected_record(deleted_at, rows.get(&record_key).map(Vec::as_slice));
+                let _previous = rows.insert(record_key, record.to_vec());
+            }
+        }
         let pruned: Vec<_> = rows
             .iter()
             .filter_map(|(key, value)| {

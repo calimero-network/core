@@ -64,9 +64,9 @@ src/
 │   │   ├── network/           # Network status handlers
 │   │   ├── tee.rs             # TEE handlers parent
 │   │   ├── tee/
-│   │   │   ├── announce.rs       # The TeeAttestationAnnounce a replica publishes
+│   │   │   ├── prompt.rs         # The TeeAdmissionPrompt a replica publishes, with the parameters it answers a challenge from
 │   │   │   ├── attest.rs
-│   │   │   ├── evidence_retry.rs # Re-announces a TEE whose authority evidence is missing
+│   │   │   ├── evidence_retry.rs # Prompts again for a TEE whose authority evidence is missing or due
 │   │   │   ├── fleet_join.rs
 │   │   │   ├── info.rs
 │   │   │   └── registration_attest.rs # Quote with the registration binding (protected)
@@ -481,6 +481,9 @@ request re-stamps it.
   node served under a host name of its own must list that origin. The CORS layer calls the same
   `admits`, so the two cannot disagree.
 - SSE streams are per-context
+- `GET /sse` creates and persists a session, so `sse_handler` refuses (`403`) a browser request no script opened before it creates one: a `Sec-Fetch-Mode` other than `cors` or `same-origin`.
+  A navigation or an `<img>` carries no `Origin`, so the origin guard admits one from any site when it names the node's own host.
+  `EventSource` and `fetch` send `cors`; a client that is not a browser sends no `Sec-Fetch-Mode` and is unaffected.
 - The `/sse/subscription` 200 is the client's readiness signal: once it lists a
   context, live events for it reach the stream. That holds only because
   `sse_handler` joins the node-event broadcast (`receive_events`) before it

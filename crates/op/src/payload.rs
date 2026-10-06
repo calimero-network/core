@@ -189,9 +189,11 @@ pub enum OpPayload {
     /// different principal than the one it writes under. One payload removes the
     /// ordering entirely.
     ///
-    /// The membership half folds exactly as [`Self::MemberAdded`] and the device
-    /// half exactly as [`Self::DeviceLinked`] — same LWW slot, same op-local
-    /// credential rules — so this variant adds no new semantics, only atomicity.
+    /// The device half folds exactly as [`Self::DeviceLinked`]. The membership
+    /// half is a join, not a [`Self::MemberAdded`]: it never replaces a standing
+    /// role, as the apply skips a join by an account that holds a row. A TEE
+    /// role marks an attestation admission, which does fold as `MemberAdded`,
+    /// over a non-TEE row too, which the apply would leave alone.
     MemberJoinedWithDevice {
         /// Group being joined.
         group: ContextGroupId,
@@ -368,6 +370,16 @@ pub enum OpPayload {
         /// The set after the step.
         new: BTreeMap<AccountId, OpMask>,
     },
+
+    /// `member` leaves `group` of its own accord (`GroupOp::MemberLeft`).
+    ///
+    /// A removal of the member from `group`, and, when `group` is the scope's
+    /// root, from every other group of the scope too, as the apply cascades a
+    /// namespace leave onto the leaver's rows in every subgroup.
+    MemberLeft {
+        group: ContextGroupId,
+        member: AccountId,
+    },
 }
 
 impl OpPayload {
@@ -395,7 +407,8 @@ impl OpPayload {
             | Self::TeeAuthorityEvidence { .. }
             | Self::RelaySeated { .. }
             | Self::RootGuarded { .. }
-            | Self::SharedWritersRotated { .. } => true,
+            | Self::SharedWritersRotated { .. }
+            | Self::MemberLeft { .. } => true,
             Self::Put { .. }
             | Self::Delete { .. }
             | Self::SetWriters { .. }

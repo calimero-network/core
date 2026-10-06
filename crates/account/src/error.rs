@@ -2,7 +2,7 @@
 
 use thiserror::Error as ThisError;
 
-use calimero_primitives::identity::{AccountId, DeviceId};
+use calimero_primitives::identity::{AccountId, DeviceId, PublicKey};
 
 /// Why a credential failed verification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ThisError)]
@@ -79,6 +79,12 @@ pub enum AccountError {
     /// epoch.
     #[error("certificate has an invalid signature for its claimed key epoch")]
     CertSignatureInvalid,
+    /// The certificate names a device id that was not minted for its account.
+    #[error("certificate names device {device}, which was not minted for its account")]
+    CertDeviceNotMinted {
+        /// The device the certificate names.
+        device: DeviceId,
+    },
     /// The signing key refused to produce a signature.
     #[error("signing failed")]
     SigningFailed,
@@ -151,6 +157,14 @@ pub enum AccountError {
         named: AccountId,
         /// The operator presenting it.
         expected: AccountId,
+    },
+    /// The bundle's executor key is not the one device the warrant names.
+    #[error("warrant names executor key {named}, not the {presented} presenting it")]
+    WarrantExecutorKeyMismatch {
+        /// The executor device the warrant names.
+        named: PublicKey,
+        /// The executor device presenting it.
+        presented: PublicKey,
     },
     /// A certificate in a delegation verified against its account but certifies a
     /// different key than the one it is supposed to vouch for.

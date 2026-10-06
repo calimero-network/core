@@ -1683,17 +1683,32 @@ mod tests {
         let mut peer = SimpleMockStorage::new();
         let mut rotations = Vec::new();
         let env = build_runtime_env(&mut peer, &mut rotations, [0; 32], [0; 32], [0; 32]);
-        with_runtime_env(env, || {
-            Interface::<MainStorage>::save_root_entry(root.to_vec(), Metadata::new(1, updated_at))
-                .expect("save root");
-            let (root_hash, _) = Index::<MainStorage>::get_hashes_for(Id::root())
-                .expect("root hash")
-                .expect("a root");
-            let delta = commit_causal_delta(&root_hash)
-                .expect("commit")
-                .expect("a delta");
-            borsh::to_vec(&StorageDelta::Actions(delta.actions)).expect("encode")
-        })
+        with_runtime_env(env, || commit_root(root, updated_at))
+    }
+
+    /// The deltas one peer commits persisting `count` successive roots, as an app does.
+    fn successive_root_deltas(count: u8) -> Vec<Vec<u8>> {
+        let mut peer = SimpleMockStorage::new();
+        let mut rotations = Vec::new();
+        (1..=count)
+            .map(|n| {
+                let env = build_runtime_env(&mut peer, &mut rotations, [0; 32], [0; 32], [0; 32]);
+                with_runtime_env(env, || commit_root(&[n; 16], n.into()))
+            })
+            .collect()
+    }
+
+    /// Saves `root` as the app-state entry and encodes the delta the write commits.
+    fn commit_root(root: &[u8], updated_at: u64) -> Vec<u8> {
+        Interface::<MainStorage>::save_root_entry(root.to_vec(), Metadata::new(1, updated_at))
+            .expect("save root");
+        let (root_hash, _) = Index::<MainStorage>::get_hashes_for(Id::root())
+            .expect("root hash")
+            .expect("a root");
+        let delta = commit_causal_delta(&root_hash)
+            .expect("commit")
+            .expect("a delta");
+        borsh::to_vec(&StorageDelta::Actions(delta.actions)).expect("encode")
     }
 
     #[test]
@@ -1773,12 +1788,15 @@ mod tests {
         let (mut logic, mut store) = setup_vm!(&mut storage, &limits, vec![]);
         let mut host = logic.host_functions(store.as_store_mut());
 
-        let refused = (1..=64u64).find_map(|n| {
-            put_doc(&host, &root_delta_artifact(&[n as u8; 16], n));
-            host.apply_storage_delta(DOC_DESC_PTR)
-                .err()
-                .map(|err| (n, err))
-        });
+        let refused = successive_root_deltas(64)
+            .iter()
+            .zip(1..)
+            .find_map(|(delta, n)| {
+                put_doc(&host, delta);
+                host.apply_storage_delta(DOC_DESC_PTR)
+                    .err()
+                    .map(|err| (n, err))
+            });
         let (n, err) = refused.expect("64 writes cannot cover 64 replayed deltas");
         assert!(n > 1, "the first replay fits the budget");
         assert!(
@@ -1894,8 +1912,8 @@ mod tests {
     /// The replay budget covers the whole run, not each call.
     #[test]
     fn test_apply_storage_delta_from_a_peer_refuses_replays_past_the_run_budget() {
-        let first = root_delta_artifact(&[1; 16], 1);
-        let writes = replay_write_count(&first);
+        let deltas = successive_root_deltas(2);
+        let writes = replay_write_count(&deltas[0]);
         let (max_writes, _) = replay_budget();
 
         let mut storage = SimpleMockStorage::new();
@@ -1905,10 +1923,10 @@ mod tests {
         logic.replay_writes = max_writes - writes;
         let mut host = logic.host_functions(store.as_store_mut());
 
-        put_doc(&host, &first);
+        put_doc(&host, &deltas[0]);
         host.apply_storage_delta(DOC_DESC_PTR)
             .expect("the first replay fits");
-        put_doc(&host, &root_delta_artifact(&[2; 16], 2));
+        put_doc(&host, &deltas[1]);
         let err = host.apply_storage_delta(DOC_DESC_PTR).unwrap_err();
         assert!(
             matches!(

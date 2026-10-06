@@ -290,8 +290,8 @@ impl PredefinedEntry for key::ContextDagDelta {
     type DataType<'a> = ContextDagDelta;
 }
 
-/// The warrant nonces this node has already accepted from one author device in
-/// one context, as a sliding replay window.
+/// The warrant nonces this node has already accepted from one author device for
+/// one executor device in one context, as a sliding replay window.
 ///
 /// **Not a high-water mark, and that is the whole design.** A
 /// strictly-increasing rule is delivery-order dependent: a peer that sees nonce
@@ -301,8 +301,8 @@ impl PredefinedEntry for key::ContextDagDelta {
 /// ordering between two warrants from the same device, so the rule has to be
 /// order-independent.
 ///
-/// A window is the standard answer and is bounded: 16 bytes per active author
-/// device per context, whatever the nonce values are.
+/// A window is the standard answer and is bounded: 16 bytes per active (author
+/// device, executor device) pair per context, whatever the nonce values are.
 ///
 /// # Why not `calimero_governance_store::NonceWindow`
 ///

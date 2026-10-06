@@ -66,12 +66,12 @@ check "a block in <details> fails"                1 "$SENSITIVE"                
 check "nested <details> stay hidden"              1 "$SENSITIVE"                  "<details><details></details>"$'\n'"$ANSWERED"$'\n'"</details>" "missing:"
 check "a block in <script> fails"                 1 "$SENSITIVE"                  "<SCRIPT type=x>"$'\n'"$ANSWERED" "missing:"
 
-# Every crate or workflow file the AGENTS.md section cites as an example is itself a trust-boundary path.
-SECTION=$(sed -n '/^## Security: trust boundaries/,/^## [^S]/p' "$ROOT/AGENTS.md")
+# Every crate or workflow file the CODING_STANDARDS.md section cites as an example is itself a trust-boundary path.
+SECTION=$(awk '/^## / { inside = ($0 == "## Security: trust boundaries") } inside' "$ROOT/CODING_STANDARDS.md")
 LINKED=$(printf '%s\n' "$SECTION" | grep -oE '\]\((crates|\.github)/[^)#]+' | sed 's/^](//' | sort -u)
-[ -n "$LINKED" ] || { echo "  FAIL  found no crate links in the AGENTS.md section"; FAIL=$((FAIL + 1)); }
+[ -n "$LINKED" ] || { echo "  FAIL  found no crate links in the CODING_STANDARDS.md section"; FAIL=$((FAIL + 1)); }
 for path in $LINKED; do
-  check "AGENTS.md example is covered: $path" 1 "$path" "" "missing:"
+  check "CODING_STANDARDS.md example is covered: $path" 1 "$path" "" "missing:"
 done
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

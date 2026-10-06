@@ -43,10 +43,10 @@ impl PredefinedEntry for key::GroupRevokedSigner {
     type DataType<'a> = ();
 }
 
-// The account the key was certified for.
+// Value-less: the key names the account that certified the signing key.
 impl PredefinedEntry for key::GroupSignerAccount {
     type Codec = Borsh;
-    type DataType<'a> = [u8; 32];
+    type DataType<'a> = ();
 }
 
 impl PredefinedEntry for key::GroupDeviceScopeFloor {

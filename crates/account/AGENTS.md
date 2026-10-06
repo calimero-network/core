@@ -51,8 +51,8 @@ This crate splits the identity half in two:
      ▼                                                    │
    AccountId ─────────────────────────────────────────────┴──▶ DeviceId
      ▲            (the only authz subject)                       │
-     │                                                           └─▶ hlc_seed()  = first 16 bytes
-     │ covers                                                           (CRDT replica id + HLC seed)
+     │                                                           └─▶ nonce_16 ‖ H(account ‖ nonce)[..16]
+     │ covers                                                           (CRDT replica id; is_minted_for(account))
    AccountMemberEndorsement  ◀── signed by a GRANTED MEMBER key, never by the root
      └── .verify() ──▶ VerifiedEndorsement   (a gate reads `member` from HERE, not from the
                                               unchecked struct — that is the point of it)
@@ -93,7 +93,6 @@ This crate splits the identity half in two:
  ═════════════════════════▼══════════ crate boundary ══════════════════════════════
  calimero-projection / calimero-authz answer what only the causal cut can:
    is key_epoch superseded?   is the device revoked?   is the endorser a member here?
-   of two devices sharing an hlc_seed, which is live?  (lower DeviceId, decided on read)
 ```
 
 **Module map.** Dependencies run one way, so a change to the anchor cannot be shadowed by a change to a credential:
@@ -135,7 +134,7 @@ and a `Verified<T>` is one that has been checked.
 | `AccountId` | struct (`[u8; 32]`) | Content address of an `AccountGenesis`; the only authorization subject |
 | `DeviceId` | struct (`[u8; 32]`) | One installation; the CRDT replica id |
 | `DeviceId::mint(account, nonce)` | fn | Mint a device id once per installation |
-| `DeviceId::hlc_seed()` | fn | First 16 bytes - the HLC instance seed for this replica |
+| `DeviceId::is_minted_for(account)` | fn | Whether `mint` made this id for `account`; `verify_device_cert` refuses a cert whose device fails it |
 | `KemPublicKey` | struct (`[u8; 32]`) | X25519 scope-key delivery recipient; a distinct type from `PublicKey` |
 | `AccountGenesis` | struct | `{version, root_sign_pk}`; hashing it yields the `AccountId`. No per-scope salt - one root key is one account everywhere |
 | `AccountGenesis::account_id()` | fn | The id this genesis addresses |
@@ -189,14 +188,14 @@ and a `Verified<T>` is one that has been checked.
 | `LoginStatement::verify_signature()` | fn | Authenticity of the statement alone - says nothing about whether the key speaks for an account |
 | `LoginStatement::addressed_to(node, audience)` | fn | Whether this statement was minted for *that* node and surface |
 | `Audience` | enum | `WebOrigin(String)` \| `CodeSigningId(String)` \| `Cli` - the client surface a session is bound to |
-| `Warrant` | struct | An author's device-signed authorization for one executor to perform one intent, once. Names accounts **and** keys: `author_account`/`executor` are the authz subjects, `author_device_key` is what the signature verifies against |
+| `Warrant` | struct | An author's device-signed authorization for one executor to perform one intent, once. Names accounts **and** keys: `author_account`/`executor` are the authz subjects, `author_device_key` is what the signature verifies against, `executor_key` is the one relay device that may spend it |
 | `Warrant::sign(author_device_sk, …)` | fn | Mint one; the named device key is derived from the secret, so it cannot claim a key it does not hold |
 | `Warrant::verify_signature()` | fn | Authenticity of the warrant alone - says nothing about whether the key speaks for the account |
 | `Warrant::authorises(context, executor)` | fn | Whether this warrant was issued for *that* context and operator |
 | **`WarrantScope`** | enum | What a warrant authorizes: `Context(ContextId)` for a data intent, `Governance { group, kind }` for one governance op, `Creation { group, context }` for one new context. The one field the three warrant kinds do not share |
-| **`WarrantStatement`** | trait | The fields every warrant carries (`scope`, `author_account`, `author_device_key`, `executor`, `nonce`, `not_after`, `governance_floor`, `verify_signature`). Implemented by `Warrant`, `GovernanceWarrant` and `ContextCreationWarrant` and nothing else; it is what `calimero-governance-store`'s one admission path is generic over |
+| **`WarrantStatement`** | trait | The fields every warrant carries (`scope`, `author_account`, `author_device_key`, `executor`, `executor_key`, `nonce`, `not_after`, `governance_floor`, `verify_signature`). Implemented by `Warrant`, `GovernanceWarrant` and `ContextCreationWarrant` and nothing else; it is what `calimero-governance-store`'s one admission path is generic over |
 | **`Delegated<W>`** | struct | `{warrant, author_proof, executor_proof, executor_key}` - the self-contained bundle that travels with any delegated change. Everything boxed but `executor_key`, so it fits in an enum variant. `Delegation`, `GovernanceDelegation` and `ContextCreationDelegation` are aliases of it, borsh-identical to the three structs they replaced |
-| `Delegated::verify()` | fn | Warrant signature **plus** both account bindings, written once for all three kinds; yields `Verified<W>` |
+| `Delegated::verify()` | fn | Warrant signature **plus** both account bindings, and the bundle's `executor_key` equal to the warrant's, written once for all three kinds; yields `Verified<W>` |
 | `Delegation` | alias | `Delegated<Warrant>`; `verify` yields `VerifiedWarrant` |
 | `VerifiedWarrant` | alias | `Verified<Warrant>` |
 | `AccountError` | enum | Why a credential failed |
@@ -273,15 +272,14 @@ the fifth producer, and is what the e2e presents.
 - **`LoginStatement::verify_signature` is authenticity, never authority.** It says the named device key signed these bytes. Whether that key belongs to an account is the accompanying `AccountProof`; whether the device is revoked needs a cut; whether the challenge was issued and unspent needs the node's MAC key and spent-set; whether `expires_at` has passed needs a clock. A caller that checks only the signature has checked almost nothing.
 - **A warrant is signed by a DEVICE key, so it is not an `AccountProof`.** Every other credential here is root-signed. This one is minted per request by the device making it, which is the point: authorizing a relay must not require the key that mints devices. Its domain is separate from `DEVICE_CERT_SIGN_DOMAIN` for that reason - a shared domain would let a device sign bytes a root-signed check would accept.
 - **`Delegation::verify` is authenticity, never authority** - the same split as `Verified<T>` versus "in force", and the list is longer here. Revocation, membership at the cut, the authorship capability, nonce reuse and `not_after` expiry all need a causal cut or a clock, so all five belong to the projection, `calimero-authz` and the receive path. A caller that checks only the bundle has checked who consented, not whether they may.
-- **`Warrant::executor` is an account, not a key, and that is load-bearing.** A relay re-keying keeps its replica slot by design; pinning a key here would void every warrant already issued to it, including ones sitting unspent on offline clients. Which *process* signed is `Delegation::executor_key`, outside the warrant, so the author never has to know it.
-- **`Delegation` carrying its own `executor_key` is not a credential nominating its own verifier.** The chain closes it: the warrant names the executor ACCOUNT and is signed by the author, and `executor_proof` must show the key is a device of that account. Substituting a key means holding a root-signed certificate for it under the operator the author actually authorized - which is that operator acting.
+- **Every warrant names one executor DEVICE (`executor_key`), signed, beside the executor account.** Nonces are spent in each relay node's own ledger, so a warrant any device of the operator could present was spendable once per device, and replicas then disagreed on which execution to keep. `Delegated::verify` refuses a bundle whose `executor_key` is not the warrant's (`WarrantExecutorKeyMismatch`), and every relay checks it against its own signing key with a `403` before it presents a credential, enlists or installs anything. Replicas spend the nonce in a ledger keyed by author device AND executor device, so each ledger has one producer. The cost is accepted: a relay that re-keys voids the warrants it has not spent. Known limit: the named device signing two deltas from one warrant (or one key cloned onto two nodes) still forks replicas.
 - **Every field of `Delegation` but `executor_key` is boxed, and it is a hard requirement rather than tidiness.** This type rides inside the gossip `BroadcastMessage` and the catchup `MessagePayload`; a warrant is ~264 bytes inline and unboxed it puts both enums past clippy's `large_enum_variant`. Borsh encodes `Box<T>` exactly as `T`, so the wire is unchanged - `boxing_the_proofs_is_invisible_on_the_wire` pins that, and it is field-order sensitive, so adding a field means updating it.
 - **`Verified<T>` cannot be built outside this crate.** Its field is private and every constructor sits behind a check. If you need to fabricate one in a test, that is a signal the check belongs in the test too - not a reason to widen the constructor.
 - **`AccountProof<T>` is borsh-identical to the loose fields it replaced.** Field order is `genesis, chain, statement`, matching the old `JoinAccountCredential { genesis, chain, cert }` and `SignedDeviceRevocation { genesis, chain, revocation }` exactly. `recorded_before_the_refactor` pins it against bytes captured before the change - if it fails, the encoding moved and that is a wire break needing a version bump, not a test to update.
 - **The end-to-end verifiers take a BORROWED chain on purpose.** `verify_device_cert` / `verify_device_revocation` are called from apply paths that hold a `&[RootKeyHandoff]`; making them methods on `AccountProof` would force those callers to allocate a proof per check just to discard it. A caller that already *has* a proof should use `AccountProof::verify`.
 - **The endorser is inside the signed payload.** Without it, swapping the `member` field would leave a signature verifying against a key that never signed - a member could be shown to have endorsed an account it never touched.
 - **`DeviceId` is minted from a nonce, not from the device's keys**, so rotating a device's keypair keeps its replica identity - and therefore its counter slots and HLC lineage - intact.
-- **HLC-seed collisions are resolved on READ, never at link time.** At most one of two devices sharing an `hlc_seed()` may be live in a scope (lower id wins), but which one cannot be decided as each link arrives: "is there a lower colliding id" reads only what has folded so far, so the live set would depend on delivery order. `ScopeState::live_devices` (and `AccountBindingRepository::live_bindings` on the governance path) apply the rule over the whole folded set instead.
+- **A `DeviceId` carries its own account binding.** It is the nonce followed by `H(account ‖ nonce)[..16]`, so `is_minted_for` checks it from the id alone and `DeviceCert::check_fields` refuses a cert naming an id minted for another account. Without it any root could certify a member's device id and claim it first. The nonce half is public and any account may reuse it, so nothing may key or de-duplicate devices on a prefix of the id.
 - **The device's signing key and KEM key are separate types.** Reusing one Ed25519 key for both a signature scheme and a Diffie-Hellman is a known footgun with no compensating benefit; the type split makes passing one for the other impossible.
 - **There is no derivation from a bare key to an account here, deliberately.** The transitional bridge needs one, and it lives private to `calimero-op-adapter` - the crate deleted at cutover. Offering it here would make a value with none of an account's properties (no rotatable root, no revocable devices) look first-class, quietly reintroducing the id-equals-key conflation this crate exists to remove.
 

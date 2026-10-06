@@ -20,6 +20,8 @@ use calimero_store::Store;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
+pub const FOUNDER_DEVICE_SEED: [u8; 32] = [0x3E; 32]; // the device a founder credential certifies
+
 /// A fresh account root: its signing key and the genesis that names it.
 ///
 /// Returned as a pair so a test can mint SEVERAL credentials under one account —
@@ -68,22 +70,33 @@ pub fn device_kem_secret(device: [u8; 32]) -> calimero_crypto::X25519SecretKey {
     calimero_crypto::X25519SecretKey::from(device)
 }
 
-/// Certify `sign_pk` as `device` under an existing account root.
+/// The device id [`join_account_for`] certifies for `device_seed` under `account`.
+pub fn device_for(account: AccountId, device_seed: [u8; 32]) -> calimero_account::DeviceId {
+    let mut nonce = [0u8; 16];
+    nonce.copy_from_slice(&device_seed[..16]);
+    calimero_account::DeviceId::mint(account, nonce)
+}
+
+/// Certify `sign_pk` as the device `device_seed` names under an existing account
+/// root. The seed's first half is the id's nonce, so a test still picks which ids
+/// share a prefix.
 pub fn join_account_for(
     root_sk: &PrivateKey,
     genesis: calimero_account::AccountGenesis,
     sign_pk: &PublicKey,
-    device: [u8; 32],
+    device_seed: [u8; 32],
     device_epoch: u32,
 ) -> Box<JoinAccountCredential> {
     let cert = calimero_account::DeviceCert::sign(
         root_sk,
         genesis.account_id(),
-        calimero_account::DeviceId::from(device),
+        device_for(genesis.account_id(), device_seed),
         sign_pk,
-        // The real public half of `device_kem_secret(device)`, so an envelope
+        // The real public half of `device_kem_secret(device_seed)`, so an envelope
         // sealed to this device can actually be opened by a test holding it.
-        &calimero_account::KemPublicKey::from(*device_kem_secret(device).public_key().as_bytes()),
+        &calimero_account::KemPublicKey::from(
+            *device_kem_secret(device_seed).public_key().as_bytes(),
+        ),
         0,
         device_epoch,
     )
@@ -302,7 +315,13 @@ pub fn namespace_genesis_v2_for(
 fn founder_credential(founder_sk: &PrivateKey) -> Box<JoinAccountCredential> {
     let root_sk = PrivateKey::from(*founder_sk.public_key());
     let genesis = calimero_account::AccountGenesis::new(root_sk.public_key());
-    join_account_for(&root_sk, genesis, &founder_sk.public_key(), [0x3E; 32], 0)
+    join_account_for(
+        &root_sk,
+        genesis,
+        &founder_sk.public_key(),
+        FOUNDER_DEVICE_SEED,
+        0,
+    )
 }
 
 /// The account [`namespace_genesis_for`] will establish for this founder.
@@ -373,14 +392,14 @@ pub fn enrol_member(store: &Store, namespace: &ContextGroupId, sign_pk: &PublicK
 /// The [`crate::DeviceSecret`] belonging to a member enrolled by [`enrol_member`].
 ///
 /// [`real_join_account`] derives the device id from the signing key and
-/// [`device_kem_secret`] derives the agreement secret from that same device id, so
+/// [`device_kem_secret`] derives the agreement secret from that same key, so
 /// this reconstructs what the member's own node would hold — which is what lets a
 /// test open an envelope addressed to that device, and prove the leaver's cannot.
 pub fn device_secret_for(sign_pk: &PublicKey) -> crate::DeviceSecret {
-    let device: [u8; 32] = *sign_pk.as_ref();
+    let device_seed: [u8; 32] = *sign_pk.as_ref();
     crate::DeviceSecret {
-        device: calimero_account::DeviceId::from(device),
-        kem_secret: device_kem_secret(device),
+        device: device_for(account_for(sign_pk), device_seed),
+        kem_secret: device_kem_secret(device_seed),
     }
 }
 
@@ -1254,6 +1273,16 @@ pub fn signed_invitation_for(
     group_id: ContextGroupId,
     nonce: [u8; 32],
 ) -> calimero_context_config::types::SignedGroupOpenInvitation {
+    signed_invitation_with_role(admin_sk, group_id, nonce, 1)
+}
+
+/// [`signed_invitation_for`], granting `invited_role` (0 admin, 1 member, 2 read-only).
+pub fn signed_invitation_with_role(
+    admin_sk: &PrivateKey,
+    group_id: ContextGroupId,
+    nonce: [u8; 32],
+    invited_role: u8,
+) -> calimero_context_config::types::SignedGroupOpenInvitation {
     use calimero_context_config::types::{
         GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
     };
@@ -1264,7 +1293,7 @@ pub fn signed_invitation_for(
         group_id,
         expiration_timestamp: 0,
         invitation_nonce: nonce,
-        invited_role: 1,
+        invited_role,
         // The inviter names itself, which is what the mint's default would
         // produce for an admin issuing its own invitation.
         admitters: vec![crate::test_fixtures::account_for(&admin_sk.public_key())],

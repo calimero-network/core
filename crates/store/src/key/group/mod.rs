@@ -2607,7 +2607,7 @@ impl Debug for GroupRevokedSigner {
 /// Every signing key a device certificate ever bound (see [`GroupSignerAccount`]).
 pub const GROUP_SIGNER_ACCOUNT_PREFIX: u8 = 0x56;
 
-/// The account a signing key was certified for in a group (see
+/// An account a signing key was certified for in a group (see
 /// [`GROUP_SIGNER_ACCOUNT_PREFIX`]).
 ///
 /// Written when a device certificate verifies, and never removed except by the
@@ -2617,37 +2617,61 @@ pub const GROUP_SIGNER_ACCOUNT_PREFIX: u8 = 0x56;
 /// is exactly such state: it names its signer by key and must be checked against
 /// an owner or writer set that names accounts.
 ///
+/// One row per account that certified the key, valueless: `prefix(1) +
+/// group_id(32) + sign_pk(32) + account_id(32)` = 97 bytes. A set, because a
+/// certificate does not prove its account holds the key, so first-come cannot decide.
+///
 /// Not an authorization. A row says only that the account's root once certified
 /// the key; whether the key may act now is still the live binding's question.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupSignerAccount(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+pub struct GroupSignerAccount(
+    Key<(
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    )>,
+);
 
 impl GroupSignerAccount {
     #[must_use]
-    pub fn new(group_id: [u8; 32], sign_pk: [u8; 32]) -> Self {
+    pub fn new(group_id: [u8; 32], sign_pk: [u8; 32], account_id: [u8; 32]) -> Self {
         Self(Key(GenericArray::from([GROUP_SIGNER_ACCOUNT_PREFIX])
             .concat(GenericArray::from(group_id))
-            .concat(GenericArray::from(sign_pk))))
+            .concat(GenericArray::from(sign_pk))
+            .concat(GenericArray::from(account_id))))
     }
 
     #[must_use]
     pub fn group_id(&self) -> [u8; 32] {
         let mut id = [0; 32];
-        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[1..33]);
         id
     }
 
     #[must_use]
     pub fn sign_pk(&self) -> [u8; 32] {
         let mut pk = [0; 32];
-        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[33..65]);
         pk
+    }
+
+    #[must_use]
+    pub fn account_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 97]>::as_ref(&self.0)[65..]);
+        id
     }
 }
 
 impl AsKeyParts for GroupSignerAccount {
-    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+    type Components = (
+        GroupPrefix,
+        GroupIdComponent,
+        GroupIdComponent,
+        GroupIdComponent,
+    );
 
     fn column() -> Column {
         Column::Group
@@ -2671,6 +2695,7 @@ impl Debug for GroupSignerAccount {
         f.debug_struct("GroupSignerAccount")
             .field("group_id", &self.group_id())
             .field("sign_pk", &self.sign_pk())
+            .field("account_id", &self.account_id())
             .finish()
     }
 }
@@ -4468,11 +4493,13 @@ mod tests {
     fn group_signer_account_key_roundtrip() {
         let gid = [0x57; 32];
         let sign_pk = [0x58; 32];
-        let key = GroupSignerAccount::new(gid, sign_pk);
+        let account = [0x59; 32];
+        let key = GroupSignerAccount::new(gid, sign_pk, account);
         assert_eq!(key.group_id(), gid);
         assert_eq!(key.sign_pk(), sign_pk);
+        assert_eq!(key.account_id(), account);
         assert_eq!(key.as_key().as_bytes()[0], GROUP_SIGNER_ACCOUNT_PREFIX);
-        assert_eq!(key.as_key().as_bytes().len(), 65);
+        assert_eq!(key.as_key().as_bytes().len(), 97);
     }
 
     /// Every prefix in this column, not a subset: the families are keyed only by

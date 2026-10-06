@@ -217,6 +217,25 @@ steps:
     account: '{{replica_tee_account}}'
     role: ReadOnlyTee
 
+  # A TEE is admitted only on a quote over a challenge the owner issued to it and
+  # that commits to its own credential. Each fleet-join prompts the namespace,
+  # the owner offers the prompting node a challenge, and the node answers with
+  # its quote, so the owner logs that answer once per TEE and refuses no
+  # challenge on the way.
+  - name: The owner admitted the TEEs on challenges it offered
+    type: assert_log_present
+    nodes:
+      - tee-mode-owner
+    patterns:
+      - 'TEE answered the challenge offered for its prompt'
+
+  - name: The owner refused no challenge
+    type: assert_log_absent
+    nodes:
+      - tee-mode-owner
+    patterns:
+      - 'presented a challenge this node did not issue'
+
   # `/intents` executes as the node's own identity in the context, so each TEE
   # has to be following its context before an intent can reach the role gate.
   - name: The relay TEE follows its context
@@ -247,12 +266,14 @@ steps:
     node: tee-mode-relay
     outputs:
       relay_account: accountId
+      relay_key: publicKey
 
   - name: Read the replica TEE's account
     type: node_identity
     node: tee-mode-replica
     outputs:
       replica_account: accountId
+      replica_key: publicKey
 
   - name: Each TEE was admitted as the account a warrant names
     type: assert
@@ -273,6 +294,8 @@ steps:
       - '{{relay_context}}'
       - --executor
       - '{{relay_account}}'
+      - --executor-key
+      - '{{relay_key}}'
       - --method
       - set
       - --args
@@ -303,6 +326,8 @@ steps:
       - '{{replica_context}}'
       - --executor
       - '{{replica_account}}'
+      - --executor-key
+      - '{{replica_key}}'
       - --method
       - set
       - --args

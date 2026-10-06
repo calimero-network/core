@@ -22,9 +22,9 @@
 use std::collections::BTreeMap;
 
 use calimero_account::{
-    AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+    AccountError, AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
 };
-use calimero_authz::{authorize, Rejected};
+use calimero_authz::{authorize, AclView, Rejected};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
@@ -206,15 +206,90 @@ fn group() -> ContextGroupId {
 
 /// The op that makes `account` a member — authored by the scope's root admin.
 fn grant_membership(admin: &Device, account: AccountId, ns: u64, parents: Vec<[u8; 32]>) -> Op {
+    grant_role(admin, account, GroupMemberRole::Member, ns, parents)
+}
+
+/// An admin's add or role change of `account`: both fold as `MemberAdded`.
+fn grant_role(
+    admin: &Device,
+    account: AccountId,
+    role: GroupMemberRole,
+    ns: u64,
+    parents: Vec<[u8; 32]>,
+) -> Op {
     admin.sign_op(
         ns,
         parents,
         OpPayload::MemberAdded {
             group: group(),
             member: account,
-            role: GroupMemberRole::Member,
+            role,
         },
     )
+}
+
+/// The scope's root group: the namespace, a leave of which reaches every group.
+fn root_group() -> ContextGroupId {
+    ContextGroupId::from(*scope().as_bytes())
+}
+
+/// The join `device` publishes for `joiner`, on an invitation carrying `role`.
+fn join_op(
+    joiner: &Account,
+    device: &Device,
+    role: GroupMemberRole,
+    ns: u64,
+    parents: Vec<[u8; 32]>,
+) -> Op {
+    join_in(group(), joiner, device, role, ns, parents)
+}
+
+/// [`join_op`], on an invitation to `group`.
+fn join_in(
+    group: ContextGroupId,
+    joiner: &Account,
+    device: &Device,
+    role: GroupMemberRole,
+    ns: u64,
+    parents: Vec<[u8; 32]>,
+) -> Op {
+    device.sign_op(
+        ns,
+        parents,
+        OpPayload::MemberJoinedWithDevice {
+            group,
+            member: joiner.id,
+            role,
+            genesis: joiner.genesis,
+            chain: joiner.chain.clone(),
+            cert: device.cert,
+        },
+    )
+}
+
+/// `account`'s direct role in [`group`], as `view` resolves it.
+fn role_in(view: &AclView, account: &AccountId) -> Option<GroupMemberRole> {
+    view.groups
+        .get(&group())
+        .and_then(|members| members.get(account))
+        .cloned()
+}
+
+/// Every arrival order of `ops`.
+fn arrival_orders(ops: &[Op]) -> Vec<Vec<Op>> {
+    if ops.len() <= 1 {
+        return vec![ops.to_vec()];
+    }
+    let mut orders = Vec::new();
+    for (first, op) in ops.iter().enumerate() {
+        let mut rest = ops.to_vec();
+        let _ = rest.remove(first);
+        for mut order in arrival_orders(&rest) {
+            order.insert(0, op.clone());
+            orders.push(order);
+        }
+    }
+    orders
 }
 
 /// Authorize `op` at its own causal cut over `log` — the real decision path.
@@ -357,85 +432,65 @@ fn a_second_device_links_with_no_further_grant() {
 }
 
 #[test]
-fn two_devices_sharing_a_replica_seed_converge_on_the_lower_id() {
-    // The seed rule must be a function of the folded SET, not of arrival order.
-    // `admit_device_link` used to reject an incoming device only when an
-    // already-folded one compared LOWER, which is order-dependent in the
-    // direction it did not check: low-then-high left one device live, but
-    // high-then-low admitted BOTH — and two replicas sharing an HLC seed mint
-    // colliding RGA ids and lose characters silently, which is the whole reason
-    // the rule exists.
+fn another_accounts_device_cannot_shadow_a_members_device() {
+    let mut fx = Fixture::new();
     let alice = Account::new(10);
+    let mallory = Account::new(20);
+    let phone = alice.enroll(11, 0);
+    fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
+    fx.push(grant_membership(&fx.admin, mallory.id, 31, fx.head.clone()));
+    fx.push(alice.link_op(&phone, 40, fx.head.clone()));
 
-    // Forge two ids sharing an hlc_seed (the id's first 16 bytes) rather than
-    // hunting for a `mint` nonce collision.
-    let mut low_id = [0u8; 32];
-    low_id[..16].copy_from_slice(&[0xAA; 16]);
-    let mut high_id = low_id;
-    high_id[31] = 0xFF;
-    let (low_id, high_id) = (DeviceId::from(low_id), DeviceId::from(high_id));
-    assert_eq!(low_id.hlc_seed(), high_id.hlc_seed());
-    assert!(low_id < high_id);
-
-    let forge = |device_seed: u8, id: DeviceId| {
-        let sk = key(device_seed);
-        Device {
+    // Shares the phone's first 16 bytes and sorts below it.
+    let mut shadow = *phone.id.as_bytes();
+    shadow[16..].fill(0);
+    let sk = key(21);
+    let claim = Device {
+        id: DeviceId::from(shadow),
+        cert: DeviceCert::sign(
+            &mallory.root,
+            mallory.id,
+            DeviceId::from(shadow),
+            &sk.public_key(),
+            &KemPublicKey::from([21; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert"),
+        sk,
+        account: mallory.id,
+    };
+    fx.push(mallory.link_op(&claim, 50, fx.head.clone()));
+    // Minted from the same nonce as the phone, as any account may.
+    let sk = key(22);
+    let id = DeviceId::mint(mallory.id, [11; 16]);
+    let same_nonce = Device {
+        id,
+        cert: DeviceCert::sign(
+            &mallory.root,
+            mallory.id,
             id,
-            cert: calimero_account::DeviceCert::sign(
-                &alice.root,
-                alice.id,
-                id,
-                &sk.public_key(),
-                &KemPublicKey::from([device_seed; 32]),
-                alice.epoch,
-                0,
-            )
-            .expect("sign cert"),
-            sk,
-            account: alice.id,
-        }
+            &sk.public_key(),
+            &KemPublicKey::from([22; 32]),
+            0,
+            0,
+        )
+        .expect("sign cert"),
+        sk,
+        account: mallory.id,
     };
-    let low = forge(11, low_id);
-    let high = forge(12, high_id);
+    fx.push(mallory.link_op(&same_nonce, 60, fx.head.clone()));
 
-    // Fold both links in each order and compare the resulting live view. Using
-    // `root()` compares the whole account plane, not just the device map, so a
-    // divergence anywhere in the fold shows up.
-    let live_and_root = |first: &Device, second: &Device| {
-        let mut fx = Fixture::new();
-        fx.push(grant_membership(&fx.admin, alice.id, 30, fx.head.clone()));
-        let a = alice.link_op(first, 40, fx.head.clone());
-        fx.push(a);
-        let b = alice.link_op(second, 50, fx.head.clone());
-        fx.push(b);
-
-        let view = ScopeState::acl_view_at(&fx.log, &fx.head);
-        let mut devices: Vec<DeviceId> = view
-            .devices
-            .keys()
-            .copied()
-            .filter(|d| *d == low_id || *d == high_id)
-            .collect();
-        devices.sort_unstable();
-        (devices, fx.root())
-    };
-
-    let (low_first, root_low_first) = live_and_root(&low, &high);
-    let (high_first, root_high_first) = live_and_root(&high, &low);
-
+    let devices = ScopeState::from_ops(&fx.log).acl_view().devices;
     assert_eq!(
-        low_first, high_first,
-        "the live device set must not depend on which link folded first"
+        devices.get(&phone.id).map(|bound| bound.account),
+        Some(alice.id),
+        "another account's device link took a member's device out of the live set"
     );
     assert_eq!(
-        low_first,
-        vec![low_id],
-        "the lower device id is the arbitrary-but-fixed winner"
-    );
-    assert_eq!(
-        root_low_first, root_high_first,
-        "the account plane folds into the root hash, so an order-dependent live \
-         set would also split the root"
+        devices.get(&same_nonce.id).map(|bound| bound.account),
+        Some(mallory.id),
+        "a validly minted device of another account must stay live too"
     );
 }
 
@@ -622,8 +677,8 @@ fn a_forged_handoff_reusing_the_real_new_key_cannot_displace_it() {
 /// the answer to depend on. So this one is deliberately built from the shapes that
 /// broke:
 ///
-///   * two device links whose ids share an HLC seed — at most one may be live,
-///     and which one cannot depend on arrival order;
+///   * device links of two accounts whose ids share a prefix - both stay live,
+///     whatever the arrival order;
 ///   * a revocation naming an account the device is NOT bound to — the mismatch
 ///     is what made the tombstone's hashed value order-dependent;
 ///   * a forged handoff reusing a real rotation's new-root key with a garbage
@@ -648,43 +703,40 @@ fn the_adversarial_account_workload_converges() {
     // Rotate FIRST, so the devices below are certified under the epoch the
     // rotation establishes. Certifying them at epoch 0 and then folding a rotation
     // to epoch 1 in the same workload would supersede them — correct behaviour,
-    // but it would mask the collision property this test is here to pin.
+    // but it would mask the shared-prefix property this test is here to pin.
     let base = fx.head.clone();
     let real_handoff = alice.rotate_to(14);
     let mut forged_handoff = real_handoff;
     forged_handoff.signature = [0u8; 64];
 
-    // Two ids sharing an hlc_seed (the id's first 16 bytes).
-    let mut low_id = [0u8; 32];
-    low_id[..16].copy_from_slice(&[0xAA; 16]);
-    let mut high_id = low_id;
-    high_id[31] = 0xFF;
-    let forge = |device_seed: u8, id: [u8; 32]| {
+    // Minted from one nonce by two accounts, so the ids share their first half.
+    let same_nonce = |account: &Account, device_seed: u8| {
         let sk = key(device_seed);
+        let id = DeviceId::mint(account.id, [0xAA; 16]);
         Device {
-            id: DeviceId::from(id),
+            id,
             cert: calimero_account::DeviceCert::sign(
-                &alice.root,
-                alice.id,
-                DeviceId::from(id),
+                &account.root,
+                account.id,
+                id,
                 &sk.public_key(),
                 &KemPublicKey::from([device_seed; 32]),
-                alice.epoch,
+                account.epoch,
                 0,
             )
             .expect("sign cert"),
             sk,
-            account: alice.id,
+            account: account.id,
         }
     };
-    let colliding_low = forge(11, low_id);
-    let colliding_high = forge(12, high_id);
+    let alice_shared = same_nonce(&alice, 11);
+    let mallory_shared = same_nonce(&mallory, 12);
     let honest = alice.enroll(13, 0);
 
     let ops = vec![
-        // Colliding pair — only the lower id may end up live.
-        alice.link_op(&colliding_low, 40, base.clone()),
-        alice.link_op(&colliding_high, 41, base.clone()),
+        // Ids sharing a prefix across accounts - both must end up live.
+        alice.link_op(&alice_shared, 40, base.clone()),
+        mallory.link_op(&mallory_shared, 41, base.clone()),
         // An honest device of the same account.
         alice.link_op(&honest, 42, base.clone()),
         // A revocation naming the WRONG account for this device.
@@ -751,12 +803,9 @@ fn the_adversarial_account_workload_converges() {
         s.acl_view()
     };
     assert!(
-        view.devices.contains_key(&colliding_low.id),
-        "the lower colliding id must be the one left live"
-    );
-    assert!(
-        !view.devices.contains_key(&colliding_high.id),
-        "the higher colliding id must not also be live"
+        view.devices.contains_key(&alice_shared.id)
+            && view.devices.contains_key(&mallory_shared.id),
+        "devices sharing an id prefix must both stay live"
     );
     assert!(
         view.accounts.get(&alice.id).is_some_and(|a| a.epoch == 1),
@@ -1335,7 +1384,7 @@ fn a_device_cannot_be_moved_between_accounts() {
     fx.push(grant_membership(&fx.admin, mallory.id, 31, fx.head.clone()));
     fx.push(alice.link_op(&phone, 40, fx.head.clone()));
 
-    // Mallory certifies a device whose id collides with Alice's bound device.
+    // Mallory certifies Alice's bound device id, which was not minted for him.
     let mut hijack = mallory.enroll(11, 1);
     hijack.id = phone.id;
     hijack.cert.device = phone.id;
@@ -1353,7 +1402,9 @@ fn a_device_cannot_be_moved_between_accounts() {
     let op = mallory.link_op(&hijack, 50, fx.head.clone());
     assert_eq!(
         decide(&fx.log, &op),
-        Err(Rejected::DeviceAccountReassignment)
+        Err(Rejected::CredentialInvalid {
+            reason: AccountError::CertDeviceNotMinted { device: phone.id }
+        })
     );
 }
 
@@ -2134,4 +2185,509 @@ fn a_join_folds_its_membership_and_its_device_together() {
         backward.root(),
         "a join must not make the projection order-dependent"
     );
+}
+
+// ------------------------------------------- a join is not a role write --
+
+/// A history that starts with `joiner` joining as a `Member`: the fixture, the
+/// joiner, its device, and the join.
+fn joined_as_member() -> (Fixture, Account, Device) {
+    let mut fx = Fixture::new();
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+        30,
+        fx.head.clone(),
+    );
+    fx.push(join);
+    (fx, joiner, device)
+}
+
+/// The role the whole of `fx`'s log resolves `account` to, at its head and in
+/// the streaming fold alike; they agree here only because `fx`'s ops carry clocks.
+fn resolved_role(fx: &Fixture, account: &AccountId) -> Option<GroupMemberRole> {
+    let at_head = role_in(&ScopeState::acl_view_at(&fx.log, &fx.head), account);
+    let streamed = role_in(&ScopeState::from_ops(&fx.log).acl_view(), account);
+    assert_eq!(
+        at_head, streamed,
+        "the two folds must agree on this history"
+    );
+    at_head
+}
+
+#[test]
+fn a_join_alone_grants_the_invited_role() {
+    let (fx, joiner, _) = joined_as_member();
+
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::Member)
+    );
+}
+
+/// The apply skips a join by an account that already holds a row, so a retried
+/// join must not put the invitation's role back over the one an admin set.
+#[test]
+fn a_repeat_join_keeps_the_role_an_admin_set() {
+    let (mut fx, joiner, device) = joined_as_member();
+    let promote = grant_role(
+        &fx.admin,
+        joiner.id,
+        GroupMemberRole::Admin,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(promote);
+    let again = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+        50,
+        fx.head.clone(),
+    );
+    fx.push(again);
+
+    assert_eq!(resolved_role(&fx, &joiner.id), Some(GroupMemberRole::Admin));
+}
+
+/// Governance ops carry no clock, so only causal depth orders them: the same
+/// history as above, as a node folds it at the cut of the repeat join.
+#[test]
+fn a_repeat_join_keeps_the_role_at_its_cut_without_a_clock() {
+    let fx = Fixture::new();
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = join_op(&joiner, &device, GroupMemberRole::Member, 0, vec![]);
+    let promote = grant_role(
+        &fx.admin,
+        joiner.id,
+        GroupMemberRole::Admin,
+        0,
+        vec![join.id()],
+    );
+    let again = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+        0,
+        vec![promote.id()],
+    );
+    let log = [join, promote, again.clone()];
+
+    let view = ScopeState::acl_view_at(&log, &[again.id()]);
+    assert_eq!(role_in(&view, &joiner.id), Some(GroupMemberRole::Admin));
+}
+
+/// Governance ops carry no clock. The cut orders two chained joins by causal
+/// depth and keeps the first; the streaming fold has only their ids to go by,
+/// so its "earliest" join is the one with the lower id, in any arrival order.
+#[test]
+fn without_a_clock_the_cut_keeps_the_first_join_and_the_stream_the_lower_id() {
+    let mut stream_named_the_second_join = 0;
+    for seed in 0..32u8 {
+        let joiner = Account::new(0x40 + seed);
+        let device = joiner.enroll(0x80 + seed, 0);
+        let first = join_op(&joiner, &device, GroupMemberRole::Member, 0, vec![]);
+        let second = join_op(
+            &joiner,
+            &device,
+            GroupMemberRole::Admin,
+            0,
+            vec![first.id()],
+        );
+        let by_id = if first.id() < second.id() {
+            GroupMemberRole::Member
+        } else {
+            stream_named_the_second_join += 1;
+            GroupMemberRole::Admin
+        };
+
+        let at_cut = ScopeState::acl_view_at(&[first.clone(), second.clone()], &[second.id()]);
+        assert_eq!(role_in(&at_cut, &joiner.id), Some(GroupMemberRole::Member));
+        for order in arrival_orders(&[first, second]) {
+            let streamed = ScopeState::from_ops(&order).acl_view();
+            assert_eq!(role_in(&streamed, &joiner.id), Some(by_id.clone()));
+        }
+    }
+    assert!(
+        (1..32).contains(&stream_named_the_second_join),
+        "the stream must differ from the cut for some ids and not for others"
+    );
+}
+
+#[test]
+fn a_member_presenting_an_admin_invitation_stays_a_member() {
+    let (mut fx, joiner, device) = joined_as_member();
+    let again = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::Admin,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(again);
+
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::Member)
+    );
+}
+
+/// Only a leave readmits by invitation: the apply refuses a join by a member an
+/// admin removed, so that history never reaches the fold.
+#[test]
+fn a_rejoin_after_a_leave_takes_the_rejoins_role() {
+    let (mut fx, joiner, device) = joined_as_member();
+    let leave = device.sign_op(
+        40,
+        fx.head.clone(),
+        OpPayload::MemberLeft {
+            group: group(),
+            member: joiner.id,
+        },
+    );
+    fx.push(leave);
+    let rejoin = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::ReadOnly,
+        50,
+        fx.head.clone(),
+    );
+    fx.push(rejoin);
+
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::ReadOnly)
+    );
+}
+
+/// `fx` after `count` more joins by `joiner`, on invitations of alternating roles
+/// that are not the one it first joined with.
+fn rejoined_repeatedly(mut fx: Fixture, joiner: &Account, device: &Device, count: u64) -> Fixture {
+    for n in 0..count {
+        let role = if n % 2 == 0 {
+            GroupMemberRole::Admin
+        } else {
+            GroupMemberRole::ReadOnly
+        };
+        let again = join_op(joiner, device, role, 100 + n, fx.head.clone());
+        fx.push(again);
+    }
+    fx
+}
+
+/// A node re-publishes its join on every retried join, and the apply skips each
+/// one, so no number of them may move the role the first join gave.
+#[test]
+fn any_number_of_repeat_joins_keeps_the_first_joins_role() {
+    let (fx, joiner, device) = joined_as_member();
+    let fx = rejoined_repeatedly(fx, &joiner, &device, 200);
+
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::Member)
+    );
+}
+
+#[test]
+fn a_leave_after_many_repeat_joins_ends_the_role_and_a_rejoin_takes_its_own() {
+    let (fx, joiner, device) = joined_as_member();
+    let mut fx = rejoined_repeatedly(fx, &joiner, &device, 200);
+    let leave = device.sign_op(
+        1000,
+        fx.head.clone(),
+        OpPayload::MemberLeft {
+            group: group(),
+            member: joiner.id,
+        },
+    );
+    fx.push(leave);
+    assert_eq!(resolved_role(&fx, &joiner.id), None);
+
+    let rejoin = join_op(
+        &joiner,
+        &device,
+        GroupMemberRole::ReadOnly,
+        1001,
+        fx.head.clone(),
+    );
+    fx.push(rejoin);
+    assert_eq!(
+        resolved_role(&fx, &joiner.id),
+        Some(GroupMemberRole::ReadOnly)
+    );
+}
+
+/// The same flood as clockless governance ops, where only causal depth orders
+/// the joins: the cut still names the first one.
+#[test]
+fn a_long_chain_of_repeat_joins_keeps_the_first_role_at_its_cut() {
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let mut payloads = vec![join_payload(
+        group(),
+        &joiner,
+        &device,
+        GroupMemberRole::Member,
+    )];
+    payloads.resize(
+        201,
+        join_payload(group(), &joiner, &device, GroupMemberRole::Admin),
+    );
+
+    assert_eq!(
+        role_after_chain(&device, &joiner.id, payloads),
+        Some(GroupMemberRole::Member)
+    );
+}
+
+/// The device half of a join is not the membership half: a repeat join from a
+/// second device changes no role and still binds that device.
+#[test]
+fn a_repeat_join_from_a_new_device_still_links_it() {
+    let (mut fx, joiner, _) = joined_as_member();
+    let promote = grant_role(
+        &fx.admin,
+        joiner.id,
+        GroupMemberRole::Admin,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(promote);
+    let second = joiner.enroll(0x5C, 0);
+    let again = join_op(
+        &joiner,
+        &second,
+        GroupMemberRole::Member,
+        50,
+        fx.head.clone(),
+    );
+    fx.push(again);
+
+    assert_eq!(resolved_role(&fx, &joiner.id), Some(GroupMemberRole::Admin));
+    assert!(ScopeState::from_ops(&fx.log)
+        .acl_view()
+        .devices
+        .contains_key(&second.id));
+}
+
+/// A TEE admission is not an invitation join: re-attesting in the other mode
+/// converts the standing TEE row, so it stays a last-writer-wins write.
+#[test]
+fn a_tee_admission_still_converts_a_standing_tee_role() {
+    let mut fx = Fixture::new();
+    let tee = Account::new(0x5A);
+    let device = tee.enroll(0x5B, 0);
+    let admitted = join_op(
+        &tee,
+        &device,
+        GroupMemberRole::ReadOnlyTee,
+        30,
+        fx.head.clone(),
+    );
+    fx.push(admitted);
+    let converted = join_op(
+        &tee,
+        &device,
+        GroupMemberRole::RelayTee,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(converted);
+
+    assert_eq!(resolved_role(&fx, &tee.id), Some(GroupMemberRole::RelayTee));
+}
+
+/// Not matched to the apply, which leaves a non-TEE row an admin wrote alone:
+/// the fold lets the admission's plain write replace that row.
+#[test]
+fn a_tee_admission_replaces_a_role_an_admin_set_where_the_apply_keeps_it() {
+    let mut fx = Fixture::new();
+    let tee = Account::new(0x5A);
+    let device = tee.enroll(0x5B, 0);
+    let made_admin = grant_role(
+        &fx.admin,
+        tee.id,
+        GroupMemberRole::Admin,
+        30,
+        fx.head.clone(),
+    );
+    fx.push(made_admin);
+    let admitted = join_op(
+        &tee,
+        &device,
+        GroupMemberRole::ReadOnlyTee,
+        40,
+        fx.head.clone(),
+    );
+    fx.push(admitted);
+
+    assert_eq!(
+        resolved_role(&fx, &tee.id),
+        Some(GroupMemberRole::ReadOnlyTee)
+    );
+}
+
+/// The membership a join history resolves to feeds `governance_hash`, so it
+/// must be the same in every arrival order, and it must be the right one.
+#[test]
+fn every_arrival_order_of_a_join_history_folds_alike() {
+    let fx = Fixture::new();
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = |role, ns| join_op(&joiner, &device, role, ns, vec![]);
+    let leave = device.sign_op(
+        40,
+        vec![],
+        OpPayload::MemberLeft {
+            group: group(),
+            member: joiner.id,
+        },
+    );
+    let histories = [
+        (
+            "join, promote, join again",
+            vec![
+                join(GroupMemberRole::Member, 30),
+                grant_role(&fx.admin, joiner.id, GroupMemberRole::Admin, 40, vec![]),
+                join(GroupMemberRole::Member, 50),
+            ],
+            GroupMemberRole::Admin,
+        ),
+        (
+            "join, leave, rejoin, join again",
+            vec![
+                join(GroupMemberRole::Member, 30),
+                leave,
+                join(GroupMemberRole::ReadOnly, 50),
+                join(GroupMemberRole::Admin, 60),
+            ],
+            GroupMemberRole::ReadOnly,
+        ),
+    ];
+
+    for (name, ops, expected) in histories {
+        let mut roots = Vec::new();
+        for order in arrival_orders(&ops) {
+            let state = ScopeState::from_ops(fx.log.iter().chain(&order));
+            assert_eq!(
+                role_in(&state.acl_view(), &joiner.id),
+                Some(expected.clone()),
+                "{name}: arrival order {:?}",
+                order.iter().map(|op| op.hlc).collect::<Vec<_>>()
+            );
+            roots.push(state.root());
+        }
+        assert!(
+            roots.windows(2).all(|pair| pair[0] == pair[1]),
+            "{name}: the root must not depend on arrival order"
+        );
+    }
+}
+
+// --------------------------------------------- a namespace leave cascades --
+
+/// `payloads` as one causal chain of clockless ops by `device`, the way
+/// governance ops are authored, and `account`'s role in [`group`] at its end.
+fn role_after_chain(
+    device: &Device,
+    account: &AccountId,
+    payloads: Vec<OpPayload>,
+) -> Option<GroupMemberRole> {
+    let mut log: Vec<Op> = Vec::new();
+    for payload in payloads {
+        let parents = log.last().map(Op::id).into_iter().collect();
+        log.push(device.sign_op(0, parents, payload));
+    }
+    let head: Vec<[u8; 32]> = log.last().map(Op::id).into_iter().collect();
+    role_in(&ScopeState::acl_view_at(&log, &head), account)
+}
+
+/// The payload of `joiner`'s join of `group` on an invitation carrying `role`.
+fn join_payload(
+    group: ContextGroupId,
+    joiner: &Account,
+    device: &Device,
+    role: GroupMemberRole,
+) -> OpPayload {
+    join_in(group, joiner, device, role, 0, vec![]).payload
+}
+
+/// The apply deletes a namespace leaver's row in every subgroup, so a role
+/// held there does not come back with the leaver, and the next join seats it.
+#[test]
+fn a_namespace_leave_ends_the_role_held_in_a_subgroup() {
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let join = |group, role| join_payload(group, &joiner, &device, role);
+    let leave = OpPayload::MemberLeft {
+        group: root_group(),
+        member: joiner.id,
+    };
+    let made_admin = OpPayload::MemberAdded {
+        group: group(),
+        member: joiner.id,
+        role: GroupMemberRole::Admin,
+    };
+    let back_in_the_namespace = vec![
+        join(root_group(), GroupMemberRole::Member),
+        made_admin,
+        leave.clone(),
+        join(root_group(), GroupMemberRole::Member),
+    ];
+    let mut rejoined_read_only = back_in_the_namespace.clone();
+    rejoined_read_only.push(join(group(), GroupMemberRole::ReadOnly));
+    let joined_then_rejoined_as_admin = vec![
+        join(root_group(), GroupMemberRole::Member),
+        join(group(), GroupMemberRole::Member),
+        leave,
+        join(root_group(), GroupMemberRole::Member),
+        join(group(), GroupMemberRole::Admin),
+    ];
+
+    let role = |payloads| role_after_chain(&device, &joiner.id, payloads);
+    assert_eq!(role(back_in_the_namespace), None);
+    assert_eq!(role(rejoined_read_only), Some(GroupMemberRole::ReadOnly));
+    assert_eq!(
+        role(joined_then_rejoined_as_admin),
+        Some(GroupMemberRole::Admin)
+    );
+}
+
+/// Only a leave of the namespace cascades: the apply leaves the subgroup rows
+/// of a member an admin removed from the root, and of one who left a subgroup.
+#[test]
+fn neither_an_admin_removal_nor_a_subgroup_leave_cascades() {
+    let joiner = Account::new(0x5A);
+    let device = joiner.enroll(0x5B, 0);
+    let other_subgroup = ContextGroupId::from([0x34; 32]);
+    let seated = vec![
+        join_payload(root_group(), &joiner, &device, GroupMemberRole::Member),
+        OpPayload::MemberAdded {
+            group: group(),
+            member: joiner.id,
+            role: GroupMemberRole::Admin,
+        },
+    ];
+    let role = |last| {
+        let mut payloads = seated.clone();
+        payloads.push(last);
+        role_after_chain(&device, &joiner.id, payloads)
+    };
+
+    let removed_from_the_root = role(OpPayload::MemberRemoved {
+        group: root_group(),
+        member: joiner.id,
+    });
+    let left_another_subgroup = role(OpPayload::MemberLeft {
+        group: other_subgroup,
+        member: joiner.id,
+    });
+
+    assert_eq!(removed_from_the_root, Some(GroupMemberRole::Admin));
+    assert_eq!(left_another_subgroup, Some(GroupMemberRole::Admin));
 }

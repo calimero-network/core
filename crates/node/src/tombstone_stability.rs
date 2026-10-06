@@ -42,9 +42,16 @@
 //!
 //! What this cannot protect: a device removed from the group stops counting,
 //! so a delta it authored before its removal and that surfaces only later can
-//! still bring back an entity collected meanwhile. And a member that signs a
-//! false beacon can release tombstones it then undoes, which any member with
-//! write access could do by writing anyway.
+//! still bring back an entity collected meanwhile, unless the record GC keeps of
+//! the delete (`calimero_storage::reclaim`) drops it as a signed write no newer
+//! than the delete. A node bootstrapped from a network snapshot has neither the
+//! tombstones nor those records, so a replay still lands there, as it does for
+//! every tombstone a snapshot does not carry, and nodes holding the record never
+//! take the entity from it, so the two stay apart. A snapshot is installed as
+//! served, records or not, so a member serving one with the entity in it brings
+//! it back the same way. And a member that signs a false beacon can release
+//! tombstones it then undoes, which any member with write access could do by
+//! writing anyway.
 //!
 //! [`StateBeacon`]: calimero_node_primitives::sync::BroadcastMessage::StateBeacon
 
