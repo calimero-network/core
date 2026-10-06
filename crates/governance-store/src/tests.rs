@@ -13562,6 +13562,89 @@ mod account_plane_apply {
         admit(&w).expect("and the relay may still write for it");
     }
 
+    /// A rotation is owed whether or not this replica holds the binding: a concurrent
+    /// link can have handed the device the key on a replica that folded it first.
+    #[test]
+    fn a_withdrawal_owes_a_rotation_whether_or_not_the_device_was_bound() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        group_with_admin(&store, &gid, &admin_sk);
+        let (owner_sk, genesis, linked) = a_linked_device(&store, &gid, &admin_sk, 0x69);
+        let account = genesis.account_id();
+        let never_linked = DeviceId::mint(account, [0x6A; 16]);
+        let pending = crate::PendingDeviceRotationRepository::new(&store);
+
+        for device in [linked, never_linked] {
+            let proof = SignedDeviceRevocation {
+                genesis,
+                chain: vec![],
+                statement: calimero_account::DeviceRevocation::sign(&owner_sk, account, device, 0)
+                    .unwrap(),
+            };
+            sign_apply_local_group_op_borsh(
+                &store,
+                &gid,
+                &admin_sk,
+                GroupOp::AccountDeviceUnlinked {
+                    account,
+                    device,
+                    proof: Some(proof),
+                },
+            )
+            .unwrap();
+            assert!(AccountBindingRepository::new(&store)
+                .device_is_withdrawn(&gid, account, device)
+                .unwrap());
+        }
+
+        assert!(pending.is_pending(&gid, &linked).unwrap());
+        assert!(pending.is_pending(&gid, &never_linked).unwrap());
+    }
+
+    /// The account's verified proof rides the event wherever it folds, unbound and
+    /// whatever the signer's role, so a sibling that folded it before the link carries it.
+    #[test]
+    fn a_verified_proof_rides_the_event_without_a_binding() {
+        let root = key(0x6B);
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x6B; 16]);
+        let proof = SignedDeviceRevocation {
+            genesis,
+            chain: vec![],
+            statement: calimero_account::DeviceRevocation::sign(&root, account, device, 0).unwrap(),
+        };
+
+        for admin in [false, true] {
+            let store = test_store();
+            let gid = test_group_id();
+            let signer_sk = key(1);
+            group_with_admin(&store, &gid, &signer_sk);
+            let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+                &store,
+                &gid,
+                &signer_sk.public_key(),
+                &GroupOp::AccountDeviceUnlinked {
+                    account,
+                    device,
+                    proof: Some(proof.clone()),
+                },
+                &CUT,
+                &FixedAuthorizer(admin),
+            )
+            .unwrap();
+
+            assert!(
+                events.iter().any(|event| matches!(
+                    event,
+                    OpEvent::DeviceRevoked { proof: Some(carried), .. } if **carried == proof
+                )),
+                "admin: {admin}, events: {events:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_revocation_proof_does_not_authorize_revoking_someone_elses_device() {
         // The self-service path's hole, and it reintroduces on this path exactly the

@@ -18,9 +18,9 @@ use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
-    bind_device_everywhere, withdraw_device_in, AccountBindingRepository, AccountDeviceRegistry,
-    AccountNamespaceSet, KnownDeviceCert, MetaRepository, NamespaceDagService, NamespaceRepository,
-    NodeDeviceRepository,
+    account_for_group, bind_device_everywhere, replay_known_revocations, withdraw_device_in,
+    AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, KnownDeviceCert,
+    MetaRepository, NamespaceDagService, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -108,6 +108,25 @@ async fn run(
     // after the one that read the new scope kept it, and no later event
     // re-follows it.
     let topics = Arc::new(AsyncMutex::new(()));
+
+    // A replay dropped by a restart or a failed publish is repaired here; each is
+    // idempotent, since only a withdrawal still owed is published.
+    {
+        let store = store.clone();
+        let node_client = node_client.clone();
+        let ack_router = Arc::clone(&ack_router);
+        let _ = tasks.spawn(async move {
+            match NamespaceRepository::new(&store).participating_namespaces() {
+                Ok(namespaces) => {
+                    replay_revocations_into(&store, &node_client, &ack_router, &namespaces).await;
+                }
+                Err(err) => warn!(
+                    ?err,
+                    "account-follow: failed to read namespaces to replay into"
+                ),
+            }
+        });
+    }
 
     loop {
         // Reap finished handlers so the set does not grow across a long run.
@@ -494,17 +513,31 @@ fn namespaces_to_bind_into(
     (!targets.is_empty()).then_some((cert, targets))
 }
 
-/// The namespaces a proof-bearing revocation folded here has to be carried into.
-/// `is_device_linked` reads the bindings still in force, so one already
-/// tombstoned - or superseded by a root rotation - is skipped by the same call.
+/// Where a proof-bearing revocation folded here is carried: every namespace this
+/// node takes part in that has not withdrawn the device, bound there or not.
 fn namespaces_to_revoke_in(
     store: &Store,
     group_id: [u8; 32],
+    account: AccountId,
     device: DeviceId,
 ) -> Vec<ContextGroupId> {
     let Some(account_namespace) = account_namespace_if_ours(store, group_id) else {
         return Vec::new();
     };
+    match account_for_group(store, &account_namespace) {
+        Ok(own) if own == account => {}
+        Ok(_) => {
+            warn!(%account, %device, "account-follow: not carrying another account's revocation");
+            return Vec::new();
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                "account-follow: failed to read which account this node speaks for"
+            );
+            return Vec::new();
+        }
+    }
     let namespaces = match NamespaceRepository::new(store).participating_namespaces() {
         Ok(namespaces) => namespaces,
         Err(err) => {
@@ -521,12 +554,12 @@ fn namespaces_to_revoke_in(
         if namespace == account_namespace {
             continue;
         }
-        match bindings.is_device_linked(&namespace, device) {
+        match bindings.withdrawal_owed(&namespace, account, device) {
             Ok(true) => targets.push(namespace),
             Ok(false) => {}
             // Skipped, not fatal: the other namespaces still get the carry.
             Err(err) => warn!(?err, ?namespace, %device,
-                              "account-follow: failed to read whether a device is still linked"),
+                              "account-follow: failed to read whether a device is withdrawn"),
         }
     }
     targets
@@ -608,7 +641,7 @@ async fn handle_revocation_carry(
     device: DeviceId,
     proof: SignedDeviceRevocation,
 ) {
-    let targets = namespaces_to_revoke_in(store, group_id, device);
+    let targets = namespaces_to_revoke_in(store, group_id, account, device);
     if targets.is_empty() {
         return;
     }
@@ -636,31 +669,40 @@ async fn handle_revocation_carry(
         ack_router,
         &targets,
         &signer_sk,
+        account,
         device,
         &op,
     )
     .await;
 }
 
-/// Publish `op` into each target, skipping any the device has left since the
-/// decision above was taken: a faster sibling of this account withdrew it there.
+/// Publish `op` into each target, skipping any that has withdrawn the device since
+/// the decision above was taken: a faster sibling of this account carried it there.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the publish context plus the one withdrawal it carries"
+)]
 async fn carry_into(
     store: &Store,
     node_client: &NodeClient,
     ack_router: &AckRouter,
     targets: &[ContextGroupId],
     signer_sk: &PrivateKey,
+    account: AccountId,
     device: DeviceId,
     op: &GroupOp,
 ) {
     let bindings = AccountBindingRepository::new(store);
     for namespace in targets {
-        match bindings.is_device_linked(namespace, device) {
+        match bindings.withdrawal_owed(namespace, account, device) {
             Ok(true) => {}
             Ok(false) => continue,
-            // A read fault costs a duplicate publish at worst, so carry anyway.
-            Err(err) => warn!(?err, ?namespace, %device,
-                              "account-follow: failed to re-read a carried device's binding"),
+            // Skipped: an unread binding may be another account's, which the publish could spend.
+            Err(err) => {
+                warn!(?err, ?namespace, %device,
+                      "account-follow: failed to re-read a carried device's binding; skipping");
+                continue;
+            }
         }
         if let Err(err) = withdraw_device_in(
             store,
@@ -716,6 +758,31 @@ async fn unfollow(node_client: &NodeClient, namespace: ContextGroupId) {
             ?namespace,
             "account-follow: failed to unfollow a namespace"
         ),
+    }
+}
+
+/// Publish this account's recorded withdrawals into each of `namespaces`.
+async fn replay_revocations_into(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespaces: &[ContextGroupId],
+) {
+    if namespaces.is_empty() {
+        return;
+    }
+    let signer_sk = match signing_identity(store, namespaces) {
+        Ok(secret) => PrivateKey::from(secret),
+        Err(err) => {
+            warn!(
+                ?err,
+                "account-follow: no identity to replay this account's withdrawals with"
+            );
+            return;
+        }
+    };
+    for namespace in namespaces {
+        replay_known_revocations(store, node_client, ack_router, namespace, &signer_sk).await;
     }
 }
 
@@ -1582,10 +1649,10 @@ mod tests {
         }
     }
 
-    /// The carry reaches every namespace this node takes part in that still has
-    /// the device live: not the account namespace, not one already tombstoned.
+    /// The carry skips the account namespace, the topic it came from, and any
+    /// namespace that already withdrew the device.
     #[test]
-    fn a_proof_bearing_revocation_is_carried_only_where_the_device_is_still_live() {
+    fn a_proof_bearing_revocation_is_not_carried_where_already_withdrawn() {
         let store = store();
         let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
         let still_live = ContextGroupId::from([0x84; 32]);
@@ -1602,15 +1669,101 @@ mod tests {
         AccountBindingRepository::new(&store)
             .apply_revocation(&already_tombstoned, lost)
             .expect("tombstone one of them ahead of the carry");
+        let account = AccountGenesis::new(root_sk.public_key()).account_id();
 
         assert_eq!(
-            namespaces_to_revoke_in(&store, account_namespace.to_bytes(), lost),
+            namespaces_to_revoke_in(&store, account_namespace.to_bytes(), account, lost),
             vec![still_live]
         );
         assert_eq!(
-            namespaces_to_revoke_in(&store, OTHER_GROUP, lost),
+            namespaces_to_revoke_in(&store, OTHER_GROUP, account, lost),
             Vec::<ContextGroupId>::new(),
             "a revocation folded on a project's DAG is this node's own publish coming back"
+        );
+    }
+
+    /// A namespace the device never linked in still gets the withdrawal, so a
+    /// link replayed there later is refused.
+    #[test]
+    fn a_proof_bearing_revocation_is_carried_where_the_device_never_linked() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let linked = ContextGroupId::from([0x86; 32]);
+        let never_linked = ContextGroupId::from([0x87; 32]);
+        for namespace in [account_namespace, linked, never_linked] {
+            let _identity = NamespaceRepository::new(&store)
+                .participate_in(&namespace)
+                .expect("take part");
+        }
+        let lost = DeviceId::from([0x67; 32]);
+        for namespace in [account_namespace, linked] {
+            a_device_bound_in(&store, namespace, &root_sk, lost);
+        }
+        let account = AccountGenesis::new(root_sk.public_key()).account_id();
+
+        let mut targets =
+            namespaces_to_revoke_in(&store, account_namespace.to_bytes(), account, lost);
+        targets.sort_by_key(ContextGroupId::to_bytes);
+        assert_eq!(targets, vec![linked, never_linked]);
+    }
+
+    /// A narrowing is not a withdrawal: a namespace the device was only scoped out of
+    /// still gets the carry, or the old scope would let it link there again.
+    #[test]
+    fn a_proof_bearing_revocation_is_carried_where_the_device_was_only_narrowed() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let narrowed = ContextGroupId::from([0x8B; 32]);
+        for namespace in [account_namespace, narrowed] {
+            let _identity = NamespaceRepository::new(&store)
+                .participate_in(&namespace)
+                .expect("take part");
+        }
+        let lost = DeviceId::from([0x6B; 32]);
+        a_device_bound_in(&store, narrowed, &root_sk, lost);
+        let account = AccountGenesis::new(root_sk.public_key()).account_id();
+        assert!(AccountBindingRepository::new(&store)
+            .narrow(&narrowed, account, lost, 1)
+            .expect("narrow the device out"));
+
+        assert_eq!(
+            namespaces_to_revoke_in(&store, account_namespace.to_bytes(), account, lost),
+            vec![narrowed]
+        );
+    }
+
+    /// Only this account's own device is carried: neither another account's proof nor
+    /// a device id another account holds selects any of this node's namespaces.
+    #[test]
+    fn another_accounts_revocation_or_device_is_not_carried() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let project = ContextGroupId::from([0x88; 32]);
+        let stranger = PrivateKey::from([0x89; 32]);
+        let foreign = DeviceId::from([0x68; 32]);
+        for namespace in [account_namespace, project] {
+            let _identity = NamespaceRepository::new(&store)
+                .participate_in(&namespace)
+                .expect("take part");
+            a_device_bound_in(&store, namespace, &stranger, foreign);
+        }
+        let stranger_account = AccountGenesis::new(stranger.public_key()).account_id();
+        let account = AccountGenesis::new(root_sk.public_key()).account_id();
+
+        assert_eq!(
+            namespaces_to_revoke_in(
+                &store,
+                account_namespace.to_bytes(),
+                stranger_account,
+                foreign
+            ),
+            Vec::<ContextGroupId>::new(),
+            "another account's proof selects nothing"
+        );
+        assert_eq!(
+            namespaces_to_revoke_in(&store, account_namespace.to_bytes(), account, foreign),
+            Vec::<ContextGroupId>::new(),
+            "nor does this account's proof for a device id another account holds there"
         );
     }
 
@@ -1776,8 +1929,12 @@ mod tests {
         let (_account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
         let still_live = ContextGroupId::from([0x88; 32]);
         let withdrawn = ContextGroupId::from([0x89; 32]);
-        a_namespace_targeting(&store, still_live, app(0x11));
-        a_namespace_targeting(&store, withdrawn, app(0x11));
+        for namespace in [still_live, withdrawn] {
+            a_namespace_targeting(&store, namespace, app(0x11));
+            let _key_id = GroupKeyring::new(&store, namespace)
+                .store_key(&[0x42; 32])
+                .expect("hold the scope key");
+        }
         let lost = DeviceId::from([0x69; 32]);
         for namespace in [still_live, withdrawn] {
             a_device_bound_in(&store, namespace, &root_sk, lost);
@@ -1804,6 +1961,7 @@ mod tests {
             harness.context_client.ack_router(),
             &[still_live, withdrawn],
             &signer_sk,
+            account,
             lost,
             &op,
         )
@@ -1828,6 +1986,9 @@ mod tests {
         let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
         let elsewhere = ContextGroupId::from([0x8A; 32]);
         a_namespace_targeting(&store, elsewhere, app(0x11));
+        let _key_id = GroupKeyring::new(&store, elsewhere)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
         let lost = DeviceId::from([0x6A; 32]);
         a_device_bound_in(&store, account_namespace, &root_sk, lost);
         a_device_bound_in(&store, elsewhere, &root_sk, lost);
@@ -1859,6 +2020,44 @@ mod tests {
                 .is_revoked(&account_namespace, lost)
                 .expect("read the account namespace's tombstone row"),
             "the account namespace is where the revocation came FROM; republishing there echoes"
+        );
+    }
+
+    /// A namespace whose replay was missed gets this account's recorded withdrawals
+    /// when the listener starts, so a dropped replay is repaired.
+    #[actix::test]
+    async fn the_start_up_sweep_replays_this_accounts_withdrawals() {
+        let store = store();
+        let (account_namespace, _own_device, root_sk) = a_device_scoped_to(&store, &[]);
+        let missed = ContextGroupId::from([0x8C; 32]);
+        a_namespace_targeting(&store, missed, app(0x11));
+        let _key_id = GroupKeyring::new(&store, missed)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key the replay publishes under");
+        let lost = DeviceId::from([0x6C; 32]);
+        AccountDeviceRegistry::new(&store, account_namespace)
+            .record_revocation(&a_revocation_of(&root_sk, lost))
+            .expect("the account namespace holds the withdrawal");
+        let account = AccountGenesis::new(root_sk.public_key()).account_id();
+
+        let mut harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        let bindings = AccountBindingRepository::new(&store);
+        let replayed = eventually(|| {
+            bindings
+                .device_is_withdrawn(&missed, account, lost)
+                .expect("read the withdrawal")
+        })
+        .await;
+        listener.abort();
+
+        assert!(
+            replayed,
+            "the start-up sweep never replayed the recorded withdrawal"
+        );
+        assert!(
+            harness.broadcast_topics().contains(&topic(missed)),
+            "the replayed withdrawal must be published, not only applied here"
         );
     }
 }

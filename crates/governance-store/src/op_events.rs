@@ -116,9 +116,9 @@ pub enum OpEvent {
     /// the recipient list, and excluding its account would cut off a member who
     /// never left.
     ///
-    /// It carries the proof that authorised the unlink, and none for an admin one,
-    /// whose authority is this group's alone. A proof names no namespace, so it
-    /// verifies wherever another device of the account republishes the withdrawal.
+    /// It carries the account's verified proof whenever the device is unbound here or
+    /// bound to that account, and none for an admin's unlink. A proof names no
+    /// namespace, so it verifies wherever another device of the account republishes it.
     DeviceRevoked {
         group_id: [u8; 32],
         account: AccountId,
