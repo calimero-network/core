@@ -161,3 +161,83 @@ pub async fn handler(
     }
     .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::http::StatusCode;
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
+    use crate::test_support::{get, public_router};
+
+    const CONTEXT: [u8; 32] = [0xB1; 32];
+
+    /// A store holding `CONTEXT` in a saved group, with this node owning
+    /// `signer` there when one is given.
+    fn held(signer: Option<&PrivateKey>) -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context = ContextId::from(CONTEXT);
+        let group = ContextGroupId::from([0xB2; 32]);
+        calimero_governance_store::MetaRepository::new(&store)
+            .save(
+                &group,
+                &calimero_governance_store::test_fixtures::test_meta(),
+            )
+            .expect("save the group");
+        calimero_governance_store::register_context_in_group(&store, &group, &context)
+            .expect("register the context");
+        if let Some(signer) = signer {
+            store
+                .handle()
+                .put(
+                    &calimero_store::key::ContextIdentity::new(context, signer.public_key()),
+                    &calimero_store::types::ContextIdentity {
+                        private_key: Some(*signer.as_bytes()),
+                    },
+                )
+                .expect("own an identity in the context");
+        }
+        store
+    }
+
+    /// Discovery names the key `POST .../intents` signs with in this context.
+    #[actix::test]
+    async fn discovery_names_this_nodes_key_in_the_context() {
+        let signer = PrivateKey::from([0x3C; 32]);
+        let store = held(Some(&signer));
+        let (router, _blobs) = public_router(&store).await;
+
+        let (status, body) = get(
+            router,
+            &format!("/contexts/{}/intents", ContextId::from(CONTEXT)),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!("\"executorKey\":\"{}\"", signer.public_key())),
+            "{body}"
+        );
+    }
+
+    /// A node owning no identity in the context can spend no warrant there,
+    /// and says so rather than naming an executor.
+    #[actix::test]
+    async fn discovery_where_this_node_owns_no_identity_is_a_404() {
+        let store = held(None);
+        let (router, _blobs) = public_router(&store).await;
+
+        let (status, body) = get(
+            router,
+            &format!("/contexts/{}/intents", ContextId::from(CONTEXT)),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    }
+}

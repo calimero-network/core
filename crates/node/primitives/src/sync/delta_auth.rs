@@ -1027,6 +1027,41 @@ mod tests {
         );
     }
 
+    /// A second relay of the same operator account keeps its own nonce ledger,
+    /// so a replica refuses its delta unless the warrant names that device.
+    #[test]
+    fn a_delta_relayed_by_a_device_the_warrant_does_not_name_is_refused() {
+        let ctx = ContextId::from([7u8; 32]);
+        let delta = [9u8; 32];
+        let (author, executor, d) = bundle_for(ctx);
+        let author_id = author.device_sk.public_key();
+
+        let sibling = party(3, 5, 0x03);
+        assert_eq!(sibling.account, executor.account, "same operator account");
+        let relayed = Delegation {
+            executor_proof: sibling.proof.clone(),
+            executor_key: sibling.device_sk.public_key(),
+            ..d
+        };
+        let sig = sign_delegated(ctx, delta, author_id, &relayed, &sibling.device_sk);
+
+        let err = verify_delta_envelope(
+            ctx,
+            delta,
+            author_id,
+            Some(&relayed),
+            None,
+            None,
+            hlc(),
+            &sig,
+        )
+        .expect_err("only the executor device the warrant names may spend it");
+        assert!(
+            err.to_string().contains("executor key"),
+            "expected the executor key mismatch, got: {err}"
+        );
+    }
+
     // ------------------------------------------------- recorded wire preimages
     //
     // Two byte-for-byte pins. They exist because merobox cannot reach this

@@ -526,6 +526,32 @@ fn an_executor_key_the_executor_never_certified_is_refused() {
     assert_eq!(bundle.verify(), Err(AccountError::WarrantProofKeyMismatch));
 }
 
+/// A creation warrant is spendable only by the executor device it names.
+#[test]
+fn a_bundle_from_a_device_the_warrant_does_not_name_is_refused() {
+    let (author, executor, warrant) = fixture();
+    let sibling_sk = key(13);
+    let sibling = sign_cert(
+        &executor.root,
+        executor.account(),
+        DeviceId::mint(executor.account(), [0x78; 16]),
+        &sibling_sk,
+        0,
+        0,
+    );
+    let bundle = ContextCreationDelegation {
+        warrant: Box::new(warrant),
+        author_proof: author.own_proof(),
+        executor_proof: executor.proof_of(sibling),
+        executor_key: sibling_sk.public_key(),
+    };
+
+    let err = bundle
+        .verify()
+        .expect_err("a sibling device of the executor must not spend this warrant");
+    assert!(err.to_string().contains("executor key"), "{err}");
+}
+
 #[test]
 fn an_author_proof_for_the_wrong_account_is_refused() {
     let (_author, executor, warrant) = fixture();

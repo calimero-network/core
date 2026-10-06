@@ -399,14 +399,14 @@ mod tests {
     use calimero_governance_store::NamespaceRepository;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::GroupMemberRole;
-    use calimero_primitives::identity::{AccountId, PrivateKey};
+    use calimero_primitives::identity::{AccountId, PrivateKey, PublicKey};
     use calimero_store::db::InMemoryDB;
     use calimero_store::{key, types, Store};
-    use libp2p::identity::Keypair;
     use tower::ServiceExt;
 
     use super::{decode_covered_op, node_identity, resolve_bundle};
     use crate::admin::handlers::context::perform_intent::IntentRefusal;
+    use crate::test_support::public_router;
 
     const GROUP: [u8; 32] = [0x11; 32];
     const NOW: u64 = 1_700_000_000;
@@ -628,23 +628,6 @@ mod tests {
         assert!(!matches!(result, Ok(DelegatedGovernanceOp::Group { .. })));
     }
 
-    /// The admin API's unauthenticated router as a relay serves it
-    /// (`delegated_access`), over `store` with this node's identity provisioned.
-    async fn public_router(store: &Store) -> (Router, tempfile::TempDir) {
-        let (state, blob_dir) = crate::test_support::admin_state(store).await;
-        let config = crate::config::ServerConfig::new(
-            vec![],
-            Keypair::generate_ed25519(),
-            Some(crate::admin::service::AdminConfig::new(true, true)),
-            None,
-            None,
-            None,
-        );
-        let (_path, _protected, public) =
-            crate::admin::service::setup(&config, state).expect("admin api enabled");
-        (public, blob_dir)
-    }
-
     fn store() -> Store {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
@@ -655,6 +638,13 @@ mod tests {
             .expect("read identity")
             .expect("provisioned")
             .0
+    }
+
+    /// The key this node signs with, provisioned as `merod init` does.
+    fn this_node_key(store: &Store) -> PublicKey {
+        NamespaceRepository::new(store)
+            .provision_node_identity()
+            .expect("provision the signing key")
     }
 
     /// The author's device key, certified under the account rooted at seed 1.
@@ -684,6 +674,7 @@ mod tests {
     fn signed(
         scope: [u8; 32],
         executor: AccountId,
+        _executor_key: PublicKey,
         kind: GovernanceOpKind,
         op: &[u8],
     ) -> GovernanceWarrant {
@@ -772,6 +763,7 @@ mod tests {
         let mut forged = signed(
             founded(),
             this_node(&store),
+            this_node_key(&store),
             GovernanceOpKind::Root,
             &founding_op(),
         );
@@ -793,7 +785,13 @@ mod tests {
         let store = store();
         let (router, _blobs) = public_router(&store).await;
         let other = AccountId::from([0x33; 32]);
-        let warrant = signed(founded(), other, GovernanceOpKind::Root, &founding_op());
+        let warrant = signed(
+            founded(),
+            other,
+            this_node_key(&store),
+            GovernanceOpKind::Root,
+            &founding_op(),
+        );
 
         let status = post(router, founded(), &warrant, &founding_op()).await;
 
@@ -802,6 +800,102 @@ mod tests {
             "the refused warrant enlisted this node"
         );
         assert_eq!(status, Some(StatusCode::FORBIDDEN));
+    }
+
+    /// A genuine warrant naming this node's account but another device's key is
+    /// refused before this node enlists: only the device it names may spend it.
+    #[actix::test]
+    async fn a_warrant_for_another_device_of_this_account_leaves_no_participation_behind() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let _provisioned = this_node_key(&store);
+        let warrant = signed(
+            founded(),
+            this_node(&store),
+            PrivateKey::from([0x66; 32]).public_key(),
+            GovernanceOpKind::Root,
+            &founding_op(),
+        );
+
+        let status = post(router, founded(), &warrant, &founding_op()).await;
+
+        assert!(
+            !participates(&store, founded()),
+            "a warrant for another device enlisted this node"
+        );
+        assert_eq!(status, Some(StatusCode::FORBIDDEN));
+    }
+
+    /// A node holding no signing key yet can be no warrant's executor device, so
+    /// a founding naming it is refused before it enlists or mints a key.
+    #[actix::test]
+    async fn a_founding_on_a_node_with_no_signing_key_leaves_no_participation_behind() {
+        let store = store();
+        let (router, _blobs) = public_router(&store).await;
+        let warrant = signed(
+            founded(),
+            this_node(&store),
+            PrivateKey::from([0x66; 32]).public_key(),
+            GovernanceOpKind::Root,
+            &founding_op(),
+        );
+
+        let status = post(router, founded(), &warrant, &founding_op()).await;
+
+        assert!(
+            !participates(&store, founded()),
+            "a node with no signing key enlisted"
+        );
+        assert_eq!(status, Some(StatusCode::FORBIDDEN));
+    }
+
+    /// The group discovery is asked about, saved, with the router over it.
+    async fn discovery(provision_key: bool) -> (Store, Router, tempfile::TempDir) {
+        let store = store();
+        calimero_governance_store::MetaRepository::new(&store)
+            .save(
+                &ContextGroupId::from(GROUP),
+                &calimero_governance_store::test_fixtures::test_meta(),
+            )
+            .expect("save the group");
+        if provision_key {
+            let _key = this_node_key(&store);
+        }
+        let (router, blobs) = public_router(&store).await;
+        (store, router, blobs)
+    }
+
+    /// Discovery names the key a governance warrant for this node must carry.
+    #[actix::test]
+    async fn discovery_names_this_nodes_signing_key() {
+        let (store, router, _blobs) = discovery(true).await;
+        let key = this_node_key(&store);
+
+        let (status, body) = crate::test_support::get(
+            router,
+            &format!("/groups/{}/governance-intents", hex::encode(GROUP)),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!("\"executorKey\":\"{key}\"")),
+            "{body}"
+        );
+    }
+
+    /// A node with no signing key can be named in no warrant, and says so.
+    #[actix::test]
+    async fn discovery_without_a_signing_key_is_a_404() {
+        let (_store, router, _blobs) = discovery(false).await;
+
+        let (status, body) = crate::test_support::get(
+            router,
+            &format!("/groups/{}/governance-intents", hex::encode(GROUP)),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     }
 
     /// A genuine warrant naming this node cannot enlist it in a namespace id its
@@ -813,6 +907,7 @@ mod tests {
         let warrant = signed(
             GROUP,
             this_node(&store),
+            this_node_key(&store),
             GovernanceOpKind::Root,
             &founding_op(),
         );
@@ -840,7 +935,13 @@ mod tests {
             salt: SALT,
         })
         .expect("encode");
-        let warrant = signed(group, this_node(&store), GovernanceOpKind::Root, &op);
+        let warrant = signed(
+            group,
+            this_node(&store),
+            this_node_key(&store),
+            GovernanceOpKind::Root,
+            &op,
+        );
 
         let status = post(router, group, &warrant, &op).await;
 
@@ -860,6 +961,7 @@ mod tests {
         let warrant = signed(
             founded(),
             this_node(&store),
+            this_node_key(&store),
             GovernanceOpKind::Root,
             &founding_op(),
         );
@@ -882,6 +984,7 @@ mod tests {
         let mut forged = signed(
             GROUP,
             this_node(&store),
+            this_node_key(&store),
             GovernanceOpKind::Group,
             &target_op(),
         );
@@ -905,6 +1008,7 @@ mod tests {
         let warrant = signed(
             GROUP,
             this_node(&store),
+            this_node_key(&store),
             GovernanceOpKind::Group,
             &target_op(),
         );

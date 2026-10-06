@@ -453,8 +453,13 @@ fn warrant_authorises_intent(
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::routing::post;
+    use axum::{Extension, Router};
     use calimero_account::Warrant;
-    use calimero_primitives::identity::PrivateKey;
+    use calimero_primitives::identity::{PrivateKey, PublicKey};
+    use tower::ServiceExt as _;
 
     use calimero_governance_store::warrant_gate::WarrantRefusal;
 
@@ -783,60 +788,22 @@ mod tests {
             "{err}"
         );
     }
-    /// A decodable author proof: a genuinely root-signed device certificate.
-    fn author_proof_hex() -> String {
-        use calimero_account::{AccountGenesis, AccountProof, DeviceCert, DeviceId, KemPublicKey};
 
-        let root = PrivateKey::from([1; 32]);
-        let genesis = AccountGenesis::new(root.public_key());
-        let account = genesis.account_id();
-        let statement = DeviceCert::sign(
-            &root,
-            account,
-            DeviceId::mint(account, [0x22; 16]),
-            &PrivateKey::from([8; 32]).public_key(),
-            &KemPublicKey::from([9; 32]),
-            0,
-            0,
-        )
-        .expect("cert");
-        hex::encode(
-            borsh::to_vec(&AccountProof {
-                genesis,
-                chain: vec![],
-                statement,
-            })
-            .expect("borsh"),
-        )
-    }
-
-    /// The prod repro: an account on relay X sends a well-formed intent for a
-    /// context that lives on relay Y. Relay X holds no row for it, so the only
-    /// honest answer is `404` naming the context, as the admin reads already
-    /// give — never a `500`, which told the client the relay was broken, and
-    /// never a spent nonce: nothing runs.
-    #[actix::test]
-    async fn an_intent_on_a_context_this_node_does_not_hold_is_a_404_not_a_500() {
-        use axum::body::Body;
-        use axum::http::Request;
-        use axum::routing::post;
-        use axum::{Extension, Router};
-        use calimero_store::db::InMemoryDB;
-        use calimero_store::Store;
-        use tower::ServiceExt as _;
-
-        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
-        let (state, _blobs) = crate::test_support::admin_state(&store).await;
+    /// `POST`s a warrant for `context` to the intents route over `store`.
+    async fn post_intent(
+        store: &calimero_store::Store,
+        context: ContextId,
+        warrant: &Warrant,
+    ) -> (axum::http::StatusCode, String) {
+        let (state, _blobs) = crate::test_support::admin_state(store).await;
         let app = Router::new()
             .route("/contexts/{context_id}/intents", post(super::handler))
             .layer(Extension(state));
-
-        let context = ContextId::from([0xAB; 32]);
         let body = serde_json::json!({
             "method": METHOD,
             "argsJson": serde_json::from_slice::<serde_json::Value>(ARGS).expect("json args"),
-            "warrant": hex::encode(borsh::to_vec(&warrant(context, NOW + 60)).expect("borsh")),
-            "authorProof": author_proof_hex(),
+            "warrant": hex::encode(borsh::to_vec(warrant).expect("borsh")),
+            "authorProof": crate::test_support::author_proof_hex(),
         });
         let response = app
             .oneshot(
@@ -847,16 +814,107 @@ mod tests {
             )
             .await
             .expect("the intents route answers");
-
         let status = response.status();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("read the response");
-        let body = String::from_utf8_lossy(&body).into_owned();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    fn store() -> calimero_store::Store {
+        calimero_store::Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()))
+    }
+
+    /// Registers `context` in a group, and with `signer` makes this node its
+    /// owner there, signing as `signer`.
+    fn hold(store: &calimero_store::Store, context: ContextId, signer: Option<&PrivateKey>) {
+        calimero_governance_store::register_context_in_group(
+            store,
+            &calimero_context_config::types::ContextGroupId::from([0xA1; 32]),
+            &context,
+        )
+        .expect("register the context");
+        if let Some(signer) = signer {
+            store
+                .handle()
+                .put(
+                    &calimero_store::key::ContextIdentity::new(context, signer.public_key()),
+                    &calimero_store::types::ContextIdentity {
+                        private_key: Some(*signer.as_bytes()),
+                    },
+                )
+                .expect("own an identity in the context");
+        }
+    }
+
+    /// A warrant for `context` naming `executor_key` as the device that may spend it.
+    fn warrant_naming(context: ContextId, _executor_key: PublicKey) -> Warrant {
+        warrant(context, NOW + 60)
+    }
+
+    /// The prod repro: an account on relay X sends a well-formed intent for a
+    /// context that lives on relay Y. Relay X holds no row for it, so the only
+    /// honest answer is `404` naming the context, as the admin reads already
+    /// give — never a `500`, which told the client the relay was broken, and
+    /// never a spent nonce: nothing runs.
+    #[actix::test]
+    async fn an_intent_on_a_context_this_node_does_not_hold_is_a_404_not_a_500() {
+        let context = ContextId::from([0xAB; 32]);
+        let (status, body) = post_intent(&store(), context, &warrant(context, NOW + 60)).await;
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND, "{body}");
         assert!(
             body.contains(&context.to_string()) && body.contains("not held by this node"),
             "{body}"
         );
+    }
+
+    /// A context whose group this node holds, but in which it owns no identity,
+    /// is answered as discovery answers it: a typed `404`, not a `500`.
+    #[actix::test]
+    async fn an_intent_where_this_node_owns_no_identity_is_a_404() {
+        let store = store();
+        let context = ContextId::from([0xAC; 32]);
+        hold(&store, context, None);
+
+        let (status, body) = post_intent(&store, context, &warrant(context, NOW + 60)).await;
+
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND, "{body}");
+        assert!(body.contains("holds no identity in this context"), "{body}");
+    }
+
+    /// A warrant naming another executor device is refused as not this node's
+    /// to spend, before this node presents a credential or runs anything.
+    #[actix::test]
+    async fn an_intent_whose_warrant_names_another_executor_key_is_a_403() {
+        let store = store();
+        let context = ContextId::from([0xAD; 32]);
+        let signer = PrivateKey::from([0x3C; 32]);
+        hold(&store, context, Some(&signer));
+        let other = PrivateKey::from([0x3D; 32]).public_key();
+
+        let (status, body) = post_intent(&store, context, &warrant_naming(context, other)).await;
+
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("executor key"), "{body}");
+    }
+
+    /// The control: a warrant naming this node's own key gets past that check,
+    /// to be refused by `verify` for its missing signature instead.
+    #[actix::test]
+    async fn an_intent_whose_warrant_names_this_nodes_key_passes_the_key_check() {
+        let store = store();
+        let context = ContextId::from([0xAE; 32]);
+        let signer = PrivateKey::from([0x3C; 32]);
+        hold(&store, context, Some(&signer));
+
+        let (status, body) = post_intent(
+            &store,
+            context,
+            &warrant_naming(context, signer.public_key()),
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        assert!(!body.contains("executor key"), "{body}");
     }
 }

@@ -326,10 +326,20 @@ pub(crate) fn internal(message: &str) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::post;
+    use axum::{Extension, Router};
     use calimero_account::{ContextCreationTerms, ContextCreationWarrant};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::NamespaceRepository;
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::identity::{AccountId, PrivateKey};
+    use calimero_primitives::identity::{AccountId, PrivateKey, PublicKey};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use tower::ServiceExt as _;
 
     use super::{creation_warrant_authorises, decode_creation_warrant, parse_group_id};
     use crate::admin::handlers::context::perform_intent::IntentRefusal;
@@ -357,6 +367,108 @@ mod tests {
             },
         )
         .expect("sign")
+    }
+
+    /// A creation warrant that never expires, naming `executor_key` as the
+    /// device that may carry it out.
+    fn warrant_naming(_executor_key: PublicKey) -> ContextCreationWarrant {
+        warrant(u64::MAX)
+    }
+
+    /// A creation warrant naming another executor device is refused as not
+    /// this node's to carry out, before it presents a credential or runs `init`.
+    #[actix::test]
+    async fn a_creation_warrant_naming_another_executor_key_is_a_403() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = crate::test_support::admin_state(&store).await;
+        let namespaces = NamespaceRepository::new(&store);
+        let _signer = namespaces
+            .provision_node_identity()
+            .expect("provision the signing key");
+        let _participation = namespaces
+            .participate_in(&ContextGroupId::from(GROUP))
+            .expect("take part in the group");
+        let app = Router::new()
+            .route("/groups/{group_id}/context-intents", post(super::handler))
+            .layer(Extension(state));
+        let warrant = warrant_naming(PrivateKey::from([0x3D; 32]).public_key());
+        let body = serde_json::json!({
+            "warrant": hex::encode(borsh::to_vec(&warrant).expect("borsh")),
+            "authorProof": crate::test_support::author_proof_hex(),
+            "initArgs": serde_json::from_slice::<serde_json::Value>(ARGS).expect("json args"),
+        });
+        let request = Request::post(format!("/groups/{}/context-intents", hex::encode(GROUP)))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("a request");
+
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(2), app.oneshot(request))
+                .await
+                .expect("refused before anything waits on the context actor")
+                .expect("the route answers");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read the response");
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("executor key"), "{body}");
+    }
+
+    /// A store holding `GROUP`, and the public router over it.
+    async fn discovery(provision_key: bool) -> (Store, Router, tempfile::TempDir) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        calimero_governance_store::MetaRepository::new(&store)
+            .save(
+                &ContextGroupId::from(GROUP),
+                &calimero_governance_store::test_fixtures::test_meta(),
+            )
+            .expect("save the group");
+        if provision_key {
+            let _key = NamespaceRepository::new(&store)
+                .provision_node_identity()
+                .expect("provision the signing key");
+        }
+        let (router, blobs) = crate::test_support::public_router(&store).await;
+        (store, router, blobs)
+    }
+
+    /// Discovery names the key a creation warrant for this node must carry.
+    #[actix::test]
+    async fn discovery_names_this_nodes_signing_key() {
+        let (store, router, _blobs) = discovery(true).await;
+        let key = NamespaceRepository::new(&store)
+            .node_identity()
+            .expect("read the key")
+            .expect("provisioned")
+            .public_key;
+
+        let (status, body) = crate::test_support::get(
+            router,
+            &format!("/groups/{}/context-intents", hex::encode(GROUP)),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!("\"executorKey\":\"{key}\"")),
+            "{body}"
+        );
+    }
+
+    /// A node with no signing key can be named in no warrant, and says so.
+    #[actix::test]
+    async fn discovery_without_a_signing_key_is_a_404() {
+        let (_store, router, _blobs) = discovery(false).await;
+
+        let (status, body) = crate::test_support::get(
+            router,
+            &format!("/groups/{}/context-intents", hex::encode(GROUP)),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     }
 
     fn refusal(err: &eyre::Report) -> String {

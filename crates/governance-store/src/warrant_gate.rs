@@ -1171,6 +1171,46 @@ mod tests {
         );
     }
 
+    /// One nonce on warrants for two relays is spent once in each relay device's
+    /// ledger, so every replica keeps both whatever order they arrive in.
+    #[test]
+    fn one_nonce_for_two_relays_is_spent_once_in_each_ledger() {
+        for this_relay_first in [true, false] {
+            let w = seed(7);
+            let other_pk = PublicKey::from([0x0D; 32]);
+            let other = enrol_member(&w.store, &w.group, &other_pk);
+            MembershipRepository::new(&w.store)
+                .add_member(&w.group, &other, GroupMemberRole::Member)
+                .expect("add the second relay");
+            CapabilitiesRepository::new(&w.store)
+                .set_member_capability(
+                    &w.group,
+                    &other,
+                    MemberCapabilities::CAN_AUTHOR_ON_BEHALF.bits(),
+                )
+                .expect("grant authorship");
+            let via_other = delegation_via(&w, other_pk, other);
+            let (first, second) = if this_relay_first {
+                (&w.delegation, &via_other)
+            } else {
+                (&via_other, &w.delegation)
+            };
+
+            for delegation in [first, second] {
+                check_delegated_delta(&w.store, &w.context, delegation, AdmissionCut::live())
+                    .expect("each executor device's ledger admits its own warrant");
+                spend_warrant_nonce(&w.store, &w.context, delegation).expect("spend");
+            }
+
+            let err = check_delegated_delta(&w.store, &w.context, first, AdmissionCut::live())
+                .expect_err("the same executor device may not spend the nonce twice");
+            assert_eq!(
+                err.downcast_ref::<WarrantRefusal>(),
+                Some(&WarrantRefusal::NonceAlreadySpent)
+            );
+        }
+    }
+
     /// A different warrant from the same author still applies — spending one
     /// nonce must not wall off the sequence.
     #[test]
