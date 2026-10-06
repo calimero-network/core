@@ -106,10 +106,16 @@ steps:
     node: e2e-node-1
     namespace_id: '{{namespace_id}}'
     group_name: test-subgroup
-    # Restricted, so the not-a-member call below is refused (the default is Open).
-    visibility: restricted
     outputs:
       subgroup_id: groupId
+
+  # Restricted, so the not-a-member call below is refused (the default is Open).
+  # A step of its own: merobox's born-visibility create sends no auth header.
+  - name: Mark the subgroup Restricted
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: restricted
 
   - name: Assert subgroup created
     type: assert
