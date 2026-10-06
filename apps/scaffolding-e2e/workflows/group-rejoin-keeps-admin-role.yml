@@ -1,0 +1,128 @@
+name: E2E KV Store - Presenting An Invitation Again Keeps The Role A Member Holds
+description: >
+  A member who already holds a role and presents a fresh invitation again (a
+  retried join, or a re-sync) is not being admitted a second time. The node that
+  answers the join must leave the role it recorded for that member alone.
+
+  The responder records the joiner before the join op reaches anyone, so that
+  the joiner's first sync stream is authorised. A member who already holds a row
+  keeps the role it holds, and a new joiner is recorded at the role its
+  invitation names.
+
+  Scenario (2 nodes, one namespace):
+
+    1. node-2 joins the namespace on an invitation from node-1.
+    2. node-1 promotes node-2 to Admin of the namespace root, and both
+       replicas settle on the promotion.
+    3. node-1 mints a second invitation and node-2 presents it.
+    4. node-1, which answered the join, still lists node-2 as an Admin.
+
+  The responder behaviour is also asserted directly by the join-responder tests
+  in `crates/node/src/sync/manager/namespace_sync.rs`.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: rejoin-role-node
+
+steps:
+  - name: Login on rejoin-role-node-1
+    type: login
+    node: rejoin-role-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on rejoin-role-node-2
+    type: login
+    node: rejoin-role-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: rejoin-role-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: rejoin-role-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: rejoin-role-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_first: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: rejoin-role-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_first}}'
+    outputs:
+      account_node2: memberAccount
+
+  - name: Promote node-2 to Admin of the namespace root
+    type: update_member_role
+    node: rejoin-role-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{account_node2}}'
+    role: Admin
+
+  - name: Settle the promotion onto both replicas
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - rejoin-role-node-1
+      - rejoin-role-node-2
+    timeout: 60
+    check_interval: 2
+
+  - name: Node-1 mints a second invitation
+    type: create_namespace_invitation
+    node: rejoin-role-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_second: invitation
+
+  - name: Node-2 presents the second invitation as an existing member
+    type: join_namespace
+    node: rejoin-role-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_second}}'
+
+  - name: Node-1, which answered the join, still lists node-2 as an Admin
+    type: assert_api_response
+    node: rejoin-role-node-1
+    path: /admin-api/groups/{{namespace_id}}/members
+    where:
+      identity: '{{account_node2}}'
+    match:
+      role: Admin
+    retries: 15
+    interval: 2
+
+  - name: Node-2 still lists itself as an Admin
+    type: assert_api_response
+    node: rejoin-role-node-2
+    path: /admin-api/groups/{{namespace_id}}/members
+    where:
+      identity: '{{account_node2}}'
+    match:
+      role: Admin
+    retries: 15
+    interval: 2
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

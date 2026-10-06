@@ -779,6 +779,29 @@ impl SyncManager {
             return Ok(());
         }
 
+        // Refuse a role the invitation may not grant before any key is wrapped;
+        // a member already recorded keeps the role it holds.
+        let admitted_role = if already_member {
+            None
+        } else {
+            match NamespaceMembershipService::new(&store, namespace_id.into())
+                .admission_role(&invitation, false)
+            {
+                Ok(role) => Some(role),
+                Err(err) => {
+                    let msg = StreamMessage::Message {
+                        sequence_id: 0,
+                        payload: MessagePayload::NamespaceJoinRejected {
+                            reason: format!("invitation rejected: {err}"),
+                        },
+                        next_nonce: nonce,
+                    };
+                    crate::sync::stream::send(stream, &msg, None).await?;
+                    return Ok(());
+                }
+            }
+        };
+
         // WHICH key covers the group being joined, not "the group's own row".
         //
         // A subgroup is minted a key row at birth regardless of visibility, and
@@ -881,49 +904,6 @@ impl SyncManager {
             None => Vec::new(),
         };
 
-        // Pre-register the joiner as a group member so that when it opens a sync
-        // stream, this node's membership check passes immediately.
-        //
-        // Unconditional now: the request carries a verified credential, so every
-        // joiner that reaches this line — first-timer included — has an account
-        // to key the row under. It used to be skipped whenever the account could
-        // not be named, which was exactly the first-join case the optimisation
-        // exists for.
-        if let Err(e) = MembershipRepository::new(&store).add_member(
-            &group_id,
-            &joiner_account,
-            calimero_primitives::context::GroupMemberRole::Member,
-        ) {
-            warn!(%e, "failed to pre-register joiner as group member");
-        }
-
-        let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
-        let application_id: [u8; 32] = *meta.target.application_id.as_ref();
-
-        for ctx_id in &context_ids {
-            let ci_key = calimero_store::key::ContextIdentity::new(*ctx_id, joiner_public_key);
-            let mut handle = store.handle();
-            if !handle.has(&ci_key).unwrap_or(false) {
-                let _ = handle.put(
-                    &ci_key,
-                    &calimero_store::types::ContextIdentity { private_key: None },
-                );
-            }
-        }
-
-        let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
-
-        // Issue #2256: the namespace's default-capabilities value travels
-        // with the bundle so the joiner doesn't need to fall back to a
-        // hard-coded constant. Read whatever the responder currently
-        // believes (already reflects any admin-issued
-        // `DefaultCapabilitiesSet` ops because the local store is
-        // updated as those ops apply). `unwrap_or(0)` matches the
-        // pre-existing semantics for "default key absent."
-        let default_capabilities = CapabilitiesRepository::new(&store)
-            .default_capabilities(&namespace)?
-            .unwrap_or(0);
-
         // Endorse the join, but only if this node is one of the admitters the
         // invitation names.
         //
@@ -956,6 +936,56 @@ impl SyncManager {
                     None
                 }
             };
+
+        // Pre-register the joiner as a group member so that when it opens a sync
+        // stream, this node's membership check passes immediately.
+        //
+        // Written for every new joiner, first-timer included, since the verified
+        // credential names its account. Skipped for a member already recorded.
+        // An admin row is authority, and peers fold the join only with an admitter's
+        // endorsement, so only a responder that endorses records one.
+        let recorded_role = match admitted_role {
+            Some(calimero_primitives::context::GroupMemberRole::Admin)
+                if admitter_endorsement_bytes.is_none() =>
+            {
+                None
+            }
+            role => role,
+        };
+        if let Some(role) = recorded_role {
+            if let Err(e) =
+                MembershipRepository::new(&store).add_member(&group_id, &joiner_account, role)
+            {
+                warn!(%e, "failed to pre-register joiner as group member");
+            }
+        }
+
+        let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
+        let application_id: [u8; 32] = *meta.target.application_id.as_ref();
+
+        for ctx_id in &context_ids {
+            let ci_key = calimero_store::key::ContextIdentity::new(*ctx_id, joiner_public_key);
+            let mut handle = store.handle();
+            if !handle.has(&ci_key).unwrap_or(false) {
+                let _ = handle.put(
+                    &ci_key,
+                    &calimero_store::types::ContextIdentity { private_key: None },
+                );
+            }
+        }
+
+        let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
+
+        // Issue #2256: the namespace's default-capabilities value travels
+        // with the bundle so the joiner doesn't need to fall back to a
+        // hard-coded constant. Read whatever the responder currently
+        // believes (already reflects any admin-issued
+        // `DefaultCapabilitiesSet` ops because the local store is
+        // updated as those ops apply). `unwrap_or(0)` matches the
+        // pre-existing semantics for "default key absent."
+        let default_capabilities = CapabilitiesRepository::new(&store)
+            .default_capabilities(&namespace)?
+            .unwrap_or(0);
 
         debug!(
             namespace_id = %hex::encode(namespace_id),
@@ -4255,13 +4285,22 @@ mod join_responder_tests {
         group: ContextGroupId,
         invited_role: u8,
     ) -> SignedGroupOpenInvitation {
+        invitation_admitted_by(inviter, group, invited_role, Vec::new())
+    }
+
+    fn invitation_admitted_by(
+        inviter: &PrivateKey,
+        group: ContextGroupId,
+        invited_role: u8,
+        admitters: Vec<AccountId>,
+    ) -> SignedGroupOpenInvitation {
         let invitation = GroupInvitationFromAdmin {
             inviter_identity: SignerId::from(*inviter.public_key().digest()),
             group_id: group,
             expiration_timestamp: 0,
             invitation_nonce: [0x42; 32],
             invited_role,
-            admitters: Vec::new(),
+            admitters,
         };
         let signature = inviter
             .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
@@ -4384,6 +4423,143 @@ mod join_responder_tests {
         MembershipRepository::new(&r.store)
             .role_of(&ns(), &account_of(key))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_new_joiner_is_recorded_at_the_role_its_invitation_names() {
+        let r = responder().await;
+        let joiner = party(0x01);
+        let invitation = invitation_from(&r.admin, ns(), 2);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            Some(true),
+            "precondition: the join is answered and carries the key"
+        );
+        assert_eq!(role_held(&r, &joiner), Some(GroupMemberRole::ReadOnly));
+    }
+
+    #[tokio::test]
+    async fn an_admin_invitation_from_an_admin_records_an_admin() {
+        let r = responder().await;
+        let joiner = party(0x02);
+        let invitation = invitation_admitted_by(&r.admin, ns(), 0, vec![account_of(&r.admin)]);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            Some(true)
+        );
+        assert_eq!(role_held(&r, &joiner), Some(GroupMemberRole::Admin));
+    }
+
+    /// Peers fold a join only with an admitter's endorsement, so a responder that
+    /// is not an admitter does not record an admin row nobody else will hold.
+    #[tokio::test]
+    async fn a_responder_that_is_not_an_admitter_records_no_admin_row() {
+        let r = responder().await;
+        let joiner = party(0x0F);
+        let other_admitter = account_of(&party(0x10));
+        let invitation = invitation_admitted_by(&r.admin, ns(), 0, vec![other_admitter]);
+
+        let reply = join_namespace(&r, &joiner, &invitation).await;
+
+        assert_eq!(served_key(reply), Some(true), "the join is still answered");
+        assert_eq!(role_held(&r, &joiner), None);
+    }
+
+    /// Control: a member row carries no authority, so any responder records it.
+    #[tokio::test]
+    async fn a_responder_that_is_not_an_admitter_records_a_member_invited_as_one() {
+        let r = responder().await;
+        let joiner = party(0x11);
+        let other_admitter = account_of(&party(0x10));
+        let invitation = invitation_admitted_by(&r.admin, ns(), 1, vec![other_admitter]);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            Some(true)
+        );
+        assert_eq!(role_held(&r, &joiner), Some(GroupMemberRole::Member));
+    }
+
+    #[tokio::test]
+    async fn an_admin_invitation_from_a_member_who_may_invite_is_refused() {
+        let r = responder().await;
+        let inviter = party(0x03);
+        let inviter_account = enrol_member(&r.store, &ns(), &inviter.public_key());
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &inviter_account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&r.store)
+            .set_member_capability(
+                &ns(),
+                &inviter_account,
+                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
+            )
+            .unwrap();
+        let plain = party(0x04);
+        let would_be_admin = party(0x05);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &plain, &invitation_from(&inviter, ns(), 1)).await),
+            Some(true),
+            "control: the same inviter may admit a plain member"
+        );
+        let reply = join_namespace(&r, &would_be_admin, &invitation_from(&inviter, ns(), 0)).await;
+        assert!(
+            refusal(&reply).is_some_and(|reason| reason.contains("only admins can invite")),
+            "only an admin may invite an admin: {reply:?}"
+        );
+        assert_eq!(role_held(&r, &would_be_admin), None);
+    }
+
+    /// The admission check is for a new row: a member already recorded is not
+    /// being admitted, whoever minted the invitation it presents.
+    #[tokio::test]
+    async fn a_recorded_member_presenting_an_admin_invitation_from_a_member_keeps_its_role() {
+        let r = responder().await;
+        let inviter = party(0x0D);
+        let inviter_account = enrol_member(&r.store, &ns(), &inviter.public_key());
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &inviter_account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&r.store)
+            .set_member_capability(
+                &ns(),
+                &inviter_account,
+                MemberCapabilities::CAN_INVITE_MEMBERS.bits(),
+            )
+            .unwrap();
+        let joiner = party(0x0E);
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &account_of(&joiner), GroupMemberRole::Member)
+            .unwrap();
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation_from(&inviter, ns(), 0)).await),
+            Some(true)
+        );
+        assert_eq!(role_held(&r, &joiner), Some(GroupMemberRole::Member));
+    }
+
+    #[tokio::test]
+    async fn a_member_presenting_an_invitation_keeps_the_role_it_holds() {
+        let r = responder().await;
+        let joiner = party(0x06);
+        MembershipRepository::new(&r.store)
+            .add_member(&ns(), &account_of(&joiner), GroupMemberRole::Admin)
+            .unwrap();
+        let invitation = invitation_from(&r.admin, ns(), 1);
+
+        assert_eq!(
+            served_key(join_namespace(&r, &joiner, &invitation).await),
+            Some(true)
+        );
+        assert_eq!(
+            role_held(&r, &joiner),
+            Some(GroupMemberRole::Admin),
+            "a re-sync with an invitation is not a new admission"
+        );
     }
 
     #[tokio::test]
