@@ -11654,6 +11654,393 @@ fn a_subgroup_only_member_is_served_no_namespace_key() {
     );
 }
 
+/// An Open subgroup under a Restricted parent, two members that reach it only by
+/// inheritance (each with a live device), and a responder holding its own key.
+struct InheritedSubgroup {
+    store: Store,
+    namespace_id: [u8; 32],
+    subgroup: ContextGroupId,
+    kicked: (calimero_account::AccountId, crate::KeyRequester),
+    kept: (calimero_account::AccountId, crate::KeyRequester),
+}
+
+fn inherited_subgroup_fixture() -> InheritedSubgroup {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let namespace_id = [0x81u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let parent = ContextGroupId::from([0x82u8; 32]);
+    let subgroup = ContextGroupId::from([0x83u8; 32]);
+
+    let responder_sk_bytes = [0x84u8; 32];
+    let responder_pk = PrivateKey::from(responder_sk_bytes).public_key();
+    let responder_account = crate::test_fixtures::account_for(&responder_pk);
+
+    let store = test_store();
+    let _ = enrol_member(&store, &ns_gid, &responder_pk);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, &responder_sk_bytes)
+        .unwrap();
+    for group in [ns_gid, parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(responder_account))
+            .unwrap();
+    }
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &parent)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x85; 32])
+        .unwrap();
+
+    let member = |seed: u8| {
+        let pk = PrivateKey::from([seed; 32]).public_key();
+        let account = enrol_member(&store, &ns_gid, &pk);
+        let device = crate::test_fixtures::device_secret_for(&pk).device;
+        MembershipRepository::new(&store)
+            .add_member(&parent, &account, GroupMemberRole::Member)
+            .unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_member_capability(
+                &parent,
+                &account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .unwrap();
+        (
+            account,
+            crate::KeyRequester {
+                identity: pk,
+                device: Some(device),
+            },
+        )
+    };
+    let kicked = member(0x86);
+    let kept = member(0x87);
+
+    InheritedSubgroup {
+        store,
+        namespace_id,
+        subgroup,
+        kicked,
+        kept,
+    }
+}
+
+fn subgroup_key_served(fixture: &InheritedSubgroup, requester: crate::KeyRequester) -> bool {
+    let (bytes, _) = crate::build_group_key_delivery(
+        &fixture.store,
+        fixture.namespace_id.into(),
+        fixture.subgroup.to_bytes(),
+        requester,
+        None,
+    )
+    .unwrap();
+    !bytes.is_empty()
+}
+
+/// A member removed from an Open subgroup it only inherits into has no row to
+/// delete: the removal is the deny-list entry plus the re-entry block.
+#[test]
+fn kicked_inherited_member_is_served_no_key_for_the_subgroup_it_was_removed_from() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (kicked_account, kicked) = f.kicked;
+    let (_, kept) = f.kept;
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .is_member(&f.subgroup, &kicked_account)
+            .unwrap(),
+        "precondition: the member reaches the subgroup by inheritance"
+    );
+    assert!(
+        subgroup_key_served(&f, kicked),
+        "precondition: before the removal the member is served the subgroup key"
+    );
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &kicked_account)
+        .unwrap();
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &kicked_account, GroupExitReason::Removed)
+        .unwrap();
+
+    assert!(
+        MembershipRepository::new(&f.store)
+            .check_path(&f.subgroup, &kicked_account)
+            .unwrap()
+            != crate::MembershipPath::None,
+        "precondition: the removal leaves the inheritance walk untouched"
+    );
+    assert!(
+        !subgroup_key_served(&f, kicked),
+        "a member removed from the subgroup must not be served its key"
+    );
+    assert!(
+        subgroup_key_served(&f, kept),
+        "control: another inherited member is still served"
+    );
+}
+
+/// A leave ends inheritance too: it writes a deny-list entry beside its `Left` block.
+#[test]
+fn an_inherited_member_who_left_the_subgroup_is_served_no_key_for_it() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    assert!(subgroup_key_served(&f, requester));
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Left)
+        .unwrap();
+
+    assert!(!subgroup_key_served(&f, requester));
+}
+
+/// A direct row is the membership: an exit record left from before the member was
+/// added back does not take the key away.
+#[test]
+fn a_direct_member_with_an_older_exit_record_is_still_served_the_subgroup_key() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Removed)
+        .unwrap();
+    assert!(!subgroup_key_served(&f, requester));
+
+    MembershipRepository::new(&f.store)
+        .add_member(&f.subgroup, &account, GroupMemberRole::Member)
+        .unwrap();
+
+    assert!(subgroup_key_served(&f, requester));
+}
+
+/// A snapshot source is admitted only while it is a live member.
+#[test]
+fn a_removed_inherited_member_is_not_admitted_as_a_snapshot_source() {
+    use calimero_store::key::GroupExitReason;
+
+    let f = inherited_subgroup_fixture();
+    let context = ContextId::from([0x8F; 32]);
+    crate::register_context_in_group(&f.store, &f.subgroup, &context).unwrap();
+    let (account, kicked) = f.kicked;
+    let (_, kept) = f.kept;
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kicked.identity).unwrap(),
+        Some(true),
+        "precondition: before the removal the member is admitted"
+    );
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
+    ReentryRepository::new(&f.store)
+        .block(&f.subgroup, &account, GroupExitReason::Removed)
+        .unwrap();
+
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kicked.identity).unwrap(),
+        Some(false)
+    );
+    assert_eq!(
+        crate::is_admitted_to_context(&f.store, &context, &kept.identity).unwrap(),
+        Some(true),
+        "control: another inherited member is still admitted"
+    );
+}
+
+/// The deny-list entry alone is enough as well.
+#[test]
+fn a_deny_listed_inherited_member_is_served_no_key_for_the_subgroup() {
+    let f = inherited_subgroup_fixture();
+    let (account, requester) = f.kicked;
+    assert!(subgroup_key_served(&f, requester));
+
+    DenyListRepository::new(&f.store)
+        .mark(&f.subgroup, &account)
+        .unwrap();
+
+    assert!(!subgroup_key_served(&f, requester));
+}
+
+/// A TEE that left an Open subgroup it also inherits into, then re-attested
+/// there, is a member again: its `Left` block outlives the readmission.
+#[test]
+fn an_inherited_tee_that_left_and_re_attested_is_a_live_member_again() {
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_store::key::GroupExitReason;
+
+    let store = test_store();
+    let namespace_id = [0x91u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let parent = ContextGroupId::from([0x92u8; 32]);
+    let subgroup = ContextGroupId::from([0x93u8; 32]);
+    let ((verifier_sk, verifier_pk), verifier) =
+        bootstrap_namespace_with_admin_account(&store, namespace_id);
+    for group in [parent, subgroup] {
+        MetaRepository::new(&store)
+            .save(&group, &sample_meta_with_admin(verifier))
+            .unwrap();
+    }
+    nest_for_test(&store, &ns_gid, &parent);
+    nest_for_test(&store, &parent, &subgroup);
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&parent, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&parent, &verifier, GroupMemberRole::Admin)
+        .unwrap();
+    GroupKeyring::new(&store, subgroup)
+        .store_key(&[0x94; 32])
+        .unwrap();
+
+    // The admission policy is read from the op log, so it is applied as a real op.
+    let ns_key = [0x95u8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&ns_key)
+        .unwrap();
+    let policy = GroupKeyring::encrypt_op(
+        &ns_key,
+        &crate::test_fixtures::guarded_group_op(
+            &store,
+            &ns_gid,
+            &verifier_pk,
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        ),
+    )
+    .unwrap();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let head = gov.read_head_record().unwrap();
+    gov.apply_signed_op(
+        &SignedNamespaceOp::sign(
+            &verifier_sk,
+            namespace_id.into(),
+            head.parent_hashes.clone(),
+            head.next_nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: policy,
+                key_rotation: None,
+            },
+        )
+        .unwrap(),
+    )
+    .expect("the policy op applies");
+
+    // The TEE holds a direct row in the subgroup and inherits into it from the parent.
+    let tee_sk = PrivateKey::from([0x96u8; 32]);
+    let tee_pk = tee_sk.public_key();
+    let tee = enrol_member(&store, &ns_gid, &tee_pk);
+    MembershipRepository::new(&store)
+        .add_member(&parent, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &parent,
+            &tee,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
+
+    let apply = |signer: &PrivateKey, op: GroupOp| {
+        let signed =
+            SignedGroupOp::sign(signer, subgroup.to_bytes().into(), vec![], 1, op).unwrap();
+        crate::apply_local_signed_group_op(&store, &signed)
+    };
+    apply(
+        &tee_sk,
+        GroupOp::MemberLeft {
+            member: tee,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("the TEE leaves the subgroup");
+    let membership = MembershipRepository::new(&store);
+    assert!(
+        !membership.is_live_member(&subgroup, &tee).unwrap(),
+        "precondition: a leaver is not a live member"
+    );
+
+    apply(
+        &verifier_sk,
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member: tee,
+            quote_hash: [0x97; 32],
+            mrtd: "m1".to_owned(),
+            rtmr0: String::new(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .expect("the TEE re-attests into the subgroup");
+    assert_eq!(
+        crate::ReentryRepository::new(&store)
+            .block_of(&subgroup, &tee)
+            .unwrap(),
+        Some(GroupExitReason::Left),
+        "precondition: the readmission leaves the Left block in place"
+    );
+    assert_eq!(
+        membership.role_of(&subgroup, &tee).unwrap(),
+        None,
+        "precondition: the readmission writes no row, the TEE is inherited"
+    );
+
+    assert!(
+        membership.is_live_member(&subgroup, &tee).unwrap(),
+        "a re-attested TEE is a live member of the subgroup"
+    );
+    let (bytes, _) = crate::build_group_key_delivery(
+        &store,
+        namespace_id.into(),
+        subgroup.to_bytes(),
+        crate::KeyRequester {
+            identity: tee_pk,
+            device: Some(crate::test_fixtures::device_secret_for(&tee_pk).device),
+        },
+        None,
+    )
+    .unwrap();
+    assert!(!bytes.is_empty(), "and is served the subgroup key");
+}
+
 /// A namespace, a parent and a subgroup below it, all owned by one account, and
 /// a plain member of the parent. Visibility is the test's to set.
 struct AnchoredTree {
