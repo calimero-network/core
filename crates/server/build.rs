@@ -136,7 +136,7 @@ fn try_main() -> eyre::Result<()> {
         }
     };
 
-    let expected_sha256 = expected_sha256(
+    let sha256 = expected_sha256(
         &src,
         pinned_sha256,
         sha256_override,
@@ -166,7 +166,7 @@ fn try_main() -> eyre::Result<()> {
 
         let cache_dir = target_dir()?.join("cache").join("webui");
 
-        let workdir = fetch_with_retry(&client, &src, &cache_dir, force, expected_sha256)?;
+        let workdir = fetch_with_retry(&client, &src, &cache_dir, force, sha256)?;
 
         workdir.into()
     };

@@ -20,12 +20,8 @@ const FRESHNESS_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const FETCH_RETRY_ATTEMPTS: u32 = 4;
 const FETCH_RETRY_INITIAL_DELAY_SECS: u64 = 2;
 const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
-/// Pinned, not `"latest"`. Resolving `"latest"` at build time meant two builds of
-/// one core commit could embed different auth-frontend bundles, and the resolution
-/// itself was a live GitHub round-trip on every build - outside the download cache
-/// below, so a warm cache did not spare it. Bumping is a deliberate edit here.
-/// `CALIMERO_AUTH_FRONTEND_VERSION=latest` still opts back in per build, given the
-/// archive's sha256 in `CALIMERO_AUTH_FRONTEND_SHA256`.
+/// Pinned so one core commit always embeds the same bundle; bump it with the sha256.
+/// `CALIMERO_AUTH_FRONTEND_VERSION=latest` opts back in per build, given its sha256.
 const CALIMERO_AUTH_FRONTEND_VERSION: &str = "v1.3.6";
 const CALIMERO_AUTH_FRONTEND_SHA256: &str =
     "2f70a88913f94ef0be74df6a649c8fd148ff21a5834f234fd48db0b7bde9ce39";
@@ -104,7 +100,7 @@ fn try_main() -> eyre::Result<()> {
         }
     };
 
-    let expected_sha256 = expected_sha256(
+    let sha256 = expected_sha256(
         &src,
         pinned_sha256,
         sha256_override,
@@ -129,7 +125,7 @@ fn try_main() -> eyre::Result<()> {
 
         let cache_dir = target_dir()?.join("cache").join("auth-frontend");
 
-        let workdir = fetch_with_retry(&client, &src, &cache_dir, force, expected_sha256)?;
+        let workdir = fetch_with_retry(&client, &src, &cache_dir, force, sha256)?;
 
         let repo = fs::read_dir(workdir)?
             .filter_map(Result::ok)

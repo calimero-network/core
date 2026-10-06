@@ -21,7 +21,8 @@ const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 /// Fetch a zip archive and return the directory it was extracted into.
 ///
 /// `src` is an `https` URL or an absolute path to a local zip; plain `http` is
-/// accepted only for a loopback host. A download over 128 MiB is refused.
+/// accepted only for a loopback host. A remote `src` needs `expected_sha256`, and a
+/// download over 128 MiB is refused.
 /// Extractions live under `cache_dir` keyed by `src`, and are reused while
 /// younger than `freshness`.
 pub fn fetch_and_extract(
@@ -69,6 +70,10 @@ fn fetch_and_extract_with_limit(
     expected_sha256: Option<&str>,
     max_bytes: u64,
 ) -> Result<PathBuf> {
+    if expected_sha256.is_none() && is_remote(src) {
+        bail!("refusing {src}: a remote archive needs an expected sha256 from the caller");
+    }
+
     let dest = cache_dir.join(cache_key(src, expected_sha256));
 
     if !force && is_fresh(&dest, freshness) {
@@ -141,7 +146,7 @@ fn require_https_or_loopback(src: &str) -> Result<()> {
 
 /// Anything that is not an `http(s)` URL is a path to a local archive.
 fn is_remote(src: &str) -> bool {
-    src.starts_with("http://") || src.starts_with("https://")
+    Url::parse(src).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
 }
 
 fn cache_key(src: &str, expected_sha256: Option<&str>) -> String {
@@ -320,11 +325,12 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir must be creatable");
         let cache = tmp.path().to_path_buf();
         let src = "https://unresolvable.invalid/webui.zip";
+        let pin = "ab".repeat(32);
 
-        let entry = cache.join(cache_key(src, None));
+        let entry = cache.join(cache_key(src, Some(&pin)));
         fs::create_dir_all(&entry).expect("the cache entry must be creatable");
 
-        let served = fetch_and_extract(&Client::new(), src, &cache, FRESH, false, None)
+        let served = fetch_and_extract(&Client::new(), src, &cache, FRESH, false, Some(&pin))
             .expect("a fresh entry must not be re-downloaded");
 
         assert_eq!(served, entry);
@@ -469,7 +475,7 @@ mod tests {
             tmp.path(),
             FRESH,
             false,
-            None,
+            Some(&"00".repeat(32)),
         )
         .expect_err("a plain http source must be refused");
 
@@ -505,6 +511,7 @@ mod tests {
     fn extracts_an_archive_served_within_the_limit() {
         let tmp = tempfile::tempdir().expect("temp dir must be creatable");
         let body = zip_bytes("served");
+        let pin = hex_sha256(&body);
 
         let url = serve_once(
             format!(
@@ -520,7 +527,7 @@ mod tests {
             tmp.path(),
             FRESH,
             false,
-            None,
+            Some(&pin),
             1024 * 1024,
         )
         .expect("an archive within the limit should extract");
@@ -541,9 +548,17 @@ mod tests {
             Vec::new(),
         );
 
-        let err =
-            fetch_and_extract_with_limit(&client(), &url, tmp.path(), FRESH, false, None, 1024)
-                .expect_err("an oversized download must be refused");
+        let pin = "00".repeat(32);
+        let err = fetch_and_extract_with_limit(
+            &client(),
+            &url,
+            tmp.path(),
+            FRESH,
+            false,
+            Some(&pin),
+            1024,
+        )
+        .expect_err("an oversized download must be refused");
 
         let report = format!("{err:#}");
 
@@ -560,9 +575,17 @@ mod tests {
             vec![0_u8; 256 * 1024],
         );
 
-        let err =
-            fetch_and_extract_with_limit(&client(), &url, tmp.path(), FRESH, false, None, 1024)
-                .expect_err("an oversized download must be refused");
+        let pin = "00".repeat(32);
+        let err = fetch_and_extract_with_limit(
+            &client(),
+            &url,
+            tmp.path(),
+            FRESH,
+            false,
+            Some(&pin),
+            1024,
+        )
+        .expect_err("an oversized download must be refused");
 
         let report = format!("{err:#}");
 
@@ -582,9 +605,32 @@ mod tests {
         assert!(err.to_string().contains(src));
     }
 
+    // A fresh cache entry would be served if the check came after the cache lookup.
+    #[test]
+    fn refuses_a_remote_source_without_a_sha256() {
+        let tmp = tempfile::tempdir().expect("temp dir must be creatable");
+
+        for src in [
+            "https://example.invalid/a.zip",
+            "HTTPS://example.invalid/a.zip",
+        ] {
+            fs::create_dir_all(tmp.path().join(cache_key(src, None)))
+                .expect("the cache entry must be creatable");
+
+            let err = fetch_and_extract(&Client::new(), src, tmp.path(), FRESH, false, None)
+                .expect_err("an unpinned remote source must be refused");
+
+            assert!(format!("{err:#}").contains("expected sha256"), "{err:#}");
+        }
+    }
+
     #[test]
     fn a_remote_override_without_a_sha256_is_refused() {
-        for src in ["https://example.com/a.zip", "http://127.0.0.1:8080/a.zip"] {
+        for src in [
+            "https://example.com/a.zip",
+            "HTTPS://example.com/a.zip",
+            "http://127.0.0.1:8080/a.zip",
+        ] {
             let err = expected_sha256(src, None, None, "X_SHA256")
                 .expect_err("an unpinned remote source must be refused");
 

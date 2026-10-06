@@ -458,8 +458,8 @@ request re-stamps it.
   archive is hash-checked before it is extracted. A remote override
   (`CALIMERO_WEBUI_SRC` as a URL, or a non-default `_REPO`, `_VERSION` or `_ASSET`)
   skips the pinned hash, so the build fails unless you pass the archive's own
-  `CALIMERO_WEBUI_SHA256`. A local path in `CALIMERO_WEBUI_SRC` (archive or
-  directory) is verified only if you pass one. Bumping the dashboard
+  `CALIMERO_WEBUI_SHA256`. A local archive in `CALIMERO_WEBUI_SRC` is verified
+  only if you pass one, and a local directory is never hashed. Bumping the dashboard
   means updating the version and sha256 constants together
 - Admin API requires authentication
 - JSON-RPC follows JSON-RPC 2.0 spec
