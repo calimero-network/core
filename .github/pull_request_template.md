@@ -45,7 +45,7 @@ sdk-ref: <your-mero-js-branch>
 
 Required when this PR touches a path in `TRUST_BOUNDARY_PATHS` in `scripts/check-trust-boundary.py`; CI fails if an item is missing or unanswered.
 Tick exactly one box per line and keep the item text as is; "no" is the expected answer for items 2-4 and 6.
-The rules: [AGENTS.md](https://github.com/calimero-network/core/blob/master/AGENTS.md#security-trust-boundaries).
+The rules: [CODING_STANDARDS.md](https://github.com/calimero-network/core/blob/master/CODING_STANDARDS.md#security-trust-boundaries).
 
 - Adds input from peers, gossip, streams, HTTP callers or app guests: [ ] yes [ ] no
 - Some new input has no named limit constant: [ ] yes [ ] no

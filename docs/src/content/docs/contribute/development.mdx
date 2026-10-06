@@ -104,8 +104,7 @@ two nodes that talk to each other:
 
 <Aside type="note">
   Node state and config live under `~/.calimero/<node>/` (e.g.
-  `~/.calimero/node/config.toml`). This is local-only — never commit it, and
-  never commit tokens or keys.
+  `~/.calimero/node/config.toml`), outside the repository.
 </Aside>
 
 ## Test
@@ -127,21 +126,17 @@ cargo test -- --nocapture
 
 ## The pre-PR gate
 
-These are the checks CI enforces; run them before pushing.
+Run every check CI's required `Rust` status waits on, read straight from
+`.github/workflows/ci-checks.yml` so the list cannot drift:
 
 ```sh
-# Formatting (must pass)
-cargo fmt --check
-
-# Lint — the no-warnings gate
-cargo clippy --workspace --all-targets --features calimero-storage/testing -- -D warnings
-
-# Tests
-cargo test
-
-# Dependency policy — only needed if you changed dependencies
-cargo deny check licenses sources
+./scripts/check-like-ci.py                 # all of it
+./scripts/check-like-ci.py --list          # what it runs, in order
+./scripts/check-like-ci.py --only clippy   # a subset, by name
 ```
+
+The rest of the Definition of Done (proof for a bug fix, docs, review) is in
+the root [`AGENTS.md`](https://github.com/calimero-network/core/blob/master/AGENTS.md#definition-of-done).
 
 <Aside type="note">
   A pre-commit hook runs `cargo fmt --check` on staged Rust files. It installs
@@ -156,17 +151,8 @@ cargo deny check licenses sources
 
 ## Commit & PR conventions
 
-Commits follow a structured, changelog-friendly format:
-
-```sh
-<type>(<scope>): <short summary>
-```
-
-The `<type>` is mandatory and must be one of `build`, `ci`, `docs`, `feat`,
-`fix`, `perf`, `refactor`, or `test`. The `<scope>` is optional and names the
-affected area. The summary uses **imperative, present tense**, no leading
-capital, and no trailing period — e.g. `fix(sync): drop stale handshake on
-timeout`.
+Commit subjects and PR titles follow the [commit rule](https://github.com/calimero-network/core/blob/master/CODING_STANDARDS.md#commits)
+in the coding standards.
 
 For pull requests:
 
@@ -178,38 +164,18 @@ For pull requests:
 - Maintainers **squash-and-merge** approved PRs; resolve each review
   conversation as you address it.
 
-The repo's own **Definition of Done** before opening a PR: `cargo fmt --check`
-passes, `cargo clippy -- -D warnings` passes, `cargo test` passes,
-`cargo deny check licenses sources` passes if you touched dependencies, and
-relevant docs (README, `AGENTS.md`, crate docs) are updated.
-
 ## Style rules
 
-The full guide is in `STYLE.md`; the rules that trip people up most:
-
-- **No `mod.rs`.** Export submodules from a file named after the module instead.
-  `crates/meroctl/src/cli/app.rs` declares `mod get;` and the file lives at
-  `crates/meroctl/src/cli/app/get.rs`. (Rare, documented exceptions exist, e.g.
-  `crates/node/src/sync/mod.rs`.)
-- **Import organization** follows the `StdExternalCrate` pattern: standard
-  library, then external crates, then local crate/parent module, then local
-  module declarations. Use module-granularity imports — don't merge imports from
-  the same crate into one nested `use`.
-- **Error handling** leans on `eyre` (`use eyre::Result as EyreResult;`). Avoid
-  `.unwrap()` / `.expect()`; prefer `?` and `.map_err()`. If an unwrap is truly
-  safe, justify it with a `// SAFETY:` comment.
-- **No dead code.** Everything in a PR must be used — no unused functions,
-  imports, or commented-out blocks. Use `#[allow(dead_code)]` only with a
-  comment explaining why.
-- Keep `Cargo.toml` dependencies sorted alphabetically; prefer imports over
-  fully-qualified paths; follow standard Rust naming conventions.
+The imports, module layout, error handling, dead-code and trust-boundary rules
+are in [`CODING_STANDARDS.md`](https://github.com/calimero-network/core/blob/master/CODING_STANDARDS.md).
 
 ## Where design docs live
 
 | Location | What's there |
 | --- | --- |
 | `docs/` | The Astro Starlight documentation site (this site) — all authored docs. |
-| `AGENTS.md` (root + per-package) | Quick orientation and conventions for each area of the tree; a good first read for any crate. |
+| `AGENTS.md` (root + per-package) | Quick orientation for each area of the tree; a good first read for any crate. |
+| `CODING_STANDARDS.md` | How code in the repository is written. |
 
 <Aside type="tip">
   When adding a non-trivial design, state the _why_ directly in code comments
