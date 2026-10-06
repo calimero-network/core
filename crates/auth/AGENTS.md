@@ -23,10 +23,10 @@ cargo run -p mero-auth -- --config crates/auth/config/config.toml --bind 0.0.0.0
 ```
 
 Building the binary embeds a built auth-frontend static bundle (`src/api/handlers/mod.rs` reads it via `rust_embed` from `CALIMERO_AUTH_FRONTEND_PATH`, which `build.rs` sets).
-`build.rs` fetches the `calimero-network/auth-frontend` release archive into the target cache unless `CALIMERO_AUTH_FRONTEND_SRC` points at a local directory.
+`build.rs` fetches the `calimero-network/auth-frontend` release archive into the target cache; a `CALIMERO_AUTH_FRONTEND_SRC` override (a URL, local archive or local directory) replaces that archive.
 The fetched version is **pinned** in `build.rs` (`CALIMERO_AUTH_FRONTEND_VERSION`), so a given core commit always embeds the same frontend.
 Bump that constant together with `CALIMERO_AUTH_FRONTEND_SHA256` to take a new auth-frontend release.
-A remote override (`CALIMERO_AUTH_FRONTEND_SRC` as a URL, or a non-default `_REPO`, `_VERSION` or `_ASSET`, `latest` included) fails the build unless the `CALIMERO_AUTH_FRONTEND_SHA256` env var names the archive's sha256.
+A remote override (`CALIMERO_AUTH_FRONTEND_SRC` as a URL, a non-default `_REPO` or `_VERSION` with `latest` included, or any `_ASSET`) fails the build unless the `CALIMERO_AUTH_FRONTEND_SHA256` env var names the archive's sha256.
 A local archive in `CALIMERO_AUTH_FRONTEND_SRC` is verified only if that env var is set, and a local directory is never hashed.
 
 ## What it does

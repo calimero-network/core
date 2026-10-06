@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-use calimero_build_utils::expected_sha256;
 use calimero_build_utils::fetch_and_extract;
+use calimero_build_utils::required_sha256;
 use eyre::bail;
 use eyre::OptionExt;
 use reqwest::blocking::Client;
@@ -39,10 +39,18 @@ fn main() {
 fn try_main() -> eyre::Result<()> {
     let token = option_env!("CALIMERO_AUTH_FRONTEND_FETCH_TOKEN");
     let sha256_override = option_env!("CALIMERO_AUTH_FRONTEND_SHA256");
+    let require_sha256 = |src: &str, pinned: Option<&'static str>| {
+        required_sha256(
+            src,
+            pinned,
+            sha256_override,
+            "CALIMERO_AUTH_FRONTEND_SHA256",
+        )
+    };
 
     let mut is_local_dir = false;
 
-    let mut pinned_sha256 = None;
+    let sha256;
 
     let src = match option_env!("CALIMERO_AUTH_FRONTEND_SRC") {
         Some(src) => {
@@ -61,6 +69,8 @@ fn try_main() -> eyre::Result<()> {
                 _ => {}
             }
 
+            sha256 = require_sha256(src, None)?;
+
             Cow::from(src)
         }
         None => {
@@ -76,9 +86,10 @@ fn try_main() -> eyre::Result<()> {
                 && version == CALIMERO_AUTH_FRONTEND_VERSION
                 && asset.is_none();
 
-            if is_default {
-                pinned_sha256 = Some(CALIMERO_AUTH_FRONTEND_SHA256);
-            }
+            sha256 = require_sha256(
+                &format!("https://github.com/{repo}/releases/{version}"),
+                is_default.then_some(CALIMERO_AUTH_FRONTEND_SHA256),
+            )?;
 
             let release_url = if let Some(asset) = asset {
                 if version == "latest" {
@@ -99,13 +110,6 @@ fn try_main() -> eyre::Result<()> {
             release_url.into()
         }
     };
-
-    let sha256 = expected_sha256(
-        &src,
-        pinned_sha256,
-        sha256_override,
-        "CALIMERO_AUTH_FRONTEND_SHA256",
-    )?;
 
     let frontend_dir = if is_local_dir {
         Cow::from(Path::new(&*src))

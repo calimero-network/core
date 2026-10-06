@@ -18,13 +18,8 @@ const CACHE_KEY_BYTES: usize = 16; // truncated sha256, wide enough that two sou
 /// Well above any bundle we ship, low enough that a bad source cannot fill memory.
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Fetch a zip archive and return the directory it was extracted into.
-///
-/// `src` is an `https` URL or an absolute path to a local zip; plain `http` is
-/// accepted only for a loopback host. A remote `src` needs `expected_sha256`, and a
-/// download over 128 MiB is refused.
-/// Extractions live under `cache_dir` keyed by `src`, and are reused while
-/// younger than `freshness`.
+/// Extract the zip at `src` (`https`, loopback `http` or a local path) under `cache_dir`,
+/// reusing an entry younger than `freshness`. A remote `src` needs `expected_sha256`.
 pub fn fetch_and_extract(
     client: &Client,
     src: &str,
@@ -44,15 +39,15 @@ pub fn fetch_and_extract(
     )
 }
 
-/// The sha256 an archive from `src` must match: `override_sha256` when set, else
+/// The sha256 an archive from `src` must match: a non-empty `override_sha256`, else
 /// `pinned` (passed only for the default source). Only a local `src` may go unverified.
-pub fn expected_sha256<'a>(
+pub fn required_sha256<'a>(
     src: &str,
     pinned: Option<&'a str>,
     override_sha256: Option<&'a str>,
     sha256_var: &str,
 ) -> Result<Option<&'a str>> {
-    let expected = override_sha256.or(pinned);
+    let expected = override_sha256.filter(|sha| !sha.is_empty()).or(pinned);
 
     if expected.is_none() && is_remote(src) {
         bail!("{sha256_var} is required: {src} is not the pinned archive");
@@ -631,7 +626,7 @@ mod tests {
             "HTTPS://example.com/a.zip",
             "http://127.0.0.1:8080/a.zip",
         ] {
-            let err = expected_sha256(src, None, None, "X_SHA256")
+            let err = required_sha256(src, None, None, "X_SHA256")
                 .expect_err("an unpinned remote source must be refused");
 
             assert!(err.to_string().contains("X_SHA256"), "{err}");
@@ -647,11 +642,13 @@ mod tests {
         for (src, pinned, given, expected) in [
             (remote, pinned, None, pinned),
             (remote, pinned, given, given),
+            (remote, pinned, Some(""), pinned),
             (remote, None, given, given),
             (local, None, given, given),
             (local, None, None, None),
+            (local, None, Some(""), None),
         ] {
-            let resolved = expected_sha256(src, pinned, given, "X_SHA256")
+            let resolved = required_sha256(src, pinned, given, "X_SHA256")
                 .expect("a pinned or local source must resolve");
 
             assert_eq!(resolved, expected, "{src} {pinned:?} {given:?}");
