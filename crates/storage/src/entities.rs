@@ -820,6 +820,17 @@ impl StorageType {
             Self::User { .. } | Self::Shared { .. } | Self::SharedMember { .. }
         )
     }
+
+    /// The signature a `User`, `Shared` or `SharedMember` entry carries.
+    #[must_use]
+    pub const fn signature_data(&self) -> Option<&SignatureData> {
+        match self {
+            Self::User { signature_data, .. }
+            | Self::Shared { signature_data, .. }
+            | Self::SharedMember { signature_data, .. } => signature_data.as_ref(),
+            Self::Public | Self::Frozen => None,
+        }
+    }
 }
 
 /// System metadata (timestamps in u64 nanoseconds).
@@ -1103,6 +1114,26 @@ impl Metadata {
     #[must_use]
     pub fn updated_at(&self) -> u64 {
         *self.updated_at
+    }
+
+    /// Dates a signed entry by the nonce its signature commits to, as `updated_at`
+    /// is not signed; one that may hold more than that write is dated no earlier.
+    pub fn date_by_signature(&mut self) {
+        let Some(nonce) = self.storage_type.signature_data().map(|sig| sig.nonce) else {
+            return;
+        };
+        // A rotation receiver keeps an anchor's first signature, and a merged
+        // entry keeps one write's signature beside the newer write's date.
+        let may_hold_more = matches!(self.storage_type, StorageType::Shared { .. })
+            || matches!(
+                self.crdt_type,
+                Some(CrdtType::Custom(_) | CrdtType::FugueTextBlock)
+            );
+        self.updated_at = if may_hold_more {
+            (*self.updated_at).max(nonce).into()
+        } else {
+            nonce.into()
+        };
     }
 
     /// Stamps the per-entry schema version tag (identity-gated migration).
