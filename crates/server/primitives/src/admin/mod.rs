@@ -4843,12 +4843,13 @@ mod tests {
             ApplicationId::from([0x99; 32]),
             None,
             Vec::new(),
-            "group".to_owned(),
+            "team-notes-group".to_owned(),
             Some("identity-secret".to_owned()),
         );
         let shown = format!("{req:?}");
 
         assert!(!shown.contains("identity-secret"), "{shown}");
+        assert!(shown.contains("team-notes-group"), "{shown}");
         assert!(shown.contains("redacted"), "{shown}");
     }
 }

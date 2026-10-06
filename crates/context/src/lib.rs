@@ -643,13 +643,6 @@ pub struct GovernancePreflight {
     pub node_client: calimero_node_primitives::client::NodeClient,
 }
 
-impl GovernancePreflight {
-    /// An owned copy of the signing key, for signing inside an async block.
-    pub fn signer_sk(&self) -> calimero_primitives::identity::PrivateKey {
-        calimero_primitives::identity::PrivateKey::from(*self.signing_key.as_bytes())
-    }
-}
-
 impl ContextManager {
     /// Evict the cached application record for `application_id` so the next
     /// resolution re-reads the row. The compiled-module, read-only-method, and
@@ -753,7 +746,7 @@ impl ContextManager {
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
-        let sk = preflight.signer_sk();
+        let sk = preflight.signing_key;
         let group_id = *group_id;
         let op_debug = format!("{op:?}");
 
