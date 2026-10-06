@@ -216,6 +216,21 @@ Not every departure rotates. For a removal the publisher decides by which key en
 
 This is the documented trade-off in `group_governance_publisher.rs`; the choice keys off whether the encrypting scope is the subgroup itself or the namespace root.
 
+## Flipping a subgroup to Restricted
+
+A `SubgroupVisibilitySet` from `Open` to `Restricted` ends inheritance: everyone who reached the subgroup through its parent stops being a member at once.
+So the publisher rotates in the same op, as a removal does.
+It mints a fresh key and attaches it as a rotation wrapped only for the subgroup's direct members, who encrypt under it from then on.
+No member who only inherited the subgroup is handed that key, so none of them can read what comes next.
+While the subgroup is Open, its own current key is neither served by the pull responder nor delivered to added members.
+
+Only the flipped subgroup rotates.
+An `Open` descendant of it stops being covered by the namespace key at the same moment and goes on under its own current key, which a member who inherited it while the chain was Open may have pulled by id.
+
+The rotation needs an admin of the subgroup itself.
+An admin inherited from a parent loses that standing by the flip, so a flip to Restricted from such a node is refused before it is applied; a relay publishing the flip on someone's behalf is judged by its author.
+A flip to `Open`, or of a subgroup that is already Restricted, rotates nothing.
+
 ## Pull-based key recovery
 
 Key delivery to a newly-admitted member is a one-shot push (`RootOp::KeyDelivery`, or the rotation envelopes above): an existing key-holder wraps the key once when it first applies the join. A single gossip publish into an intermittent mesh can be missed, and gossipsub has no replay. So the _durable_ path is the opposite direction — a member that is online and syncing **pulls** any key it is entitled to but lacks, every sync round, until it has it.
