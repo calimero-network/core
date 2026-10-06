@@ -106,7 +106,20 @@ async fn handle(
             &group_subscriptions,
         );
     }
-    let subscribed_groups = groups.subscribed;
+    let mut subscribed_groups = groups.subscribed;
+
+    // A withdrawal that committed after the gates above read the store found
+    // nothing here to drop yet, so ask again now the ids are in place.
+    if !super::re_derive(&state, &connection_state).await.is_empty() {
+        warn!("revoked a WS subscription on re-checking it after the subscribe recorded it");
+    }
+    // Answer and seed only what the connection still holds: the fan-out may
+    // have revoked an id since it was recorded.
+    {
+        let inner = connection_state.inner.read().await;
+        subscribed.retain(|id| inner.subscriptions.contains(id));
+        subscribed_groups.retain(|id| inner.group_subscriptions.contains(id));
+    }
 
     // Seed this connection with each context's CURRENT presence, now that the
     // subscription is live.
