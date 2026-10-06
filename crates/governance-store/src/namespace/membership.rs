@@ -163,16 +163,9 @@ impl<'a> NamespaceMembershipService<'a> {
         let reentry = ReentryRepository::new(self.store);
         reentry.require_invitation_admits(&group_id, member, inv.invitation_nonce)?;
 
-        let role = role_from_invited_role(inv.invited_role);
-        if role == GroupMemberRole::Admin && !self_authored {
-            // At the join's cut, like `require_inviter_permission`, and skipped
-            // on the author for the same reason, or an admin invitation would be
-            // the one kind that still cannot be accepted offline. A key bound to
-            // no account holds no admin row, so it answers `false` here.
-            if !self.permissions(&group_id).is_admin(&inviter_pk)? {
-                bail!("only admins can invite new admins");
-            }
-        }
+        // Skipped on the author for the same reason as the inviter permission:
+        // an admin invitation would otherwise be the one kind not accepted offline.
+        let role = self.admission_role(signed_invitation, self_authored)?;
 
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
         if resolved_ns.to_bytes() != self.namespace_id.to_bytes() {
@@ -210,6 +203,26 @@ impl<'a> NamespaceMembershipService<'a> {
             events.push(auto_follow);
         }
         Ok(events)
+    }
+
+    /// The role `signed_invitation` admits a joiner at: `Admin` only when its
+    /// inviter is an admin. `self_authored` skips that lookup on the joiner's node.
+    pub fn admission_role(
+        &self,
+        signed_invitation: &SignedGroupOpenInvitation,
+        self_authored: bool,
+    ) -> EyreResult<GroupMemberRole> {
+        let inv = &signed_invitation.invitation;
+        let role = role_from_invited_role(inv.invited_role);
+        if role == GroupMemberRole::Admin && !self_authored {
+            // At the join's cut, like `require_inviter_permission`; a key bound
+            // to no account holds no admin row, so it answers `false` here.
+            let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
+            if !self.permissions(&inv.group_id).is_admin(&inviter_pk)? {
+                bail!("only admins can invite new admins");
+            }
+        }
+        Ok(role)
     }
 
     /// Validate an open invitation for the responder key-delivery path:

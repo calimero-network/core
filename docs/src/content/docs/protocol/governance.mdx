@@ -73,6 +73,10 @@ When a member's latest membership write in a group is a removal or a leave above
 That is the same in every arrival order, it is the exact role whenever all those joins carried one role, and it can lower a member's authority but never raise it.
 This rule is part of `SignedNamespaceOp` version 23: a node on an older version folds a different role, so nodes of one namespace must be upgraded together.
 
+### Which role an invitation admits at
+
+An invitation names the role its joiner is admitted at, and only an invitation whose inviter is an admin of the group may name `Admin`: a member who merely holds `CAN_INVITE_MEMBERS` cannot mint an admin. The node that answers the join applies the same rule as every peer applying `MemberJoined` (`NamespaceMembershipService::admission_role`), read from its current state rather than the join's cut, so it refuses such an invitation before serving a key and records the joiner at the invited role. A responder writes an `Admin` row only when it is itself an admitter that endorses the join; otherwise the joiner's row arrives with the join op. A member who already holds a row keeps the role it holds when it presents an invitation again.
+
 ### Which group an invitation may target
 
 An invitation names a `group_id`, and that may be the namespace root or a `Restricted` subgroup — but **not a subgroup on an `Open` chain to its namespace**. The reason is the key, not the membership row.
