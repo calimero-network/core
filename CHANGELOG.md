@@ -1457,6 +1457,19 @@
 
 ### Changed
 
+- **A namespace subgroup is created Open unless the caller says otherwise.**
+  `POST /admin-api/namespaces/:id/groups` without `visibility` now creates an
+  Open subgroup; it used to create a Restricted one. Creating Restricted and
+  flipping to Open is not the same as creating Open: the Restricted subgroup
+  admits the TEE with an op sealed under its own key, the flip cites it, and a
+  namespace member outside the subgroup can read the flip but never that
+  ancestry, so it parks the flip and every namespace op after it. A caller
+  that wants a private subgroup must send `"visibility": "restricted"`. The
+  Rust client's `create_group_in_namespace` takes the visibility, and
+  `meroctl namespace create-group` takes `--visibility`. (breaking: a caller
+  relying on the Restricted default gets an Open group; apps#377 names it in
+  every app)
+
 - **Tombstone GC sweeps every 10 minutes, and the interval is configurable.**
   The new `[gc] check_interval` (seconds, default `600`) replaces the fixed
   one-hour cadence, so a tombstone every member has applied goes within about

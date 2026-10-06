@@ -863,7 +863,13 @@ impl SyncManager {
                                                 &format!("fails signature verification: {e}"),
                                             ));
                                         }
-                                        stage.put_entity(Id::new(*id), entry, index)?;
+                                        stage_signed_dated(
+                                            &stage,
+                                            context_id,
+                                            Id::new(*id),
+                                            entry,
+                                            &named,
+                                        )?;
                                         let _previous = declined.insert(
                                             Id::new(*id),
                                             schema_bytecode_id
@@ -975,7 +981,13 @@ impl SyncManager {
                                     }
 
                                     // Verified: staged, and installed with the rest of the snapshot.
-                                    stage.put_entity(id_obj, entry, index)?;
+                                    stage_signed_dated(
+                                        &stage,
+                                        context_id,
+                                        id_obj,
+                                        entry,
+                                        &index_entity,
+                                    )?;
                                     applied += 1;
                                     if let Some(k) = schema_bytecode_id {
                                         observed_schema = Some(*k);
@@ -1014,18 +1026,17 @@ impl SyncManager {
                                     //   key nothing ever wrote; a
                                     //   peer emitting one is
                                     //   misbehaving.
-                                    // * `ROTATION_LOG` - legacy rotation
-                                    //   history nothing reads now: a
-                                    //   cell's writers come from the
-                                    //   governance fold.
+                                    // * kind 3 - the retired rotation
+                                    //   log an older peer may still
+                                    //   ship: a cell's writers come
+                                    //   from the governance fold.
                                     warn!(
                                         %context_id,
                                         kind,
                                         id = ?id,
                                         "snapshot Auxiliary record: rejecting — no kind \
                                          currently has per-record authentication (issue \
-                                         #2387 follow-up: sign each rotation-log entry \
-                                         at write time)"
+                                         #2387 follow-up)"
                                     );
                                     rejected += 1;
                                     continue;
@@ -1082,12 +1093,12 @@ impl SyncManager {
                                         for (id_obj, entry, index, member_schema) in
                                             deferred_members.drain(..)
                                         {
-                                            let metadata = match borsh::from_slice::<
+                                            let index_entity = match borsh::from_slice::<
                                                 calimero_storage::index::EntityIndex,
                                             >(
                                                 &index
                                             ) {
-                                                Ok(idx) => idx.metadata,
+                                                Ok(idx) => idx,
                                                 Err(e) => {
                                                     return Err(refused_snapshot_entity(
                                                         context_id,
@@ -1096,6 +1107,7 @@ impl SyncManager {
                                                     ));
                                                 }
                                             };
+                                            let metadata = &index_entity.metadata;
                                             let anchor = match &metadata.storage_type {
                                                 calimero_storage::entities::StorageType::SharedMember {
                                                     anchor,
@@ -1114,7 +1126,7 @@ impl SyncManager {
                                             };
                                             if let Err(e) =
                                                 Interface::<MainStorage>::verify_snapshot_member_signature(
-                                                    id_obj, &entry, &metadata,
+                                                    id_obj, &entry, metadata,
                                                 )
                                             {
                                                 return Err(refused_snapshot_entity(
@@ -1141,7 +1153,7 @@ impl SyncManager {
                                                 &self.node_state.folded_tee(),
                                                 &context_id,
                                                 id_obj,
-                                                &metadata,
+                                                metadata,
                                                 Some(writers),
                                                 &ever_writers,
                                             ) {
@@ -1159,7 +1171,13 @@ impl SyncManager {
                                                     ));
                                                 }
                                             }
-                                            stage.put_entity(id_obj, &entry, &index)?;
+                                            stage_signed_dated(
+                                                &stage,
+                                                context_id,
+                                                id_obj,
+                                                &entry,
+                                                &index_entity,
+                                            )?;
                                             total_applied += 1;
                                             // Bind observed_schema from members too,
                                             // so a SharedMember-only context settles
@@ -1608,8 +1626,12 @@ pub(crate) fn persist_buffered_snapshot_entity(
         }
     }
 
+    let Some(dated) = signed_dated(&index_entity) else {
+        warn!(%context_id, id = ?id, "absorb entity drain: refusing an entity dated ahead of the clock");
+        return Ok(SnapshotEntityDrainOutcome::Refused);
+    };
     let mut handle = store.handle();
-    let _row_state_key = put_entity_row(&mut handle, context_id, id_obj, entry, index)?;
+    let _row_state_key = put_entity_row(&mut handle, context_id, id_obj, entry, &dated)?;
 
     // Link into the parent's child trie HERE, not only in the one-shot rebuild
     // after the snapshot pages land.
@@ -1690,21 +1712,47 @@ pub(crate) fn drain_buffered_snapshot_entity(
     Ok(SnapshotEntityDrainOutcome::Pending)
 }
 
-/// Writes an entity received in a snapshot: its index record and its data, as
-/// the one entity row the storage layer keeps for them (`calimero_storage::row`).
+/// `index` dated by its signature rather than by the date the server sent, or
+/// `None` when that date is further ahead of the clock than the drift tolerance.
+fn signed_dated(
+    index: &calimero_storage::index::EntityIndex,
+) -> Option<calimero_storage::index::EntityIndex> {
+    let mut index = index.clone();
+    index.metadata.date_by_signature();
+    let bound = time_now().saturating_add(calimero_storage::constants::DRIFT_TOLERANCE_NANOS);
+    (index.metadata.updated_at() <= bound).then_some(index)
+}
+
+/// Stages a verified entity as [`signed_dated`] returns it, refusing the
+/// snapshot when it returns `None`: the entity's parent hash counts it.
+fn stage_signed_dated(
+    stage: &Stage,
+    context_id: ContextId,
+    id: Id,
+    entry: &[u8],
+    index: &calimero_storage::index::EntityIndex,
+) -> Result<()> {
+    let dated = signed_dated(index).ok_or_else(|| {
+        refused_snapshot_entity(context_id, id, "its signed time is ahead of the clock")
+    })?;
+    stage.put_entity(id, entry, &borsh::to_vec(&dated)?)
+}
+
+/// Writes an entity received in a snapshot: its dated index record and its data,
+/// as the one entity row the storage layer keeps for them (`calimero_storage::row`).
 /// Returns the row's state key, which the install keeps across stale-key cleanup.
 fn put_entity_row(
     handle: &mut calimero_store::Handle<Store>,
     context_id: ContextId,
     id: Id,
     entry: &[u8],
-    index: &[u8],
+    index: &calimero_storage::index::EntityIndex,
 ) -> Result<[u8; calimero_store::key::STATE_KEY_LEN]> {
     let row_state_key = StorageKey::Index(id).to_bytes();
     let row = calimero_storage::row::encode(
         id,
         &calimero_storage::row::Row {
-            index: Some(index.to_vec()),
+            index: Some(borsh::to_vec(index)?),
             data: Some(entry.to_vec()),
         },
     );
@@ -2261,7 +2309,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // existence checks alone (no value reads). This reproduces the
     // pre-#2133 bookkeeping exactly: `consumed_keys` collects every
     // state_key we either ship in a bundle, deliberately skip
-    // (cursor / RotationLog), and `unrecognized_count` is the
+    // (cursor), and `unrecognized_count` is the
     // residual `total_records − consumed`. It is computed over the
     // *full* id set on every call (independent of the page window)
     // so the operator-visible warning stays stable across
@@ -2308,8 +2356,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         let has_index = present_keys.contains(&index_key);
         let has_entry = with_entry.contains(id);
 
-        // An entity contributes 1 record (Entity bundling Entry + Index). A rotation
-        // writes no data, so there is no rotation key to count.
+        // An entity contributes 1 record (Entity bundling Entry + Index).
         if has_index && has_entry {
             total_entries += 1;
         }
@@ -2882,11 +2929,8 @@ mod tests {
     use calimero_store::Store;
 
     use super::*;
-    // Wire-codec round-trip tests below use the `ROTATION_LOG` auxiliary
-    // kind as a sample `SnapshotRecord::Auxiliary`; the constant lives in
-    // node-primitives and is exercised only here (the sender never emits a
-    // rotation-log auxiliary record).
-    use calimero_node_primitives::sync::snapshot::snapshot_record_kind;
+
+    const AUX_KIND: u8 = 3; // a retired auxiliary kind, as an older peer ships it
 
     /// Grouping siblings behind one row cache must be invisible in the result.
     ///
@@ -3690,7 +3734,7 @@ mod tests {
                 schema_bytecode_id: Some([7u8; 32]),
             },
             SnapshotRecord::Auxiliary {
-                kind: snapshot_record_kind::ROTATION_LOG,
+                kind: AUX_KIND,
                 id: [4u8; 32],
                 value: vec![5, 6, 7],
             },
@@ -3710,7 +3754,7 @@ mod tests {
         assert!(matches!(
             &records[1],
             SnapshotRecord::Auxiliary { kind, id, value }
-                if *kind == snapshot_record_kind::ROTATION_LOG
+                if *kind == AUX_KIND
                     && *id == [4u8; 32]
                     && value == &vec![5, 6, 7]
         ));
@@ -3730,7 +3774,7 @@ mod tests {
             schema_bytecode_id: None,
         };
         let aux = SnapshotRecord::Auxiliary {
-            kind: snapshot_record_kind::ROTATION_LOG,
+            kind: AUX_KIND,
             id: [2u8; 32],
             value: vec![30, 31],
         };
@@ -3746,7 +3790,7 @@ mod tests {
         assert!(matches!(
             &records[1],
             SnapshotRecord::Auxiliary { kind, id, .. }
-                if *kind == snapshot_record_kind::ROTATION_LOG && *id == [2u8; 32]
+                if *kind == AUX_KIND && *id == [2u8; 32]
         ));
     }
 
@@ -4443,6 +4487,78 @@ mod snapshot_trust_tests {
             "a member serving a snapshot must not be able to write alice's entry late"
         );
         assert_eq!(drain(&alice), SnapshotEntityDrainOutcome::Persisted);
+    }
+
+    /// Drains, as a buffered snapshot leaf, Alice's owned entry signed at `nonce`
+    /// and shipped dated `updated_at`. Returns the outcome and the stored date.
+    fn drain_alices_entry(
+        nonce: u64,
+        updated_at: u64,
+    ) -> (SnapshotEntityDrainOutcome, Option<u64>) {
+        let alice = PrivateKey::from([0x78; 32]);
+        let (group, alice_account) = Group::with_admin(&alice.public_key());
+        let id =
+            calimero_storage::tests::common::owned_entry_id(Id::new([0x79; 32]), &alice_account);
+        let data = b"alice's entry".to_vec();
+        let mut metadata = Metadata::new(1, nonce);
+        metadata.storage_type = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
+            owner: alice_account,
+            signature_data: signer(&alice, nonce),
+        };
+        let payload = Action::Add {
+            id,
+            data: data.clone(),
+            ancestors: vec![],
+            metadata: metadata.clone(),
+        }
+        .payload_for_signing();
+        if let StorageType::User {
+            signature_data: Some(sig),
+            ..
+        } = &mut metadata.storage_type
+        {
+            sig.signature = alice.sign(&payload).unwrap().to_bytes();
+        }
+        metadata.updated_at = updated_at.into();
+        let mut index = EntityIndex::minimal_for_test(id);
+        index.metadata = metadata;
+
+        let outcome = persist_buffered_snapshot_entity(
+            &group.store,
+            &calimero_governance_store::NotFolded,
+            group.context,
+            *id.as_bytes(),
+            &data,
+            &super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &data),
+            &|_| Ok(CellWriters::Genesis),
+        )
+        .unwrap();
+        let stored = crate::delta_store::read_entity_index_direct(&group.store, group.context, id)
+            .unwrap()
+            .map(|index| index.metadata.updated_at());
+        (outcome, stored)
+    }
+
+    /// `updated_at` is not signed, so a peer serving a snapshot can re-date an
+    /// entry. The joiner stores it under the date its signature commits to.
+    #[test]
+    fn a_snapshot_entry_is_stored_under_its_signed_date() {
+        assert_eq!(
+            drain_alices_entry(1, calimero_storage::env::time_now()),
+            (SnapshotEntityDrainOutcome::Persisted, Some(1))
+        );
+    }
+
+    /// A date past the drift tolerance would make every later write to the entry
+    /// look stale, and stamp this node's own writes past it, so it is refused.
+    #[test]
+    fn a_snapshot_entry_signed_ahead_of_the_clock_is_refused() {
+        let ahead = calimero_storage::env::time_now() + 60_000_000_000;
+        assert_eq!(
+            drain_alices_entry(ahead, 1),
+            (SnapshotEntityDrainOutcome::Refused, None)
+        );
     }
 
     fn writer_set(accounts: &[AccountId]) -> BTreeMap<AccountId, OpMask> {

@@ -58,6 +58,11 @@ A state delta is authenticated at **two independent grains**, and each closes a 
 **Layer 1 — the delta-envelope signature.** The author signs a canonical payload that binds `(domain, context_id, delta_id, author_id, governance_position)`, where `delta_id` is the content hash over the delta's parents and actions (`crates/node/primitives/src/sync/delta_auth.rs`). The domain, `SignatureDomain::Delta`, is serialized *into* the signed bytes as their first byte, so a signature minted for another kind of statement cannot be replayed here. Every receive path — gossip, DAG-catchup, snapshot-buffer replay — calls `verify_delta_signature(...)` against the claimed `author_id` *before* the delta touches storage. This binds the **whole delta to one author**: a current member cannot take a delta authored by someone else and rebroadcast it under their own `author_id`, because the foreign author's signature won't verify under the new key and they cannot produce a fresh one.
 
 **Layer 2 — per-action signatures.** Restricted entities — `StorageType::User` (owner-scoped) and `StorageType::Shared` (writer-set–scoped) — carry a `signature_data` on each action. Inside `Interface::apply_action` (`crates/storage/src/interface.rs`), a remote `User`/`Shared` action with no signature is **rejected** (`"Remote User action must be signed"`), and the Ed25519 signature is verified over `action.payload_for_signing()` — a hash binding `(prefix, id, data, nonce, storage-type access-control triple)` — against the owner or a member of the writer set. This attributes **each individual restricted write** to a legitimate writer of *that object*. `Public` and `Frozen` entities carry no per-action signature (`apply_action` returns early for them).
+The signed nonce is also the write's date for last-writer-wins, replay and delete checks.
+`updated_at` travels unsigned, so a peer serving an entity by HashComparison, LevelWise or a snapshot could re-date it (a delta cannot: its `delta_id` hashes the actions, metadata included).
+`apply_action` and the snapshot install therefore date a `User` or `SharedMember` write by its nonce (`Metadata::date_by_signature`).
+An entry that may hold more than its signed write is dated no earlier than its nonce rather than at it: a `Shared` anchor, whose first signature a rotation receiver keeps beside the rotation's date, and an entry of a type that merges (`Custom`, `FugueTextBlock`), which keeps one write's signature beside the newer write's date.
+For those the served date is trusted up to the drift tolerance, and a snapshot entity or a merge written back for a peer's leaf dated past it is refused.
 
 Neither layer subsumes the other:
 
@@ -127,7 +132,7 @@ Two caveats follow directly from this design and are worth stating loudly:
 - **Rotation is forward-only.** It does not un-share data the removed member already decrypted while a member. Anything they read or copied before removal is theirs forever.
 - **Past ciphertext under the old key remains decryptable to anyone who held the old key.** Rotation changes the *next* key; it does not re-encrypt history.
 
-Mechanics and the rotation-log bookkeeping are in [Key Rotation](/protocol/key-rotation/).
+Mechanics and bookkeeping are in [Key Rotation](/protocol/key-rotation/).
 
 ## Which scope key protects a context
 

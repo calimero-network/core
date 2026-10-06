@@ -18,10 +18,16 @@ use crate::AdminState;
 pub struct CreateGroupInNamespaceBody {
     pub group_name: Option<String>,
     /// Optional subgroup visibility at birth (#2771): `"open"` or
-    /// `"restricted"`. Absent ⇒ `"restricted"` (preserves legacy behavior).
-    /// A born-Open subgroup is Open at `SubgroupCreated`-event time, so
-    /// `tee_subgroup_admit` skips it (TEE reads via inheritance) and no
-    /// transient direct TEE row is created.
+    /// `"restricted"`. Absent ⇒ `"open"`.
+    ///
+    /// Open is the default because creating Restricted and flipping to Open
+    /// is not equivalent to creating Open: a Restricted subgroup admits the
+    /// TEE with an op sealed under its own key, the flip cites that op, and a
+    /// namespace member outside the subgroup can read the flip but never its
+    /// ancestry - so it parks the flip, and every namespace op after it. A
+    /// born-Open subgroup is Open at `SubgroupCreated`-event time, so
+    /// `tee_subgroup_admit` skips it and that op never exists. Callers that
+    /// want a private subgroup must say `"restricted"`.
     pub visibility: Option<String>,
 }
 
@@ -76,18 +82,9 @@ pub async fn handler(
 
     let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
 
-    // Map the optional `visibility` field to the op's `restricted` flag.
-    // Default (absent / unrecognized) ⇒ Restricted, matching legacy behavior.
-    let restricted = match body.visibility.as_deref() {
-        Some(v) if v.eq_ignore_ascii_case("open") => false,
-        Some(v) if v.eq_ignore_ascii_case("restricted") => true,
-        Some(other) => {
-            return parse_api_error(eyre::eyre!(
-                "invalid visibility '{other}': expected \"open\" or \"restricted\""
-            ))
-            .into_response();
-        }
-        None => true,
+    let restricted = match restricted_from(body.visibility.as_deref()) {
+        Ok(restricted) => restricted,
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
     // The account this node signs as. Carried on the op so receivers fold the
@@ -236,9 +233,43 @@ pub async fn handler(
     }
 }
 
+/// The op's `restricted` flag for a request's `visibility`: absent ⇒ Open (see
+/// [`CreateGroupInNamespaceBody::visibility`]); an unrecognized value is refused.
+fn restricted_from(visibility: Option<&str>) -> eyre::Result<bool> {
+    match visibility {
+        None => Ok(false),
+        Some(v) if v.eq_ignore_ascii_case("open") => Ok(false),
+        Some(v) if v.eq_ignore_ascii_case("restricted") => Ok(true),
+        Some(other) => {
+            eyre::bail!("invalid visibility '{other}': expected \"open\" or \"restricted\"")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::CreateGroupInNamespaceBody;
+    use super::{restricted_from, CreateGroupInNamespaceBody};
+
+    #[test]
+    fn an_absent_visibility_creates_the_group_open() {
+        assert!(!restricted_from(None).unwrap());
+    }
+
+    #[test]
+    fn a_named_visibility_is_honoured() {
+        assert!(!restricted_from(Some("open")).unwrap());
+        assert!(restricted_from(Some("restricted")).unwrap());
+        assert!(restricted_from(Some("Restricted")).unwrap());
+    }
+
+    #[test]
+    fn an_unknown_visibility_is_refused() {
+        let err = restricted_from(Some("public")).expect_err("must be refused");
+        assert!(
+            err.to_string().contains("invalid visibility 'public'"),
+            "got: {err}"
+        );
+    }
 
     #[test]
     fn a_body_with_an_unknown_field_is_refused() {

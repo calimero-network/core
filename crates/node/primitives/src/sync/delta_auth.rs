@@ -380,14 +380,7 @@ pub fn verify_state_beacon(
 // not a wire field at all: it rides sealed inside `SealedDeltaPayload`, so it is
 // unavailable to a pre-decrypt verifier.
 //
-// It cannot go into the `compute_id` preimage either, which would otherwise
-// cover it on every path. The rotation-log self-log leg reassigns
-// `delta.expected_root_hash` AFTER the id is computed, and it cannot be reordered
-// to run first because the self-log needs `delta.id` to exist. That circularity
-// is why `content_address_survives_post_id_root_hash_mutation` pins the field as
-// being outside the preimage.
-//
-// Living with it is acceptable because the field is advisory: `DeltaStore` stores
+// Living without it is acceptable because the field is advisory: `DeltaStore` stores
 // the root hash it COMPUTED, never this one, and a mismatch never rejects a
 // delta. Forging it on the catchup paths (where it is plaintext; gossip seals it)
 // only flips the merge classification that decides how a delta's children are

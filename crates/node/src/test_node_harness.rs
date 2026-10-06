@@ -533,7 +533,7 @@ fn enclosing_attribute_block(head: &str) -> &str {
     &head[block_start..sig]
 }
 
-fn collect_rs_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn collect_rs_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("read_dir") {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {

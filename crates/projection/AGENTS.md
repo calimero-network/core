@@ -61,7 +61,7 @@ Two ways to fold, for two different purposes:
 ## Relationship to calimero-op / calimero-op-adapter / calimero-authz
 
 - **calimero-op** defines the log this crate folds: `Op` (scope, parents, author, hlc, payload, signature), `OpPayload` (the append-only, exhaustively-matched enum of all four planes), and the `scope_root` combining function. `calimero-projection` computes the three component hashes (`entities_hash`, `acl_hash`, `governance_hash`) that `scope_root` combines - this crate owns the hashing, `calimero-op` only owns the combinator.
-- **calimero-op-adapter** is the transitional bridge that encodes today's per-plane operation types (`Action`, `RotationLogEntry`, `GroupOp`, `RootOp`) into `OpPayload`, so the unified projection can be proven fold-equivalent with the current per-plane resolvers before those are retired.
+- **calimero-op-adapter** is the transitional bridge that encodes today's per-plane operation types (`Action`, `GroupOp`, `RootOp`) into `OpPayload`, so the unified projection can be proven fold-equivalent with the current per-plane resolvers before those are retired.
 - **calimero-authz** consumes this crate's output: `AclView` (and `SubgroupEdge`) is authz's own type, but it is only ever populated by `ScopeState::acl_view()` / `acl_view_at()`. `calimero_authz::authorize(op, acl_at_cut)` decides against that view; this crate never authorizes anything itself, and authz never walks the DAG itself.
 
 ## Key Files
