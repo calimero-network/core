@@ -376,6 +376,8 @@ merod account warrant \
   --args    '{"key":"k","value":"v"}' \
   --executor <64-hex AccountId of the relay> \
   --executor-key <64-hex signing key of the relay> \
+  --release-bytecode-id <64-hex release the context runs> \
+  --release-version 1.2.0 \
   --nonce 1 \
   --device-secret-file ./device.secret \
   --credential <hex from sign-cert>
@@ -383,6 +385,11 @@ merod account warrant \
 
 `--executor` and `--executor-key` are the account and signing key of the relay that will spend it; the relay's `GET /admin-api/contexts/<id>/intents` reports both as `executorAccount` and `executorKey`.
 Only that one device of the account may spend the warrant.
+
+`--release-bytecode-id` pins the release the context's group names, reported there as
+`releaseBytecodeId`; the relay refuses a warrant pinning any other, so it is not spent on
+code an upgrade widened. `--release-version` (`releaseVersion`) is
+signed for whoever reads the warrant and never compared; it defaults to empty.
 
 `--device-secret-file` reads the 64-hex secret from a file, or from stdin when given
 `-`; surrounding whitespace is ignored. `login-statement` takes the same flag, and

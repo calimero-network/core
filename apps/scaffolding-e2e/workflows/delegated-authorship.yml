@@ -162,6 +162,15 @@ steps:
       relay_account: accountId
       relay_key: publicKey
 
+  # The release a warrant pins: the blob id the group names (`appKey`), which
+  # `GET .../intents` also reports as `releaseBytecodeId`.
+  - name: Read the release both warrants pin
+    type: get_group_info
+    node: delegated-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      release: appKey
+
   # Minted once, presented three times below (refused, accepted, refused) — same
   # bytes each time, so only the grant can explain the different verdicts.
   #
@@ -192,6 +201,8 @@ steps:
       - '{{relay_account}}'
       - --executor-key
       - '{{relay_key}}'
+      - --release-bytecode-id
+      - '{{release}}'
       - --method
       - set
       # One argv element, and the exact JSON the intent below sends. The warrant
@@ -290,9 +301,9 @@ steps:
   # `expect` here, not just hash convergence: hashes can agree milliseconds
   # before a pending delta finishes applying.
 
-  # Expiry is checked only on the relay side (`perform_intent`), never by a peer
-  # at apply - wall-clock there is node-dependent and would stop authorization
-  # converging. Isolated so `not_after` is the only thing that can refuse this.
+  # Expiry is checked against the relay's clock here; a peer compares it only with
+  # the delta's own signed stamp, never its clock, so authorization still
+  # converges. Isolated so `not_after` is the only thing that can refuse this.
   - name: The author mints a warrant that expires almost immediately
     type: node_exec
     node: delegated-node-2
@@ -306,6 +317,8 @@ steps:
       - '{{relay_account}}'
       - --executor-key
       - '{{relay_key}}'
+      - --release-bytecode-id
+      - '{{release}}'
       - --method
       - set
       - --args

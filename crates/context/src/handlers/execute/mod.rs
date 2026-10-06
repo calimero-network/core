@@ -11,12 +11,13 @@ use calimero_app_downloader::{AppRequest, Outcome as AcquireOutcome};
 use calimero_context_client::client::crypto::ContextIdentity;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::messages::{
-    ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse, InternalErrorKind,
-    MethodNotExported, MigrationParams, WriteSource,
+    DelegatedWriteRefusal, ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
+    InternalErrorKind, MethodNotExported, MigrationParams, WriteSource,
 };
 use calimero_context_client::{ContextAtomic, ContextAtomicKey, ContextGuard};
 use calimero_context_config::types::{ContextGroupId, GovernanceParentEdge};
 use calimero_node_primitives::client::NodeClient;
+use calimero_node_primitives::sync::delta_auth::stamped_after_expiry;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
@@ -929,6 +930,16 @@ impl Handler<ExecuteRequest> for ContextManager {
                         .and_then(|abi| abi.read_only.as_ref())
                         .is_some_and(|set| set.contains(method.as_str())));
 
+            // A warrant is spent only on the release its author signed against,
+            // judged against the blob just loaded rather than the group's target.
+            let release_refusal = delegation
+                .as_deref()
+                .filter(|d| d.warrant.release_bytecode_id != *executing_blob.digest())
+                .map(|_| ExecuteError::DelegatedWriteRefused {
+                    context_id: context.id,
+                    reason: DelegatedWriteRefusal::ReleaseNotRunning,
+                });
+
             // Cheap (Arc-backed) clone kept past internal_execute (which moves
             // `datastore`) so a post-call migrate_my_entries can refresh the
             // node-local authored_remaining count (6f.8 drop-after-convert).
@@ -967,6 +978,15 @@ impl Handler<ExecuteRequest> for ContextManager {
                         %context_id,
                         function = %method,
                         "delegated read refused: method is not declared read-only"
+                    );
+                    bail!(refusal);
+                }
+
+                if let Some(refusal) = release_refusal {
+                    warn!(
+                        %context_id,
+                        function = %method,
+                        "delegated write refused: the warrant pins a release this context does not run"
                     );
                     bail!(refusal);
                 }
@@ -2446,7 +2466,6 @@ async fn internal_execute(
                 d,
                 calimero_governance_store::AdmissionCut::live(),
             ) {
-                use calimero_context_client::messages::DelegatedWriteRefusal;
                 use calimero_governance_store::warrant_gate::WarrantRefusal;
                 let reason = match err.downcast_ref::<WarrantRefusal>() {
                     Some(WarrantRefusal::ExecutorIsTeeReplica) => {
@@ -2711,6 +2730,20 @@ async fn internal_execute(
         }
     }
 
+    // Stamped before anything commits: peers judge a delegated delta's expiry
+    // on this stamp, so a run past the warrant's deadline must not land here.
+    let delta_hlc = (outcome.root_hash.is_some() && !is_state_op && !outcome.artifact.is_empty())
+        .then(calimero_storage::env::hlc_timestamp);
+    if let Some(d) = delegation {
+        let stamp = delta_hlc.unwrap_or_else(calimero_storage::env::hlc_timestamp);
+        if stamped_after_expiry(&d.warrant, &stamp) {
+            bail!(ExecuteError::DelegatedWriteRefused {
+                context_id: context.id,
+                reason: DelegatedWriteRefusal::WarrantExpired,
+            });
+        }
+    }
+
     // Always update root_hash if present (even if storage is empty)
     // This is critical for state_ops like __calimero_sync_next where actions
     // are applied inside WASM but storage appears empty
@@ -2753,7 +2786,7 @@ async fn internal_execute(
         }
 
         // Create causal delta for non-state ops with non-empty artifacts
-        if !is_state_op && !outcome.artifact.is_empty() {
+        if let Some(hlc) = delta_hlc {
             // Extract actions from artifact for DAG persistence
             let mut actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
                 Ok(StorageDelta::Actions(actions)) => actions,
@@ -2881,7 +2914,6 @@ async fn internal_execute(
                 }
             };
 
-            let hlc = calimero_storage::env::hlc_timestamp();
             let events_hash = events_payload(&outcome.events)
                 .as_deref()
                 .map(CausalDelta::hash_events);
@@ -3220,8 +3252,7 @@ fn on_behalf_refusal(
     datastore: &Store,
     context_id: &ContextId,
     author: calimero_account::AccountId,
-) -> eyre::Result<Option<calimero_context_client::messages::DelegatedWriteRefusal>> {
-    use calimero_context_client::messages::DelegatedWriteRefusal;
+) -> eyre::Result<Option<DelegatedWriteRefusal>> {
     use calimero_governance_store::OnBehalfRefusal;
 
     let Some(group_id) = calimero_governance_store::get_group_for_context(datastore, context_id)?

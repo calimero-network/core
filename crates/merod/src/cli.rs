@@ -191,6 +191,8 @@ mod tests {
                 &"b".repeat(64),
                 "--executor-key",
                 &"e".repeat(64),
+                "--release-bytecode-id",
+                &"f".repeat(64),
                 "--method",
                 "set",
                 "--args",

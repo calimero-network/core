@@ -22,7 +22,6 @@
 //! when the wire format is *deliberately* changing, and treat that as the
 //! breaking change it is.
 
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{AccountId, PublicKey};
 
@@ -44,7 +43,8 @@ fn terms() -> WarrantTerms {
         author_account: AccountId::from([0x22; 32]),
         executor: AccountId::from([0x33; 32]),
         executor_key: PublicKey::from([0x77; 32]),
-        app_version: ApplicationId::from([0x44; 32]),
+        release_bytecode_id: [0x44; 32],
+        release_version: "1.0.0".to_owned(),
         method: METHOD.to_owned(),
         intent_hash: Warrant::intent_hash(METHOD, ARGS),
         account_heads: vec![[0x55; 32]],
@@ -79,7 +79,7 @@ fn the_intent_hash_is_stable() {
 fn the_signing_preimage_is_stable() {
     assert_eq!(
         hex::encode(fixture().signing_payload()),
-        "f7ebb6c7645c551a7148866d7b2268f7e62fe79685e05ae82d131a2fbde75e34",
+        "f38e2c9eb7e78025f8797bb34168fe48da95a20320fc62fc2da41e3efd30607c",
         "the signing preimage changed; every warrant signed elsewhere now \
          verifies nowhere",
     );
@@ -91,18 +91,19 @@ fn the_signing_preimage_is_stable() {
 /// no length prefixes, no tags — which is what made a non-borsh implementation
 /// viable in the first place. v2 gives that up deliberately: `method` travels in
 /// the clear as a `String` and each cited-head list is a `Vec`, so three
-/// `u32` little-endian counts now sit inside the encoding. A signer in another
-/// language has to write those counts, and the length below is the cheapest
-/// signal that a field changed shape again.
+/// `u32` little-endian counts now sit inside the encoding, and the release's
+/// semver adds a fourth. A signer in another language has to write those
+/// counts, and the length below is the cheapest signal that a field changed
+/// shape again.
 #[test]
 fn the_wire_encoding_is_stable() {
     let bytes = borsh_bytes(&fixture());
 
     assert_eq!(
         bytes.len(),
-        383,
-        "32*7 ids and hashes + (4 + 3) method + 2*(4 + 32) cited heads + 8 + 8 \
-         + 64. A different length means a field changed shape, and a signer in \
+        392,
+        "32*7 ids and hashes + (4 + 5) release version + (4 + 3) method + 2*(4 + 32) \
+         cited heads + 8 + 8 + 64. A different length means a field changed shape, and a signer in \
          another language is now wrong",
     );
     // Split by field so the layout is legible: a reviewer can check the
@@ -120,8 +121,11 @@ fn the_wire_encoding_is_stable() {
             "3333333333333333333333333333333333333333333333333333333333333333",
             // executor_key
             "7777777777777777777777777777777777777777777777777777777777777777",
-            // app_version
+            // release_bytecode_id
             "4444444444444444444444444444444444444444444444444444444444444444",
+            // release_version: u32 LE length 5, then "1.0.0" in ASCII
+            "05000000",
+            "312e302e30",
             // method: u32 LE length 3, then "set" in ASCII
             "03000000",
             "736574",
@@ -138,8 +142,8 @@ fn the_wire_encoding_is_stable() {
             // not_after 1_700_000_000, u64 little-endian
             "00f1536500000000",
             // signature
-            "317e0f841ded54b75e227d66abd819b95892218a6c70cb92d6a94fb0fb74ea81",
-            "cf0063bc163f528c67a3a4ed68278152985f6d14afa2024c33932f23d61ea006",
+            "e42f753e1a30657fe036b0c0a07030f3f6d92ea56749921c5a6ae07eb966cb50",
+            "1ed439f7a8007dfce0ccb6b5a8b94bdda9f48db9c84f181e9fbaa0d208726b02",
         ),
     );
 }

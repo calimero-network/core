@@ -332,6 +332,16 @@ impl Fixture {
             .await
     }
 
+    /// The release the group names, which its contexts run.
+    fn release(&self) -> [u8; 32] {
+        MetaRepository::new(&self.store)
+            .load(&self.group)
+            .expect("read the group meta")
+            .expect("the group meta exists")
+            .target
+            .bytecode_id
+    }
+
     fn context_id(&self) -> ContextId {
         ContextId::from_seed(SEED)
     }
@@ -490,14 +500,7 @@ async fn delegated_write(
         .expect("still holding the authorship bit, which the warrant gate honours");
 
     let release = match pin {
-        Pin::Running => {
-            MetaRepository::new(&fx.store)
-                .load(&fx.group)
-                .expect("read the group meta")
-                .expect("the group meta exists")
-                .target
-                .bytecode_id
-        }
+        Pin::Running => fx.release(),
         Pin::Other => [0xEE; 32],
     };
     let args = br#"{}"#.to_vec();
@@ -508,7 +511,8 @@ async fn delegated_write(
             author_account: fx.author,
             executor: fx.relay,
             executor_key: fx.relay_pk,
-            app_version: ApplicationId::from(release),
+            release_bytecode_id: release,
+            release_version: "1.0.0".to_owned(),
             method: method.to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash(method, &args),
             account_heads: vec![],
@@ -577,15 +581,20 @@ async fn a_delegated_write_that_signs_nothing_lands_through_a_granted_relay() {
 /// other refuses it before it runs rather than spending it on different code.
 #[actix::test]
 async fn a_delegated_write_pinned_to_a_release_the_context_does_not_run_is_refused() {
-    use calimero_context_client::messages::ExecuteError;
+    use calimero_context_client::messages::{DelegatedWriteRefusal, ExecuteError};
 
     let (outcome, before, after) = delegated_write("set", Pin::Other, u64::MAX).await;
     let err = outcome.expect_err("refused before it runs");
     assert!(
-        matches!(err, ExecuteError::DelegatedWriteRefused { .. }),
+        matches!(
+            err,
+            ExecuteError::DelegatedWriteRefused {
+                reason: DelegatedWriteRefusal::ReleaseNotRunning,
+                ..
+            }
+        ),
         "{err:?}"
     );
-    assert!(err.to_string().contains("release"), "{err}");
     assert_eq!(after, before, "nothing committed");
 }
 
@@ -593,15 +602,20 @@ async fn a_delegated_write_pinned_to_a_release_the_context_does_not_run_is_refus
 /// would stamp past the warrant's deadline.
 #[actix::test]
 async fn a_delegated_write_stamped_past_its_warrant_commits_nothing() {
-    use calimero_context_client::messages::ExecuteError;
+    use calimero_context_client::messages::{DelegatedWriteRefusal, ExecuteError};
 
     let (outcome, before, after) = delegated_write("set", Pin::Running, 1).await;
     let err = outcome.expect_err("refused before it commits");
     assert!(
-        matches!(err, ExecuteError::DelegatedWriteRefused { .. }),
+        matches!(
+            err,
+            ExecuteError::DelegatedWriteRefused {
+                reason: DelegatedWriteRefusal::WarrantExpired,
+                ..
+            }
+        ),
         "{err:?}"
     );
-    assert!(err.to_string().contains("expired"), "{err}");
     assert_eq!(after, before, "nothing committed");
 }
 
@@ -609,15 +623,20 @@ async fn a_delegated_write_stamped_past_its_warrant_commits_nothing() {
 /// warrant's deadline rather than spending it.
 #[actix::test]
 async fn a_delegated_run_that_writes_nothing_past_its_warrant_is_refused() {
-    use calimero_context_client::messages::ExecuteError;
+    use calimero_context_client::messages::{DelegatedWriteRefusal, ExecuteError};
 
     let (outcome, _, _) = delegated_write("noop", Pin::Running, 1).await;
     let err = outcome.expect_err("refused past the deadline");
     assert!(
-        matches!(err, ExecuteError::DelegatedWriteRefused { .. }),
+        matches!(
+            err,
+            ExecuteError::DelegatedWriteRefused {
+                reason: DelegatedWriteRefusal::WarrantExpired,
+                ..
+            }
+        ),
         "{err:?}"
     );
-    assert!(err.to_string().contains("expired"), "{err}");
 }
 
 /// Published, not just applied locally: peers learn of the context from the
@@ -824,7 +843,8 @@ async fn the_first_delegated_write_after_a_delegated_creation_lands_immediately(
             author_account: fx.author,
             executor: fx.relay,
             executor_key: fx.relay_pk,
-            app_version: fx.application_id,
+            release_bytecode_id: fx.release(),
+            release_version: "1.0.0".to_owned(),
             method: "set".to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash("set", &args),
             account_heads: vec![],
@@ -877,7 +897,8 @@ async fn a_write_reusing_the_creation_nonce_is_refused() {
             author_account: fx.author,
             executor: fx.relay,
             executor_key: fx.relay_pk,
-            app_version: fx.application_id,
+            release_bytecode_id: fx.release(),
+            release_version: "1.0.0".to_owned(),
             method: "set".to_owned(),
             intent_hash: calimero_account::Warrant::intent_hash("set", &args),
             account_heads: vec![],

@@ -9,8 +9,11 @@
 //! client has no way to derive, and whether the node may act here at all is a
 //! row in the owning group's capabilities that the client cannot read either.
 //!
-//! Both facts belong to the same question — "can this relay run my intent, and
-//! whose name do I put in the warrant?" — so they are one answer, on the path
+//! The release the context runs is the third such fact: a warrant pins it, and
+//! the client cannot read the group's target without a credential here.
+//!
+//! All of them belong to the same question, "can this relay run my intent, and
+//! whose name do I put in the warrant?", so they are one answer, on the path
 //! the intent will be presented to. A client that had to compose them from
 //! `/admin-api/identity` plus a group read would need two calls, a group id it
 //! does not have, and a credential on this node to make the second one.
@@ -172,6 +175,28 @@ pub async fn handler(
         }
     };
 
+    // The release a warrant must pin: the one this context's group named, which
+    // the context runs once any pending upgrade has applied.
+    let release = match calimero_governance_store::MetaRepository::new(store).load(&group_id) {
+        Ok(Some(meta)) if meta.target.bytecode_id != [0; 32] => meta.target,
+        Ok(_) => {
+            return ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "this context's group names no release yet, so no warrant can pin one"
+                    .to_owned(),
+            }
+            .into_response()
+        }
+        Err(err) => {
+            error!(error = ?err, %context_id, "Failed to read the group's release");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to read the group's release".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     ApiResponse {
         payload: IntentRelayApiResponse {
             data: IntentRelayApiResponseData {
@@ -180,6 +205,8 @@ pub async fn handler(
                 can_author_on_behalf,
                 group_id: hex::encode(group_id.to_bytes()),
                 granted_on_group_id: granted_on.map(|g| hex::encode(g.to_bytes())),
+                release_bytecode_id: hex::encode(release.bytecode_id),
+                release_version: release.version.into(),
             },
         },
     }

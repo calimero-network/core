@@ -50,15 +50,16 @@
 //! * is `author_account` a **member** at the cut the change cites?
 //! * does `executor` hold the **authorship capability** on the owning group?
 //! * has this `nonce` already been spent by this author device?
-//! * is `not_after` in the past?
+//! * is the relay running the release the warrant pins?
+//! * is the delta stamped after `not_after`?
 //!
 //! — because none of them are properties of the bundle. They belong to the
-//! projection, to `calimero-authz`, and to the receive path, which are the only
-//! places that see a cut or a clock. A caller that checks only what is here has
-//! checked authenticity and not authority.
+//! projection, to `calimero-authz`, to the relay and to the receive path, which
+//! are the only places that see a cut, the running code or the delta's stamp. A
+//! caller that checks only what is here has checked authenticity and not
+//! authority.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{domain_hash, AccountId, PrivateKey, PublicKey};
 
@@ -89,14 +90,11 @@ pub struct Warrant {
     /// The one device of [`Self::executor`] that may spend this warrant; see the
     /// module header.
     pub executor_key: PublicKey,
-    /// The exact application this warrant authorizes, as the content address of
-    /// its bytecode.
-    ///
-    /// Pins the code, not a version string, so a relay cannot wait for an
-    /// upgrade that widens what the named method does and then spend a warrant
-    /// signed against the narrower one. A semver would not do: two builds can
-    /// share a version and differ in exactly the way that matters.
-    pub app_version: ApplicationId,
+    /// The blob id of the release this warrant is signed against. Only the relay can
+    /// check it runs that code, so this holds an honest relay to it and no one else.
+    pub release_bytecode_id: [u8; 32],
+    /// That release's semver, for whoever reads the warrant. Signed, never compared.
+    pub release_version: String,
     /// The method this warrant authorizes, in the clear.
     ///
     /// Carried so a peer can select a **per-method write-set** directly, without
@@ -138,7 +136,8 @@ pub struct Warrant {
     /// independent replicas: they cannot coordinate on a shared counter, so an
     /// account-scoped sequence would have them refusing each other's warrants.
     pub nonce: u64,
-    /// Wall-clock bound, in seconds. Checked by whoever holds a clock — not here.
+    /// Deadline, in unix seconds: the relay checks it against its clock, every
+    /// replica against the delta's own signed stamp. Not here.
     pub not_after: u64,
     /// Signature by [`Self::author_device_key`] over [`Self::signing_payload`].
     pub signature: [u8; 64],
@@ -151,6 +150,9 @@ pub struct Warrant {
 /// from untrusted bytes, and an unbounded `Vec` there is an allocation primitive
 /// handed to exactly the party the warrant protects against.
 pub const MAX_WARRANT_CITED_HEADS: usize = 64;
+
+/// Longest `release_version` a warrant may carry, in bytes, refused before any signature work.
+pub const MAX_WARRANT_RELEASE_VERSION_LEN: usize = 256;
 
 /// The values a warrant is minted from, minus the ones derived for you.
 ///
@@ -172,8 +174,10 @@ pub struct WarrantTerms {
     pub executor: AccountId,
     /// The one executor device that may spend it.
     pub executor_key: PublicKey,
-    /// The exact application, as the content address of its bytecode.
-    pub app_version: ApplicationId,
+    /// The blob id of the release's bytecode; see [`Warrant::release_bytecode_id`].
+    pub release_bytecode_id: [u8; 32],
+    /// That release's semver, for readability only.
+    pub release_version: String,
     /// The method, in the clear.
     pub method: String,
     /// `H(method ‖ args)` — see [`Warrant::intent_hash`].
@@ -207,13 +211,14 @@ impl Warrant {
         let governance_len = (self.governance_floor.len() as u64).to_le_bytes();
 
         let mut parts: Vec<&[u8]> =
-            Vec::with_capacity(11 + self.account_heads.len() + self.governance_floor.len());
+            Vec::with_capacity(13 + self.account_heads.len() + self.governance_floor.len());
         parts.push(self.context.digest());
         parts.push(self.author_account.as_bytes());
         parts.push(AsRef::<[u8; 32]>::as_ref(&self.author_device_key));
         parts.push(self.executor.as_bytes());
         parts.push(AsRef::<[u8; 32]>::as_ref(&self.executor_key));
-        parts.push(AsRef::<[u8; 32]>::as_ref(&self.app_version));
+        parts.push(&self.release_bytecode_id);
+        parts.push(self.release_version.as_bytes());
         parts.push(self.method.as_bytes());
         parts.push(&self.intent_hash);
         parts.push(&account_len);
@@ -276,7 +281,8 @@ impl Warrant {
             author_device_key: author_device_sk.public_key(),
             executor: terms.executor,
             executor_key: terms.executor_key,
-            app_version: terms.app_version,
+            release_bytecode_id: terms.release_bytecode_id,
+            release_version: terms.release_version,
             method: terms.method,
             intent_hash: terms.intent_hash,
             account_heads: terms.account_heads,
@@ -287,19 +293,20 @@ impl Warrant {
             // its value cannot affect what is signed.
             signature: [0u8; 64],
         };
-        warrant.check_cited_head_bounds()?;
+        warrant.check_bounds()?;
 
         let payload = warrant.signing_payload();
         warrant.signature = sign_payload(author_device_sk, &payload)?;
         Ok(warrant)
     }
 
-    /// Refuse cited-head lists larger than [`MAX_WARRANT_CITED_HEADS`].
+    /// Refuse cited-head lists larger than [`MAX_WARRANT_CITED_HEADS`] and a
+    /// `release_version` longer than [`MAX_WARRANT_RELEASE_VERSION_LEN`].
     ///
     /// Checked before any Ed25519 work, not after: the point is to bound what an
     /// untrusted warrant can make this node allocate and hash, and a check that
     /// runs after the expensive part bounds nothing.
-    fn check_cited_head_bounds(&self) -> Result<(), AccountError> {
+    fn check_bounds(&self) -> Result<(), AccountError> {
         for len in [self.account_heads.len(), self.governance_floor.len()] {
             if len > MAX_WARRANT_CITED_HEADS {
                 return Err(AccountError::WarrantTooManyCitedHeads {
@@ -307,6 +314,13 @@ impl Warrant {
                     max: MAX_WARRANT_CITED_HEADS,
                 });
             }
+        }
+        let len = self.release_version.len();
+        if len > MAX_WARRANT_RELEASE_VERSION_LEN {
+            return Err(AccountError::WarrantReleaseVersionTooLong {
+                len,
+                max: MAX_WARRANT_RELEASE_VERSION_LEN,
+            });
         }
         Ok(())
     }
@@ -320,7 +334,7 @@ impl Warrant {
     /// # Errors
     /// [`AccountError::WarrantSignatureInvalid`] if the signature does not verify.
     pub fn verify_signature(&self) -> Result<(), AccountError> {
-        self.check_cited_head_bounds()?;
+        self.check_bounds()?;
         self.author_device_key
             .verify_raw_signature(&self.signing_payload(), &self.signature)
             .map_err(|_ignored| AccountError::WarrantSignatureInvalid)

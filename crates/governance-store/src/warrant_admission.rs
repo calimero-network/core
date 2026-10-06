@@ -41,7 +41,8 @@
 //! different times, so a warrant that expired between two receivers would be
 //! accepted by one and refused by the other, and authorization would stop
 //! converging. The relay checks it at its API boundary, where one clock decides
-//! and nothing has converged yet. See [`crate::warrant_gate`].
+//! and nothing has converged yet; a delegated delta is also held to it against
+//! its own signed stamp. See [`crate::warrant_gate`].
 
 use calimero_account::{AccountId, Delegated, WarrantScope, WarrantStatement};
 use calimero_context_config::types::ContextGroupId;
@@ -788,7 +789,8 @@ mod tests {
             author_device_key: key,
             executor: account(2),
             executor_key: executor_device(),
-            app_version: ApplicationId::from([3; 32]),
+            release_bytecode_id: [3; 32],
+            release_version: String::new(),
             method: "m".to_owned(),
             intent_hash: [0; 32],
             account_heads: vec![],
