@@ -1011,6 +1011,22 @@ struct MyType {
   a written-once delete);
   `assert_every_owned_entry_is_bound` and `assert_every_shared_entity_is_bound` check
   the layout store-wide.
+- **Collecting a signed entity's tombstone leaves a record of its delete**
+  (`Key::Collected(id)`, 8 bytes of `deleted_at`, never lowered;
+  `reclaim::collected_record`). The node's GC writes it in the same atomic write
+  that deletes the tombstone, only for `StorageType::is_signed` entities. Apply
+  drops a signed write to an id it does not hold whose nonce or stamp is at or below the
+  record (`predates_collected_delete`), which is what the tombstone refused, and
+  refuses an action whose signed ancestor stamp would re-create a collected id.
+  A local first write of that id is stamped after the record
+  (`stamp_after_stored`). Each costs one read: per signed first write, per
+  signed remote write to an id not held, per missing signed ancestor. The record
+  is node-local and kept for good: snapshots neither carry nor clear it (a
+  resync keeps it, a joiner lacks it, as it lacks tombstones, and stays apart
+  from the nodes that have it if a replay reaches it). The ancestor refusal also
+  holds back an honestly re-created entity named only as an ancestor until its
+  own write arrives. `tests/reclaim.rs` pins each replay, the tie, a lagging
+  re-insert and an ancestor stamp.
 - **No entity is its own ancestor.** `apply_action` refuses an upsert whose links (the
   entity under its first ancestor, each missing ancestor under the next) would put an
   entity under itself, give it more than `MAX_PARENT_CHAIN` ancestors, or link one id

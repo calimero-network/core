@@ -34,6 +34,10 @@ pub enum Key {
     /// Its key's tag keeps it out of the entity rows' range, which is what
     /// tombstone GC scans.
     ChildTrie(Id),
+
+    /// The `deleted_at` of this entity's delete, kept once tombstone GC has
+    /// collected its tombstone. Node-local: never synced, hashed or snapshotted.
+    Collected(Id),
 }
 
 /// Length of a storage key: a kind tag and the id.
@@ -44,6 +48,7 @@ impl Key {
     const TAG_ENTRY: u8 = 1;
     // Tag 2 named a sync-state key nothing ever wrote; it decodes as no key.
     const TAG_CHILD_TRIE: u8 = 3;
+    const TAG_COLLECTED: u8 = 4;
 
     /// The physical key: the kind's tag followed by the id.
     ///
@@ -57,6 +62,7 @@ impl Key {
             Self::Index(id) => (Self::TAG_INDEX, id),
             Self::Entry(id) => (Self::TAG_ENTRY, id),
             Self::ChildTrie(id) => (Self::TAG_CHILD_TRIE, id),
+            Self::Collected(id) => (Self::TAG_COLLECTED, id),
         };
         let mut bytes = [0; KEY_LEN];
         bytes[0] = tag;
@@ -73,6 +79,7 @@ impl Key {
             Self::TAG_INDEX => Self::Index(id),
             Self::TAG_ENTRY => Self::Entry(id),
             Self::TAG_CHILD_TRIE => Self::ChildTrie(id),
+            Self::TAG_COLLECTED => Self::Collected(id),
             _ => return None,
         })
     }
@@ -81,7 +88,7 @@ impl Key {
     #[must_use]
     pub const fn id(&self) -> Id {
         match *self {
-            Self::Index(id) | Self::Entry(id) | Self::ChildTrie(id) => id,
+            Self::Index(id) | Self::Entry(id) | Self::ChildTrie(id) | Self::Collected(id) => id,
         }
     }
 }

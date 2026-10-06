@@ -67,7 +67,7 @@ src/
 │   ├── side_rows.rs          # The per-delta side tables (events hash, TEE trigger) a pruned row takes with it
 │   ├── orphans.rs            # Bounded two-look sweep of side rows no delta row, absorb record or live DAG claims
 │   └── sweep_tests.rs        # RocksDB sweeps: cold / restarted / pending contexts, side rows, orphans, SST bytes given back
-├── gc.rs                     # Tombstone GC (+ parents' deleted_children), under each context's lock
+├── gc.rs                     # Tombstone GC (+ parents' deleted_children, a record per collected delete), under each context's lock
 ├── tombstone_stability.rs    # When a tombstone may go: every member device caught up (signed StateBeacon)
 ├── constants.rs              # Constants
 ├── arbiter_pool.rs           # Actix arbiter pool

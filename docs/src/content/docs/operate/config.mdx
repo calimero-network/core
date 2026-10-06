@@ -285,7 +285,13 @@ check_interval = 300
 
 A delete also lists the entity's id in its parent's `deleted_children` (so sync
 can ship the deletion); the same pass drops each collected tombstone's id from
-that list, so once a tombstone is collected nothing of the delete is left.
+that list.
+For an entry whose writes are signed (owned entries and `SharedStorage` cells and their entries), the pass keeps a record of when it was deleted in the tombstone's place.
+A signed write to that entity no newer than the delete is dropped against it, as the tombstone dropped it, so a peer replaying an older write cannot bring the entity back.
+Each record is one state row: a 33-byte key under the context id, holding 8 bytes.
+Records are kept for good and read by every sweep's scan; deletes of other entries leave nothing.
+A node that resyncs from a snapshot keeps its records, though it installs whatever the snapshot holds.
+A node that joins from a snapshot has no records, as it has no tombstones: a replay sent to it lands there, and the nodes holding the record never take that entity from it, so the two stay apart until it is deleted again.
 
 The cost of never guessing: while any member device is silent (offline, or
 gone without being removed), the tombstones of every delete since it went
