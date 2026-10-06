@@ -140,6 +140,47 @@ fn member_change_requires_group_admin() {
     assert_eq!(authorize(&by_stranger, &view), Err(Rejected::NotGroupAdmin));
 }
 
+/// Opening a Restricted subgroup is its creator's alone (#4522); closing stays
+/// with its admins.
+#[test]
+fn only_the_creator_opens_a_subgroup_and_its_admins_close_it() {
+    let creator = AccountId::from([1u8; 32]);
+    let admin = AccountId::from([2u8; 32]);
+    let group = ContextGroupId::from([3u8; 32]);
+    let scope = ScopeId::from(group.to_bytes());
+
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        group,
+        [
+            (creator, GroupMemberRole::Admin),
+            (admin, GroupMemberRole::Admin),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let view = bind_account(
+        bind_test_devices(AclView {
+            groups,
+            group_creator: [(group, creator)].into_iter().collect(),
+            ..Default::default()
+        }),
+        admin,
+    );
+    let flip = |by: AccountId, restricted: bool| {
+        op_with(by, OpPayload::SubgroupVisibilitySet { scope, restricted })
+    };
+
+    assert!(authorize(&flip(creator, false), &view).is_ok());
+    assert_eq!(
+        authorize(&flip(admin, false), &view),
+        Err(Rejected::NotGroupCreator),
+        "an admin who did not create it may not open it"
+    );
+    assert!(authorize(&flip(admin, true), &view).is_ok());
+    assert!(authorize(&flip(creator, true), &view).is_ok());
+}
+
 #[test]
 fn admin_ops_require_root_admin() {
     let root = AccountId::from([1u8; 32]);

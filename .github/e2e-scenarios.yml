@@ -255,6 +255,12 @@ scenarios:
     file: workflows/group-list-subgroups-restricted-hidden.yml
     app: scaffolding-e2e
     registry_fetch: "false"
+  # #4522: only a Restricted subgroup's creator may open it, and a member
+  # outside it applies the opening as it arrives. Governance only.
+  - workflow: group-only-creator-opens-restricted
+    file: workflows/group-only-creator-opens-restricted.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: member-removed-multi-context-convergence
     file: workflows/member-removed-multi-context-convergence.yml
     app: scaffolding-e2e
