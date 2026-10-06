@@ -535,6 +535,7 @@ pub fn delete_namespace_local_state(
 ) -> EyreResult<()> {
     const BATCH_SIZE: usize = 1000;
     let ns_bytes = namespace_id.to_bytes();
+    let ledger = crate::void_ledger::VoidLedger::new(store, ns_bytes.into());
 
     loop {
         let batch = super::collect_keys_with_prefix_paginated::<NamespaceGovOp>(
@@ -550,6 +551,7 @@ pub fn delete_namespace_local_state(
         }
         let mut handle = store.handle();
         for key in batch {
+            ledger.forget_parked(key.delta_id())?;
             handle.delete(&key)?;
         }
     }
@@ -558,7 +560,7 @@ pub fn delete_namespace_local_state(
     handle.delete(&NamespaceGovHead::new(ns_bytes))?;
     handle.delete(&NamespaceParticipation::new(ns_bytes))?;
     drop(handle);
-    crate::void_ledger::VoidLedger::new(store, ns_bytes.into()).clear()?;
+    ledger.clear()?;
 
     // The device is node-level, so leaving ONE namespace cannot take it: every
     // other namespace this node belongs to opens its scope keys with the same

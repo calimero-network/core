@@ -1748,12 +1748,26 @@ fn leaving_a_namespace_forgets_what_was_kept_to_take_its_void_ops_back() {
             key: [3; 32],
         })
         .unwrap();
+    ledger.note_parked([9; 32]).unwrap();
+    ledger.settle_parked([9; 32], false).unwrap();
+    {
+        let mut handle = w.store.handle();
+        handle
+            .put(
+                &calimero_store::key::NamespaceGovOp::new(NS, [9; 32]),
+                &calimero_store::key::NamespaceGovOpValue {
+                    skeleton_bytes: vec![0],
+                },
+            )
+            .unwrap();
+    }
 
     crate::delete_namespace_local_state(&w.store, &LogAuthorizer::group()).expect("leave");
 
     assert!(ledger.voided().unwrap().is_empty());
     assert!(ledger.key_intros().unwrap().is_empty());
     assert_eq!(ledger.default_seed([8; 32]).unwrap(), None);
+    assert!(!ledger.refused([9; 32]).unwrap(), "a refused op's verdict");
 }
 
 #[test]

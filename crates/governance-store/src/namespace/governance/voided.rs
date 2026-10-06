@@ -96,9 +96,27 @@ impl NamespaceGovernance<'_> {
     }
 
     /// May the bytes of `op`, which this node cannot read, be kept? An op that is
-    /// refused still takes its place in the log, so the DAG moves on.
-    pub(super) fn admit_unreadable(&self, op: &SignedNamespaceOp) -> EyreResult<bool> {
-        OpBudget::unreadable(self.store).admit_op(op)
+    /// refused still takes its place in the log, so the DAG moves on. A kept op is
+    /// marked parked, so the apply its key later lets run decides what it folds as.
+    pub(super) fn admit_unreadable(
+        &self,
+        op: &SignedNamespaceOp,
+        delta_id: [u8; 32],
+    ) -> EyreResult<bool> {
+        let kept = OpBudget::unreadable(self.store).admit_op(op)?;
+        if kept {
+            VoidLedger::new(self.store, self.namespace_id).note_parked(delta_id)?;
+        }
+        Ok(kept)
+    }
+
+    /// Record whether the retried apply of `op` took, so a parked op it refused
+    /// folds as nothing, as on a node that held the key and refused it on arrival.
+    pub(super) fn settle_parked(&self, op: &SignedNamespaceOp, applied: bool) -> EyreResult<()> {
+        let id = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        VoidLedger::new(self.store, self.namespace_id).settle_parked(id, applied)
     }
 
     /// How `op` is stored: whole, or as the hole that keeps its place in the log when

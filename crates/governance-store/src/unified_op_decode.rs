@@ -473,6 +473,20 @@ pub struct OpenedNamespaceOp {
     /// credential and signer come from here and not from the envelope. The DAG
     /// identity stays the envelope's.
     pub relayed_join: Option<SignedNamespaceOp>,
+    /// An op parked unread whose apply refused it once its key arrived: it folds
+    /// as nothing, as on a node that held the key and refused it on arrival.
+    pub refused: bool,
+}
+
+/// Whether `op` is a shape a node lacking its key parks for the retry pass.
+fn can_be_parked(op: &NamespaceOp) -> bool {
+    matches!(
+        op,
+        NamespaceOp::Group { .. }
+            | NamespaceOp::RootSealed { .. }
+            | NamespaceOp::RootSealedForGroup { .. }
+            | NamespaceOp::RootRelaySealed { .. }
+    )
 }
 
 /// `result`'s value, or `None` for an op this node cannot open: a key it does
@@ -502,6 +516,25 @@ impl OpenedNamespaceOp {
     #[must_use]
     pub fn open(store: &calimero_store::Store, signed: &SignedNamespaceOp) -> Self {
         let namespace_id = signed.namespace_id;
+        if can_be_parked(&signed.op) {
+            let refused = signed
+                .content_hash()
+                .map_err(|e| eyre::eyre!("content_hash: {e}"))
+                .and_then(|id| {
+                    crate::void_ledger::VoidLedger::new(store, namespace_id).refused(id)
+                });
+            match read_or_hole(namespace_id, "retry verdict", refused.map(Some)) {
+                Some(false) => {}
+                Some(true) => {
+                    return Self {
+                        refused: true,
+                        ..Self::default()
+                    }
+                }
+                // Unknown whether it was refused: read it as the hole it may be.
+                None => return Self::default(),
+            }
+        }
         match &signed.op {
             NamespaceOp::Group {
                 group_id,
@@ -583,6 +616,16 @@ impl OpenedNamespaceOp {
         hlc: HybridTimestamp,
         parents: &[[u8; 32]],
     ) -> Op {
+        if self.refused {
+            return build_op(
+                id,
+                ScopeId::from(signed.namespace_id.to_bytes()),
+                authorship_for(signed, None, None, signer_binding(&signed.signer)),
+                hlc,
+                parents,
+                OpPayload::Noop,
+            );
+        }
         match &self.relayed_join {
             // `open_relayed_join` admits a cleartext root join only, so the
             // joiner's op needs no further opening.

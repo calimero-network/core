@@ -602,7 +602,7 @@ impl<'a> NamespaceGovernance<'a> {
             // dropped: the op stays in the log for the retry pass that runs on
             // key delivery.
             (NamespaceOp::RootSealed { key_id, .. }, None) => {
-                keep_bytes &= self.admit_unreadable(op)?;
+                keep_bytes &= self.admit_unreadable(op, delta_id)?;
                 result.key_unwrap_failures.push(KeyUnwrapFailure {
                     group_id: self.namespace_id.to_bytes(),
                     reason: format!(
@@ -626,7 +626,7 @@ impl<'a> NamespaceGovernance<'a> {
                 },
                 None,
             ) => {
-                keep_bytes &= self.admit_unreadable(op)?;
+                keep_bytes &= self.admit_unreadable(op, delta_id)?;
                 // `info`, not `debug`: this is the audit record of a join this
                 // node is not entitled to read, and the reason an operator sees
                 // no membership for it here. At `debug` a node on the default
@@ -726,7 +726,7 @@ impl<'a> NamespaceGovernance<'a> {
                     }
                 }
                 None => {
-                    keep_bytes &= self.admit_unreadable(op)?;
+                    keep_bytes &= self.admit_unreadable(op, delta_id)?;
                     result.key_unwrap_failures.push(KeyUnwrapFailure {
                         group_id: self.namespace_id.to_bytes(),
                         reason: format!(
@@ -774,7 +774,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // group is not a member and must never process a rotation for it.
                 let inner_decrypted = resolved_key.is_some();
                 if !inner_decrypted {
-                    keep_bytes &= self.admit_unreadable(op)?;
+                    keep_bytes &= self.admit_unreadable(op, delta_id)?;
                     // The key-arrival replay applies the rotation at this op's sequence.
                     if keep_bytes && key_rotation.is_some() {
                         DeferredRotations::new(self.store, self.namespace_id)
@@ -2140,6 +2140,7 @@ impl<'a> NamespaceGovernance<'a> {
                 _ => None,
             };
             let Some((gate_op, root)) = opened else {
+                self.settle_parked(&entry.signed_op, false)?;
                 continue;
             };
             // The same relocated check the receive path runs. Skipping it here
@@ -2151,6 +2152,7 @@ impl<'a> NamespaceGovernance<'a> {
                     error = %format!("{e:#}"),
                     "skipping a sealed root op that fails validation after unsealing"
                 );
+                self.settle_parked(&entry.signed_op, false)?;
                 continue;
             }
             // This walk has no applied marker, so it re-feeds creates this node
@@ -2164,7 +2166,9 @@ impl<'a> NamespaceGovernance<'a> {
             if self.root_op_is_void(&gate_op, &root, gate_op.content_hash()?)? {
                 continue;
             }
-            match self.apply_root_op(&gate_op, &root) {
+            let outcome = self.apply_root_op(&gate_op, &root);
+            self.settle_parked(&entry.signed_op, outcome.is_ok())?;
+            match outcome {
                 Ok(_events) => {
                     applied += 1;
                     record_namespace_retry_event("sealed_root_applied");
@@ -2323,12 +2327,14 @@ impl<'a> NamespaceGovernance<'a> {
                 let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
                     continue;
                 };
-                match self.decrypt_and_apply_group_op(
+                let outcome = self.decrypt_and_apply_group_op(
                     &candidate.signed_op,
                     &gid_typed,
                     &candidate.group_key,
                     encrypted,
-                ) {
+                );
+                self.settle_parked(&candidate.signed_op, outcome.is_ok())?;
+                match outcome {
                     // Surface divergence from retry-path applies. Once a
                     // retry replay applies an op, the DAG marks any later
                     // fresh arrival of the same op as `Duplicate` and the
@@ -2542,12 +2548,14 @@ impl<'a> NamespaceGovernance<'a> {
                 let was_present = load_nonce_window(self.store, &gid_typed, signer)
                     .map(|w| w.contains(nonce))
                     .unwrap_or(false);
-                match self.decrypt_and_apply_group_op(
+                let outcome = self.decrypt_and_apply_group_op(
                     &candidate.signed_op,
                     &gid_typed,
                     &candidate.group_key,
                     encrypted,
-                ) {
+                );
+                self.settle_parked(&candidate.signed_op, outcome.is_ok())?;
+                match outcome {
                     Ok(_divergence) => {
                         rotated |= self.replay_deferred_rotation(candidate);
                         let now_present = load_nonce_window(self.store, &gid_typed, signer)

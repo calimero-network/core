@@ -1,5 +1,6 @@
 //! What a node remembers to take back its own judgement of a void op: the ops it
-//! judged void, and the key each applied rotation introduced.
+//! judged void, and the key each applied rotation introduced. Also which parked ops
+//! their retried apply refused, which the projection folds as nothing.
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -22,6 +23,9 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 /// Stands in for the op of a key that was already held when an op stored it: no void
 /// verdict on that op takes the key back.
 pub(crate) const STORED_BEFORE: [u8; 32] = [0; 32];
+
+const PARKED: u8 = 0; // a parked op's row: no retried apply has decided it yet
+const REFUSED: u8 = 1; // a parked op's row: its last retried apply refused it
 
 /// The default capabilities a group held before the first op this node applied set them
 /// (`None` for none), which a rollback restores when no other op sets one.
@@ -103,6 +107,47 @@ impl<'a> VoidLedger<'a> {
             .map(|seed| seed.caps))
     }
 
+    /// Remember that `op` was kept unread on arrival, so its retried apply decides it.
+    pub(crate) fn note_parked(&self, op: [u8; 32]) -> EyreResult<()> {
+        self.store.handle().put(
+            &self.op_key(op),
+            &GenericData::from(Slice::from(vec![PARKED])),
+        )?;
+        Ok(())
+    }
+
+    /// Record how the retried apply of `op` went, if it was parked. An op applied on
+    /// arrival is not judged again by a replay, which may refuse what it once applied.
+    pub(crate) fn settle_parked(&self, op: [u8; 32], applied: bool) -> EyreResult<()> {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        let key = self.op_key(op);
+        let mut handle = self.store.handle();
+        if handle.get(&key)?.is_none() {
+            return Ok(());
+        }
+        if applied {
+            handle.delete(&key)?;
+        } else {
+            handle.put(&key, &GenericData::from(Slice::from(vec![REFUSED])))?;
+        }
+        Ok(())
+    }
+
+    /// Whether the last retried apply of the parked op `op` refused it.
+    pub(crate) fn refused(&self, op: [u8; 32]) -> EyreResult<bool> {
+        let handle = self.store.handle();
+        let Some(data) = handle.get(&self.op_key(op))? else {
+            return Ok(false);
+        };
+        let bytes: &[u8] = data.as_ref();
+        Ok(bytes == [REFUSED])
+    }
+
+    pub(crate) fn forget_parked(&self, op: [u8; 32]) -> EyreResult<()> {
+        self.store.handle().delete(&self.op_key(op))?;
+        Ok(())
+    }
+
     /// Forget everything kept for the namespace, as when this node leaves it.
     pub(crate) fn clear(&self) -> EyreResult<()> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
@@ -117,6 +162,14 @@ impl<'a> VoidLedger<'a> {
         let mut hasher = Sha256::new();
         hasher.update(kind);
         hasher.update(self.namespace.as_bytes());
+        GenericKey::new(SCOPE, hasher.finalize().into())
+    }
+
+    fn op_key(&self, op: [u8; 32]) -> GenericKey {
+        let mut hasher = Sha256::new();
+        hasher.update(b"parked");
+        hasher.update(self.namespace.as_bytes());
+        hasher.update(op);
         GenericKey::new(SCOPE, hasher.finalize().into())
     }
 
@@ -176,6 +229,38 @@ mod tests {
         assert_eq!(ledger.default_seed([4; 32]).unwrap(), Some(None));
         ledger.note_default_seed([5; 32], Some(8)).unwrap();
         assert_eq!(ledger.default_seed([5; 32]).unwrap(), Some(Some(8)));
+    }
+
+    #[test]
+    fn a_parked_op_is_refused_until_a_retry_applies_it() {
+        let store = test_store();
+        let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
+        ledger.note_parked([7; 32]).unwrap();
+        assert!(
+            !ledger.refused([7; 32]).unwrap(),
+            "undecided is not refused"
+        );
+
+        ledger.settle_parked([7; 32], false).unwrap();
+        assert!(ledger.refused([7; 32]).unwrap());
+        ledger.settle_parked([7; 32], true).unwrap();
+        assert!(
+            !ledger.refused([7; 32]).unwrap(),
+            "a later apply takes it back"
+        );
+        ledger.settle_parked([7; 32], false).unwrap();
+        assert!(
+            !ledger.refused([7; 32]).unwrap(),
+            "a replay of an applied op does not judge it again"
+        );
+    }
+
+    #[test]
+    fn a_replay_refuses_nothing_that_was_not_parked() {
+        let store = test_store();
+        let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
+        ledger.settle_parked([7; 32], false).unwrap();
+        assert!(!ledger.refused([7; 32]).unwrap());
     }
 
     #[test]
