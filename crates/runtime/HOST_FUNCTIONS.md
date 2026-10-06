@@ -185,7 +185,7 @@ Node-local, per-context search (`calimero-search`); views only.
 | `commit` | `(root_hash_ptr: u64, artifact_ptr: u64)` | Commits execution state with 32-byte root hash and artifact. **Must be called exactly once.** |
 | `persist_root_state` | `(doc_ptr: u64, created_at: u64, updated_at: u64)` | Persists root state document through Merkle tree. Its writes are held to the `storage_write` limits and budget. |
 | `read_root_state` | `(register_id: u64) -> i32` | Reads persisted root state. Returns `1` if exists, `0` if not. |
-| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. Not held to the write limits, so a peer's JS delta is not refused by them; a guest can also call it with a delta of its own. |
+| `apply_storage_delta` | `(delta_ptr: u64)` | Applies Borsh-encoded `StorageDelta::Actions` from another executor. Its writes are held to the `storage_write` caps and per-execution write budget; a peer's delta replayed by the node is held instead to the default per-entry caps and to a separate budget, a multiple of the default write count and byte limits, so every node judges it alike. |
 | `flush_delta` | `() -> i32` | Flushes pending CRDT actions as causal delta. Returns `1` if delta emitted, `0` if nothing to commit. |
 | `register_js_sdk_root_merge` | `()` | Opts the JS app root into the WASM `__calimero_merge_root_state` sync path (concurrent-writer convergence). `persist_root_state` then stamps the root with the `JsRoot` marker instead of `None`. |
 
@@ -392,7 +392,7 @@ A **writer set** crosses the ABI as a buffer of concatenated 32-byte public keys
 | `js_crdt_shared_writable_by_me` | `(cell_id_ptr: u64) -> i32` | Whether the current executor is in the writer set (`1`/`0`). |
 | `js_crdt_shared_is_frozen` | `(cell_id_ptr: u64) -> i32` | Whether the writer set is frozen (`1`/`0`). |
 | `js_crdt_shared_rotate_writers` | `(cell_id_ptr: u64, writers_ptr: u64) -> i32` | Admin-gated. Asks to rotate the writer set to the given keys: the request is recorded on the execution outcome and nothing is written to the cell; the run reads the new set at once. Returns `1` on success; `-1` with a message in register `0` for a non-admin, a frozen cell, an empty target set, more than 256 writers, or a run that already asked 64 times. |
-| `js_crdt_delete_collection` | `(id_ptr: u64, register_id: u64) -> i32` | Deletes a root-level collection entity by id and unlinks it from the root (cascades the subtree; rejects Frozen; enforces `Shared` writer authority). Used by the JS SDK to reclaim the random-id collection orphaned by deterministic-id reassignment. Returns `1` if an entity was deleted, `0` if none existed (idempotent), or `-1` with an error message in the register. |
+| `js_crdt_delete_collection` | `(id_ptr: u64, register_id: u64) -> i32` | Deletes a root-level collection entity by id and unlinks it from the root (cascades the subtree; rejects Frozen data, and owned or writer-set entries under it; enforces `Shared` writer authority). Used by the JS SDK to reclaim the random-id collection orphaned by deterministic-id reassignment. Returns `1` if an entity was deleted, `0` if none existed (idempotent), or `-1` with an error message in the register. |
 
 > **Deferred (not in this bridge):** per-writer **OpMask** capabilities (`grant_capability` /
 > `revoke_capability` / `rotate_writers_scoped`, exposing `WRITE`/`DELETE`/`ADMIN` granularity) and

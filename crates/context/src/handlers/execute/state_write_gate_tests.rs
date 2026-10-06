@@ -38,7 +38,7 @@ pub(super) const INITIAL_ROOT: [u8; 32] = [0x01; 32];
 
 /// Exports the two kinds of run the gate tells apart: `__calimero_sync_next`
 /// (the merge-apply of a delta) and `set` (an ordinary mutating method). Both
-/// just `commit` [`COMMITTED_ROOT`] with a one-byte artifact, which is all the
+/// just `commit` [`COMMITTED_ROOT`] with an empty `Actions` artifact, which is all the
 /// gate looks at. Memory layout: the root at 0, the artifact at 32, and the two
 /// `{ptr: u64, len: u64}` descriptors `commit` reads at 64 and 80.
 const MODULE: &str = r#"
@@ -47,10 +47,10 @@ const MODULE: &str = r#"
         (memory (export "memory") 1)
         (data (i32.const 0)
             "\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a\5a")
-        (data (i32.const 32) "\01")
+        (data (i32.const 32) "\00\00\00\00\00")
         (data (i32.const 64)
             "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
-            "\20\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
+            "\20\00\00\00\00\00\00\00\05\00\00\00\00\00\00\00")
         (func (export "__calimero_sync_next") (call $commit (i64.const 64) (i64.const 80)))
         (func (export "set") (call $commit (i64.const 64) (i64.const 80))))
 "#;

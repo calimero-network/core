@@ -349,6 +349,20 @@ impl<'a> MembershipRepository<'a> {
         ))
     }
 
+    /// Whether `identity` is a member of `group_id` today: a direct row, or an
+    /// inheritance the member has not [exited](Self::exited).
+    pub fn is_live_member(
+        &self,
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+    ) -> EyreResult<bool> {
+        match self.check_path(group_id, identity)? {
+            MembershipPath::None => Ok(false),
+            MembershipPath::Direct => Ok(true),
+            MembershipPath::Inherited { .. } => Ok(!self.exited(group_id, identity)?),
+        }
+    }
+
     /// Returns the capability bitmask `identity` holds as an *effective*
     /// member of `group_id` — direct or inherited — or `None` when they
     /// are not a member at all.

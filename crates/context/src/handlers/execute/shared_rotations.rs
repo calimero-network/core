@@ -16,7 +16,6 @@ use calimero_primitives::identity::PrivateKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::collections::cell_id_binds;
-use calimero_storage::delta::StorageDelta;
 use calimero_storage::shared_writers::{
     cell_uses, shared_anchors, CellWriters, SharedRotation, Writers,
 };
@@ -115,14 +114,6 @@ fn check_author_keeps_rights(
         return Err(SharedRotationRefusal::RemovesOwnWrite);
     }
     Ok(())
-}
-
-/// The actions of a run's artifact.
-fn run_actions(artifact: &[u8]) -> Vec<Action> {
-    match borsh::from_slice::<StorageDelta>(artifact) {
-        Ok(StorageDelta::Actions(actions)) => actions,
-        _ => Vec::new(),
-    }
 }
 
 /// Milliseconds since the epoch, for a nonce that grows from one rotation to the next.
@@ -255,14 +246,14 @@ pub(super) struct Publisher<'a> {
 }
 
 impl Publisher<'_> {
-    /// Publish `rotations` signed by this node so the run's delta, whose actions are `artifact`,
+    /// Publish `rotations` signed by this node so the run's delta, whose actions are `actions`,
     /// cites them. Nothing goes out unless all are admissible; ops published before a failing
     /// one stay published. Fails unless each cell then reads back as the run left it.
     pub(super) async fn publish(
         &self,
         run: RunKind,
         rotations: &[SharedRotation],
-        artifact: &[u8],
+        actions: &[Action],
         resolver: &SharedWritersResolver,
     ) -> eyre::Result<()> {
         let refuse = |reason| {
@@ -277,8 +268,7 @@ impl Publisher<'_> {
         let group_id = self
             .group_id
             .ok_or_else(|| refuse(SharedRotationRefusal::NoGroup))?;
-        check_author_keeps_rights(rotations, &self.author, &run_actions(artifact))
-            .map_err(refuse)?;
+        check_author_keeps_rights(rotations, &self.author, actions).map_err(refuse)?;
         let ops = plan_rotation_ops(
             self.context_id,
             rotations,
@@ -343,7 +333,7 @@ impl Publisher<'_> {
         pinned: &PinnedCut,
         position: Option<&GovernanceParentEdge>,
         rotations: &[SharedRotation],
-        artifact: &[u8],
+        actions: &[Action],
     ) -> eyre::Result<()> {
         let refuse = |reason| {
             eyre::Report::new(ExecuteError::SharedRotationRefused {
@@ -354,10 +344,9 @@ impl Publisher<'_> {
         let Some(group_id) = self.group_id else {
             return Ok(());
         };
-        let actions = run_actions(artifact);
-        let mut cells = shared_anchors(&actions);
+        let mut cells = shared_anchors(actions);
         cells.extend(rotations.iter().map(|rotation| rotation.cell));
-        let uses = cell_uses(&actions, &cells);
+        let uses = cell_uses(actions, &cells);
         if uses.is_empty() {
             return Ok(());
         }
@@ -717,16 +706,6 @@ mod tests {
             check_author_keeps_rights(&[keeps_write], &account(1), &[delete_member(cell)]),
             Err(SharedRotationRefusal::RemovesOwnWrite)
         );
-    }
-
-    #[test]
-    fn the_actions_of_a_run_are_read_from_its_artifact() {
-        let cell = cell_of(&[1], 7);
-        let actions = vec![update_member(cell)];
-        let artifact = borsh::to_vec(&StorageDelta::Actions(actions.clone())).expect("encodes");
-        assert_eq!(run_actions(&artifact), actions);
-        assert_eq!(run_actions(&[]), vec![]);
-        assert_eq!(run_actions(&[0xFF; 3]), vec![]);
     }
 
     #[test]

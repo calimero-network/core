@@ -7,16 +7,18 @@
 
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::GroupOp;
-use calimero_context_client::messages::{ExecuteError, SharedRotationRefusal};
+use calimero_context_client::messages::{ExecuteError, InternalErrorKind, SharedRotationRefusal};
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_governance_store::{NamespaceDagService, NamespaceOpLogService};
 use calimero_governance_types::NamespaceOp;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PrivateKey;
+use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::collections::cell_id;
-use calimero_storage::entities::OpMask;
+use calimero_storage::delta::StorageDelta;
+use calimero_storage::entities::{Metadata, OpMask, StorageType};
 use calimero_storage::shared_writers::{CellWriters, SharedRotation, Writers};
 use calimero_store::key::{self, ContextDagDelta};
 
@@ -43,7 +45,8 @@ fn rotation_for(account: AccountId, field: u8) -> SharedRotation {
 /// A module whose `rotate` records `rotation` and commits [`COMMITTED_ROOT`], laid out like
 /// the gate tests' module with the rotation's descriptor at 96 and its bytes at 128.
 fn module_rotating(rotation: &SharedRotation) -> String {
-    module_with_artifact(rotation, &[1])
+    let no_writes = borsh::to_vec(&StorageDelta::Actions(Vec::new())).expect("encodes");
+    module_with_artifact(rotation, &no_writes)
 }
 
 /// [`module_rotating`] committing `artifact`, which it holds at 512.
@@ -300,28 +303,30 @@ async fn a_rotation_overtaken_by_a_concurrent_one_is_reported_not_applied() {
     );
 }
 
+/// A rotation that leaves `account` out of the cell, and a write `account` makes in it.
+fn rotated_out_of_a_written_cell(account: AccountId) -> (SharedRotation, Action) {
+    let mut rotation = rotation_for(account, 0xA1);
+    rotation.new = writers(&[AccountId::from([0xEE; 32])]);
+    let mut metadata = Metadata::new(1, 1);
+    metadata.storage_type = StorageType::SharedMember {
+        anchor: rotation.cell,
+        signature_data: None,
+    };
+    let write = Action::Update {
+        id: Id::new([0xCC; 32]),
+        data: vec![1],
+        ancestors: Vec::new(),
+        metadata,
+    };
+    (rotation, write)
+}
+
 /// A run that writes a cell and rotates its author out of it is refused: receivers judge the
 /// delta at a position that includes the rotation and would refuse the write.
 #[actix::test]
 async fn a_call_that_writes_a_cell_and_rotates_itself_out_of_it_keeps_nothing() {
-    use calimero_storage::action::Action;
-    use calimero_storage::delta::StorageDelta;
-    use calimero_storage::entities::{Metadata, StorageType};
-
     let fx = fixture_running(LocalRole::Role(GroupMemberRole::Member), |account| {
-        let mut rotation = rotation_for(account, 0xA1);
-        rotation.new = writers(&[AccountId::from([0xEE; 32])]);
-        let mut metadata = Metadata::new(1, 1);
-        metadata.storage_type = StorageType::SharedMember {
-            anchor: rotation.cell,
-            signature_data: None,
-        };
-        let write = Action::Update {
-            id: Id::new([0xCC; 32]),
-            data: vec![1],
-            ancestors: Vec::new(),
-            metadata,
-        };
+        let (rotation, write) = rotated_out_of_a_written_cell(account);
         let artifact = borsh::to_vec(&StorageDelta::Actions(vec![write])).expect("encodes");
         module_with_artifact(&rotation, &artifact)
     })
@@ -334,6 +339,48 @@ async fn a_call_that_writes_a_cell_and_rotates_itself_out_of_it_keeps_nothing() 
     assert_eq!(refusal(result), SharedRotationRefusal::RemovesOwnWrite);
     assert_eq!(fx.root(), Hash::from(INITIAL_ROOT), "no write was kept");
     assert_eq!(heads(&fx), before, "nothing was published");
+}
+
+/// The same run committing its write as anything but `Actions` is not read as writing nothing,
+/// which would pass the rights checks and keep a write no delta ships.
+#[actix::test]
+async fn a_call_whose_artifact_is_not_actions_keeps_and_publishes_nothing() {
+    let modules: [fn(AccountId) -> String; 2] = [
+        |account| {
+            let (rotation, write) = rotated_out_of_a_written_cell(account);
+            let artifact = borsh::to_vec(&StorageDelta::CausalActions {
+                actions: vec![write],
+                delta_id: [0; 32],
+                delta_hlc: Default::default(),
+                effective_writers: Default::default(),
+                signer_account: None,
+                on_behalf_accounts: Default::default(),
+            })
+            .expect("encodes");
+            module_with_artifact(&rotation, &artifact)
+        },
+        |account| module_with_artifact(&rotated_out_of_a_written_cell(account).0, &[0xFF; 3]),
+    ];
+    for module in modules {
+        let fx = fixture_running(LocalRole::Role(GroupMemberRole::Member), module).await;
+        seed_governance(&fx).await;
+        let before = heads(&fx);
+
+        let result = fx.call_locally("rotate").await;
+
+        assert!(
+            matches!(
+                result,
+                Err(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Runtime
+                })
+            ),
+            "the call fails: {:?}",
+            result.map(drop)
+        );
+        assert_eq!(fx.root(), Hash::from(INITIAL_ROOT), "no write was kept");
+        assert_eq!(heads(&fx), before, "nothing was published");
+    }
 }
 
 /// A state op whose position names no heads is read at the namespace's current heads, not at
@@ -524,9 +571,7 @@ async fn refreshing_folds_a_locally_published_op_and_a_fresh_cell_is_at_genesis(
 mod rights_kept {
     use std::sync::{Arc, RwLock};
 
-    use calimero_storage::action::Action;
-    use calimero_storage::delta::StorageDelta;
-    use calimero_storage::entities::{ChildInfo, EntryRules, Metadata, StorageType};
+    use calimero_storage::entities::{ChildInfo, EntryRules};
     use calimero_storage::tests::common::{collection_at, member_at, owned_entry_id};
 
     use super::*;
@@ -597,10 +642,6 @@ mod rights_kept {
         }
     }
 
-    fn artifact(actions: Vec<Action>) -> Vec<u8> {
-        borsh::to_vec(&StorageDelta::Actions(actions)).expect("encodes")
-    }
-
     /// `rotation` leaves the local account with `mask` and adds a second writer.
     fn leaving(fx: &Fixture, mask: OpMask) -> SharedRotation {
         let mut rotation = rotation_for(fx.account, 0xA1);
@@ -633,7 +674,7 @@ mod rights_kept {
         .publish(
             RUN,
             std::slice::from_ref(rotation),
-            &artifact(actions),
+            &actions,
             &pinned.writers,
         )
         .await
@@ -727,7 +768,7 @@ mod rights_kept {
                 group_id: self.pinned.group_id,
                 author: self.fx.account,
             }
-            .verify_signing_cut(&self.pinned, position, &[], &artifact(actions))
+            .verify_signing_cut(&self.pinned, position, &[], &actions)
         }
     }
 

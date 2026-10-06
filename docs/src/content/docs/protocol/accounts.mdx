@@ -424,7 +424,9 @@ It records the highest scope epoch a link was made under and the highest epoch a
 **A device the namespace withdrew is withdrawn in every group of it.**
 Tombstones and scope floors are recorded under the namespace, so a check made under a context's own group id would never find them.
 `AccountBindingRepository::device_is_withdrawn` resolves the group to its namespace first, and counts a device as withdrawn when it is revoked there, or narrowed out there and not bound again since.
-A relayed write refuses a withdrawn author or relay, a presence update refuses a withdrawn device, and a connection that proved a device is refused a subscription, a context query and a listing in that namespace; a session that names no device keeps what its account may see. A subscription opened before the withdrawal is checked again only when that group's membership next changes, or on reconnect.
+A relayed write refuses a withdrawn author or relay, a presence update refuses a withdrawn device, and a connection that proved a device is refused a subscription, a context query and a listing in that namespace; a session that names no device keeps what its account may see.
+A WebSocket or SSE subscription opened before the withdrawal is checked again and dropped as soon as this node applies the withdrawal.
+A withdrawal that unbinds nothing, of a device bound nowhere in the namespace, is announced as `DeviceWithdrawn` for that reason; it owes no key rotation, so it is neither `DeviceRevoked` nor `DeviceDescoped`.
 
 A **revoked** device is refused outright rather than repaired namespace by namespace.
 The tombstone is per namespace but the `DeviceId` is spent everywhere, and enrolling the machine again mints a fresh one - so there is no relink that brings the old id back, and the refusal says so.

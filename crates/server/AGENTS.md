@@ -285,7 +285,7 @@ refusals, and they are deliberately distinct:
 
 | answer | meaning |
 | --- | --- |
-| `401` + `X-Auth-Error: invalid_proof` | `Malformed` or `Unverified` — bad signature, wrong node, outside its window, not a `CallerProof` |
+| `401` + `X-Auth-Error: invalid_proof` | `Malformed` or `Unverified`: bad signature, wrong node, outside its window, a window longer than the account crate's lifetime caps, not a `CallerProof` |
 | `403` + `X-Auth-Error: invalid_proof` | `NotServed`: this node serves no delegated access and the proof names an account other than its own (decided before any signature check) |
 | `401`, no header | no credential at all |
 
@@ -342,6 +342,8 @@ sealed under the session and responses stream back in sealed frames. Six rules:
   merged router), not as a route. The opened request is handed back to the router
   and routed afresh, so auth, permissions and metrics see it as a direct request.
   CORS sits outside the envelope so the sealed response carries it.
+  `Host`, `X-Forwarded-Host` and `Origin` come from the outer hop, never the
+  envelope; every other header is the envelope's own claim, not a fact about the caller.
 - **The transport key authenticates; it never encrypts.** Session keys come from
   both sides' ephemeral keys, so dropping a session (`SESSION_LIFETIME`, or idle)
   is what gives forward secrecy. Never send data under the static key alone: the
@@ -436,6 +438,14 @@ resuming request proved rather than one remembered from the record. Anything
 will not resolve — also leaves the grant stale rather than narrowing what it
 watches.
 
+**A device withdrawal is not a membership change.**
+A revoked, descoped or withdrawn device keeps its account's membership, so no membership event names it.
+The WS fan-out and every SSE event task also listen to the governance op events (`next_withdrawal`): a `DeviceRevoked`, `DeviceDescoped` or `DeviceWithdrawn` re-derives the grants that watch its namespace, and a lagged listener re-derives every grant.
+Each listener subscribes before it re-derives what it already holds, and an SSE event task re-derives its session on every (re)connect, so a withdrawal applied while no task listened is not missed.
+A subscribe re-derives once more after it records its ids, since a withdrawal committed between its gate and that write finds nothing to drop.
+A descope or withdrawal skips connections anchored on another account; a revocation does not, since its tombstone spends the device id whatever account the op names.
+A re-derivation vouches only for the ids it checked, so an id a subscribe added meanwhile stays stale.
+
 The caller identity itself (`EventCaller`) is deliberately not persisted on an
 SSE session, for the same reason: a persisted identity would let a later
 connection re-authorize as whoever the record remembers. Every authenticated
@@ -476,9 +486,9 @@ request re-stamps it.
   `sse_handler` joins the node-event broadcast (`receive_events`) before it
   spawns `handle_node_events` - never move that call into the task, or a delta
   emitted before its first poll is lost (an ephemeral delta for good)
-- A membership event re-authorizes only connections whose grants it can reach;
-  if a subscription stops being revoked when it should be, suspect what `vouch`
-  recorded, not the gate
+- A membership event or device withdrawal re-authorizes only connections whose
+  grants it can reach; if a subscription stops being revoked when it should be,
+  suspect what `vouch` recorded, not the gate
 - All responses use consistent error format
 - `install-application` and `install-dev-application` start compiling the
   installed application's modules in the background

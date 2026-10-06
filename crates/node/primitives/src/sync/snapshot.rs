@@ -644,8 +644,8 @@ pub enum SnapshotSafety {
     /// persisted (#3252) — the contradiction that otherwise permanently trips
     /// the safety gate (`root=0` routes only to snapshot, but the state keys
     /// make it look initialized, so it's refused forever). A re-bootstrap
-    /// snapshot IS the recovery: it re-applies the boundary and
-    /// `cleanup_stale_keys` reconciles the orphaned entries. Proceed.
+    /// snapshot IS the recovery: it re-applies the boundary and its install
+    /// deletes the orphaned entries. Proceed.
     RecoverContradiction,
     /// A non-zero root (with or without state keys), or state keys the node
     /// legitimately holds under a live root. A genuinely-initialized context —
@@ -677,23 +677,8 @@ pub fn snapshot_safety_decision(has_state_keys: bool, has_nonzero_root: bool) ->
 /// Maximum byte length for governance op payloads in [`BroadcastMessage::NamespaceGovernanceDelta`].
 pub const MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES: usize = 64 * 1024;
 
-/// Upper bound on a decrypted [`SealedDeltaPayload`]'s `artifact` (the
-/// borsh-encoded storage delta).
-///
-/// This is a defense-in-depth backstop, NOT the primary limit: an inbound
-/// gossip message is already capped at the network's gossipsub
-/// `max_transmit_size` (1 MiB), so a network-delivered delta's plaintext
-/// cannot exceed this before it reaches decryption. The cap matters for
-/// the buffered-replay path (which decrypts payloads loaded from local
-/// storage) and as a hard ceiling against a malicious group-key holder, who
-/// can seal an arbitrarily large payload that still passes AEAD.
-///
-/// Deliberately distinct from [`MAX_COMPRESSED_PAYLOAD_SIZE`], which bounds
-/// *compressed* snapshot pages and is intentionally looser to absorb
-/// compression expansion. A state-delta plaintext is uncompressed, so it gets
-/// its own, tighter, named bound. Sized generously above any legitimate delta
-/// (the same size as the gossip transmit cap) but far below a memory-exhaustion
-/// payload.
+/// Bound on a decrypted [`SealedDeltaPayload`]'s `artifact` plus `events`. A backstop: each sealed
+/// delta arrives in a gossip message under calimero-network's `GOSSIPSUB_MAX_TRANSMIT_SIZE`.
 pub const MAX_STATE_DELTA_PLAINTEXT_BYTES: usize = 1024 * 1024;
 
 /// Plaintext that gets encrypted into the `artifact` field of a

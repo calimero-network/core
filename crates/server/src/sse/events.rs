@@ -11,6 +11,7 @@ use tracing::{debug, error, warn};
 
 use super::session::SessionState;
 use super::state::ServiceState;
+use crate::subscription_grants::next_withdrawal;
 
 /// Handle incoming node events and forward to subscribed clients
 ///
@@ -65,13 +66,12 @@ pub async fn handle_node_events(
     command_sender: mpsc::Sender<Command>,
     events: impl Stream<Item = NodeEvent>,
 ) {
-    // Validate before serving anything. A session resumed from a persisted
-    // record arrives with its subscriptions restored but no grant — stale by
-    // construction — so this is where a reconnect re-derives them against live
-    // membership, using the caller the resuming request proved rather than one
-    // remembered from the record. A session that was never persisted and just
-    // subscribed is already vouched for, so this costs it nothing.
-    prune_stale_grants(session_id, &state, &session_state, None).await;
+    // Listen before re-deriving, so a withdrawal lands either before the
+    // re-derive (which sees it) or after it (and arrives here).
+    let mut withdrawals = calimero_governance_store::op_events::subscribe();
+    // Re-derive on every (re)connect, with the caller this request proved: a
+    // session kept between connections had no task to hear what changed.
+    re_derive(session_id, &state, &session_state).await;
 
     let mut events = pin!(events);
 
@@ -89,6 +89,21 @@ pub async fn handle_node_events(
             () = command_sender.closed() => {
                 debug!(%session_id, "SSE connection closed, stopping event handler");
                 break;
+            }
+            // Before the next event, so a withdrawn device is served nothing after it.
+            withdrawn = next_withdrawal(&mut withdrawals) => {
+                match withdrawn {
+                    Some(withdrawal) => {
+                        let caller = session_state.inner.read().await.caller;
+                        if withdrawal.may_affect(caller.as_ref()) {
+                            let namespace = Some(withdrawal.namespace);
+                            prune_stale_grants(session_id, &state, &session_state, namespace)
+                                .await;
+                        }
+                    }
+                    None => re_derive(session_id, &state, &session_state).await,
+                }
+                continue;
             }
             maybe_event = events.next() => match maybe_event {
                 Some(event) => event,
@@ -191,8 +206,9 @@ pub async fn handle_node_events(
 /// Drop this session's subscriptions whose caller no longer passes the
 /// subscribe-time gate.
 ///
-/// Runs only on a membership REMOVAL (`revoked`), not on every event: that is
-/// what makes it affordable. The cost is one re-authorization pass per removal
+/// Re-derives only when a membership change or device withdrawal names a group
+/// the grant watches, or the grant is stale, not on every event: that is what
+/// makes it affordable. The cost is one re-authorization pass per change
 /// — a rare, governance-paced event — rather than a membership lookup per event
 /// per subscriber, on a path that carries video frames and document updates.
 ///
@@ -209,23 +225,34 @@ async fn prune_stale_grants(
     session_state: &SessionState,
     changed_group: Option<calimero_primitives::hash::Hash>,
 ) {
-    // Snapshot under a write lock — `note_membership_change` records the
-    // staleness — and release it before the membership lookups, which touch the
-    // store and must not run while holding it.
-    let (caller, node_owner, subscriptions, group_subscriptions) = {
+    // The cheap filter, and all most events cost: a hash-set lookup under the
+    // read lock deciding whether this change can touch this session at all. A
+    // session already stale - a resumed one, whose subscriptions came back from
+    // the store without a grant - is affected by everything and falls through
+    // to re-derive, which is what `None` relies on.
+    let affected = {
         let inner = session_state.inner.read().await;
-        // The cheap filter, and all most events cost: a hash-set lookup under
-        // the read lock deciding whether this change can touch this session at
-        // all. A session already stale — a resumed one, whose subscriptions
-        // came back from the store without a grant — is affected by everything
-        // and falls through to re-derive, which is what `None` relies on.
-        let affected = match changed_group {
+        match changed_group {
             Some(group) => inner.grants.is_affected_by(&group),
             None => inner.grants.is_stale(),
-        };
-        if !affected {
-            return;
         }
+    };
+    if affected {
+        re_derive(session_id, state, session_state).await;
+    }
+}
+
+/// Re-run the subscribe-time gate over every subscription this session holds,
+/// whether or not its grant is stale, and drop what fails it.
+pub(crate) async fn re_derive(
+    session_id: ConnectionId,
+    state: &ServiceState,
+    session_state: &SessionState,
+) {
+    // Snapshot under the read lock and release it before the membership
+    // lookups, which touch the store and must not run while holding it.
+    let (caller, node_owner, subscriptions, group_subscriptions) = {
+        let inner = session_state.inner.read().await;
         (
             inner.caller,
             inner.node_owner,
@@ -236,6 +263,7 @@ async fn prune_stale_grants(
     if subscriptions.is_empty() && group_subscriptions.is_empty() {
         return;
     }
+    let checked = (&subscriptions, &group_subscriptions);
 
     let revocation = crate::ws::revoke_lost_subscriptions(
         &state.ctx_client,
@@ -246,17 +274,17 @@ async fn prune_stale_grants(
         &group_subscriptions,
     );
     if revocation.is_empty() {
-        // Nothing came off, but the session is still marked stale; re-vouch so
+        // Nothing came off, but the session may be marked stale; re-vouch so
         // it stops re-deriving on every subsequent membership change.
         let mut inner = session_state.inner.write().await;
-        let (subscriptions, group_subscriptions) = (
+        let (holds, holds_groups) = (
             inner.subscriptions.clone(),
             inner.group_subscriptions.clone(),
         );
-        inner.grants.vouch(
+        inner.grants.vouch_if_checked(
             state.ctx_client.datastore(),
-            &subscriptions,
-            &group_subscriptions,
+            (&holds, &holds_groups),
+            checked,
         );
         return;
     }
@@ -280,16 +308,16 @@ async fn prune_stale_grants(
             &mut inner.group_subscriptions,
             &mut inner.admin_group_subscriptions,
         );
-        // Re-vouch for what survived: the subscriptions changed, so what
-        // governs them may have too.
-        let (subscriptions, group_subscriptions) = (
+        // Re-vouch for what survived, unless a subscribe added an id this pass
+        // never checked: that one stays stale for the next pass to judge.
+        let (holds, holds_groups) = (
             inner.subscriptions.clone(),
             inner.group_subscriptions.clone(),
         );
-        inner.grants.vouch(
+        inner.grants.vouch_if_checked(
             state.ctx_client.datastore(),
-            &subscriptions,
-            &group_subscriptions,
+            (&holds, &holds_groups),
+            checked,
         );
         inner.to_persisted()
     };

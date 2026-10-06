@@ -31,7 +31,7 @@ pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
     })
 }
 
-use crate::blob_types::{BlobAuth, BlobProbe};
+use crate::blob_types::{BlobAuth, BlobProbe, ByteBudget};
 use crate::messages::{
     AnnounceBlob, Bootstrap, CloseAllConnections, ConnectedPeers, Dial, ListenOn, MeshPeerCount,
     MeshPeers, MeshStats, NetworkMessage, NetworkStatus, OpenStream, PeerAddrs, PeerCount,
@@ -465,6 +465,7 @@ impl NetworkClient {
         context_id: ContextId,
         peer_id: libp2p::PeerId,
         auth: Option<BlobAuth>,
+        budget: ByteBudget,
     ) -> eyre::Result<Option<Vec<u8>>> {
         let (tx, rx) = oneshot::channel();
 
@@ -475,6 +476,7 @@ impl NetworkClient {
                     context_id,
                     peer_id,
                     auth,
+                    budget,
                 },
                 outcome: tx,
             })

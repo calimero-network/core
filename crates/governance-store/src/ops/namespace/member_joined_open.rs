@@ -42,8 +42,8 @@ use eyre::Result as EyreResult;
 /// their account. Without (2), a member holding any valid credential could
 /// name someone else's account in the op and have the row written for them.
 ///
-/// A key the device has since been re-keyed past at the op's cut proves nothing:
-/// that op is refused with an error, read at the cut so every replica agrees.
+/// A key the device has since been re-keyed past at the op's cut proves nothing, nor does a
+/// device withdrawn there (ordered by the cut, confirmed by the binding rows): both are refused.
 ///
 /// Deliberately NOT used by the TEE admission path, which breaks half (1) on
 /// purpose: an attested replica cannot admit itself, so its op is signed by the
@@ -64,6 +64,13 @@ pub(crate) fn join_op_proves_ownership(
              (certificate epoch {})",
             hex::encode(cert.device.as_bytes()),
             cert.device_epoch
+        );
+    }
+    if permissions.device_withdrawn(&cert.account, &cert.device)? {
+        eyre::bail!(
+            "join signed by {signer}, a key of device {} the namespace has withdrawn at \
+             the op's cut",
+            hex::encode(cert.device.as_bytes())
         );
     }
     Ok(true)

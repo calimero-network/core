@@ -3290,7 +3290,7 @@ mod frozen_storage_verification {
     /// Deleting a non-frozen subtree that has a Frozen entity buried below it
     /// must also be rejected — the operator has to relocate the frozen data
     /// out first. The direct child is NOT frozen here, so this exercises the
-    /// descendant scan (`find_frozen_descendant`), not the direct-child guard.
+    /// descendant scan (`find_kept_descendant`), not the direct-child guard.
     #[test]
     fn remove_child_from_rejects_subtree_with_frozen_descendant() {
         use crate::delta::{commit_causal_delta, reset_delta_context};

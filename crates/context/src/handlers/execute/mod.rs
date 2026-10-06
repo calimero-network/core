@@ -27,6 +27,7 @@ use calimero_primitives::events::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_runtime::logic::Outcome;
+use calimero_storage::action::Action;
 use calimero_storage::delta::{CausalDelta, StorageDelta};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -79,7 +80,7 @@ const MAX_XCALL_DEPTH: u32 = 3;
 const SDK_EXPORT_PREFIX: &str = "__calimero";
 
 use governance_position::compute_governance_position_for_context;
-pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions};
+pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions, signs_entries};
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 use upgrade_gate::{
     maybe_lazy_upgrade, resolve_producing_bytecode_id, should_block, upgrade_blocks_write,
@@ -879,7 +880,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             //
             // `None` here means the module carries no ABI at all; that refuses
             // the read, which is the fail-closed direction.
-            let read_refusal = read_as.and_then(|_account| {
+            let read_refusal = read_as.and_then(|_read_as| {
                 let declared_read_only = abi
                     .and_then(|abi| abi.read_only.as_ref())
                     .is_some_and(|set| set.contains(method.as_str()));
@@ -2116,7 +2117,7 @@ async fn internal_execute(
     // The authenticated caller's account, when this run is a delegated READ.
     // Mutually exclusive with `delegation` by construction: a read carries no
     // warrant and a warranted write sets no `read_as`.
-    read_as: Option<calimero_account::AccountId>,
+    read_as: Option<calimero_context_client::messages::ReadAs>,
     // What fired this run, when the node's TEE scheduler did. Only honoured on a
     // node whose key is an attested TEE authority for the context; see
     // `tee_authority` below. The delta is signed over it.
@@ -2281,12 +2282,21 @@ async fn internal_execute(
         None if tee_authority => {
             Principal::new(calimero_account::AccountId::TEE_AUTHORITY, executor)
         }
-        // A delegated READ: the account comes from the authenticated session,
-        // the device from this node. Those halves may differ here, where they
-        // may not for a write, because the rule they would break —
+        // A delegated READ: both halves come from the authenticated session,
+        // as both come from the warrant for a delegated write. The account is
+        // the session's; the device is the certified signing key of the device
+        // that opened the session, resolved through the namespace's bindings
+        // (`session_device_key`), so a method asking "who am I" through this
+        // path and through a warrant for the same device gets the same answer.
+        // It used to be THIS node's key, which made every account's read on a
+        // relay answer with the relay.
+        //
+        // The halves may still differ from the executor here, where they may
+        // not for a write, because the rule they would break —
         // `user_leaf_author_is_its_owner` on the receive path — is about a leaf,
         // and a read writes none. Nothing this run produces is persisted,
-        // signed, or gossiped.
+        // signed, or gossiped. The executor stays this node's key: it is the
+        // replica running the call, and the sealing context is derived from it.
         //
         // Membership is re-checked HERE, on every call, rather than trusted from
         // the session. A relay serves several tenants, so a session that carried
@@ -2296,7 +2306,8 @@ async fn internal_execute(
         // at the moment of the read.
         None if read_as.is_some() => {
             // SAFETY: guarded by `read_as.is_some()` in the arm's condition.
-            let account = read_as.expect("read_as is Some in this arm");
+            let calimero_context_client::messages::ReadAs { account, device } =
+                read_as.expect("read_as is Some in this arm");
 
             if !calimero_governance_store::account_is_context_member(
                 &datastore,
@@ -2308,7 +2319,12 @@ async fn internal_execute(
                 });
             }
 
-            Principal::new(account, executor)
+            let device = match device {
+                Some(device) => session_device_key(&datastore, &context.id, account, device)?,
+                None => None,
+            };
+
+            Principal::new(account, device.unwrap_or(executor))
         }
         None => Principal::new(
             calimero_governance_store::account_for_context(&datastore, &context.id)?,
@@ -2440,6 +2456,7 @@ async fn internal_execute(
         tee_authority,
         sealing,
         search_host,
+        write_source == WriteSource::RemoteDelta,
     )
     .await?;
 
@@ -2587,6 +2604,14 @@ async fn internal_execute(
         }
     }
 
+    // Read before anything is published or kept, so an artifact that is not the run's
+    // actions fails the run. A state op's artifact is the peer delta it applied.
+    let actions = if is_state_op {
+        Vec::new()
+    } else {
+        run_actions(&outcome.artifact)?
+    };
+
     // The entries a delegated run writes for its author are signed by this
     // node, and peers accept them only from a `RelayTee` writing for a member.
     // The warrant gate is wider (it also admits an `Admin` or `Member` holding
@@ -2594,8 +2619,7 @@ async fn internal_execute(
     // rule too, before anything commits. A run that signs none writes nothing
     // on the author's behalf and stays with the warrant gate alone.
     if let (Some(d), Some(store)) = (delegation, on_behalf_store.as_ref()) {
-        if !is_state_op && outcome.root_hash.is_some() && artifact_signs_entries(&outcome.artifact)
-        {
+        if outcome.root_hash.is_some() && signs_entries(&actions) {
             if let Some(reason) = on_behalf_refusal(store, &context.id, d.warrant.author_account)? {
                 bail!(ExecuteError::DelegatedWriteRefused {
                     context_id: context.id,
@@ -2625,7 +2649,7 @@ async fn internal_execute(
                     state_op: is_state_op,
                 },
                 &outcome.shared_rotations,
-                &outcome.artifact,
+                &actions,
                 &pinned.writers,
             )
             .await?;
@@ -2645,7 +2669,7 @@ async fn internal_execute(
             &pinned,
             signing_position.as_ref(),
             &outcome.shared_rotations,
-            &outcome.artifact,
+            &actions,
         )?;
     }
 
@@ -2692,21 +2716,7 @@ async fn internal_execute(
 
         // Create causal delta for non-state ops with non-empty artifacts
         if !is_state_op && !outcome.artifact.is_empty() {
-            // Extract actions from artifact for DAG persistence
-            let mut actions = match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
-                Ok(StorageDelta::Actions(actions)) => actions,
-                Ok(_) => {
-                    warn!("Unexpected StorageDelta variant, using empty actions");
-                    vec![]
-                }
-                Err(e) => {
-                    warn!(
-                        ?e,
-                        "Failed to deserialize artifact for DAG, using empty actions"
-                    );
-                    vec![]
-                }
-            };
+            let mut actions = actions;
 
             // The artifact was `StorageDelta::Actions`.
             if !actions.is_empty() {
@@ -2781,14 +2791,14 @@ async fn internal_execute(
                 let mut verified_parents = Vec::new();
                 for head in &context.dag_heads {
                     if *head == [0u8; 32] {
-                        verified_parents.push(*head);
+                        verified_parents.push((Default::default(), *head));
                         continue;
                     }
 
                     // Check if this parent is actually in RocksDB
                     let db_key = key::ContextDagDelta::new(context.id, *head);
-                    if store.handle().get(&db_key).is_ok_and(|v| v.is_some()) {
-                        verified_parents.push(*head);
+                    if let Ok(Some(row)) = store.handle().get(&db_key) {
+                        verified_parents.push((row.hlc, *head));
                     } else {
                         warn!(
                             context_id = %context.id,
@@ -2797,6 +2807,15 @@ async fn internal_execute(
                         );
                     }
                 }
+
+                // Receivers refuse more parents. Keep the newest heads, whose
+                // ancestry most likely holds the writer sets this write relies on.
+                if verified_parents.len() > calimero_dag::MAX_DELTA_PARENTS {
+                    verified_parents.sort_unstable_by_key(|&(hlc, _)| std::cmp::Reverse(hlc));
+                    verified_parents.truncate(calimero_dag::MAX_DELTA_PARENTS);
+                }
+                let verified_parents: Vec<[u8; 32]> =
+                    verified_parents.into_iter().map(|(_, head)| head).collect();
 
                 // If NO parents verified, use genesis
                 if verified_parents.is_empty() {
@@ -3066,28 +3085,19 @@ async fn internal_execute(
     ))
 }
 
-/// The keys behind this run's sealing host functions.
-///
-/// A run may open envelopes sealed to its executor key, with two exceptions.
-/// A run on a TEE node opens nothing unless the TEE scheduler fired it: what is
-/// sealed to a TEE is sealed to that node's key, and an ordinary JSON-RPC call
-/// there runs as the same key. And a delegated run opens nothing, because its
-/// principal is someone other than the node whose key it would open with.
-///
-/// A TEE-triggered run also gets the namespace TEE keys this TEE holds, and
-/// seals a `TeeSecret` to the lowest that is not retired, so any TEE authority
-/// that holds it, including one admitted later, can open it. Until the namespace
-/// has such a key, or while every key this TEE holds is retired because a TEE
-/// that held it was removed, it seals to the attested key of every TEE
-/// authority instead.
-/// Whether a run's artifact carries an entry this node will sign: see
-/// [`signing::signs_entries`]. An artifact that is not `StorageDelta::Actions`
-/// carries none, matching how the commit below reads it.
-pub(crate) fn artifact_signs_entries(artifact: &[u8]) -> bool {
-    matches!(
-        borsh::from_slice::<StorageDelta>(artifact),
-        Ok(StorageDelta::Actions(actions)) if signing::signs_entries(&actions)
-    )
+/// The actions of a run's artifact: none if it wrote nothing, else it must be `Actions`, since
+/// reading anything else as empty would keep writes no check or delta sees.
+pub(crate) fn run_actions(artifact: &[u8]) -> eyre::Result<Vec<Action>> {
+    if artifact.is_empty() {
+        return Ok(Vec::new());
+    }
+    match borsh::from_slice::<StorageDelta>(artifact) {
+        Ok(StorageDelta::Actions(actions)) => Ok(actions),
+        _ => Err(ExecuteError::InternalError {
+            kind: InternalErrorKind::Runtime,
+        }
+        .into()),
+    }
 }
 
 /// Why peers would refuse the entries a delegated run writes for `author`, or
@@ -3125,6 +3135,20 @@ fn on_behalf_refusal(
     )
 }
 
+/// The keys behind this run's sealing host functions.
+///
+/// A run may open envelopes sealed to its executor key, with two exceptions.
+/// A run on a TEE node opens nothing unless the TEE scheduler fired it: what is
+/// sealed to a TEE is sealed to that node's key, and an ordinary JSON-RPC call
+/// there runs as the same key. And a delegated run opens nothing, because its
+/// principal is someone other than the node whose key it would open with.
+///
+/// A TEE-triggered run also gets the namespace TEE keys this TEE holds, and
+/// seals a `TeeSecret` to the lowest that is not retired, so any TEE authority
+/// that holds it, including one admitted later, can open it. Until the namespace
+/// has such a key, or while every key this TEE holds is retired because a TEE
+/// that held it was removed, it seals to the attested key of every TEE
+/// authority instead.
 fn sealing_context(
     datastore: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
@@ -3244,6 +3268,7 @@ pub(crate) async fn execute(
     sealing: calimero_runtime::logic::SealingContext,
     // Only ever `Some` for a read-only run (see `internal_execute`).
     search: Option<std::sync::Arc<dyn calimero_runtime::logic::SearchHost>>,
+    remote_delta: bool,
 ) -> eyre::Result<(Outcome, ContextStorage, Option<ContextPrivateStorage>)> {
     let context_id = **context;
 
@@ -3285,6 +3310,7 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     search,
+                    remote_delta,
                 )?
             } else {
                 module.run_with_origin(
@@ -3300,6 +3326,7 @@ pub(crate) async fn execute(
                     tee_trigger,
                     sealing,
                     None,
+                    remote_delta,
                 )?
             };
             Ok((outcome, storage, private_storage))
@@ -3330,6 +3357,43 @@ fn events_payload(events: &[calimero_runtime::logic::Event]) -> Option<Vec<u8>> 
 /// Returns `None` on any parse failure so callers default to the write lock.
 /// Methods are declared read-only by the app author via `#[app::view]`; the ABI
 /// emitter stores `MethodIntent::ReadOnly` in the embedded manifest section.
+/// The certified signing key of `device`, when the namespace owning
+/// `context_id` binds it to `account`.
+///
+/// A session names its device by id, and an id signs nothing: what a method
+/// observes as `env::device_id()` — and what a warrant for the same device
+/// carries as `author_device_key` — is the key the device's certificate names.
+/// The namespace's bindings are where this node keeps that certificate for a
+/// device it has admitted, which is the same row revocation is judged on.
+///
+/// `None` when the namespace binds no such device, or binds it to a different
+/// account: the read then has no key of the caller's to run as, and the caller
+/// falls back to the executor rather than to anybody else's key. Never an
+/// authorization input — the account decided membership above — so an
+/// unresolved device narrows nothing and widens nothing.
+fn session_device_key(
+    store: &Store,
+    context_id: &ContextId,
+    account: calimero_account::AccountId,
+    device: calimero_primitives::identity::DeviceId,
+) -> eyre::Result<Option<PublicKey>> {
+    let Some(group_id) = calimero_governance_store::get_group_for_context(store, context_id)?
+    else {
+        return Ok(None);
+    };
+    let binding = calimero_governance_store::AccountBindingRepository::new(store)
+        .live_binding(&group_id, device)?
+        .filter(|binding| binding.account == account);
+    if binding.is_none() {
+        debug!(
+            %context_id, %account, %device,
+            "session names a device the namespace does not bind to its account; \
+             the read runs on this node's key"
+        );
+    }
+    Ok(binding.map(|binding| binding.sign_pk))
+}
+
 fn extract_read_only_set(bytecode: &[u8]) -> Option<Arc<HashSet<String>>> {
     let manifest = calimero_wasm_abi::embed::read_embedded_state_schema(bytecode)?;
     let set: HashSet<String> = manifest
@@ -3417,6 +3481,8 @@ fn xcall_same_owning_group(
 }
 
 #[cfg(test)]
+mod read_as_tests;
+#[cfg(test)]
 mod search_tests;
 
 #[cfg(test)]
@@ -3445,10 +3511,13 @@ mod tests {
 
     use std::collections::HashMap;
 
+    use calimero_context_client::messages::{ExecuteError, InternalErrorKind};
+    use calimero_storage::delta::StorageDelta;
+
     use super::{
-        extract_xcall_policies, resolve_producing_bytecode_id, should_block, upgrade_blocks_write,
-        upgrade_rejects_committed_write, xcall_caller_denied, xcall_same_owning_group,
-        XCallCallers,
+        extract_xcall_policies, resolve_producing_bytecode_id, run_actions, should_block,
+        upgrade_blocks_write, upgrade_rejects_committed_write, xcall_caller_denied,
+        xcall_same_owning_group, XCallCallers,
     };
     use calimero_store::key::GroupUpgradeStatus;
 
@@ -3611,6 +3680,35 @@ mod tests {
             resolve_producing_bytecode_id(&store, &context_id).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn a_run_that_wrote_nothing_has_no_actions() {
+        let none = borsh::to_vec(&StorageDelta::Actions(Vec::new())).expect("encodes");
+        assert!(run_actions(&none).expect("decodes").is_empty());
+        assert!(run_actions(&[]).expect("an empty artifact").is_empty());
+    }
+
+    #[test]
+    fn an_artifact_that_is_not_actions_fails_the_run_rather_than_reading_as_empty() {
+        let causal = borsh::to_vec(&StorageDelta::CausalActions {
+            actions: Vec::new(),
+            delta_id: [0; 32],
+            delta_hlc: Default::default(),
+            effective_writers: Default::default(),
+            signer_account: None,
+            on_behalf_accounts: Default::default(),
+        })
+        .expect("encodes");
+        for artifact in [vec![0xFF; 3], causal] {
+            let error = run_actions(&artifact).expect_err("not a run's actions");
+            assert!(matches!(
+                error.downcast_ref::<ExecuteError>(),
+                Some(ExecuteError::InternalError {
+                    kind: InternalErrorKind::Runtime
+                })
+            ));
+        }
     }
 
     #[test]

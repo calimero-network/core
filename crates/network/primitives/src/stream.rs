@@ -9,10 +9,14 @@ use tokio::io::{duplex, DuplexStream};
 use tokio_util::codec::Framed;
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 
+use crate::blob_types::ByteBudget;
+
 mod codec;
+mod metered;
 
 use codec::MessageCodec;
 pub use codec::{CodecError, Message};
+use metered::Metered;
 
 pub const MAX_MESSAGE_SIZE: usize = 8 * 1_024 * 1_024;
 
@@ -31,10 +35,10 @@ pub const CALIMERO_BLOB_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimer
 pub const CALIMERO_BLOB_ANNOUNCE_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/calimero/blob-announce/2.0.0");
 
-type Libp2pFramed = Framed<BufStream<Compat<P2pStream>>, MessageCodec>;
+type Libp2pFramed = Framed<BufStream<Metered<Compat<P2pStream>>>, MessageCodec>;
 
 #[cfg(feature = "test-utils")]
-type MemoryFramed = Framed<BufStream<DuplexStream>, MessageCodec>;
+type MemoryFramed = Framed<BufStream<Metered<DuplexStream>>, MessageCodec>;
 
 #[derive(Debug)]
 pub struct Stream {
@@ -59,7 +63,7 @@ enum StreamInner {
 impl Stream {
     #[must_use]
     pub fn new(stream: P2pStream) -> Self {
-        let stream = BufStream::new(stream.compat());
+        let stream = BufStream::new(Metered::new(stream.compat()));
         let stream = Framed::new(stream, MessageCodec::new(MAX_MESSAGE_SIZE));
         Self {
             inner: StreamInner::Libp2p(stream),
@@ -81,9 +85,29 @@ impl Stream {
         (Self::from_duplex(a), Self::from_duplex(b))
     }
 
+    /// Refuse any later frame longer than `max_message_size`, before its body is
+    /// read, for a reply known to be small.
+    pub fn set_max_message_size(&mut self, max_message_size: usize) {
+        match &mut self.inner {
+            StreamInner::Libp2p(inner) => inner.codec_mut().set_max_message_size(max_message_size),
+            #[cfg(feature = "test-utils")]
+            StreamInner::Memory(inner) => inner.codec_mut().set_max_message_size(max_message_size),
+        }
+    }
+
+    /// Count every byte this stream reads into `budget`, failing the read that
+    /// overdraws it.
+    pub fn meter(&mut self, budget: ByteBudget) {
+        match &mut self.inner {
+            StreamInner::Libp2p(inner) => inner.get_mut().get_mut().meter(budget),
+            #[cfg(feature = "test-utils")]
+            StreamInner::Memory(inner) => inner.get_mut().get_mut().meter(budget),
+        }
+    }
+
     #[cfg(feature = "test-utils")]
     fn from_duplex(half: DuplexStream) -> Self {
-        let stream = BufStream::new(half);
+        let stream = BufStream::new(Metered::new(half));
         let stream = Framed::new(stream, MessageCodec::new(MAX_MESSAGE_SIZE));
         Self {
             inner: StreamInner::Memory(stream),

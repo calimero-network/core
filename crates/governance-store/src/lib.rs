@@ -172,7 +172,9 @@ pub use self::pending_admission::{pending_standing, PendingStanding};
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
-pub use self::on_behalf::{on_behalf_standing, on_behalf_standing_live, OnBehalfRefusal};
+pub use self::on_behalf::{
+    on_behalf_standing, on_behalf_standing_live, seated_as_relay, OnBehalfRefusal,
+};
 pub use self::tee::{
     is_attested_tee_key_for_context, is_evidence_quote_used, is_quote_hash_used,
     is_tee_admitted_identity, is_tee_authority, is_tee_authority_for_context,
@@ -1704,6 +1706,9 @@ pub fn get_context_service_name(
 // subtly different copy of it. Off by default, so a normal build is unchanged.
 #[cfg(any(test, feature = "testing"))]
 pub mod test_fixtures;
+
+#[cfg(any(test, feature = "testing"))]
+pub mod authz_matrix;
 
 #[cfg(test)]
 mod void_tests;

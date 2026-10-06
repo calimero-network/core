@@ -40,7 +40,7 @@ const HONEST_ROOT: u8 = 0xB0; // committed by the group's own release
 const SQUAT_ROOT: u8 = 0xEE; // committed by the squatted release
 const NEWER_ROOT: u8 = 0x33; // committed by another group's newer release
 
-/// A module whose `init` and `set` commit `[root; 32]` with a one-byte artifact. Memory:
+/// A module whose `init` and `set` commit `[root; 32]` with an empty `Actions` artifact. Memory:
 /// the root at 0, the artifact at 32, the `{ptr, len}` descriptors at 64 and 80.
 fn module(root: u8) -> Vec<u8> {
     let root = format!("\\{root:02x}").repeat(32);
@@ -49,10 +49,10 @@ fn module(root: u8) -> Vec<u8> {
             (import "env" "commit" (func $commit (param i64 i64)))
             (memory (export "memory") 1)
             (data (i32.const 0) "{root}")
-            (data (i32.const 32) "\01")
+            (data (i32.const 32) "\00\00\00\00\00")
             (data (i32.const 64)
                 "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00"
-                "\20\00\00\00\00\00\00\00\01\00\00\00\00\00\00\00")
+                "\20\00\00\00\00\00\00\00\05\00\00\00\00\00\00\00")
             (func (export "init") (call $commit (i64.const 64) (i64.const 80)))
             (func (export "set") (call $commit (i64.const 64) (i64.const 80))))"#
     ))

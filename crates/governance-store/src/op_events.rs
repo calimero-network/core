@@ -132,6 +132,13 @@ pub enum OpEvent {
         account: AccountId,
         device: DeviceId,
     },
+    /// A device bound nowhere here stands withdrawn after its account's own
+    /// withdrawal or a descope. No binding went, so unlike the two above it owes no rotation.
+    DeviceWithdrawn {
+        group_id: [u8; 32],
+        account: AccountId,
+        device: DeviceId,
+    },
     /// `GroupOp::AccountDeviceCertified` - a device was recorded in this
     /// namespace's registry. Fires only when the row changed, so a re-gossiped
     /// op wakes nobody; `group_id` is the namespace, which owns the registry.

@@ -992,6 +992,30 @@ pub struct FleetJoinResponse {
     #[serde(default)]
     pub auto_follow_enabled: bool,
     pub contexts_joined: Vec<String>,
+    /// The peer that admitted this node when it was asked directly, as a libp2p
+    /// peer id. Set even when `admitted` is still `false`: the admitter has
+    /// said yes, and this node is still pulling the membership op and the key
+    /// that make it a member here.
+    #[serde(default)]
+    pub admitted_by: Option<String>,
+    /// Why each directly-asked admitter declined, when every one did.
+    ///
+    /// Empty when none was asked, when one admitted this node, or when the
+    /// request failed before any answered. A refusal from a peer allowed to
+    /// vouch is final until something changes on its side (an admin re-adds a
+    /// removed node, the policy admits these measurements), so a caller can
+    /// show the reason instead of retrying blind.
+    #[serde(default)]
+    pub refusals: Vec<FleetJoinRefusal>,
+}
+
+/// One directly-asked admitter's answer to a fleet node it did not admit.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FleetJoinRefusal {
+    /// The admitter's libp2p peer id.
+    pub peer: String,
+    /// Its reason, or what went wrong reaching it. Bounded by the node.
+    pub reason: String,
 }
 
 /// Per-column on-disk byte estimates for a namespace.
@@ -4059,6 +4083,19 @@ mod tests {
                 .expect("the pre-existing body must still deserialize");
         assert!(req.admitter_addrs.is_empty());
         assert!(req.validate().is_empty());
+    }
+
+    /// `meroctl` built after `admitted_by` and `refusals` must still read the
+    /// answer of a node that predates them, as "nobody answered directly".
+    #[test]
+    fn a_fleet_join_answer_without_direct_admission_fields_still_parses() {
+        let resp: FleetJoinResponse = serde_json::from_str(
+            r#"{"status":"announced","group_id":"g","namespace_id":"n","public_key":"k",
+                "account":"a","admitted":false,"auto_follow_enabled":false,"contexts_joined":[]}"#,
+        )
+        .expect("an older node's answer must still deserialize");
+        assert!(resp.admitted_by.is_none());
+        assert!(resp.refusals.is_empty());
     }
 
     /// The addresses are dialed, so how many and how long is bounded — the cap

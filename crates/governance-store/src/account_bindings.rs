@@ -290,9 +290,48 @@ impl<'a> AccountBindingRepository<'a> {
         if self.is_revoked(&namespace, device)? {
             return Ok(true);
         }
-        // A floor with no binding row left: narrowed out, and not widened since.
+        // A floor with no binding row left for the account: narrowed out, not widened since.
         Ok(self.scope_floor(&namespace, account, device)?.is_some()
-            && self.raw_binding(&namespace, device)?.is_none())
+            && self
+                .raw_binding(&namespace, device)?
+                .is_none_or(|bound| bound.account != *account.as_bytes()))
+    }
+
+    /// Do the rows withdraw `account`'s `device` past a link at `link_epoch`: a revocation, or a
+    /// floor at or above it? Unlike [`Self::device_is_withdrawn`], a later widening does not count.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn device_withdrawn_past(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+        link_epoch: u32,
+    ) -> EyreResult<bool> {
+        let namespace = crate::NamespaceRepository::new(self.store).resolve(group)?;
+        Ok(self.is_revoked(&namespace, device)?
+            || self
+                .scope_floor(&namespace, account, device)?
+                .is_some_and(|floor| floor >= link_epoch))
+    }
+
+    /// Is `device` bound to `account` in `group`'s namespace at an epoch past
+    /// `device_epoch`, so a certificate at that epoch names a key it rotated out?
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn device_epoch_superseded(
+        &self,
+        group: &ContextGroupId,
+        account: AccountId,
+        device: DeviceId,
+        device_epoch: u32,
+    ) -> EyreResult<bool> {
+        let namespace = crate::NamespaceRepository::new(self.store).resolve(group)?;
+        Ok(self.raw_binding(&namespace, device)?.is_some_and(|bound| {
+            bound.account == *account.as_bytes() && device_epoch < bound.device_epoch
+        }))
     }
 
     /// Did `sign_pk` sign for a device that was revoked or narrowed out in `group`?

@@ -160,7 +160,8 @@ pub async fn generate_client_key_handler(
         );
     }
 
-    let root_key_id = auth_response.key_id;
+    // The user's root, so a key minted from a client session joins the same user.
+    let root_key_id = auth_response.user_id;
 
     // Extract node URL from request for node-specific token generation
     let node_url = request.target_node_url.clone();
@@ -351,6 +352,7 @@ pub async fn delete_client_handler(
 #[cfg(test)]
 mod tests {
     use axum::http::{header, HeaderValue};
+    use tower::ServiceExt;
 
     use super::*;
     use crate::auth::rate_limit::LoginRateLimiter;
@@ -402,6 +404,106 @@ mod tests {
         });
 
         (state, headers)
+    }
+
+    async fn mint_admin_client(state: &Arc<AppState>, headers: HeaderMap) -> String {
+        let response = generate_client_key_handler(
+            Extension(Arc::clone(state)),
+            headers,
+            ValidatedJson(GenerateClientKeyRequest {
+                context_id: None,
+                context_identity: None,
+                permissions: Some(vec!["admin".to_string()]),
+                target_node_url: None,
+                application_id: None,
+                ttl_secs: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        body["data"]["access_token"].as_str().unwrap().to_owned()
+    }
+
+    fn bearer(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        let _ = headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn a_key_minted_from_a_client_session_belongs_to_the_users_root() {
+        let (state, headers) = admin_state().await;
+        let parent = mint_admin_client(&state, headers).await;
+        let child = mint_admin_client(&state, bearer(&parent)).await;
+
+        let clients = state
+            .key_manager
+            .list_client_keys_for_root("root-1")
+            .await
+            .unwrap();
+        assert_eq!(clients.len(), 2);
+
+        // The auth service's own routes name the same user.
+        let response = crate::api::routes::create_router(Arc::clone(&state), &state.config)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/admin/keys/clients")
+                    .header(header::AUTHORIZATION, format!("Bearer {child}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["X-Auth-User"], "root-1");
+    }
+
+    #[tokio::test]
+    async fn a_revoked_user_mints_no_key_from_a_client_session() {
+        let (state, headers) = admin_state().await;
+        let parent = mint_admin_client(&state, headers).await;
+        let mut root = state.key_manager.get_key("root-1").await.unwrap().unwrap();
+        root.revoke();
+        let _ = state.key_manager.set_key("root-1", &root).await.unwrap();
+
+        let status = mint(&state, &bearer(&parent), None, &["admin"]).await;
+
+        assert_ne!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_password_change_revokes_keys_minted_from_client_sessions() {
+        let (state, _) = admin_state().await;
+        let config = crate::config::UserPasswordConfig::default();
+        let provision = |password| {
+            crate::provisioning::provision_admin_key(&state.storage, &config, "admin", password)
+        };
+        let root = provision("password-1").await.unwrap();
+        let (access, _) = state
+            .token_generator
+            .generate_token_pair(root, vec!["admin".to_owned()], None, None)
+            .await
+            .unwrap();
+        let parent = mint_admin_client(&state, bearer(&access)).await;
+        let child = mint_admin_client(&state, bearer(&parent)).await;
+
+        let _ = provision("password-2").await.unwrap();
+
+        for token in [parent, child] {
+            assert!(state
+                .token_generator
+                .verify_token_string(&token, None)
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test]
