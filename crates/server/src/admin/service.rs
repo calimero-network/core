@@ -1574,8 +1574,8 @@ async fn is_authed_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod static_asset_tests {
     use super::{
-        apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths,
-        NodeUiStaticFiles,
+        apply_dashboard_security_headers, is_rewritable_text, rewrite_dashboard_paths, site,
+        AdminConfig, NodeUiStaticFiles,
     };
 
     #[test]
@@ -1595,6 +1595,39 @@ mod static_asset_tests {
         assert_eq!(headers["x-frame-options"], "DENY");
         assert_eq!(headers["x-content-type-options"], "nosniff");
         assert_eq!(headers["referrer-policy"], "no-referrer");
+    }
+
+    #[tokio::test]
+    async fn the_served_dashboard_refuses_framing_and_sniffing() {
+        use tower::ServiceExt as _;
+
+        let config = crate::config::ServerConfig::new(
+            vec![],
+            libp2p::identity::Keypair::generate_ed25519(),
+            Some(AdminConfig::new(true, true)),
+            None,
+            None,
+            None,
+        );
+        let (path, router) = site(&config).expect("the dashboard is enabled");
+        let app = axum::Router::new().nest(&path, router);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::get(format!("{path}/index.html"))
+                    .body(axum::body::Body::empty())
+                    .expect("a request"),
+            )
+            .await
+            .expect("the dashboard answers");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let headers = response.headers();
+        let csp = headers["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("script-src 'self';"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
     }
 
     #[test]
