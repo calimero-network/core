@@ -255,10 +255,23 @@ scenarios:
     file: workflows/group-list-subgroups-restricted-hidden.yml
     app: scaffolding-e2e
     registry_fetch: "false"
+  # #4511: a flip whose subgroup history a namespace member cannot read must
+  # not stall that member's namespace governance. Governance
+  # only, like the one above: no context is joined, so the registry is never asked.
+  - workflow: group-held-flip-nonmember-keeps-up
+    file: workflows/group-held-flip-nonmember-keeps-up.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   # #4522: only a Restricted subgroup's creator may open it, and a member
   # outside it applies the opening as it arrives. Governance only.
   - workflow: group-only-creator-opens-restricted
     file: workflows/group-only-creator-opens-restricted.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
+  # The replay half: the held flip applies once the member is added and the
+  # subgroup key arrives. Governance only, too.
+  - workflow: group-held-flip-applies-when-member-added
+    file: workflows/group-held-flip-applies-when-member-added.yml
     app: scaffolding-e2e
     registry_fetch: "false"
   - workflow: member-removed-multi-context-convergence

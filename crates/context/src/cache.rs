@@ -66,8 +66,8 @@ impl<K: Ord + Clone + Debug, V: Evictable> BoundedCache<K, V> {
         self.map.len()
     }
 
-    pub(crate) fn values(&self) -> impl Iterator<Item = &V> {
-        self.map.values()
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.map.iter()
     }
 
     pub(crate) fn contains_key(&self, key: &K) -> bool {

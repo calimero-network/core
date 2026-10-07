@@ -9037,6 +9037,253 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     );
 }
 
+/// A namespace with an Open subgroup, and a flip of it to Restricted signed by
+/// its admin but not yet applied. Readable by every namespace member (it is
+/// sealed under the namespace key) but authorized by the subgroup's admins, so a
+/// member outside the subgroup cannot settle it once the subgroup's history
+/// holds a sealed op - the shape of core#4511 that remains now that opening is
+/// the creator's alone (#4522).
+struct HeldFlipSetup {
+    store: Store,
+    owner_sk: PrivateKey,
+    owner_account: AccountId,
+    namespace_id: [u8; 32],
+    subgroup: ContextGroupId,
+    flip: calimero_context_client::local_governance::SignedNamespaceOp,
+}
+
+fn held_flip_setup() -> HeldFlipSetup {
+    use calimero_context_client::local_governance::{GroupOp, SignedNamespaceOp};
+    use calimero_context_config::VisibilityMode;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = UnwrapErr(SysRng);
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_account = crate::test_fixtures::account_for(&owner_sk.public_key());
+
+    let namespace_id = founded_namespace_for(&owner_sk);
+    let subgroup = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &owner_account,
+        namespace_id,
+        false,
+        0x01,
+    ));
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let genesis = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        vec![],
+        0,
+        namespace_genesis_for(&owner_sk).0,
+    )
+    .expect("owner signs genesis");
+    gov.apply_signed_op(&genesis).expect("genesis must apply");
+
+    let head = gov.read_head_record().expect("read head");
+    let create = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        seal_for_test(
+            &store,
+            ContextGroupId::from(namespace_id),
+            crate::test_fixtures::group_created(owner_account, namespace_id, false, 0x01),
+        ),
+    )
+    .expect("owner signs GroupCreated");
+    gov.apply_signed_op(&create)
+        .expect("the owner may create an Open subgroup");
+
+    // The flip, readable here: this node holds the key it is sealed under.
+    let flip_key = [0x47; 32];
+    let flip_key_id = GroupKeyring::new(&store, subgroup)
+        .store_key(&flip_key)
+        .expect("store the key the flip is sealed under");
+    let head = gov.read_head_record().expect("read head");
+    let flip = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Group {
+            group_id: subgroup.to_bytes().into(),
+            key_id: flip_key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(
+                &flip_key,
+                &GroupOp::SubgroupVisibilitySet {
+                    mode: VisibilityMode::Restricted,
+                },
+            )
+            .expect("seal the flip"),
+            key_rotation: None,
+        },
+    )
+    .expect("owner signs the flip to Restricted");
+
+    HeldFlipSetup {
+        store,
+        owner_sk,
+        owner_account,
+        namespace_id,
+        subgroup,
+        flip,
+    }
+}
+
+/// core#4511: a namespace member outside a subgroup decrypts a flip of it
+/// (sealed under the namespace key) but can never fold the subgroup ops it
+/// cites, and is never served their key. Refusing such an op parked it for good,
+/// and every namespace op after it with it. It is now kept unapplied - the head
+/// moves past it, its effect waits for the key - while a cut undecidable for any
+/// other reason still parks.
+#[test]
+fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use calimero_context_config::VisibilityMode;
+
+    use super::super::test_fixtures::{SealedHistoryAuthorizer, UnresolvableAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let HeldFlipSetup {
+        store,
+        owner_sk,
+        owner_account,
+        namespace_id,
+        subgroup,
+        flip,
+    } = held_flip_setup();
+    let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    let head = gov.read_head_record().expect("read head");
+
+    // Undecidable for another reason (say, history not yet synced): still parks.
+    let err = NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &UnresolvableAuthorizer)
+        .apply_signed_op(&flip)
+        .expect_err("a cut more history can settle must park, not be skipped");
+    assert!(
+        format!("{err:#}").contains("authority undecidable"),
+        "expected AuthorityUndecidable, got: {err:#}"
+    );
+    assert_eq!(
+        gov.read_head_record().expect("read head").parent_hashes,
+        head.parent_hashes,
+        "a parked op must not advance the head"
+    );
+
+    // Undecidable only because the subgroup's own history is sealed: held.
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &SealedHistoryAuthorizer)
+        .apply_signed_op(&flip)
+        .expect("an op whose only hole is its group's sealed history is held, not refused");
+    let after = gov.read_head_record().expect("read head");
+    assert_ne!(
+        after.parent_hashes, head.parent_hashes,
+        "the head must move past a held op, or everything after it stalls"
+    );
+    assert_ne!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&subgroup)
+            .expect("read visibility"),
+        VisibilityMode::Restricted,
+        "a held op's effect waits for the key: nothing unverified is applied"
+    );
+    let held = crate::held_ops::HeldOps::new(&store, namespace_id.into())
+        .read()
+        .expect("read held ops");
+    assert_eq!(
+        held.ops,
+        vec![crate::held_ops::HeldOp {
+            delta_id: flip.content_hash().expect("flip id"),
+            group_id: subgroup.to_bytes(),
+        }],
+        "a held op is listed, so its missing effect is visible without logs"
+    );
+
+    // And the namespace moves on: an op after the held one applies.
+    let sibling = SignedNamespaceOp::sign(
+        &owner_sk,
+        namespace_id.into(),
+        after.parent_hashes.clone(),
+        after.next_nonce,
+        seal_for_test(
+            &store,
+            ContextGroupId::from(namespace_id),
+            crate::test_fixtures::group_created(owner_account, namespace_id, false, 0x02),
+        ),
+    )
+    .expect("owner signs a sibling GroupCreated");
+    gov.apply_signed_op(&sibling)
+        .expect("an op after the held one must apply");
+}
+
+/// The other half of the hold: a held op is not lost. Once this node can read
+/// the group's history - the key arrives, served by a key holder once the
+/// subgroup is Open there, or because the node is added to it - the key-arrival
+/// replay re-feeds the held flip and it applies.
+#[test]
+fn a_held_group_op_applies_once_its_groups_key_arrives() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::super::test_fixtures::{SealedHistoryAuthorizer, TEST_CUT};
+    use super::NamespaceGovernance;
+
+    let HeldFlipSetup {
+        store,
+        namespace_id,
+        subgroup,
+        flip,
+        ..
+    } = held_flip_setup();
+
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .with_apply_auth(&TEST_CUT, &SealedHistoryAuthorizer)
+        .apply_signed_op(&flip)
+        .expect("the flip is held");
+    assert_ne!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&subgroup)
+            .expect("read visibility"),
+        VisibilityMode::Restricted,
+        "held, not applied"
+    );
+
+    // The key arrives: the history now reads, so the cut is decidable.
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .retry_encrypted_ops_for_group(subgroup.to_bytes())
+        .expect("the key-arrival replay runs");
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&subgroup)
+            .expect("read visibility"),
+        VisibilityMode::Restricted,
+        "the replay must apply the held flip once its group's history reads"
+    );
+    assert!(
+        crate::held_ops::HeldOps::new(&store, namespace_id.into())
+            .read()
+            .expect("read held ops")
+            .ops
+            .is_empty(),
+        "an applied op is no longer listed as held"
+    );
+
+    // Applied once: a second key arrival finds its nonce spent and changes nothing.
+    NamespaceGovernance::new(&store, namespace_id.into())
+        .retry_encrypted_ops_for_group(subgroup.to_bytes())
+        .expect("a second replay runs");
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&subgroup)
+            .expect("read visibility"),
+        VisibilityMode::Restricted,
+    );
+}
+
 #[test]
 fn group_created_honors_at_cut_grant_over_live_denial() {
     use calimero_context_client::local_governance::SignedNamespaceOp;
