@@ -172,6 +172,12 @@ pub trait AtCutAuthorizer: Send + Sync {
         true
     }
 
+    /// The authorizer that answers every gate at the op's own cut, to judge a parked
+    /// op as its arrival on a keyed node did; `None` when there is none.
+    fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
+        None
+    }
+
     /// When [`can_resolve_cut`](Self::can_resolve_cut) refuses: is that only
     /// because an op of `group` itself is sealed under a key this node lacks?
     /// Such a cut is settled by the key's arrival, not by more history, so an

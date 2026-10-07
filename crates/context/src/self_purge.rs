@@ -606,7 +606,7 @@ fn redrive_stranded_ops_sweep(store: &Store) {
     };
 
     let scanned_namespaces = namespaces.len();
-    let mut total_redriven = 0usize;
+    let mut total_redriven = redrive_sealed_root_ops(store, &namespaces);
 
     // Convergence loop: re-run the sweep until a pass applies nothing new. Each
     // pass drains the buffered set, so this is monotone and bounded.
@@ -706,6 +706,11 @@ fn redrive_stranded_ops_sweep(store: &Store) {
         }
     }
 
+    // A folded group op can be what a sealed root op's apply waits on.
+    if total_redriven > 0 {
+        total_redriven += redrive_sealed_root_ops(store, &namespaces);
+    }
+
     if total_redriven > 0 {
         info!(
             scanned_namespaces,
@@ -720,6 +725,27 @@ fn redrive_stranded_ops_sweep(store: &Store) {
             "curative re-drive sweep (#2848) complete — nothing to re-drive"
         );
     }
+}
+
+/// Replay each namespace's sealed root ops whose keys are held, so a parked one is
+/// judged even when no key arrives after a restart. Returns how many applied.
+fn redrive_sealed_root_ops(store: &Store, namespaces: &[[u8; 32]]) -> usize {
+    let mut applied = 0;
+    for ns_id in namespaces {
+        match calimero_governance_store::redrive_sealed_root_ops_with(
+            store,
+            (*ns_id).into(),
+            &crate::VoidJudge::new(store),
+        ) {
+            Ok(count) => applied += count,
+            Err(e) => warn!(
+                namespace = %hex::encode(ns_id),
+                error = ?e,
+                "startup sweep: sealed root op replay failed for one namespace"
+            ),
+        }
+    }
+    applied
 }
 
 /// What the reconcile should do for one marked namespace. Split out from
@@ -3027,6 +3053,40 @@ mod tests {
             get_group_for_context(&store, &context_id).expect("get_group_for_context"),
             Some(sub_gid),
             "a second sweep must leave the now-applied context registered (idempotent)"
+        );
+    }
+
+    /// A parked op whose key is already held when the node starts, with no replay
+    /// ever run for it, is decided by the startup sweep, sealed root ops included.
+    #[test]
+    fn the_startup_sweep_decides_parked_ops_whose_key_is_held() {
+        use crate::group_key_pull::tests::{
+            admin_at_heads, keyless_namespace, park_a_create_naming_a_folded_group,
+        };
+
+        let ns = ContextGroupId::from([0x53; 32]);
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let node_sk = PrivateKey::from([0x74; 32]);
+        NamespaceRepository::new(&store)
+            .store_identity(&ns, &node_sk.public_key(), &[0x74; 32])
+            .unwrap();
+        let ns_key = [0x63u8; 32];
+        let s = park_a_create_naming_a_folded_group(&store, ns, &owner_sk, &mallory_sk, &ns_key);
+        let _ = GroupKeyring::new(&store, ns).store_key(&ns_key).unwrap();
+
+        redrive_stranded_ops_sweep(&store);
+
+        assert_eq!(
+            admin_at_heads(&store, &ns, s, &owner),
+            Some(true),
+            "the sweep leaves S's cut decidable"
+        );
+        assert_eq!(
+            admin_at_heads(&store, &ns, s, &mallory),
+            Some(false),
+            "the sweep refuses the parked create rather than folding it"
         );
     }
 }

@@ -122,6 +122,7 @@ pub use self::device_link::{
 pub use self::ops::group::shared_writers_rotated::require_context_not_rotated;
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
+pub use self::void_ledger::{parked_op, Parked};
 
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
@@ -156,14 +157,14 @@ pub use self::namespace::{
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
     open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
-    redrive_buffered_ops_for_group_with, retry_encrypted_ops_for_group,
-    retry_encrypted_ops_for_group_with, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
-    seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
-    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
-    KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
-    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
-    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+    redrive_buffered_ops_for_group_with, redrive_sealed_root_ops_with,
+    retry_encrypted_ops_for_group, retry_encrypted_ops_for_group_with,
+    seal_root_op_for_group_if_keyed, seal_root_op_for_publish, seal_root_op_if_keyed,
+    sign_and_apply_namespace_op_without_publish, sign_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
+    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
+    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
+    NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,
