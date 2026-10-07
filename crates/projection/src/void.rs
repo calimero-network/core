@@ -286,7 +286,10 @@ fn capability_by_payload(op: &Op, author: AccountId) -> u32 {
         }
         OpPayload::SubgroupCreated { .. } => MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
         OpPayload::SubgroupDeleted { .. } => MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
-        OpPayload::SubgroupVisibilitySet { .. } => MemberCapabilities::CAN_MANAGE_VISIBILITY.bits(),
+        // Opening is the creator's alone and takes no capability (#4522).
+        OpPayload::SubgroupVisibilitySet {
+            restricted: true, ..
+        } => MemberCapabilities::CAN_MANAGE_VISIBILITY.bits(),
         _ => 0,
     }
 }

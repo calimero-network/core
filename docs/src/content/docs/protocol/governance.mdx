@@ -379,7 +379,8 @@ fn authorize(op, view) -> Result<(), Rejected>:
         SetWriters{object}   => require view.is_owner(op.author, object)      // = may(.., ADMIN); else NotOwner
         SharedWritersRotated{prior} => require prior[op.author].contains(ADMIN)  // else NotOwner
         MemberAdded|MemberRemoved{group}                  => require view.is_group_admin(op.author, group)  // else NotGroupAdmin
-        SubgroupVisibilitySet{scope}                      => require view.is_group_admin(op.author, scope)
+        SubgroupVisibilitySet{scope, restricted: true}    => require view.is_group_admin(op.author, scope)
+        SubgroupVisibilitySet{scope, restricted: false}   => require view.is_group_creator(op.author, scope)  // else NotGroupCreator
         DefaultCapabilitiesSet|MemberCapabilitySet{group} => require view.is_group_admin(op.author, group)
         AdminChanged|PolicyUpdated|SubgroupCreated|SubgroupReparented|SubgroupDeleted
                              => require view.is_root_admin(op.author)         // else NotRootAdmin

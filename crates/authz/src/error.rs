@@ -33,6 +33,9 @@ pub enum Rejected {
     /// Author is not an admin of the group being mutated.
     #[error("author is not an admin of the group at the cut")]
     NotGroupAdmin,
+    /// Author did not create the subgroup it is opening: only its creator may.
+    #[error("author is not the creator of the subgroup it is opening")]
+    NotGroupCreator,
     /// Author is not the scope's root admin.
     #[error("author is not the scope root admin at the cut")]
     NotRootAdmin,

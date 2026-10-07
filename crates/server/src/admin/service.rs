@@ -2780,11 +2780,11 @@ mod parse_api_error_tests {
             );
         }
 
-        /// A delegated write the execute path refused over a role reaches the
-        /// `/intents` caller as a 403 naming the role — never as the `200` it
-        /// used to be (writes silently discarded) or the opaque `500`.
+        /// A delegated write the execute path refused reaches the `/intents`
+        /// caller as a 403 naming why, never as the `200` it used to be (writes
+        /// silently discarded) or the opaque `500`.
         #[test]
-        fn a_delegated_write_refused_over_a_role_is_a_403_with_its_reason() {
+        fn a_refused_delegated_write_is_a_403_with_its_reason() {
             use calimero_context_client::messages::DelegatedWriteRefusal;
             for (reason, says) in [
                 (
@@ -2802,6 +2802,14 @@ mod parse_api_error_tests {
                 (
                     DelegatedWriteRefusal::ExecutorIsNotARelay,
                     "this node is not a RelayTee in this namespace",
+                ),
+                (
+                    DelegatedWriteRefusal::ReleaseNotRunning,
+                    "the warrant pins a release this context is not running",
+                ),
+                (
+                    DelegatedWriteRefusal::WarrantExpired,
+                    "the warrant expired before its write could be stamped",
                 ),
             ] {
                 let api = parse_api_error(

@@ -178,6 +178,18 @@ pub trait AtCutAuthorizer: Send + Sync {
         false
     }
 
+    /// When [`can_resolve_cut`](Self::can_resolve_cut) refuses: is that only
+    /// because an op of `group` itself is sealed under a key this node lacks?
+    /// Such a cut is settled by the key's arrival, not by more history, so an
+    /// op of `group` refused at it may be kept unapplied for the key-arrival
+    /// replay instead of parking the namespace's DAG (core#4511).
+    ///
+    /// Default `false`: an implementation with no projection cannot tell, and
+    /// the op parks as before.
+    fn history_sealed_in_group(&self, _group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
+        false
+    }
+
     /// Is `device` bound to `account` in `group`'s namespace at an epoch past
     /// `device_epoch` at the cut, so that certificate names a retired key? `None` = defer.
     fn device_epoch_superseded_at_cut(

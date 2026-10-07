@@ -191,16 +191,12 @@ impl IntentCommand {
             .unwrap_or(0)
             .saturating_add(self.valid_for);
 
-        // The build the warrant is signed against, read from the node rather
-        // than asserted here: `app_version` pins the code, so a value this
-        // client guessed would pin the wrong one. Read after the relay check so
-        // a refusal that costs nothing comes first.
-        let app_version = client
-            .get_context(&context_id)
-            .await
-            .wrap_err("could not read the context to learn which application it runs")?
-            .data
-            .application_id;
+        // The release the warrant pins, read from the relay: a value guessed here
+        // would pin code the context does not run, and the relay would refuse it.
+        let release_bytecode_id: [u8; 32] = hex::decode(&relay.data.release_bytecode_id)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| eyre::eyre!("the node reported a release this client cannot parse"))?;
 
         // The arguments are the commitment, not the intent. The envelope this
         // rides in is plaintext to anything subscribed to the context's topic,
@@ -214,7 +210,8 @@ impl IntentCommand {
                 author_account,
                 executor,
                 executor_key: relay.data.executor_key,
-                app_version,
+                release_bytecode_id,
+                release_version: relay.data.release_version.clone(),
                 method: self.method.clone(),
                 intent_hash: Warrant::intent_hash(&self.method, &args_bytes),
                 // Cited by a client that tracks the logs; meroctl tracks

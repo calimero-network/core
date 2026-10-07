@@ -27,6 +27,7 @@ use crate::governance_broadcast::{
     self, assert_transport_ready, classify_publish_readiness, ns_topic,
     publish_and_await_ack_namespace, timeout_for_namespace_op, DeliveryReport, PublishReadiness,
 };
+use crate::held_ops::HeldOps;
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
 use crate::void_ledger::{KeyIntro, VoidLedger, STORED_BEFORE};
@@ -778,6 +779,8 @@ impl<'a> NamespaceGovernance<'a> {
                 // signal for the rotation gate below: a node with no key for the
                 // group is not a member and must never process a rotation for it.
                 let inner_decrypted = resolved_key.is_some();
+                // Decrypted, but kept unapplied for the key-arrival replay.
+                let mut held = false;
                 if !inner_decrypted {
                     unread = true;
                     keep_bytes &= self.admit_unreadable(op)?;
@@ -803,20 +806,62 @@ impl<'a> NamespaceGovernance<'a> {
                     // encrypted group op, so the assignment is a simple
                     // overwrite. Any prior `None` is preserved if this
                     // op reports `None`.
-                    let report =
-                        self.decrypt_and_apply_group_op(op, &group_id_typed, group_key, encrypted)?;
-                    if report.is_some() {
-                        result.divergence = report;
+                    match self.decrypt_and_apply_group_op(op, &group_id_typed, group_key, encrypted)
+                    {
+                        Ok(report) => {
+                            if report.is_some() {
+                                result.divergence = report;
+                            }
+                        }
+                        // Readable, but judged at a cut whose only hole is this
+                        // group's own sealed history (core#4511): a namespace
+                        // member outside a Restricted subgroup reads the Open flip
+                        // but never the subgroup ops it cites, and is never served
+                        // their key. Refusing here parked the op for good, and every
+                        // op after it in the namespace with it. Kept instead like an
+                        // op this node cannot decrypt: logged, head advanced,
+                        // nothing applied. The key-arrival replay re-feeds every op
+                        // of this group and applies it once the history reads.
+                        Err(e)
+                            if matches!(
+                                e.downcast_ref::<crate::ApplyError>(),
+                                Some(crate::ApplyError::AuthorityUndecidable { .. })
+                            ) && self
+                                .authorizer
+                                .history_sealed_in_group(&group_id_typed, self.parents) =>
+                        {
+                            tracing::warn!(
+                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                group_id = %hex::encode(group_id_typed.to_bytes()),
+                                delta_id = %hex::encode(delta_id),
+                                signer = %op.signer,
+                                nonce = op.nonce,
+                                "group op held unapplied: its group's history is sealed under \
+                                 a key this node does not hold; the namespace moves on and \
+                                 the op applies if that key arrives"
+                            );
+                            HeldOps::new(self.store, self.namespace_id)
+                                .hold(delta_id, group_id_typed.to_bytes())?;
+                            held = true;
+                            applied = None;
+                            if key_rotation.is_some() {
+                                DeferredRotations::new(self.store, self.namespace_id)
+                                    .defer(delta_id, op_sequence)?;
+                            }
+                        }
+                        Err(e) => return Err(e),
                     }
                 }
 
-                self.apply_carried_rotation(
-                    op,
-                    inner_op.as_ref(),
-                    op_sequence,
-                    delta_id,
-                    &mut result,
-                )?;
+                if !held {
+                    self.apply_carried_rotation(
+                        op,
+                        inner_op.as_ref(),
+                        op_sequence,
+                        delta_id,
+                        &mut result,
+                    )?;
+                }
             }
             // `NamespaceOp` is `#[non_exhaustive]`; an unknown future op type
             // contributes nothing to apply (it folds as a `Noop` in decode),
@@ -2360,6 +2405,9 @@ impl<'a> NamespaceGovernance<'a> {
                     // were buffered pending `KeyDelivery`.
                     Ok(divergence) => {
                         group_applied += 1;
+                        if let Ok(id) = candidate.signed_op.content_hash() {
+                            HeldOps::new(self.store, self.namespace_id).release(id)?;
+                        }
                         record_namespace_retry_event("applied");
                         tracing::info!(
                             group_id = %hex::encode(group_id),
@@ -2369,6 +2417,13 @@ impl<'a> NamespaceGovernance<'a> {
                         if divergence.is_some() {
                             retry_divergence = divergence;
                         }
+                    }
+                    Err(e) if self.still_held(candidate, &e) => {
+                        record_namespace_retry_event("still_held");
+                        tracing::debug!(
+                            group_id = %hex::encode(group_id),
+                            "a held op is still held: its group's history is still sealed here"
+                        );
                     }
                     Err(e) => {
                         record_namespace_retry_event("failed");
@@ -2549,10 +2604,26 @@ impl<'a> NamespaceGovernance<'a> {
                 record_namespace_retry_event("collected");
             }
             let mut rotated = false;
+            // A held op waits on its group's own key. Until this node holds one,
+            // no re-drive can apply it - re-feeding it on every namespace-key
+            // delivery only failed it and warned (core#4511).
+            let group_key_held = GroupKeyring::new(self.store, gid_typed)
+                .load_current_key()?
+                .is_some();
+            let held_ops = HeldOps::new(self.store, self.namespace_id);
             for candidate in &retry_candidates {
                 let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
                     continue;
                 };
+                let delta_id = candidate.signed_op.content_hash().ok();
+                if !group_key_held {
+                    if let Some(id) = delta_id {
+                        if held_ops.contains(id)? {
+                            record_namespace_retry_event("still_held");
+                            continue;
+                        }
+                    }
+                }
                 let signer = &candidate.signed_op.signer;
                 let nonce = candidate.signed_op.nonce;
                 // Pre-apply nonce-window membership tells a real apply apart from an
@@ -2583,6 +2654,9 @@ impl<'a> NamespaceGovernance<'a> {
                             // inflate the metric (review fix B).
                             record_namespace_retry_event("applied");
                             applied += 1;
+                            if let Some(id) = delta_id {
+                                held_ops.release(id)?;
+                            }
                             tracing::info!(
                                 group_id = %hex::encode(group_id),
                                 "curative re-drive applied a stranded encrypted op (#2848)"
@@ -2591,6 +2665,9 @@ impl<'a> NamespaceGovernance<'a> {
                             // Idempotent nonce-deduped replay: nothing was written.
                             record_namespace_retry_event("nonce_skip");
                         }
+                    }
+                    Err(e) if self.still_held(candidate, &e) => {
+                        record_namespace_retry_event("still_held");
                     }
                     Err(e) => {
                         record_namespace_retry_event("failed");
@@ -2608,6 +2685,21 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         Ok(applied)
+    }
+
+    /// Did replaying a held op fail only because it is still held: undecidable,
+    /// with its group's own history still sealed here?
+    fn still_held(&self, candidate: &RetryCandidate, error: &eyre::Report) -> bool {
+        let NamespaceOp::Group { group_id, .. } = &candidate.signed_op.op else {
+            return false;
+        };
+        matches!(
+            error.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::AuthorityUndecidable { .. })
+        ) && self.authorizer.history_sealed_in_group(
+            &ContextGroupId::from(group_id.to_bytes()),
+            &candidate.signed_op.parent_op_hashes,
+        )
     }
 
     /// Apply the rotation riding the group op `op`, unless the op is void and the

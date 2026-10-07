@@ -1492,6 +1492,52 @@ mod user_storage_replay_protection {
              stale_attempt={old_nonce}"
         );
     }
+
+    /// `updated_at` is not signed, so a relaying peer can re-date a write ahead;
+    /// it keeps its signed date, so the owner's next write does not look stale.
+    #[test]
+    fn a_write_re_dated_ahead_keeps_its_signed_date() {
+        crate::tests::common::register_test_merge_functions();
+        env::reset_for_testing();
+
+        let (signing_key, owner) = create_test_owner();
+        let page = Page::new_from_element("v1", crate::tests::common::owned_element(owner));
+
+        let nonce1 = env::time_now();
+        let mut first = create_signed_user_add_action(
+            &signing_key,
+            owner,
+            page.id(),
+            to_vec(&page).unwrap(),
+            nonce1,
+        );
+        if let Action::Add { metadata, .. } = &mut first {
+            metadata.updated_at = (nonce1 + DRIFT_TOLERANCE_NANOS / 2).into();
+        }
+        MainInterface::apply_action(first, &apply_ctx_for(owner))
+            .expect("the write itself is authentic");
+        let stored = <Index<MainStorage>>::get_metadata(page.id())
+            .unwrap()
+            .expect("stored");
+        assert_eq!(*stored.updated_at, nonce1, "dated by its signed nonce");
+
+        sleep(Duration::from_millis(2));
+        let mut next = page.clone();
+        next.title = "v2".to_owned();
+        let second = create_signed_user_update_action(
+            &signing_key,
+            owner,
+            page.id(),
+            to_vec(&next).unwrap(),
+            env::time_now(),
+            page.element().created_at(),
+        );
+        MainInterface::apply_action(second, &apply_ctx_for(owner)).expect("the next write applies");
+        let stored = MainInterface::find_by_id::<Page>(page.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.title, "v2", "the owner's next write wins");
+    }
 }
 
 /// Tests for Shared storage replay protection.
@@ -1507,6 +1553,7 @@ mod shared_storage_replay_protection {
 
     use ed25519_dalek::SigningKey;
 
+    use crate::action::Action;
     use crate::env;
     use crate::index::Index;
     use crate::interface::MainInterface;
@@ -1581,16 +1628,68 @@ mod shared_storage_replay_protection {
              stale_attempt={nonce_stale}"
         );
     }
+
+    /// A peer relaying a write can also re-date it into the past, behind the
+    /// write it follows. It keeps the date its signature commits to and wins.
+    #[test]
+    fn a_shared_write_re_dated_into_the_past_still_wins() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = account_of_key(&alice_sk);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = cell_at(0x5D, &writers);
+
+        let nonce1 = env::time_now();
+        let first = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers.clone(),
+            nonce1,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(first, &apply_ctx_for(alice)).expect("the first write applies");
+
+        sleep(Duration::from_millis(2));
+        let nonce2 = env::time_now();
+        let mut second = build_signed_shared_action(
+            false,
+            id,
+            b"v1".to_vec(),
+            writers,
+            nonce2,
+            &alice_sk,
+            vec![],
+        );
+        if let Action::Update { metadata, .. } = &mut second {
+            metadata.updated_at = (nonce1 - 1).into();
+        }
+        MainInterface::apply_action(second, &apply_ctx_for(alice))
+            .expect("the write itself is authentic");
+
+        assert_eq!(
+            MainInterface::find_by_id_raw(id).as_deref(),
+            Some(&b"v1"[..]),
+            "the later write wins"
+        );
+        let stored = <Index<MainStorage>>::get_metadata(id)
+            .unwrap()
+            .expect("stored");
+        assert_eq!(*stored.updated_at, nonce2, "dated by its signed nonce");
+    }
 }
 
 /// Tests for `SharedStorage` writer-set rotation authentication.
 ///
 /// A writer-set rotation propagates as a signed per-entity action and is
-/// verified at merge against the *current* writer set (resolved from the
-/// rotation log / `effective_writers`, with the stored writers as the
-/// fallback). A rotation forged by a non-writer must be rejected — this is the
-/// merge-time backstop behind the local writer gate, and the property that
-/// makes the writer set unforgeable.
+/// verified at merge against the *current* writer set (the fold's answer in
+/// `effective_writers`, with the stored writers as the fallback). A rotation
+/// forged by a non-writer must be rejected - this is the merge-time backstop
+/// behind the local writer gate, and the property that makes the writer set
+/// unforgeable.
 #[cfg(test)]
 mod shared_storage_rotation_authentication {
     use std::collections::BTreeSet;
@@ -2214,7 +2313,7 @@ mod shared_storage_rotation_authentication {
         // path where the apply context carries NO `effective_writers` (empty
         // ctx). The verifier must then fall back to the entity's *stored* writer
         // set and still reject a non-writer's forged rotation — covering the
-        // case where rotation-log resolution yielded nothing.
+        // case where the node resolved no rotated set.
         env::reset_for_testing();
         let root = setup_root_for_main();
 
@@ -2389,10 +2488,9 @@ mod shared_storage_rotation_authentication {
     /// writer becomes un-writable by Bob the instant the anchor rotates him out,
     /// even though the member entity itself is byte-identical throughout.
     ///
-    /// We model the rotation by the writer set the node's `writers_at` would
-    /// resolve from the anchor's rotation log at the delta's causal cut, passed
-    /// as `effective_writers`. The member carries only its anchor pointer, so
-    /// the SAME stored member is verified against {alice, bob} before the
+    /// We model the rotation by the writer set the governance fold would give
+    /// for the anchor at the delta's causal cut, passed as `effective_writers`.
+    /// The member carries only its anchor pointer, so the SAME stored member is verified against {alice, bob} before the
     /// rotation and {alice} after — no per-member re-stamp involved.
     #[test]
     fn rotating_anchor_retroactively_revokes_member_writes() {
@@ -2726,6 +2824,175 @@ mod shared_storage_rotation_authentication {
                 Err(StorageError::InvalidSignature)
             ),
             "a leaf whose signature does not cover its data must be rejected"
+        );
+    }
+
+    /// A member write re-dated into the past by the peer relaying it keeps the
+    /// date its signature commits to, so it still replaces the write before it.
+    #[test]
+    fn a_member_write_re_dated_into_the_past_still_lands() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = account_of_key(&alice_sk);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let anchor = cell_at(0xA2, &writers);
+        let member = member_at(anchor, 0x3F);
+
+        let n0 = env::time_now();
+        MainInterface::apply_action(
+            build_signed_shared_action(
+                true,
+                anchor,
+                b"anchor".to_vec(),
+                writers,
+                n0,
+                &alice_sk,
+                vec![root.clone()],
+            ),
+            &apply_ctx_for(alice),
+        )
+        .expect("the anchor bootstraps");
+        MainInterface::apply_action(
+            build_signed_member_action(
+                true,
+                member,
+                anchor,
+                b"first".to_vec(),
+                n0 + 1_000_000,
+                &alice_sk,
+                vec![root.clone()],
+            ),
+            &apply_ctx_for(alice),
+        )
+        .expect("the first write applies");
+
+        let mut second = build_signed_member_action(
+            false,
+            member,
+            anchor,
+            b"second".to_vec(),
+            n0 + 2_000_000,
+            &alice_sk,
+            vec![root],
+        );
+        if let Action::Update { metadata, .. } = &mut second {
+            metadata.updated_at = n0.into();
+        }
+        MainInterface::apply_action(second, &apply_ctx_for(alice))
+            .expect("the write itself is authentic");
+
+        assert_eq!(
+            MainInterface::find_by_id_raw(member).as_deref(),
+            Some(&b"second"[..]),
+            "the later write lands"
+        );
+    }
+
+    /// A rotation receiver from before writers rotated through governance keeps the
+    /// anchor's first signature beside the rotation's date; a node taking that row
+    /// must read the same date, or deletes diverge.
+    #[test]
+    fn an_anchor_taken_from_a_rotation_receiver_keeps_its_date() {
+        type Joiner = crate::store::MockedStorage<7420>;
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = account_of_key(&alice_sk);
+        let bob = account_of_key(&make_signing_key(0xB0));
+        let genesis: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let anchor = cell_at(0xA3, &genesis);
+
+        let n1 = env::time_now();
+        let n_rot = n1 + 2_000_000;
+        MainInterface::apply_action(
+            build_signed_shared_action(
+                true,
+                anchor,
+                b"anchor".to_vec(),
+                genesis.clone(),
+                n1,
+                &alice_sk,
+                vec![root],
+            ),
+            &apply_ctx_for(alice),
+        )
+        .expect("the anchor bootstraps");
+        // The row such a receiver stored: the first signature, the rotation's date.
+        let _ = <Index<MainStorage>>::write_value_for(
+            anchor,
+            b"anchor",
+            n_rot.into(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let served = <Index<MainStorage>>::get_metadata(anchor).unwrap().unwrap();
+        assert_eq!(*served.updated_at, n_rot);
+
+        Index::<Joiner>::add_root(ChildInfo::new(Id::root(), [0; 32], Metadata::default()))
+            .unwrap();
+        let (root_hash, _) = Index::<Joiner>::get_hashes_for(Id::root())
+            .unwrap()
+            .unwrap();
+        crate::interface::Interface::<Joiner>::apply_action(
+            Action::Add {
+                id: anchor,
+                data: MainInterface::find_by_id_raw(anchor).unwrap(),
+                ancestors: vec![ChildInfo::new(Id::root(), root_hash, Metadata::default())],
+                metadata: served.clone(),
+            },
+            &apply_ctx_for(alice),
+        )
+        .expect("the joiner takes the served row");
+        let joined = Index::<Joiner>::get_metadata(anchor).unwrap().unwrap();
+        assert_eq!(
+            joined.updated_at, served.updated_at,
+            "the same date on both"
+        );
+
+        let deleted_at = n1 + 1_000_000;
+        let mut delete = Action::DeleteRef {
+            id: anchor,
+            deleted_at,
+            metadata: Metadata {
+                created_at: n1,
+                updated_at: deleted_at.into(),
+                storage_type: StorageType::Shared {
+                    writers: crate::entities::full_mask(genesis),
+                    signature_data: Some(crate::entities::SignatureData {
+                        signature: [0; 64],
+                        nonce: deleted_at,
+                        signer: Some(pubkey_of(&alice_sk)),
+                        on_behalf: None,
+                    }),
+                },
+                crdt_type: None,
+                field_name: None,
+                schema_version: None,
+                order: 0,
+            },
+        };
+        let signature = crate::tests::common::sign_action(&delete, &alice_sk);
+        if let Action::DeleteRef { metadata, .. } = &mut delete {
+            if let StorageType::Shared {
+                signature_data: Some(sd),
+                ..
+            } = &mut metadata.storage_type
+            {
+                sd.signature = signature;
+            }
+        }
+        let on_server = MainInterface::apply_action(delete.clone(), &apply_ctx_for(alice));
+        let on_joiner =
+            crate::interface::Interface::<Joiner>::apply_action(delete, &apply_ctx_for(alice));
+        assert!(
+            matches!(on_server, Err(StorageError::NonceReplay(_)))
+                && matches!(on_joiner, Err(StorageError::NonceReplay(_))),
+            "a delete older than the rotation is a replay on both: {on_server:?} {on_joiner:?}"
         );
     }
 
@@ -4803,16 +5070,19 @@ mod tee_only_tamper_resistance {
 mod stale_write_to_a_merging_entry {
     use std::collections::BTreeSet;
 
+    use borsh::{BorshDeserialize, BorshSerialize};
     use calimero_primitives::crdt::CustomTypeId;
     use ed25519_dalek::SigningKey;
 
     use crate::action::Action;
     use crate::address::Id;
-    use crate::collections::crdt_meta::CrdtType;
-    use crate::entities::ChildInfo;
+    use crate::collections::crdt_meta::{
+        CrdtType, CustomMergeable, MergeError, MergeStrategy, Mergeable,
+    };
+    use crate::entities::{ChildInfo, Metadata};
     use crate::env;
     use crate::index::Index;
-    use crate::interface::{MainInterface, StorageError};
+    use crate::interface::{Interface, MainInterface, StorageError};
     use crate::store::{Key, MainStorage, StorageAdaptor};
     use crate::tests::common::{
         account_of_key, apply_ctx_for, build_signed_member_action, build_signed_shared_action,
@@ -4839,6 +5109,27 @@ mod stale_write_to_a_merging_entry {
         nonce: u64,
         crdt_type: Option<CrdtType>,
     ) -> (Id, Vec<ChildInfo>) {
+        let (member, ancestors) = cell(alice, nonce);
+        let write = build_signed_member_action(
+            true,
+            member,
+            ancestors[0].id(),
+            b"newer".to_vec(),
+            nonce,
+            alice,
+            ancestors.clone(),
+        );
+        MainInterface::apply_action(
+            tagged(write, crdt_type),
+            &apply_ctx_for(account_of_key(alice)),
+        )
+        .unwrap();
+        (member, ancestors)
+    }
+
+    /// Alice's cell, created before `nonce`, with no member written yet.
+    /// Returns the id of its member and the ancestors a write to it names.
+    fn cell(alice: &SigningKey, nonce: u64) -> (Id, Vec<ChildInfo>) {
         let root = setup_root_for_main();
         let writers: BTreeSet<_> = [account_of_key(alice)].into_iter().collect();
         let anchor = cell_at(0x5E, &writers);
@@ -4863,22 +5154,7 @@ mod stale_write_to_a_merging_entry {
             ),
             root,
         ];
-        let member = member_at(anchor, 1);
-        let write = build_signed_member_action(
-            true,
-            member,
-            anchor,
-            b"newer".to_vec(),
-            nonce,
-            alice,
-            ancestors.clone(),
-        );
-        MainInterface::apply_action(
-            tagged(write, crdt_type),
-            &apply_ctx_for(account_of_key(alice)),
-        )
-        .unwrap();
-        (member, ancestors)
+        (member_at(anchor, 1), ancestors)
     }
 
     fn stored(id: Id) -> Option<Vec<u8>> {
@@ -4977,9 +5253,172 @@ mod stale_write_to_a_merging_entry {
         assert_eq!(after.updated_at, before.updated_at);
         assert_eq!(after.crdt_type, None);
     }
+
+    /// A value whose app rule keeps the larger number.
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct Highest(u64);
+
+    impl crate::collections::rekey::RekeyTarget for Highest {
+        fn rekey_relative_to(&mut self, _parent_id: Id) {}
+    }
+
+    #[diagnostic::do_not_recommend]
+    impl MergeStrategy for Highest {
+        const DISPATCHED: bool = true;
+    }
+
+    impl Mergeable for Highest {
+        fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+            self.0 = self.0.max(other.0);
+            Ok(())
+        }
+    }
+
+    impl CustomMergeable for Highest {
+        const TYPE_ID: CustomTypeId = CustomTypeId::of("tests::Highest");
+
+        fn register_merge() -> bool {
+            crate::merge::register_custom_merge::<Self>()
+        }
+    }
+
+    /// A local migration dates the app root past every prior write on purpose,
+    /// so the trusted write keeps a stamp far past the drift bound.
+    #[test]
+    fn a_local_root_write_keeps_its_far_future_stamp() {
+        env::reset_for_testing();
+        let far = u64::MAX / 2;
+        let root = crate::collections::ROOT_ENTRY_ID;
+
+        let outcome = MainInterface::write_migrated_root_state(root, b"v2", Metadata::new(1, far));
+
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let stored = <Index<MainStorage>>::get_metadata(root).unwrap().unwrap();
+        assert_eq!(*stored.updated_at, far);
+    }
+
+    /// After a migration the root's own stamp is far ahead, so a merge for a peer's
+    /// root is bounded by the peer's stamp, not by the stamp the merge keeps.
+    #[test]
+    fn a_root_merge_after_a_migration_bounds_only_the_peer_stamp() {
+        env::reset_for_testing();
+        let far = u64::MAX / 2;
+        let root = crate::collections::ROOT_ENTRY_ID;
+        MainInterface::write_migrated_root_state(root, b"v2", Metadata::new(1, far)).unwrap();
+
+        let forged =
+            MainInterface::write_pre_merged_root_state(root, b"forged", Metadata::new(1, far), far);
+        assert!(
+            matches!(forged, Err(StorageError::InvalidTimestamp(..))),
+            "{forged:?}"
+        );
+        assert_eq!(stored(root).as_deref(), Some(&b"v2"[..]));
+
+        let merged = MainInterface::write_pre_merged_root_state(
+            root,
+            b"merged",
+            Metadata::new(1, far),
+            env::time_now(),
+        );
+        assert!(merged.is_ok(), "{merged:?}");
+        assert_eq!(stored(root).as_deref(), Some(&b"merged"[..]));
+    }
+
+    /// A merge for a peer's leaf is written back with its unsigned stamp; one past
+    /// the drift bound would outdate every write the owner can still make.
+    #[test]
+    fn a_merge_written_back_with_a_far_future_stamp_is_refused() {
+        env::reset_for_testing();
+        let alice = SigningKey::from_bytes(&[0xA1; 32]);
+        let nonce = env::time_now();
+        let (member, _) = cell_with_member(&alice, nonce, Some(custom()));
+
+        let mut far = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
+        far.updated_at = u64::MAX.into();
+        let outcome = MainInterface::write_pre_merged_root_state(member, b"merged", far, u64::MAX);
+        assert!(
+            matches!(outcome, Err(StorageError::InvalidTimestamp(..))),
+            "{outcome:?}"
+        );
+        let after = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
+        assert_eq!(*after.updated_at, nonce);
+        assert_eq!(stored(member).as_deref(), Some(&b"newer"[..]));
+    }
+
+    /// An honest merged row can hold the older write's signature beside the newer
+    /// write's date, so a node taking it keeps that date, as the serving replica does.
+    #[test]
+    fn a_merged_row_keeps_its_date_on_a_node_that_takes_it() {
+        type Joiner = crate::store::MockedStorage<7431>;
+        env::reset_for_testing();
+        let _ = Highest::register_merge();
+        let alice = SigningKey::from_bytes(&[0xA1; 32]);
+        let t10 = env::time_now();
+        let t20 = t10 + 1_000_000;
+        let tag = Some(CrdtType::Custom(Highest::TYPE_ID));
+
+        let (member, ancestors) = cell(&alice, t10);
+        let nine = borsh::to_vec(&Highest(9)).unwrap();
+        let five = borsh::to_vec(&Highest(5)).unwrap();
+        for (add, bytes, at) in [(true, &nine, t10), (false, &five, t20)] {
+            let write = build_signed_member_action(
+                add,
+                member,
+                ancestors[0].id(),
+                bytes.clone(),
+                at,
+                &alice,
+                ancestors.clone(),
+            );
+            MainInterface::apply_action(
+                tagged(write, tag.clone()),
+                &apply_ctx_for(account_of_key(&alice)),
+            )
+            .unwrap();
+        }
+        let served = <Index<MainStorage>>::get_metadata(member).unwrap().unwrap();
+        assert_eq!(stored(member).as_ref(), Some(&nine), "the rule kept 9");
+        assert_eq!(*served.updated_at, t20, "as new as the newer write");
+
+        Index::<Joiner>::add_root(ChildInfo::new(Id::root(), [0; 32], Metadata::default()))
+            .unwrap();
+        let (root_hash, _) = Index::<Joiner>::get_hashes_for(Id::root())
+            .unwrap()
+            .unwrap();
+        let root = ChildInfo::new(Id::root(), root_hash, Metadata::default());
+        let anchor = ancestors[0].id();
+        let writers: BTreeSet<_> = [account_of_key(&alice)].into_iter().collect();
+        Interface::<Joiner>::apply_action(
+            build_signed_shared_action(
+                true,
+                anchor,
+                Vec::new(),
+                writers,
+                t10 - 10,
+                &alice,
+                vec![root.clone()],
+            ),
+            &apply_ctx_for(account_of_key(&alice)),
+        )
+        .unwrap();
+        let (_, anchor_hash) = Index::<Joiner>::get_hashes_for(anchor).unwrap().unwrap();
+        let anchor_meta = Index::<Joiner>::get_metadata(anchor).unwrap().unwrap();
+        Interface::<Joiner>::apply_action(
+            Action::Add {
+                id: member,
+                data: nine,
+                ancestors: vec![ChildInfo::new(anchor, anchor_hash, anchor_meta), root],
+                metadata: served.clone(),
+            },
+            &apply_ctx_for(account_of_key(&alice)),
+        )
+        .expect("the node takes the served row");
+        let taken = Index::<Joiner>::get_metadata(member).unwrap().unwrap();
+        assert_eq!(taken.updated_at, served.updated_at, "the same date on both");
+    }
 }
 
-/// A cell's writers come from the host, never from the cell's rotation log.
+/// A cell's writers come from the host, never from entities under the cell.
 #[cfg(test)]
 mod shared_writers_from_the_host {
     use std::collections::BTreeSet;

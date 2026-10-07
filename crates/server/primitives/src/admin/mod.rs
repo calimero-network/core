@@ -1850,6 +1850,11 @@ pub struct IntentRelayApiResponseData {
     /// must not infer permission from this field alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub granted_on_group_id: Option<String>,
+    /// The blob id of the release this context's group names, hex: what a
+    /// warrant for this node must pin as `release_bytecode_id`.
+    pub release_bytecode_id: String,
+    /// That release's semver, for the warrant's `release_version`.
+    pub release_version: String,
 }
 
 /// Wrapped in `data` like every neighbouring response.
@@ -4887,6 +4892,31 @@ pub struct NamespaceApiResponse {
     /// has not applied it yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub founding: Option<NamespaceFoundingApi>,
+    /// Group ops this node logged but holds unapplied, because their group's
+    /// history is sealed under a key it lacks: their effects are missing here
+    /// until that key arrives, which for a node outside the group is never.
+    /// What explains a subgroup that looks stale on this node and current on
+    /// another. Absent when nothing is held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_ops: Option<NamespaceHeldOpsApi>,
+}
+
+/// The group ops a namespace holds unapplied on this node.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceHeldOpsApi {
+    pub ops: Vec<NamespaceHeldOpApi>,
+    /// Holds past the node's listing bound, counted but not listed.
+    pub untracked: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceHeldOpApi {
+    /// Hex-encoded id of the namespace op in the governance DAG.
+    pub delta_id: String,
+    /// Hex-encoded id of the group whose sealed history it waits on.
+    pub group_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

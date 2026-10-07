@@ -336,6 +336,14 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         folded.0.can_resolve_cut(self.store, *group, parents)
     }
 
+    fn history_sealed_in_group(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        if parents.is_empty() {
+            return false;
+        }
+        self.folded(group)
+            .is_some_and(|folded| folded.0.sealed_in_own_group(self.store, *group, parents))
+    }
+
     fn standing_reads_at_cut<'s>(
         &'s self,
         group: &ContextGroupId,
@@ -477,6 +485,10 @@ impl AtCutAuthorizer for ProjectionAuthorizer<'_> {
 
     fn can_resolve_cut(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
         parents.is_empty() || self.read().can_resolve_cut(self.store, *group, parents)
+    }
+
+    fn history_sealed_in_group(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        !parents.is_empty() && self.read().sealed_in_own_group(self.store, *group, parents)
     }
 
     fn standing_reads_at_cut<'s>(

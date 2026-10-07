@@ -118,9 +118,6 @@ fn shipped(top: Id, signer: &SigningKey) -> Vec<Delivery> {
         let metadata = <Index<MainStorage>>::get_metadata(id)
             .expect("metadata")
             .expect("entity");
-        if metadata.crdt_type == Some(CrdtType::RotationLog) {
-            continue;
-        }
         let data = MainStorage::storage_read(Key::Entry(id)).unwrap_or_default();
         let ancestors = <Index<MainStorage>>::get_ancestors_of(id).expect("ancestors");
         out.push((

@@ -13,7 +13,7 @@ indexmap.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-wasmparser = "0.259"
+wasmparser = "0.261"
 
 [dev-dependencies]
 jsonschema.workspace = true

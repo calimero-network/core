@@ -22,7 +22,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
+use calimero_governance_store::metrics::{
+    record_at_cut_undecidable, UndecidableCause, UndecidableRemedy,
+};
 use calimero_governance_store::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
@@ -2374,6 +2376,45 @@ impl ScopeProjections {
     /// otherwise, defer to live), build the folded view + the genesis root tuple
     /// (`AclView::is_authorized_admin` prefers the folded root admin, tracking
     /// `AdminChanged`; this is the un-folded base) + the namespace default cap.
+    /// Is the cut at `heads` undecidable for `group` only because an op of
+    /// `group` ITSELF is sealed under a key this node does not hold?
+    ///
+    /// The one undecidable cut a key can settle and history cannot: the
+    /// ancestry is whole, and what is missing is the reading of `group`'s own
+    /// sealed ops. An op of `group` judged at such a cut can be kept in the log
+    /// unapplied, like an op this node cannot decrypt at all - the key-arrival
+    /// replay re-feeds every op of `group`, and applies it once the history
+    /// reads. A node outside a Restricted subgroup never gets that key, and
+    /// without this the op parked for good and the namespace's DAG with it
+    /// (core#4511).
+    ///
+    /// `false` for every other refusal: a gap in the history is closed by sync,
+    /// not by a key, so an op held for one would never be re-fed.
+    #[must_use]
+    pub fn sealed_in_own_group(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> bool {
+        let Ok(namespace) = NamespaceRepository::new(store).resolve(&group) else {
+            return false;
+        };
+        let namespace_id = namespace.to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        let Some(log) = self.logs.get(&scope) else {
+            return false;
+        };
+        let Some(base) = authority_base(store, namespace_id) else {
+            return false;
+        };
+        let walked = self.walk(&scope, log, heads, base);
+        walked.is_complete()
+            && walked
+                .first_opaque_in_any(&BTreeSet::from([group]))
+                .is_some()
+    }
+
     /// Can this projection decide ANY authority question for `group` at `heads`?
     ///
     /// Every `*_at_cut` gate funnels through [`auth_cut_context`](Self::auth_cut_context),
@@ -2403,28 +2444,39 @@ impl ScopeProjections {
             Ok(_) => true,
             Err(cause) => {
                 record_at_cut_undecidable(cause);
-                if cause.is_transient() {
+                match cause.remedy() {
                     // The common, self-healing case — the op parks and retries
                     // once sync delivers the history. Not worth an operator's
                     // attention, and loud enough at debug to explain a park.
-                    tracing::debug!(
+                    UndecidableRemedy::Sync | UndecidableRemedy::Retry => tracing::debug!(
                         group = ?group,
                         ?cause,
                         "at-cut authority undecidable; op parks for retry"
-                    );
-                } else {
+                    ),
+                    // An op this cut cites is sealed under a key this node lacks.
+                    // Not sync's to fix: it clears when that key arrives, and a
+                    // node outside the op's group is never served it. An op whose
+                    // own group's history is the hole is held instead (core#4511);
+                    // what parks here cites a sealed op in an ancestor group.
+                    UndecidableRemedy::Key => tracing::debug!(
+                        group = ?group,
+                        ?cause,
+                        "at-cut authority undecidable; op parks until the key of \
+                         a group its history is sealed in arrives, which a node \
+                         outside that group is never served"
+                    ),
                     // Permanent: no amount of sync brings a dropped prefix back,
                     // so this op will park on every retry and everything causally
                     // downstream of it stalls behind it on this node. Warn —
                     // nothing below this layer can recover it.
-                    tracing::warn!(
+                    UndecidableRemedy::Never => tracing::warn!(
                         group = ?group,
                         ?cause,
                         "at-cut authority permanently undecidable: the retained \
                          op-log no longer reaches this cut, so the op cannot ever \
                          apply here and this namespace's governance DAG will not \
                          advance past it"
-                    );
+                    ),
                 }
                 false
             }
@@ -2469,7 +2521,7 @@ impl ScopeProjections {
         // An absent log goes through `classify_unresolvable_cut`, not a bare
         // `ScopeUnfed`: that function checks truncation FIRST, so a truncated
         // scope whose log is already evicted keeps reporting the permanent
-        // `LogTruncated` instead of a cause `is_transient` calls self-healing —
+        // `LogTruncated` instead of a cause whose `remedy` is sync —
         // which would park the op retrying forever and leave the one series
         // worth alerting on silent.
         let Some(log) = self.logs.get(&scope) else {
@@ -3868,8 +3920,9 @@ mod tests {
             "an evicted log looks unfed; the truncation mark is the only thing \
              that distinguishes permanent loss from history that never arrived",
         );
-        assert!(
-            !cause.is_transient(),
+        assert_eq!(
+            cause.remedy(),
+            UndecidableRemedy::Never,
             "the point of the distinction: this cut can never resolve, so the \
              op must stop being retried as though it could",
         );

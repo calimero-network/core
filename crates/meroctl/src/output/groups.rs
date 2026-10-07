@@ -247,6 +247,19 @@ impl Report for NamespaceApiResponse {
         if let Some(ref name) = self.name {
             let _ = table.add_row(vec!["Name", name]);
         }
+        if let Some(ref held) = self.held_ops {
+            // Ops logged but not applied here: their groups' history is sealed
+            // under a key this node lacks.
+            let mut lines: Vec<String> = held
+                .ops
+                .iter()
+                .map(|op| format!("{} (group {})", op.delta_id, op.group_id))
+                .collect();
+            if held.untracked > 0 {
+                lines.push(format!("+{} more, not listed", held.untracked));
+            }
+            let _ = table.add_row(vec!["Held ops".to_owned(), lines.join("\n")]);
+        }
         println!("{table}");
     }
 }

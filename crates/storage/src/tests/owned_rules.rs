@@ -235,6 +235,52 @@ fn a_redelivery_of_the_same_bytes_is_accepted() {
     apply(again, account_of_key(&alice)).expect("sync redelivers what it already has");
 }
 
+/// A repair peer labels Alice's signed entry `Custom` so sync defers it to the
+/// app's merge; the store refuses the merge, so her signed bytes stay.
+#[test]
+#[serial]
+fn a_deferred_custom_merge_does_not_rewrite_an_owned_entry() {
+    let (messages, alice, id) = alices_message();
+    let parent = (**messages).id();
+    let signed_bytes = MainStorage::storage_read(Key::Entry(id)).expect("stored");
+    let mallory = key(0xEE);
+    let forged = map_entry_bytes(id, &"m1".to_owned(), &text("mallory"));
+
+    let rewrite = signed(
+        update(id, parent, forged.clone()),
+        account_of_key(&alice),
+        rules_of(id),
+        &mallory,
+        later(),
+    );
+    assert!(
+        apply(rewrite, account_of_key(&mallory)).is_err(),
+        "control: the plain apply refuses Mallory's bytes for Alice's entry"
+    );
+
+    let at = later();
+    let request = MainInterface::custom_entry_merge_request(
+        id,
+        crate::collections::crdt_meta::CustomTypeId::of("app::Custom"),
+        forged.clone(),
+        at,
+    );
+    if let Ok(Some((request, stored))) = &request {
+        // The merge result the app hands back: here, the incoming side.
+        let _ = MainInterface::write_custom_entry_merge(id, request, stored, &forged, at);
+    }
+
+    assert!(
+        matches!(request, Err(StorageError::ActionNotAllowed(_))),
+        "got {request:?}"
+    );
+    assert_eq!(
+        MainStorage::storage_read(Key::Entry(id)),
+        Some(signed_bytes),
+        "a deferred custom merge must not replace an owned entry's signed bytes"
+    );
+}
+
 #[test]
 #[serial]
 fn no_node_accepts_a_delete_even_signed_by_the_owner() {

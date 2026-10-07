@@ -240,7 +240,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 %author_id,
                 delta_id = ?delta_id,
                 %err,
-                "Rejecting state delta — envelope signature verification failed"
+                "Rejecting state delta: envelope verification failed"
             );
             return Ok(());
         }
@@ -1007,7 +1007,7 @@ pub(crate) fn arm_signer_resolver_for_cut(
         //
         // The slot is only ever replaced, so an early return would leave the
         // resolver armed for a PREVIOUS delta — a different cut, possibly a
-        // different context — and this delta's author and rotation entries would be
+        // different context — and this delta's author would be
         // resolved against it. That is exactly the "one view of the bindings"
         // invariant this function exists to uphold, so failing to arm has to mean
         // armed-with-nothing, which refuses and retries, and never means
@@ -1874,7 +1874,7 @@ async fn request_missing_deltas(
                                     delta_id = ?missing_id,
                                     author = %response_author,
                                     %err,
-                                    "parent-fetch: envelope signature verification failed, dropping"
+                                    "parent-fetch: envelope verification failed, dropping"
                                 );
                                 continue;
                             }
@@ -2280,7 +2280,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 delta_id = ?delta_id,
                 author = %buffered.author_id,
                 %err,
-                "Rejecting buffered state delta — envelope signature verification failed"
+                "Rejecting buffered state delta: envelope verification failed"
             );
             return Ok(false);
         }
@@ -2810,7 +2810,6 @@ mod tests {
             AccountGenesis, AccountId, AccountProof, Delegation, DeviceCert, DeviceId,
             KemPublicKey, Warrant, WarrantTerms,
         };
-        use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::ContextId;
         use calimero_primitives::identity::{PrivateKey, PublicKey};
         use calimero_store::db::InMemoryDB;
@@ -2855,7 +2854,8 @@ mod tests {
                     author_account: author.statement.account,
                     executor: relay_account,
                     executor_key: relay_sk.public_key(),
-                    app_version: ApplicationId::from([0u8; 32]),
+                    release_bytecode_id: [0u8; 32],
+                    release_version: String::new(),
                     method: "send_message".to_owned(),
                     intent_hash: Warrant::intent_hash("send_message", b"{}"),
                     account_heads: vec![],

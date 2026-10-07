@@ -487,6 +487,46 @@ impl<'a> PermissionChecker<'a> {
         })
     }
 
+    /// Allow only the group's creator to open it (#4522).
+    ///
+    /// Opening a Restricted subgroup is its creator's decision alone: not an
+    /// admin promoted inside it, not an admin of a group above it. The creator is
+    /// fixed at the subgroup's birth and recorded from its `GroupCreated`, which
+    /// every namespace member reads, and the signer's account is resolved at the
+    /// NAMESPACE scope. So a member outside the subgroup - who cannot read its
+    /// sealed history - reaches the same verdict as one inside, and the flip
+    /// applies on every node instead of being held where the key is missing.
+    ///
+    /// A creator later removed from the subgroup can still open it: that removal
+    /// is sealed under the subgroup's key, so honouring it would bring back the
+    /// split this rule removes. Removal from the namespace does stop it, because
+    /// it ends the binding the signer resolves through.
+    ///
+    /// A group with no recorded creator - a namespace root, which no
+    /// `GroupCreated` makes, and whose history every member reads anyway - keeps
+    /// the admin / `CAN_MANAGE_VISIBILITY` rule, as the projection does.
+    pub fn require_creator_opens(&self, identity: &PublicKey) -> EyreResult<()> {
+        let Some(creator) = crate::group_creator::GroupCreatorRepository::new(self.store)
+            .creator(&self.group_id)?
+        else {
+            return self.require_can_manage_visibility(identity);
+        };
+        let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        let signer = match self.principal_account(identity) {
+            Some(account) => Some(account),
+            None => PermissionChecker::new(self.store, namespace)
+                .with_apply_auth(self.parents, self.authorizer)
+                .account_for_signer(identity)?,
+        };
+        if signer == Some(creator) {
+            return Ok(());
+        }
+        bail!(CapabilitiesError::Unauthorized {
+            group_id: self.group_id.to_string(),
+            operation: "open a Restricted subgroup (only its creator may)".into(),
+        })
+    }
+
     /// Allow if `identity` is a group admin (incl. inherited admin) or holds
     /// `CAN_MANAGE_METADATA` for `self.group_id`. Used by the `*MetadataSet`
     /// ops (a member setting *their own* member metadata bypasses this — see

@@ -9,8 +9,11 @@
 //! client has no way to derive, and whether the node may act here at all is a
 //! row in the owning group's capabilities that the client cannot read either.
 //!
-//! Both facts belong to the same question — "can this relay run my intent, and
-//! whose name do I put in the warrant?" — so they are one answer, on the path
+//! The release the context runs is the third such fact: a warrant pins it, and
+//! the client cannot read the group's target without a credential here.
+//!
+//! All of them belong to the same question, "can this relay run my intent, and
+//! whose name do I put in the warrant?", so they are one answer, on the path
 //! the intent will be presented to. A client that had to compose them from
 //! `/admin-api/identity` plus a group read would need two calls, a group id it
 //! does not have, and a credential on this node to make the second one.
@@ -172,6 +175,28 @@ pub async fn handler(
         }
     };
 
+    // The release a warrant must pin: the one this context's group named, which
+    // the context runs once any pending upgrade has applied.
+    let release = match calimero_governance_store::MetaRepository::new(store).load(&group_id) {
+        Ok(Some(meta)) if meta.target.bytecode_id != [0; 32] => meta.target,
+        Ok(_) => {
+            return ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "this context's group names no release yet, so no warrant can pin one"
+                    .to_owned(),
+            }
+            .into_response()
+        }
+        Err(err) => {
+            error!(error = ?err, %context_id, "Failed to read the group's release");
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to read the group's release".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
     ApiResponse {
         payload: IntentRelayApiResponse {
             data: IntentRelayApiResponseData {
@@ -180,6 +205,8 @@ pub async fn handler(
                 can_author_on_behalf,
                 group_id: hex::encode(group_id.to_bytes()),
                 granted_on_group_id: granted_on.map(|g| hex::encode(g.to_bytes())),
+                release_bytecode_id: hex::encode(release.bytecode_id),
+                release_version: release.version.into(),
             },
         },
     }
@@ -192,9 +219,11 @@ mod tests {
 
     use axum::http::StatusCode;
     use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::test_fixtures::test_meta;
     use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
+    use calimero_store::key::{GroupMetaValue, GroupTarget};
     use calimero_store::Store;
 
     use crate::test_support::{get, public_router};
@@ -204,14 +233,16 @@ mod tests {
     /// A store holding `CONTEXT` in a saved group, with this node owning
     /// `signer` there when one is given.
     fn held(signer: Option<&PrivateKey>) -> Store {
+        held_in(&test_meta(), signer)
+    }
+
+    /// [`held`], with the group saved as `meta`.
+    fn held_in(meta: &GroupMetaValue, signer: Option<&PrivateKey>) -> Store {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let context = ContextId::from(CONTEXT);
         let group = ContextGroupId::from([0xB2; 32]);
         calimero_governance_store::MetaRepository::new(&store)
-            .save(
-                &group,
-                &calimero_governance_store::test_fixtures::test_meta(),
-            )
+            .save(&group, meta)
             .expect("save the group");
         calimero_governance_store::register_context_in_group(&store, &group, &context)
             .expect("register the context");
@@ -263,5 +294,49 @@ mod tests {
         .await;
 
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    }
+
+    /// Discovery names the release a warrant here must pin: the one the group targets.
+    #[actix::test]
+    async fn discovery_names_the_release_the_group_targets() {
+        let mut meta = test_meta();
+        meta.target.version = "1.2.0".into();
+        let store = held_in(&meta, Some(&PrivateKey::from([0x3C; 32])));
+        let (router, _blobs) = public_router(&store).await;
+
+        let (status, body) = get(
+            router,
+            &format!("/contexts/{}/intents", ContextId::from(CONTEXT)),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let release = hex::encode(meta.target.bytecode_id);
+        assert!(
+            body.contains(&format!("\"releaseBytecodeId\":\"{release}\"")),
+            "{body}"
+        );
+        assert!(body.contains("\"releaseVersion\":\"1.2.0\""), "{body}");
+    }
+
+    /// A group that names no release yet leaves a warrant nothing to pin, so
+    /// discovery refuses rather than reporting an all-zero release.
+    #[actix::test]
+    async fn discovery_where_the_group_names_no_release_is_a_404() {
+        let meta = GroupMetaValue {
+            target: GroupTarget::default(),
+            ..test_meta()
+        };
+        let store = held_in(&meta, Some(&PrivateKey::from([0x3C; 32])));
+        let (router, _blobs) = public_router(&store).await;
+
+        let (status, body) = get(
+            router,
+            &format!("/contexts/{}/intents", ContextId::from(CONTEXT)),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body.contains("names no release"), "{body}");
     }
 }

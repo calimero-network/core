@@ -37,7 +37,7 @@ use calimero_account::{Delegation, VerifiedWarrant, Warrant};
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{domain_hash, PublicKey};
-use calimero_storage::logical_clock::HybridTimestamp;
+use calimero_storage::logical_clock::{physical_time_secs, HybridTimestamp};
 
 /// What a delta-envelope signature is for. The first field of every signed
 /// payload in this module, so a signature made for one kind can never verify
@@ -380,14 +380,7 @@ pub fn verify_state_beacon(
 // not a wire field at all: it rides sealed inside `SealedDeltaPayload`, so it is
 // unavailable to a pre-decrypt verifier.
 //
-// It cannot go into the `compute_id` preimage either, which would otherwise
-// cover it on every path. The rotation-log self-log leg reassigns
-// `delta.expected_root_hash` AFTER the id is computed, and it cannot be reordered
-// to run first because the self-log needs `delta.id` to exist. That circularity
-// is why `content_address_survives_post_id_root_hash_mutation` pins the field as
-// being outside the preimage.
-//
-// Living with it is acceptable because the field is advisory: `DeltaStore` stores
+// Living without it is acceptable because the field is advisory: `DeltaStore` stores
 // the root hash it COMPUTED, never this one, and a mismatch never rejects a
 // delta. Forging it on the catchup paths (where it is plaintext; gossip seals it)
 // only flips the merge classification that decides how a delta's children are
@@ -491,8 +484,9 @@ pub enum VerifiedEnvelope {
     /// * neither device revoked in this group,
     /// * `author_account` a member at the cited cut,
     /// * `executor` holding the authorship capability on the owning group,
-    /// * this `nonce` unseen for `author_device_key`,
-    /// * `not_after` not yet passed.
+    /// * this `nonce` unseen for `author_device_key`.
+    ///
+    /// Expiry is settled here, against the delta's own stamp.
     ///
     /// Boxed for the same `large_enum_variant` reason the bundle's own fields
     /// are: a warrant dwarfs the unit variant beside it.
@@ -514,6 +508,13 @@ impl VerifiedEnvelope {
             Self::SelfAuthored | Self::Delegated(_) => None,
         }
     }
+}
+
+/// Whether a delta stamped `hlc` falls after its warrant's deadline. Judged on the
+/// signed stamp rather than a clock, so the relay and every replica agree.
+#[must_use]
+pub fn stamped_after_expiry(warrant: &Warrant, hlc: &HybridTimestamp) -> bool {
+    u64::from(physical_time_secs(hlc)) > warrant.not_after
 }
 
 /// The ONE entry point every receive path uses to check a delta's envelope.
@@ -610,6 +611,15 @@ pub fn verify_delta_envelope(
         .map_err(|err| {
             eyre::eyre!("delegated delta envelope signature verification failed: {err}")
         })?;
+
+    // Judged on the stamp only once its signature is known to cover it.
+    if stamped_after_expiry(&warrant, &hlc) {
+        eyre::bail!(
+            "delegated delta is stamped at {}s, after its warrant expired at {}s",
+            physical_time_secs(&hlc),
+            warrant.not_after
+        );
+    }
 
     Ok(VerifiedEnvelope::Delegated(Box::new(warrant)))
 }
@@ -739,7 +749,6 @@ mod tests {
         AccountGenesis, AccountProof, Delegation, DeviceCert, DeviceId, KemPublicKey, Warrant,
         WarrantTerms,
     };
-    use calimero_primitives::application::ApplicationId;
 
     /// The v2 terms these fixtures start from: the delta-auth path reads the
     /// context, the parties and the intent hash, and none of the fields added in
@@ -758,7 +767,8 @@ mod tests {
             author_account,
             executor,
             executor_key,
-            app_version: ApplicationId::from([0u8; 32]),
+            release_bytecode_id: [0u8; 32],
+            release_version: String::new(),
             method: "send_message".to_owned(),
             intent_hash,
             account_heads: vec![],
@@ -1066,6 +1076,36 @@ mod tests {
         );
     }
 
+    /// Verify a delegated envelope whose stamp is `seconds_past` its warrant's deadline.
+    fn verify_stamped(seconds_past: u64) -> eyre::Result<VerifiedEnvelope> {
+        let ctx = ContextId::from([7u8; 32]);
+        let delta = [9u8; 32];
+        let (author, executor, d) = bundle_for(ctx);
+        let author_id = author.device_sk.public_key();
+        let stamp =
+            HybridTimestamp::from_unix_nanos((d.warrant.not_after + seconds_past) * 1_000_000_000);
+        let payload =
+            delegated_delta_signature_payload(ctx, delta, author_id, &d, None, stamp).unwrap();
+        let sig = executor.device_sk.sign(&payload).unwrap().to_bytes();
+        verify_delta_envelope(ctx, delta, author_id, Some(&d), None, None, stamp, &sig)
+    }
+
+    /// Expiry is judged on the delta's own signed stamp, so every replica reaches
+    /// the same verdict whenever it applies.
+    #[test]
+    fn a_delta_stamped_after_its_warrant_expired_is_refused() {
+        let err = verify_stamped(1).expect_err("a delta stamped past not_after must be refused");
+        assert!(
+            err.to_string().contains("expired"),
+            "expected the expiry, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_delta_stamped_at_its_warrants_deadline_is_accepted() {
+        let _verified = verify_stamped(0).expect("a warrant is live through the second it names");
+    }
+
     // ------------------------------------------------- recorded wire preimages
     //
     // Two byte-for-byte pins. They exist because merobox cannot reach this
@@ -1113,7 +1153,7 @@ mod tests {
         )
         .expect("the payload must encode");
 
-        assert_eq!(hex::encode(&payload), "01070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a4ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c00000000000000000000000000000000000000000000000000000000000000000c00000073656e645f6d657373616765abababababababababababababababababababababababababababababababab0000000000000000070000000000000070f6a86800000000cf536d46c051635d52d327caaad1a854b3c1cef1b5b61487ee037a3eea9ae1ecd34576120fdb68c4c86574677cf011be9f3c69bd6638d4c41cd047fd606a5e090000000000000000000100000000000000");
+        assert_eq!(hex::encode(&payload), "01070707070707070707070707070707070707070707070707070707070707070709090909090909090909090909090909090909090909090909090909090909098139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c070707070707070707070707070707070707070707070707070707070707070704cfa21629a77f8cd8ddd3f821ed514009a9f572b2ce8e0a11f5cbb5e25340b08139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3943c9e2afa5cf44dc025651097c17af3363cecb1e3b3564705e6fc4354bb0b37a4ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c0000000000000000000000000000000000000000000000000000000000000000000000000c00000073656e645f6d657373616765abababababababababababababababababababababababababababababababab0000000000000000070000000000000070f6a86800000000e9eabd38701d758e72de70583b789bfa8e35a0d35a2ca66a3bb8e0457e9fd85e9f0bd918c5d618f6c250e166780260f200a819ca9e6521dd24f6c08676b1220d0000000000000000000100000000000000");
 
         // A different first byte from the self-authored preimage, so neither can
         // ever be the other — which is what stops a self-authored signature
