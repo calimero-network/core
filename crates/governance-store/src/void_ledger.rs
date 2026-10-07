@@ -179,14 +179,7 @@ impl<'a> VoidLedger<'a> {
         drop(handle);
         let scope = self.parked_scope();
         loop {
-            let rows = crate::collect_keys_with_prefix_paginated::<GenericKey>(
-                self.store,
-                GenericKey::new(scope, [0; 32]),
-                scope[0],
-                |key| key.scope() == scope,
-                0,
-                DELETE_BATCH,
-            )?;
+            let rows = self.parked_rows(scope)?;
             if rows.is_empty() {
                 return Ok(());
             }
@@ -195,6 +188,22 @@ impl<'a> VoidLedger<'a> {
                 handle.delete(&row)?;
             }
         }
+    }
+
+    /// Up to [`DELETE_BATCH`] parked rows under `scope`, from its start.
+    fn parked_rows(&self, scope: [u8; 16]) -> EyreResult<Vec<GenericKey>> {
+        let handle = self.store.handle();
+        let mut iter = handle.iter::<GenericKey>()?;
+        let first = iter.seek(GenericKey::new(scope, [0; 32])).transpose();
+        let mut rows = Vec::new();
+        for key in first.into_iter().chain(iter.keys()) {
+            let key = key.map_err(|e| eyre::eyre!("parked row key: {e:?}"))?;
+            if key.scope() != scope || rows.len() == DELETE_BATCH {
+                break;
+            }
+            rows.push(key);
+        }
+        Ok(rows)
     }
 
     fn key(&self, kind: &[u8]) -> GenericKey {
