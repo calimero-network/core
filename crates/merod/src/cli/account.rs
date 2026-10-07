@@ -1486,6 +1486,85 @@ mod tests {
         assert!(err.to_string().contains("device-secret"), "{err}");
     }
 
+    #[test]
+    fn warrant_debug_omits_the_device_secret() {
+        use clap::Parser;
+
+        let secret = "a7".repeat(32);
+        let command = WarrantCommand::try_parse_from([
+            "warrant",
+            "--context",
+            "context",
+            "--method",
+            "transfer_funds",
+            "--executor",
+            &"22".repeat(32),
+            "--executor-key",
+            &"33".repeat(32),
+            "--release-bytecode-id",
+            &"44".repeat(32),
+            "--nonce",
+            "1",
+            "--device-secret",
+            &secret,
+            "--credential",
+            "aabb",
+        ])
+        .expect("parse");
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains(&secret), "{shown}");
+        assert!(shown.contains("transfer_funds"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn login_statement_debug_omits_the_device_secret() {
+        use clap::Parser;
+
+        let secret = "a7".repeat(32);
+        let command = LoginStatementCommand::try_parse_from([
+            "login-statement",
+            "--challenge",
+            &"22".repeat(32),
+            "--node",
+            &"33".repeat(32),
+            "--generate-session-key",
+            "--device-secret",
+            &secret,
+            "--audience",
+            "https://app.example",
+        ])
+        .expect("parse");
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains(&secret), "{shown}");
+        assert!(shown.contains("https://app.example"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn sign_request_debug_omits_the_signer_secret() {
+        use clap::Parser;
+
+        let secret = "a7".repeat(32);
+        let command = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret",
+            &secret,
+        ])
+        .expect("parse");
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains(&secret), "{shown}");
+        assert!(shown.contains("/admin-api/contexts"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
     /// A file's contents are trimmed, `-` reads the stream given, and an empty
     /// or malformed secret is refused by name.
     #[test]

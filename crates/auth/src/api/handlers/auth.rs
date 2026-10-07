@@ -1155,6 +1155,56 @@ mod tests {
         client.sub = "user".to_owned();
         assert!(!tokens_share_key(&client, &other_client));
     }
+
+    #[test]
+    fn token_request_debug_omits_the_provider_data() {
+        let req: TokenRequest = serde_json::from_value(serde_json::json!({
+            "auth_method": "user_password",
+            "public_key": "public-key",
+            "client_name": "relay-client",
+            "timestamp": 0,
+            "provider_data": { "username": "alice", "password": "password-secret" },
+        }))
+        .expect("a well-formed request");
+        let shown = format!("{req:?}");
+
+        assert!(!shown.contains("password-secret"), "{shown}");
+        assert!(shown.contains("relay-client"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn token_response_debug_omits_the_tokens() {
+        let response = TokenResponse {
+            access_token: "access-secret".to_owned(),
+            refresh_token: "refresh-secret".to_owned(),
+            error: Some("session-expired".to_owned()),
+        };
+        let shown = format!("{response:?}");
+
+        assert!(!shown.contains("access-secret"), "{shown}");
+        assert!(!shown.contains("refresh-secret"), "{shown}");
+        assert!(shown.contains("session-expired"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn refresh_and_logout_debug_omit_the_tokens() {
+        let refresh = RefreshTokenRequest {
+            access_token: "access-secret".to_owned(),
+            refresh_token: "refresh-secret".to_owned(),
+        };
+        let logout = LogoutRequest {
+            refresh_token: "logout-secret".to_owned(),
+        };
+        let shown = format!("{refresh:?} {logout:?}");
+
+        assert!(!shown.contains("access-secret"), "{shown}");
+        assert!(!shown.contains("refresh-secret"), "{shown}");
+        assert!(!shown.contains("logout-secret"), "{shown}");
+        assert!(shown.contains("LogoutRequest"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
 }
 
 /// Response to `GET /auth/challenge`.

@@ -5097,3 +5097,47 @@ mod group_key_value_compat_tests {
             .expect_err("created_at predates every layout — its absence is corruption");
     }
 }
+
+#[cfg(test)]
+mod secret_value_debug_tests {
+    use super::{AutoFollowFlags, GroupKeyValue, GroupMemberRole, GroupMemberValue};
+
+    #[test]
+    fn group_member_value_debug_omits_both_keys() {
+        let private_key = [0xa7; 32];
+        let sender_key = [0xb8; 32];
+        let shown = format!(
+            "{:?}",
+            GroupMemberValue {
+                role: GroupMemberRole::ReadOnly,
+                private_key: Some(private_key),
+                sender_key: Some(sender_key),
+                auto_follow: AutoFollowFlags::default(),
+            }
+        );
+
+        assert!(!shown.contains(&format!("{private_key:?}")), "{shown}");
+        assert!(!shown.contains(&format!("{sender_key:?}")), "{shown}");
+        assert!(shown.contains("ReadOnly"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn group_key_value_debug_omits_the_key() {
+        let key = [0xa7; 32];
+        let shown = format!(
+            "{:?}",
+            GroupKeyValue {
+                group_key: key,
+                created_at: 1_700_000_000,
+                epoch: 9,
+                insertion_seq: 11,
+                flags: 0,
+            }
+        );
+
+        assert!(!shown.contains(&format!("{key:?}")), "{shown}");
+        assert!(shown.contains("1700000000"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+}
