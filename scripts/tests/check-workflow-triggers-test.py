@@ -106,6 +106,51 @@ CASES = [
     ("an unprivileged workflow may checkout the head and cache", PLAIN_PR, 0),
 ]
 
+def run_job(condition="", steps="", needs="", extra=""):
+    lines = ["name: t", "on:", "  workflow_run:", "    workflows: [CI]", "  workflow_dispatch:", "jobs:", "  build:", "    runs-on: ubuntu-latest"]
+    if condition:
+        lines.append(f"    if: {condition}")
+    lines += [extra] if extra else []
+    lines += ["    steps:"] + steps.rstrip("\n").split("\n")
+    return "\n".join(lines) + "\n"
+
+
+CHECKOUT = "      - uses: actions/checkout@v7\n        with:\n          ref: %s\n"
+BYPASSES = [
+    ("unparsable yaml", "name: [unclosed\non: workflow_run\n", 1),
+    ("no on key", "name: t\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: echo\n", 1),
+    ("on of an unexpected shape", "name: t\non: 5\njobs: {}\n", 1),
+    ("on and a quoted on together", "name: t\non: workflow_run\n'on': push\njobs: {}\n", 1),
+    ("quoted on key is read", 'name: t\n"on": workflow_run\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/cache@v6\n', 1),
+    ("reusable workflow job", "name: t\non: workflow_run\njobs:\n  a:\n    uses: ./.github/workflows/x.yml\n", 1),
+    ("yaml merge key", "name: t\non: workflow_run\njobs:\n  a: &a\n    runs-on: x\n    steps: []\n  b:\n    <<: *a\n", 1),
+    ("duplicate key", "name: t\non: workflow_run\njobs:\n  a:\n    runs-on: x\n    runs-on: y\n    steps: []\n", 1),
+    ("merge ref checkout", run_job(steps=CHECKOUT % "refs/pull/${{ github.event.number }}/merge"), 1),
+    ("head_commit id checkout", run_job(steps=CHECKOUT % "${{ github.event.head_commit.id }}"), 1),
+    ("ref built through env", run_job(steps=CHECKOUT % "${{ env.TARGET }}"), 1),
+    ("checkout of another repository", run_job(steps="      - uses: actions/checkout@v7\n        with:\n          repository: someone/else\n"), 1),
+    ("gh pr checkout in run", run_job(steps="      - run: gh pr checkout 5\n"), 1),
+    ("git fetch of a pull ref in run", run_job(steps="      - run: git fetch origin pull/5/head\n"), 1),
+    ("unknown checkout action", run_job(steps="      - uses: someone/checkout-pr@v1\n"), 1),
+    ("unknown cache action", run_job(steps="      - uses: someone/cache-everything@v1\n"), 1),
+    ("guard or always()", run_job(RUN_GUARD + " || always()", CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+    ("always() or guard", run_job("always() || " + RUN_GUARD, CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+    ("guard or another condition", run_job("github.actor == 'x' || " + RUN_GUARD, CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+    ("negated guard", run_job("!(" + RUN_GUARD + ")", CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+    ("guard only inside a string", run_job("github.event.workflow_run.name == '" + RUN_GUARD + "'", CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+    ("event_name equal to the privileged trigger", run_job("github.event_name == 'workflow_run' || " + RUN_GUARD, CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+    ("guard in a conjunction", run_job("github.event.workflow_run.conclusion == 'success' && " + RUN_GUARD, CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 0),
+    ("guard written reversed", run_job("github.repository == github.event.workflow_run.head_repository.full_name", CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 0),
+    ("other events exempt through or", run_job("github.event_name == 'workflow_dispatch' || (" + RUN_GUARD + ")", CHECKOUT % "${{ github.event.workflow_run.head_sha || github.sha }}"), 0),
+    ("not-this-trigger exempt through or", run_job("github.event_name != 'workflow_run' || (" + RUN_GUARD + ")", CHECKOUT % "${{ github.event.workflow_run.head_sha || github.sha }}"), 0),
+    ("default checkout needs no guard", run_job(steps="      - uses: actions/checkout@v7\n"), 0),
+    ("checkout of github.sha needs no guard", run_job(steps=CHECKOUT % "${{ github.sha }}"), 0),
+    ("always() on a dependent in braces", NEEDS_CHAIN % (RUN_GUARD, "${{ always() }}"), 1),
+    ("failure() on a dependent", NEEDS_CHAIN % (RUN_GUARD, "failure()"), 1),
+    ("a dependent whose needed job gates on an or", NEEDS_CHAIN % (RUN_GUARD + " || always()", "true"), 1),
+]
+CASES += BYPASSES
+
 
 def main():
     failures = 0
