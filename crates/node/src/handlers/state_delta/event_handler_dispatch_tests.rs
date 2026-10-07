@@ -3,30 +3,42 @@
 //! Driven through a real `ContextManager` and a hand-written module whose every
 //! export commits [`COMMITTED_ROOT`], so "did it run?" is a read of the root.
 
+use std::time::Duration;
+
 use calimero_context::test_support::{enrol, enrol_holder};
 use calimero_context_client::messages::ExecuteError;
 use calimero_context_client::tee_trigger::TeeTriggerCause;
 use calimero_context_config::types::ContextGroupId;
+use calimero_crypto::SharedKey;
 use calimero_governance_store::{
     register_context_in_group, GroupKeyring, MembershipRepository, MetaRepository,
     NamespaceRepository, NodeDeviceRepository,
 };
+use calimero_node_primitives::sync::delta_auth::delta_signature_payload;
+use calimero_node_primitives::sync::SealedDeltaPayload;
 use calimero_node_primitives::test_fixtures::signed_wasm;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::events::ExecutionEvent;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::delta::{CausalDelta, StorageDelta};
+use calimero_storage::logical_clock::HybridTimestamp;
 use calimero_store::key::{self, GroupMetaValue, GroupTarget};
 use calimero_store::types;
 use calimero_wasm_abi::schema::{Manifest, Method};
 use futures_util::io::Cursor;
+use libp2p::PeerId;
 use serial_test::serial;
 
 use super::events::execute_event_handlers_parsed;
+use super::{apply_authorized_state_delta, StateDeltaContext, StateDeltaMessage};
 use crate::test_node_harness::{boot_test_node, TestNode};
 
 const COMMITTED_ROOT: [u8; 32] = [0x5A; 32]; // what every export of MODULE commits
 const INITIAL_ROOT: [u8; 32] = [0x01; 32]; // the context's root before any run
+const ADMIN_KEY: [u8; 32] = [0x11; 32]; // the group admin, a member other than this node
+const GROUP_KEY: [u8; 32] = [0x33; 32]; // the group key deltas are sealed under
 
 /// Three exports that each `commit` [`COMMITTED_ROOT`] with an empty `Actions` artifact:
 /// the root at 0, the artifact at 32, the `{ptr, len}` descriptors at 64 and 80.
@@ -136,7 +148,7 @@ async fn fixture(node: TestNode, wasm: Vec<u8>) -> Fixture {
         .expect("install the application");
 
     let group_id = ContextGroupId::from([0x6A; 32]);
-    let admin = PrivateKey::from([0x11; 32]).public_key();
+    let admin = PrivateKey::from(ADMIN_KEY).public_key();
     let admin_account = enrol(&store, &group_id, &admin);
     MetaRepository::new(&store)
         .save(
@@ -160,7 +172,7 @@ async fn fixture(node: TestNode, wasm: Vec<u8>) -> Fixture {
         .add_member(&group_id, &admin_account, GroupMemberRole::Admin)
         .expect("seat the admin");
     let _key_id = GroupKeyring::new(&store, group_id)
-        .store_key(&[0x33; 32])
+        .store_key(&GROUP_KEY)
         .expect("store the group key");
 
     let executor_sk = PrivateKey::from([0x22; 32]);
@@ -276,6 +288,105 @@ impl Fixture {
         );
         meta.root_hash == COMMITTED_ROOT
     }
+}
+
+impl Fixture {
+    /// The admin's delta on this context, its id and signature given for `signed`
+    /// events, with `sealed` events inside the payload.
+    fn admin_delta(
+        &self,
+        signed: &[ExecutionEvent],
+        sealed: &[ExecutionEvent],
+    ) -> StateDeltaMessage {
+        let author = PrivateKey::from(ADMIN_KEY);
+        let parents = vec![[0; 32]];
+        let hlc = HybridTimestamp::zero();
+        let signed_hash = CausalDelta::hash_events(&ExecutionEvent::encode_all(signed));
+        let delta_id = CausalDelta::compute_id(&parents, &[], Some(&signed_hash), &hlc);
+        let signature_payload =
+            delta_signature_payload(self.context_id, delta_id, author.public_key(), None, hlc)
+                .expect("signature payload");
+        let payload = SealedDeltaPayload {
+            root_hash: Hash::from(COMMITTED_ROOT),
+            artifact: borsh::to_vec(&StorageDelta::Actions(Vec::new())).expect("encode actions"),
+            events: Some(ExecutionEvent::encode_all(sealed)),
+        };
+        let (nonce, artifact) = SharedKey::from_sk(&PrivateKey::from(GROUP_KEY))
+            .encrypt(borsh::to_vec(&payload).expect("encode the payload"))
+            .expect("seal the payload");
+        StateDeltaMessage {
+            source: PeerId::random(),
+            context_id: self.context_id,
+            author_id: author.public_key(),
+            delta_id,
+            parent_ids: parents,
+            hlc,
+            artifact,
+            nonce,
+            governance_position: None,
+            key_id: GroupKeyring::key_id_for(&GROUP_KEY),
+            delta_signature: Some(author.sign(&signature_payload).expect("sign").to_bytes()),
+            delegation: None,
+            tee_trigger: None,
+            producing_bytecode_id: None,
+        }
+    }
+
+    /// Hand `message` to the apply path a peer's delta takes, and return the DAG
+    /// row it left under `delta_id`, if any.
+    async fn apply(&self, message: StateDeltaMessage) -> Option<types::ContextDagDelta> {
+        let delta_id = message.delta_id;
+        let input = StateDeltaContext {
+            node_clients: crate::NodeClients {
+                context: self.node.context_client.clone(),
+                node: self.node.node_client.clone(),
+            },
+            node_state: crate::NodeState::new(),
+            network_client: self.node.node_client.network_client().clone(),
+            sync_timeout: Duration::from_secs(5),
+        };
+        // Judged by what reached the DAG: a refusal returns `Ok` too.
+        let _outcome = apply_authorized_state_delta(input, message, false).await;
+        self.node
+            .store
+            .handle()
+            .get(&key::ContextDagDelta::new(self.context_id, delta_id))
+            .expect("read the DAG row")
+    }
+}
+
+/// The sealed events name the handlers a receiver runs, so swapping them under a
+/// delta's id and signature must keep it out of the DAG.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_delta_whose_sealed_events_were_swapped_never_reaches_the_dag() {
+    let fx = fixture(boot_test_node().await, module_declaring_on_event()).await;
+    let honest = [event("on_event")];
+
+    let swapped = fx
+        .apply(fx.admin_delta(&honest, &[event("transfer")]))
+        .await;
+    assert!(
+        swapped.is_none(),
+        "a delta whose events do not match its id was taken into the DAG"
+    );
+    let meta: types::ContextMeta = fx
+        .node
+        .store
+        .handle()
+        .get(&key::ContextMeta::new(fx.context_id))
+        .expect("read the context meta")
+        .expect("the context meta exists");
+    assert!(
+        meta.root_hash == INITIAL_ROOT,
+        "a refused delta moved the root"
+    );
+
+    let applied = fx.apply(fx.admin_delta(&honest, &honest)).await;
+    assert!(
+        applied.is_some(),
+        "the same delta with the events its id covers did not reach the DAG"
+    );
 }
 
 #[tokio::test]
