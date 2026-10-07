@@ -1,32 +1,31 @@
-name: E2E Scaffolding - a Restricted->Open flip does not stall a non-member
+name: E2E Scaffolding - a flip a non-member cannot settle does not stall it
 description: >
-  Regression coverage for #4511: flipping a subgroup from Restricted to Open
-  must not stall namespace governance on a namespace member outside that
-  subgroup.
+  Regression coverage for #4511: a group op that a namespace member outside
+  the group can read but not authorize must not stall that member's namespace
+  governance.
 
-  The flip (`SubgroupVisibilitySet(Open)`) is sealed under the namespace key,
-  so every namespace member can read it, but authorizing it folds the
-  subgroup's own history - and that history holds an op sealed under the
-  subgroup's key, which a non-member is never served. Before the fix the flip
-  was undecidable forever on such a node, and because the namespace DAG is
+  The op here is a flip of the subgroup to Restricted after it was opened. It
+  is sealed under the namespace key (the subgroup was Open), so every
+  namespace member reads it, but closing is judged by the subgroup's admins,
+  and that answer folds the subgroup's own history, which holds an op sealed
+  under the subgroup's key while it was Restricted: a non-member is never
+  served that key. (Opening is no longer such an op: since #4522 only the
+  creator may open, which every member can verify.) Before #4511's fix the
+  flip was undecidable forever on such a node, and because the namespace DAG is
   shared by every group, every namespace op after it waited behind it until
   the pending TTL dropped it: the node never saw another subgroup.
 
   Topology:
-    * node-1 - the namespace owner.
+    * node-1 - the namespace owner, and the subgroup's creator.
     * node-2 - a plain namespace member, never added to `before`.
 
-  node-2 is offline while node-1 creates `before` Restricted, gives it a
-  sealed op (its metadata), flips it Open, deletes it, and creates `after`
-  Open - the shape of the production incident, where the stalled member was
-  offline through the flip and the subgroup was gone (and its key with it)
-  before that member could ask for the key. With node-1 online and the
-  subgroup alive, node-2's key request is answered and the park clears on its
-  own; here no one can answer it.
+  node-2 is offline while node-1 creates `before`, makes it Restricted, gives
+  it a sealed op (its metadata), opens it, closes it again, deletes it, and
+  creates `after` - the subgroup, and its key, gone before node-2 can ask for
+  it, as in the production incident.
 
-  Headline: back online, node-2 converges on the namespace and lists `after`.
-  Before the fix it never did: the flip stayed undecidable and `after`, the
-  deletion and every other op after it waited behind it.
+  Headline: back online, node-2 holds the closing flip, applies the deletion
+  and lists `after`. Before the fix it never did.
 
 force_pull_image: false
 
@@ -133,13 +132,21 @@ steps:
     group_id: '{{before_sub}}'
     record_name: Before
 
-  # Sealed under the namespace key, so node-2 reads it, but its parents
-  # include the sealed metadata op above.
+  # The creator opens it: decidable by every member (#4522), so it applies on
+  # node-2 too.
   - name: Node-1 flips `before` Open
     type: set_subgroup_visibility
     node: e2e-node-1
     group_id: '{{before_sub}}'
     visibility: open
+
+  # Closing is judged by the subgroup's admins, against its sealed history:
+  # the op node-2 can read but never settle.
+  - name: Node-1 closes `before` again
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{before_sub}}'
+    visibility: restricted
 
   # The subgroup, and its key, are gone before node-2 can ask anyone for it.
   - name: Node-1 deletes `before`

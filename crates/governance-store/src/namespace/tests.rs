@@ -9037,14 +9037,12 @@ fn member_joined_open_parks_on_an_unresolvable_cut_rather_than_denying_from_live
     );
 }
 
-/// core#4511: a namespace member outside a Restricted subgroup decrypts the
-/// subgroup's Open flip (sealed under the namespace key) but can never fold the
-/// subgroup ops it cites, and is never served their key. Refusing such an op
-/// parked it for good, and every namespace op after it with it. It is now kept
-/// unapplied - the head moves past it, its effect waits for the key - while a
-/// cut undecidable for any other reason still parks.
-/// A namespace with a Restricted subgroup, and that subgroup's Open flip signed
-/// by the owner but not yet applied: the shape of core#4511.
+/// A namespace with an Open subgroup, and a flip of it to Restricted signed by
+/// its admin but not yet applied. Readable by every namespace member (it is
+/// sealed under the namespace key) but authorized by the subgroup's admins, so a
+/// member outside the subgroup cannot settle it once the subgroup's history
+/// holds a sealed op - the shape of core#4511 that remains now that opening is
+/// the creator's alone (#4522).
 struct HeldFlipSetup {
     store: Store,
     owner_sk: PrivateKey,
@@ -9071,7 +9069,7 @@ fn held_flip_setup() -> HeldFlipSetup {
     let subgroup = ContextGroupId::from(crate::test_fixtures::derived_group_id(
         &owner_account,
         namespace_id,
-        true,
+        false,
         0x01,
     ));
     let gov = NamespaceGovernance::new(&store, namespace_id.into());
@@ -9094,12 +9092,12 @@ fn held_flip_setup() -> HeldFlipSetup {
         seal_for_test(
             &store,
             ContextGroupId::from(namespace_id),
-            crate::test_fixtures::group_created(owner_account, namespace_id, true, 0x01),
+            crate::test_fixtures::group_created(owner_account, namespace_id, false, 0x01),
         ),
     )
     .expect("owner signs GroupCreated");
     gov.apply_signed_op(&create)
-        .expect("the owner may create a Restricted subgroup");
+        .expect("the owner may create an Open subgroup");
 
     // The flip, readable here: this node holds the key it is sealed under.
     let flip_key = [0x47; 32];
@@ -9118,14 +9116,14 @@ fn held_flip_setup() -> HeldFlipSetup {
             encrypted: GroupKeyring::encrypt_op(
                 &flip_key,
                 &GroupOp::SubgroupVisibilitySet {
-                    mode: VisibilityMode::Open,
+                    mode: VisibilityMode::Restricted,
                 },
             )
             .expect("seal the flip"),
             key_rotation: None,
         },
     )
-    .expect("owner signs the Open flip");
+    .expect("owner signs the flip to Restricted");
 
     HeldFlipSetup {
         store,
@@ -9137,6 +9135,12 @@ fn held_flip_setup() -> HeldFlipSetup {
     }
 }
 
+/// core#4511: a namespace member outside a subgroup decrypts a flip of it
+/// (sealed under the namespace key) but can never fold the subgroup ops it
+/// cites, and is never served their key. Refusing such an op parked it for good,
+/// and every namespace op after it with it. It is now kept unapplied - the head
+/// moves past it, its effect waits for the key - while a cut undecidable for any
+/// other reason still parks.
 #[test]
 fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
     use calimero_context_client::local_governance::SignedNamespaceOp;
@@ -9185,7 +9189,7 @@ fn a_group_op_whose_own_history_is_sealed_is_held_and_the_namespace_moves_on() {
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&subgroup)
             .expect("read visibility"),
-        VisibilityMode::Open,
+        VisibilityMode::Restricted,
         "a held op's effect waits for the key: nothing unverified is applied"
     );
 
@@ -9233,7 +9237,7 @@ fn a_held_group_op_applies_once_its_groups_key_arrives() {
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&subgroup)
             .expect("read visibility"),
-        VisibilityMode::Open,
+        VisibilityMode::Restricted,
         "held, not applied"
     );
 
@@ -9245,7 +9249,7 @@ fn a_held_group_op_applies_once_its_groups_key_arrives() {
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&subgroup)
             .expect("read visibility"),
-        VisibilityMode::Open,
+        VisibilityMode::Restricted,
         "the replay must apply the held flip once its group's history reads"
     );
 
@@ -9257,7 +9261,7 @@ fn a_held_group_op_applies_once_its_groups_key_arrives() {
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&subgroup)
             .expect("read visibility"),
-        VisibilityMode::Open,
+        VisibilityMode::Restricted,
     );
 }
 

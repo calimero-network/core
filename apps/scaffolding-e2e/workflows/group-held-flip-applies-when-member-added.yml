@@ -1,21 +1,17 @@
-name: E2E Scaffolding - a held Restricted->Open flip applies once the subgroup key arrives
+name: E2E Scaffolding - a held flip applies once the member is added
 description: >
-  The replay half of #4511's hold. A namespace member outside a Restricted
-  subgroup reads that subgroup's Open flip but cannot authorize it - the
-  subgroup's history is sealed under a key it does not hold - so it holds the
+  The replay half of #4511's hold. A namespace member outside a subgroup reads
+  a flip of it to Restricted, but cannot authorize it - closing is judged
+  against the subgroup's history, sealed under a key it lacks - so it holds the
   flip: logged, head advanced, nothing applied. That is only safe if the hold
-  loses nothing, so this pins the other half.
-
-  The subgroup's sealed ops sit in node-2's log as ciphertext, so key
-  recovery asks for their key, and once the subgroup is Open on a node that
-  holds its keys, that node serves them to every namespace member (each is an
-  inherited member now). The key arrives, the key-arrival replay re-feeds the
-  held flip, it applies at its own cut, and node-2 reads the subgroup Open -
-  and its name, sealed while it was Restricted.
+  loses nothing, so this pins the other half: once node-1 adds node-2 to the
+  subgroup, the key arrives, the key-arrival replay re-feeds the held flip, it
+  applies at its own cut, and node-2 reads the subgroup Restricted - and its
+  name, sealed while it was Restricted before.
 
   Topology:
-    * node-1 - the namespace owner, online throughout.
-    * node-2 - a namespace member outside the subgroup, offline through the flip.
+    * node-1 - the namespace owner, the subgroup's creator, online throughout.
+    * node-2 - a namespace member, offline through the flips, then added.
 
 force_pull_image: false
 
@@ -123,6 +119,13 @@ steps:
     group_id: '{{club_sub}}'
     visibility: open
 
+  # Closing it again: the flip node-2 can read but not settle.
+  - name: Node-1 closes the subgroup again
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{club_sub}}'
+    visibility: restricted
+
   # --- node-2 comes back and holds the flip ---
 
   - name: Node-2 comes back online
@@ -143,9 +146,17 @@ steps:
       - "group op held unapplied"
     timeout: 90
 
-  # --- the key arrives from node-1 and the replay applies the flip ---
+  # --- node-2 is added: the key arrives and the replay applies the flip ---
 
-  - name: Node-2 recovers the subgroup key and replays the held flip
+  - name: Node-1 adds node-2 to the subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{club_sub}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+
+  - name: Node-2 receives the subgroup key and replays the held flip
     type: assert_log_present
     nodes:
       - e2e-node-2
@@ -161,10 +172,11 @@ steps:
     outputs:
       node2_visibility: subgroupVisibility
 
+  # Without the replay node-2 would still read the Open the creator set.
   - name: Assert the held flip applied on node-2
     type: assert
     statements:
-      - "equals({{node2_visibility}}, open)"
+      - "equals({{node2_visibility}}, restricted)"
 
   - name: Node-2 reads the subgroup's name, sealed while it was Restricted
     type: get_group_metadata
