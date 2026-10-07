@@ -440,7 +440,7 @@ jobs:
 
       - name: Share the built apps
         if: steps.apps.outputs.save == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ steps.apps.outputs.paths }}
           key: ${{ steps.apps.outputs.key }}
