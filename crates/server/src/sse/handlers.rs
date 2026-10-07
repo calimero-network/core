@@ -1322,9 +1322,11 @@ mod tests {
 
     use calimero_context_client::client::ContextClient;
     use calimero_primitives::context::ContextId;
+    use calimero_primitives::hash::Hash;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
+    use std::collections::HashSet;
     use tempfile::TempDir;
 
     /// An SSE `ServiceState` whose node actor answers presence-snapshot reads
@@ -2008,6 +2010,78 @@ mod tests {
         }
     }
 
+    /// A node-owner session bound to one context, with its subscribe's outcome.
+    async fn bound_subscribe(params: serde_json::Value) -> SessionState {
+        use calimero_context_config::types::ContextGroupId;
+
+        let (state, _events, _blob_dir) = sse_state_authed().await;
+        let [namespace, owning, sibling] =
+            [0xC0, 0xC1, 0xC2].map(|b| ContextGroupId::from([b; 32]));
+        let namespaces = calimero_governance_store::NamespaceRepository::new(&state.store);
+        namespaces.nest(&namespace, &owning).unwrap();
+        namespaces.nest(&namespace, &sibling).unwrap();
+        calimero_governance_store::register_context_in_group(
+            &state.store,
+            &owning,
+            &ContextId::from([0xC3; 32]),
+        )
+        .unwrap();
+
+        let (session, _tx, _rx) = session_with_connection();
+        drop(state.sessions.write().await.insert(1, session.clone()));
+        let (parts, _) = handle_subscription(
+            Extension(Arc::clone(&state)),
+            None,
+            Some(Extension(AuthenticatedNodeOwner)),
+            None,
+            None,
+            Some(Extension(bound_scope(0xC3))),
+            Json(
+                serde_json::from_value(serde_json::json!({
+                    "id": "1",
+                    "method": "subscribe",
+                    "params": params,
+                }))
+                .expect("subscribe request parses"),
+            ),
+        )
+        .await
+        .into_response()
+        .into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        session
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_subscribes_only_to_its_context() {
+        let session = bound_subscribe(serde_json::json!({
+            "contextIds": [ContextId::from([0xC3; 32]), ContextId::from([0xC4; 32])],
+        }))
+        .await;
+
+        let subscribed: Vec<_> = session
+            .inner
+            .read()
+            .await
+            .subscriptions
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(subscribed, vec![ContextId::from([0xC3; 32])]);
+    }
+
+    #[actix::test]
+    async fn a_bound_client_key_subscribes_only_to_groups_above_its_context() {
+        let [namespace, owning, sibling] = [0xC0, 0xC1, 0xC2].map(|b| Hash::from([b; 32]));
+        let session = bound_subscribe(serde_json::json!({
+            "groupIds": [namespace, owning, sibling],
+        }))
+        .await;
+
+        let granted = session.inner.read().await.group_subscriptions.clone();
+        assert_eq!(granted, HashSet::from([namespace, owning]));
+    }
+
     /// A device the namespace withdrew reads nothing there, wherever in the
     /// namespace the read lands.
     ///
@@ -2026,7 +2100,6 @@ mod tests {
         use calimero_primitives::events::{
             ContextEvent, ContextEventPayload, NodeEvent, StateMutationPayload,
         };
-        use calimero_primitives::hash::Hash;
         use calimero_primitives::identity::{DeviceId, PrivateKey};
         use tokio::sync::broadcast;
         use tokio::task::JoinHandle;
@@ -2034,7 +2107,7 @@ mod tests {
         use super::*;
         use crate::admin::caller_scope::{list_scope, ListScope};
         use crate::test_support::{
-            apply_through_governance, descope_by_root, revoke_through_governance,
+            admin_state, apply_through_governance, descope_by_root, revoke_through_governance,
             seed_device_members, withdrawal_by_root,
         };
         use crate::ws::{authorize_group_subscriptions, caller_may_observe_context};
@@ -2325,6 +2398,51 @@ mod tests {
                     f.device,
                 ),
                 "a context owned by no group has no namespace to withdraw from"
+            );
+        }
+
+        /// What `POST /contexts/:id/query` answers `device` acting for the fixture's account.
+        async fn query_as(f: &Fixture, device: DeviceId) -> (StatusCode, String) {
+            let (admin, _blob_dir) = admin_state(&f.state.store).await;
+            let response = crate::admin::handlers::context::query_context::handler(
+                Path(f.context.to_string()),
+                Extension(admin),
+                Some(Extension(AuthenticatedAccount(f.account))),
+                Some(Extension(AuthenticatedDevice(device))),
+                Json(
+                    serde_json::from_value(serde_json::json!({
+                        "method": "get",
+                        "argsJson": {},
+                    }))
+                    .expect("query request parses"),
+                ),
+            )
+            .await
+            .into_response();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read the response");
+            (status, String::from_utf8_lossy(&body).into_owned())
+        }
+
+        #[actix::test]
+        async fn a_revoked_device_cannot_query_a_context() {
+            const WITHDRAWN: &str = "no longer authorized";
+            let f = fixture().await;
+            let (_, before) = query_as(&f, f.device).await;
+            assert!(
+                !before.contains(WITHDRAWN),
+                "precondition: a live device is not refused as withdrawn: {before}"
+            );
+
+            revoke_through_governance(&f.state.store, &f.ns, f.account, f.device);
+
+            let (status, body) = query_as(&f, f.device).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert!(
+                body.contains(WITHDRAWN),
+                "refused for another reason: {body}"
             );
         }
 
