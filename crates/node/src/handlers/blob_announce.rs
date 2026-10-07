@@ -309,6 +309,14 @@ async fn prefetch_announced_blob(
     Ok(())
 }
 
+/// Release what prefetches took for every context this node no longer serves.
+pub(crate) async fn release_unserved_prefetches(
+    _node_client: &NodeClient,
+    _context_client: &ContextClient,
+) -> eyre::Result<()> {
+    Ok(())
+}
+
 /// Whether `announcement` carries a valid membership proof for its context,
 /// signed for `peer_id`: the check a signed blob read gets.
 fn is_from_context_member(
@@ -576,8 +584,16 @@ mod tests {
     async fn availability_node_over(
         network: NetworkClient,
     ) -> (NodeClient, ContextClient, TempDir, TempDir) {
+        node_over(GroupMemberRole::ReadOnlyTee, network).await
+    }
+
+    /// A node whose own key holds `role` for the test context.
+    async fn node_over(
+        role: GroupMemberRole,
+        network: NetworkClient,
+    ) -> (NodeClient, ContextClient, TempDir, TempDir) {
         let tee = PrivateKey::from(TEE);
-        let mut members = vec![(GroupMemberRole::ReadOnlyTee, tee.public_key())];
+        let mut members = vec![(role, tee.public_key())];
         for key in [
             MEMBER,
             OTHER_MEMBER,
@@ -1123,6 +1139,97 @@ mod tests {
         node.0.record_blob_owner(&context(), &blob).expect("record");
         let second = announcement_of(blob, &PrivateKey::from(OTHER_MEMBER), peer, now_secs());
         assert!(!starts_a_fetch(&node, peer, second).await, "held here");
+    }
+
+    /// A node whose own key holds `role`, holding bytes a prefetch took for `context`.
+    async fn node_with_a_prefetch(
+        role: GroupMemberRole,
+        context: ContextId,
+    ) -> (NodeClient, ContextClient, BlobId, TempDir, TempDir) {
+        let (node_client, context_client, data, blobs) =
+            node_over(role, NetworkClient::new(LazyRecipient::new())).await;
+        let (blob, _size) = node_client
+            .add_blob(&b"prefetched for a context"[..], None, None)
+            .await
+            .expect("store bytes");
+        node_client
+            .record_prefetched_blob(&context, &blob)
+            .await
+            .expect("record the prefetch");
+        (node_client, context_client, blob, data, blobs)
+    }
+
+    #[tokio::test]
+    async fn the_sweep_keeps_what_was_prefetched_for_a_context_this_node_serves() {
+        let (node_client, context_client, blob, _data, _blobs) =
+            node_with_a_prefetch(GroupMemberRole::ReadOnlyTee, context()).await;
+
+        release_unserved_prefetches(&node_client, &context_client)
+            .await
+            .expect("sweep");
+
+        assert!(node_client.has_blob(&blob).expect("read"));
+    }
+
+    /// A node that is a member but no longer a TEE member of the context, so it
+    /// is no longer an availability node for it.
+    #[tokio::test]
+    async fn the_sweep_releases_what_was_prefetched_once_this_node_stops_serving_the_context() {
+        let (node_client, context_client, blob, _data, _blobs) =
+            node_with_a_prefetch(GroupMemberRole::Member, context()).await;
+
+        release_unserved_prefetches(&node_client, &context_client)
+            .await
+            .expect("sweep");
+
+        assert!(!node_client.has_blob(&blob).expect("read"));
+    }
+
+    #[tokio::test]
+    async fn the_sweep_releases_what_was_prefetched_for_a_context_this_node_no_longer_has() {
+        let deleted = ContextId::from([0xC9; 32]);
+        let (node_client, context_client, blob, _data, _blobs) =
+            node_with_a_prefetch(GroupMemberRole::ReadOnlyTee, deleted).await;
+
+        release_unserved_prefetches(&node_client, &context_client)
+            .await
+            .expect("sweep");
+
+        assert!(!node_client.has_blob(&blob).expect("read"));
+    }
+
+    /// A prefetch records the reference it took, so releasing the context's
+    /// prefetches frees the bytes. Real time: the peer answers from another thread.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_prefetch_records_the_reference_it_took() {
+        let served = vec![0x5F; 1024];
+        let (node_client, context_client, _data, _blobs) =
+            availability_node_over(network_of_one_peer(Some(served.clone()))).await;
+        let (blob, _size) = node_client
+            .add_blob(served.as_slice(), None, None)
+            .await
+            .expect("hash the served bytes");
+        let _deleted = node_client.delete_blob(blob).await.expect("forget them");
+        let peer = PeerId::random();
+
+        let announced = BlobAnnouncement {
+            size: served.len() as u64,
+            ..announcement_of(blob, &PrivateKey::from(OTHER_MEMBER), peer, now_secs())
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, announced)
+            .await
+            .expect("prefetch");
+        assert!(node_client.has_blob(&blob).expect("read"), "prefetched");
+
+        node_client
+            .release_prefetched_blobs(&context())
+            .await
+            .expect("release");
+        assert!(
+            !node_client.has_blob(&blob).expect("read"),
+            "the prefetch's reference was its own"
+        );
     }
 
     #[test]

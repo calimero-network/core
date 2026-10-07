@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use calimero_app_downloader::registry::RegistryMode;
@@ -1093,6 +1094,25 @@ impl NodeClient {
             .handle()
             .put(&key::BlobOwner::new(*context_id, *blob_id), &())?;
         Ok(())
+    }
+
+    /// Record that a prefetch for `context_id` took one reference to `blob_id`.
+    pub async fn record_prefetched_blob(
+        &self,
+        _context_id: &ContextId,
+        _blob_id: &BlobId,
+    ) -> eyre::Result<()> {
+        Ok(())
+    }
+
+    /// Release every reference prefetches took for `context_id`.
+    pub async fn release_prefetched_blobs(&self, _context_id: &ContextId) -> eyre::Result<()> {
+        Ok(())
+    }
+
+    /// The contexts prefetches took a reference for.
+    pub fn prefetched_blob_contexts(&self) -> eyre::Result<BTreeSet<ContextId>> {
+        Ok(BTreeSet::new())
     }
 
     /// Whether this node may serve `blob_id` to members of `context_id`: it was
