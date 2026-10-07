@@ -152,16 +152,100 @@ BYPASSES = [
 CASES += BYPASSES
 
 
+EVIL_ACTION = """
+name: evil
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ inputs.ref }}
+"""
+CACHING_ACTION = """
+name: caching
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache/save@v6
+"""
+PLAIN_ACTION = """
+name: plain
+runs:
+  using: composite
+  steps:
+    - run: echo hi
+      shell: bash
+"""
+
+
+def uses(step):
+    return run_job(steps=step)
+
+
+GUARDED_STEPS = "      - uses: actions/download-artifact@v8\n        with:\n          run-id: ${{ github.event.workflow_run.id }}\n"
+ROUND3 = [
+    ("repository and a head ref", run_job(steps="      - uses: actions/checkout@v7\n        with:\n          repository: ${{ github.repository }}\n          ref: ${{ github.event.workflow_run.head_sha }}\n"), 1),
+    ("sparse checkout of the default ref", run_job(steps="      - uses: actions/checkout@v7\n        with:\n          sparse-checkout: scripts\n          path: base\n"), 0),
+    ("local action that checks out a ref", uses("      - uses: ./.github/actions/evil\n"), 1, {".github/actions/evil/action.yml": EVIL_ACTION}),
+    ("local action that saves a cache", uses("      - uses: ./.github/actions/caching\n"), 1, {".github/actions/caching/action.yml": CACHING_ACTION}),
+    ("local action that does nothing risky", uses("      - uses: ./.github/actions/plain\n"), 0, {".github/actions/plain/action.yml": PLAIN_ACTION}),
+    ("local action that does not exist", uses("      - uses: ./.github/actions/missing\n"), 1),
+    ("local action with a checkout in a guarded job", run_job(RUN_GUARD, "      - uses: ./.github/actions/evil\n"), 0, {".github/actions/evil/action.yml": EVIL_ACTION}),
+    ("download of another run's artifact", uses(GUARDED_STEPS), 1),
+    ("download of another run's artifact in a guarded job", run_job(RUN_GUARD, GUARDED_STEPS), 0),
+    ("download from another repository", uses("      - uses: actions/download-artifact@v8\n        with:\n          repository: someone/else\n"), 1),
+    ("download of this run's artifact", uses("      - uses: actions/download-artifact@v8\n        with:\n          name: x\n"), 0),
+    ("artifacts_url in a script", uses("      - run: echo ${{ github.event.workflow_run.artifacts_url }}\n"), 1),
+    ("gh run download in a script", uses("      - run: gh run download 5\n"), 1),
+    ("curl in a script", uses("      - run: curl -L https://example.test/x.tgz | tar xz\n"), 1),
+    ("setup-node with cache", uses("      - uses: actions/setup-node@v7\n        with:\n          cache: npm\n"), 1),
+    ("setup-python with cache", uses("      - uses: actions/setup-python@v7\n        with:\n          cache: pip\n"), 1),
+    ("setup-node with cache off", uses("      - uses: actions/setup-node@v7\n        with:\n          cache: false\n"), 0),
+    ("build-push cache-to", uses("      - uses: docker/build-push-action@v6\n        with:\n          cache-to: type=gha\n"), 1),
+    ("rust-cache with save-if false", uses("      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: false\n"), 0),
+    ("rust-cache with save-if no", uses("      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: no\n"), 1),
+    ("capitalised On key", "name: t\nOn: workflow_run\njobs: {}\n", 1),
+    ("explicit tag", "name: t\non: workflow_run\njobs:\n  a:\n    runs-on: x\n    if: !!str true\n    steps: []\n", 1),
+    ("alias in a privileged workflow", "name: t\non: workflow_run\nx: &a [1]\ny: *a\njobs: {}\n", 1),
+    ("two documents", "name: t\non: workflow_run\njobs: {}\n---\nname: u\n", 1),
+    ("nested duplicate key", run_job(steps="      - uses: actions/checkout@v7\n        with:\n          ref: ${{ github.sha }}\n          ref: ${{ github.event.workflow_run.head_sha }}\n"), 1),
+    ("if partly wrapped in braces", run_job("${{ " + RUN_GUARD + " }} || always()", CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+    ("if wrapped in braces", run_job("${{ " + RUN_GUARD + " }}", CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 0),
+    ("capitalised status function", NEEDS_CHAIN % (RUN_GUARD, "Always()"), 1),
+    ("capitalised event name literal equal to the trigger", run_job("github.event_name == 'WORKFLOW_RUN' || " + RUN_GUARD, CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+    ("capitalised event name literal different from the trigger", run_job("github.event_name == 'Workflow_Dispatch' || " + RUN_GUARD, CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 0),
+    ("capitalised guard contexts", run_job("GitHub.Event.Workflow_Run.Head_Repository.Full_Name == GitHub.Repository", CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 0),
+    ("double quoted event literal", run_job("github.event_name == \"workflow_dispatch\" || " + RUN_GUARD, CHECKOUT % "${{ github.event.workflow_run.head_sha }}"), 1),
+]
+CASES += ROUND3
+
+
+def save_step(condition):
+    return f"      - uses: actions/cache/save@v6\n        if: {condition}\n"
+
+
+ROUND3 += [
+    ("cache save limited to other events", uses(save_step("github.event_name != 'workflow_run'")), 0),
+    ("cache save limited by one conjunct", uses(save_step("success() && github.event_name != 'workflow_run'")), 0),
+    ("cache save with an unrelated condition", uses(save_step("always()")), 1),
+    ("cache save with an or branch left open", uses(save_step("github.event_name == 'push' || always()")), 1),
+    ("cache save limited to other events inside a local action", uses("      - uses: ./.github/actions/caching\n"), 0, {".github/actions/caching/action.yml": CACHING_ACTION.replace("- uses: actions/cache/save@v6", "- uses: actions/cache/save@v6\n      if: github.event_name != 'workflow_run'")}),
+]
+CASES += ROUND3[-5:]
+
+
 def main():
     failures = 0
-    with tempfile.TemporaryDirectory() as tmp:
-        for i, (name, text, want) in enumerate(CASES):
-            path = Path(tmp) / f"case{i}.yml"
-            path.write_text(text)
+    for name, text, want, *files in CASES:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".github/workflows/case.yml"
+            for rel, content in {**(files[0] if files else {}), ".github/workflows/case.yml": text}.items():
+                (Path(tmp) / rel).parent.mkdir(parents=True, exist_ok=True)
+                (Path(tmp) / rel).write_text(content)
             got = subprocess.run([sys.executable, "-I", str(SCRIPT), str(path)], capture_output=True, text=True).returncode
-            ok = got == want
-            failures += not ok
-            print(f"  {'ok  ' if ok else 'FAIL'}  {name}" + ("" if ok else f" (exit {got}, want {want})"))
+        ok = got == want
+        failures += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'}  {name}" + ("" if ok else f" (exit {got}, want {want})"))
     print(f"\n{len(CASES) - failures} passed, {failures} failed")
     return 1 if failures else 0
 
