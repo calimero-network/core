@@ -16,7 +16,7 @@ rules:
     disable: true
   use-trusted-publishing:
     disable: true
-  # Each privileged trigger gates on the push event and the same repository.
+  # scripts/check-workflow-triggers.py enforces the same-repository guard and no cache writes.
   dangerous-triggers:
     ignore:
       - comment.yml

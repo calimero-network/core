@@ -56,7 +56,7 @@ runs:
         cp "$built/cargo-mero" "$DIR/cargo-mero"
 
     - name: Share cargo-mero
-      if: steps.build.outcome == 'success' && steps.key.outputs.share == 'true'
+      if: steps.build.outcome == 'success' && steps.key.outputs.share == 'true' && github.event_name != 'workflow_run'
       uses: actions/cache/save@v4
       with:
         path: ${{ steps.key.outputs.dir }}
