@@ -37,9 +37,10 @@ use crate::scope_projection::{authority_base, ScopeProjections};
 type FoldedProjection = (ScopeProjections, [u8; 32], Vec<[u8; 32]>);
 
 /// An [`AtCutAuthorizer`] that resolves each gate against an ephemeral projection of
-/// the op's namespace, at the op's causal cut: the namespace DAG applier's, and the
-/// key-arrival replays', which judge a parked op as its arrival would have.
-pub struct EphemeralProjectionAuthorizer<'a> {
+/// the op's namespace, at the op's causal cut. Constructed at the namespace DAG
+/// applier (the one call site); `pub(crate)` because it's an implementation detail,
+/// not API other crates should depend on.
+pub(crate) struct EphemeralProjectionAuthorizer<'a> {
     store: &'a Store,
     /// Per-apply fold cache (see module doc). Keyed by `group`: every gate for one op
     /// passes the same group, so after the first fold the rest are cache hits; a
@@ -49,8 +50,7 @@ pub struct EphemeralProjectionAuthorizer<'a> {
 }
 
 impl<'a> EphemeralProjectionAuthorizer<'a> {
-    #[must_use]
-    pub fn new(store: &'a Store) -> Self {
+    pub(crate) fn new(store: &'a Store) -> Self {
         Self {
             store,
             cache: Mutex::new(None),
@@ -82,7 +82,143 @@ impl<'a> EphemeralProjectionAuthorizer<'a> {
     }
 }
 
+/// Judges void ops against the projection and leaves every authority gate to the live
+/// resolver. For replays that never ran the at-cut gates, so they keep their old answers.
+pub struct VoidJudge<'a>(EphemeralProjectionAuthorizer<'a>);
+
+impl<'a> VoidJudge<'a> {
+    #[must_use]
+    pub fn new(store: &'a Store) -> Self {
+        Self(EphemeralProjectionAuthorizer::new(store))
+    }
+}
+
+impl AtCutAuthorizer for VoidJudge<'_> {
+    fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
+        Some(&self.0)
+    }
+
+    fn is_admin_at_cut(&self, _: &ContextGroupId, _: &PublicKey, _: &[[u8; 32]]) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &PublicKey,
+        _: u32,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: u32,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &AccountId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _: &ContextGroupId,
+        _: &ContextId,
+        _: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
+    // No replay predates this gate, so reading the cut changes no answer a replay gave.
+    fn device_epoch_superseded_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        device: &DeviceId,
+        device_epoch: u32,
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        self.0
+            .device_epoch_superseded_at_cut(group, account, device, device_epoch, parents)
+    }
+
+    // No replay predates this gate either.
+    fn device_withdrawn_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        device: &DeviceId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<u32>> {
+        self.0
+            .device_withdrawn_at_cut(group, account, device, parents)
+    }
+
+    fn forget(&self) {
+        self.0.forget();
+    }
+
+    fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
+        self.0.op_is_void(group, capability, op)
+    }
+
+    fn voided_ops(
+        &self,
+        group: &ContextGroupId,
+        applied: Option<&Op>,
+        held: &[([u8; 32], ContextGroupId)],
+    ) -> Option<BTreeSet<[u8; 32]>> {
+        self.0.voided_ops(group, applied, held)
+    }
+
+    fn group_rows(&self, group: &ContextGroupId, applied: Option<&Op>) -> Option<GroupRows> {
+        self.0.group_rows(group, applied)
+    }
+}
+
 impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
+    fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
+        Some(self)
+    }
+
     fn is_admin_at_cut(
         &self,
         group: &ContextGroupId,
@@ -305,10 +441,6 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             &heads,
             applied,
         )
-    }
-
-    fn judges_at_cut(&self) -> bool {
-        true
     }
 
     fn can_resolve_cut(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
@@ -700,6 +832,29 @@ mod tests {
         assert!(
             !zed_is_member(&without),
             "a projection fed without the store's facts does not know the owner"
+        );
+    }
+
+    #[test]
+    fn the_void_judge_answers_void_questions_and_leaves_every_gate_to_live() {
+        let (store, sam, _alice, removal) = namespace();
+        let root = ContextGroupId::from(NS);
+        let judge = VoidJudge::new(&store);
+
+        let from_the_old_cut = add(SAM, &[&sam], XAVIER, GroupMemberRole::Admin);
+        assert_eq!(
+            judge.op_is_void(&root, 0, &from_the_old_cut),
+            Some(true),
+            "judged against the projection"
+        );
+        assert!(judge
+            .voided_ops(&root, Some(&from_the_old_cut), &[])
+            .is_some());
+        let signer = PublicKey::from([ALICE; 32]);
+        assert_eq!(
+            judge.is_admin_at_cut(&root, &signer, &[removal.id()]),
+            None,
+            "a gate is live's to answer"
         );
     }
 }

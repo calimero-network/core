@@ -93,8 +93,6 @@ use calimero_governance_store::{
     MembershipRepository, NamespaceRepository, PendingSelfPurgeRepository,
 };
 
-use crate::apply_authorizer::EphemeralProjectionAuthorizer;
-
 struct HandleState {
     abort: AbortHandle,
 }
@@ -662,7 +660,7 @@ fn redrive_stranded_ops_sweep(store: &Store) {
                 store,
                 ns_id.into(),
                 group_id,
-                &EphemeralProjectionAuthorizer::new(store),
+                &crate::VoidJudge::new(store),
             ) {
                 Ok(0) => {
                     // Nothing applied this pass for this group (already
@@ -737,7 +735,7 @@ fn redrive_sealed_root_ops(store: &Store, namespaces: &[[u8; 32]]) -> usize {
         match calimero_governance_store::redrive_sealed_root_ops_with(
             store,
             (*ns_id).into(),
-            &EphemeralProjectionAuthorizer::new(store),
+            &crate::VoidJudge::new(store),
         ) {
             Ok(count) => applied += count,
             Err(e) => warn!(

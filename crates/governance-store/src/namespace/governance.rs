@@ -2954,30 +2954,33 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
-    /// An undecidable cut falls back to the live gates and records only an apply.
+    /// An undecidable cut, or no at-cut judge, falls back to this pass's gates and
+    /// records only an apply.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
         gate_op: &SignedNamespaceOp,
         root: &RootOp,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
-        let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
-            .with_apply_auth(&parked.parent_op_hashes, self.authorizer)
-            .apply_root_op(gate_op, root);
-        if at_cut.as_ref().is_err_and(is_undecidable) {
-            let live = NamespaceGovernance::new(self.store, self.namespace_id)
+        if let Some(judge) = self.authorizer.at_cut() {
+            let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
+                .with_apply_auth(&parked.parent_op_hashes, judge)
                 .apply_root_op(gate_op, root);
-            if live.is_ok() {
-                self.settle_parked(parked, true);
+            if !at_cut.as_ref().is_err_and(is_undecidable) {
+                self.settle_parked(parked, at_cut.is_ok());
+                return at_cut;
             }
-            return live;
         }
-        self.settle_verdict(parked, at_cut.is_ok());
-        at_cut
+        let outcome = self.apply_root_op(gate_op, root);
+        if outcome.is_ok() {
+            self.settle_parked(parked, true);
+        }
+        outcome
     }
 
-    /// [`Self::decrypt_and_apply_group_op`] for a replay: a parked op is judged at
-    /// its own cut and its verdict recorded, falling back to the live gates as above.
+    /// [`Self::decrypt_and_apply_group_op`] for a replay. A parked op is judged at its
+    /// own cut as [`Self::replay_parked_root_op`] judges one; any other keeps this
+    /// pass's gates.
     fn replay_group_op(
         &self,
         ns_op: &SignedNamespaceOp,
@@ -2985,24 +2988,21 @@ impl<'a> NamespaceGovernance<'a> {
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        let outcome = self.decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
-        if outcome.as_ref().is_err_and(is_undecidable) {
-            let live = NamespaceGovernance::new(self.store, self.namespace_id)
+        let parked = self.is_parked(ns_op);
+        if let Some(judge) = self.authorizer.at_cut().filter(|_| parked) {
+            let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
+                .with_apply_auth(self.parents, judge)
                 .decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
-            if live.is_ok() {
-                self.settle_parked(ns_op, true);
+            if !at_cut.as_ref().is_err_and(is_undecidable) {
+                self.settle_parked(ns_op, at_cut.is_ok());
+                return at_cut;
             }
-            return live;
         }
-        self.settle_verdict(ns_op, outcome.is_ok());
+        let outcome = self.decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
+        if parked && outcome.is_ok() {
+            self.settle_parked(ns_op, true);
+        }
         outcome
-    }
-
-    /// Record an apply; record a refusal only when the gates read the op's own cut.
-    fn settle_verdict(&self, op: &SignedNamespaceOp, applied: bool) {
-        if applied || self.authorizer.judges_at_cut() {
-            self.settle_parked(op, applied);
-        }
     }
 
     /// Decrypt an encrypted group op and apply it via

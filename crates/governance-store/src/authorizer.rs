@@ -172,10 +172,10 @@ pub trait AtCutAuthorizer: Send + Sync {
         true
     }
 
-    /// Whether the gates are answered from a fold at the op's own cut, so a refusal
-    /// under this authorizer is the verdict a node that held the key on arrival reached.
-    fn judges_at_cut(&self) -> bool {
-        false
+    /// The authorizer that answers every gate at the op's own cut, to judge a parked
+    /// op as its arrival on a keyed node did; `None` when there is none.
+    fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
+        None
     }
 
     /// When [`can_resolve_cut`](Self::can_resolve_cut) refuses: is that only

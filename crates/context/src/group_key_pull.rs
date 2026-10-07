@@ -27,7 +27,7 @@ pub(crate) fn adopt_pulled_group_key(
 ) -> eyre::Result<[u8; 32]> {
     let key_id =
         calimero_governance_store::GroupKeyring::new(store, group_id).store_key(group_key)?;
-    let authorizer = crate::apply_authorizer::EphemeralProjectionAuthorizer::new(store);
+    let authorizer = crate::apply_authorizer::VoidJudge::new(store);
     if let Err(err) = calimero_governance_store::retry_encrypted_ops_for_group_with(
         store,
         namespace_id,
@@ -429,7 +429,7 @@ pub(crate) mod tests {
 
     /// Apply `op` as it arrives from a peer: parked, since this node lacks its key.
     pub(crate) fn arrive(store: &Store, op: &SignedNamespaceOp, parents: &[[u8; 32]]) -> [u8; 32] {
-        let parked = calimero_governance_store::apply_signed_namespace_op_at_cut(
+        let _ = calimero_governance_store::apply_signed_namespace_op_at_cut(
             store,
             op,
             parents,
@@ -907,9 +907,12 @@ pub(crate) mod tests {
         let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
         let mallory = crate::test_support::account_for(&mallory_sk.public_key());
         let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
+        // The owner's key speaks for its account at the cut only through a folded credential.
+        let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
         let ns_key = [0x61u8; 32];
-        let promote = role_set(&owner_sk, ns, vec![joined_id], 2, &ns_key, mallory);
-        let _ = arrive(&store, &promote, &[joined_id]);
+        let cut = vec![joined_id, owner_joined];
+        let promote = role_set(&owner_sk, ns, cut.clone(), 2, &ns_key, mallory);
+        let _ = arrive(&store, &promote, &cut);
 
         let _ = adopt_pulled_group_key(&store, ns.to_bytes().into(), ns, &ns_key)
             .expect("the pulled key stores");
