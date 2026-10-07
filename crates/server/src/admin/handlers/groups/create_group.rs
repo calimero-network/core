@@ -14,7 +14,7 @@ use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
-use super::parse_group_id;
+use super::{parse_group_id, restricted_from};
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
@@ -84,7 +84,7 @@ fn create_request(req: CreateGroupApiRequest) -> Result<CreateGroupRequest, ApiE
         application_id: Some(req.application_id),
         name: req.name,
         parent_group_id,
-        restricted: true,
+        restricted,
     })
 }
 

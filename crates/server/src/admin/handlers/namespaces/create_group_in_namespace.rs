@@ -9,7 +9,7 @@ use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use crate::admin::handlers::groups::parse_group_id;
+use crate::admin::handlers::groups::{parse_group_id, restricted_from};
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
@@ -84,7 +84,7 @@ pub async fn handler(
 
     let restricted = match restricted_from(body.visibility.as_deref()) {
         Ok(restricted) => restricted,
-        Err(err) => return parse_api_error(err).into_response(),
+        Err(err) => return err.into_response(),
     };
 
     // The account this node signs as. Carried on the op so receivers fold the
@@ -233,43 +233,9 @@ pub async fn handler(
     }
 }
 
-/// The op's `restricted` flag for a request's `visibility`: absent ⇒ Open (see
-/// [`CreateGroupInNamespaceBody::visibility`]); an unrecognized value is refused.
-fn restricted_from(visibility: Option<&str>) -> eyre::Result<bool> {
-    match visibility {
-        None => Ok(false),
-        Some(v) if v.eq_ignore_ascii_case("open") => Ok(false),
-        Some(v) if v.eq_ignore_ascii_case("restricted") => Ok(true),
-        Some(other) => {
-            eyre::bail!("invalid visibility '{other}': expected \"open\" or \"restricted\"")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{restricted_from, CreateGroupInNamespaceBody};
-
-    #[test]
-    fn an_absent_visibility_creates_the_group_open() {
-        assert!(!restricted_from(None).unwrap());
-    }
-
-    #[test]
-    fn a_named_visibility_is_honoured() {
-        assert!(!restricted_from(Some("open")).unwrap());
-        assert!(restricted_from(Some("restricted")).unwrap());
-        assert!(restricted_from(Some("Restricted")).unwrap());
-    }
-
-    #[test]
-    fn an_unknown_visibility_is_refused() {
-        let err = restricted_from(Some("public")).expect_err("must be refused");
-        assert!(
-            err.to_string().contains("invalid visibility 'public'"),
-            "got: {err}"
-        );
-    }
+    use super::CreateGroupInNamespaceBody;
 
     #[test]
     fn a_body_with_an_unknown_field_is_refused() {

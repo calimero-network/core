@@ -1330,6 +1330,8 @@ pub struct CreateGroupApiRequest {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
 }
 
 impl Validate for CreateGroupApiRequest {
