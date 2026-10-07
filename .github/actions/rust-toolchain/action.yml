@@ -37,7 +37,7 @@ runs:
         echo "pinned toolchain: $channel"
 
     - name: Install it
-      uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       with:
         toolchain: ${{ steps.pin.outputs.channel }}
         components: ${{ inputs.components }}
