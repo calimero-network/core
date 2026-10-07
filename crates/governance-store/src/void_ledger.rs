@@ -138,17 +138,15 @@ impl<'a> VoidLedger<'a> {
         self.put_parked(op, UNDECIDED)
     }
 
-    /// Record a replay's verdict on `op` at its cut; `false` when it was not parked,
-    /// since a replay may refuse what an arrival applied.
+    /// Record a replay's verdict on `op` at its cut; `false` when that changed nothing:
+    /// it was not parked, since a replay may refuse what an arrival applied, or it was
+    /// refused already.
     pub(crate) fn settle_parked(&self, op: [u8; 32], applied: bool) -> EyreResult<bool> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
-        if self.parked(op)?.is_none() {
-            return Ok(false);
-        }
-        if applied {
-            self.forget_parked(op)?;
-        } else {
-            self.put_parked(op, REFUSED)?;
+        match (self.parked(op)?, applied) {
+            (None, _) | (Some(Parked::Refused), false) => return Ok(false),
+            (Some(_), true) => self.forget_parked(op)?,
+            (Some(Parked::Undecided), false) => self.put_parked(op, REFUSED)?,
         }
         Ok(true)
     }

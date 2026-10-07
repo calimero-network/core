@@ -17,7 +17,7 @@ use super::super::op_log::Hole;
 use super::NamespaceGovernance;
 use crate::authorizer::GroupRows;
 use crate::op_budget::OpBudget;
-use crate::void_ledger::{VoidLedger, STORED_BEFORE};
+use crate::void_ledger::{Parked, VoidLedger, STORED_BEFORE};
 use crate::{
     cascade_remove_member_from_group_tree, restore_member_context_identities,
     CapabilitiesRepository, GroupKeyring, MembershipRepository, NamespaceOpLogService,
@@ -139,24 +139,21 @@ impl NamespaceGovernance<'_> {
         }
     }
 
-    /// Whether this node parked `op` and no replay has applied it yet. An unreadable
-    /// mark reads as not parked: the op then replays as before and stays a hole.
-    pub(super) fn is_parked(&self, op: &SignedNamespaceOp) -> bool {
+    /// What a replay owes `op` if this node parked it and none has applied it yet. An
+    /// unreadable mark reads as undecided: the op is still judged at its cut.
+    pub(super) fn parked_state(&self, op: &SignedNamespaceOp) -> Option<Parked> {
         let parked = op
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))
             .and_then(|id| VoidLedger::new(self.store, self.namespace_id).parked(id));
-        parked.map_or_else(
-            |err| {
-                tracing::warn!(
-                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                    %err,
-                    "could not read whether an op is parked"
-                );
-                false
-            },
-            |parked| parked.is_some(),
-        )
+        parked.unwrap_or_else(|err| {
+            tracing::warn!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                %err,
+                "could not read whether an op is parked"
+            );
+            Some(Parked::Undecided)
+        })
     }
 
     /// How `op` is stored: whole, or as the hole that keeps its place in the log when

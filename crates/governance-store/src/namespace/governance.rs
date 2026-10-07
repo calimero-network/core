@@ -30,7 +30,7 @@ use crate::governance_broadcast::{
 use crate::held_ops::HeldOps;
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
-use crate::void_ledger::{KeyIntro, VoidLedger, STORED_BEFORE};
+use crate::void_ledger::{KeyIntro, Parked, VoidLedger, STORED_BEFORE};
 
 use super::super::{
     apply_group_op_mutations, load_nonce_window, restore_member_context_identities,
@@ -2213,8 +2213,8 @@ impl<'a> NamespaceGovernance<'a> {
             // creator as admin again, and a moved group refuses it on every pass.
             // Its side effect also re-drives the group, which re-enters this walk.
             // A parked create was never applied here, so it is judged instead.
-            let parked = self.is_parked(&entry.signed_op);
-            if !parked && self.group_created_already_folded(&root)? {
+            let parked = self.parked_state(&entry.signed_op);
+            if parked.is_none() && self.group_created_already_folded(&root)? {
                 continue;
             }
             // A replayed root op is judged as one applied on arrival is. A void one
@@ -2223,8 +2223,8 @@ impl<'a> NamespaceGovernance<'a> {
                 self.settle_parked(&entry.signed_op, true);
                 continue;
             }
-            let outcome = if parked {
-                self.replay_parked_root_op(&entry.signed_op, &gate_op, &root)
+            let outcome = if let Some(state) = parked {
+                self.replay_parked_root_op(&entry.signed_op, &gate_op, &root, state)
             } else {
                 self.apply_root_op(&gate_op, &root)
             };
@@ -2387,11 +2387,13 @@ impl<'a> NamespaceGovernance<'a> {
                 let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
                     continue;
                 };
+                let parked = self.parked_state(&candidate.signed_op);
                 let outcome = self.replay_group_op(
                     &candidate.signed_op,
                     &gid_typed,
                     &candidate.group_key,
                     encrypted,
+                    parked,
                 );
                 match outcome {
                     // Surface divergence from retry-path applies. Once a
@@ -2413,7 +2415,7 @@ impl<'a> NamespaceGovernance<'a> {
                             group_id = %hex::encode(group_id),
                             "retried encrypted op after KeyDelivery"
                         );
-                        rotated |= self.replay_deferred_rotation(candidate);
+                        rotated |= self.replay_deferred_rotation(candidate, parked.is_some());
                         if divergence.is_some() {
                             retry_divergence = divergence;
                         }
@@ -2633,15 +2635,17 @@ impl<'a> NamespaceGovernance<'a> {
                 let was_present = load_nonce_window(self.store, &gid_typed, signer)
                     .map(|w| w.contains(nonce))
                     .unwrap_or(false);
+                let parked = self.parked_state(&candidate.signed_op);
                 let outcome = self.replay_group_op(
                     &candidate.signed_op,
                     &gid_typed,
                     &candidate.group_key,
                     encrypted,
+                    parked,
                 );
                 match outcome {
                     Ok(_divergence) => {
-                        rotated |= self.replay_deferred_rotation(candidate);
+                        rotated |= self.replay_deferred_rotation(candidate, parked.is_some());
                         let now_present = load_nonce_window(self.store, &gid_typed, signer)
                             .map(|w| w.contains(nonce))
                             .unwrap_or(false);
@@ -2749,20 +2753,26 @@ impl<'a> NamespaceGovernance<'a> {
 
     /// [`Self::apply_deferred_rotation`], logging a failure: the deferral stays
     /// recorded, so the next replay tries again. `true` when one was consumed.
-    fn replay_deferred_rotation(&self, candidate: &RetryCandidate) -> bool {
-        self.apply_deferred_rotation(candidate).unwrap_or_else(|e| {
-            tracing::warn!(
-                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                error = %format!("{e:#}"),
-                "failed to apply a deferred key rotation; the next replay retries it"
-            );
-            false
-        })
+    fn replay_deferred_rotation(&self, candidate: &RetryCandidate, parked: bool) -> bool {
+        self.apply_deferred_rotation(candidate, parked)
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    error = %format!("{e:#}"),
+                    "failed to apply a deferred key rotation; the next replay retries it"
+                );
+                false
+            })
     }
 
     /// Apply the rotation a replayed op carried when it was deferred on arrival. The
     /// key it seals under may have arrived later at a higher epoch, which it must outrank.
-    fn apply_deferred_rotation(&self, candidate: &RetryCandidate) -> EyreResult<bool> {
+    /// A parked op's rotation is judged at its cut, as the op was.
+    fn apply_deferred_rotation(
+        &self,
+        candidate: &RetryCandidate,
+        parked: bool,
+    ) -> EyreResult<bool> {
         let NamespaceOp::Group {
             group_id,
             key_id,
@@ -2782,7 +2792,14 @@ impl<'a> NamespaceGovernance<'a> {
             .key_epoch(key_id.as_bytes())?
             .map_or(sequence, |sealing| sequence.max(sealing.saturating_add(1)));
         let mut result = ApplyNamespaceOpResult::default();
-        self.apply_carried_rotation(
+        let at_cut = parked
+            .then(|| self.authorizer.at_cut())
+            .flatten()
+            .map(|judge| {
+                NamespaceGovernance::new(self.store, self.namespace_id)
+                    .with_apply_auth(&candidate.signed_op.parent_op_hashes, judge)
+            });
+        at_cut.as_ref().unwrap_or(self).apply_carried_rotation(
             &candidate.signed_op,
             Some(&inner),
             epoch,
@@ -2955,18 +2972,19 @@ impl<'a> NamespaceGovernance<'a> {
 
     /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
     /// An undecidable cut, or no at-cut judge, falls back to this pass's gates and
-    /// records only an apply.
+    /// records only an apply; an op already refused is not given that fallback.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
         gate_op: &SignedNamespaceOp,
         root: &RootOp,
+        state: Parked,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         if let Some(judge) = self.authorizer.at_cut() {
             let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
                 .with_apply_auth(&parked.parent_op_hashes, judge)
                 .apply_root_op(gate_op, root);
-            if !at_cut.as_ref().is_err_and(is_undecidable) {
+            if state == Parked::Refused || !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(parked, at_cut.is_ok());
                 return at_cut;
             }
@@ -2987,19 +3005,19 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: &ContextGroupId,
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
+        parked: Option<Parked>,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        let parked = self.is_parked(ns_op);
-        if let Some(judge) = self.authorizer.at_cut().filter(|_| parked) {
+        if let Some(judge) = self.authorizer.at_cut().filter(|_| parked.is_some()) {
             let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
-                .with_apply_auth(self.parents, judge)
+                .with_apply_auth(&ns_op.parent_op_hashes, judge)
                 .decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
-            if !at_cut.as_ref().is_err_and(is_undecidable) {
+            if parked == Some(Parked::Refused) || !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(ns_op, at_cut.is_ok());
                 return at_cut;
             }
         }
         let outcome = self.decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
-        if parked && outcome.is_ok() {
+        if parked.is_some() && outcome.is_ok() {
             self.settle_parked(ns_op, true);
         }
         outcome
