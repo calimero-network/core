@@ -5099,6 +5099,7 @@ mod naming_back_compat_tests {
             application_id: ApplicationId::from([0_u8; 32]),
             name: None,
             parent_group_id: None,
+            visibility: None,
         };
         let json = serde_json::to_string(&req).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");

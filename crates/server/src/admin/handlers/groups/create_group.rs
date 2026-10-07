@@ -77,6 +77,7 @@ fn create_request(req: CreateGroupApiRequest) -> Result<CreateGroupRequest, ApiE
         .as_deref()
         .map(parse_group_id)
         .transpose()?;
+    let restricted = restricted_from(req.visibility.as_deref())?;
 
     Ok(CreateGroupRequest {
         salt: None,
