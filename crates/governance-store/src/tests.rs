@@ -6043,43 +6043,33 @@ fn permission_checker_subgroup_management_capabilities() {
 }
 
 #[test]
-fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
+fn group_settings_subgroup_visibility_opens_for_its_creator_and_closes_for_its_managers() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 
     use super::group_settings::GroupSettingsService;
 
     let store = test_store();
     let gid = ContextGroupId::from([0x9B; 32]);
-    let admin_pk = PublicKey::from([0x01; 32]);
+    let creator_pk = PublicKey::from([0x01; 32]);
+    let admin_pk = PublicKey::from([0x03; 32]);
     let member_pk = PublicKey::from([0x02; 32]);
+    let creator = enrol_member(&store, &gid, &creator_pk);
     let admin = enrol_member(&store, &gid, &admin_pk);
     let member = enrol_member(&store, &gid, &member_pk);
 
-    MembershipRepository::new(&store)
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&gid, &creator, GroupMemberRole::Admin)
+        .unwrap();
+    members
         .add_member(&gid, &admin, GroupMemberRole::Admin)
         .unwrap();
-    MembershipRepository::new(&store)
+    members
         .add_member(&gid, &member, GroupMemberRole::Member)
         .unwrap();
-
-    let svc = GroupSettingsService::new(&store, gid);
-
-    // Admin can flip it.
-    svc.set_subgroup_visibility(&admin_pk, VisibilityMode::Open)
+    crate::group_creator::GroupCreatorRepository::new(&store)
+        .record(&gid, &creator)
         .unwrap();
-    assert_eq!(
-        CapabilitiesRepository::new(&store)
-            .subgroup_visibility(&gid)
-            .unwrap(),
-        VisibilityMode::Open
-    );
-
-    // Member without the cap cannot.
-    assert!(svc
-        .set_subgroup_visibility(&member_pk, VisibilityMode::Restricted)
-        .is_err());
-
-    // Granting CAN_MANAGE_VISIBILITY lets the member flip it.
     CapabilitiesRepository::new(&store)
         .set_member_capability(
             &gid,
@@ -6087,13 +6077,110 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
             MemberCapabilities::CAN_MANAGE_VISIBILITY.bits(),
         )
         .unwrap();
-    svc.set_subgroup_visibility(&member_pk, VisibilityMode::Restricted)
-        .unwrap();
-    assert_eq!(
+    let svc = GroupSettingsService::new(&store, gid);
+    let visibility = || {
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&gid)
+            .unwrap()
+    };
+
+    // Closing: an admin, or a member holding CAN_MANAGE_VISIBILITY.
+    svc.set_subgroup_visibility(&admin_pk, VisibilityMode::Restricted)
+        .unwrap();
+    assert_eq!(visibility(), VisibilityMode::Restricted);
+    svc.set_subgroup_visibility(&member_pk, VisibilityMode::Restricted)
+        .unwrap();
+
+    // Opening: neither of them - another admin, or a member with the capability.
+    for not_creator in [&admin_pk, &member_pk] {
+        let err = svc
+            .set_subgroup_visibility(not_creator, VisibilityMode::Open)
+            .expect_err("only the creator may open a Restricted subgroup");
+        assert!(
+            format!("{err:#}").contains("only its creator may"),
+            "{err:#}"
+        );
+        assert_eq!(visibility(), VisibilityMode::Restricted);
+    }
+
+    // The creator may.
+    svc.set_subgroup_visibility(&creator_pk, VisibilityMode::Open)
+        .unwrap();
+    assert_eq!(visibility(), VisibilityMode::Open);
+
+    // A group no `GroupCreated` made - a namespace root - keeps the admin rule.
+    let root = ContextGroupId::from([0x9E; 32]);
+    let root_admin = enrol_member(&store, &root, &admin_pk);
+    members
+        .add_member(&root, &root_admin, GroupMemberRole::Admin)
+        .unwrap();
+    GroupSettingsService::new(&store, root)
+        .set_subgroup_visibility(&admin_pk, VisibilityMode::Open)
+        .expect("a namespace root's admin may open it");
+}
+
+/// Opening rests on facts a namespace member outside the subgroup holds - the
+/// creator from the subgroup's `GroupCreated`, the signer's account at the
+/// namespace - so it is decided even where the subgroup's own history is sealed,
+/// instead of being undecidable there (#4522). Closing still asks the
+/// subgroup's history, and stays undecidable on such a node.
+#[test]
+fn opening_is_decided_where_the_subgroups_history_is_sealed() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::group_settings::GroupSettingsService;
+    use crate::test_fixtures::SealedSubgroupAuthorizer;
+
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x9C; 32]);
+    let subgroup = ContextGroupId::from([0x9D; 32]);
+    crate::test_fixtures::nest_for_test(&store, &namespace, &subgroup);
+    let creator_pk = PublicKey::from([0x01; 32]);
+    let admin_pk = PublicKey::from([0x02; 32]);
+    // Bound at the namespace, where a member outside the subgroup reads them.
+    let creator = enrol_member(&store, &namespace, &creator_pk);
+    let admin = enrol_member(&store, &namespace, &admin_pk);
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    crate::group_creator::GroupCreatorRepository::new(&store)
+        .record(&subgroup, &creator)
+        .unwrap();
+
+    // This node is outside `subgroup`: no cut of it resolves here.
+    let sealed = SealedSubgroupAuthorizer(subgroup);
+    let parents: [[u8; 32]; 0] = [];
+    let svc = GroupSettingsService::new(&store, subgroup).with_apply_auth(&parents, &sealed);
+
+    // Closing asks the subgroup's history: undecidable here.
+    let err = svc
+        .set_subgroup_visibility(&admin_pk, VisibilityMode::Restricted)
+        .expect_err("closing needs the subgroup's history");
+    assert!(
+        matches!(
+            err.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::AuthorityUndecidable { .. })
+        ),
+        "{err:#}"
+    );
+
+    // Opening does not: a non-creator is refused outright, not parked ...
+    let err = svc
+        .set_subgroup_visibility(&admin_pk, VisibilityMode::Open)
+        .expect_err("an admin who did not create it may not open it");
+    assert!(
+        format!("{err:#}").contains("only its creator may"),
+        "{err:#}"
+    );
+
+    // ... and the creator's flip applies.
+    svc.set_subgroup_visibility(&creator_pk, VisibilityMode::Open)
+        .expect("the creator opens it, decided without the sealed history");
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&subgroup)
             .unwrap(),
-        VisibilityMode::Restricted
+        VisibilityMode::Open
     );
 }
 

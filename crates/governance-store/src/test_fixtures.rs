@@ -860,6 +860,93 @@ impl crate::authorizer::AtCutAuthorizer for UnresolvableAuthorizer {
     }
 }
 
+/// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) for a namespace
+/// member outside one Restricted subgroup: every cut of THAT subgroup is
+/// undecidable here (its history is sealed under a key this node lacks), every
+/// other group's - the namespace root's included - resolves, and the gates defer
+/// to live (`None`).
+pub struct SealedSubgroupAuthorizer(pub ContextGroupId);
+
+impl crate::authorizer::AtCutAuthorizer for SealedSubgroupAuthorizer {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
+    fn can_resolve_cut(&self, group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
+        *group != self.0
+    }
+}
+
 /// Enrol `sign_pk` as THIS NODE's device in `namespace`.
 ///
 /// The difference from [`enrol_member`] is the secret half. `enrol_member`

@@ -8859,6 +8859,10 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
     MembershipRepository::new(&store)
         .add_member(&sub_gid, &owner_account, GroupMemberRole::Admin)
         .unwrap();
+    // What its `GroupCreated` records: the owner created it, so may open it.
+    crate::group_creator::GroupCreatorRepository::new(&store)
+        .record(&sub_gid, &owner_account)
+        .unwrap();
     assert_eq!(
         CapabilitiesRepository::new(&store)
             .subgroup_visibility(&sub_gid)

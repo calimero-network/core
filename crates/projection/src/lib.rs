@@ -189,6 +189,11 @@ pub struct ScopeState {
     // --- per-group admin (the subgroup creator / genesis admin) ---
     group_admin: BTreeMap<ContextGroupId, AccountId>,
     group_admin_clock: BTreeMap<ContextGroupId, Stamp>,
+    /// Each subgroup's creator: the account its earliest `SubgroupCreated`
+    /// names, and no other op moves it. Every `SubgroupCreated` for one id
+    /// names the same account in practice, since the id is derived from it;
+    /// keeping the earliest stamp makes the fold order-independent regardless.
+    group_creator: BTreeMap<ContextGroupId, (Stamp, AccountId)>,
     // --- account plane ---
     //
     // Unlike every plane above, this one carries **no LWW stamps**. Each of its
@@ -561,6 +566,13 @@ impl ScopeState {
                 lww_set(&mut slot.exists, stamp, true);
                 // The creator is the subgroup's genesis admin.
                 let g = ContextGroupId::from(*child.as_bytes());
+                if self
+                    .group_creator
+                    .get(&g)
+                    .is_none_or(|(earliest, _)| stamp < *earliest)
+                {
+                    let _ = self.group_creator.insert(g, (stamp, *admin));
+                }
                 if wins(stamp, self.group_admin_clock.get(&g)) {
                     let _ = self.group_admin.insert(g, *admin);
                     let _ = self.group_admin_clock.insert(g, stamp);
@@ -1272,6 +1284,11 @@ impl ScopeState {
             member_caps: self.current_member_caps(&member_caps),
             subgroups,
             group_admin: self.group_admin.clone(),
+            group_creator: self
+                .group_creator
+                .iter()
+                .map(|(group, (_, creator))| (*group, *creator))
+                .collect(),
             devices,
             accounts,
             revoked_devices: self.revoked_devices.clone(),

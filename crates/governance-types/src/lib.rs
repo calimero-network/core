@@ -2365,7 +2365,15 @@ pub struct SignedNamespaceOp {
 /// at the gate rather than mis-decode. A coordinated upgrade.
 /// - core#4465: a join never replaces a standing role, and a namespace leave folds
 ///   onto every subgroup. Nothing moves on the wire, but a v22 node folds otherwise.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 23;
+///
+/// v24: only a subgroup's creator may open it (#4522). A `SubgroupVisibilitySet`
+/// to `Open` is authorized against the creator its `GroupCreated` recorded, with
+/// the signer's account resolved at the namespace, so a member outside a
+/// Restricted subgroup decides it without the subgroup's sealed history and every
+/// node agrees. Closing keeps the admin / `CAN_MANAGE_VISIBILITY` rule. Nothing
+/// moves on the wire, but a v23 node accepts an opening flip by any of the
+/// subgroup's admins: a coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 24;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,

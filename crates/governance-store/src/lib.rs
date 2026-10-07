@@ -56,6 +56,7 @@ pub mod device_link;
 mod errors;
 pub mod first_target_gate;
 mod governance_signer;
+pub mod group_creator;
 mod group_governance_publisher;
 mod group_keys;
 mod group_settings;

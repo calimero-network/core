@@ -141,7 +141,12 @@ impl<'a> GroupSettingsService<'a> {
         mode: VisibilityMode,
     ) -> EyreResult<()> {
         let permissions = self.permissions();
-        permissions.require_can_manage_visibility(signer)?;
+        match mode {
+            // Opening is the creator's alone, and decidable without the
+            // subgroup's sealed history (see `require_creator_opens`).
+            VisibilityMode::Open => permissions.require_creator_opens(signer)?,
+            VisibilityMode::Restricted => permissions.require_can_manage_visibility(signer)?,
+        }
         CapabilitiesRepository::new(self.store).set_subgroup_visibility(&self.group_id, mode)
     }
 
