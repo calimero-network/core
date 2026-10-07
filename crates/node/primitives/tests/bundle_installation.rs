@@ -7,6 +7,7 @@ use calimero_node_primitives::bundle::{
 };
 use calimero_node_primitives::client::application::bundle::MAX_ARCHIVE_BYTES;
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::application::ApplicationId;
 use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
@@ -19,7 +20,7 @@ use tar::Builder;
 use tempfile::TempDir;
 
 mod common;
-use common::{create_test_bundle, create_test_node_client, pack_entries};
+use common::{create_test_bundle, create_test_node_client, pack_entries, signed_bundle_bytes};
 
 /// Signs a manifest JSON value and adds the signature field.
 /// This is a convenience wrapper around the shared sign_manifest_json function.
@@ -1962,4 +1963,63 @@ async fn install_from_path_rejects_a_file_over_the_bundle_cap() {
         err.to_string().contains(&MAX_ARCHIVE_BYTES.to_string()),
         "error should name the byte cap, got: {err}"
     );
+}
+
+async fn install_bundle_bytes(node_client: &NodeClient, bytes: Vec<u8>) -> ApplicationId {
+    let (blob_id, _size) = node_client
+        .add_blob(
+            Cursor::new(bytes.as_slice()),
+            Some(bytes.len() as u64),
+            None,
+        )
+        .await
+        .expect("add the bundle blob");
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    node_client
+        .install_application_from_bundle_blob(&blob_id, &source)
+        .await
+        .expect("install the bundle")
+}
+
+/// mero-mcp and meroctl read only the list, so each entry must carry its
+/// services exactly as the single-application read does.
+#[tokio::test]
+async fn list_applications_reports_each_applications_services() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let (bytes, multi_id) =
+        signed_bundle_bytes("com.example.multi", "1.0.0", &["docs", "registry"]);
+    install_bundle_bytes(&node_client, bytes).await;
+
+    let listed = node_client
+        .list_applications()
+        .expect("list applications")
+        .into_iter()
+        .find(|app| app.id == multi_id)
+        .expect("the installed application is listed");
+    let read = node_client
+        .get_application(&multi_id)
+        .expect("read the application")
+        .expect("the application exists");
+
+    assert_eq!(
+        listed.services.keys().collect::<Vec<_>>(),
+        ["docs", "registry"]
+    );
+    assert_eq!(listed.services, read.services);
+}
+
+#[tokio::test]
+async fn list_applications_leaves_a_single_service_application_without_services() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let (bytes, single_id) = signed_bundle_bytes("com.example.single", "1.0.0", &[]);
+    install_bundle_bytes(&node_client, bytes).await;
+
+    let listed = node_client
+        .list_applications()
+        .expect("list applications")
+        .into_iter()
+        .find(|app| app.id == single_id)
+        .expect("the installed application is listed");
+
+    assert!(listed.services.is_empty());
 }
