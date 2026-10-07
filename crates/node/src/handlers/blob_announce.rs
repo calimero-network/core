@@ -25,7 +25,7 @@
 //! retry bolted on here.
 
 use core::time::Duration;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use calimero_context_client::client::ContextClient;
@@ -38,7 +38,7 @@ use calimero_primitives::identity::{MemberIdentity, PublicKey};
 use futures_util::StreamExt;
 use libp2p::PeerId;
 use tokio::sync::Semaphore;
-use tokio::time::Instant;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
 use crate::handlers::blob_protocol::is_signed_context_member;
@@ -67,6 +67,7 @@ const MEMBER_PREFETCH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60); // h
 const MIN_PREFETCH_CHARGE_BYTES: u64 = 1024 * 1024; // so a failed or empty fetch is not free
 const MIN_PREFETCH_SUCCESS_COST_BYTES: u64 = 64 * 1024; // probes, headers and a stored file per blob
 const PREFETCH_FRAMING_BYTES: u64 = 64 * 1024; // headers and chunk framing over a transfer's payload
+const PREFETCH_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60); // how often prefetches for contexts no longer served are released
 
 /// Global prefetch budget, shared by every inbound announcement.
 static PREFETCH_SLOTS: Semaphore = Semaphore::const_new(PREFETCH_CONCURRENCY);
@@ -284,6 +285,12 @@ async fn prefetch_announced_blob(
     let cost = match outcome {
         Ok(Ok(Some(_))) => {
             info!(%blob_id, %context_id, size, received, "prefetched announced blob");
+            if let Err(err) = node_client
+                .record_prefetched_blob(&context_id, &blob_id)
+                .await
+            {
+                warn!(%blob_id, %context_id, %err, "failed to record the prefetched blob");
+            }
             received.max(MIN_PREFETCH_SUCCESS_COST_BYTES)
         }
         Ok(Ok(None)) => {
@@ -309,12 +316,60 @@ async fn prefetch_announced_blob(
     Ok(())
 }
 
-/// Release what prefetches took for every context this node no longer serves.
-pub(crate) async fn release_unserved_prefetches(
-    _node_client: &NodeClient,
-    _context_client: &ContextClient,
+/// A context is released only when two sweeps in a row find it unserved, so a group move
+/// between detach and register, or a lookup that misreads once, does not cost it its blobs.
+async fn release_unserved_prefetches(
+    node_client: &NodeClient,
+    context_client: &ContextClient,
+    unserved_before: &mut BTreeSet<ContextId>,
 ) -> eyre::Result<()> {
+    let mut unserved_now = BTreeSet::new();
+    for context_id in node_client.prefetched_blob_contexts()? {
+        match is_availability_node_for(node_client, context_client, &context_id) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(err) => {
+                warn!(%context_id, %err, "could not tell whether this node still serves the context");
+                continue;
+            }
+        }
+        if !unserved_before.contains(&context_id) {
+            let _new = unserved_now.insert(context_id);
+            continue;
+        }
+        match node_client.release_prefetched_blobs(&context_id).await {
+            Ok(()) => {
+                info!(%context_id, "released the blobs prefetched for a context no longer served")
+            }
+            Err(err) => {
+                warn!(%context_id, %err, "failed to release the blobs prefetched for the context");
+                let _failed = unserved_now.insert(context_id);
+            }
+        }
+    }
+    *unserved_before = unserved_now;
     Ok(())
+}
+
+/// Release unserved prefetches at startup and then every [`PREFETCH_SWEEP_INTERVAL`].
+pub(crate) fn spawn_prefetch_sweep(
+    node_client: NodeClient,
+    context_client: ContextClient,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(PREFETCH_SWEEP_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut unserved_before = BTreeSet::new();
+        loop {
+            let _ = interval.tick().await;
+            if let Err(err) =
+                release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+                    .await
+            {
+                warn!(%err, "failed to sweep the prefetched blobs of contexts no longer served");
+            }
+        }
+    })
 }
 
 /// Whether `announcement` carries a valid membership proof for its context,
@@ -1164,9 +1219,12 @@ mod tests {
         let (node_client, context_client, blob, _data, _blobs) =
             node_with_a_prefetch(GroupMemberRole::ReadOnlyTee, context()).await;
 
-        release_unserved_prefetches(&node_client, &context_client)
-            .await
-            .expect("sweep");
+        let mut unserved_before = BTreeSet::new();
+        for _ in 0..2 {
+            release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+                .await
+                .expect("sweep");
+        }
 
         assert!(node_client.has_blob(&blob).expect("read"));
     }
@@ -1178,7 +1236,15 @@ mod tests {
         let (node_client, context_client, blob, _data, _blobs) =
             node_with_a_prefetch(GroupMemberRole::Member, context()).await;
 
-        release_unserved_prefetches(&node_client, &context_client)
+        let mut unserved_before = BTreeSet::new();
+        release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+            .await
+            .expect("sweep");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "one unserved sweep keeps them"
+        );
+        release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
             .await
             .expect("sweep");
 
@@ -1191,7 +1257,15 @@ mod tests {
         let (node_client, context_client, blob, _data, _blobs) =
             node_with_a_prefetch(GroupMemberRole::ReadOnlyTee, deleted).await;
 
-        release_unserved_prefetches(&node_client, &context_client)
+        let mut unserved_before = BTreeSet::new();
+        release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+            .await
+            .expect("sweep");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "one unserved sweep keeps them"
+        );
+        release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
             .await
             .expect("sweep");
 

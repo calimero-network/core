@@ -118,3 +118,25 @@ async fn a_freed_blob_forgets_its_prefetches() {
 
     assert!(node_client.has_blob(&reuploaded).expect("read"));
 }
+
+/// A prefetch whose blob was freed meanwhile has nothing to hold, so it leaves no
+/// row to release the same bytes stored again by someone else.
+#[actix::test]
+async fn a_prefetch_recorded_after_its_blob_was_freed_records_nothing() {
+    let (node_client, _data, _blobs) = create_test_node_client(None).await;
+    let blob = add(&node_client, BYTES).await;
+    let _freed = node_client.delete_blob(blob).await.expect("free the blob");
+    node_client
+        .record_prefetched_blob(&ContextId::from(CONTEXT), &blob)
+        .await
+        .expect("record the prefetch");
+    let uploaded = add(&node_client, BYTES).await;
+
+    release(&node_client, CONTEXT).await;
+
+    assert!(node_client.has_blob(&uploaded).expect("read"));
+    assert!(node_client
+        .prefetched_blob_contexts()
+        .expect("read")
+        .is_empty());
+}

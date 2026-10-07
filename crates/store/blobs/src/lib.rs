@@ -9,7 +9,10 @@ use std::sync::Arc;
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::content_hash::ContentHash;
-use calimero_store::key::{BlobMeta as BlobMetaKey, BlobOwner as BlobOwnerKey};
+use calimero_primitives::context::ContextId;
+use calimero_store::key::{
+    BlobMeta as BlobMetaKey, BlobOwner as BlobOwnerKey, PrefetchedBlob as PrefetchedBlobKey,
+};
 use calimero_store::types::BlobMeta as BlobMetaValue;
 use calimero_store::Store as DataStore;
 use camino::Utf8PathBuf;
@@ -160,6 +163,17 @@ impl Deleted {
     pub const fn existed(self) -> bool {
         !matches!(self, Self::Absent)
     }
+}
+
+/// What [`BlobManager::record_prefetch`] did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Recorded {
+    /// The row was written: it now stands for the caller's reference.
+    New,
+    /// The row was already there, so the caller's reference is a duplicate.
+    AlreadyHeld,
+    /// The blob has no metadata row, so nothing was written.
+    Absent,
 }
 
 /// What releasing one reference to a blob id did.
@@ -356,8 +370,44 @@ impl BlobManager {
         Ok(deleted)
     }
 
-    /// Drop every row recording a context `id` is held for. The index is keyed
-    /// by context first, so this scans it; it runs only when a blob is freed.
+    /// Record that a prefetch for `context_id` took one reference to `id`.
+    ///
+    /// Runs under the blob's stripe lock, so it cannot race a free that drops the
+    /// rows with the last reference.
+    pub async fn record_prefetch(&self, context_id: ContextId, id: BlobId) -> EyreResult<Recorded> {
+        let _guard = self.ref_locks.lock(id).await;
+
+        let mut handle = self.data_store.handle();
+        if !handle.has(&BlobMetaKey::new(id))? {
+            return Ok(Recorded::Absent);
+        }
+        let row = PrefetchedBlobKey::new(context_id, id);
+        if handle.has(&row)? {
+            return Ok(Recorded::AlreadyHeld);
+        }
+        handle.put(&row, &())?;
+        Ok(Recorded::New)
+    }
+
+    /// Release the reference a prefetch for `context_id` took to `id`.
+    ///
+    /// Only the caller that deletes the row releases its reference.
+    pub async fn release_prefetch(&self, context_id: ContextId, id: BlobId) -> EyreResult<Deleted> {
+        {
+            let _guard = self.ref_locks.lock(id).await;
+
+            let mut handle = self.data_store.handle();
+            let row = PrefetchedBlobKey::new(context_id, id);
+            if !handle.has(&row)? {
+                return Ok(Deleted::Absent);
+            }
+            handle.delete(&row)?;
+        }
+        self.delete(id).await
+    }
+
+    /// Drop every row recording a context `id` is held for, and its prefetch rows.
+    /// Runs when a blob is freed; both are keyed by context first, so this scans them.
     fn forget_owners(&self, id: BlobId) -> EyreResult<()> {
         let mut handle = self.data_store.handle();
         let owners = {
@@ -368,6 +418,22 @@ impl BlobManager {
         };
         for owner in owners {
             handle.delete(&owner)?;
+        }
+        self.forget_prefetches(id)
+    }
+
+    /// Drop every row recording a prefetch's reference to `id`. Runs when the blob
+    /// is freed, and when its root row is restarted: the references died with the chunks.
+    fn forget_prefetches(&self, id: BlobId) -> EyreResult<()> {
+        let mut handle = self.data_store.handle();
+        let prefetched = {
+            let mut iter = handle.iter::<PrefetchedBlobKey>()?;
+            iter.keys()
+                .filter(|row| row.as_ref().map_or(true, |row| row.blob_id() == id))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for row in prefetched {
+            handle.delete(&row)?;
         }
         Ok(())
     }
@@ -415,12 +481,13 @@ impl BlobManager {
 
         match meta.refs.saturating_sub(1) {
             0 => {
-                self.data_store.handle().delete(&key)?;
                 // Under the id's guard, so an add of the same bytes for another
                 // context cannot record its owner in between and lose it here.
+                // Rows go first: a failure before the meta row is deleted leaks, never leaves stale rows.
                 if matches!(slot, Slot::Root(_)) {
                     self.forget_owners(id)?;
                 }
+                self.data_store.handle().delete(&key)?;
                 // A failed file delete is logged, not propagated, so the caller
                 // still goes on to release this blob's chunks.
                 if let Some(file) = slot.file() {
@@ -470,6 +537,9 @@ impl BlobManager {
 
         let existing = self.data_store.handle().get(&key)?;
         let created = existing.is_none() || restart;
+        if restart && existing.is_some() {
+            self.forget_prefetches(id)?;
+        }
         let refs = match existing.filter(|_| !restart) {
             // Overflow is not physically reachable (it needs u32::MAX live
             // references to one content id) but is surfaced rather than saturated:
