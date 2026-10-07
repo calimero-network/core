@@ -4,9 +4,11 @@ on:
   pull_request:
     paths:
       - "crates/bundle/**"
+      - "crates/governance-store/**"
       - "crates/governance-types/**"
       - "crates/network/**"
       - "crates/node/primitives/**"
+      - "crates/projection/**"
       - "crates/storage/**"
       - "tools/mero-sign/**"
       - "fuzz/**"
@@ -74,6 +76,13 @@ jobs:
               - "crates/governance-types/**"
               - "fuzz/fuzz_targets/signed_ops.rs"
               - "fuzz/seeds/signed_ops/**"
+            governance_apply:
+              - *shared
+              - "crates/governance-store/**"
+              - "crates/governance-types/**"
+              - "crates/projection/**"
+              - "fuzz/fuzz_targets/governance_apply.rs"
+              - "fuzz/seeds/governance_apply/**"
 
   smoke:
     name: Smoke (${{ matrix.target }})
@@ -106,7 +115,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [bundle_open, crdt_sync, wire_decode, provider_record, signed_ops]
+        target:
+          - bundle_open
+          - crdt_sync
+          - wire_decode
+          - provider_record
+          - signed_ops
+          - governance_apply
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
