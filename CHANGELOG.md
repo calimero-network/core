@@ -2,27 +2,46 @@
 
 ## [Unreleased]
 
-### Changed
-
-- **TEE admission is bound to the admitted credential and fresh.** A fleet TEE
-  node is admitted only on a quote whose report data is a challenge the
-  admitting member chose for it (32 random bytes, single-use, valid for about
-  a minute), followed by `SHA-256("calimero.tee.admission.v1" || namespace ||
-  group || identity key || account || delivery key || device)`. The node asks
-  for the challenge over the direct admission request path, or a member offers
-  it after hearing the node's prompt: `TeeAttestationAnnounce` and
-  `TeeReleaseAttestationAnnounce` are replaced by a quote-free
-  `TeeAdmissionPrompt`, which admits nobody. `RootOp::MemberJoinedViaTeeAttestation`
-  carries its quote and every peer checks it against the credential in the op;
-  `GroupOp::TeeAuthorityEvidence` carries the credential its quote was made
-  for; the admitting node refuses a quote already used in an admission or an
-  evidence refresh in the namespace.
-  Breaking: wire and signed-op layouts change
-  (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 23, the step after core#4263's 22;
-  `SIGNED_GROUP_OP_SCHEMA_VERSION` 16), so every peer of a namespace upgrades together, and the node image's
-  fleet-join must be a build that answers a challenge (mero-tee).
-
 ### Added
+
+- **A warrant names the one device that may spend it.** A warrant named only
+  the executor account, and each relay spends nonces in its own ledger, so two
+  devices of one operator account could each spend the same warrant and
+  replicas forked. `Warrant`, `GovernanceWarrant` and `ContextCreationWarrant`
+  now carry `executor_key`. Every replica refuses a bundle from another device
+  (`WarrantExecutorKeyMismatch`), and the intent routes answer 403 to a
+  warrant naming another key before anything is presented or installed. The
+  discovery routes report `executorKey`; `merod account warrant` requires
+  `--executor-key`. A relay that re-keys voids its unspent warrants.
+  `GET /contexts/:id/intents` answers 404 when the node owns no identity in
+  the context (was `canAuthorOnBehalf: false`). (breaking: the signed
+  preimage and borsh layout of all three warrants change, so warrants signed
+  earlier no longer decode, and the node-local `ContextWarrantNonce` key grows
+  from 64 to 96 bytes with no migration; pairs with mero-js#250 and
+  calimero-client-py#127) (#4505)
+
+- **A data warrant pins the release it was signed against, and expires on
+  the delta's stamp.** `Warrant` replaces the unread `app_version` with
+  `release_bytecode_id` and `release_version` (at most 256 bytes). The relay
+  refuses a warrant pinning another blob than the one it is about to run
+  (403 `ReleaseNotRunning`, nonce unspent) and a run whose delta stamp is past
+  `not_after` (403 `WarrantExpired`, nothing commits); every replica refuses a
+  delegated delta stamped after its warrant expired. `GET
+  /admin-api/contexts/{id}/intents` reports `releaseBytecodeId` and
+  `releaseVersion` and answers 404 while the group names no release; `merod
+  account warrant` requires `--release-bytecode-id`. (breaking: the data
+  warrant's signed preimage and borsh layout change, so warrants and stored
+  delegated deltas from earlier builds no longer decode; the paired mero-js
+  and calimero-client-py changes are to follow) (#4517)
+
+- **A fleet node that is refused admission is told why.** `fleet-join`
+  answered only `admitted: false`. Each admitter's refusal reason (removed
+  from the group, measurements outside the policy, a peer that may not vouch)
+  was folded into one error string and only logged. `FleetJoinResponse` now
+  carries `refusals: [{ peer, reason }]`, with each reason cut to 512 bytes,
+  and `admitted_by`, the peer that said yes before the key arrives. meroctl
+  prints both. Both fields are `serde(default)`, so an older node's answer
+  still decodes. (#4494)
 
 - **A namespace names the group ops it holds unapplied.** The namespace
   endpoints (`GET /admin-api/namespaces/{id}`, and both listings) carry an
@@ -44,10 +63,22 @@
   another account removes its signer's `ADMIN`, and a cell folds at most 256
   steps. `ScopeProjections::shared_writers_at_cut` answers for a governance
   cut; a context whose cells have rotated cannot be detached or deleted.
-  Execution does not read the fold yet. (breaking: `SIGNED_NAMESPACE_OP_SCHEMA_VERSION`
-  moves to 22 and an older node cannot decode the op, so every peer of a
-  namespace upgrades together; the SDK signs at 22 from mero-js 23.8.2,
-  mero-js#244) (#4263)
+  Every check of who may write a cell reads the fold: the delta applier at
+  the delta's own governance position, execution at a cut pinned before the
+  run, and snapshot and repair leaves, whose signer must be a writer the cell
+  has ever had. An admin's `rotate_writers` (new host functions
+  `shared_writers` and `shared_writers_rotate`) writes nothing; the node
+  publishes the rotation before the run's delta, which cites it, and a run may
+  ask for at most 64. A delegated, TEE, relay or state-op run, or a context in
+  no group, is refused with `SharedRotationRefused` (403, 409 or 503). The
+  storage rotation log is gone; `CrdtType::RotationLog` stays as a
+  decode-only tag. (breaking: `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` moves to 22
+  and an older node cannot decode the op, so every peer of a namespace
+  upgrades together; the SDK signs at 22 from mero-js 23.8.2, mero-js#244.
+  Rebuild apps that use `SharedStorage`. A node on an earlier build still
+  appends rotation-log children and computes different hashes, and a wrapper
+  an earlier rotation rewrote no longer binds to its cell id) (#4263, #4277,
+  #4278)
 
 - **A namespace ownership proof says who founded the namespace.**
   `issue-namespace-ownership-proof` now answers `founding` (founder account and
@@ -447,6 +478,250 @@
   [#3528])
 
 ### Fixed
+
+- **A served signed write is dated by its signature.** A signed `User`,
+  `Shared` or `SharedMember` write committed to its nonce but not to
+  `updated_at`, which last-writer-wins, the stale/replay check and the delete
+  check read, so a serving peer could re-date a genuine write. Snapshot,
+  HashComparison and LevelWise installs now store `User` and `SharedMember`
+  rows under the signed nonce, and bound the served date of the other kinds to
+  5 s ahead; a snapshot entry signed further ahead fails the snapshot, and a
+  sync merge write-back stamped further ahead is refused. (#4497)
+
+- **A repair merges a peer's bytes through the app's custom merge only into
+  a stored `Public` custom entry of the same type.** `crdt_type` is not
+  signed, so a peer could tag any stored entry `Custom` and have its bytes
+  written under the entry's signed metadata. A signed entry is now applied
+  through `apply_action`, which checks its signature, owner and writers, and a
+  leaf storage refuses is logged and skipped on HashComparison and LevelWise
+  pulls instead of ending the session. (#4519)
+
+- **A passive cross-site blob request asks no peer.** A blob `GET` or `HEAD`
+  caused by a navigation or subresource load from another site (which a
+  `proxy`-mode node's origin guard admits) is served only from what the node
+  holds, and answers 404 on a miss instead of fetching from the context's
+  peers. (#4477)
+
+- **A WebSocket upgrade is judged by the same origin rule as HTTP.** `GET /ws`
+  had its own origin check, which refused a loopback page on another port, the
+  desktop webview (`tauri://localhost`) and the node's own page under an
+  address it does not listen on, though all of them reached HTTP routes. The
+  upgrade now asks the router's `OriginGuard` in both auth modes and is
+  refused with the same 403 and log line. (an embedded-auth node behind a
+  proxy that rewrites `Host` loses its dashboard socket until that origin is
+  listed in `[server.cors] allowed_origins`) (#4471)
+
+- **`GET /sse` refuses a request no script opened, before creating a
+  session.** A navigation, a frame or a `no-cors` subresource load created and
+  persisted an SSE session, and on a `proxy`-mode node the origin guard admits
+  such requests. A request whose `Sec-Fetch-Mode` is present and is neither
+  `cors` nor `same-origin` now gets `403` and no session. `EventSource`,
+  `fetch` and clients that send no fetch metadata are served as before.
+  (#4476)
+
+- **The mock token endpoint refuses browser pages.** `POST /auth/mock-token`
+  (debug builds only) minted a token for any page that could reach it,
+  including one on another site. A request carrying `Origin` or
+  `Sec-Fetch-Site` now gets `403`, also when mock auth is off. Scripts and
+  CLIs send neither and are served as before. (#4469)
+
+- **A namespace join is recorded at the role its invitation names.** The node
+  answering a join recorded every new joiner as `Member`, so one invited as
+  `Admin` was listed as a member there until the join op arrived from
+  elsewhere. The responder now uses the apply path's rule
+  (`admission_role`): a new joiner gets the invited role, an existing member
+  keeps its own, and an `Admin` invitation from a non-admin is refused before
+  any key is wrapped. A responder that is not an admitter records no `Admin`
+  row. (#4481)
+
+- **A repeat join no longer replaces a member's standing role.** The
+  governance projection folded an invitation join as a role write. So a
+  member promoted to Admin who presented another invitation was listed, and
+  judged at a cut, as a Member, and a Member presenting an Admin invitation
+  became Admin. A join now takes effect only when no add stands for the
+  member, the earliest such join wins, and leaving the namespace root ends the
+  member's subgroup roles, as the apply does. (breaking for mixed-version
+  namespaces: older nodes fold a different role, `governance_hash` and at-cut
+  admin verdict for these histories; it rides the
+  `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 23 upgrade with #4265) (#4465)
+
+- **A peer's write to the app state or the root goes through the remote write
+  rules on every path.** Delta replay saved the root verbatim, and a
+  HashComparison or LevelWise repair wrote an app-state entry the peer called
+  opaque, so a concurrent field write could be lost by last-writer-wins. The
+  app-state entry now merges through the app's own `Mergeable` on every path.
+  A register stamp beyond the drift bound loses, and a root write other than
+  the stored shell is refused, as is a remote delete of the root or the
+  app-state entry. An equal stamp keeps the greater bytes. (rebuild Rust apps
+  against this release: an older module, like a JS guest, has no merge export
+  and falls back to bounded last-writer-wins; upgrade a context's nodes
+  together, since an older node merges these writes otherwise; one-way)
+  (#4204)
+
+- **A device id is bound to the account that minted it.** No verifier checked
+  a device id against its certificate's account. Another account could link
+  an id sharing a member's 16-byte prefix and shadow, evict or claim that
+  member's device or signing key. Ids are now
+  `nonce ‖ H(account ‖ nonce)[..16]`, and every device certificate check
+  refuses one minted for another account (`pair-complete` answers 400
+  `PairingDeviceNotMinted`). A signing key certified under two accounts
+  resolves to neither. (breaking, one-way: device ids and certificates from
+  earlier builds stop verifying, so every device is minted and certified
+  again; mero-js mints the new layout from mero-js#249) (#4496)
+
+- **A collected signed delete keeps an older write dropped.** Once tombstone
+  GC collected a deleted `User`, `Shared` or `SharedMember` entry, a replay of
+  an authentic older signed write brought it back. GC now leaves a node-local
+  `Key::Collected(id)` record, a signed write stamped at or before it stays
+  dropped, and a local re-insert is stamped after it. (adds one 8-byte row per
+  collected signed delete, kept for good and never synced; one-way) (#4500)
+
+- **A device withdrawn by its account's root is withdrawn in every namespace
+  the account takes part in.** `revoke_device` published the withdrawal only
+  where the device was bound, so its old certificate could be replayed to link
+  it again in another namespace. The withdrawal is now carried into every
+  participating namespace where it is still owed, including ones the account
+  joins later, and a device spent in the account namespace or the target is
+  never linked. `revoked_in` lists only namespaces that received it. (adds a
+  stored row, prefix `0x59`, and moves the ledger pointer to `0x5A`; one-way)
+  (#4489)
+
+- **Group keys, blobs and sync state are served only to live members.** A
+  member removed from, or who left, an Open subgroup under a Restricted parent
+  kept its inherited membership: the removal is a deny-list entry and a
+  re-entry block, and the membership walk read neither. Such a member could
+  still pull the subgroup key, sync its contexts, read its blobs and act as a
+  snapshot source. These gates now use `is_live_member`, which reads both. A
+  `ContextIdentity` row for a revoked device no longer counts as membership,
+  and the namespace-join responder refuses a revoked device before it wraps a
+  key. (#4479)
+
+- **A join signed by a revoked, narrowed-out or withdrawn device is refused.**
+  `MemberJoined`, `MemberJoinedAt` and `MemberJoinedOpen` took their authority
+  from the credential alone. A device the namespace had revoked or its account
+  had withdrawn could still join that account into groups, and an open join
+  also cleared the account's deny entry. The join gate now refuses a device
+  that is out at the op's cut. The namespace-join responder also refuses a
+  certificate at a device epoch that was re-keyed past. (breaking for
+  mixed-version namespaces: the projection's `governance_hash` now hashes the
+  account beside each device link, so older peers report
+  `scope_root_governance_divergence` and re-pull governance every tick until
+  all nodes upgrade; nothing on disk changes) (#4487)
+
+- **A password user's id no longer lets a token holder guess the password
+  offline.** A `user_password` key id was PBKDF2(username, password) under a
+  deterministic salt, and it was sent as the JWT `sub` and the `X-Auth-User`
+  header. Users are now root keys under a random id. Logins check a per-user
+  random salt and a 600,000-round PBKDF2 hash, and an unknown username does
+  the same work as a wrong password. JWTs gain a required `key_id` claim.
+  `POST /admin/keys` for an existing username now replaces the password and
+  revokes that user's sessions. (breaking: there is no migration; existing
+  password users must be re-provisioned and every token issued before this
+  release stops validating) (#4490)
+
+- **A subgroup's key rotates when it becomes Restricted.** Flipping an Open
+  subgroup to Restricted minted no key. A member who had only inherited
+  access while it was Open could keep pulling and reading it. The flip now
+  carries a key rotation wrapped for direct members only. A subgroup the
+  namespace key covers serves no key of its own. Only a direct admin of the
+  subgroup may flip it to Restricted; an inherited admin is refused. (an
+  older peer does not expect the rotation on `SubgroupVisibilitySet`, so
+  upgrade the namespace together) (#4480)
+
+- **An open subscription ends when its device is revoked, descoped or
+  withdrawn.** A WS or SSE subscription kept delivering events to a withdrawn
+  device until the client reconnected. When the node applies one of these ops
+  it now re-checks open subscriptions against the subscribe-time gate and
+  drops those that now fail. An SSE stream re-checks on every reconnect, so a
+  withdrawal applied while the client was away is not missed. (#4495)
+
+- **Deleting a public container no longer removes entries the deleter does
+  not own.** A peer's unsigned `DeleteRef` of a `Public` container
+  tombstoned every descendant except `Frozen` data. This covered the
+  owner's entries in an `Authored`, `WriteOnce` or `Moderated` map,
+  `UserStorage`, `AuthoredVector` and `SharedStorage` collections. The
+  replay now skips `User`, `Shared` and `SharedMember` descendants, and a
+  local delete of such a container is refused with `ActionNotAllowed`. (a
+  node on an older build still tombstones those entries on the same delete,
+  so upgrade a context's nodes together) (#4488)
+
+- **A snapshot is installed only if every entity checks out and the tree
+  folds to the claimed root.** An entity that failed its signature,
+  authorship or anchor check was dropped and the rest installed, and the root
+  was compared only with a row from the same stream. Pages are now staged on
+  disk, each entity is checked for its hash and a timestamp no more than 5 s
+  ahead, and the staged tree must fold to the claimed root before it replaces
+  state. A refused snapshot leaves the context as it was. (adds the node-local
+  column `Column::SnapshotStage`, created at open without migration; a joiner
+  whose clock runs more than 5 s behind its source can no longer bootstrap)
+  (#4229)
+
+- **A caller proof whose request or session link is valid for too long is
+  refused.** `CallerProof::verify` checked that a link's window was open but
+  not how long it was, so a captured proof could be replayed for as long as
+  the caller chose. Proofs are now refused with `401 invalid_proof` before
+  any signature is checked when the request link is longer than 300 s or the
+  session link longer than 3600 s. `merod account sign-request` and
+  `login-statement` refuse longer `--valid-for` values. (a client that
+  overrides its TTL above these caps is now refused) (#4348)
+
+- **A sealed request takes its `Origin` from the outer hop.** A request
+  opened from a sealed envelope already replaced `Host` and
+  `X-Forwarded-Host` with the outer hop's values, but kept whatever `Origin`
+  the envelope stated. That `Origin` is now dropped and the outer hop's
+  used, or none when the outer hop sends none. (#4468)
+
+- **The sealed transport bounds the bytes it holds before authentication.**
+  `POST /sealed/v2` read bodies of up to 64 MiB with no node-wide cap and no
+  deadline, so concurrent or stalled uploads could hold unbounded memory. In
+  this unauthenticated state the node now holds at most 256 MiB at once and
+  answers `503 busy` past it. A body must arrive within 120 s (`408 timeout`)
+  and an inner head is capped at 64 KiB. Decryption now works in place
+  instead of copying the body twice. (clients can now see `503 busy` and
+  `408 timeout` on an exchange) (#4503)
+
+- **A state delta may name at most 256 parents, and pending deltas are
+  bounded by bytes.** A delta naming tens of thousands of missing parents was
+  buffered pending, and pending deltas were capped only by count. Every
+  ingest path now refuses a delta with more than `MAX_DELTA_PARENTS` (256)
+  parents before decrypting or buffering it. Pending deltas per DAG are
+  capped at 64 MiB, and a writer with more than 256 heads names the newest
+  256. (an older node with more than 256 heads produces deltas that updated
+  nodes refuse) (#4323)
+
+- **One context member can make a fleet node prefetch at most 4 GiB a
+  day.** A fleet node prefetched every blob a member announced, up to
+  500 MiB each, with no limit on the total. Each member now has a 4 GiB
+  budget per 24 h, and every byte read from every holder counts against it.
+  A blob response header over 4 KiB is refused on transfers and probes.
+  Past its budget a member loses only prefetch, not access to the blob.
+  (#4499)
+
+- **A replayed storage delta counts against the guest's write limits.** A
+  guest could pass its own delta to `apply_storage_delta` and write past
+  `max_storage_writes` and `max_storage_write_bytes`, because the replay
+  was not metered. A guest's call now draws on its per-execution budget, so
+  a JS app that replays more than that budget in one call traps. A peer's
+  delta is held to twice the default limits, so every node reaches the same
+  verdict. (#4504)
+
+- **Debug output no longer prints key material, passwords or tokens.**
+  `Debug` printed the secret for the store encryption key, `ContextIdentity`,
+  the namespace identity record, `StoredGroupKey`, the node's seal and publish
+  material, meroctl's stored JWTs and login callback, and mero-sign's key
+  file. It also printed mero-auth's user-password requests and root-key
+  provider data, `CreateContextRequest.identity_secret`, and meroctl's device
+  secret, identity secret and node tokens. These types now print
+  `[redacted]`. meroctl's stored tokens are zeroized on drop, and the
+  governance preflight holds the node's signing key as a zeroizing
+  `PrivateKey`. The token-refresh and KMS key responses no longer derive
+  `Debug`. (#4501, #4516)
+
+- **A rich text delete past the end of the text is a no-op.** A
+  `RichText::apply_delta` delete starting past the end returned an error after
+  earlier ops in the same delta had already been written. A delete of
+  `usize::MAX` overflowed and trapped the app. Both ends of the delete are now
+  clamped to the text, as documented and as `FugueText` does. (#4498)
 
 - **Stuck namespace ops are reported as such.**
   - The pending sweep warns per namespace, with the dropped op ids, when ops
@@ -1489,6 +1764,25 @@
 
 ### Changed
 
+- **TEE admission is bound to the admitted credential and fresh.** A fleet TEE
+  node is admitted only on a quote whose report data is a challenge the
+  admitting member chose for it (32 random bytes, single-use, valid for about
+  a minute), followed by `SHA-256("calimero.tee.admission.v1" || namespace ||
+  group || identity key || account || delivery key || device)`. The node asks
+  for the challenge over the direct admission request path, or a member offers
+  it after hearing the node's prompt: `TeeAttestationAnnounce` and
+  `TeeReleaseAttestationAnnounce` are replaced by a quote-free
+  `TeeAdmissionPrompt`, which admits nobody. `RootOp::MemberJoinedViaTeeAttestation`
+  carries its quote and every peer checks it against the credential in the op;
+  `GroupOp::TeeAuthorityEvidence` carries the credential its quote was made
+  for; the admitting node refuses a quote already used in an admission or an
+  evidence refresh in the namespace.
+  (breaking: wire and signed-op layouts change,
+  `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 23, the step after core#4263's 22, and
+  `SIGNED_GROUP_OP_SCHEMA_VERSION` 16, so every peer of a namespace upgrades
+  together; the node image's fleet-join must be a mero-tee build that answers
+  a challenge; the SDK signs at 23 from mero-js#220) (#4265)
+
 - **A namespace subgroup is created Open unless the caller says otherwise.**
   `POST /admin-api/namespaces/:id/groups` without `visibility` now creates an
   Open subgroup; it used to create a Restricted one. Creating Restricted and
@@ -1500,7 +1794,7 @@
   Rust client's `create_group_in_namespace` takes the visibility, and
   `meroctl namespace create-group` takes `--visibility`. (breaking: a caller
   relying on the Restricted default gets an Open group; apps#377 names it in
-  every app)
+  every app) (#4508)
 
 - **Tombstone GC sweeps every 10 minutes, and the interval is configurable.**
   The new `[gc] check_interval` (seconds, default `600`) replaces the fixed
