@@ -134,7 +134,7 @@ runs:
     - name: Restore the apps
       id: restore
       if: steps.key.outputs.share == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ steps.key.outputs.paths }}
         key: ${{ steps.key.outputs.key }}

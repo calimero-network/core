@@ -152,7 +152,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -193,7 +193,7 @@ jobs:
         run: docker save merod:local-mock-tee | zstd -T0 -3 -o /tmp/merod-local-mock-tee.tar.zst
 
       - name: Upload mock-attestation Docker image
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: merod-image-mock-tee
           path: /tmp/merod-local-mock-tee.tar.zst
@@ -209,7 +209,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -235,7 +235,7 @@ jobs:
     name: Scenario convergence lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install PyYAML
@@ -268,13 +268,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Download Docker image
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: merod-image
           path: /tmp
@@ -327,13 +327,13 @@ jobs:
       TRAEFIK_VERSION: "3.5.0"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Download Docker image
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: merod-image
           path: /tmp
@@ -364,7 +364,7 @@ jobs:
           "$RUNNER_TEMP/traefik" version
 
       - name: Download app bundles
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-app-bundles
           path: dist
@@ -422,7 +422,7 @@ jobs:
     runs-on: big-machine
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -447,13 +447,13 @@ jobs:
 
       - name: Share the built apps
         if: steps.apps.outputs.save == 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.apps.outputs.paths }}
           key: ${{ steps.apps.outputs.key }}
 
       - name: Upload app artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-apps
           path: |
@@ -513,7 +513,7 @@ jobs:
           retention-days: 1
 
       - name: Upload app bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-app-bundles
           path: dist/*.mpk
@@ -537,7 +537,7 @@ jobs:
       matrix-mock-tee: ${{ steps.plan.outputs.matrix-mock-tee }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -573,14 +573,14 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix-default) }}
     steps: &test-steps
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Download Docker image
         if: matrix.image != 'merod:local-mock-tee'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: merod-image
           path: /tmp
@@ -593,7 +593,7 @@ jobs:
       # not worth pulling into every group.
       - name: Download mock-attestation Docker image
         if: matrix.image == 'merod:local-mock-tee'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: merod-image-mock-tee
           path: /tmp
@@ -603,13 +603,13 @@ jobs:
         run: zstd -d /tmp/merod-local-mock-tee.tar.zst --stdout | docker load
 
       - name: Download app artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-apps
           path: apps
 
       - name: Download app bundles
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-app-bundles
           path: dist
@@ -635,7 +635,7 @@ jobs:
       # landed in Node 22. Pinned so a runner image change can't silently break the scripts.
       - name: Setup Node
         if: matrix.setup_node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -667,7 +667,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: logs-${{ matrix.group }}-${{ github.sha }}
           # docker-logs/<scenario>/ per scenario: merobox's per-container logs, prefixed with the
@@ -700,7 +700,7 @@ jobs:
         id: logs
         # Tolerated so the assertion below can say precisely why logs are missing, rather
         # than fail indistinguishably from a suite that legitimately produced none.
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: logs-*
           merge-multiple: true
@@ -753,7 +753,7 @@ jobs:
         id: logs
         # Tolerated so the assertion below can say precisely why logs are missing, rather
         # than fail indistinguishably from a suite that legitimately produced none.
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: logs-*
           merge-multiple: true
@@ -869,7 +869,7 @@ jobs:
 
       - name: Upload Comment
         if: steps.check_status.outputs.job_failed == 'true' && steps.check_status.outputs.was_cancelled == 'false'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr-comment-payload-rust-apps
           path: payload.json

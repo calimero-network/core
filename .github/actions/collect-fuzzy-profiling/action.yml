@@ -82,7 +82,7 @@ runs:
 
     - name: Upload profiling data
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: profiling-data-${{ steps.suffix.outputs.value }}-${{ github.run_number }}-${{ github.run_id }}
         path: profiling-data/${{ inputs.suite }}/
@@ -91,7 +91,7 @@ runs:
 
     - name: Upload profiling reports
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: profiling-reports-${{ steps.suffix.outputs.value }}-${{ github.run_number }}-${{ github.run_id }}
         path: profiling-reports/${{ inputs.suite }}/
