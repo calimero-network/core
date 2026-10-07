@@ -6,6 +6,7 @@ use std::sync::Mutex;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_governance_types::NamespaceId;
+use calimero_store::iter::DBIter;
 use calimero_store::key::Generic as GenericKey;
 use calimero_store::slice::Slice;
 use calimero_store::types::GenericData;
@@ -50,6 +51,12 @@ pub(crate) struct KeyIntro {
     pub(crate) group: [u8; 32],
     pub(crate) op: [u8; 32],
     pub(crate) key: [u8; 32],
+}
+
+/// The parked row a raw `Generic` key names, if it lies under `scope`.
+fn parked_row(scope: [u8; 16], key: &[u8]) -> Option<GenericKey> {
+    let fragment: [u8; 32] = key.strip_prefix(&scope[..])?.try_into().ok()?;
+    Some(GenericKey::new(scope, fragment))
 }
 
 /// What became of `op`, which this node parked in `namespace`; `None` when it holds no
@@ -190,18 +197,22 @@ impl<'a> VoidLedger<'a> {
         }
     }
 
-    /// Up to [`DELETE_BATCH`] parked rows under `scope`, from its start.
+    /// Up to [`DELETE_BATCH`] parked rows under `scope`. Read as raw keys, since the
+    /// typed iterator needs a key error type `Generic` does not have.
     fn parked_rows(&self, scope: [u8; 16]) -> EyreResult<Vec<GenericKey>> {
         let handle = self.store.handle();
         let mut iter = handle.iter::<GenericKey>()?;
-        let first = iter.seek(GenericKey::new(scope, [0; 32])).transpose();
+        let mut start = [0; 48];
+        start[..16].copy_from_slice(&scope);
         let mut rows = Vec::new();
-        for key in first.into_iter().chain(iter.keys()) {
-            let key = key.map_err(|e| eyre::eyre!("parked row key: {e:?}"))?;
-            if key.scope() != scope || rows.len() == DELETE_BATCH {
+        let mut next = DBIter::seek(&mut iter, Slice::from(&start[..]))?
+            .and_then(|key| parked_row(scope, key.as_ref()));
+        while let Some(row) = next {
+            rows.push(row);
+            if rows.len() == DELETE_BATCH {
                 break;
             }
-            rows.push(key);
+            next = DBIter::next(&mut iter)?.and_then(|key| parked_row(scope, key.as_ref()));
         }
         Ok(rows)
     }
