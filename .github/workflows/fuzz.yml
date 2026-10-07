@@ -78,7 +78,7 @@ jobs:
               - "fuzz/seeds/signed_ops/**"
             governance_apply:
               - *shared
-                      - "crates/governance-store/**"
+              - "crates/governance-store/**"
               - "crates/governance-types/**"
               - "crates/projection/**"
               - "fuzz/fuzz_targets/governance_apply.rs"
