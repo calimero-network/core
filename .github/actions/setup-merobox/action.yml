@@ -26,7 +26,13 @@ runs:
         # to the mock measurement (required since rc.45), and tee_fleet_join
         # waits 180 s and can name its admitters (calimero-network/merobox#433,
         # #434).
-        MEROBOX_VERSION="0.6.83"
+        # >= 0.6.84 for calimero-client-py 0.9.0, built on this repo's master at
+        # 6811e566 (in 0.11.0-rc.83): its sign_warrant signs the warrant layout
+        # with the executor key and the pinned release (#4505, #4517), and a
+        # create_group_in_namespace step with `visibility:` now sends the node's
+        # token, so an embedded-auth node no longer refuses it with 401
+        # (calimero-network/merobox#437, #438).
+        MEROBOX_VERSION="0.6.84"
 
         MEROBOX_ARCH=""
         if [ "${RUNNER_OS}" != "Windows" ]; then
