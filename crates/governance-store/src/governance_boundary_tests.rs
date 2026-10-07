@@ -16,7 +16,7 @@ use crate::test_fixtures::{
 };
 use crate::{
     apply_local_signed_group_op, get_group_for_context, member_account_in_namespace,
-    register_context_in_group, AccountBindingRepository, CapabilitiesRepository,
+    register_context_in_group, AccountBindingRepository, CapabilitiesRepository, MembershipError,
     MembershipRepository, MetaRepository, NamespaceGovernance, NamespaceRepository,
 };
 
@@ -381,5 +381,55 @@ fn another_accounts_device_cannot_take_over_a_members_signing_key() {
         member_account_in_namespace(&store, &ns, &victim_pk).unwrap(),
         Some(victim),
         "revoking the other account's device restores the victim's resolution",
+    );
+}
+
+#[test]
+fn member_added_cannot_demote_the_last_admin_to_member() {
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let admin = enrol_member(&store, &gid, &admin_sk.public_key());
+    // The genesis founder counts as an admin, so it must be this account for it to be the last.
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    let members = MembershipRepository::new(&store);
+    members
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+
+    let add = |member, role, nonce| {
+        SignedGroupOp::sign(
+            &admin_sk,
+            gid.to_bytes().into(),
+            vec![],
+            nonce,
+            GroupOp::MemberAdded { member, role },
+        )
+        .unwrap()
+    };
+    let err = apply_local_signed_group_op(&store, &add(admin, GroupMemberRole::Member, 1))
+        .expect_err("the sole admin re-adding itself as Member must be refused");
+    assert!(
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::LastAdminDemotion)
+        ),
+        "expected LastAdminDemotion, got: {err}"
+    );
+    assert_eq!(
+        members.role_of(&gid, &admin).unwrap(),
+        Some(GroupMemberRole::Admin)
+    );
+
+    let (_, second) = enrolled(&store, &gid, 0x64);
+    apply_local_signed_group_op(&store, &add(second, GroupMemberRole::Admin, 2))
+        .expect("control: the admin adds a second admin");
+    apply_local_signed_group_op(&store, &add(admin, GroupMemberRole::Member, 3))
+        .expect("control: with another admin standing, the demotion applies");
+    assert_eq!(
+        members.role_of(&gid, &admin).unwrap(),
+        Some(GroupMemberRole::Member)
     );
 }
