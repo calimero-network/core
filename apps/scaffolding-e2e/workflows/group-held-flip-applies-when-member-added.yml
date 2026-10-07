@@ -1,0 +1,193 @@
+name: E2E Scaffolding - a held flip applies once the member is added
+description: >
+  The replay half of #4511's hold. A namespace member outside a subgroup reads
+  a flip of it to Restricted, but cannot authorize it - closing is judged
+  against the subgroup's history, sealed under a key it lacks - so it holds the
+  flip: logged, head advanced, nothing applied. That is only safe if the hold
+  loses nothing, so this pins the other half: once node-1 adds node-2 to the
+  subgroup, the key arrives, the key-arrival replay re-feeds the held flip, it
+  applies at its own cut, and node-2 reads the subgroup Restricted - and its
+  name, sealed while it was Restricted before.
+
+  Topology:
+    * node-1 - the namespace owner, the subgroup's creator, online throughout.
+    * node-2 - a namespace member, offline through the flips, then added.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  - name: Login on e2e-node-1
+    type: login
+    node: e2e-node-1
+    username: dev
+    password: dev-password
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  # Node-2 must hold the namespace before node-1 seals anything, so every op
+  # below reaches it through the namespace DAG.
+  - name: Converge node-2 on the namespace before the subgroup exists
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-2 goes offline
+    type: stop_node
+    nodes: e2e-node-2
+
+  # Visibility in steps of its own: merobox's born-visibility create sends no
+  # auth header. Restricted before anything is sealed in it.
+  - name: Node-1 creates the subgroup
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_name: club
+    outputs:
+      club_sub: groupId
+
+  - name: Assert the subgroup was created
+    type: assert
+    statements:
+      - "is_set({{club_sub}})"
+
+  - name: Node-1 marks the subgroup Restricted
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{club_sub}}'
+    visibility: restricted
+
+  # Sealed under the subgroup's key: node-2 cannot read it until it is added.
+  - name: Node-1 names the subgroup (an op sealed under its key)
+    type: set_group_metadata
+    node: e2e-node-1
+    group_id: '{{club_sub}}'
+    record_name: Club
+
+  - name: Node-1 flips the subgroup Open
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{club_sub}}'
+    visibility: open
+
+  # Closing it again: the flip node-2 can read but not settle.
+  - name: Node-1 closes the subgroup again
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{club_sub}}'
+    visibility: restricted
+
+  # --- node-2 comes back and holds the flip ---
+
+  - name: Node-2 comes back online
+    type: start_node
+    nodes: e2e-node-2
+
+  - name: Login on e2e-node-2
+    type: login
+    node: e2e-node-2
+    username: dev
+    password: dev-password
+
+  - name: Node-2 reached the flip and held it
+    type: assert_log_present
+    nodes:
+      - e2e-node-2
+    patterns:
+      - "group op held unapplied"
+    timeout: 90
+
+  # --- node-2 is added: the key arrives and the replay applies the flip ---
+
+  - name: Node-1 adds node-2 to the subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{club_sub}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+
+  - name: Node-2 receives the subgroup key and replays the held flip
+    type: assert_log_present
+    nodes:
+      - e2e-node-2
+    patterns:
+      - "retried encrypted op after KeyDelivery"
+    timeout: 90
+
+  # A field, not the envelope: the step unwraps `data` before the capture runs.
+  - name: Node-2 reads the subgroup's visibility
+    type: get_group_info
+    node: e2e-node-2
+    group_id: '{{club_sub}}'
+    outputs:
+      node2_visibility: subgroupVisibility
+
+  # Without the replay node-2 would still read the Open the creator set.
+  - name: Assert the held flip applied on node-2
+    type: assert
+    statements:
+      - "equals({{node2_visibility}}, restricted)"
+
+  - name: Node-2 reads the subgroup's name, sealed while it was Restricted
+    type: get_group_metadata
+    node: e2e-node-2
+    group_id: '{{club_sub}}'
+    outputs:
+      node2_name: name
+
+  - name: Assert node-2 reads the subgroup's sealed history
+    type: assert
+    statements:
+      - "equals({{node2_name}}, Club)"
+
+stop_all_nodes: false

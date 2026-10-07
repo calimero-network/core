@@ -98,7 +98,7 @@ jobs:
 
       - name: Share the built fixtures
         if: steps.fixtures.outputs.save == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ steps.fixtures.outputs.paths }}
           key: ${{ steps.fixtures.outputs.key }}

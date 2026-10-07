@@ -43,6 +43,14 @@
   prints both. Both fields are `serde(default)`, so an older node's answer
   still decodes. (#4494)
 
+- **A namespace names the group ops it holds unapplied.** The namespace
+  endpoints (`GET /admin-api/namespaces/{id}`, and both listings) carry an
+  optional `heldOps`: each op this node logged but holds because its group's
+  history is sealed under a key it lacks (#4511), and the group it waits on.
+  It explains a subgroup that looks stale on one node and current on another.
+  `meroctl` prints it as "Held ops". The list is bounded (`MAX_HELD_OPS_LISTED`,
+  counted past it) and leaves out ops of a group deleted since.
+
 - **A shared cell's writers rotate by a governance op.** A `SharedStorage`
   cell's writer list is changed by `GroupOp::SharedWritersRotated
   { context_id, cell, prior, nonce, new }`, published encrypted in the group
@@ -714,6 +722,30 @@
   earlier ops in the same delta had already been written. A delete of
   `usize::MAX` overflowed and trapped the app. Both ends of the delete are now
   clamped to the text, as documented and as `FugueText` does. (#4498)
+
+- **Stuck namespace ops are reported as such.**
+  - The pending sweep warns per namespace, with the dropped op ids, when ops
+    wait past `NAMESPACE_PENDING_TTL` for a parent. It used to log a bare count
+    at info.
+  - An undecidable cut says what clears it: `UndecidableCause::remedy` replaces
+    `is_transient`, which called an unreadable ancestor self-healing.
+  - Group-key recovery backs off a key no peer serves (30s doubling to 10min,
+    never given up) instead of asking every peer on every tick.
+  - A held op is no longer re-driven, and warned about, on every namespace-key
+    delivery. (#4511)
+
+- **A group op a member outside the group cannot settle no longer stalls the
+  namespace.** A namespace member outside a subgroup can decrypt an op sealed
+  under the namespace key - a flip of the subgroup back to Restricted, say -
+  whose authorization folds the subgroup's own history, which holds ops sealed
+  under a key it is never served. The op was undecidable forever there, and
+  every namespace op after it waited behind it until the pending TTL dropped it:
+  later subgroups and contexts never reached that node. (The original case,
+  opening a Restricted subgroup, is decidable by every member since only its
+  creator may open it, #4522.) A group op undecidable only because its own
+  group's history is sealed is now held like an op the node cannot decrypt:
+  logged, the head advanced, nothing applied, and the key-arrival replay applies
+  it once the key comes. Any other undecidable cut still parks. (#4511)
 
 - **A read on an account's session runs as that account's device, not as the
   node.** The delegated-read arm of `execute` built its principal from the

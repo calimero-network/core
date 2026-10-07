@@ -68,6 +68,11 @@ pub struct AclView {
     /// `GroupMeta.admin_identity`. An identity is a group admin iff it is this
     /// or holds the `Admin` role in `groups[group]`.
     pub group_admin: BTreeMap<ContextGroupId, AccountId>,
+    /// Per-subgroup creator, set once from its `SubgroupCreated` and never
+    /// moved (the subgroup id commits to it). Unlike [`Self::group_admin`] no
+    /// later op changes it, and it is readable at the namespace scope, so a
+    /// node outside a Restricted subgroup can tell who may open it (#4522).
+    pub group_creator: BTreeMap<ContextGroupId, AccountId>,
     /// Each account's **resolved** root key at the cut (the account plane).
     ///
     /// Derived by the projection by walking the account's handoff chain, so
@@ -234,6 +239,13 @@ impl AclView {
             self.groups.get(&group).and_then(|m| m.get(author)),
             Some(GroupMemberRole::Admin)
         )
+    }
+
+    /// Did `author` create `group`? Only the creator may open a Restricted
+    /// subgroup.
+    #[must_use]
+    pub fn is_group_creator(&self, author: &AccountId, group: ContextGroupId) -> bool {
+        self.group_creator.get(&group) == Some(author)
     }
 
     /// How many root-guarded ops `group` has at the cut; zero if none.
