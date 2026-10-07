@@ -58,6 +58,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # NOTE: `cache: pip` deliberately omitted — see file-level comment.
       - uses: actions/setup-python@v7

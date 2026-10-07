@@ -34,6 +34,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@v7
         with:
@@ -46,8 +47,11 @@ jobs:
       - name: Determine PR number and agent count
         id: pr
         run: |
-          echo "number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
-          echo "agents=${{ github.event.inputs.agents }}"    >> $GITHUB_OUTPUT
+          echo "number=${GITHUB_EVENT_INPUTS_PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "agents=${GITHUB_EVENT_INPUTS_AGENTS}"    >> $GITHUB_OUTPUT
+        env:
+          GITHUB_EVENT_INPUTS_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          GITHUB_EVENT_INPUTS_AGENTS: ${{ github.event.inputs.agents }}
 
       - name: Run AI Code Review
         env:
@@ -58,11 +62,13 @@ jobs:
           # MeroReviewer via --reviewer-name, and past meroreviewer[bot]
           # reviews stay recognized via extra_reviewer_users in .ai-reviewer.yaml.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STEPS_PR_OUTPUTS_NUMBER: ${{ steps.pr.outputs.number }}
+          STEPS_PR_OUTPUTS_AGENTS: ${{ steps.pr.outputs.agents }}
         run: |
           ai-reviewer review-pr \
             ${{ github.repository }} \
-            ${{ steps.pr.outputs.number }} \
+            ${STEPS_PR_OUTPUTS_NUMBER} \
             --config .ai-reviewer.yaml \
-            --agents ${{ steps.pr.outputs.agents }} \
+            --agents ${STEPS_PR_OUTPUTS_AGENTS} \
             --reviewer-name "MeroReviewer" \
             --output github

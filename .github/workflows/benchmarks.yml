@@ -64,6 +64,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Saves nothing. A cache per crate was seven entries of the repo's 10 GB
       # for jobs that never gate, and they evicted the caches that do. No other
@@ -76,7 +78,9 @@ jobs:
           save-if: false
 
       - name: Run benchmarks
-        run: cargo bench -p ${{ matrix.crate }} -- --save-baseline ${{ github.sha }}
+        run: cargo bench -p ${MATRIX_CRATE} -- --save-baseline ${{ github.sha }}
+        env:
+          MATRIX_CRATE: ${{ matrix.crate }}
 
       - name: Upload criterion baseline
         uses: actions/upload-artifact@v7
@@ -147,16 +151,18 @@ jobs:
 
       - name: Compare
         run: |
-          if [ -z "${{ steps.master-run.outputs.run_id }}" ]; then
+          if [ -z "${STEPS_MASTER_RUN_OUTPUTS_RUN_ID}" ]; then
             echo "no comparison: no benchmarks.yml run found for base commit ${{ github.event.pull_request.base.sha }} (see the 'Find master's benchmark run' step log)" > /tmp/critcmp.txt
           elif ! find target/criterion -type d -name "${{ github.event.pull_request.base.sha }}" -print -quit | grep -q .; then
-            echo "no comparison: found benchmarks.yml run ${{ steps.master-run.outputs.run_id }} for the base commit, but its baseline artifacts did not download (expired past 30-day retention, or the download step failed -- see its log)" > /tmp/critcmp.txt
+            echo "no comparison: found benchmarks.yml run ${STEPS_MASTER_RUN_OUTPUTS_RUN_ID} for the base commit, but its baseline artifacts did not download (expired past 30-day retention, or the download step failed -- see its log)" > /tmp/critcmp.txt
           elif critcmp ${{ github.event.pull_request.base.sha }} ${{ github.sha }} > /tmp/critcmp.txt 2>&1; then
             :
           else
             echo "no comparison: baselines downloaded for both commits but critcmp found nothing to diff" > /tmp/critcmp.txt
           fi
           cat /tmp/critcmp.txt
+        env:
+          STEPS_MASTER_RUN_OUTPUTS_RUN_ID: ${{ steps.master-run.outputs.run_id }}
 
       - name: Post the comparison
         uses: thollander/actions-comment-pull-request@24bffb9b452ba05a4f3f77933840a6a841d1b32b # v3.0.1

@@ -47,6 +47,7 @@ jobs:
           # On pull_request, check out the PR head; on push, head.sha is empty so
           # fall back to the pushed commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Resolve mero-devtools-js ref (paired)
         id: devtoolsref
@@ -66,6 +67,7 @@ jobs:
           repository: calimero-network/mero-devtools-js
           ref: ${{ steps.devtoolsref.outputs.ref }}
           path: mero-devtools-js
+          persist-credentials: false
 
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci

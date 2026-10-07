@@ -1,0 +1,29 @@
+rules:
+  # Action pinning is a separate gate.
+  unpinned-uses:
+    disable: true
+  # Local actions keep the plain ./ path that actionlint understands.
+  self-repository:
+    disable: true
+  # Minting app tokens with scoped permissions is not enforced yet.
+  github-app:
+    disable: true
+  secrets-inherit:
+    disable: true
+  superfluous-actions:
+    disable: true
+  adhoc-packages:
+    disable: true
+  use-trusted-publishing:
+    disable: true
+  # Each privileged trigger gates on the push event and the same repository.
+  dangerous-triggers:
+    ignore:
+      - comment.yml
+      - e2e-rust-apps-release.yml
+      - fuzzy-load-test.yml
+      - new-issue-or-pr.yml
+  # The consumer checkout keeps its token to push the bump branch.
+  artipacked:
+    ignore:
+      - fleet-bump.yml:118

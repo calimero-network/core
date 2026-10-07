@@ -86,6 +86,7 @@ Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero
 - **One gate:** enforce a rule in the shared function every caller goes through - [`ProofPolicy::admit`](crates/server/src/proof_auth.rs).
 - **Signed format changes** bump the schema version in the same PR, check open PRs have not claimed that number, and name the paired SDK PR with `sdk-ref:` in the body - [`SIGNED_NAMESPACE_OP_SCHEMA_VERSION`](crates/governance-types/src/lib.rs), [`pre_flag_day_namespace_op_version_is_rejected`](crates/governance-types/src/tests.rs).
 - **Workflows:** give every workflow explicit least-privilege `permissions`; a privileged workflow (`pull_request_target`, `workflow_run`) never checks out PR code or trusts an artifact a fork can upload - the "Check payload targets the triggering PR" step in [`comment.yml`](.github/workflows/comment.yml).
+  Pass `github.*` and `steps.*` values to a `run:` script through `env:`, never `${{ }}`; `Workflow lint` runs `actionlint` and `zizmor` (`zizmor .github/workflows`) and its exceptions are in [`.github/zizmor.yml`](.github/zizmor.yml).
 - **Secrets** (tokens, keys, credentials) stay in the node's local config under `~/.calimero/<node>/`, outside the repository.
 
 ## Commands in docs and CI

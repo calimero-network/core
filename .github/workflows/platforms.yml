@@ -75,6 +75,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Test the change detector
         run: python3 scripts/tests/needs-windows-ci-test.py
@@ -150,6 +151,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Rust
         uses: ./.github/actions/rust-toolchain
@@ -172,6 +174,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       # The windows cache, which windows-merod saves.
       - name: Setup Rust CI
@@ -207,6 +210,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       # The one saver of the windows cache that windows-node-smoke restores too.
       - name: Setup Rust CI
@@ -246,6 +250,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
@@ -278,6 +283,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Download merod.exe
         uses: actions/download-artifact@v8
@@ -328,6 +334,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Download merod.exe
         uses: actions/download-artifact@v8
@@ -424,6 +431,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       # Saves nothing, like release.yml's build job: a release cache per OS was
       # gigabytes of the repo's 10 GB, reused at best by the next night's build.
