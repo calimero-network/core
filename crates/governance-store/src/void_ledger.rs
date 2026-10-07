@@ -1,6 +1,5 @@
-//! What a node remembers to take back its own judgement of a void op: the ops it
-//! judged void, and the key each applied rotation introduced. Also which parked ops
-//! their retried apply refused, which the projection folds as nothing.
+//! What a node remembers to take back its own judgement of a void op (the ops it judged
+//! void, the key each applied rotation introduced), and what became of each parked op.
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -24,8 +23,18 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 /// verdict on that op takes the key back.
 pub(crate) const STORED_BEFORE: [u8; 32] = [0; 32];
 
-const PARKED: u8 = 0; // a parked op's row: no retried apply has decided it yet
-const REFUSED: u8 = 1; // a parked op's row: its last retried apply refused it
+const UNDECIDED: u8 = 0; // a parked op's row before a replay judges it at its cut
+const REFUSED: u8 = 1; // a parked op's row once a replay refused it at its cut
+const DELETE_BATCH: usize = 1000; // parked rows removed per store pass on leaving
+
+/// What became of an op kept unread on arrival, until a replay applies it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Parked {
+    /// No replay has judged it yet: it folds as a hole.
+    Undecided,
+    /// A replay refused it at its cut: it folds as nothing.
+    Refused,
+}
 
 /// The default capabilities a group held before the first op this node applied set them
 /// (`None` for none), which a rollback restores when no other op sets one.
@@ -41,6 +50,16 @@ pub(crate) struct KeyIntro {
     pub(crate) group: [u8; 32],
     pub(crate) op: [u8; 32],
     pub(crate) key: [u8; 32],
+}
+
+/// What became of `op`, which this node parked in `namespace`; `None` when it holds no
+/// mark (never parked, or since applied).
+pub fn parked_op(
+    store: &Store,
+    namespace: NamespaceId,
+    op: [u8; 32],
+) -> EyreResult<Option<Parked>> {
+    VoidLedger::new(store, namespace).parked(op)
 }
 
 pub(crate) struct VoidLedger<'a> {
@@ -107,44 +126,46 @@ impl<'a> VoidLedger<'a> {
             .map(|seed| seed.caps))
     }
 
-    /// Remember that `op` was kept unread on arrival, so its retried apply decides it.
+    /// Remember that `op` was kept unread on arrival, so a replay judges it.
     pub(crate) fn note_parked(&self, op: [u8; 32]) -> EyreResult<()> {
-        self.store.handle().put(
-            &self.op_key(op),
-            &GenericData::from(Slice::from(vec![PARKED])),
-        )?;
-        Ok(())
+        self.put_parked(op, UNDECIDED)
     }
 
-    /// Record how the retried apply of `op` went, if it was parked. An op applied on
-    /// arrival is not judged again by a replay, which may refuse what it once applied.
-    pub(crate) fn settle_parked(&self, op: [u8; 32], applied: bool) -> EyreResult<()> {
+    /// Record a replay's verdict on `op` at its cut; `false` when it was not parked,
+    /// since a replay may refuse what an arrival applied.
+    pub(crate) fn settle_parked(&self, op: [u8; 32], applied: bool) -> EyreResult<bool> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
-        let key = self.op_key(op);
-        let mut handle = self.store.handle();
-        if handle.get(&key)?.is_none() {
-            return Ok(());
+        if self.parked(op)?.is_none() {
+            return Ok(false);
         }
         if applied {
-            handle.delete(&key)?;
+            self.forget_parked(op)?;
         } else {
-            handle.put(&key, &GenericData::from(Slice::from(vec![REFUSED])))?;
+            self.put_parked(op, REFUSED)?;
         }
-        Ok(())
+        Ok(true)
     }
 
-    /// Whether the last retried apply of the parked op `op` refused it.
-    pub(crate) fn refused(&self, op: [u8; 32]) -> EyreResult<bool> {
+    pub(crate) fn parked(&self, op: [u8; 32]) -> EyreResult<Option<Parked>> {
         let handle = self.store.handle();
-        let Some(data) = handle.get(&self.op_key(op))? else {
-            return Ok(false);
+        let Some(data) = handle.get(&self.parked_key(op))? else {
+            return Ok(None);
         };
         let bytes: &[u8] = data.as_ref();
-        Ok(bytes == [REFUSED])
+        Ok(Some(if bytes == [REFUSED] {
+            Parked::Refused
+        } else {
+            Parked::Undecided
+        }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refused(&self, op: [u8; 32]) -> EyreResult<bool> {
+        Ok(self.parked(op)? == Some(Parked::Refused))
     }
 
     pub(crate) fn forget_parked(&self, op: [u8; 32]) -> EyreResult<()> {
-        self.store.handle().delete(&self.op_key(op))?;
+        self.store.handle().delete(&self.parked_key(op))?;
         Ok(())
     }
 
@@ -155,7 +176,25 @@ impl<'a> VoidLedger<'a> {
         for kind in [&b"voided"[..], b"keys", b"defaults"] {
             handle.delete(&self.key(kind))?;
         }
-        Ok(())
+        drop(handle);
+        let scope = self.parked_scope();
+        loop {
+            let rows = crate::collect_keys_with_prefix_paginated::<GenericKey>(
+                self.store,
+                GenericKey::new(scope, [0; 32]),
+                scope[0],
+                |key| key.scope() == scope,
+                0,
+                DELETE_BATCH,
+            )?;
+            if rows.is_empty() {
+                return Ok(());
+            }
+            let mut handle = self.store.handle();
+            for row in rows {
+                handle.delete(&row)?;
+            }
+        }
     }
 
     fn key(&self, kind: &[u8]) -> GenericKey {
@@ -165,12 +204,27 @@ impl<'a> VoidLedger<'a> {
         GenericKey::new(SCOPE, hasher.finalize().into())
     }
 
-    fn op_key(&self, op: [u8; 32]) -> GenericKey {
+    /// Each namespace's parked rows share one scope, so leaving it can find them all.
+    fn parked_scope(&self) -> [u8; 16] {
         let mut hasher = Sha256::new();
-        hasher.update(b"parked");
+        hasher.update(b"calimero-parked");
         hasher.update(self.namespace.as_bytes());
-        hasher.update(op);
-        GenericKey::new(SCOPE, hasher.finalize().into())
+        let digest: [u8; 32] = hasher.finalize().into();
+        let mut scope = [0; 16];
+        scope.copy_from_slice(&digest[..16]);
+        scope
+    }
+
+    fn parked_key(&self, op: [u8; 32]) -> GenericKey {
+        GenericKey::new(self.parked_scope(), op)
+    }
+
+    fn put_parked(&self, op: [u8; 32], verdict: u8) -> EyreResult<()> {
+        self.store.handle().put(
+            &self.parked_key(op),
+            &GenericData::from(Slice::from(vec![verdict])),
+        )?;
+        Ok(())
     }
 
     fn read<T: BorshDeserialize + Ord>(&self, kind: &[u8]) -> EyreResult<BTreeSet<T>> {
@@ -232,25 +286,24 @@ mod tests {
     }
 
     #[test]
-    fn a_parked_op_is_refused_until_a_retry_applies_it() {
+    fn a_parked_op_is_refused_until_a_replay_applies_it() {
         let store = test_store();
         let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
         ledger.note_parked([7; 32]).unwrap();
-        assert!(
-            !ledger.refused([7; 32]).unwrap(),
-            "undecided is not refused"
-        );
+        assert_eq!(ledger.parked([7; 32]).unwrap(), Some(Parked::Undecided));
 
-        ledger.settle_parked([7; 32], false).unwrap();
-        assert!(ledger.refused([7; 32]).unwrap());
-        ledger.settle_parked([7; 32], true).unwrap();
-        assert!(
-            !ledger.refused([7; 32]).unwrap(),
+        assert!(ledger.settle_parked([7; 32], false).unwrap());
+        assert_eq!(ledger.parked([7; 32]).unwrap(), Some(Parked::Refused));
+        assert!(ledger.settle_parked([7; 32], true).unwrap());
+        assert_eq!(
+            ledger.parked([7; 32]).unwrap(),
+            None,
             "a later apply takes it back"
         );
-        ledger.settle_parked([7; 32], false).unwrap();
-        assert!(
-            !ledger.refused([7; 32]).unwrap(),
+        assert!(!ledger.settle_parked([7; 32], false).unwrap());
+        assert_eq!(
+            ledger.parked([7; 32]).unwrap(),
+            None,
             "a replay of an applied op does not judge it again"
         );
     }
@@ -259,8 +312,25 @@ mod tests {
     fn a_replay_refuses_nothing_that_was_not_parked() {
         let store = test_store();
         let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
-        ledger.settle_parked([7; 32], false).unwrap();
-        assert!(!ledger.refused([7; 32]).unwrap());
+        assert!(!ledger.settle_parked([7; 32], false).unwrap());
+        assert_eq!(ledger.parked([7; 32]).unwrap(), None);
+    }
+
+    #[test]
+    fn leaving_forgets_parked_rows_of_that_namespace_only() {
+        let store = test_store();
+        let left = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
+        let kept = VoidLedger::new(&store, NamespaceId::from([2u8; 32]));
+        left.note_parked([7; 32]).unwrap();
+        let _ = left.settle_parked([7; 32], false).unwrap();
+        left.note_parked([8; 32]).unwrap();
+        kept.note_parked([7; 32]).unwrap();
+
+        left.clear().unwrap();
+
+        assert_eq!(left.parked([7; 32]).unwrap(), None);
+        assert_eq!(left.parked([8; 32]).unwrap(), None);
+        assert_eq!(kept.parked([7; 32]).unwrap(), Some(Parked::Undecided));
     }
 
     #[test]

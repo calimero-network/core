@@ -96,27 +96,67 @@ impl NamespaceGovernance<'_> {
     }
 
     /// May the bytes of `op`, which this node cannot read, be kept? An op that is
-    /// refused still takes its place in the log, so the DAG moves on. A kept op is
-    /// marked parked, so the apply its key later lets run decides what it folds as.
-    pub(super) fn admit_unreadable(
+    /// refused still takes its place in the log, so the DAG moves on.
+    pub(super) fn admit_unreadable(&self, op: &SignedNamespaceOp) -> EyreResult<bool> {
+        OpBudget::unreadable(self.store).admit_op(op)
+    }
+
+    /// Mark an op kept unread as parked, for a replay to judge; clear a mark an
+    /// earlier, unfinished arrival of an op now read on arrival left behind.
+    pub(super) fn mark_parked(
         &self,
         op: &SignedNamespaceOp,
         delta_id: [u8; 32],
-    ) -> EyreResult<bool> {
-        let kept = OpBudget::unreadable(self.store).admit_op(op)?;
-        if kept {
-            VoidLedger::new(self.store, self.namespace_id).note_parked(delta_id)?;
+        parked: bool,
+    ) -> EyreResult<()> {
+        let ledger = VoidLedger::new(self.store, self.namespace_id);
+        if parked {
+            ledger.note_parked(delta_id)
+        } else if crate::unified_op_decode::can_be_parked(&op.op) {
+            ledger.forget_parked(delta_id)
+        } else {
+            Ok(())
         }
-        Ok(kept)
     }
 
-    /// Record whether the retried apply of `op` took, so a parked op it refused
-    /// folds as nothing, as on a node that held the key and refused it on arrival.
-    pub(super) fn settle_parked(&self, op: &SignedNamespaceOp, applied: bool) -> EyreResult<()> {
-        let id = op
+    /// Record a replay's verdict on a parked op, and drop what the authorizer folded
+    /// when it changed. Logged rather than raised: an unrecorded verdict leaves a hole.
+    pub(super) fn settle_parked(&self, op: &SignedNamespaceOp, applied: bool) {
+        let settled = op
             .content_hash()
-            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-        VoidLedger::new(self.store, self.namespace_id).settle_parked(id, applied)
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))
+            .and_then(|id| {
+                VoidLedger::new(self.store, self.namespace_id).settle_parked(id, applied)
+            });
+        match settled {
+            Ok(true) => self.authorizer.forget(),
+            Ok(false) => {}
+            Err(err) => tracing::warn!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                %err,
+                "could not record a replay's verdict on a parked op; it stays a hole"
+            ),
+        }
+    }
+
+    /// Whether this node parked `op` and no replay has applied it yet. An unreadable
+    /// mark reads as not parked: the op then replays as before and stays a hole.
+    pub(super) fn is_parked(&self, op: &SignedNamespaceOp) -> bool {
+        let parked = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))
+            .and_then(|id| VoidLedger::new(self.store, self.namespace_id).parked(id));
+        parked.map_or_else(
+            |err| {
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    %err,
+                    "could not read whether an op is parked"
+                );
+                false
+            },
+            |parked| parked.is_some(),
+        )
     }
 
     /// How `op` is stored: whole, or as the hole that keeps its place in the log when

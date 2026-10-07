@@ -93,6 +93,8 @@ use calimero_governance_store::{
     MembershipRepository, NamespaceRepository, PendingSelfPurgeRepository,
 };
 
+use crate::apply_authorizer::EphemeralProjectionAuthorizer;
+
 struct HandleState {
     abort: AbortHandle,
 }
@@ -606,7 +608,7 @@ fn redrive_stranded_ops_sweep(store: &Store) {
     };
 
     let scanned_namespaces = namespaces.len();
-    let mut total_redriven = 0usize;
+    let mut total_redriven = redrive_sealed_root_ops(store, &namespaces);
 
     // Convergence loop: re-run the sweep until a pass applies nothing new. Each
     // pass drains the buffered set, so this is monotone and bounded.
@@ -660,7 +662,7 @@ fn redrive_stranded_ops_sweep(store: &Store) {
                 store,
                 ns_id.into(),
                 group_id,
-                &crate::VoidJudge::new(store),
+                &EphemeralProjectionAuthorizer::new(store),
             ) {
                 Ok(0) => {
                     // Nothing applied this pass for this group (already
@@ -706,6 +708,11 @@ fn redrive_stranded_ops_sweep(store: &Store) {
         }
     }
 
+    // A folded group op can be what a sealed root op's apply waits on.
+    if total_redriven > 0 {
+        total_redriven += redrive_sealed_root_ops(store, &namespaces);
+    }
+
     if total_redriven > 0 {
         info!(
             scanned_namespaces,
@@ -720,6 +727,27 @@ fn redrive_stranded_ops_sweep(store: &Store) {
             "curative re-drive sweep (#2848) complete — nothing to re-drive"
         );
     }
+}
+
+/// Replay each namespace's sealed root ops whose keys are held, so a parked one is
+/// judged even when no key arrives after a restart. Returns how many applied.
+fn redrive_sealed_root_ops(store: &Store, namespaces: &[[u8; 32]]) -> usize {
+    let mut applied = 0;
+    for ns_id in namespaces {
+        match calimero_governance_store::redrive_sealed_root_ops_with(
+            store,
+            (*ns_id).into(),
+            &EphemeralProjectionAuthorizer::new(store),
+        ) {
+            Ok(count) => applied += count,
+            Err(e) => warn!(
+                namespace = %hex::encode(ns_id),
+                error = ?e,
+                "startup sweep: sealed root op replay failed for one namespace"
+            ),
+        }
+    }
+    applied
 }
 
 /// What the reconcile should do for one marked namespace. Split out from

@@ -381,6 +381,8 @@ impl<'a> NamespaceGovernance<'a> {
         let mut applied: Option<Op> = None;
         // Whether the op's bytes may be kept, or only its place in the log.
         let mut keep_bytes = true;
+        // Whether the op arrived sealed under a key this node does not hold.
+        let mut unread = false;
 
         // Open a sealed root op before the match, so the arm below sees a `RootOp`
         // whether it arrived sealed or in the clear and its body stays one
@@ -602,7 +604,8 @@ impl<'a> NamespaceGovernance<'a> {
             // dropped: the op stays in the log for the retry pass that runs on
             // key delivery.
             (NamespaceOp::RootSealed { key_id, .. }, None) => {
-                keep_bytes &= self.admit_unreadable(op, delta_id)?;
+                unread = true;
+                keep_bytes &= self.admit_unreadable(op)?;
                 result.key_unwrap_failures.push(KeyUnwrapFailure {
                     group_id: self.namespace_id.to_bytes(),
                     reason: format!(
@@ -626,7 +629,8 @@ impl<'a> NamespaceGovernance<'a> {
                 },
                 None,
             ) => {
-                keep_bytes &= self.admit_unreadable(op, delta_id)?;
+                unread = true;
+                keep_bytes &= self.admit_unreadable(op)?;
                 // `info`, not `debug`: this is the audit record of a join this
                 // node is not entitled to read, and the reason an operator sees
                 // no membership for it here. At `debug` a node on the default
@@ -726,7 +730,8 @@ impl<'a> NamespaceGovernance<'a> {
                     }
                 }
                 None => {
-                    keep_bytes &= self.admit_unreadable(op, delta_id)?;
+                    unread = true;
+                    keep_bytes &= self.admit_unreadable(op)?;
                     result.key_unwrap_failures.push(KeyUnwrapFailure {
                         group_id: self.namespace_id.to_bytes(),
                         reason: format!(
@@ -774,7 +779,8 @@ impl<'a> NamespaceGovernance<'a> {
                 // group is not a member and must never process a rotation for it.
                 let inner_decrypted = resolved_key.is_some();
                 if !inner_decrypted {
-                    keep_bytes &= self.admit_unreadable(op, delta_id)?;
+                    unread = true;
+                    keep_bytes &= self.admit_unreadable(op)?;
                     // The key-arrival replay applies the rotation at this op's sequence.
                     if keep_bytes && key_rotation.is_some() {
                         DeferredRotations::new(self.store, self.namespace_id)
@@ -830,6 +836,7 @@ impl<'a> NamespaceGovernance<'a> {
         // head un-advanced, and a later re-receive would hit the guard, skip
         // the apply, and never advance the head for it. A truly atomic update
         // would need a single-batch write spanning both keys.
+        self.mark_parked(op, delta_id, unread && keep_bytes)?;
         let head = self.read_head_record()?;
         self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
         // An op that takes authority away may void ops already applied. Done before
@@ -2051,6 +2058,7 @@ impl<'a> NamespaceGovernance<'a> {
         let mut divergence: Option<super::super::DivergenceReport> = None;
         for entry in entries {
             if own_identity == Some(entry.signed_op.signer) {
+                self.settle_parked(&entry.signed_op, true);
                 continue;
             }
             let key_id = entry.key_id;
@@ -2140,7 +2148,7 @@ impl<'a> NamespaceGovernance<'a> {
                 _ => None,
             };
             let Some((gate_op, root)) = opened else {
-                self.settle_parked(&entry.signed_op, false)?;
+                self.settle_parked(&entry.signed_op, false);
                 continue;
             };
             // The same relocated check the receive path runs. Skipping it here
@@ -2152,22 +2160,29 @@ impl<'a> NamespaceGovernance<'a> {
                     error = %format!("{e:#}"),
                     "skipping a sealed root op that fails validation after unsealing"
                 );
-                self.settle_parked(&entry.signed_op, false)?;
+                self.settle_parked(&entry.signed_op, false);
                 continue;
             }
             // This walk has no applied marker, so it re-feeds creates this node
             // folded long ago, and a create is not replay-safe: its fold seats the
             // creator as admin again, and a moved group refuses it on every pass.
             // Its side effect also re-drives the group, which re-enters this walk.
-            if self.group_created_already_folded(&root)? {
+            // A parked create was never applied here, so it is judged instead.
+            let parked = self.is_parked(&entry.signed_op);
+            if !parked && self.group_created_already_folded(&root)? {
                 continue;
             }
-            // A replayed root op is judged as one applied on arrival is.
+            // A replayed root op is judged as one applied on arrival is. A void one
+            // folds as any logged op does, so it is no longer parked.
             if self.root_op_is_void(&gate_op, &root, gate_op.content_hash()?)? {
+                self.settle_parked(&entry.signed_op, true);
                 continue;
             }
-            let outcome = self.apply_root_op(&gate_op, &root);
-            self.settle_parked(&entry.signed_op, outcome.is_ok())?;
+            let outcome = if parked {
+                self.replay_parked_root_op(&entry.signed_op, &gate_op, &root)
+            } else {
+                self.apply_root_op(&gate_op, &root)
+            };
             match outcome {
                 Ok(_events) => {
                     applied += 1;
@@ -2327,13 +2342,12 @@ impl<'a> NamespaceGovernance<'a> {
                 let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
                     continue;
                 };
-                let outcome = self.decrypt_and_apply_group_op(
+                let outcome = self.replay_group_op(
                     &candidate.signed_op,
                     &gid_typed,
                     &candidate.group_key,
                     encrypted,
                 );
-                self.settle_parked(&candidate.signed_op, outcome.is_ok())?;
                 match outcome {
                     // Surface divergence from retry-path applies. Once a
                     // retry replay applies an op, the DAG marks any later
@@ -2548,13 +2562,12 @@ impl<'a> NamespaceGovernance<'a> {
                 let was_present = load_nonce_window(self.store, &gid_typed, signer)
                     .map(|w| w.contains(nonce))
                     .unwrap_or(false);
-                let outcome = self.decrypt_and_apply_group_op(
+                let outcome = self.replay_group_op(
                     &candidate.signed_op,
                     &gid_typed,
                     &candidate.group_key,
                     encrypted,
                 );
-                self.settle_parked(&candidate.signed_op, outcome.is_ok())?;
                 match outcome {
                     Ok(_divergence) => {
                         rotated |= self.replay_deferred_rotation(candidate);
@@ -2846,6 +2859,58 @@ impl<'a> NamespaceGovernance<'a> {
             break;
         }
         Ok(())
+    }
+
+    /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
+    /// An undecidable cut falls back to the live gates and records only an apply.
+    fn replay_parked_root_op(
+        &self,
+        parked: &SignedNamespaceOp,
+        gate_op: &SignedNamespaceOp,
+        root: &RootOp,
+    ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
+        let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
+            .with_apply_auth(&parked.parent_op_hashes, self.authorizer)
+            .apply_root_op(gate_op, root);
+        if at_cut.as_ref().is_err_and(is_undecidable) {
+            let live = NamespaceGovernance::new(self.store, self.namespace_id)
+                .apply_root_op(gate_op, root);
+            if live.is_ok() {
+                self.settle_parked(parked, true);
+            }
+            return live;
+        }
+        self.settle_verdict(parked, at_cut.is_ok());
+        at_cut
+    }
+
+    /// [`Self::decrypt_and_apply_group_op`] for a replay: a parked op is judged at
+    /// its own cut and its verdict recorded, falling back to the live gates as above.
+    fn replay_group_op(
+        &self,
+        ns_op: &SignedNamespaceOp,
+        group_id: &ContextGroupId,
+        group_key: &[u8; 32],
+        encrypted: &EncryptedGroupOp,
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        let outcome = self.decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
+        if outcome.as_ref().is_err_and(is_undecidable) {
+            let live = NamespaceGovernance::new(self.store, self.namespace_id)
+                .decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
+            if live.is_ok() {
+                self.settle_parked(ns_op, true);
+            }
+            return live;
+        }
+        self.settle_verdict(ns_op, outcome.is_ok());
+        outcome
+    }
+
+    /// Record an apply; record a refusal only when the gates read the op's own cut.
+    fn settle_verdict(&self, op: &SignedNamespaceOp, applied: bool) {
+        if applied || self.authorizer.judges_at_cut() {
+            self.settle_parked(op, applied);
+        }
     }
 
     /// Decrypt an encrypted group op and apply it via
@@ -3684,6 +3749,16 @@ impl<'a> NamespaceGovernance<'a> {
     }
 }
 
+/// Whether `err` is a gate declining to decide an unresolvable cut, not a verdict.
+fn is_undecidable(err: &eyre::Report) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::AuthorityUndecidable { .. })
+        )
+    })
+}
+
 /// Apply a signed namespace op with the LIVE apply-auth gates (no causal cut).
 /// The backward-compatible entry for call sites without an at-cut authorizer
 /// (tests, internal facades); the production apply path uses
@@ -4267,6 +4342,19 @@ pub fn redrive_buffered_ops_for_group_with(
     NamespaceGovernance::new(store, namespace_id)
         .with_apply_auth(&[], authorizer)
         .redrive_encrypted_ops_for_group_counted(group_id)
+}
+
+/// Replay the sealed root ops of `namespace_id` whose keys this node holds, judging
+/// them against `authorizer`, as a key arrival does. Returns how many applied.
+pub fn redrive_sealed_root_ops_with(
+    store: &Store,
+    namespace_id: NamespaceId,
+    authorizer: &dyn crate::authorizer::AtCutAuthorizer,
+) -> EyreResult<usize> {
+    NamespaceGovernance::new(store, namespace_id)
+        .with_apply_auth(&[], authorizer)
+        .retry_sealed_root_ops(0)
+        .map(|pass| pass.applied)
 }
 
 pub async fn sign_apply_and_publish_namespace_op(

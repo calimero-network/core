@@ -2198,7 +2198,7 @@ impl SyncManager {
                 // hash check cannot bound the content and the responder gate
                 // above is all that stands between this node and a chosen key.
                 let expected_key_ids = key_id.as_slice();
-                let judge = calimero_context::VoidJudge::new(&store);
+                let judge = calimero_context::EphemeralProjectionAuthorizer::new(&store);
                 let outcome = calimero_governance_store::apply_received_group_key_with(
                     &store,
                     namespace_id.into(),

@@ -172,6 +172,12 @@ pub trait AtCutAuthorizer: Send + Sync {
         true
     }
 
+    /// Whether the gates are answered from a fold at the op's own cut, so a refusal
+    /// under this authorizer is the verdict a node that held the key on arrival reached.
+    fn judges_at_cut(&self) -> bool {
+        false
+    }
+
     /// Is `device` bound to `account` in `group`'s namespace at an epoch past
     /// `device_epoch` at the cut, so that certificate names a retired key? `None` = defer.
     fn device_epoch_superseded_at_cut(

@@ -27,7 +27,7 @@ pub(crate) fn adopt_pulled_group_key(
 ) -> eyre::Result<[u8; 32]> {
     let key_id =
         calimero_governance_store::GroupKeyring::new(store, group_id).store_key(group_key)?;
-    let authorizer = crate::apply_authorizer::VoidJudge::new(store);
+    let authorizer = crate::apply_authorizer::EphemeralProjectionAuthorizer::new(store);
     if let Err(err) = calimero_governance_store::retry_encrypted_ops_for_group_with(
         store,
         namespace_id,
@@ -367,6 +367,16 @@ pub(crate) mod tests {
                 .unwrap(),
             "the buffered join must fold once the flip it depends on is readable"
         );
+        assert_eq!(
+            calimero_governance_store::parked_op(
+                &store,
+                namespace_id.into(),
+                join.content_hash().unwrap()
+            )
+            .unwrap(),
+            None,
+            "a join its first pass could not apply is no longer parked once a later one did"
+        );
 
         // Both recoveries are best-effort, so the key-delivery and startup sweeps
         // re-run them on a key this path already adopted.
@@ -426,11 +436,13 @@ pub(crate) mod tests {
             &crate::apply_authorizer::EphemeralProjectionAuthorizer::new(store),
         )
         .expect("an op whose key is absent parks");
-        assert!(
-            !parked.key_unwrap_failures.is_empty() || matches!(op.op, NamespaceOp::Group { .. }),
+        let id = op.content_hash().unwrap();
+        assert_eq!(
+            calimero_governance_store::parked_op(store, op.namespace_id, id).unwrap(),
+            Some(calimero_governance_store::Parked::Undecided),
             "precondition: the op is parked unread"
         );
-        op.content_hash().unwrap()
+        id
     }
 
     /// Whether `account` is an admin of `group` at this node's governance heads,
@@ -977,5 +989,55 @@ pub(crate) mod tests {
             "the refused op leaves S's cut decidable"
         );
         assert_eq!(admin_at_heads(&store, &ns, s, &mallory), Some(false));
+    }
+
+    /// A relayed join its replay refuses (an inviter with no standing) is recorded
+    /// as refused, and its joiner is no member at the cut.
+    #[test]
+    fn a_refused_relayed_join_is_recorded_as_refused_once_its_key_arrives() {
+        let ns = ContextGroupId::from([0x54; 32]);
+        let namespace_id = ns.to_bytes();
+        let (store, _owner_sk, mallory_sk) = keyless_namespace(ns);
+        let joiner_sk = PrivateKey::from([0x75; 32]);
+        let joiner = crate::test_support::account_for(&joiner_sk.public_key());
+        let ns_key = [0x64u8; 32];
+
+        let inner = SignedNamespaceOp::sign(
+            &joiner_sk,
+            namespace_id.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoined {
+                member: joiner,
+                signed_invitation: invitation(&mallory_sk, ns),
+                account: crate::test_support::credential(&joiner_sk.public_key()),
+            }),
+        )
+        .unwrap();
+        let relayed = SignedNamespaceOp::sign(
+            &mallory_sk,
+            namespace_id.into(),
+            vec![],
+            1,
+            NamespaceOp::RootRelaySealed {
+                key_id: GroupKeyring::key_id_for(&ns_key).into(),
+                encrypted: GroupKeyring::encrypt_relayed_op(&ns_key, &inner).unwrap(),
+            },
+        )
+        .unwrap();
+        let id = arrive(&store, &relayed, &[]);
+        let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &ns_key)
+            .expect("the pulled key stores");
+
+        assert_eq!(
+            calimero_governance_store::parked_op(&store, namespace_id.into(), id).unwrap(),
+            Some(calimero_governance_store::Parked::Refused)
+        );
+        let (projection, _, heads) =
+            ScopeProjections::ephemeral_projection(&store, &ns).expect("fold the namespace");
+        assert_eq!(
+            projection.account_member_at_cut(&store, ns, &joiner, &heads),
+            Some(false)
+        );
     }
 }

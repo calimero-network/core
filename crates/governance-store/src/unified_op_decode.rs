@@ -473,13 +473,13 @@ pub struct OpenedNamespaceOp {
     /// credential and signer come from here and not from the envelope. The DAG
     /// identity stays the envelope's.
     pub relayed_join: Option<SignedNamespaceOp>,
-    /// An op parked unread whose apply refused it once its key arrived: it folds
-    /// as nothing, as on a node that held the key and refused it on arrival.
+    /// A parked op a replay refused at its cut: it folds as nothing, as on a node
+    /// that held the key and refused it on arrival.
     pub refused: bool,
 }
 
 /// Whether `op` is a shape a node lacking its key parks for the retry pass.
-fn can_be_parked(op: &NamespaceOp) -> bool {
+pub(crate) fn can_be_parked(op: &NamespaceOp) -> bool {
     matches!(
         op,
         NamespaceOp::Group { .. }
@@ -517,22 +517,28 @@ impl OpenedNamespaceOp {
     pub fn open(store: &calimero_store::Store, signed: &SignedNamespaceOp) -> Self {
         let namespace_id = signed.namespace_id;
         if can_be_parked(&signed.op) {
-            let refused = signed
+            let verdict = signed
                 .content_hash()
                 .map_err(|e| eyre::eyre!("content_hash: {e}"))
-                .and_then(|id| {
-                    crate::void_ledger::VoidLedger::new(store, namespace_id).refused(id)
-                });
-            match read_or_hole(namespace_id, "retry verdict", refused.map(Some)) {
-                Some(false) => {}
-                Some(true) => {
+                .and_then(|id| crate::void_ledger::VoidLedger::new(store, namespace_id).parked(id));
+            match verdict {
+                Ok(None) => {}
+                Ok(Some(crate::void_ledger::Parked::Refused)) => {
                     return Self {
                         refused: true,
                         ..Self::default()
                     }
                 }
-                // Unknown whether it was refused: read it as the hole it may be.
-                None => return Self::default(),
+                // A hole until a replay judges it at its cut.
+                Ok(Some(crate::void_ledger::Parked::Undecided)) => return Self::default(),
+                Err(err) => {
+                    tracing::debug!(
+                        %err,
+                        namespace_id = %hex::encode(namespace_id.as_bytes()),
+                        "unified op decode: parked verdict unreadable; folded as unreadable"
+                    );
+                    return Self::default();
+                }
             }
         }
         match &signed.op {
