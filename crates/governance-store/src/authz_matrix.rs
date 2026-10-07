@@ -1,5 +1,6 @@
 //! Authorization matrix: every gated operation run against every actor state.
 //! A new `GatedOp` needs a table and a row; the coverage tests fail without both.
+//! Which signed op variants have no row is classified in `calimero-governance-types` (`authz_classification`).
 
 mod world;
 
