@@ -2023,3 +2023,21 @@ async fn list_applications_leaves_a_single_service_application_without_services(
 
     assert!(listed.services.is_empty());
 }
+
+#[tokio::test]
+async fn a_service_blob_counts_as_an_application_artifact() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let (bytes, id) = signed_bundle_bytes("com.example.multi", "1.0.0", &["docs", "registry"]);
+    install_bundle_bytes(&node_client, bytes).await;
+
+    let app = node_client
+        .get_application(&id)
+        .expect("read the application")
+        .expect("the application exists");
+
+    for service in app.services.values() {
+        assert!(node_client
+            .is_blob_application_artifact(&service.bytecode)
+            .expect("artifact check"));
+    }
+}
