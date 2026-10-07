@@ -182,4 +182,22 @@ mod tests {
         assert_eq!(mode_of(root.path()), 0o755);
         assert_eq!(mode_of(&root.path().join("meroctl")), 0o700);
     }
+
+    #[tokio::test]
+    async fn save_creates_the_config_dir_owner_only() {
+        let home = tempfile::tempdir().unwrap();
+        // The only test that reads the config location, so the process-wide change is race-free.
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        Config::default().save().await.unwrap();
+
+        let dir = Config::config_path().unwrap().parent().unwrap().to_owned();
+        assert!(
+            dir.starts_with(home.path()),
+            "{dir:?} escaped the temp home"
+        );
+        assert_eq!(mode_of(&dir), 0o700);
+        assert_eq!(mode_of(dir.parent().unwrap()), 0o700);
+    }
 }
