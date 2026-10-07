@@ -1502,13 +1502,30 @@ impl Default for AutoFollowFlags {
 /// Stored against [`GroupMember`]. Tracks the member's role and, for the local
 /// node, the Ed25519 key pair used for sync key-share across all contexts in
 /// this group.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMemberValue {
     pub role: GroupMemberRole,
     pub private_key: Option<[u8; 32]>,
     pub sender_key: Option<[u8; 32]>,
     pub auto_follow: AutoFollowFlags,
+}
+
+impl Debug for GroupMemberValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupMemberValue")
+            .field("role", &self.role)
+            .field(
+                "private_key",
+                &self.private_key.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "sender_key",
+                &self.sender_key.as_ref().map(|_| "[redacted]"),
+            )
+            .field("auto_follow", &self.auto_follow)
+            .finish()
+    }
 }
 
 /// Tracks the progress of a group-wide upgrade operation.
@@ -4114,7 +4131,7 @@ impl Debug for GroupPendingDeviceRotation {
 /// Serialization is still derived, so every *new* write is the full five-field
 /// layout; only the read side is lenient. Any field added after this one must
 /// extend the same tail-optional pattern rather than re-deriving.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize))]
 pub struct GroupKeyValue {
     pub group_key: [u8; 32],
@@ -4123,6 +4140,18 @@ pub struct GroupKeyValue {
     pub insertion_seq: u64,
     /// [`Self::VOIDED`], or `0`.
     pub flags: u8,
+}
+
+impl Debug for GroupKeyValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupKeyValue")
+            .field("group_key", &"[redacted]")
+            .field("created_at", &self.created_at)
+            .field("epoch", &self.epoch)
+            .field("insertion_seq", &self.insertion_seq)
+            .field("flags", &self.flags)
+            .finish()
+    }
 }
 
 impl GroupKeyValue {

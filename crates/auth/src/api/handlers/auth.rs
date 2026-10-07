@@ -111,7 +111,7 @@ pub async fn login_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse
 }
 
 /// Base token request with common fields
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct BaseTokenRequest {
     /// Authentication method
@@ -136,11 +136,24 @@ pub struct BaseTokenRequest {
     pub provider_data: Value,
 }
 
+impl std::fmt::Debug for BaseTokenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BaseTokenRequest")
+            .field("auth_method", &self.auth_method)
+            .field("public_key", &self.public_key)
+            .field("client_name", &self.client_name)
+            .field("permissions", &self.permissions)
+            .field("timestamp", &self.timestamp)
+            .field("provider_data", &"[redacted]")
+            .finish()
+    }
+}
+
 /// Token request that includes provider-specific data
 pub type TokenRequest = BaseTokenRequest;
 
 /// Token response
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct TokenResponse {
     /// Access token
     access_token: String,
@@ -148,6 +161,16 @@ pub struct TokenResponse {
     refresh_token: String,
     /// Error message
     error: Option<String>,
+}
+
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[redacted]")
+            .field("refresh_token", &"[redacted]")
+            .field("error", &self.error)
+            .finish()
+    }
 }
 
 impl TokenResponse {
@@ -359,7 +382,7 @@ pub async fn token_handler(
 }
 
 /// Refresh token request
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct RefreshTokenRequest {
     /// Access token
@@ -368,6 +391,15 @@ pub struct RefreshTokenRequest {
     /// Refresh token
     #[validate(length(min = 1, message = "Refresh token is required"))]
     refresh_token: String,
+}
+
+impl std::fmt::Debug for RefreshTokenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshTokenRequest")
+            .field("access_token", &"[redacted]")
+            .field("refresh_token", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Refresh token handler
@@ -848,11 +880,19 @@ pub async fn revoke_token_handler(
     }
 }
 
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct LogoutRequest {
     #[validate(length(min = 1, message = "Refresh token is required"))]
     refresh_token: String,
+}
+
+impl std::fmt::Debug for LogoutRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogoutRequest")
+            .field("refresh_token", &"[redacted]")
+            .finish()
+    }
 }
 
 pub async fn logout_handler(
