@@ -55,8 +55,9 @@ pub(crate) mod tests {
     use calimero_context_config::types::ContextGroupId;
     use calimero_context_config::VisibilityMode;
     use calimero_governance_store::{
-        CapabilitiesRepository, DenyListRepository, GroupKeyring, MembershipRepository,
-        MetaRepository, NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
+        CapabilitiesRepository, DenyListRepository, GroupKeyring, KeyRecipient,
+        MembershipRepository, MetaRepository, NamespaceDagService, NamespaceOpLogService,
+        NamespaceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::PrivateKey;
@@ -783,21 +784,18 @@ pub(crate) mod tests {
         );
     }
 
-    /// A parked op is judged at its own cut, as on a node that held the key on
-    /// arrival, not against the rows this node holds when the key arrives.
-    #[test]
-    fn a_parked_op_is_judged_at_its_own_cut_once_its_key_arrives() {
-        let ns = ContextGroupId::from([0x4F; 32]);
+    /// Mallory's Restricted subgroup S. Its live rows already show her gone, as a later
+    /// removal's cascade leaves them; at the cut she is its admin.
+    fn mallory_subgroup(
+        store: &Store,
+        ns: ContextGroupId,
+        owner_sk: &PrivateKey,
+        mallory_sk: &PrivateKey,
+        joined_id: [u8; 32],
+    ) -> (ContextGroupId, [u8; 32]) {
         let namespace_id = ns.to_bytes();
-        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
         let owner = crate::test_support::account_for(&owner_sk.public_key());
         let mallory = crate::test_support::account_for(&mallory_sk.public_key());
-        let yara_sk = PrivateKey::from([0x73; 32]);
-        let yara = crate::test_support::enrol(&store, &ns, &yara_sk.public_key());
-        let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
-
-        // Mallory's Restricted subgroup S. Its live rows already show her gone,
-        // as a later removal's cascade leaves them; at the cut she is its admin.
         let s_salt = [0x14u8; 32];
         let s = ContextGroupId::from(calimero_account::created_subgroup_id(
             &mallory,
@@ -805,13 +803,13 @@ pub(crate) mod tests {
             true,
             &s_salt,
         ));
-        NamespaceRepository::new(&store).nest(&ns, &s).unwrap();
-        MetaRepository::new(&store).save(&s, &meta(owner)).unwrap();
-        CapabilitiesRepository::new(&store)
+        NamespaceRepository::new(store).nest(&ns, &s).unwrap();
+        MetaRepository::new(store).save(&s, &meta(owner)).unwrap();
+        CapabilitiesRepository::new(store)
             .set_subgroup_visibility(&s, VisibilityMode::Restricted)
             .unwrap();
         let created = SignedNamespaceOp::sign(
-            &mallory_sk,
+            mallory_sk,
             namespace_id.into(),
             vec![joined_id],
             2,
@@ -824,13 +822,28 @@ pub(crate) mod tests {
             }),
         )
         .unwrap();
-        land(&store, namespace_id, &created, &[joined_id]);
+        land(store, namespace_id, &created, &[joined_id]);
         let created_id = created.content_hash().unwrap();
         assert_eq!(
-            admin_at_heads(&store, &ns, s, &mallory),
+            admin_at_heads(store, &ns, s, &mallory),
             Some(true),
             "control: at the cut Mallory is S's admin"
         );
+        (s, created_id)
+    }
+
+    /// A parked op is judged at its own cut, as on a node that held the key on
+    /// arrival, not against the rows this node holds when the key arrives.
+    #[test]
+    fn a_parked_op_is_judged_at_its_own_cut_once_its_key_arrives() {
+        let ns = ContextGroupId::from([0x4F; 32]);
+        let namespace_id = ns.to_bytes();
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let yara_sk = PrivateKey::from([0x73; 32]);
+        let yara = crate::test_support::enrol(&store, &ns, &yara_sk.public_key());
+        let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
+
+        let (s, created_id) = mallory_subgroup(&store, ns, &owner_sk, &mallory_sk, joined_id);
 
         let s_key = [0x5Fu8; 32];
         let add = SignedNamespaceOp::sign(
@@ -927,6 +940,177 @@ pub(crate) mod tests {
             admin_at_heads(&store, &ns, ns, &mallory),
             Some(true),
             "the owner's promotion folds once applied"
+        );
+    }
+
+    /// A parked op's carried rotation is judged at the op's own cut, as the op is: its
+    /// signer was S's admin there, though the live rows show her gone.
+    #[test]
+    fn a_parked_ops_rotation_is_judged_at_its_own_cut_once_its_key_arrives() {
+        let ns = ContextGroupId::from([0x52; 32]);
+        let namespace_id = ns.to_bytes();
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let yara_sk = PrivateKey::from([0x73; 32]);
+        let yara = crate::test_support::enrol(&store, &ns, &yara_sk.public_key());
+        let node_sk = PrivateKey::from([0x74; 32]);
+        NamespaceRepository::new(&store)
+            .store_identity(&ns, &node_sk.public_key(), &[0x74; 32])
+            .unwrap();
+        let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
+        let (s, created_id) = mallory_subgroup(&store, ns, &owner_sk, &mallory_sk, joined_id);
+
+        let s_key = [0x5Fu8; 32];
+        let rotated_key = [0x5Eu8; 32];
+        let rotation = GroupKeyring::new(&store, s)
+            .build_rotation(
+                &rotated_key,
+                &mallory_sk,
+                &[KeyRecipient::Member(node_sk.public_key())],
+            )
+            .unwrap();
+        let add = SignedNamespaceOp::sign(
+            &mallory_sk,
+            namespace_id.into(),
+            vec![created_id],
+            3,
+            NamespaceOp::Group {
+                group_id: s.to_bytes().into(),
+                key_id: GroupKeyring::key_id_for(&s_key).into(),
+                encrypted: GroupKeyring::encrypt_op(
+                    &s_key,
+                    &GroupOp::MemberAdded {
+                        member: yara,
+                        role: GroupMemberRole::Member,
+                    },
+                )
+                .unwrap(),
+                key_rotation: Some(rotation),
+            },
+        )
+        .unwrap();
+        let _ = arrive(&store, &add, &[created_id]);
+        let _ = adopt_pulled_group_key(&store, namespace_id.into(), s, &s_key)
+            .expect("the pulled key stores");
+
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&s, &yara)
+                .unwrap(),
+            Some(GroupMemberRole::Member),
+            "control: the op applied at its cut"
+        );
+        assert_eq!(
+            GroupKeyring::new(&store, s)
+                .load_key_by_id(&GroupKeyring::key_id_for(&rotated_key))
+                .unwrap(),
+            Some(rotated_key),
+            "the rotation its signer was entitled to at the cut is stored, as on a keyed node"
+        );
+    }
+
+    /// A parked op whose cut cannot be resolved is judged by this pass's gates, and an
+    /// apply is all it records.
+    #[test]
+    fn a_parked_op_with_an_unresolvable_cut_is_judged_live_and_records_only_an_apply() {
+        let ns = ContextGroupId::from([0x53; 32]);
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let yara_sk = PrivateKey::from([0x73; 32]);
+        let yara = crate::test_support::enrol(&store, &ns, &yara_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&ns, &yara, GroupMemberRole::Member)
+            .unwrap();
+        let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
+        let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
+        let ns_key = [0x62u8; 32];
+        let cut = vec![joined_id, owner_joined, [0xEEu8; 32]];
+        let by_owner = role_set(&owner_sk, ns, cut.clone(), 2, &ns_key, yara);
+        let by_mallory = role_set(&mallory_sk, ns, cut.clone(), 2, &ns_key, mallory);
+        let owner_op = arrive(&store, &by_owner, &cut);
+        let mallory_op = arrive(&store, &by_mallory, &cut);
+
+        let _ = adopt_pulled_group_key(&store, ns.to_bytes().into(), ns, &ns_key)
+            .expect("the pulled key stores");
+
+        let members = MembershipRepository::new(&store);
+        assert_eq!(
+            members.role_of(&ns, &yara).unwrap(),
+            Some(GroupMemberRole::Admin),
+            "the live gates admit the owner's op"
+        );
+        assert_eq!(
+            calimero_governance_store::parked_op(&store, by_owner.namespace_id, owner_op).unwrap(),
+            None,
+            "an apply clears the mark"
+        );
+        assert_eq!(
+            members.role_of(&ns, &mallory).unwrap(),
+            Some(GroupMemberRole::Member),
+            "the live gates refuse Mallory's op"
+        );
+        assert_eq!(
+            calimero_governance_store::parked_op(&store, by_mallory.namespace_id, mallory_op)
+                .unwrap(),
+            Some(calimero_governance_store::Parked::Undecided),
+            "a live refusal on an unresolvable cut is no verdict at the cut"
+        );
+    }
+
+    /// An op a replay refused at its cut stays refused when a later replay cannot
+    /// resolve that cut, even where the live rows would admit it.
+    #[test]
+    fn a_refused_parked_op_stays_refused_when_its_cut_turns_unresolvable() {
+        let ns = ContextGroupId::from([0x54; 32]);
+        let namespace_id = ns.to_bytes();
+        let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
+        let mallory = crate::test_support::account_for(&mallory_sk.public_key());
+        let yara_sk = PrivateKey::from([0x73; 32]);
+        let yara = crate::test_support::enrol(&store, &ns, &yara_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&ns, &yara, GroupMemberRole::Member)
+            .unwrap();
+        let joined_id = land_mallory_join(&store, ns, &owner_sk, &mallory_sk);
+        let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
+        let cut = vec![joined_id, owner_joined];
+        let ns_key = [0x63u8; 32];
+        let add = role_set(&mallory_sk, ns, cut.clone(), 2, &ns_key, yara);
+        let id = arrive(&store, &add, &cut);
+        // The live rows show Mallory an admin; at the op's cut she is none.
+        MembershipRepository::new(&store)
+            .set_role(&ns, &mallory, GroupMemberRole::Admin)
+            .unwrap();
+
+        let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &ns_key)
+            .expect("the pulled key stores");
+        let verdict = || calimero_governance_store::parked_op(&store, add.namespace_id, id);
+        assert_eq!(
+            verdict().unwrap(),
+            Some(calimero_governance_store::Parked::Refused),
+            "control: the replay refused the op at its cut"
+        );
+
+        let mut handle = store.handle();
+        handle
+            .delete(&calimero_store::key::ScopeUnifiedOp::new(
+                namespace_id,
+                owner_joined,
+            ))
+            .unwrap();
+        drop(handle);
+        let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &ns_key)
+            .expect("the pulled key stores");
+
+        assert_eq!(
+            verdict().unwrap(),
+            Some(calimero_governance_store::Parked::Refused),
+            "the verdict stands"
+        );
+        assert_ne!(
+            MembershipRepository::new(&store)
+                .role_of(&ns, &yara)
+                .unwrap(),
+            Some(GroupMemberRole::Admin),
+            "an op refused at its cut is not applied by the live rows"
         );
     }
 

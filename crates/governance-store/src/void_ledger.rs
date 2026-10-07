@@ -329,6 +329,16 @@ mod tests {
     }
 
     #[test]
+    fn a_second_refusal_of_a_refused_op_changes_nothing() {
+        let store = test_store();
+        let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
+        ledger.note_parked([7; 32]).unwrap();
+        assert!(ledger.settle_parked([7; 32], false).unwrap());
+        assert!(!ledger.settle_parked([7; 32], false).unwrap());
+        assert_eq!(ledger.parked([7; 32]).unwrap(), Some(Parked::Refused));
+    }
+
+    #[test]
     fn a_replay_refuses_nothing_that_was_not_parked() {
         let store = test_store();
         let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
