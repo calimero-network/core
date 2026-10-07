@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout core (PR head)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -86,7 +86,7 @@ jobs:
       MEROD_BIN: ${{ github.workspace }}/merod-bin/mock-tee/merod
     steps:
       - name: Checkout core (PR head)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -123,7 +123,7 @@ jobs:
           echo "Testing against mero-js@$REF"
 
       - name: Checkout mero-js (paired ref)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: calimero-network/mero-js
           ref: ${{ steps.sdkref.outputs.ref }}
@@ -131,7 +131,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node + pnpm
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20"
       - run: npm install -g pnpm

@@ -1,7 +1,8 @@
 rules:
-  # Action pinning is a separate gate.
   unpinned-uses:
-    disable: true
+    config:
+      policies:
+        "*": hash-pin
   # Local actions keep the plain ./ path that actionlint understands.
   self-repository:
     disable: true
