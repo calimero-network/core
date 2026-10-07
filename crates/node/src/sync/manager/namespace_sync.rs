@@ -2074,6 +2074,13 @@ impl SyncManager {
                 }
             };
 
+        // The namespace's heads now: a key-request pause ends as soon as they move.
+        let heads =
+            calimero_governance_store::NamespaceDagService::new(&store, namespace_id.into())
+                .read_head_record()
+                .map(|head| head.parent_hashes)
+                .unwrap_or_default();
+
         drop(store);
 
         // Merge into one request list of `(group_id, Option<key_id>)`: op-driven
@@ -2114,7 +2121,13 @@ impl SyncManager {
 
         for (group_id, key_id) in requests {
             let request = (namespace_id, group_id, key_id);
-            if !self.node_state.key_recovery_allowed(request) {
+            // Only a request for a SUBGROUP's key, named by a logged op, may be
+            // paused: that is the shape of a node outside a Restricted subgroup.
+            // The namespace's own key, and a member's or device's bootstrap
+            // request (`None`), are how a fresh join or pairing comes up, which
+            // looks just as keyless until the peers fold it.
+            let pausable = key_id.is_some() && group_id != namespace_id;
+            if pausable && !self.node_state.key_recovery_allowed(request, &heads) {
                 debug!(
                     group_id = %hex::encode(group_id),
                     "group-key recovery: paused for this key after rounds no peer served it"
@@ -2302,8 +2315,8 @@ impl SyncManager {
             }
             if served {
                 self.node_state.record_key_recovery_served(request);
-            } else if answered_empty {
-                if let Some(pause) = self.node_state.record_key_recovery_miss(request) {
+            } else if answered_empty && pausable {
+                if let Some(pause) = self.node_state.record_key_recovery_miss(request, &heads) {
                     // The shape of a node outside a Restricted group: every peer
                     // answers, none serves. Say so once per pause, not per tick.
                     info!(
