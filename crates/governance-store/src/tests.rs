@@ -6107,6 +6107,16 @@ fn group_settings_subgroup_visibility_opens_for_its_creator_and_closes_for_its_m
     svc.set_subgroup_visibility(&creator_pk, VisibilityMode::Open)
         .unwrap();
     assert_eq!(visibility(), VisibilityMode::Open);
+
+    // A group no `GroupCreated` made - a namespace root - keeps the admin rule.
+    let root = ContextGroupId::from([0x9E; 32]);
+    let root_admin = enrol_member(&store, &root, &admin_pk);
+    members
+        .add_member(&root, &root_admin, GroupMemberRole::Admin)
+        .unwrap();
+    GroupSettingsService::new(&store, root)
+        .set_subgroup_visibility(&admin_pk, VisibilityMode::Open)
+        .expect("a namespace root's admin may open it");
 }
 
 /// Opening rests on facts a namespace member outside the subgroup holds - the

@@ -501,9 +501,16 @@ impl<'a> PermissionChecker<'a> {
     /// is sealed under the subgroup's key, so honouring it would bring back the
     /// split this rule removes. Removal from the namespace does stop it, because
     /// it ends the binding the signer resolves through.
+    ///
+    /// A group with no recorded creator - a namespace root, which no
+    /// `GroupCreated` makes, and whose history every member reads anyway - keeps
+    /// the admin / `CAN_MANAGE_VISIBILITY` rule, as the projection does.
     pub fn require_creator_opens(&self, identity: &PublicKey) -> EyreResult<()> {
-        let creator = crate::group_creator::GroupCreatorRepository::new(self.store)
-            .creator(&self.group_id)?;
+        let Some(creator) = crate::group_creator::GroupCreatorRepository::new(self.store)
+            .creator(&self.group_id)?
+        else {
+            return self.require_can_manage_visibility(identity);
+        };
         let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let signer = match self.principal_account(identity) {
             Some(account) => Some(account),
@@ -511,7 +518,7 @@ impl<'a> PermissionChecker<'a> {
                 .with_apply_auth(self.parents, self.authorizer)
                 .account_for_signer(identity)?,
         };
-        if creator.is_some() && signer == creator {
+        if signer == Some(creator) {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {

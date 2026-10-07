@@ -179,6 +179,29 @@ fn only_the_creator_opens_a_subgroup_and_its_admins_close_it() {
     );
     assert!(authorize(&flip(admin, true), &view).is_ok());
     assert!(authorize(&flip(creator, true), &view).is_ok());
+
+    // A group with no recorded creator (a namespace root) keeps the admin rule.
+    let root = ContextGroupId::from([9u8; 32]);
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        root,
+        [(admin, GroupMemberRole::Admin)].into_iter().collect(),
+    );
+    let root_view = bind_account(
+        bind_test_devices(AclView {
+            groups,
+            ..Default::default()
+        }),
+        admin,
+    );
+    let open_root = op_with(
+        admin,
+        OpPayload::SubgroupVisibilitySet {
+            scope: ScopeId::from(root.to_bytes()),
+            restricted: false,
+        },
+    );
+    assert!(authorize(&open_root, &root_view).is_ok());
 }
 
 #[test]

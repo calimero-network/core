@@ -208,8 +208,9 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
         }
         OpPayload::SubgroupVisibilitySet { scope, restricted } => {
             let group = ContextGroupId::from(*scope.as_bytes());
-            if *restricted {
-                // Closing is the subgroup's admins' to decide.
+            // Closing - and anything on a group with no recorded creator, the
+            // namespace root - is the group's admins' to decide.
+            if *restricted || !acl_at_cut.group_creator.contains_key(&group) {
                 if acl_at_cut.is_group_admin(&op.author(), group) {
                     Ok(())
                 } else {
