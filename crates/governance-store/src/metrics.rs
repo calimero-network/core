@@ -680,18 +680,40 @@ impl UndecidableCause {
         }
     }
 
-    /// Can the refusal this cause describes resolve on its own, once sync
-    /// delivers more history?
+    /// What clears the refusal this cause describes.
     ///
-    /// [`Self::LogTruncated`] cannot: the history is gone from the retained
-    /// window, so no amount of sync brings the walk back within reach. Exposed
-    /// so the recording site can log a truncation loudly (it needs an operator)
-    /// while leaving the self-healing cases quiet, and so a future caller can
-    /// branch on permanence without re-deriving the classification.
+    /// The causes differ in what they wait for, and a log or a caller that
+    /// treats them alike misleads: a history gap clears once sync delivers the
+    /// missing ops, an unreadable ancestor only once its group's key arrives -
+    /// which a node outside that group is never served - and a truncated log
+    /// never clears at all.
     #[must_use]
-    pub fn is_transient(self) -> bool {
-        !matches!(self, UndecidableCause::LogTruncated)
+    pub fn remedy(self) -> UndecidableRemedy {
+        match self {
+            UndecidableCause::ScopeUnfed
+            | UndecidableCause::HeadsMissing
+            | UndecidableCause::AncestryGap => UndecidableRemedy::Sync,
+            UndecidableCause::AncestryUnreadable => UndecidableRemedy::Key,
+            UndecidableCause::LogTruncated => UndecidableRemedy::Never,
+            UndecidableCause::FoldUnavailable | UndecidableCause::NamespaceUnresolved => {
+                UndecidableRemedy::Retry
+            }
+        }
     }
+}
+
+/// What clears an at-cut refusal: see [`UndecidableCause::remedy`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UndecidableRemedy {
+    /// More history: sync delivers the missing ops and the op re-folds.
+    Sync,
+    /// A group key this node lacks. It clears when the key arrives, which for a
+    /// node outside that group is never.
+    Key,
+    /// Nothing: the retained log no longer reaches the cut. Needs an operator.
+    Never,
+    /// A store fault; the next attempt may succeed.
+    Retry,
 }
 
 /// Record one apply-time at-cut authority refusal, labeled by cause. No-op
@@ -803,7 +825,7 @@ mod tests {
     /// a local family rather than the process-global sink for the reason
     /// `self_purge_failures_register_and_encode` documents below.
     #[test]
-    fn undecidable_causes_encode_distinctly_and_only_truncation_is_permanent() {
+    fn undecidable_causes_encode_distinctly_and_name_what_clears_them() {
         let all = [
             UndecidableCause::ScopeUnfed,
             UndecidableCause::HeadsMissing,
@@ -821,18 +843,26 @@ mod tests {
             "two causes share a label, so one would hide inside the other's series",
         );
 
-        let permanent: Vec<&str> = all
-            .iter()
-            .filter(|c| !c.is_transient())
-            .map(|c| c.as_label())
-            .collect();
+        let by = |remedy: UndecidableRemedy| -> Vec<&str> {
+            all.iter()
+                .filter(|c| c.remedy() == remedy)
+                .map(|c| c.as_label())
+                .collect()
+        };
         assert_eq!(
-            permanent,
+            by(UndecidableRemedy::Never),
             vec!["log_truncated"],
-            "only a truncated log is unrecoverable; the rest clear once sync \
-             delivers the missing history — `ancestry_unreadable` included, since \
-             a key delivery re-folds the op and it is a node outside the group, \
-             not the history, that keeps it standing",
+            "only a truncated log is unrecoverable by anything",
+        );
+        assert_eq!(
+            by(UndecidableRemedy::Key),
+            vec!["ancestry_unreadable"],
+            "an unreadable ancestor waits for a key, not for history: a node \
+             outside its group waits forever, and must not be told sync will fix it",
+        );
+        assert_eq!(
+            by(UndecidableRemedy::Sync),
+            vec!["scope_unfed", "heads_missing", "ancestry_gap"],
         );
 
         let mut registry = Registry::default();

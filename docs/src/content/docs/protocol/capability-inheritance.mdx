@@ -190,7 +190,7 @@ A member's capabilities are a `u32` bitfield, `MemberCapabilities`. The bits rel
 | 4 | `MANAGE_APPLICATION` | `1 << 4` | Manage the group's application. |
 | 5 | `CAN_CREATE_SUBGROUP` | `1 << 5` | Non-admin creation of a subgroup **directly under the namespace root** only. |
 | 6 | `CAN_DELETE_SUBGROUP` | `1 << 6` | Non-admin deletion of a subgroup and its subtree (checked at the root). |
-| 7 | `CAN_MANAGE_VISIBILITY` | `1 << 7` | Flip a subgroup's `Open` ↔ `Restricted` without full admin. A flip to `Restricted` rotates the key, so it also needs a direct admin of the subgroup. |
+| 7 | `CAN_MANAGE_VISIBILITY` | `1 << 7` | Flip a subgroup to `Restricted` without full admin. That flip rotates the key, so it also needs a direct admin of the subgroup. Opening a subgroup is its creator's alone, whatever the capability (#4522). |
 | 8 | `CAN_MANAGE_METADATA` | `1 << 8` | Set group/member/context metadata without full admin. |
 | 9 | `CAN_AUTHOR_ON_BEHALF` | `1 << 9` | Execute a [delegated write](/protocol/delegated-authorship/) as another member. The one bit that resolves through the anchor — see the aside below. |
 

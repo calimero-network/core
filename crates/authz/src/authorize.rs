@@ -206,12 +206,22 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
                 Err(Rejected::NotGroupAdmin)
             }
         }
-        OpPayload::SubgroupVisibilitySet { scope, .. } => {
-            // Visibility is a property of the subgroup; its admin sets it.
-            if acl_at_cut.is_group_admin(&op.author(), ContextGroupId::from(*scope.as_bytes())) {
+        OpPayload::SubgroupVisibilitySet { scope, restricted } => {
+            let group = ContextGroupId::from(*scope.as_bytes());
+            // Closing - and anything on a group with no recorded creator, the
+            // namespace root - is the group's admins' to decide.
+            if *restricted || !acl_at_cut.group_creator.contains_key(&group) {
+                if acl_at_cut.is_group_admin(&op.author(), group) {
+                    Ok(())
+                } else {
+                    Err(Rejected::NotGroupAdmin)
+                }
+            } else if acl_at_cut.is_group_creator(&op.author(), group) {
+                // Opening is its creator's alone (#4522): a fact every
+                // namespace member holds, so every node reaches this verdict.
                 Ok(())
             } else {
-                Err(Rejected::NotGroupAdmin)
+                Err(Rejected::NotGroupCreator)
             }
         }
         // Owner-level: the admin pin, and ownership transfer, which folds as it.
