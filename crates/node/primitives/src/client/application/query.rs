@@ -2,11 +2,12 @@
 
 use std::cmp::Ordering;
 
-use calimero_primitives::application::{Application, ApplicationBlob, ApplicationId};
+use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::blobs::BlobId;
 use calimero_store::key;
 use semver::Version;
 
+use super::application_from_meta;
 use crate::client::NodeClient;
 
 /// Release order: semver, with an unparseable version below any parseable one
@@ -30,23 +31,7 @@ impl NodeClient {
 
         for (id, app) in iter.entries() {
             let (id, app) = (id?, app?);
-            applications.push(
-                Application::new(
-                    id.application_id(),
-                    ApplicationBlob {
-                        bytecode: app.bytecode.blob_id(),
-                        compiled: app.compiled.blob_id(),
-                    },
-                    app.size,
-                    app.source.parse()?,
-                    app.metadata.to_vec(),
-                )
-                .with_bundle_info(
-                    app.signer_id.to_string(),
-                    app.package.to_string(),
-                    app.version.to_string(),
-                ),
-            );
+            applications.push(application_from_meta(id.application_id(), &app)?);
         }
 
         Ok(applications)

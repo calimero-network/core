@@ -11,6 +11,7 @@ use calimero_primitives::application::{Application, ApplicationBlob, Application
 use calimero_primitives::blobs::BlobId;
 use calimero_store::key;
 use calimero_store::key::AsKeyParts;
+use calimero_store::types::ApplicationMeta;
 use eyre::bail;
 use tracing::debug;
 
@@ -19,6 +20,40 @@ use super::NodeClient;
 pub use bind::{lock_application_rows, InstallOrigin};
 pub use install::NotABundle;
 pub use query::compare_versions;
+
+/// The one place a stored application row becomes an `Application`, so the
+/// single read and the list report the same fields.
+fn application_from_meta(id: ApplicationId, meta: &ApplicationMeta) -> eyre::Result<Application> {
+    let mut app = Application::new(
+        id,
+        ApplicationBlob {
+            bytecode: meta.bytecode.blob_id(),
+            compiled: meta.compiled.blob_id(),
+        },
+        meta.size,
+        meta.source.parse()?,
+        meta.metadata.to_vec(),
+    )
+    .with_bundle_info(
+        meta.signer_id.to_string(),
+        meta.package.to_string(),
+        meta.version.to_string(),
+    );
+    app.services = meta
+        .services
+        .iter()
+        .map(|s| {
+            (
+                s.name.to_string(),
+                ApplicationBlob {
+                    bytecode: s.bytecode.blob_id(),
+                    compiled: s.compiled.blob_id(),
+                },
+            )
+        })
+        .collect();
+    Ok(app)
+}
 
 impl NodeClient {
     pub fn get_application(
@@ -33,38 +68,7 @@ impl NodeClient {
             return Ok(None);
         };
 
-        let services = application
-            .services
-            .iter()
-            .map(|s| {
-                (
-                    s.name.to_string(),
-                    ApplicationBlob {
-                        bytecode: s.bytecode.blob_id(),
-                        compiled: s.compiled.blob_id(),
-                    },
-                )
-            })
-            .collect();
-
-        let mut app = Application::new(
-            *application_id,
-            ApplicationBlob {
-                bytecode: application.bytecode.blob_id(),
-                compiled: application.compiled.blob_id(),
-            },
-            application.size,
-            application.source.parse()?,
-            application.metadata.into_vec(),
-        )
-        .with_bundle_info(
-            application.signer_id.to_string(),
-            application.package.to_string(),
-            application.version.to_string(),
-        );
-        app.services = services;
-
-        Ok(Some(app))
+        application_from_meta(*application_id, &application).map(Some)
     }
 
     pub async fn get_application_bytes(
