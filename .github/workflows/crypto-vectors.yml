@@ -37,6 +37,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       # The pinned toolchain and the ci-checks cache, which only its owner saves.
       - name: Setup Rust CI

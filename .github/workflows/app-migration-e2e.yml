@@ -78,6 +78,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       # A hit is these exact fixtures, built on master from the same migration-app
       # trees, cargo-mero, lockfile, toolchain and script; a crate change that
@@ -125,6 +126,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
@@ -228,6 +230,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Download merod image artifact
         uses: actions/download-artifact@v8

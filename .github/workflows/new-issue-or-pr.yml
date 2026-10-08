@@ -8,16 +8,16 @@ on:
     branches:
       - master # Trigger when PRs are opened or reopened targeting the master branch
 
-# Runs under pull_request_target (privileged token). Restrict it to exactly what the
-# labeling jobs need; everything else defaults to no access.
-permissions:
-  issues: write
-  pull-requests: write
+# Runs under pull_request_target (privileged token); the labeling job declares its own scopes.
+permissions: {}
 
 jobs:
   labelIssuePR:
     name: Apply Label to Issues and PRs
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
     steps:
       - name: Add Label to Issue or PR
         uses: actions/github-script@v9
@@ -45,11 +45,16 @@ jobs:
           result-encoding: string
         id: result
       - name: Get result
-        run: echo "${{steps.result.outputs.result}}"
+        run: echo "${STEPS_RESULT_OUTPUTS_RESULT}"
+        env:
+          STEPS_RESULT_OUTPUTS_RESULT: ${{steps.result.outputs.result}}
 
   determine-contribution-type:
     name: Apply Label to Issues and PRs
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
     outputs:
       is_external: ${{ steps.determine_if_external.outputs.is_external }}
       contribution_author: ${{ steps.get_author.outputs.result }}
@@ -97,11 +102,11 @@ jobs:
       - name: Determine if Author is External
         id: determine_if_external
         run: |
-          echo "Author: ${{ steps.get_author.outputs.result }}"
-          echo "Organization Members: ${{ steps.get_org_members.outputs.result }}"
+          echo "Author: ${STEPS_GET_AUTHOR_OUTPUTS_RESULT}"
+          echo "Organization Members: ${STEPS_GET_ORG_MEMBERS_OUTPUTS_RESULT}"
 
-          AUTHOR="${{ steps.get_author.outputs.result }}"
-          ORG_MEMBERS="${{ steps.get_org_members.outputs.result }}"
+          AUTHOR="${STEPS_GET_AUTHOR_OUTPUTS_RESULT}"
+          ORG_MEMBERS="${STEPS_GET_ORG_MEMBERS_OUTPUTS_RESULT}"
 
           if echo "$ORG_MEMBERS" | grep -q "$AUTHOR"; then
             echo "The author $AUTHOR is a member of the organization.";
@@ -110,6 +115,9 @@ jobs:
             echo "The author $AUTHOR is an external contributor.";
             echo "is_external=true" >> $GITHUB_OUTPUT
           fi
+        env:
+          STEPS_GET_AUTHOR_OUTPUTS_RESULT: ${{ steps.get_author.outputs.result }}
+          STEPS_GET_ORG_MEMBERS_OUTPUTS_RESULT: ${{ steps.get_org_members.outputs.result }}
 
       - name: Add External Label if Necessary
         if: steps.determine_if_external.outputs.is_external == 'true'

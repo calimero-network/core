@@ -29,10 +29,12 @@ jobs:
       - name: Set artifact name
         id: artifact
         run: |
-          case "${{ github.event.workflow_run.name }}" in
+          case "${GITHUB_EVENT_WORKFLOW_RUN_NAME}" in
             "E2E - Rust Apps") echo "name=pr-comment-payload-rust-apps" >> $GITHUB_OUTPUT ;;
             *) echo "name=pr-comment-payload" >> $GITHUB_OUTPUT ;;
           esac
+        env:
+          GITHUB_EVENT_WORKFLOW_RUN_NAME: ${{ github.event.workflow_run.name }}
 
       - name: Download artifact
         id: download

@@ -94,6 +94,7 @@ jobs:
           # Under workflow_run, github.sha is the default-branch HEAD, not
           # the commit Release built from; pin to that commit instead.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
@@ -178,6 +179,7 @@ jobs:
           # Under workflow_run, github.sha is the default-branch HEAD, not
           # the commit Release built from; pin to that commit instead.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
@@ -199,15 +201,17 @@ jobs:
       - name: Override test duration
         # duration_override wins if set; otherwise 60min for the nightly
         # schedule, else 15min.
+        env:
+          EVENT_INPUTS_DURATION_OVERRIDE: ${{ github.event.inputs.duration_override }}
         run: |
-          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
-            DURATION="${{ github.event.inputs.duration_override }}"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ -n "${EVENT_INPUTS_DURATION_OVERRIDE}" ]; then
+            DURATION="${EVENT_INPUTS_DURATION_OVERRIDE}"
+          elif [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             DURATION="60"
           else
             DURATION="15"
           fi
-          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
+          echo "Using duration: ${DURATION} minutes (trigger: ${GITHUB_EVENT_NAME})"
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" workflows/fuzzy-tests/kv-store/fuzzy-test.yml
 
       - name: Create directories
@@ -222,32 +226,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Pins workflow_run runs to the triggering commit's image; empty otherwise.
           WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_INPUTS_ENABLE_PROFILING: ${{ github.event.inputs.enable_profiling }}
+          EVENT_PULL_REQUEST_NUMBER_OR_0: ${{ github.event.pull_request.number || '0' }}
         run: |
           chmod +x scripts/determine-image-tag.sh
-          if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
+          if [ "${EVENT_INPUTS_ENABLE_PROFILING}" = "false" ]; then
             ./scripts/determine-image-tag.sh \
-              "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
-              "${{ github.repository_owner }}" \
-              "${{ github.repository }}" \
-              "${{ github.head_ref || github.ref_name }}" \
-              "${{ github.token }}"
+              "${GITHUB_EVENT_NAME}" \
+              "${EVENT_PULL_REQUEST_NUMBER_OR_0}" \
+              "${GITHUB_REPOSITORY_OWNER}" \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+              "${GH_TOKEN}"
             echo "profiling=false" >> $GITHUB_OUTPUT
           else
             ./scripts/determine-image-tag.sh \
-              "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
-              "${{ github.repository_owner }}" \
-              "${{ github.repository }}" \
-              "${{ github.head_ref || github.ref_name }}" \
-              "${{ github.token }}" \
+              "${GITHUB_EVENT_NAME}" \
+              "${EVENT_PULL_REQUEST_NUMBER_OR_0}" \
+              "${GITHUB_REPOSITORY_OWNER}" \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+              "${GH_TOKEN}" \
               --profiling
             echo "profiling=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Pull Docker image
+        env:
+          STEPS_IMAGE_OUTPUTS_TAG: ${{ steps.image.outputs.tag }}
         run: |
-          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          IMAGE="ghcr.io/calimero-network/merod:${STEPS_IMAGE_OUTPUTS_TAG}"
           docker pull "$IMAGE" || true
           # A soak test of the p2p paths, so its nodes resolve from each other.
           ./scripts/set-registry-mode.sh "$IMAGE" dht
@@ -259,20 +267,28 @@ jobs:
         id: setup-vmagent
         env:
           VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
+          EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           chmod +x scripts/setup-vmagent.sh
-          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_HASH="${EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "kv-store" \
             "kv-store-${SHORT_COMMIT}" \
-            "${{ github.run_id }}" \
+            "${GITHUB_RUN_ID}" \
             "8429" \
             "$COMMIT_HASH" \
-            "${{ github.ref_name }}"
+            "${GITHUB_REF_NAME}"
 
       - name: Run KV Store Fuzzy Test with Metrics Collection
         id: kv-test
+        env:
+          EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          STEPS_IMAGE_OUTPUTS_TAG: ${{ steps.image.outputs.tag }}
+          STEPS_SETUP_VMAGENT_OUTPUTS_VMAGENT_DIR: ${{ steps.setup-vmagent.outputs.vmagent_dir }}
+          STEPS_SETUP_VMAGENT_OUTPUTS_VICTORIA_URL: ${{ steps.setup-vmagent.outputs.victoria_url }}
+          STEPS_SETUP_VMAGENT_OUTPUTS_AUTH_ENABLED: ${{ steps.setup-vmagent.outputs.auth_enabled }}
+          STEPS_SETUP_VMAGENT_OUTPUTS_BEARER_TOKEN_FILE: ${{ steps.setup-vmagent.outputs.bearer_token_file }}
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           mkdir -p fuzzy-test-logs/kv-store/docker-logs
@@ -280,21 +296,21 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           TEST_CASE="kv-store"
-          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_HASH="${EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
-          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          IMAGE="ghcr.io/calimero-network/merod:${STEPS_IMAGE_OUTPUTS_TAG}"
           FUZZY_CONFIG="workflows/fuzzy-tests/kv-store/fuzzy-test.yml"
           NODE_COUNT=$(yq '.nodes.count' "$FUZZY_CONFIG")
           NODE_PREFIX=$(yq '.nodes.prefix' "$FUZZY_CONFIG")
 
           VMAGENT_STARTED="false"
           if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
-            "$TEST_CASE" "$INSTANCE_NAME" "${{ github.run_id }}" "$COMMIT_HASH" "${{ github.ref_name }}" \
-            "${{ steps.setup-vmagent.outputs.vmagent_dir }}" \
-            "${{ steps.setup-vmagent.outputs.victoria_url }}" \
-            "${{ steps.setup-vmagent.outputs.auth_enabled }}" \
-            "${{ steps.setup-vmagent.outputs.bearer_token_file }}" \
+            "$TEST_CASE" "$INSTANCE_NAME" "${GITHUB_RUN_ID}" "$COMMIT_HASH" "${GITHUB_REF_NAME}" \
+            "${STEPS_SETUP_VMAGENT_OUTPUTS_VMAGENT_DIR}" \
+            "${STEPS_SETUP_VMAGENT_OUTPUTS_VICTORIA_URL}" \
+            "${STEPS_SETUP_VMAGENT_OUTPUTS_AUTH_ENABLED}" \
+            "${STEPS_SETUP_VMAGENT_OUTPUTS_BEARER_TOKEN_FILE}" \
             "8429" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
@@ -357,8 +373,10 @@ jobs:
       - name: Set test result
         id: set-result
         if: always()
+        env:
+          STEPS_KV_TEST_OUTPUTS_EXIT_CODE: ${{ steps.kv-test.outputs.exit_code }}
         run: |
-          EXIT_CODE="${{ steps.kv-test.outputs.exit_code }}"
+          EXIT_CODE="${STEPS_KV_TEST_OUTPUTS_EXIT_CODE}"
           if [ "$EXIT_CODE" = "0" ]; then
             echo "passed=true" >> $GITHUB_OUTPUT
           else
@@ -410,6 +428,7 @@ jobs:
           # Under workflow_run, github.sha is the default-branch HEAD, not
           # the commit Release built from; pin to that commit instead.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
@@ -429,15 +448,17 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
+        env:
+          EVENT_INPUTS_DURATION_OVERRIDE: ${{ github.event.inputs.duration_override }}
         run: |
-          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
-            DURATION="${{ github.event.inputs.duration_override }}"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ -n "${EVENT_INPUTS_DURATION_OVERRIDE}" ]; then
+            DURATION="${EVENT_INPUTS_DURATION_OVERRIDE}"
+          elif [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             DURATION="60"
           else
             DURATION="15"
           fi
-          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
+          echo "Using duration: ${DURATION} minutes (trigger: ${GITHUB_EVENT_NAME})"
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" workflows/fuzzy-tests/kv-store-with-handlers/fuzzy-test.yml
 
       - name: Create directories
@@ -452,32 +473,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Pins workflow_run runs to the triggering commit's image; empty otherwise.
           WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_INPUTS_ENABLE_PROFILING: ${{ github.event.inputs.enable_profiling }}
+          EVENT_PULL_REQUEST_NUMBER_OR_0: ${{ github.event.pull_request.number || '0' }}
         run: |
           chmod +x scripts/determine-image-tag.sh
-          if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
+          if [ "${EVENT_INPUTS_ENABLE_PROFILING}" = "false" ]; then
             ./scripts/determine-image-tag.sh \
-              "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
-              "${{ github.repository_owner }}" \
-              "${{ github.repository }}" \
-              "${{ github.head_ref || github.ref_name }}" \
-              "${{ github.token }}"
+              "${GITHUB_EVENT_NAME}" \
+              "${EVENT_PULL_REQUEST_NUMBER_OR_0}" \
+              "${GITHUB_REPOSITORY_OWNER}" \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+              "${GH_TOKEN}"
             echo "profiling=false" >> $GITHUB_OUTPUT
           else
             ./scripts/determine-image-tag.sh \
-              "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
-              "${{ github.repository_owner }}" \
-              "${{ github.repository }}" \
-              "${{ github.head_ref || github.ref_name }}" \
-              "${{ github.token }}" \
+              "${GITHUB_EVENT_NAME}" \
+              "${EVENT_PULL_REQUEST_NUMBER_OR_0}" \
+              "${GITHUB_REPOSITORY_OWNER}" \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+              "${GH_TOKEN}" \
               --profiling
             echo "profiling=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Pull Docker image
+        env:
+          STEPS_IMAGE_OUTPUTS_TAG: ${{ steps.image.outputs.tag }}
         run: |
-          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          IMAGE="ghcr.io/calimero-network/merod:${STEPS_IMAGE_OUTPUTS_TAG}"
           docker pull "$IMAGE" || true
           # A soak test of the p2p paths, so its nodes resolve from each other.
           ./scripts/set-registry-mode.sh "$IMAGE" dht
@@ -489,20 +514,28 @@ jobs:
         id: setup-vmagent-handlers
         env:
           VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
+          EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           chmod +x scripts/setup-vmagent.sh
-          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_HASH="${EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "kv-store-with-handlers" \
             "kv-store-with-handlers-${SHORT_COMMIT}" \
-            "${{ github.run_id }}" \
+            "${GITHUB_RUN_ID}" \
             "8430" \
             "$COMMIT_HASH" \
-            "${{ github.ref_name }}"
+            "${GITHUB_REF_NAME}"
 
       - name: Run Handlers Fuzzy Test with Metrics Collection
         id: handlers-test
+        env:
+          EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          STEPS_IMAGE_OUTPUTS_TAG: ${{ steps.image.outputs.tag }}
+          STEPS_SETUP_VMAGENT_HANDLERS_OUTPUTS_VMAGENT_DIR: ${{ steps.setup-vmagent-handlers.outputs.vmagent_dir }}
+          STEPS_SETUP_VMAGENT_HANDLERS_OUTPUTS_VICTORIA_URL: ${{ steps.setup-vmagent-handlers.outputs.victoria_url }}
+          STEPS_SETUP_VMAGENT_HANDLERS_OUTPUTS_AUTH_ENABLED: ${{ steps.setup-vmagent-handlers.outputs.auth_enabled }}
+          STEPS_SETUP_VMAGENT_HANDLERS_OUTPUTS_BEARER_TOKEN_FILE: ${{ steps.setup-vmagent-handlers.outputs.bearer_token_file }}
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           mkdir -p fuzzy-test-logs/kv-store-with-handlers/docker-logs
@@ -510,21 +543,21 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           TEST_CASE="kv-store-with-handlers"
-          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_HASH="${EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
-          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          IMAGE="ghcr.io/calimero-network/merod:${STEPS_IMAGE_OUTPUTS_TAG}"
           FUZZY_CONFIG="workflows/fuzzy-tests/kv-store-with-handlers/fuzzy-test.yml"
           NODE_COUNT=$(yq '.nodes.count' "$FUZZY_CONFIG")
           NODE_PREFIX=$(yq '.nodes.prefix' "$FUZZY_CONFIG")
 
           VMAGENT_STARTED="false"
           if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
-            "$TEST_CASE" "$INSTANCE_NAME" "${{ github.run_id }}" "$COMMIT_HASH" "${{ github.ref_name }}" \
-            "${{ steps.setup-vmagent-handlers.outputs.vmagent_dir }}" \
-            "${{ steps.setup-vmagent-handlers.outputs.victoria_url }}" \
-            "${{ steps.setup-vmagent-handlers.outputs.auth_enabled }}" \
-            "${{ steps.setup-vmagent-handlers.outputs.bearer_token_file }}" \
+            "$TEST_CASE" "$INSTANCE_NAME" "${GITHUB_RUN_ID}" "$COMMIT_HASH" "${GITHUB_REF_NAME}" \
+            "${STEPS_SETUP_VMAGENT_HANDLERS_OUTPUTS_VMAGENT_DIR}" \
+            "${STEPS_SETUP_VMAGENT_HANDLERS_OUTPUTS_VICTORIA_URL}" \
+            "${STEPS_SETUP_VMAGENT_HANDLERS_OUTPUTS_AUTH_ENABLED}" \
+            "${STEPS_SETUP_VMAGENT_HANDLERS_OUTPUTS_BEARER_TOKEN_FILE}" \
             "8430" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
@@ -587,8 +620,10 @@ jobs:
       - name: Set test result
         id: set-result-handlers
         if: always()
+        env:
+          STEPS_HANDLERS_TEST_OUTPUTS_EXIT_CODE: ${{ steps.handlers-test.outputs.exit_code }}
         run: |
-          EXIT_CODE="${{ steps.handlers-test.outputs.exit_code }}"
+          EXIT_CODE="${STEPS_HANDLERS_TEST_OUTPUTS_EXIT_CODE}"
           if [ "$EXIT_CODE" = "0" ]; then
             echo "passed=true" >> $GITHUB_OUTPUT
           else
@@ -638,6 +673,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
@@ -657,15 +693,17 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
+        env:
+          EVENT_INPUTS_DURATION_OVERRIDE: ${{ github.event.inputs.duration_override }}
         run: |
-          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
-            DURATION="${{ github.event.inputs.duration_override }}"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ -n "${EVENT_INPUTS_DURATION_OVERRIDE}" ]; then
+            DURATION="${EVENT_INPUTS_DURATION_OVERRIDE}"
+          elif [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             DURATION="60"
           else
             DURATION="15"
           fi
-          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
+          echo "Using duration: ${DURATION} minutes (trigger: ${GITHUB_EVENT_NAME})"
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" workflows/fuzzy-tests/scaffolding-e2e/fuzzy-test.yml
 
       - name: Create directories
@@ -680,32 +718,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Pins workflow_run runs to the triggering commit's image; empty otherwise.
           WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_INPUTS_ENABLE_PROFILING: ${{ github.event.inputs.enable_profiling }}
+          EVENT_PULL_REQUEST_NUMBER_OR_0: ${{ github.event.pull_request.number || '0' }}
         run: |
           chmod +x scripts/determine-image-tag.sh
-          if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
+          if [ "${EVENT_INPUTS_ENABLE_PROFILING}" = "false" ]; then
             ./scripts/determine-image-tag.sh \
-              "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
-              "${{ github.repository_owner }}" \
-              "${{ github.repository }}" \
-              "${{ github.head_ref || github.ref_name }}" \
-              "${{ github.token }}"
+              "${GITHUB_EVENT_NAME}" \
+              "${EVENT_PULL_REQUEST_NUMBER_OR_0}" \
+              "${GITHUB_REPOSITORY_OWNER}" \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+              "${GH_TOKEN}"
             echo "profiling=false" >> $GITHUB_OUTPUT
           else
             ./scripts/determine-image-tag.sh \
-              "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
-              "${{ github.repository_owner }}" \
-              "${{ github.repository }}" \
-              "${{ github.head_ref || github.ref_name }}" \
-              "${{ github.token }}" \
+              "${GITHUB_EVENT_NAME}" \
+              "${EVENT_PULL_REQUEST_NUMBER_OR_0}" \
+              "${GITHUB_REPOSITORY_OWNER}" \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+              "${GH_TOKEN}" \
               --profiling
             echo "profiling=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Pull Docker image
+        env:
+          STEPS_IMAGE_OUTPUTS_TAG: ${{ steps.image.outputs.tag }}
         run: |
-          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          IMAGE="ghcr.io/calimero-network/merod:${STEPS_IMAGE_OUTPUTS_TAG}"
           docker pull "$IMAGE" || true
           # A soak test of the p2p paths, so its nodes resolve from each other.
           ./scripts/set-registry-mode.sh "$IMAGE" dht
@@ -717,20 +759,28 @@ jobs:
         id: setup-vmagent-e2e
         env:
           VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
+          EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           chmod +x scripts/setup-vmagent.sh
-          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_HASH="${EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "scaffolding-e2e" \
             "scaffolding-e2e-${SHORT_COMMIT}" \
-            "${{ github.run_id }}" \
+            "${GITHUB_RUN_ID}" \
             "8431" \
             "$COMMIT_HASH" \
-            "${{ github.ref_name }}"
+            "${GITHUB_REF_NAME}"
 
       - name: Run Scaffolding E2E Fuzzy Test with Metrics Collection
         id: e2e-test
+        env:
+          EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          STEPS_IMAGE_OUTPUTS_TAG: ${{ steps.image.outputs.tag }}
+          STEPS_SETUP_VMAGENT_E2E_OUTPUTS_VMAGENT_DIR: ${{ steps.setup-vmagent-e2e.outputs.vmagent_dir }}
+          STEPS_SETUP_VMAGENT_E2E_OUTPUTS_VICTORIA_URL: ${{ steps.setup-vmagent-e2e.outputs.victoria_url }}
+          STEPS_SETUP_VMAGENT_E2E_OUTPUTS_AUTH_ENABLED: ${{ steps.setup-vmagent-e2e.outputs.auth_enabled }}
+          STEPS_SETUP_VMAGENT_E2E_OUTPUTS_BEARER_TOKEN_FILE: ${{ steps.setup-vmagent-e2e.outputs.bearer_token_file }}
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           mkdir -p fuzzy-test-logs/scaffolding-e2e/docker-logs
@@ -738,21 +788,21 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           TEST_CASE="scaffolding-e2e"
-          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_HASH="${EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
-          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          IMAGE="ghcr.io/calimero-network/merod:${STEPS_IMAGE_OUTPUTS_TAG}"
           FUZZY_CONFIG="workflows/fuzzy-tests/scaffolding-e2e/fuzzy-test.yml"
           NODE_COUNT=$(yq '.nodes.count' "$FUZZY_CONFIG")
           NODE_PREFIX=$(yq '.nodes.prefix' "$FUZZY_CONFIG")
 
           VMAGENT_STARTED="false"
           if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
-            "$TEST_CASE" "$INSTANCE_NAME" "${{ github.run_id }}" "$COMMIT_HASH" "${{ github.ref_name }}" \
-            "${{ steps.setup-vmagent-e2e.outputs.vmagent_dir }}" \
-            "${{ steps.setup-vmagent-e2e.outputs.victoria_url }}" \
-            "${{ steps.setup-vmagent-e2e.outputs.auth_enabled }}" \
-            "${{ steps.setup-vmagent-e2e.outputs.bearer_token_file }}" \
+            "$TEST_CASE" "$INSTANCE_NAME" "${GITHUB_RUN_ID}" "$COMMIT_HASH" "${GITHUB_REF_NAME}" \
+            "${STEPS_SETUP_VMAGENT_E2E_OUTPUTS_VMAGENT_DIR}" \
+            "${STEPS_SETUP_VMAGENT_E2E_OUTPUTS_VICTORIA_URL}" \
+            "${STEPS_SETUP_VMAGENT_E2E_OUTPUTS_AUTH_ENABLED}" \
+            "${STEPS_SETUP_VMAGENT_E2E_OUTPUTS_BEARER_TOKEN_FILE}" \
             "8431" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
@@ -814,8 +864,10 @@ jobs:
       - name: Set test result
         id: set-result-e2e
         if: always()
+        env:
+          STEPS_E2E_TEST_OUTPUTS_EXIT_CODE: ${{ steps.e2e-test.outputs.exit_code }}
         run: |
-          EXIT_CODE="${{ steps.e2e-test.outputs.exit_code }}"
+          EXIT_CODE="${STEPS_E2E_TEST_OUTPUTS_EXIT_CODE}"
           if [ "$EXIT_CODE" = "0" ]; then
             echo "passed=true" >> $GITHUB_OUTPUT
           else
@@ -865,6 +917,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
@@ -884,15 +937,17 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
+        env:
+          EVENT_INPUTS_DURATION_OVERRIDE: ${{ github.event.inputs.duration_override }}
         run: |
-          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
-            DURATION="${{ github.event.inputs.duration_override }}"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ -n "${EVENT_INPUTS_DURATION_OVERRIDE}" ]; then
+            DURATION="${EVENT_INPUTS_DURATION_OVERRIDE}"
+          elif [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             DURATION="60"
           else
             DURATION="15"
           fi
-          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
+          echo "Using duration: ${DURATION} minutes (trigger: ${GITHUB_EVENT_NAME})"
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" workflows/fuzzy-tests/group-governance/fuzzy-test.yml
 
       - name: Create directories
@@ -907,32 +962,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Pins workflow_run runs to the triggering commit's image; empty otherwise.
           WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT_INPUTS_ENABLE_PROFILING: ${{ github.event.inputs.enable_profiling }}
+          EVENT_PULL_REQUEST_NUMBER_OR_0: ${{ github.event.pull_request.number || '0' }}
         run: |
           chmod +x scripts/determine-image-tag.sh
-          if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
+          if [ "${EVENT_INPUTS_ENABLE_PROFILING}" = "false" ]; then
             ./scripts/determine-image-tag.sh \
-              "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
-              "${{ github.repository_owner }}" \
-              "${{ github.repository }}" \
-              "${{ github.head_ref || github.ref_name }}" \
-              "${{ github.token }}"
+              "${GITHUB_EVENT_NAME}" \
+              "${EVENT_PULL_REQUEST_NUMBER_OR_0}" \
+              "${GITHUB_REPOSITORY_OWNER}" \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+              "${GH_TOKEN}"
             echo "profiling=false" >> $GITHUB_OUTPUT
           else
             ./scripts/determine-image-tag.sh \
-              "${{ github.event_name }}" \
-              "${{ github.event.pull_request.number || '0' }}" \
-              "${{ github.repository_owner }}" \
-              "${{ github.repository }}" \
-              "${{ github.head_ref || github.ref_name }}" \
-              "${{ github.token }}" \
+              "${GITHUB_EVENT_NAME}" \
+              "${EVENT_PULL_REQUEST_NUMBER_OR_0}" \
+              "${GITHUB_REPOSITORY_OWNER}" \
+              "${GITHUB_REPOSITORY}" \
+              "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+              "${GH_TOKEN}" \
               --profiling
             echo "profiling=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Pull Docker image
+        env:
+          STEPS_IMAGE_OUTPUTS_TAG: ${{ steps.image.outputs.tag }}
         run: |
-          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          IMAGE="ghcr.io/calimero-network/merod:${STEPS_IMAGE_OUTPUTS_TAG}"
           docker pull "$IMAGE" || true
           # A soak test of the p2p paths, so its nodes resolve from each other.
           ./scripts/set-registry-mode.sh "$IMAGE" dht
@@ -944,20 +1003,28 @@ jobs:
         id: setup-vmagent-gov
         env:
           VICTORIA_METRICS_BEARER_TOKEN: ${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}
+          EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           chmod +x scripts/setup-vmagent.sh
-          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_HASH="${EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           ./scripts/setup-vmagent.sh \
             "group-governance" \
             "group-governance-${SHORT_COMMIT}" \
-            "${{ github.run_id }}" \
+            "${GITHUB_RUN_ID}" \
             "8432" \
             "$COMMIT_HASH" \
-            "${{ github.ref_name }}"
+            "${GITHUB_REF_NAME}"
 
       - name: Run Group Governance Fuzzy Test with Metrics Collection
         id: gov-test
+        env:
+          EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          STEPS_IMAGE_OUTPUTS_TAG: ${{ steps.image.outputs.tag }}
+          STEPS_SETUP_VMAGENT_GOV_OUTPUTS_VMAGENT_DIR: ${{ steps.setup-vmagent-gov.outputs.vmagent_dir }}
+          STEPS_SETUP_VMAGENT_GOV_OUTPUTS_VICTORIA_URL: ${{ steps.setup-vmagent-gov.outputs.victoria_url }}
+          STEPS_SETUP_VMAGENT_GOV_OUTPUTS_AUTH_ENABLED: ${{ steps.setup-vmagent-gov.outputs.auth_enabled }}
+          STEPS_SETUP_VMAGENT_GOV_OUTPUTS_BEARER_TOKEN_FILE: ${{ steps.setup-vmagent-gov.outputs.bearer_token_file }}
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           mkdir -p fuzzy-test-logs/group-governance/docker-logs
@@ -965,21 +1032,21 @@ jobs:
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
           TEST_CASE="group-governance"
-          COMMIT_HASH="${{ github.event.workflow_run.head_sha || github.sha }}"
+          COMMIT_HASH="${EVENT_WORKFLOW_RUN_HEAD_SHA_OR_GITHUB_SHA}"
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
-          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          IMAGE="ghcr.io/calimero-network/merod:${STEPS_IMAGE_OUTPUTS_TAG}"
           FUZZY_CONFIG="workflows/fuzzy-tests/group-governance/fuzzy-test.yml"
           NODE_COUNT=$(yq '.nodes.count' "$FUZZY_CONFIG")
           NODE_PREFIX=$(yq '.nodes.prefix' "$FUZZY_CONFIG")
 
           VMAGENT_STARTED="false"
           if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
-            "$TEST_CASE" "$INSTANCE_NAME" "${{ github.run_id }}" "$COMMIT_HASH" "${{ github.ref_name }}" \
-            "${{ steps.setup-vmagent-gov.outputs.vmagent_dir }}" \
-            "${{ steps.setup-vmagent-gov.outputs.victoria_url }}" \
-            "${{ steps.setup-vmagent-gov.outputs.auth_enabled }}" \
-            "${{ steps.setup-vmagent-gov.outputs.bearer_token_file }}" \
+            "$TEST_CASE" "$INSTANCE_NAME" "${GITHUB_RUN_ID}" "$COMMIT_HASH" "${GITHUB_REF_NAME}" \
+            "${STEPS_SETUP_VMAGENT_GOV_OUTPUTS_VMAGENT_DIR}" \
+            "${STEPS_SETUP_VMAGENT_GOV_OUTPUTS_VICTORIA_URL}" \
+            "${STEPS_SETUP_VMAGENT_GOV_OUTPUTS_AUTH_ENABLED}" \
+            "${STEPS_SETUP_VMAGENT_GOV_OUTPUTS_BEARER_TOKEN_FILE}" \
             "8432" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
@@ -1041,8 +1108,10 @@ jobs:
       - name: Set test result
         id: set-result-gov
         if: always()
+        env:
+          STEPS_GOV_TEST_OUTPUTS_EXIT_CODE: ${{ steps.gov-test.outputs.exit_code }}
         run: |
-          EXIT_CODE="${{ steps.gov-test.outputs.exit_code }}"
+          EXIT_CODE="${STEPS_GOV_TEST_OUTPUTS_EXIT_CODE}"
           if [ "$EXIT_CODE" = "0" ]; then
             echo "passed=true" >> $GITHUB_OUTPUT
           else
@@ -1088,9 +1157,9 @@ jobs:
         # Priority must match the duration-resolution blocks in the fuzzy-test
         # jobs above: duration_override wins, then schedule, then routine default.
         run: |
-          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
-            RUN_KIND="Manual override (${{ github.event.inputs.duration_override }} min)"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ -n "${GITHUB_EVENT_INPUTS_DURATION_OVERRIDE}" ]; then
+            RUN_KIND="Manual override (${GITHUB_EVENT_INPUTS_DURATION_OVERRIDE} min)"
+          elif [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             RUN_KIND="Nightly soak (60 min)"
           else
             RUN_KIND="Routine (15 min)"
@@ -1098,50 +1167,65 @@ jobs:
           echo "## Fuzzy Load Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Run kind:** ${RUN_KIND}" >> $GITHUB_STEP_SUMMARY
-          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Profiling Enabled:** ${{ github.event.inputs.enable_profiling || 'true' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${GITHUB_EVENT_NAME}" >> $GITHUB_STEP_SUMMARY
+          echo "**Profiling Enabled:** ${EVENT_INPUTS_ENABLE_PROFILING_OR_TRUE}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### KV Store Test" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.fuzzy-test-kv-store.result }}" = "skipped" ]; then
+          if [ "${NEEDS_FUZZY_TEST_KV_STORE_RESULT}" = "skipped" ]; then
             echo "**SKIPPED**" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.fuzzy-test-kv-store.outputs.test_passed }}" = "true" ]; then
+          elif [ "${NEEDS_FUZZY_TEST_KV_STORE_OUTPUTS_TEST_PASSED}" = "true" ]; then
             echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**FAILED** (exit code: ${{ needs.fuzzy-test-kv-store.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
+            echo "**FAILED** (exit code: ${NEEDS_FUZZY_TEST_KV_STORE_OUTPUTS_EXIT_CODE})" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### KV Store with Handlers Test" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.fuzzy-test-handlers.result }}" = "skipped" ]; then
+          if [ "${NEEDS_FUZZY_TEST_HANDLERS_RESULT}" = "skipped" ]; then
             echo "**SKIPPED**" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.fuzzy-test-handlers.outputs.test_passed }}" = "true" ]; then
+          elif [ "${NEEDS_FUZZY_TEST_HANDLERS_OUTPUTS_TEST_PASSED}" = "true" ]; then
             echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**FAILED** (exit code: ${{ needs.fuzzy-test-handlers.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
+            echo "**FAILED** (exit code: ${NEEDS_FUZZY_TEST_HANDLERS_OUTPUTS_EXIT_CODE})" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### E2E KV Store Test" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.fuzzy-test-scaffolding-e2e.result }}" = "skipped" ]; then
+          if [ "${NEEDS_FUZZY_TEST_SCAFFOLDING_E2E_RESULT}" = "skipped" ]; then
             echo "**SKIPPED**" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.fuzzy-test-scaffolding-e2e.outputs.test_passed }}" = "true" ]; then
+          elif [ "${NEEDS_FUZZY_TEST_SCAFFOLDING_E2E_OUTPUTS_TEST_PASSED}" = "true" ]; then
             echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**FAILED** (exit code: ${{ needs.fuzzy-test-scaffolding-e2e.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
+            echo "**FAILED** (exit code: ${NEEDS_FUZZY_TEST_SCAFFOLDING_E2E_OUTPUTS_EXIT_CODE})" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Group Governance Test" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.fuzzy-test-group-governance.result }}" = "skipped" ]; then
+          if [ "${NEEDS_FUZZY_TEST_GROUP_GOVERNANCE_RESULT}" = "skipped" ]; then
             echo "**SKIPPED**" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.fuzzy-test-group-governance.outputs.test_passed }}" = "true" ]; then
+          elif [ "${NEEDS_FUZZY_TEST_GROUP_GOVERNANCE_OUTPUTS_TEST_PASSED}" = "true" ]; then
             echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**FAILED** (exit code: ${{ needs.fuzzy-test-group-governance.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
+            echo "**FAILED** (exit code: ${NEEDS_FUZZY_TEST_GROUP_GOVERNANCE_OUTPUTS_EXIT_CODE})" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Profiling Artifacts" >> $GITHUB_STEP_SUMMARY
           echo "- \`profiling-data-<suite>-*\`: per-node \`perf-*.data\` (CPU, frame-pointer call-graphs — merod in this image is built with \`-C force-frame-pointers=yes\`), \`perf-*.map\` (WASM JIT symbols), jemalloc \`*.heap\` dumps, and (when rendering succeeds) \`<node>/reports/flamegraph-{cpu,memory}-*.svg\`. Harvested from the node host data dirs (\`./data/<node>/profiling-dump/\`)." >> $GITHUB_STEP_SUMMARY
           echo "- \`profiling-reports-<suite>-*\`: just the rendered flamegraph SVGs (CPU + memory + icicle), lifted out of \`profiling-data-*\` into a small standalone artifact for quick browsing. Empty only when the in-container flamegraph render produced nothing for that run — in which case use the raw \`perf-*.data\` / \`*.heap\` in \`profiling-data-*\` directly." >> $GITHUB_STEP_SUMMARY
+        env:
+          GITHUB_EVENT_INPUTS_DURATION_OVERRIDE: ${{ github.event.inputs.duration_override }}
+          NEEDS_FUZZY_TEST_KV_STORE_OUTPUTS_TEST_PASSED: ${{ needs.fuzzy-test-kv-store.outputs.test_passed }}
+          NEEDS_FUZZY_TEST_KV_STORE_OUTPUTS_EXIT_CODE: ${{ needs.fuzzy-test-kv-store.outputs.exit_code }}
+          NEEDS_FUZZY_TEST_HANDLERS_OUTPUTS_TEST_PASSED: ${{ needs.fuzzy-test-handlers.outputs.test_passed }}
+          NEEDS_FUZZY_TEST_HANDLERS_OUTPUTS_EXIT_CODE: ${{ needs.fuzzy-test-handlers.outputs.exit_code }}
+          NEEDS_FUZZY_TEST_SCAFFOLDING_E2E_OUTPUTS_TEST_PASSED: ${{ needs.fuzzy-test-scaffolding-e2e.outputs.test_passed }}
+          NEEDS_FUZZY_TEST_SCAFFOLDING_E2E_OUTPUTS_EXIT_CODE: ${{ needs.fuzzy-test-scaffolding-e2e.outputs.exit_code }}
+          NEEDS_FUZZY_TEST_GROUP_GOVERNANCE_OUTPUTS_TEST_PASSED: ${{ needs.fuzzy-test-group-governance.outputs.test_passed }}
+          NEEDS_FUZZY_TEST_GROUP_GOVERNANCE_OUTPUTS_EXIT_CODE: ${{ needs.fuzzy-test-group-governance.outputs.exit_code }}
+          EVENT_INPUTS_ENABLE_PROFILING_OR_TRUE: ${{ github.event.inputs.enable_profiling || 'true' }}
+          NEEDS_FUZZY_TEST_KV_STORE_RESULT: ${{ needs.fuzzy-test-kv-store.result }}
+          NEEDS_FUZZY_TEST_HANDLERS_RESULT: ${{ needs.fuzzy-test-handlers.result }}
+          NEEDS_FUZZY_TEST_SCAFFOLDING_E2E_RESULT: ${{ needs.fuzzy-test-scaffolding-e2e.result }}
+          NEEDS_FUZZY_TEST_GROUP_GOVERNANCE_RESULT: ${{ needs.fuzzy-test-group-governance.result }}

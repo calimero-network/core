@@ -23,6 +23,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
         
       # The pinned toolchain and the wasm-apps cache, which only e2e's Build Apps saves.
       - name: Setup Rust CI

@@ -55,7 +55,7 @@ runs:
     - name: Restore the cached merobox binary
       if: runner.os != 'Windows'
       id: cache
-      uses: actions/cache@v6
+      uses: actions/cache/restore@v6
       with:
         path: ~/.cache/merobox
         key: merobox-${{ steps.pin.outputs.tag }}-${{ steps.pin.outputs.arch }}
@@ -118,3 +118,11 @@ runs:
           echo "::error::merobox reports ${HAVE_MEROBOX} but ${MEROBOX_VERSION} is pinned"
           exit 1
         fi
+
+    # A workflow_run job would write the default branch's cache scope from a branch's code.
+    - name: Save the merobox binary
+      if: runner.os != 'Windows' && github.event_name != 'workflow_run' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/merobox
+        key: merobox-${{ steps.pin.outputs.tag }}-${{ steps.pin.outputs.arch }}

@@ -79,13 +79,14 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Get version info
         id: version_info
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "target_commit=${GITHUB_SHA}" >> $GITHUB_OUTPUT
 
           version=$(cargo metadata --format-version 1 --no-deps | jq -r '.metadata.workspaces.version')
 
@@ -94,26 +95,26 @@ jobs:
           crate_release=false
           docker_release=false
 
-          if [ "${{ github.ref }}" == "refs/heads/master" ]; then
+          if [ "${GITHUB_REF}" == "refs/heads/master" ]; then
             if [[ "$version" =~ -[a-z]+(\.[0-9]+)?$ ]]; then
               prerelease=true
             fi
 
-            if ! gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
+            if ! gh release view "$version" --repo ${GITHUB_REPOSITORY} >/dev/null 2>&1; then
               binary_release=true
               crate_release=true
               docker_release=true
-            elif [ "${{ github.run_attempt }}" != "1" ] \
-              && [ "$(gh release view "$version" --repo ${{ github.repository }} --json assets --jq '.assets | length')" = "0" ]; then
+            elif [ "${GITHUB_RUN_ATTEMPT}" != "1" ] \
+              && [ "$(gh release view "$version" --repo ${GITHUB_REPOSITORY} --json assets --jq '.assets | length')" = "0" ]; then
               # Re-arm only on a re-run: on a first attempt, a shell with no assets is
               # just a release still building, owned by another run.
               binary_release=true
-            elif [ "$(gh release view "$version" --repo ${{ github.repository }} --json assets --jq '.assets | length')" = "0" ]; then
+            elif [ "$(gh release view "$version" --repo ${GITHUB_REPOSITORY} --json assets --jq '.assets | length')" = "0" ]; then
               # A failed release build must be fixed by re-running its own run, since the
               # tag points at that commit.
               echo "::warning::Release $version exists with no assets. If its build failed, re-run that run; this push will not upload binaries."
             fi
-          elif [ "${{ github.event_name }}" == "pull_request" ]; then
+          elif [ "${GITHUB_EVENT_NAME}" == "pull_request" ]; then
             docker_release=true
           fi
 
@@ -189,16 +190,16 @@ jobs:
           VERSION: ${{ steps.version_info.outputs.version }}
           PRERELEASE: ${{ steps.version_info.outputs.prerelease }}
         run: |
-          if gh release view "$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+          if gh release view "$VERSION" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "Release $VERSION already exists — nothing to create."
             exit 0
           fi
-          args=(--repo "${{ github.repository }}" --target "${{ github.sha }}" --title "$VERSION" --notes "")
+          args=(--repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "$VERSION" --notes "")
           if [ "$PRERELEASE" = "true" ]; then
             args+=(--prerelease)
           fi
           if ! gh release create "$VERSION" "${args[@]}"; then
-            echo "::error::Could not create release $VERSION. If master moved past ${{ github.sha }} already, create the tag+release manually and re-run failed jobs: gh api -X POST repos/${{ github.repository }}/git/refs -f ref=refs/tags/$VERSION -f sha=${{ github.sha }} && gh api -X POST repos/${{ github.repository }}/releases -f tag_name=$VERSION -f name=$VERSION -F prerelease=$PRERELEASE"
+            echo "::error::Could not create release $VERSION. If master moved past ${GITHUB_SHA} already, create the tag+release manually and re-run failed jobs: gh api -X POST repos/${GITHUB_REPOSITORY}/git/refs -f ref=refs/tags/$VERSION -f sha=${GITHUB_SHA} && gh api -X POST repos/${GITHUB_REPOSITORY}/releases -f tag_name=$VERSION -f name=$VERSION -F prerelease=$PRERELEASE"
             exit 1
           fi
 
@@ -251,6 +252,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       # The pinned toolchain only: this job saves no Rust cache. The x86 release
       # cache was 3.8 GB of the repo's 10 GB, and next to ci-checks' 3.5 GB it got
@@ -302,15 +304,19 @@ jobs:
 
       - name: Build binaries
         if: needs.prepare.outputs.build == 'true'
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
         run: |
           readarray -t binaries <<< "$TARGET_BINARIES"
 
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
-          cargo build $binaries --release --target ${{ matrix.target }}
+          cargo build $binaries --release --target ${MATRIX_TARGET}
 
       - name: Compress artifacts using gzip
         if: needs.prepare.outputs.build == 'true'
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
         run: |
           mkdir -p artifacts
 
@@ -324,13 +330,15 @@ jobs:
           fi
 
           for binary in "${binaries[@]}"; do
-            tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary$suffix"
+            tar -czf artifacts/"$binary"_${MATRIX_TARGET}.tar.gz -C target/${MATRIX_TARGET}/release "$binary$suffix"
           done
 
       # A bin target of calimero-tee-attestation behind the `cli` feature, so it cannot join $BINARIES (`-p`).
       # Ships because mdma's manager shells out to it to verify TDX quotes; linux/amd64 image only.
       - name: Build calimero-tee-verify (Linux only)
         if: ${{ needs.prepare.outputs.build == 'true' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
         run: |
           # With mock-attestation compiled in, the verifier would accept a forged
           # MOCK_TDX_QUOTE_V1 blob.
@@ -341,32 +349,36 @@ jobs:
           echo "OK: mock-attestation is not enabled in calimero-tee-verify"
 
           cargo build -p calimero-tee-attestation --bin calimero-tee-verify \
-            --features cli --release --target ${{ matrix.target }}
+            --features cli --release --target ${MATRIX_TARGET}
 
-          tar -czf artifacts/calimero-tee-verify_${{ matrix.target }}.tar.gz \
-            -C target/${{ matrix.target }}/release calimero-tee-verify
+          tar -czf artifacts/calimero-tee-verify_${MATRIX_TARGET}.tar.gz \
+            -C target/${MATRIX_TARGET}/release calimero-tee-verify
 
       # x86_64 only: every consumer of the profiling image (fuzzy-load-test, the
       # sync-regression scenarios) runs on amd64, and on the arm64 runner this build
       # took 22 of the job's 42 minutes, holding back every master push's :edge image.
       - name: Build profiling binaries (with frame pointers and debug symbols)
         if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && matrix.target == 'x86_64-unknown-linux-gnu') }}
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
         run: |
           readarray -t binaries <<< "$BINARIES"
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
           # calimero-context/profiling enables Wasmer PerfMap.
-          RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${{ matrix.target }} --features calimero-context/profiling
+          RUSTFLAGS="-C force-frame-pointers=yes" cargo build $binaries --profile profiling --target ${MATRIX_TARGET} --features calimero-context/profiling
 
       - name: Compress profiling artifacts using gzip
         if: ${{ needs.prepare.outputs.build == 'true' && ((github.event_name == 'push' || needs.prepare.outputs.profiling_paths_changed == 'true') && matrix.target == 'x86_64-unknown-linux-gnu') }}
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
         run: |
           mkdir -p artifacts-profiling
 
           readarray -t binaries <<< "$BINARIES"
 
           for binary in "${binaries[@]}"; do
-            tar -czf artifacts-profiling/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/profiling "$binary"
+            tar -czf artifacts-profiling/"$binary"_${MATRIX_TARGET}.tar.gz -C target/${MATRIX_TARGET}/profiling "$binary"
           done
 
       - name: Upload artifacts
@@ -404,6 +416,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Download x86_64 Linux artifacts
         uses: actions/download-artifact@v8
@@ -475,6 +488,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
@@ -487,7 +501,9 @@ jobs:
         uses: ./.github/actions/setup-cargo-mero
 
       - name: Build the kv-store bundle
-        run: cargo mero bundle --dev --no-icon --app-version "${{ needs.prepare.outputs.version }}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
+        run: cargo mero bundle --dev --no-icon --app-version "${NEEDS_PREPARE_OUTPUTS_VERSION}" --manifest-path apps/kv-store/Cargo.toml --output dist/kv-store-test-fixture.mpk
+        env:
+          NEEDS_PREPARE_OUTPUTS_VERSION: ${{ needs.prepare.outputs.version }}
 
       - name: Upload the bundle to the release
         uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
@@ -516,6 +532,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
@@ -568,6 +585,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Release
         uses: ./.github/actions/container-release
@@ -604,6 +622,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Release
         uses: ./.github/actions/container-release
@@ -639,6 +658,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Release
         uses: ./.github/actions/container-release-profiling
@@ -682,21 +702,25 @@ jobs:
 
       - name: Get GitHub App User ID
         id: get-user-id
-        run: echo "user-id=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+        run: echo "user-id=$(gh api "/users/${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STEPS_APP_TOKEN_OUTPUTS_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
 
       - name: Configure Git
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STEPS_APP_TOKEN_OUTPUTS_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          STEPS_GET_USER_ID_OUTPUTS_USER_ID: ${{ steps.get-user-id.outputs.user-id }}
         run: |
           gh auth setup-git
-          git config --global user.name '${{ steps.app-token.outputs.app-slug }}[bot]'
-          git config --global user.email '${{ steps.get-user-id.outputs.user-id }}+${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          git config --global user.name "${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]"
+          git config --global user.email "${STEPS_GET_USER_ID_OUTPUTS_USER_ID}+${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]@users.noreply.github.com"
 
       - name: Update Formula
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NEEDS_PREPARE_OUTPUTS_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           target_branch="chore/bump-formulas-version"
           git fetch origin "${target_branch}" || true
@@ -705,8 +729,8 @@ jobs:
           readarray -t binaries <<< "$HOMEBREW_BINARIES"
 
           for binary in "${binaries[@]}"; do
-            echo "Updating formula for ${binary}, version: ${{ needs.prepare.outputs.version }}"
-            ./generate-formula.sh "${binary}" "${{ needs.prepare.outputs.version }}"
+            echo "Updating formula for ${binary}, version: ${NEEDS_PREPARE_OUTPUTS_VERSION}"
+            ./generate-formula.sh "${binary}" "${NEEDS_PREPARE_OUTPUTS_VERSION}"
           done
 
           git status

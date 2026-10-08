@@ -56,6 +56,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Three surfaces move on release: `cargo` pins the SDK by git tag; `tauri` and
       # `tee` ship a merod binary with no SDK link, reached only through this list.
@@ -100,6 +102,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: producer
+          persist-credentials: false
 
       # Scoped to the single repository this matrix leg touches, rather than to
       # the whole fleet at once.

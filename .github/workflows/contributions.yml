@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Apply Needs Attention Label
         id: needs-attention
@@ -28,4 +29,6 @@ jobs:
           response-required-label: "waiting-for-author-feedback"
           needs-attention-label: "needs-team-review"
       - name: Result
-        run: echo '${{ steps.needs-attention.outputs.result }}'
+        run: echo "${STEPS_NEEDS_ATTENTION_OUTPUTS_RESULT}"
+        env:
+          STEPS_NEEDS_ATTENTION_OUTPUTS_RESULT: ${{ steps.needs-attention.outputs.result }}
