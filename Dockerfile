@@ -29,6 +29,7 @@ ARG CALIMERO_WEBUI_REPO # the git repository hosting the webui (for a git releas
 ARG CALIMERO_WEBUI_VERSION # the version of the webui to use (for a git release asset)
 ARG CALIMERO_WEBUI_FETCH # invalidate the cache, fetch the webui (for a git release asset)
 ARG CALIMERO_WEBUI_ASSET # file name of the asset to use (for a git release asset)
+ARG CALIMERO_WEBUI_SHA256 # expected sha256 of the archive (required when overriding the pinned default with a remote source)
 # CALIMERO_WEBUI_FETCH_TOKEN # GitHub token to use for fetching the webui (for a git release asset)
 
 # ^~~ docker build

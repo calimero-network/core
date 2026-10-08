@@ -4,7 +4,7 @@ use std::time::Duration;
 use std::{env, fs};
 
 use bytes::Bytes;
-use calimero_build_utils::fetch_and_extract;
+use calimero_build_utils::{fetch_and_extract, required_sha256};
 use eyre::{bail, Context, OptionExt};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
@@ -50,10 +50,13 @@ fn main() {
 fn try_main() -> eyre::Result<()> {
     let token = option_env!("CALIMERO_WEBUI_FETCH_TOKEN");
     let sha256_override = option_env!("CALIMERO_WEBUI_SHA256");
+    let require_sha256 = |src: &str, pinned: Option<&'static str>| {
+        required_sha256(src, pinned, sha256_override, "CALIMERO_WEBUI_SHA256")
+    };
 
     let mut is_local_dir = false;
 
-    let mut expected_sha256 = sha256_override;
+    let sha256;
 
     let src = if let Some(src) = option_env!("CALIMERO_WEBUI_SRC") {
         match reqwest::Url::parse(src) {
@@ -71,6 +74,8 @@ fn try_main() -> eyre::Result<()> {
             _ => {}
         }
 
+        sha256 = require_sha256(src, None)?;
+
         Cow::from(src)
     } else {
         let repo = option_env!("CALIMERO_WEBUI_REPO").unwrap_or(CALIMERO_WEBUI_REPO);
@@ -81,9 +86,10 @@ fn try_main() -> eyre::Result<()> {
             && version == CALIMERO_WEBUI_VERSION
             && asset.is_none_or(|asset| asset == CALIMERO_WEBUI_DEFAULT_ASSET);
 
-        if is_default && expected_sha256.is_none() {
-            expected_sha256 = Some(CALIMERO_WEBUI_SHA256);
-        }
+        sha256 = require_sha256(
+            &format!("https://github.com/{repo}/releases/{version}"),
+            is_default.then_some(CALIMERO_WEBUI_SHA256),
+        )?;
 
         if let Some(asset) = asset {
             release_download_url(repo, version, asset).into()
@@ -159,13 +165,7 @@ fn try_main() -> eyre::Result<()> {
 
         let cache_dir = target_dir()?.join("cache").join("webui");
 
-        if expected_sha256.is_none() {
-            println!(
-                "cargo:warning=webui from {src} is NOT hash-verified; set CALIMERO_WEBUI_SHA256 to pin it"
-            );
-        }
-
-        let workdir = fetch_with_retry(&client, &src, &cache_dir, force, expected_sha256)?;
+        let workdir = fetch_with_retry(&client, &src, &cache_dir, force, sha256)?;
 
         workdir.into()
     };
