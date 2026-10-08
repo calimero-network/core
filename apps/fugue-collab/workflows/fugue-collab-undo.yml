@@ -3,6 +3,8 @@ description: >
   its own insert by deleting exactly the characters it minted, while another node edits.
 name: Fugue Collab Undo
 
+auth_mode: proxy
+
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge

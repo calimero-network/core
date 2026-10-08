@@ -17,6 +17,8 @@ x-sync: &sync
   timeout: 180
   trigger_sync: true
 
+auth_mode: proxy
+
 # Defined individually so every port is pinned: the count form lets --e2e-mode
 # allocate ports dynamically, and a later start_node reconnects on base_port.
 nodes:

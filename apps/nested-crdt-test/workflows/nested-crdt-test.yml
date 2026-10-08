@@ -3,6 +3,8 @@ description: Nested CRDT test - verifies Map<String, Counter>, Map<String, LWW>,
 
 force_pull_image: true
 
+auth_mode: proxy
+
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge

@@ -35,6 +35,8 @@ force_pull_image: false
 no_docker: true
 nuke_on_start: true
 
+auth_mode: proxy
+
 nodes:
   count: 4
   prefix: relay-login-node

@@ -97,11 +97,13 @@ CLI — `app`, `context`, `namespace`, `call`).
 1. Initialize a node's config and data directory, then run it:
 
    ```sh
-   merod --node node1 init --server-port 2428 --swarm-port 2528
+   merod --node node1 init --auth-mode proxy --server-port 2428 --swarm-port 2528
    merod --node node1 run
    ```
 
-   `init` defaults to `--auth-mode proxy`, which authenticates no caller.
+   `init` defaults to embedded auth, which needs admin credentials
+   (`--admin-user` with `--admin-password-stdin`) or `--no-admin`.
+   `--auth-mode proxy` authenticates no caller, so `meroctl` works without a login.
    Any page served from localhost can then reach the admin API, so use it only on a development machine.
 
    `merod --node node1 init --help` lists the full set (swarm/server host and

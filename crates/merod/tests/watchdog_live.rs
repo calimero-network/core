@@ -147,6 +147,8 @@ fn init_returning_port(home: &Path, node: &str) -> u16 {
             // A sandboxed runner has no netlink socket, and mDNS retries that
             // failure in a tight loop that floods the log and starves the node.
             "--no-mdns",
+            "--auth-mode",
+            "proxy",
             "--server-port",
             &server_port.to_string(),
             "--swarm-port",
