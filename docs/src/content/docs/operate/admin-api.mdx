@@ -328,7 +328,7 @@ the path parameter — these are reproduced exactly as routed below.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/admin-api/groups` | Create a group. |
+| POST | `/admin-api/groups` | Create a group. A nested group is created Open unless the body sets `visibility: "restricted"`. |
 | GET | `/admin-api/groups/:group_id` | Get group info. |
 | PATCH | `/admin-api/groups/:group_id` | Update group settings. |
 | DELETE | `/admin-api/groups/:group_id` | Delete a group. |
