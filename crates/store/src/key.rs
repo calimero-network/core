@@ -24,7 +24,7 @@ mod group;
 pub use absorb::{AbsorbBufferKey, ABSORB_BUFFER_PREFIX};
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
 pub use application::{ApplicationMeta, ApplicationPreviousBlob};
-pub use blobs::{BlobMeta, BlobOwner};
+pub use blobs::{BlobMeta, BlobOwner, PrefetchedBlob};
 pub use calimero_primitives::context::GroupMemberRole;
 use component::KeyComponents;
 pub use context::{

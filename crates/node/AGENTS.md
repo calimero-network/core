@@ -321,6 +321,14 @@ cargo test -p calimero-node --test network_simulation
   initiator. Record only after the bytes are verified, and never on a local hit
   or on an announcement's say-so: either would let one context's member claim
   another context's blob by id
+- **A prefetch's reference is recorded once, and released with its context.**
+  `NodeClient::record_prefetched_blob` is called only on the prefetch path in
+  `handlers/blob_announce.rs`; one `key::PrefetchedBlob` row is one reference.
+  `release_prefetched_blobs` drops them on `delete_context`, and
+  `spawn_prefetch_sweep` does the same for a context once two hourly sweeps in
+  a row find this node no longer serves it. `BlobManager::record_prefetch` and
+  `release_prefetch` write and delete the row under the blob's stripe lock, and
+  only the caller that deletes a row releases its reference
 - `NodeClient::get_blob`'s discovery leg does NOT trust the DHT alone: a
   provider record is opportunistic (nothing announces application
   bytecode at install, and a restart drops what was announced), so an

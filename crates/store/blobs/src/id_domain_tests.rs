@@ -188,6 +188,28 @@ async fn adding_a_blob_stored_under_the_old_chunk_keys_restarts_its_count() {
 }
 
 #[tokio::test]
+async fn restarting_a_root_drops_its_prefetch_rows_but_keeps_its_owners() {
+    let dir = tempdir().unwrap();
+    let mgr = manager(dir.path()).await;
+
+    let payload = b"stored by an earlier version";
+    let root = seed_old_layout_blob(&mgr, payload).await;
+    let context = ContextId::from([0x11; 32]);
+    assert_eq!(
+        mgr.record_prefetch(context, root).await.unwrap(),
+        Recorded::New
+    );
+    let owner = BlobOwnerKey::new(context, root);
+    mgr.data_store.handle().put(&owner, &()).unwrap();
+
+    mgr.put(&payload[..]).await.unwrap();
+
+    let handle = mgr.data_store.handle();
+    assert!(!handle.has(&PrefetchedBlobKey::new(context, root)).unwrap());
+    assert!(handle.has(&owner).unwrap());
+}
+
+#[tokio::test]
 async fn a_second_add_of_a_current_blob_still_counts_two_references() {
     let dir = tempdir().unwrap();
     let mgr = manager(dir.path()).await;

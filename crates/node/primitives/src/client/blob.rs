@@ -1,7 +1,8 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use calimero_app_downloader::registry::RegistryMode;
-use calimero_blobstore::{Blob, BlobManager as BlobStore, Deleted, Size};
+use calimero_blobstore::{Blob, BlobManager as BlobStore, Deleted, Recorded, Size};
 use calimero_context_config::MAX_NAMESPACE_DEPTH;
 use calimero_network_primitives::blob_types::{BlobAuth, BlobAuthPayload, BlobProbe, ByteBudget};
 use calimero_primitives::{
@@ -138,6 +139,22 @@ impl BlobManager {
     /// [`calimero_blobstore::BlobManager::delete`].
     pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<Deleted> {
         self.blobstore.delete(blob_id).await
+    }
+
+    pub async fn record_prefetch(
+        &self,
+        context_id: ContextId,
+        blob_id: BlobId,
+    ) -> eyre::Result<Recorded> {
+        self.blobstore.record_prefetch(context_id, blob_id).await
+    }
+
+    pub async fn release_prefetch(
+        &self,
+        context_id: ContextId,
+        blob_id: BlobId,
+    ) -> eyre::Result<Deleted> {
+        self.blobstore.release_prefetch(context_id, blob_id).await
     }
 }
 
@@ -1093,6 +1110,61 @@ impl NodeClient {
             .handle()
             .put(&key::BlobOwner::new(*context_id, *blob_id), &())?;
         Ok(())
+    }
+
+    /// Record that a prefetch for `context_id` took one reference to `blob_id`.
+    /// A row already there gives the new reference back, so one row is one reference.
+    pub async fn record_prefetched_blob(
+        &self,
+        context_id: &ContextId,
+        blob_id: &BlobId,
+    ) -> eyre::Result<()> {
+        let recorded = self
+            .blob_manager
+            .record_prefetch(*context_id, *blob_id)
+            .await?;
+        if recorded == Recorded::AlreadyHeld {
+            let _released = self.delete_blob(*blob_id).await?;
+        }
+        Ok(())
+    }
+
+    /// Release every reference prefetches took for `context_id`.
+    pub async fn release_prefetched_blobs(&self, context_id: &ContextId) -> eyre::Result<()> {
+        for row in self.prefetched_rows(context_id)? {
+            let _released = self
+                .blob_manager
+                .release_prefetch(*context_id, row.blob_id())
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// The contexts prefetches took a reference for.
+    pub fn prefetched_blob_contexts(&self) -> eyre::Result<BTreeSet<ContextId>> {
+        let handle = self.datastore.clone().handle();
+        let mut iter = handle.iter::<key::PrefetchedBlob>()?;
+        iter.keys().map(|row| Ok(row?.context_id())).collect()
+    }
+
+    fn prefetched_rows(&self, context_id: &ContextId) -> eyre::Result<Vec<key::PrefetchedBlob>> {
+        let handle = self.datastore.clone().handle();
+        let mut iter = handle.iter::<key::PrefetchedBlob>()?;
+        let first = iter
+            .seek(key::PrefetchedBlob::new(
+                *context_id,
+                [0; DIGEST_SIZE].into(),
+            ))
+            .transpose();
+        let mut rows = Vec::new();
+        for row in first.into_iter().chain(iter.keys()) {
+            let row = row?;
+            if row.context_id() != *context_id {
+                break;
+            }
+            rows.push(row);
+        }
+        Ok(rows)
     }
 
     /// Whether this node may serve `blob_id` to members of `context_id`: it was
