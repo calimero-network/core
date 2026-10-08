@@ -1502,13 +1502,30 @@ impl Default for AutoFollowFlags {
 /// Stored against [`GroupMember`]. Tracks the member's role and, for the local
 /// node, the Ed25519 key pair used for sync key-share across all contexts in
 /// this group.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct GroupMemberValue {
     pub role: GroupMemberRole,
     pub private_key: Option<[u8; 32]>,
     pub sender_key: Option<[u8; 32]>,
     pub auto_follow: AutoFollowFlags,
+}
+
+impl Debug for GroupMemberValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupMemberValue")
+            .field("role", &self.role)
+            .field(
+                "private_key",
+                &self.private_key.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "sender_key",
+                &self.sender_key.as_ref().map(|_| "[redacted]"),
+            )
+            .field("auto_follow", &self.auto_follow)
+            .finish()
+    }
 }
 
 /// Tracks the progress of a group-wide upgrade operation.
@@ -4114,7 +4131,7 @@ impl Debug for GroupPendingDeviceRotation {
 /// Serialization is still derived, so every *new* write is the full five-field
 /// layout; only the read side is lenient. Any field added after this one must
 /// extend the same tail-optional pattern rather than re-deriving.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize))]
 pub struct GroupKeyValue {
     pub group_key: [u8; 32],
@@ -4123,6 +4140,18 @@ pub struct GroupKeyValue {
     pub insertion_seq: u64,
     /// [`Self::VOIDED`], or `0`.
     pub flags: u8,
+}
+
+impl Debug for GroupKeyValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupKeyValue")
+            .field("group_key", &"[redacted]")
+            .field("created_at", &self.created_at)
+            .field("epoch", &self.epoch)
+            .field("insertion_seq", &self.insertion_seq)
+            .field("flags", &self.flags)
+            .finish()
+    }
 }
 
 impl GroupKeyValue {
@@ -5095,5 +5124,49 @@ mod group_key_value_compat_tests {
     fn rejects_a_row_missing_created_at() {
         let _err = GroupKeyValue::try_from_slice(&KEY)
             .expect_err("created_at predates every layout — its absence is corruption");
+    }
+}
+
+#[cfg(test)]
+mod secret_value_debug_tests {
+    use super::{AutoFollowFlags, GroupKeyValue, GroupMemberRole, GroupMemberValue};
+
+    #[test]
+    fn group_member_value_debug_omits_both_keys() {
+        let private_key = [0xa7; 32];
+        let sender_key = [0xb8; 32];
+        let shown = format!(
+            "{:?}",
+            GroupMemberValue {
+                role: GroupMemberRole::ReadOnly,
+                private_key: Some(private_key),
+                sender_key: Some(sender_key),
+                auto_follow: AutoFollowFlags::default(),
+            }
+        );
+
+        assert!(!shown.contains(&format!("{private_key:?}")), "{shown}");
+        assert!(!shown.contains(&format!("{sender_key:?}")), "{shown}");
+        assert!(shown.contains("ReadOnly"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn group_key_value_debug_omits_the_key() {
+        let key = [0xa7; 32];
+        let shown = format!(
+            "{:?}",
+            GroupKeyValue {
+                group_key: key,
+                created_at: 1_700_000_000,
+                epoch: 9,
+                insertion_seq: 11,
+                flags: 0,
+            }
+        );
+
+        assert!(!shown.contains(&format!("{key:?}")), "{shown}");
+        assert!(shown.contains("1700000000"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 }
