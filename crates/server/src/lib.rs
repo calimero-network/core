@@ -262,6 +262,20 @@ pub async fn start(
                 .is_some_and(|admin| admin.delegated_access),
         }
     };
+    // In proxy mode the node can still guard a sealed request itself, by asking
+    // the proxy's auth service what the proxy would have asked.
+    let forward_auth = match (&config.sealed.forward_auth, config.use_embedded_auth()) {
+        (Some(_), true) => {
+            warn!("[server.sealed] forward_auth is ignored under embedded auth");
+            None
+        }
+        (Some(origin), false) => {
+            let forward_auth = sealed::ForwardAuth::new(origin).map_err(|err| eyre::eyre!(err))?;
+            info!(%origin, "Sealed requests are guarded by the auth service, as the proxy guards direct ones");
+            Some(forward_auth)
+        }
+        (None, _) => None,
+    };
     let transport = Arc::new(sealed::SealedTransport::generate(
         &sealed::SealedOptions::new(
             config.sealed.required,
@@ -269,7 +283,8 @@ pub async fn start(
                 .ok()
                 .filter(|prefix| !prefix.is_empty()),
         )
-        .with_inner_scope(inner_scope),
+        .with_inner_scope(inner_scope)
+        .with_forward_auth(forward_auth),
         &mut prom_registry,
     ));
     if config.sealed.required {

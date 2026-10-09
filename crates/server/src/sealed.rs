@@ -92,10 +92,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zeroize::{Zeroize, Zeroizing};
 
+pub use self::forward_auth::ForwardAuth;
 pub use self::session::SESSION_LIFETIME;
 use self::session::{SessionId, SessionKeys, Sessions, MESSAGE_1_LEN, SESSION_ID_LEN};
-use crate::proxy_identity;
 
+mod forward_auth;
 mod session;
 
 /// Where a session is opened, under the node's mount (see [`SealedOptions`]).
@@ -208,6 +209,10 @@ pub struct SealedOptions {
     pub path_prefix: Option<String>,
     /// Which routes an opened request may reach.
     pub inner_scope: InnerScope,
+    /// Under [`InnerScope::Uncredentialed`], the auth service to ask about an
+    /// opened request the scope alone would refuse, as the proxy would have
+    /// (`[server.sealed] forward_auth`). See [`ForwardAuth`].
+    pub forward_auth: Option<ForwardAuth>,
 }
 
 impl SealedOptions {
@@ -217,6 +222,7 @@ impl SealedOptions {
             required,
             path_prefix,
             inner_scope: InnerScope::Any,
+            forward_auth: None,
         }
     }
 
@@ -224,6 +230,14 @@ impl SealedOptions {
     #[must_use]
     pub const fn with_inner_scope(mut self, inner_scope: InnerScope) -> Self {
         self.inner_scope = inner_scope;
+        self
+    }
+
+    /// Ask `forward_auth` about what the inner scope alone would refuse; see
+    /// [`ForwardAuth`].
+    #[must_use]
+    pub fn with_forward_auth(mut self, forward_auth: Option<ForwardAuth>) -> Self {
+        self.forward_auth = forward_auth;
         self
     }
 }
@@ -244,6 +258,7 @@ pub struct SealedTransport {
     /// Which routes an opened request may reach, and the prefix they sit under.
     inner_scope: InnerScope,
     prefix: String,
+    forward_auth: Option<ForwardAuth>,
     metrics: SealedMetrics,
 }
 
@@ -292,6 +307,7 @@ impl SealedTransport {
             unsealed_allowed,
             inner_scope: options.inner_scope,
             prefix,
+            forward_auth: options.forward_auth.clone(),
             metrics,
         }
     }
@@ -615,21 +631,6 @@ async fn open_and_dispatch(
     if transport.route(inner.uri().path()).is_some() {
         return Err(malformed());
     }
-    // Refused inside the envelope rather than in the clear: the session is
-    // valid, so the answer is sealed like any other, and what was asked for
-    // stays between the client and this node.
-    if !transport.allows_inner(inner.uri().path()) {
-        let refusal = Refusal {
-            status: StatusCode::FORBIDDEN,
-            code: "sealed_route_unguarded",
-            message: "this node's auth is enforced by the proxy in front of it, which \
-                      cannot see inside a sealed request, so only the routes it serves \
-                      without a credential can be reached sealed",
-        };
-        transport.refuse(&refusal);
-        return Ok(seal_response(frames, refusal.into_response(), expires));
-    }
-    let _previous = transport.metrics.requests.inc();
     // Whatever the server's own layers put on the outer request (connection
     // info, above all) belongs to the inner one: it is the same request.
     *inner.extensions_mut() = outer.extensions;
@@ -646,11 +647,38 @@ async fn open_and_dispatch(
     // state: the proxy cannot see inside one, so a value here was written by
     // the client. Nor is it copied from outside, as `Host` is: the outer
     // request's would describe the envelope's hop, not the request it carries.
-    for name in [
-        &proxy_identity::ACCOUNT_HEADER,
-        &proxy_identity::DEVICE_HEADER,
-    ] {
+    // Only the auth service, asked below, may name it.
+    for name in forward_auth::AUTH_HEADERS {
         let _previous = inner.headers_mut().remove(name);
+    }
+
+    // Refused inside the envelope rather than in the clear: the session is
+    // valid, so the answer is sealed like any other, and what was asked for
+    // stays between the client and this node.
+    if !transport.allows_inner(inner.uri().path()) {
+        let Some(auth) = transport.forward_auth.as_ref() else {
+            let refusal = Refusal {
+                status: StatusCode::FORBIDDEN,
+                code: "sealed_route_unguarded",
+                message: "this node's auth is enforced by the proxy in front of it, which \
+                          cannot see inside a sealed request, so only the routes it serves \
+                          without a credential can be reached sealed",
+            };
+            transport.refuse(&refusal);
+            return Ok(seal_response(frames, refusal.into_response(), expires));
+        };
+        // What the proxy would have done had it seen the request: route the
+        // auth service's own paths to it, and guard everything else with it.
+        let _previous = transport.metrics.requests.inc();
+        if ForwardAuth::serves(inner.uri().path()) {
+            let response = auth.forward(inner).await;
+            return Ok(seal_response(frames, response, expires));
+        }
+        if let Err(response) = auth.authorize(&mut inner).await {
+            return Ok(seal_response(frames, response, expires));
+        }
+    } else {
+        let _previous = transport.metrics.requests.inc();
     }
 
     let response = next.run(inner).await;
