@@ -113,13 +113,16 @@ The node opens an envelope and routes the request inside it like a direct one. W
 | --- | --- | --- |
 | `embedded` | `merod` itself | everything: login, admin API, JSON-RPC, SSE, intents |
 | `proxy` (hosted TEE nodes) | the proxy in front of `merod` | only what `merod` serves **without a credential**: `.../intents` (with `delegated_access`), `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`, and the public TEE routes |
+| `proxy` with `[server.sealed] forward_auth` | the proxy, and for sealed requests `merod` asking the proxy's auth service | everything the proxy would let the same token reach: login, admin API, queries, SSE, intents |
 
 In proxy mode, the proxy sees only `POST /sealed/v2`, never the route inside. If an opened request could reach a route the proxy guards, the envelope would be a way around the guard. So `merod` refuses such a request inside the envelope with `403` and code `sealed_route_unguarded`. The route is not executed and nothing is published.
 
+With `[server.sealed] forward_auth`, `merod` closes that gap itself: it asks the proxy's auth service about the opened request, on loopback inside the TD, exactly as the proxy would have, and forwards `/auth/…` to it ([details](/operate/security/#behind-an-auth-proxy)). A refusal comes back sealed; nothing reaches a route the proxy would have refused.
+
 For a client of a hosted TEE relay this means:
 
-- **Intents are sealed.** That is the write path, and the part carrying the arguments.
-- **Reads (`POST .../query`) and login are not.** They need a session, which the proxy and mero-auth check outside the TD. A client that needs its reads confidential too should read from a node it trusts, or from a node running embedded auth, where everything can be sealed.
+- **Intents are sealed** on every relay. That is the write path, and the part carrying the arguments.
+- **Login, reads (`POST .../query`) and event streams are sealed** on a relay with `forward_auth`. On one without it they need a session the proxy checks outside the TD, so they are not; a client that needs them confidential there should read from a node it trusts.
 
 ## 4. The TEE authority: a different mechanism
 

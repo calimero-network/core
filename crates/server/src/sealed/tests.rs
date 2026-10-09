@@ -9,6 +9,7 @@ use tower::{Layer, ServiceExt};
 
 use super::session::{builder, respond_with, MAX_SESSIONS, PROLOGUE};
 use super::*;
+use crate::proxy_identity;
 
 const TRANSPORT_SECRET: [u8; 32] = [0x22; 32];
 const MIB: usize = 1024 * 1024;
@@ -44,6 +45,14 @@ async fn echo(headers: HeaderMap, uri: Uri, body: Bytes) -> impl IntoResponse {
             ("x-echo-uri", uri.to_string()),
             ("x-echo-host", header(HOST)),
             ("x-echo-origin", header(ORIGIN)),
+            (
+                "x-echo-account",
+                header(proxy_identity::ACCOUNT_HEADER.clone()),
+            ),
+            (
+                "x-echo-permissions",
+                header(HeaderName::from_static("x-auth-permissions")),
+            ),
         ],
         body,
     )
@@ -1443,4 +1452,286 @@ async fn every_inner_origin_is_replaced_by_the_outer_hops() {
 async fn every_inner_origin_is_dropped_when_the_outer_hop_has_none() {
     let origin = echoed_origin(&SEVERAL_INNER_ORIGINS, None).await;
     assert_eq!(origin, "none");
+}
+
+/// What a fake auth service saw of the probes it was sent.
+#[derive(Default)]
+struct AuthLog {
+    probes: Mutex<Vec<HeaderMap>>,
+    logins: Mutex<Vec<(HeaderMap, Bytes)>>,
+}
+
+/// A stand-in for mero-auth on loopback: `/auth/validate` admits `Bearer
+/// good` as account `acct` with `context:query`, and refuses anything else as
+/// mero-auth does; `/auth/token` answers a login.
+async fn fake_auth() -> (String, Arc<AuthLog>) {
+    let log = Arc::new(AuthLog::default());
+    let validate = {
+        let log = Arc::clone(&log);
+        move |headers: HeaderMap| {
+            let log = Arc::clone(&log);
+            async move {
+                let good = headers
+                    .get(AUTHORIZATION)
+                    .is_some_and(|value| value == "Bearer good");
+                log.probes.lock().unwrap().push(headers);
+                if good {
+                    (
+                        StatusCode::OK,
+                        [
+                            ("x-auth-user", "acct"),
+                            ("x-auth-permissions", "context:query"),
+                            ("x-auth-account", "acct"),
+                        ],
+                        "",
+                    )
+                        .into_response()
+                } else {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        [("x-auth-error", "invalid_token")],
+                        "Invalid token",
+                    )
+                        .into_response()
+                }
+            }
+        }
+    };
+    let token = {
+        let log = Arc::clone(&log);
+        move |headers: HeaderMap, body: Bytes| {
+            let log = Arc::clone(&log);
+            async move {
+                log.logins.lock().unwrap().push((headers, body));
+                (StatusCode::OK, "{\"accessToken\":\"good\"}")
+            }
+        }
+    };
+    let router = Router::new()
+        .route("/auth/validate", get(validate))
+        .route("/auth/token", post(token));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    drop(tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    }));
+    (origin, log)
+}
+
+fn guarded_transport(origin: &str) -> Arc<SealedTransport> {
+    transport_with(
+        &SealedOptions::new(false, None)
+            .with_inner_scope(InnerScope::Uncredentialed {
+                delegated_access: true,
+            })
+            .with_forward_auth(Some(ForwardAuth::new(origin).unwrap())),
+    )
+}
+
+async fn sealed_call_with(
+    transport: &Arc<SealedTransport>,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> (ResponseHead, Vec<u8>) {
+    let mut client = Client::open(transport).await;
+    let (id, sealed) = client.seal(&head(method, path, headers), body);
+    let (status, outer) = send(transport, SEALED_PATH, sealed).await;
+    assert_eq!(status, StatusCode::OK, "the envelope itself is accepted");
+    let (head, inner, _) = client.open_response(id, &outer);
+    (head, inner)
+}
+
+/// With `forward_auth`, a logged-in call the proxy would have guarded is
+/// guarded by the same auth service, asked the same question, and reaches the
+/// route with the identity the auth service names.
+#[tokio::test]
+async fn behind_an_auth_proxy_a_sealed_call_is_guarded_by_its_auth_service() {
+    let (origin, log) = fake_auth().await;
+    let transport = guarded_transport(&origin);
+
+    let (head, _) = sealed_call_with(
+        &transport,
+        "GET",
+        "/admin-api/contexts?all=1",
+        &[("authorization", "Bearer good")],
+        b"",
+    )
+    .await;
+    assert_eq!(head.status, 200, "an admitted token reaches the route");
+    assert_eq!(response_header(&head, "x-echo-account"), Some("acct"));
+    assert_eq!(
+        response_header(&head, "x-echo-permissions"),
+        Some("context:query")
+    );
+
+    let probes = log.probes.lock().unwrap();
+    let probe = probes.last().unwrap();
+    assert_eq!(probe["x-forwarded-method"], "GET");
+    assert_eq!(probe["x-forwarded-uri"], "/admin-api/contexts?all=1");
+    assert_eq!(
+        probe["x-forwarded-host"], "tee-node.example",
+        "the host the caller reached, for node-bound tokens"
+    );
+}
+
+#[tokio::test]
+async fn behind_an_auth_proxy_the_auth_services_refusal_comes_back_sealed() {
+    let (origin, _log) = fake_auth().await;
+    let transport = guarded_transport(&origin);
+
+    for headers in [&[("authorization", "Bearer bad")][..], &[]] {
+        let (head, body) =
+            sealed_call_with(&transport, "DELETE", "/admin-api/contexts", headers, b"").await;
+        assert_eq!(head.status, 401, "the route is never reached");
+        assert_eq!(
+            response_header(&head, "x-auth-error"),
+            Some("invalid_token")
+        );
+        assert_eq!(body, b"Invalid token");
+    }
+}
+
+/// The identity is the auth service's to name. An envelope stating one gets
+/// it replaced by what the auth service says, or dropped when it says none.
+#[tokio::test]
+async fn behind_an_auth_proxy_an_envelope_cannot_name_its_own_identity() {
+    let (origin, _log) = fake_auth().await;
+    let transport = guarded_transport(&origin);
+
+    let (head, _) = sealed_call_with(
+        &transport,
+        "GET",
+        "/admin-api/contexts",
+        &[
+            ("authorization", "Bearer good"),
+            ("x-auth-account", "someone-else"),
+            ("x-auth-permissions", "admin"),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(head.status, 200);
+    assert_eq!(response_header(&head, "x-echo-account"), Some("acct"));
+    assert_eq!(
+        response_header(&head, "x-echo-permissions"),
+        Some("context:query")
+    );
+
+    // A public route asks nobody, and the stated identity does not survive.
+    let intents = format!("/admin-api/contexts/{CONTEXT}/intents");
+    let (head, _) = sealed_call_with(
+        &transport,
+        "POST",
+        &intents,
+        &[("x-auth-account", "someone-else")],
+        b"warrant",
+    )
+    .await;
+    assert_eq!(head.status, 200);
+    assert_eq!(response_header(&head, "x-echo-account"), Some("none"));
+}
+
+#[tokio::test]
+async fn behind_an_auth_proxy_public_routes_are_not_sent_to_the_auth_service() {
+    let (origin, log) = fake_auth().await;
+    let transport = guarded_transport(&origin);
+
+    let intents = format!("/admin-api/contexts/{CONTEXT}/intents");
+    let (head, body) = sealed_call_with(&transport, "POST", &intents, &[], b"warrant").await;
+    assert_eq!(head.status, 200);
+    assert_eq!(body, b"warrant");
+    let (head, _) = sealed_call_with(&transport, "GET", "/admin-api/health", &[], b"").await;
+    assert_eq!(head.status, 200);
+    assert!(log.probes.lock().unwrap().is_empty());
+}
+
+/// A login is the auth service's: the proxy routes `/auth/` to it, and so does
+/// the node for a sealed one, with the host the caller reached.
+#[tokio::test]
+async fn behind_an_auth_proxy_a_sealed_login_reaches_the_auth_service() {
+    let (origin, log) = fake_auth().await;
+    let transport = guarded_transport(&origin);
+
+    let (head, body) = sealed_call_with(
+        &transport,
+        "POST",
+        "/auth/token",
+        &[
+            ("content-type", "application/json"),
+            ("x-forwarded-for", "203.0.113.9"),
+            ("x-forwarded-host", "attacker.example"),
+        ],
+        b"{\"auth_method\":\"account_proof\"}",
+    )
+    .await;
+    assert_eq!(head.status, 200);
+    assert_eq!(body, b"{\"accessToken\":\"good\"}");
+
+    let logins = log.logins.lock().unwrap();
+    let (headers, sent) = logins.last().unwrap();
+    assert_eq!(sent.as_ref(), b"{\"auth_method\":\"account_proof\"}");
+    assert_eq!(
+        headers["x-forwarded-host"], "tee-node.example",
+        "the host the caller reached, not one the envelope states"
+    );
+    assert!(
+        headers.get("x-forwarded-for").is_none(),
+        "the proxy overwrites forwarding headers; an envelope does not set them"
+    );
+    assert_eq!(headers["content-type"], "application/json");
+}
+
+#[tokio::test]
+async fn behind_an_auth_proxy_an_unreachable_auth_service_is_a_502() {
+    // Bound and released: nothing listens there.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let transport = guarded_transport(&origin);
+
+    let (head, _) = sealed_call_with(
+        &transport,
+        "GET",
+        "/admin-api/contexts",
+        &[("authorization", "Bearer good")],
+        b"",
+    )
+    .await;
+    assert_eq!(head.status, 502, "never routed unguarded");
+    let (head, _) = sealed_call_with(&transport, "POST", "/auth/token", &[], b"{}").await;
+    assert_eq!(head.status, 502);
+}
+
+#[test]
+fn forward_auth_is_a_loopback_http_origin_only() {
+    for ok in [
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3001/",
+        "http://localhost:3001",
+        "http://[::1]:3001",
+    ] {
+        assert!(ForwardAuth::new(ok).is_ok(), "{ok}");
+    }
+    for refused in [
+        "https://127.0.0.1:3001",
+        "http://10.0.0.5:3001",
+        "http://auth.example:3001",
+        "http://127.0.0.1:3001/auth",
+        "http://127.0.0.1:3001/?x=1",
+        "http://user:pw@127.0.0.1:3001",
+        "127.0.0.1:3001",
+    ] {
+        assert!(ForwardAuth::new(refused).is_err(), "{refused}");
+    }
+}
+
+#[test]
+fn the_auth_service_is_routed_its_own_prefixes_only() {
+    assert!(ForwardAuth::serves("/auth/token"));
+    assert!(ForwardAuth::serves("/admin/client-key"));
+    assert!(!ForwardAuth::serves("/admin-api/contexts"));
+    assert!(!ForwardAuth::serves("/auth"));
+    assert!(!ForwardAuth::serves("/authx/token"));
 }

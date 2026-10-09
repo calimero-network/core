@@ -168,9 +168,30 @@ forwards `/sealed/v2` unauthenticated would let anyone reach every route it
 guards by wrapping the request. With embedded auth (`auth_mode = "embedded"`),
 `merod` checks the opened request itself, and everything can be sealed.
 
-That is what hosted TEE relays run: proxy auth, with delegated execution public.
-A browser seals its intents to the relay's TD; logins and reads go through the
-proxy and are not sealed. The four ways a client reaches a node, and what each
+**`[server.sealed] forward_auth`** lifts that limit in proxy mode. It names the
+auth service the proxy asks about each request (forward-auth), for example
+`http://127.0.0.1:3001`. `merod` then does for an opened request what the proxy
+would have done had it seen it:
+
+- `/auth/…` and `/admin/…` (login, refresh, the auth service's own API) are
+  forwarded to the auth service, and its answer is sealed back;
+- any other route the rule above would refuse is sent to `/auth/validate` with
+  the request's token, method, URI and host, as the proxy's forward-auth sends
+  them. A refusal comes back sealed as the auth service gave it. An admission
+  puts the identity it names (`X-Auth-User`, `X-Auth-Permissions`,
+  `X-Auth-Account`, `X-Auth-Device`) on the request, replacing any the envelope
+  stated, and routes it.
+
+The auth service stays the one authority: a route is reachable sealed exactly
+when it is reachable through the proxy with the same token. The origin must be
+`http` on a loopback address, since tokens are sent there in the clear; on a TEE
+node that hop never leaves the TD. If the auth service does not answer, the
+request gets `502` and is not routed.
+
+Hosted TEE relays run proxy auth with delegated execution public. With
+`forward_auth` set, a browser can seal its login, reads and event streams to the
+relay's TD as well as its intents; without it, logins and reads go through the
+proxy unsealed. The four ways a client reaches a node, and what each
 can seal, are in [how a client reaches a node](/protocol/client-paths/).
 
 ### Requiring sealing
