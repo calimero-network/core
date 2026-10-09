@@ -155,7 +155,7 @@ impl ForwardAuth {
     /// forward-auth would. On admission, `request` carries the identity it
     /// names and no other; on refusal, the auth service's answer is returned
     /// for the caller.
-    pub(super) async fn authorize(&self, request: &mut Request) -> Result<(), Response> {
+    pub(super) async fn authorize(&self, request: &mut Request) -> Result<(), Box<Response>> {
         let mut probe = HeaderMap::new();
         for value in request.headers().get_all(AUTHORIZATION) {
             let _previous = probe.append(AUTHORIZATION, value.clone());
@@ -163,7 +163,7 @@ impl ForwardAuth {
         let _previous = probe.insert(
             X_FORWARDED_METHOD.clone(),
             HeaderValue::from_str(request.method().as_str())
-                .map_err(|_| plain_error(StatusCode::BAD_REQUEST, "unusable method"))?,
+                .map_err(|_| Box::new(plain_error(StatusCode::BAD_REQUEST, "unusable method")))?,
         );
         let uri = request
             .uri()
@@ -172,19 +172,19 @@ impl ForwardAuth {
         let _previous = probe.insert(
             X_FORWARDED_URI.clone(),
             HeaderValue::from_str(uri)
-                .map_err(|_| plain_error(StatusCode::BAD_REQUEST, "unusable path"))?,
+                .map_err(|_| Box::new(plain_error(StatusCode::BAD_REQUEST, "unusable path")))?,
         );
         if let Some(host) = forwarded_host(request.headers()) {
             let _previous = probe.insert(X_FORWARDED_HOST, host.clone());
         }
 
         let Ok(url) = self.base.join("/auth/validate") else {
-            return Err(unreachable_auth());
+            return Err(Box::new(unreachable_auth()));
         };
         let answer = self.client.get(url).headers(probe).send().await;
         let answer = match answer {
             Ok(answer) if answer.status().is_success() => answer,
-            other => return Err(relay(other).await),
+            other => return Err(Box::new(relay(other).await)),
         };
 
         let headers = request.headers_mut();

@@ -675,7 +675,7 @@ async fn open_and_dispatch(
             return Ok(seal_response(frames, response, expires));
         }
         if let Err(response) = auth.authorize(&mut inner).await {
-            return Ok(seal_response(frames, response, expires));
+            return Ok(seal_response(frames, *response, expires));
         }
     } else {
         let _previous = transport.metrics.requests.inc();
