@@ -51,6 +51,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // binding it to its creator is what stops another member who saw the
         // id from racing a concurrent create for it. That needs the creator's
         // account, so it is derived below, once the account is resolved.
+
+        // Only the account namespace passes a salt, so its genesis marks it as one.
+        let account_namespace = salt.is_some();
         let (root_id, founding) = match parent_group_id {
             None => {
                 let founder = match crate::join_credential::founding_account(&self.datastore) {
@@ -483,10 +486,18 @@ impl Handler<CreateGroupRequest> for ContextManager {
                              the salt its id was derived with"
                         );
                     };
-                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
-                        founder: admin_account,
-                        account: founder_credential,
-                        salt,
+                    let genesis_op = NamespaceOp::Root(if account_namespace {
+                        RootOp::AccountNamespaceCreated {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt,
+                        }
+                    } else {
+                        RootOp::NamespaceCreatedV2 {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt,
+                        }
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,

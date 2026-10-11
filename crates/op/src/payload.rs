@@ -13,6 +13,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyHandoff};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
@@ -152,6 +153,9 @@ pub enum OpPayload {
         /// Epoch of the root-signed scope the link was made under; `0` when it
         /// carries none (a join, a genesis). Ordered against the descope floor.
         scope_epoch: u32,
+        /// The applications that scope reaches; empty for every application, as a
+        /// join or a genesis binds. A device is live only where it covers the target.
+        applications: Vec<ApplicationId>,
     },
     /// Withdraw a device from an account, at this cut.
     ///
@@ -380,6 +384,25 @@ pub enum OpPayload {
         group: ContextGroupId,
         member: AccountId,
     },
+
+    // ---- application plane ----
+    /// Point `group` at `application`, from a `TargetApplicationSet` or a
+    /// `CascadeUpgrade`. The scope root's target decides which device scopes reach it.
+    TargetApplicationSet {
+        group: ContextGroupId,
+        application: ApplicationId,
+    },
+    /// An account namespace's genesis: the founder's device link it carries, and the
+    /// account whose devices it exempts from scope, honoured only if `(founder, salt)`
+    /// derives the scope id.
+    AccountNamespaceFounded {
+        /// The account that founded the namespace.
+        founder: AccountId,
+        /// The salt the namespace id was derived with from `founder`.
+        salt: [u8; 32],
+        /// What the genesis folds as besides: the founder's device link, or `Noop`.
+        carried: Box<OpPayload>,
+    },
 }
 
 impl OpPayload {
@@ -408,7 +431,9 @@ impl OpPayload {
             | Self::RelaySeated { .. }
             | Self::RootGuarded { .. }
             | Self::SharedWritersRotated { .. }
-            | Self::MemberLeft { .. } => true,
+            | Self::MemberLeft { .. }
+            | Self::TargetApplicationSet { .. }
+            | Self::AccountNamespaceFounded { .. } => true,
             Self::Put { .. }
             | Self::Delete { .. }
             | Self::SetWriters { .. }

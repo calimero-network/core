@@ -156,7 +156,12 @@ pub(crate) fn dispatch_root_op(
             founder,
             account,
             salt,
-        } => namespace_created::apply(ctx, op, *founder, account, salt),
+        } => namespace_created::apply(ctx, op, *founder, account, salt, false),
+        RootOp::AccountNamespaceCreated {
+            founder,
+            account,
+            salt,
+        } => namespace_created::apply(ctx, op, *founder, account, salt, true),
         // `KeyDelivery` has no state mutation of its own here: the actual
         // key-unwrap/store side effect is orchestrated by the outer
         // `apply_signed_op` match in `namespace/governance.rs`, which owns the

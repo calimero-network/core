@@ -154,7 +154,8 @@ pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
         | OpPayload::DefaultCapabilitiesSet { group, .. }
         | OpPayload::TeeAuthoringPolicySet { group, .. }
         | OpPayload::TeeAuthorityEvidence { group, .. }
-        | OpPayload::SharedWritersRotated { group, .. } => Some(*group),
+        | OpPayload::SharedWritersRotated { group, .. }
+        | OpPayload::TargetApplicationSet { group, .. } => Some(*group),
         OpPayload::SubgroupVisibilitySet { scope, .. } => {
             Some(ContextGroupId::from(*scope.as_bytes()))
         }
@@ -286,6 +287,7 @@ fn capability_by_payload(op: &Op, author: AccountId) -> u32 {
         }
         OpPayload::SubgroupCreated { .. } => MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
         OpPayload::SubgroupDeleted { .. } => MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
+        OpPayload::TargetApplicationSet { .. } => MemberCapabilities::MANAGE_APPLICATION.bits(),
         // Opening is the creator's alone and takes no capability (#4522).
         OpPayload::SubgroupVisibilitySet {
             restricted: true, ..
@@ -308,8 +310,12 @@ fn resolve_unattributed(ops: &[&Op]) -> Resolved {
     }
     let mut linked: HashMap<[u8; 32], Option<(AccountId, DeviceId)>> = HashMap::new();
     for op in ops {
+        let payload = match &op.payload {
+            OpPayload::AccountNamespaceFounded { carried, .. } => carried,
+            payload => payload,
+        };
         let (OpPayload::DeviceLinked { cert, .. } | OpPayload::MemberJoinedWithDevice { cert, .. }) =
-            &op.payload
+            payload
         else {
             continue;
         };

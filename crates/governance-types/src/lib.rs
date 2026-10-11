@@ -1500,7 +1500,7 @@ pub fn root_op_is_sealable(op: &RootOp) -> bool {
         // publish it, not who may read it.
         RootOp::RootGuarded { op, .. } => root_op_is_sealable(op),
         // Genesis, before any key exists.
-        RootOp::NamespaceCreatedV2 { .. } => false,
+        RootOp::NamespaceCreatedV2 { .. } | RootOp::AccountNamespaceCreated { .. } => false,
     }
 }
 
@@ -1836,6 +1836,13 @@ pub enum RootOp {
         op: Box<RootOp>,
         proof: Box<SignedOwnerOp>,
     },
+    /// [`Self::NamespaceCreatedV2`] for the founder's account namespace, where its devices
+    /// need no scope naming an application. Applied the same way; never delegable.
+    AccountNamespaceCreated {
+        founder: AccountId,
+        account: Box<JoinAccountCredential>,
+        salt: [u8; 32],
+    },
 }
 
 impl RootOp {
@@ -1924,6 +1931,9 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::OnBehalf { .. }) => "root_on_behalf",
             NamespaceOp::Root(RootOp::RootGuarded { .. }) => "root_guarded",
             NamespaceOp::Root(RootOp::NamespaceCreatedV2 { .. }) => "namespace_created_v2",
+            NamespaceOp::Root(RootOp::AccountNamespaceCreated { .. }) => {
+                "account_namespace_created"
+            }
             NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation { .. }) => {
                 "member_joined_via_tee_root"
             }

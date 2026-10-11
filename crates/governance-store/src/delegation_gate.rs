@@ -348,6 +348,7 @@ fn root_op_label(op: &RootOp) -> &'static str {
         RootOp::MemberJoinedViaTeeAttestation { .. } => "MemberJoinedViaTeeAttestation",
         RootOp::KeyDelivery { .. } => "KeyDelivery",
         RootOp::NamespaceCreatedV2 { .. } => "NamespaceCreated",
+        RootOp::AccountNamespaceCreated { .. } => "AccountNamespaceCreated",
         RootOp::OnBehalf { .. } => "OnBehalf",
         RootOp::RootGuarded { .. } => "RootGuarded",
     }
@@ -1807,6 +1808,29 @@ mod founding_tests {
             .chain()
             .find_map(|c| c.downcast_ref::<DelegationRefusal>())
             .cloned()
+    }
+
+    /// Only the holder's node founds its account namespace; a relay carrying that
+    /// genesis is refused, and nothing is founded.
+    #[test]
+    fn a_relay_never_carries_an_account_namespace_genesis() {
+        let f = founding();
+        let genesis = RootOp::AccountNamespaceCreated {
+            founder: f.author,
+            account: real_join_account(&f.author_sk.public_key()),
+            salt: SALT,
+        };
+
+        let refused = refusal(f.publish_root(&f.relay_sk, f.wrapped(genesis, 1)));
+
+        assert!(
+            matches!(refused, Some(DelegationRefusal::NotDelegable(_))),
+            "{refused:?}"
+        );
+        assert!(MetaRepository::new(&f.store)
+            .load(&f.ns)
+            .expect("read")
+            .is_none());
     }
 
     #[test]

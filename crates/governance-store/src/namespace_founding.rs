@@ -134,6 +134,35 @@ impl<'a> NamespaceFoundingRepository<'a> {
     }
 }
 
+/// Namespaces whose genesis marked them as their founder's account namespace
+/// (`RootOp::AccountNamespaceCreated`), recorded by that apply on every replica.
+const ACCOUNT_SCOPE: [u8; 16] = *b"calimero-nsacctn";
+
+fn account_key(namespace_id: &ContextGroupId) -> GenericKey {
+    GenericKey::new(ACCOUNT_SCOPE, namespace_id.to_bytes())
+}
+
+impl NamespaceFoundingRepository<'_> {
+    /// Mark `namespace_id` as its founder's account namespace.
+    pub fn mark_account_namespace(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        let data = GenericData::from(Slice::from(vec![1u8]));
+        self.store.handle().put(&account_key(namespace_id), &data)?;
+        Ok(())
+    }
+
+    /// The founder whose account namespace `namespace_id` is, or `None` when its
+    /// genesis marked no account namespace (or has not applied here).
+    pub fn account_namespace_founder(
+        &self,
+        namespace_id: &ContextGroupId,
+    ) -> EyreResult<Option<AccountId>> {
+        if !self.store.handle().has(&account_key(namespace_id))? {
+            return Ok(None);
+        }
+        Ok(self.get(namespace_id)?.map(|(founder, _)| founder))
+    }
+}
+
 /// The relay a namespace was founded through, and whether it has attested.
 ///
 /// A namespace founded on a member's behalf has no admin node to admit a TEE,

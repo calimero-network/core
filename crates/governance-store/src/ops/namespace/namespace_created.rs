@@ -159,12 +159,30 @@ fn bind_founder(
     Ok(())
 }
 
+/// Keep what a genesis was derived from, and whether it marked the founder's
+/// account namespace.
+fn record_founding(
+    store: &Store,
+    namespace: &ContextGroupId,
+    founder: &AccountId,
+    salt: &[u8; 32],
+    account_namespace: bool,
+) -> EyreResult<()> {
+    let founding = crate::NamespaceFoundingRepository::new(store);
+    founding.record(namespace, founder, salt)?;
+    if account_namespace {
+        founding.mark_account_namespace(namespace)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn apply(
     ctx: &mut NamespaceApplyCtx<'_>,
     op: &calimero_context_client::local_governance::SignedNamespaceOp,
     founder: AccountId,
     account: &calimero_context_client::local_governance::JoinAccountCredential,
     salt: &[u8; 32],
+    account_namespace: bool,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -310,8 +328,7 @@ pub(crate) fn apply(
                 // records the pair too. A salt that does not derive the id is
                 // simply not recorded: an established namespace never errors.
                 if derived {
-                    crate::NamespaceFoundingRepository::new(store)
-                        .record(&ns_gid, &founder, salt)?;
+                    record_founding(store, &ns_gid, &founder, salt, account_namespace)?;
                 }
                 tracing::debug!(
                     namespace_id = %hex::encode(namespace_id.as_bytes()),
@@ -517,7 +534,7 @@ pub(crate) fn apply(
     // Local and hash-neutral like the deny-list: it records a fact the op
     // already carries, so every replica that applies this genesis holds the
     // same row, and any member can show the pair without the founder's node.
-    crate::NamespaceFoundingRepository::new(store).record(&ns_gid, &founder, salt)?;
+    record_founding(store, &ns_gid, &founder, salt, account_namespace)?;
 
     tracing::info!(
         namespace_id = %hex::encode(namespace_id.as_bytes()),

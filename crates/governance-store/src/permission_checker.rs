@@ -3,6 +3,7 @@ use crate::MembershipRepository;
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
+use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -234,6 +235,51 @@ impl<'a> PermissionChecker<'a> {
     pub fn account_for_signer(&self, signer: &PublicKey) -> EyreResult<Option<AccountId>> {
         self.ensure_live_fallback_is_sound(signer)?;
         self.live_account_or_park(signer)
+    }
+
+    /// [`account_for_signer`](Self::account_for_signer) answered at the op's cut, for
+    /// a gate whose refusal every replica must reach alike; live only where it is sound.
+    pub fn account_for_signer_at_cut(&self, signer: &PublicKey) -> EyreResult<Option<AccountId>> {
+        if let Some(account) = self.principal_account(signer) {
+            return Ok(Some(account));
+        }
+        if let Some(answer) =
+            self.authorizer
+                .signer_account_at_cut(&self.group_id, signer, self.parents)
+        {
+            return Ok(answer);
+        }
+        self.account_for_signer(signer)
+    }
+
+    /// Does a device of `account` scoped to `applications` reach this namespace at
+    /// the op's cut: its own account namespace, or a scope covering the target?
+    pub fn scope_reaches(
+        &self,
+        account: &AccountId,
+        applications: &[ApplicationId],
+    ) -> EyreResult<bool> {
+        if let Some(verdict) = self.authorizer.scope_reaches_at_cut(
+            &self.group_id,
+            account,
+            applications,
+            self.parents,
+        ) {
+            return Ok(verdict);
+        }
+        self.ensure_live_fallback_is_sound_for_account(account)?;
+        let root = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        let target = crate::MetaRepository::new(self.store)
+            .load(&root)?
+            .map(|meta| meta.target.application_id)
+            .filter(|application| *application != ZERO_APPLICATION_ID);
+        let founder =
+            crate::NamespaceFoundingRepository::new(self.store).account_namespace_founder(&root)?;
+        Ok(calimero_authz::scope_reaches(
+            applications,
+            target,
+            founder == Some(*account),
+        ))
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {

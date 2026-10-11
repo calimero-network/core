@@ -20,6 +20,7 @@ use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, RootKeyH
 use calimero_authz::{AccountBinding, AclView, DeviceBinding};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{scope_root, Op, OpPayload, ScopeId};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
@@ -227,6 +228,14 @@ pub struct ScopeState {
     /// Per-`(account, device)` floor: the highest epoch a narrowing took this
     /// device out at, recorded whether or not anything is bound.
     device_scope_floor: BTreeMap<(AccountId, DeviceId), u32>,
+    /// The applications of the highest-epoch scope folded for an `(account, device)`;
+    /// a tie keeps the greater list, so the fold is order-independent.
+    device_scope_applications: BTreeMap<(AccountId, DeviceId), (u32, Vec<ApplicationId>)>,
+    /// The application the scope root targets, one LWW register.
+    target_application: Option<(Stamp, ApplicationId)>,
+    /// The founder whose account namespace this scope is, from a genesis whose
+    /// `(founder, salt)` derives the scope id; only one founder can.
+    account_namespace: Option<AccountId>,
     // --- TEE authorship plane ---
     /// The TEE authoring policy, one LWW register per scope. Not part of
     /// `governance_hash`: it decides who may author `TeeOnly` state, which the
@@ -665,7 +674,8 @@ impl ScopeState {
                 chain,
                 cert,
                 scope_epoch,
-            } => self.fold_device_linked(genesis, chain, cert, *scope_epoch),
+                applications,
+            } => self.fold_device_linked(genesis, chain, cert, *scope_epoch, applications),
 
             // The deny direction, written unconditionally like the revocation
             // tombstone: a narrowing folded before its link must still win.
@@ -700,8 +710,9 @@ impl ScopeState {
                 } else {
                     self.fold_member_joined(*group, *member, role, stamp);
                 }
-                // A join carries no scope statement: epoch 0, as the live apply writes.
-                self.fold_device_linked(genesis, chain, cert, 0);
+                // A join carries no scope statement: epoch 0, every application, as
+                // the live apply writes.
+                self.fold_device_linked(genesis, chain, cert, 0, &[]);
             }
             OpPayload::DeviceRevoked { device, .. } => {
                 // The one account-plane arm with NO ownership gate, and the only
@@ -739,6 +750,27 @@ impl ScopeState {
                 // set union is a join by construction.
                 let _ = self.revoked_devices.insert(*device);
                 let _ = self.devices.remove(device);
+            }
+            // ---- application plane ----
+            // Only the scope root's target decides which device scopes reach it.
+            OpPayload::TargetApplicationSet { group, application } => {
+                if group.to_bytes() == *op.scope.as_bytes() {
+                    lww_set(&mut self.target_application, stamp, *application);
+                }
+            }
+            // Op-local: only a genesis, parentless and naming the founder the scope
+            // id derives from, marks it, so every one that passes names the same account.
+            OpPayload::AccountNamespaceFounded {
+                founder,
+                salt,
+                carried,
+            } => {
+                if op.parents.is_empty()
+                    && calimero_account::is_founded_by(op.scope.as_bytes(), founder, salt)
+                {
+                    self.account_namespace = Some(*founder);
+                }
+                self.fold_payload(op, carried, stamp);
             }
             OpPayload::AccountKeysRotated { handoff } => {
                 // Only the account may write its own epoch slots. `authorize`
@@ -792,9 +824,9 @@ impl ScopeState {
             } => {
                 self.fold_payload(op, carried, stamp);
                 if let Some(device) = device {
-                    // No scope statement rides with it: epoch 0, as the live
-                    // apply binds it.
-                    self.fold_device_linked(&device.genesis, &device.chain, &device.cert, 0);
+                    // No scope statement rides with it: epoch 0, every application,
+                    // as the live apply binds it.
+                    self.fold_device_linked(&device.genesis, &device.chain, &device.cert, 0, &[]);
                 }
                 let key = (*group, *relay);
                 self.fold_namespace_leave_into(key);
@@ -998,6 +1030,7 @@ impl ScopeState {
         chain: &[RootKeyHandoff],
         cert: &DeviceCert,
         scope_epoch: u32,
+        applications: &[ApplicationId],
     ) {
         // Learn the account FIRST, and unconditionally — the genesis is
         // self-certifying (it hashes to the id it claims), so absorbing it is
@@ -1048,6 +1081,14 @@ impl ScopeState {
                 .entry((cert.account, cert.device))
                 .or_default();
             *recorded = (*recorded).max(scope_epoch);
+            let scope = (scope_epoch, applications.to_vec());
+            let reach = self
+                .device_scope_applications
+                .entry((cert.account, cert.device))
+                .or_insert_with(|| scope.clone());
+            if scope > *reach {
+                *reach = scope;
+            }
         }
         let Ok(verified) = admitted else {
             // Deterministically inadmissible on every node, so ignoring it keeps
@@ -1134,6 +1175,7 @@ impl ScopeState {
                 .get(&binding.account)
                 .is_none_or(|account| binding.key_epoch >= account.epoch)
                 && !self.is_descoped(**device, binding)
+                && self.reaches(**device, binding)
         });
         unsuperseded
             .map(|(device, binding)| (*device, *binding))
@@ -1150,6 +1192,22 @@ impl ScopeState {
             })
             .map(|(key, _)| *key)
             .collect()
+    }
+
+    /// Does this binding's scope reach the scope's target at the end of the fold?
+    /// Read here, like the floor, so the answer is a function of the op set.
+    fn reaches(&self, device: DeviceId, binding: &DeviceBinding) -> bool {
+        let applications = self
+            .device_scope_applications
+            .get(&(binding.account, device))
+            .map_or(&[][..], |(_, applications)| applications.as_slice());
+        calimero_authz::scope_reaches(
+            applications,
+            self.target_application
+                .as_ref()
+                .map(|(_, application)| *application),
+            self.account_namespace == Some(binding.account),
+        )
     }
 
     /// Has a narrowing withdrawn this binding? Read here rather than at fold time,
@@ -1309,6 +1367,11 @@ impl ScopeState {
                 .iter()
                 .map(|(group, ops)| (*group, u64::try_from(ops.len()).unwrap_or(u64::MAX)))
                 .collect(),
+            target_application: self
+                .target_application
+                .as_ref()
+                .map(|(_, application)| *application),
+            account_namespace: self.account_namespace,
         }
     }
 

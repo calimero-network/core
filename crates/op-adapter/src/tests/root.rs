@@ -259,6 +259,7 @@ fn root_op_encoder_mapping() {
             chain: joined_open.chain.clone(),
             cert: joined_open.statement,
             scope_epoch: 0,
+            applications: vec![],
         })
     );
     // Invitation-based join: group_id + role decoded off the admin-signed
@@ -368,6 +369,7 @@ fn namespace_created_folds_the_founders_device_link() {
             chain: credential.chain.clone(),
             cert: credential.statement,
             scope_epoch: 0,
+            applications: vec![],
         }),
         "genesis is the only place the founder's device is bound"
     );

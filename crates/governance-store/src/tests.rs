@@ -12939,7 +12939,7 @@ mod account_plane_apply {
         .unwrap();
 
         // Not a member yet → refused, and nothing recorded.
-        sign_apply_local_group_op_borsh(
+        let _refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -12952,7 +12952,8 @@ mod account_plane_apply {
                 scope: link_scope(&key(9), &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link for an account that is not a member is refused");
         let _repo = AccountBindingRepository::new(&store);
         assert!(
             live_for(&store, &gid, account).is_empty(),
@@ -13070,7 +13071,7 @@ mod account_plane_apply {
         )
         .unwrap();
 
-        sign_apply_local_group_op_borsh(
+        let _refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13083,7 +13084,8 @@ mod account_plane_apply {
                 scope: link_scope(&key(20), &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link endorsed by a key bound to no member is refused");
         assert!(live_for(&store, &gid, account).is_empty());
     }
 
@@ -13244,7 +13246,7 @@ mod account_plane_apply {
         // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
         // simply has no standing here.
         let stranger = key(7);
-        sign_apply_local_group_op_borsh(
+        let _refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13257,7 +13259,8 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link endorsed by a non-member is refused");
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "a valid endorsement from a non-member must not admit a link"
@@ -14864,7 +14867,7 @@ mod account_plane_apply {
 
         // A valid, root-signed narrowing - replayed by a member of this namespace
         // that speaks for some other account.
-        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+        let _refused = crate::apply_group_op_mutations(
             &store,
             &gid,
             &admin_sk.public_key(),
@@ -14872,9 +14875,8 @@ mod account_plane_apply {
             &CUT,
             &FixedAuthorizer(true),
         )
-        .unwrap();
+        .expect_err("a replay by another account is refused");
 
-        assert_eq!(events, vec![]);
         assert!(
             is_live(&store, &gid, account, device),
             "a replay by a member of another account must not unbind the device"
@@ -15195,16 +15197,113 @@ mod account_plane_apply {
         );
     }
 
-    /// The apply pipeline re-runs a mutation before the op-log dedup gate, so a
-    /// second run has to find no binding and say nothing rather than fail.
+    /// A cut at which `signer` speaks for `account`, as a self-descope's own cut
+    /// does on a re-run after the descope unbound the signing device.
+    struct SignerAtCut {
+        signer: PublicKey,
+        account: AccountId,
+    }
+
+    impl crate::authorizer::AtCutAuthorizer for SignerAtCut {
+        fn is_admin_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &PublicKey,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_or_capability_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &PublicKey,
+            _: u32,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_or_capability_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: u32,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_last_admin_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn membership_path_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<crate::authorizer::AtCutMembershipPath> {
+            None
+        }
+
+        fn effective_role_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<GroupMemberRole>> {
+            None
+        }
+
+        fn context_rotation_group_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &calimero_primitives::context::ContextId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<ContextGroupId>> {
+            None
+        }
+
+        fn signer_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            signer: &PublicKey,
+            _: &[[u8; 32]],
+        ) -> Option<Option<AccountId>> {
+            Some((*signer == self.signer).then_some(self.account))
+        }
+    }
+
+    /// The apply pipeline re-runs a mutation before the op-log dedup gate. The signer
+    /// is named at the op's cut, so a self-descope's re-run is not refused for having
+    /// unbound its own device, and it narrows nothing a second time.
     #[test]
-    fn re_applying_a_descope_is_a_silent_no_op() {
+    fn re_applying_a_descope_narrows_nothing_again() {
         let store = test_store();
         let gid = test_group_id();
         let admin_sk = key(1);
         let _admin = group_with_admin(&store, &gid, &admin_sk);
-        let (owner_sk, _genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
         let op = descoped(&owner_sk, device, elsewhere(), 1);
+        let at_cut = SignerAtCut {
+            signer: owner_sk.public_key(),
+            account: genesis.account_id(),
+        };
 
         let mut last = None;
         for _ in 0..2 {
@@ -15214,12 +15313,19 @@ mod account_plane_apply {
                 &owner_sk.public_key(),
                 &op,
                 &CUT,
-                &FixedAuthorizer(true),
+                &at_cut,
             )
             .unwrap();
             last = Some(events);
         }
-        assert_eq!(last.unwrap(), vec![], "the second run owes no wake-up");
+        assert!(
+            !last
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, OpEvent::DeviceDescoped { .. })),
+            "the second run narrows nothing again"
+        );
+        assert!(!is_live(&store, &gid, genesis.account_id(), device));
     }
 
     /// An account seated here through one bound key, which is no admin, and a

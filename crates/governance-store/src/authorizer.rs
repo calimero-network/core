@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::Op;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 
@@ -271,6 +272,29 @@ pub trait AtCutAuthorizer: Send + Sync {
         _group: &ContextGroupId,
         _parents: &[[u8; 32]],
         _floor: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    /// The account `signer` speaks for at the cut, `Some(None)` when nothing binds
+    /// it there. `None` when the cut cannot be resolved here.
+    fn signer_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        None
+    }
+
+    /// Does a device of `account` scoped to `applications` reach `group`'s namespace
+    /// at the cut? `None` when the cut cannot be resolved here.
+    fn scope_reaches_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _account: &AccountId,
+        _applications: &[ApplicationId],
+        _parents: &[[u8; 32]],
     ) -> Option<bool> {
         None
     }

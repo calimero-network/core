@@ -37,6 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::ScopeId;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
@@ -107,6 +108,10 @@ pub struct AclView {
     /// proof must name exactly this count for its group; see
     /// `OpPayload::RootGuarded`.
     pub owner_op_counts: BTreeMap<ContextGroupId, u64>,
+    /// The application the scope root targets at the cut; `None` before any op set one.
+    pub target_application: Option<ApplicationId>,
+    /// The account whose account namespace this scope is, if its genesis marked one.
+    pub account_namespace: Option<AccountId>,
 }
 
 /// What a TEE member's verified attestation evidence established, at a cut.
@@ -259,4 +264,26 @@ impl AclView {
     pub fn is_root_admin(&self, author: &AccountId) -> bool {
         self.root_admin.as_ref() == Some(author)
     }
+
+    /// Does a device of `account`, scoped to `applications`, reach this scope?
+    #[must_use]
+    pub fn scope_reaches(&self, account: &AccountId, applications: &[ApplicationId]) -> bool {
+        scope_reaches(
+            applications,
+            self.target_application,
+            self.account_namespace.as_ref() == Some(account),
+        )
+    }
+}
+
+/// Whether a device scoped to `applications` reaches a scope targeting `target`:
+/// its own account's namespace always, elsewhere only if the scope covers the target.
+/// Shared with the projection's live device set, so the two cannot disagree.
+#[must_use]
+pub fn scope_reaches(
+    applications: &[ApplicationId],
+    target: Option<ApplicationId>,
+    own_account_namespace: bool,
+) -> bool {
+    own_account_namespace || calimero_account::scope_covers(applications, target)
 }

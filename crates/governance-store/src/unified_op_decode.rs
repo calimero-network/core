@@ -145,6 +145,7 @@ fn root_credential(root: &RootOp) -> Option<&calimero_account::DeviceCert> {
         | RootOp::MemberJoinedOpen { account, .. }
         | RootOp::MemberJoinedAt { account, .. }
         | RootOp::NamespaceCreatedV2 { account, .. }
+        | RootOp::AccountNamespaceCreated { account, .. }
         | RootOp::MemberJoinedViaTeeAttestation { account, .. } => Some(&account.statement),
         _ => None,
     }

@@ -36,9 +36,8 @@ use calimero_op::{OpPayload, ScopeId};
 ///
 /// **Out-of-model (`None`, by design — not gaps).** Ops that never enter the
 /// authorization decision:
-/// - app / upgrade / migration config (`TargetApplicationSet`,
-///   `GroupMigrationSet`, `CascadeUpgrade`) - owned by
-///   the app-version machinery;
+/// - migration config (`GroupMigrationSet`); `TargetApplicationSet` and
+///   `CascadeUpgrade` fold only the target a device scope has to reach;
 /// - metadata (`GroupMetadataSet`, `MemberMetadataSet`, `ContextMetadataSet`),
 ///   TEE-admission *policy* (`TeeAdmissionPolicySet`), auto-follow
 ///   (`MemberSetAutoFollow`);
@@ -78,15 +77,30 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
             cert,
             scope,
             ..
-        } => Some(OpPayload::DeviceLinked {
-            genesis: *genesis,
-            chain: chain.clone(),
-            cert: *cert,
-            // The payload carries the epoch, not the proof, so the statement is
-            // checked here: an unauthorised one lifts no device over a floor.
-            scope_epoch: scope
-                .authorises(cert.account, cert.device)
-                .map_or(0, |verified| verified.scope_epoch),
+        } => {
+            // The payload carries the scope's epoch and reach, not the proof, so the
+            // statement is checked here: the apply refuses an unauthorised one.
+            let verified = scope.authorises(cert.account, cert.device).ok()?;
+            Some(OpPayload::DeviceLinked {
+                genesis: *genesis,
+                chain: chain.clone(),
+                cert: *cert,
+                scope_epoch: verified.scope_epoch,
+                applications: verified.applications.clone(),
+            })
+        }
+        // The target a device scope has to reach. A cascade folds as the target it
+        // names, whichever descendants its apply moved.
+        GroupOp::TargetApplicationSet {
+            target_application_id,
+            ..
+        }
+        | GroupOp::CascadeUpgrade {
+            target_application_id,
+            ..
+        } => Some(OpPayload::TargetApplicationSet {
+            group,
+            application: *target_application_id,
         }),
         // `proof` is dropped, like `endorsement` on the link above and for the
         // same reason: on the unified plane membership is keyed by `AccountId`,
