@@ -754,10 +754,8 @@ pub(crate) fn snapshot_leaf_authorship(
         );
     };
     let verdicts = writes.map(|(_, storage_type)| {
-        let metadata = Metadata {
-            storage_type,
-            ..metadata.clone()
-        };
+        let mut metadata = metadata.clone();
+        metadata.storage_type = storage_type;
         write_authorship(
             store,
             folded,
