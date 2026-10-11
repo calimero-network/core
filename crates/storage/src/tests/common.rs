@@ -13,12 +13,36 @@ use crate::entities::{
 };
 use crate::env;
 use crate::interface::MainInterface;
+use crate::written_once::{self, SignedWrite};
 
 /// The id `owner`'s entry at `slot` is stored under, for a test outside this
 /// crate that plays a peer writing an owned entry.
 #[must_use]
 pub fn owned_entry_id(slot: Id, owner: &AccountId) -> Id {
     crate::collections::owned_entry_id(slot, owner)
+}
+
+/// What a written-once entry stamped `storage_type` stores once two different
+/// signed `writes` seal it: the record's bytes, and the stamp they sit under.
+#[must_use]
+pub fn conflict_record(
+    storage_type: &StorageType,
+    writes: [(Vec<u8>, SignatureData); 2],
+) -> (Vec<u8>, StorageType) {
+    let kept = written_once::kept(
+        writes
+            .into_iter()
+            .map(|(data, signature_data)| SignedWrite {
+                data,
+                signature_data,
+            })
+            .collect(),
+    );
+    let stamp = written_once::with_signature(storage_type, kept[0].signature_data);
+    (
+        written_once::settled_bytes(kept).expect("a record encodes"),
+        stamp,
+    )
 }
 
 /// The bytes the map entry `(key, value)` at `id` is stored as: the

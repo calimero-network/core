@@ -24,10 +24,12 @@ use crate::collections::{Root, UnorderedMap, WriteOnce};
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
+use crate::interface::{MainInterface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::map_entry_bytes;
-use crate::tests::common::{account_of_key, test_account};
+use crate::tests::common::{account_of_key, conflict_record, test_account};
 use crate::tests::owned_rules::{act_as, apply, conflicted, key, later, signed};
+use crate::written_once::conflict_parts;
 
 /// Plain values, so two nodes holding the same entry hold the same bytes.
 type Ballots = WriteOnce<UnorderedMap<String, String>>;
@@ -187,9 +189,40 @@ fn leaf(id: Id) -> Action {
     }
 }
 
-/// Apply a peer's leaf as a repair does.
+/// Apply a peer's leaf as a repair does: a sealed entry's record as the writes
+/// it holds, each on its own.
 fn repair(leaf: &Action) {
-    let _ = apply(leaf.clone(), voter());
+    let Action::Update {
+        id, data, metadata, ..
+    } = leaf
+    else {
+        panic!("a leaf is an update");
+    };
+    let Some(writes) = conflict_parts(&metadata.storage_type, data) else {
+        let _ = apply(leaf.clone(), voter());
+        return;
+    };
+    for (data, storage_type) in writes {
+        let write = Action::Update {
+            id: *id,
+            data,
+            ancestors: vec![],
+            metadata: Metadata {
+                storage_type,
+                ..metadata.clone()
+            },
+        };
+        let _ = apply(write, voter());
+    }
+}
+
+/// A node's leaf once the voter's phone and laptop cast different ballots.
+fn sealed_leaf() -> Action {
+    let ballots = fresh_node();
+    for (device, value, at) in [(PHONE, "yes", AT), (LAPTOP, "no", AT + 1)] {
+        apply(cast(&ballots, device, value, at), voter()).expect("each write lands");
+    }
+    leaf(entry_id(&ballots))
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +363,51 @@ fn a_redelivery_of_either_write_changes_nothing_once_settled() {
     apply(phone, voter()).expect("a redelivery of either write is accepted");
     apply(laptop, voter()).expect("a redelivery of either write is accepted");
     assert_eq!(held(&ballots), settled);
+}
+
+#[test]
+#[serial]
+fn a_sealed_entry_s_record_is_never_applied_as_one_write() {
+    let record = sealed_leaf();
+    let _node = fresh_node();
+    assert!(matches!(
+        apply(record, voter()),
+        Err(StorageError::ActionNotAllowed(_))
+    ));
+}
+
+#[test]
+#[serial]
+fn a_snapshot_holds_a_record_only_if_each_of_its_writes_verifies() {
+    let Action::Update {
+        id, data, metadata, ..
+    } = sealed_leaf()
+    else {
+        panic!("a leaf is an update");
+    };
+    let parent = ballots_id(&fresh_node());
+    MainInterface::verify_snapshot_entity_signature(id, Some(parent), &data, &metadata)
+        .expect("a record of two genuine writes verifies");
+
+    let [(first, first_type), (_, second_type)] =
+        conflict_parts(&metadata.storage_type, &data).expect("a record");
+    let signature = |stamp: &StorageType| *stamp.signature_data().expect("signed");
+    let other = map_entry_bytes(id, &ballot_key(), &"maybe".to_owned());
+    let (forged, stamp) = conflict_record(
+        &metadata.storage_type,
+        [
+            (first, signature(&first_type)),
+            (other, signature(&second_type)),
+        ],
+    );
+    let metadata = Metadata {
+        storage_type: stamp,
+        ..metadata
+    };
+    assert!(matches!(
+        MainInterface::verify_snapshot_entity_signature(id, Some(parent), &forged, &metadata),
+        Err(StorageError::InvalidSignature)
+    ));
 }
 
 // ---------------------------------------------------------------------------

@@ -111,6 +111,11 @@ pub enum StorageError {
     /// diagnostic payload, so it carries the id and lets the message say which.
     NonceReplay(Box<([u8; 32], u64)>),
 
+    /// Two different authentic values were signed for this written-once entry,
+    /// which seals it: it has no single value to read.
+    #[error("Written-once entry {0} is conflicted: two different values were signed for it")]
+    Conflicted(Id),
+
     /// The requested record was not found, but in the context it was asked for,
     /// it was expected to be found and so this represents an error or some kind
     /// of inconsistency in the stored data.
@@ -142,6 +147,7 @@ impl Serialize for StorageError {
             | Self::CannotCreateOrphan(id)
             | Self::IndexNotFound(id)
             | Self::UnexpectedId(id)
+            | Self::Conflicted(id)
             | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),
             Self::InvalidTimestamp(timestamp, local_time) => serializer.serialize_str(&format!(
                 "Invalid timestamp {timestamp} for an action, too far in the future (local time: {local_time})."

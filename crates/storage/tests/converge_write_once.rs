@@ -24,7 +24,7 @@ use calimero_storage::collections::{
     StoreError, UnorderedMap, WriteOnce,
 };
 use calimero_storage::testing::converge;
-use calimero_storage::{env, rekey_field_if_supported};
+use calimero_storage::{env, rekey_field_if_supported, StorageError};
 use serial_test::serial;
 
 const REPLICAS: usize = 3;
@@ -93,7 +93,10 @@ fn mine() -> u64 {
 
 /// Whether a read returned the answer for an entry two different values sealed.
 fn conflicted<T>(read: &Result<T, StoreError>) -> bool {
-    read.is_err()
+    matches!(
+        read,
+        Err(StoreError::StorageError(StorageError::Conflicted(_)))
+    )
 }
 
 /// The key every device casts its ballot at.

@@ -952,6 +952,7 @@ impl SyncManager {
                                             &context_id,
                                             writers,
                                             &index_entity.metadata.storage_type,
+                                            entry,
                                         ) {
                                             return Err(refused_snapshot_entity(
                                                 context_id,
@@ -967,6 +968,7 @@ impl SyncManager {
                                         &context_id,
                                         id_obj,
                                         &index_entity.metadata,
+                                        entry,
                                         None,
                                         &ever_writers,
                                     ) {
@@ -1146,6 +1148,7 @@ impl SyncManager {
                                                 &context_id,
                                                 writers,
                                                 &metadata.storage_type,
+                                                &entry,
                                             ) {
                                                 return Err(refused_snapshot_entity(
                                                     context_id,
@@ -1159,6 +1162,7 @@ impl SyncManager {
                                                 &context_id,
                                                 id_obj,
                                                 metadata,
+                                                &entry,
                                                 Some(writers),
                                                 &ever_writers,
                                             ) {
@@ -1638,6 +1642,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
             &context_id,
             writers,
             &metadata.storage_type,
+            entry,
         ) {
             warn!(%context_id, id = ?id,
                 "absorb entity drain: claims the TEE-only writer set but its signer is \
@@ -1655,6 +1660,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
         &context_id,
         id_obj,
         metadata,
+        entry,
         anchor_writers.as_ref(),
         ever_writers,
     ) {
@@ -4523,6 +4529,7 @@ mod snapshot_trust_tests {
                 &self.context,
                 Id::new([0; 32]),
                 &metadata,
+                &[],
                 None,
                 &|_| Ok(CellWriters::Genesis),
             )

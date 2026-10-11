@@ -135,7 +135,8 @@ pub trait OwnerEdits: Owning {}
 pub struct Owner;
 
 /// Each entry is owned by the account that inserted it and written once:
-/// every node refuses an update or delete of it, by anyone.
+/// every node refuses a delete of it, by anyone, and a second value its owner
+/// signs seals it rather than changing it.
 #[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
 pub struct OwnerOnce;
 
@@ -154,7 +155,8 @@ pub trait Edits: sealed::Sealed + 'static {
 #[derive(Clone, Copy, Debug)]
 pub struct Editable;
 
-/// Nobody may edit an entry; only a moderator may remove it.
+/// Nobody may edit an entry (a second value its owner signs seals it); only a
+/// moderator may remove it.
 #[derive(Clone, Copy, Debug)]
 pub struct Once;
 

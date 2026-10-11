@@ -2020,6 +2020,8 @@ where
                     .key_fits(id, &entry.item)
                     .then_some(Ok((id, entry.item))),
                 Ok(None) => Some(Err(StoreError::StorageError(StorageError::NotFound(id)))),
+                // A written-once entry two values sealed has no value to list.
+                Err(StoreError::StorageError(StorageError::Conflicted(_))) => None,
                 Err(error) => Some(Err(error)),
             }))
     }
@@ -2063,7 +2065,11 @@ where
             {
                 continue;
             }
-            if let Some(entry) = self.find_keyed(child.id())? {
+            let entry = match self.find_keyed(child.id()) {
+                Err(StoreError::StorageError(StorageError::Conflicted(_))) => continue,
+                entry => entry?,
+            };
+            if let Some(entry) = entry {
                 if wanted(&entry.item.1) {
                     out.push((stamped, entry.item));
                 }

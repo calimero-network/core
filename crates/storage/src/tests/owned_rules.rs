@@ -74,7 +74,12 @@ pub(super) fn refused<T: core::fmt::Debug>(
 
 /// Whether a read returned the answer for an entry two different values sealed.
 pub(super) fn conflicted<T>(read: &Result<T, crate::collections::StoreError>) -> bool {
-    read.is_err()
+    matches!(
+        read,
+        Err(crate::collections::StoreError::StorageError(
+            StorageError::Conflicted(_)
+        ))
+    )
 }
 
 /// A signed owner-stamped action, as a peer's node would produce it.

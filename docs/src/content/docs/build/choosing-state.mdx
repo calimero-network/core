@@ -152,10 +152,10 @@ self.charter.get()?;   // there is no set
 ```
 
 The value's only writer is whoever created it, holding a single capability:
-write once. On every node, a later write with different bytes is refused even
-if that writer signs it, removing it is refused, and nobody can be given the
-right to change it. A byte-identical redelivery is accepted, which is what sync
-sends. Like `SharedStorage`'s writer set, the writer comes from genesis, the
+write once. If that writer signs a second, different value, every node seals
+the cell: `get` returns `StorageError::Conflicted` instead of either value.
+Removing it is refused, and nobody can be given the right to change it. A
+byte-identical redelivery is accepted, which is what sync sends. Like `SharedStorage`'s writer set, the writer comes from genesis, the
 state the creator writes, so a new node trusts the peer it first takes genesis
 from.
 
