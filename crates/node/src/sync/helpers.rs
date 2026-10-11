@@ -634,9 +634,8 @@ fn tee_only_leaf_admitted<W>(
 /// What a snapshot leaf's signer proves about who wrote it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SnapshotAuthorship {
-    /// The signer's account is the leaf's owner or one of its writers, carried as
-    /// the account storage checks the write against; `None` when the leaf names no
-    /// account to check (Public, Frozen, or a context in no group).
+    /// The signer's account is the owner or a writer: the account storage checks the
+    /// write against, or `None` when the leaf names none (Public, Frozen, no group).
     Authored(Option<calimero_account::AccountId>),
     /// The signer's account is known and is neither the owner nor a writer. The
     /// leaf is a forgery by whoever signed it; drop it.
@@ -739,16 +738,30 @@ pub(crate) fn snapshot_leaf_authorship(
         return SnapshotAuthorship::Unknown;
     };
     // A certificate does not prove its account holds the key, so the leaf stands
-    // if any account that certified the key may have written it.
-    let verdicts: Vec<_> = accounts.into_iter().map(|a| verdict(Some(a))).collect();
-    if let Some(authored) = verdicts
+    // if any account that certified the key may have written it. The live one, if
+    // it does, is the account a delta of the same key is checked as.
+    let live = calimero_governance_store::member_account_in_namespace(store, &group_id, &signer)
+        .ok()
+        .flatten();
+    let verdicts: Vec<_> = accounts
+        .into_iter()
+        .map(|a| (a, verdict(Some(a))))
+        .collect();
+    let authored = verdicts
         .iter()
-        .find(|v| matches!(v, SnapshotAuthorship::Authored(_)))
+        .filter(|(_, v)| matches!(v, SnapshotAuthorship::Authored(_)));
+    if let Some((_, v)) = authored
+        .clone()
+        .find(|(a, _)| Some(*a) == live)
+        .or_else(|| authored.clone().next())
     {
-        *authored
+        *v
     } else if verdicts.is_empty() {
         verdict(None)
-    } else if verdicts.contains(&SnapshotAuthorship::Unknown) {
+    } else if verdicts
+        .iter()
+        .any(|(_, v)| *v == SnapshotAuthorship::Unknown)
+    {
         SnapshotAuthorship::Unknown
     } else {
         SnapshotAuthorship::Forged

@@ -13,6 +13,7 @@ use calimero_node_primitives::sync::{
 };
 use calimero_node_primitives::{SyncState, SyncStatusSnapshot};
 use calimero_primitives::context::ContextId;
+use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, NodeEvent, SyncStatusPayload,
 };
@@ -1714,15 +1715,32 @@ fn apply_drained_snapshot_entity(
 ) -> Result<SnapshotEntityDrainOutcome> {
     let held = |id| crate::delta_store::read_entity_index_direct(store, context_id, id);
     let stored = held(id)?.is_some();
+    // What repair would hand to the app's merge is left to repair once this node holds it.
+    if stored {
+        let crdt_type = index
+            .metadata
+            .crdt_type
+            .clone()
+            .unwrap_or_else(CrdtType::opaque_leaf);
+        if crate::sync::helpers::classify_leaf(id, &crdt_type, || {
+            crate::sync::helpers::stored_custom_type(id)
+        }) != crate::sync::helpers::LeafDisposition::Apply
+        {
+            warn!(%context_id, id = ?id.as_bytes(),
+                "absorb entity drain: it merges in the app's module, leaving it to repair");
+            return Ok(SnapshotEntityDrainOutcome::Refused);
+        }
+    }
     let ancestors = match index.parent_id() {
         _ if stored || id == Id::new(*context_id.as_ref()) => vec![],
         Some(parent) if held(parent)?.is_some() => {
             vec![ChildInfo::new(parent, [0; 32], Metadata::default())]
         }
+        // Its parent may be buffered and still pending; the drain's pass bound ends the wait.
         _ => {
-            warn!(%context_id, id = ?id.as_bytes(),
-                "absorb entity drain: its parent is not in this node's tree, deleting");
-            return Ok(SnapshotEntityDrainOutcome::Refused);
+            debug!(%context_id, id = ?id.as_bytes(),
+                "absorb entity drain: its parent is not in this node's tree yet, leaving pending");
+            return Ok(SnapshotEntityDrainOutcome::Pending);
         }
     };
     let (data, metadata) = (entry.to_vec(), index.metadata.clone());
