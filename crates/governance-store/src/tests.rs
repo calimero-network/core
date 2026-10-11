@@ -12939,7 +12939,7 @@ mod account_plane_apply {
         .unwrap();
 
         // Not a member yet → refused, and nothing recorded.
-        let _refused = sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -12954,6 +12954,10 @@ mod account_plane_apply {
         )
         .err()
         .expect("a link for an account that is not a member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         let _repo = AccountBindingRepository::new(&store);
         assert!(
             live_for(&store, &gid, account).is_empty(),
@@ -13071,7 +13075,7 @@ mod account_plane_apply {
         )
         .unwrap();
 
-        let _refused = sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13086,6 +13090,10 @@ mod account_plane_apply {
         )
         .err()
         .expect("a link endorsed by a key bound to no member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         assert!(live_for(&store, &gid, account).is_empty());
     }
 
@@ -13246,7 +13254,7 @@ mod account_plane_apply {
         // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
         // simply has no standing here.
         let stranger = key(7);
-        let _refused = sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13261,6 +13269,10 @@ mod account_plane_apply {
         )
         .err()
         .expect("a link endorsed by a non-member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "a valid endorsement from a non-member must not admit a link"
@@ -14867,7 +14879,7 @@ mod account_plane_apply {
 
         // A valid, root-signed narrowing - replayed by a member of this namespace
         // that speaks for some other account.
-        let _refused = crate::apply_group_op_mutations(
+        let refused = crate::apply_group_op_mutations(
             &store,
             &gid,
             &admin_sk.public_key(),
@@ -14876,6 +14888,10 @@ mod account_plane_apply {
             &FixedAuthorizer(true),
         )
         .expect_err("a replay by another account is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::SignerNotTheAccount)
+        );
 
         assert!(
             is_live(&store, &gid, account, device),

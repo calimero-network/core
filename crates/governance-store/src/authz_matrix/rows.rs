@@ -178,9 +178,9 @@ fn device_link(world: &World, actor: &Actor) -> Outcome {
         .expect("read live bindings")
         .iter()
         .any(|binding| binding.device == device);
-    // A non-member endorser is still resolved from live rows, so the link records
-    // nothing rather than being refused.
-    verdict(applied, linked, |_| false)
+    verdict(applied, linked, |reason| {
+        matches!(reason, BindingRejected::AccountNotMember)
+    })
 }
 
 /// The actor withdraws another member's device, with no proof from its account.
