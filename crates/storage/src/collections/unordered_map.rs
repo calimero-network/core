@@ -37,7 +37,9 @@ use calimero_account::AccountId;
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, StorageKey, ValueRef};
+use super::{
+    compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, StorageKey, ValueRef, Written,
+};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -742,17 +744,17 @@ where
     pub(crate) fn owned_entries(
         &self,
         owner: Option<&AccountId>,
-    ) -> Result<Vec<(AccountId, K, V)>, StoreError> {
+    ) -> Result<Vec<(AccountId, K, Written<V>)>, StoreError> {
         Ok(self
             .inner
             .owned_entries(owner)?
             .into_iter()
-            .map(|(owner, (value, key))| (owner, key, value))
+            .map(|(owner, (entry, key))| (owner, key, entry))
             .collect())
     }
 
-    /// Every owner's value at `key`, ascending by entry id.
-    pub(crate) fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError>
+    /// Every owner's entry at `key`, ascending by entry id.
+    pub(crate) fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, Written<V>)>, StoreError>
     where
         K: AsRef<[u8]>,
     {
@@ -760,7 +762,7 @@ where
             .inner
             .entries_at(self.slot_id(key))?
             .into_iter()
-            .map(|(owner, (value, _))| (owner, value))
+            .map(|(owner, (entry, _))| (owner, entry))
             .collect())
     }
 

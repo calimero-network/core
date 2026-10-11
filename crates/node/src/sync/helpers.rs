@@ -15,7 +15,7 @@ use calimero_storage::collections::ROOT_ENTRY_ID;
 use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{Action, ApplyContext, Interface};
-use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
+use calimero_storage::shared_writers::{writes_once_only, CellWriters, WritersUnavailable};
 use calimero_storage::store::MainStorage;
 use calimero_storage::written_once::conflict_parts;
 use calimero_store::Store;
@@ -753,6 +753,18 @@ pub(crate) fn snapshot_leaf_authorship(
             ever_writers,
         );
     };
+    // A cell's record is a seal only where its writers write once, or it is a
+    // mutable cell's history packed by whoever served it.
+    let cell_writers = match &metadata.storage_type {
+        StorageType::Shared { writers, .. } => Some(Some(writers)),
+        StorageType::SharedMember { .. } => Some(anchor_writers),
+        _ => None,
+    };
+    match cell_writers {
+        Some(None) => return SnapshotAuthorship::Unknown,
+        Some(Some(writers)) if !writes_once_only(writers) => return SnapshotAuthorship::Forged,
+        _ => {}
+    }
     let verdicts = writes.map(|(_, storage_type)| {
         let mut metadata = metadata.clone();
         metadata.storage_type = storage_type;

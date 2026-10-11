@@ -473,9 +473,8 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
-    /// Enforce the `WRITE` capability for an upsert of `id` with `data`, or
-    /// `WRITE_ONCE` where the writer holds only that: the write then settles
-    /// against what `id` holds, as any written-once entry's does.
+    /// Enforce `WRITE` for an upsert of `id`, or settle it as a written-once write
+    /// where the writer holds `WRITE_ONCE` alone in a set granting nothing beside it.
     fn enforce_put_mask(
         signer_account: &AccountId,
         writers: &BTreeMap<AccountId, OpMask>,
@@ -492,11 +491,29 @@ impl<S: StorageAdaptor> Interface<S> {
                 "Signer is a writer but lacks the required operation capability".to_owned(),
             ));
         }
+        if crate::shared_writers::mixes_write_once(writers) {
+            return Err(StorageError::ActionNotAllowed(
+                "a write-once grant beside other grants writes nothing".to_owned(),
+            ));
+        }
+        refuse_oversized_written_once(data)?;
         match <Index<S>>::get_metadata(id)? {
             Some(stored_metadata) => {
                 Self::settle_written_once(id, &stored_metadata, data, signature_data)
             }
             None => Ok(None),
+        }
+    }
+
+    /// Whether a local write stamped `storage_type` is written once: an immutable
+    /// owned entry, or a cell member whose writers hold `WRITE_ONCE` alone.
+    fn is_written_once(storage_type: &StorageType) -> bool {
+        match storage_type {
+            StorageType::User { rules, .. } => rules.immutable,
+            StorageType::SharedMember { anchor, .. } => {
+                crate::shared_writers::writes_once_only(&Self::resolve_anchor_writers(*anchor))
+            }
+            _ => false,
         }
     }
 
@@ -1338,6 +1355,11 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
         refuse_misfiled_owned_entry(child.id(), Some(parent_id), &data)?;
+        if data.len() > written_once::MAX_VALUE_BYTES
+            && Self::is_written_once(&child.element().metadata.storage_type)
+        {
+            refuse_oversized_written_once(&data)?;
+        }
 
         let own_hash = Sha256::digest(&data).into();
 
@@ -2089,11 +2111,8 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Ok(());
                         }
 
-                        // A written-once entry keeps the same writes on every
-                        // node in any order (`written_once::settle`): one value,
-                        // or, once its owner signed two different ones, both, which
-                        // seals it. Decided before the stale-nonce skip below,
-                        // which would otherwise drop an earlier write as older.
+                        // A written-once entry keeps the same writes in any order
+                        // (`written_once::settle`), decided before the stale-nonce skip.
                         //
                         // `verify_action_update` has already held the rules to
                         // the stored ones, so `rules` here are the entry's own.
@@ -2108,6 +2127,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // delete arrived first.
                         if rules.immutable {
                             Self::refuse_deleted_written_once(stored_index.as_ref(), *id, rules)?;
+                            refuse_oversized_written_once(data)?;
                             if let Some(stored_metadata) = stored_metadata {
                                 match Self::settle_written_once(
                                     *id,
@@ -3336,6 +3356,38 @@ impl<S: StorageAdaptor> Interface<S> {
     }
 
     fn find_under<D: Data>(id: Id, parent: Option<Id>) -> Result<Option<D>, StorageError> {
+        let Some((slice, index)) = Self::row_under(id, parent)? else {
+            return Ok(None);
+        };
+        if let Some(index) = &index {
+            if written_once::conflict_writes(&index.metadata.storage_type, &slice).is_some() {
+                return Err(StorageError::Conflicted(id));
+            }
+        }
+        Self::decode_row(id, &slice, index).map(Some)
+    }
+
+    /// The first write a sealed written-once child of `parent` keeps, decoded as
+    /// that entry; `None` when `id` is no sealed child of `parent`.
+    pub(crate) fn find_sealed_child_by_id<D: Data>(
+        parent: Id,
+        id: Id,
+    ) -> Result<Option<D>, StorageError> {
+        let Some((slice, Some(index))) = Self::row_under(id, Some(parent))? else {
+            return Ok(None);
+        };
+        let Some((first, _)) = written_once::conflict_writes(&index.metadata.storage_type, &slice)
+        else {
+            return Ok(None);
+        };
+        Self::decode_row(id, &first.data, Some(index)).map(Some)
+    }
+
+    /// The live row at `id`, bytes and index, if `parent` holds it when one is named.
+    fn row_under(
+        id: Id,
+        parent: Option<Id>,
+    ) -> Result<Option<(Vec<u8>, Option<EntityIndex>)>, StorageError> {
         // One row read serves the tombstone check, the merkle_hash and metadata
         // below AND the data: reading the index and the data apart read the
         // same row twice for every child of every collection scan.
@@ -3356,17 +3408,15 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        let value = row.data;
+        Ok(row.data.map(|slice| (slice, index)))
+    }
 
-        let Some(slice) = value else {
-            return Ok(None);
-        };
-        if let Some(index) = &index {
-            if written_once::conflict_writes(&index.metadata.storage_type, &slice).is_some() {
-                return Err(StorageError::Conflicted(id));
-            }
-        }
-
+    /// Decode `slice` as the entity at `id`, under the domain and stamp its index names.
+    fn decode_row<D: Data>(
+        id: Id,
+        slice: &[u8],
+        index: Option<EntityIndex>,
+    ) -> Result<D, StorageError> {
         // Collections inside the value come back in this entity's domain, so an
         // owned entry's nested maps stay owned (see `crate::domain`).
         let domain = index.as_ref().map_or(crate::domain::Domain::Open, |index| {
@@ -3377,7 +3427,7 @@ impl<S: StorageAdaptor> Interface<S> {
         let updated_at = index.as_ref().map(|index| *index.metadata.updated_at);
         let mut item = crate::domain::with_ambient(domain, || {
             crate::collections::lww_register::entry_stamp::with_stored(updated_at, || {
-                from_slice::<D>(&slice)
+                from_slice::<D>(slice)
             })
         })
         .map_err(StorageError::DeserializationError)?;
@@ -3386,7 +3436,7 @@ impl<S: StorageAdaptor> Interface<S> {
         item.element_mut().merkle_hash = index.full_hash();
         item.element_mut().metadata = index.metadata;
 
-        Ok(Some(item))
+        Ok(item)
     }
 
     /// Finds an entity by ID, returning raw bytes without deserialization.
@@ -4052,11 +4102,8 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(())
     }
 
-    /// Store the bytes a written-once entry settled on over what it held, dated
-    /// and signed by the first write it keeps, and return the new full hash.
-    ///
-    /// Bypasses `save_internal`, whose LWW guard drops an incoming write with an
-    /// older `updated_at`: the kept write can be the older one.
+    /// Store a written-once entry's settled bytes, dated and signed by its first kept
+    /// write; bypasses `save_internal`'s LWW guard, since that write can be the older.
     fn replace_written_once(
         id: Id,
         kept: &[u8],
@@ -5375,6 +5422,17 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
     }
 
     // If this check passes, the data is verified.
+    Ok(())
+}
+
+/// Refuses a written-once write too large for a record of two to fit one sync leaf.
+fn refuse_oversized_written_once(data: &[u8]) -> Result<(), StorageError> {
+    if data.len() > written_once::MAX_VALUE_BYTES {
+        return Err(StorageError::ActionNotAllowed(format!(
+            "a written-once value holds at most {} bytes",
+            written_once::MAX_VALUE_BYTES
+        )));
+    }
     Ok(())
 }
 

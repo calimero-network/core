@@ -20,7 +20,7 @@ use serial_test::serial;
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::collections::{ModeratedOnce, Root, UnorderedMap};
+use crate::collections::{ModeratedOnce, Root, UnorderedMap, Written};
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
@@ -143,7 +143,7 @@ fn full_hash_of(id: Id) -> Option<[u8; 32]> {
 /// cell, whose register each fresh node stamps with its own clock.
 #[derive(Debug, PartialEq)]
 struct Held {
-    entries: Vec<(AccountId, String, String)>,
+    entries: Vec<(AccountId, String, Written<String>)>,
     deleted: bool,
     collection_hash: Option<[u8; 32]>,
 }

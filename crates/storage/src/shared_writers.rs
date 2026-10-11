@@ -156,6 +156,26 @@ pub enum RotationRefusal {
     /// A set names more writers than a governance op carries.
     #[error("a rotation names more than {MAX_WRITERS_PER_ROTATION} writers")]
     TooManyWriters,
+    /// The new set grants `WRITE_ONCE` beside another bit.
+    #[error("a rotation cannot grant WRITE_ONCE beside any other capability")]
+    MixedWriteOnce,
+}
+
+/// Whether every writer in a non-empty `writers` holds `WRITE_ONCE` alone, as a
+/// written-once cell's do.
+#[must_use]
+pub fn writes_once_only(writers: &Writers) -> bool {
+    !writers.is_empty() && writers.values().all(|mask| *mask == OpMask::WRITE_ONCE)
+}
+
+/// Whether `writers` grants `WRITE_ONCE` beside any other bit: such a set lets a
+/// write-once writer seal what a writer may change, so no rotation reaches one.
+#[must_use]
+pub fn mixes_write_once(writers: &Writers) -> bool {
+    writers
+        .values()
+        .any(|mask| mask.contains(OpMask::WRITE_ONCE))
+        && writers.values().any(|mask| *mask != OpMask::WRITE_ONCE)
 }
 
 impl SharedRotation {
@@ -171,6 +191,8 @@ impl SharedRotation {
             || self.new.len() > MAX_WRITERS_PER_ROTATION
         {
             Some(RotationRefusal::TooManyWriters)
+        } else if mixes_write_once(&self.new) {
+            Some(RotationRefusal::MixedWriteOnce)
         } else {
             None
         }
@@ -287,8 +309,9 @@ fn count_steps<'a>(
             .filter(|&j| step.seen.contains(&steps[j].id))
             .collect();
         let (node, in_effect) = head_of(&steps, &parents, &reps, &past, &genesis);
-        let counts =
-            step.prior == in_effect && RotationStep::is_admin_in(&step.prior, &step.signer_account);
+        let counts = step.prior == in_effect
+            && RotationStep::is_admin_in(&step.prior, &step.signer_account)
+            && !mixes_write_once(&step.new);
         let node = counts.then_some(node);
         let rep = (0..i)
             .find(|&j| parents[j].is_some() && parents[j] == node && steps[j].new == step.new)
@@ -755,6 +778,26 @@ mod tests {
             rotation(cell(), over, at_bound).refusal(),
             Some(RotationRefusal::TooManyWriters),
             "the set it steps from is bounded too"
+        );
+    }
+
+    #[test]
+    fn write_once_is_granted_only_alone() {
+        let mut mixed = set(&[0xAA]);
+        let _ = mixed.insert(acct(0xBB), OpMask::WRITE_ONCE);
+        assert_eq!(
+            rotation(cell(), set(&[0xAA]), mixed.clone()).refusal(),
+            Some(RotationRefusal::MixedWriteOnce)
+        );
+        let alone: Writers = [(acct(0xBB), OpMask::WRITE_ONCE)].into();
+        assert_eq!(rotation(cell(), set(&[0xAA]), alone).refusal(), None);
+
+        let mut stepped = step(1, 0xAA, &[0xAA], &[0xAA], 1, &[]);
+        stepped.new = mixed;
+        assert_eq!(
+            fold_in(cell(), [&stepped]),
+            None,
+            "a mixed step never takes effect"
         );
     }
 

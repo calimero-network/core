@@ -374,7 +374,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                     transport, context_id, identity, init_pop, requested, from, &mut stats,
                 )
                 .await?;
-                valid.resize(valid.len() + leaves.len(), true);
+                valid.extend(leaves.iter().map(TreeNode::is_valid));
                 nodes.extend(leaves);
             }
         }
@@ -970,10 +970,8 @@ async fn fetch_remaining_children<T: SyncTransport>(
         else {
             bail!("Unexpected payload type while paging a child list");
         };
-        // Every page within the cap, every id at or above where it was asked
-        // to start, each page ending past where it began, and every leaf a
-        // valid leaf among the page's own children: anything else is a peer
-        // not walking its list, and would loop, overflow or smuggle nodes in.
+        // A page within the cap, from `from`, ending past it and holding its own leaves, or a
+        // peer could loop, overflow or smuggle nodes; the caller skips an invalid leaf.
         let page: HashSet<&[u8; 32]> = children.iter().collect();
         if children.len() > MAX_CHILDREN_PER_NODE
             || leaves.len() > children.len()
@@ -981,7 +979,7 @@ async fn fetch_remaining_children<T: SyncTransport>(
             || next.is_some_and(|next| next <= from)
             || !leaves
                 .iter()
-                .all(|leaf| leaf.is_leaf() && leaf.is_valid() && page.contains(&leaf.id))
+                .all(|leaf| leaf.is_leaf() && page.contains(&leaf.id))
         {
             bail!("peer sent a malformed child-list page");
         }

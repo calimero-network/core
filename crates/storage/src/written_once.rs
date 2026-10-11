@@ -10,11 +10,16 @@ use core::cmp::Ordering;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
+use crate::constants::MAX_LEAF_VALUE_SIZE;
 use crate::entities::{SignatureData, StorageType};
 use crate::error::StorageError;
 use crate::hash_meter::{Digest, Sha256};
 
 const CONFLICT_TAG: &[u8] = b"calimero.written-once.conflict.v1"; // leads a conflict record
+const RECORD_OVERHEAD: usize = 512; // bounds a record's tag and its writes' lengths and signatures
+
+/// The most bytes a written-once write may carry, so a record of two fits one sync leaf.
+pub(crate) const MAX_VALUE_BYTES: usize = (MAX_LEAF_VALUE_SIZE - RECORD_OVERHEAD) / 2;
 
 /// One authentic write: the bytes and the signature over them.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
@@ -47,12 +52,7 @@ pub(crate) enum Settled {
 }
 
 /// Settle the authentic `incoming` write against the entry's `stored` bytes and
-/// `stored_type` stamp.
-///
-/// # Errors
-/// `ActionNotAllowed` for other bytes while the stored write is not yet signed,
-/// since no record could prove the conflict; `SerializationError` if a record
-/// cannot be encoded.
+/// `stored_type` stamp. Refuses other bytes while the stored write is unsigned.
 pub(crate) fn settle(
     stored_type: &StorageType,
     stored: Vec<u8>,
@@ -170,5 +170,33 @@ fn may_be_written_once(storage_type: &StorageType) -> bool {
         StorageType::User { rules, .. } => rules.immutable,
         StorageType::Shared { .. } | StorageType::SharedMember { .. } => true,
         StorageType::Public | StorageType::Frozen => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_account::AccountId;
+    use calimero_primitives::identity::PublicKey;
+
+    use super::{settled_bytes, SignedWrite, MAX_LEAF_VALUE_SIZE, MAX_VALUE_BYTES};
+    use crate::entities::SignatureData;
+
+    #[test]
+    fn a_record_of_two_writes_at_the_cap_fits_one_sync_leaf() {
+        let write = |byte: u8| SignedWrite {
+            data: vec![byte; MAX_VALUE_BYTES],
+            signature_data: SignatureData {
+                signature: [byte; 64],
+                nonce: u64::MAX,
+                signer: Some(PublicKey::from([byte; 32])),
+                on_behalf: Some(AccountId::from([byte; 32])),
+            },
+        };
+        let record = settled_bytes(vec![write(1), write(2)]).expect("a record encodes");
+        assert!(
+            record.len() <= MAX_LEAF_VALUE_SIZE,
+            "{} bytes",
+            record.len()
+        );
     }
 }

@@ -43,7 +43,7 @@ use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, AccountId};
 use calimero_storage::collections::{
     Authored, ContentAddressed, Frozen, IndexedMap, LwwRegister, ModeratedOnce, SortedMap,
-    UnorderedMap, WriteOnce,
+    UnorderedMap, WriteOnce, Written,
 };
 use thiserror::Error;
 
@@ -181,6 +181,13 @@ fn message_key(channel: &str, id: &str) -> String {
 /// so each row's author is the holder of its key whose message it is.
 /// `holders` is the collection's `entries_at`. A holder is used once, so two
 /// authors of equal messages at one key are both named.
+/// The holders of a written-once key that have a value: a sealed entry has none.
+fn written_values(held: Vec<(AccountId, Written<Message>)>) -> Vec<(AccountId, Message)> {
+    held.into_iter()
+        .filter_map(|(owner, entry)| Some((owner, entry.value()?)))
+        .collect()
+}
+
 fn message_views(
     rows: impl IntoIterator<Item = (String, Message)>,
     holders: impl Fn(&String) -> app::Result<Vec<(AccountId, Message)>>,
@@ -272,7 +279,7 @@ impl TeamSpace {
     pub fn channel(&self, channel: String) -> app::Result<Vec<MessageView>> {
         let prefix = format!("{channel}/");
         message_views(self.messages.prefix(prefix.as_bytes())?, |key| {
-            Ok(self.messages.entries_at(key)?)
+            Ok(written_values(self.messages.entries_at(key)?))
         })
     }
 
@@ -302,7 +309,7 @@ impl TeamSpace {
     /// Every announcement, by id: one row per author holding the id.
     pub fn announcements(&self) -> app::Result<Vec<MessageView>> {
         let mut views = message_views(self.announcements.entries()?, |key| {
-            Ok(self.announcements.entries_at(key)?)
+            Ok(written_values(self.announcements.entries_at(key)?))
         })?;
         views.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(views)

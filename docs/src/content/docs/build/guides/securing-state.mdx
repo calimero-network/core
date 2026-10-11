@@ -216,7 +216,9 @@ signature disappears; the audit log says whatever the last vandal wanted.
 **Right.** `WriteOnce<C>`: the author owns the entry, and **nobody**, the author
 included, can change or delete it, on any node. An author who signs a second
 value seals the entry instead: every node then reads it as
-`StorageError::Conflicted`.
+`StorageError::Conflicted`, and the owner listings (`entries_with_owners`,
+`entries_by`, `entries_at`) return it as `Written::Conflicted`, so a tally
+counts a sealed move rather than losing it.
 
 ```rust
 moves:      WriteOnce<SortedMap<String, MoveRecord>>,

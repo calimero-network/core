@@ -187,7 +187,7 @@ where
             .owned_entries(None)?
             .into_iter()
             .filter(|(owner, account, _)| owner == account)
-            .map(|(_, account, value)| (account, value)))
+            .filter_map(|(_, account, entry)| Some((account, entry.value()?))))
     }
 
     /// Gets the data for the current executor.

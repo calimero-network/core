@@ -55,8 +55,8 @@ impl VMHostFunctions<'_> {
     /// # Errors
     ///
     /// * `HostError::DeserializationError` if the bytes are not exactly one rotation.
-    /// * `HostError::InvalidSharedRotation` if either set is empty or the cell is not a cell id,
-    ///   since the node could not publish it.
+    /// * `HostError::InvalidSharedRotation` if either set is empty, the cell is not a cell id, or
+    ///   the new set grants `WRITE_ONCE` beside another bit, since the node could not publish it.
     /// * `HostError::SharedWritersOverflow` if either set is over the bound.
     /// * `HostError::SharedRotationsOverflow` if the run already recorded the most it may.
     /// * `HostError::InvalidMemoryAccess` if memory access fails for the descriptor buffer.
@@ -72,9 +72,11 @@ impl VMHostFunctions<'_> {
             Some(RotationRefusal::TooManyWriters) => {
                 return Err(HostError::SharedWritersOverflow.into())
             }
-            Some(RotationRefusal::EmptySet | RotationRefusal::NotACell) => {
-                return Err(HostError::InvalidSharedRotation.into())
-            }
+            Some(
+                RotationRefusal::EmptySet
+                | RotationRefusal::NotACell
+                | RotationRefusal::MixedWriteOnce,
+            ) => return Err(HostError::InvalidSharedRotation.into()),
         }
         if self.borrow_logic().shared_rotations.len() >= MAX_SHARED_ROTATIONS_PER_RUN {
             return Err(HostError::SharedRotationsOverflow.into());

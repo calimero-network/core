@@ -91,7 +91,11 @@ switching a field between the two types needs no migration.
   arrive. One kept write is the value. Two seal the entry: its stored bytes
   become a conflict record (`calimero.written-once.conflict.v1` then borsh of
   both signed writes), stamped with the first write's signature, and a read
-  returns `StorageError::Conflicted`; listings skip it. The kept pair is a
+  returns `StorageError::Conflicted`. The owner listings of a written-once
+  policy return `Written<V>` per entry (`Owning::Listed`), so a sealed entry
+  stays listed as `Written::Conflicted`; the inner collection's listings leave
+  it out. A written-once write over `written_once::MAX_VALUE_BYTES` is refused,
+  so a record of two fits one sync leaf. The kept pair is a
   semilattice, so nodes that saw different pairs store the same bytes after
   any exchange. A record is never applied as one write
   (`refuse_conflict_record_as_write`): a repair applies it as its two writes,
@@ -305,6 +309,10 @@ switching a field between the two types needs no migration.
 - A `WriterSetCell<FrozenValue<T>>` built by `new_write_once`: one writer, the
   creating account, with `OpMask::WRITE_ONCE` (`0b1000`) and nothing else. No
   `DELETE`, no `ADMIN`, so the value cannot be removed or its writer rotated.
+- `WRITE_ONCE` is granted only alone: `SharedRotation::refusal` and the fold
+  (`count_steps`) refuse a set granting it beside another bit
+  (`mixes_write_once`), and `enforce_put_mask` refuses a write-once write in
+  such a set, so a write-once writer can never seal what a writer may change.
 - `enforce_put_mask` settles a `Put` from a `WRITE_ONCE` writer as any
   written-once entry's write (`written_once::settle`): genesis lands on a fresh
   node, a redelivery changes nothing, and a second value signed by the writer

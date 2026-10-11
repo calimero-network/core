@@ -102,7 +102,7 @@ fn its_writer_holds_write_once_and_nothing_else() {
 
 #[test]
 #[serial]
-fn its_writer_cannot_rewrite_it_on_any_node() {
+fn an_unsigned_genesis_value_refuses_its_writer_s_rewrite() {
     let (charter, founder) = charter();
     assert!(matches!(
         write(false, charter.ids(), "be anything", &founder),

@@ -20,7 +20,7 @@ use serial_test::serial;
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::collections::{Root, UnorderedMap, WriteOnce};
+use crate::collections::{Root, UnorderedMap, WriteOnce, Written};
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
@@ -374,9 +374,19 @@ fn a_redelivery_of_either_write_changes_nothing_once_settled() {
 #[serial]
 fn a_sealed_entry_stays_in_every_owner_listing() {
     let ballots = sealed_node();
-    assert_eq!(ballots.entries_with_owners().expect("entries").len(), 1);
-    assert_eq!(ballots.entries_by(&voter()).expect("by").len(), 1);
-    assert_eq!(ballots.entries_at(&ballot_key()).expect("at").len(), 1);
+    let sealed = Written::<String>::Conflicted;
+    assert_eq!(
+        ballots.entries_with_owners().expect("entries"),
+        vec![(voter(), ballot_key(), sealed.clone())]
+    );
+    assert_eq!(
+        ballots.entries_by(&voter()).expect("by"),
+        vec![(ballot_key(), sealed.clone())]
+    );
+    assert_eq!(
+        ballots.entries_at(&ballot_key()).expect("at"),
+        vec![(voter(), sealed)]
+    );
 }
 
 #[test]

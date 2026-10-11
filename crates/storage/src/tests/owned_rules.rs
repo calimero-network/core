@@ -204,7 +204,7 @@ fn a_write_once_key_cannot_be_taken_again() {
 
 #[test]
 #[serial]
-fn no_node_accepts_a_rewrite_even_signed_by_the_owner() {
+fn an_unsigned_stored_write_refuses_a_rewrite_even_signed_by_the_owner() {
     let (messages, alice, id) = alices_message();
     let parent = (**messages).id();
     let rewrite = signed(

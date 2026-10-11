@@ -99,7 +99,7 @@ pub mod guarded;
 pub use guarded::{
     Authored, ContentAddressed, ContentHash, Editable, Edits, Guarded, GuardedEntries, GuardedKeys,
     Moderated, ModeratedOnce, Moderation, Once, Owner, OwnerEdits, OwnerOnce, Owning, Policy,
-    WriteOnce,
+    WriteOnce, Written,
 };
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
@@ -1980,6 +1980,22 @@ where
             .filter(|entry| self.key_fits(id, &entry.item)))
     }
 
+    /// The key of the entry at `id` that two values sealed, read from the first
+    /// write it keeps, if this collection admits it and its key fits.
+    fn sealed_key(&self, id: Id) -> StoreResult<Option<K>> {
+        let parent = self.id();
+        let entry =
+            self.within(|| <Interface<S>>::find_sealed_child_by_id::<Entry<(V, K)>>(parent, id))?;
+        Ok(entry
+            .filter(|entry| {
+                self.storage
+                    .domain
+                    .admits(&entry.storage.metadata.storage_type)
+                    && self.key_fits(id, &entry.item)
+            })
+            .map(|entry| entry.item.1))
+    }
+
     /// The `(value, key)` at `id`, if this collection admits it and its key fits.
     fn get_keyed(&self, id: Id) -> StoreResult<Option<(V, K)>> {
         Ok(self.find_keyed(id)?.map(|entry| entry.item))
@@ -2028,7 +2044,10 @@ where
 
     /// Every owned entry with its owner, in child order: only `owner`'s when one
     /// is given. Reads the stored bytes of only the entries it returns.
-    fn owned_entries(&self, owner: Option<&AccountId>) -> StoreResult<Vec<(AccountId, (V, K))>> {
+    fn owned_entries(
+        &self,
+        owner: Option<&AccountId>,
+    ) -> StoreResult<Vec<(AccountId, (Written<V>, K))>> {
         let children = match <Interface<S>>::child_info_for(self.id()) {
             Ok(children) => children,
             Err(StorageError::IndexNotFound(_)) => Vec::new(),
@@ -2039,7 +2058,7 @@ where
 
     /// Every owner's entry at `slot`, ascending by id. One trie bucket holds
     /// them all, since an owned id keeps its slot's prefix.
-    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (V, K))>>
+    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (Written<V>, K))>>
     where
         K: AsRef<[u8]>,
     {
@@ -2054,7 +2073,7 @@ where
         children: Vec<ChildInfo>,
         owner: Option<&AccountId>,
         wanted: impl Fn(&K) -> bool,
-    ) -> StoreResult<Vec<(AccountId, (V, K))>> {
+    ) -> StoreResult<Vec<(AccountId, (Written<V>, K))>> {
         let domain = &self.storage.domain;
         let mut out = Vec::new();
         for child in children {
@@ -2066,13 +2085,14 @@ where
                 continue;
             }
             let entry = match self.find_keyed(child.id()) {
-                Err(StoreError::StorageError(StorageError::Conflicted(_))) => continue,
-                entry => entry?,
+                Ok(entry) => entry.map(|entry| (Written::Value(entry.item.0), entry.item.1)),
+                Err(StoreError::StorageError(StorageError::Conflicted(_))) => self
+                    .sealed_key(child.id())?
+                    .map(|key| (Written::Conflicted, key)),
+                Err(error) => return Err(error),
             };
-            if let Some(entry) = entry {
-                if wanted(&entry.item.1) {
-                    out.push((stamped, entry.item));
-                }
+            if let Some(entry) = entry.filter(|(_, key)| wanted(key)) {
+                out.push((stamped, entry));
             }
         }
         Ok(out)

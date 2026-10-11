@@ -372,8 +372,12 @@ against the writer set / owner. A forged write does not survive convergence.
 - **`WriteOnce<C>`** — owned *and* immutable: the inserter owns the entry, and
   nobody, the owner included, can change or delete it. If the owner signs two
   different values for one key (two devices, or a patched node), every node
-  seals the entry and `get` returns `StorageError::Conflicted`; listings skip
-  it. Use it when the key is the app's own (a message id) rather than a hash.
+  seals the entry and `get` returns `StorageError::Conflicted`. The owner
+  listings (`entries_with_owners`, `entries_by`, `my_entries`, `entries_at`)
+  return a `Written<V>` per entry, `Written::Conflicted` for a sealed one, so a
+  tally must count it; the inner collection's listings (`entries`, `range`,
+  `prefix`, `query`) leave it out. Use it when the key is the app's own (a
+  message id) rather than a hash.
 
 - **`Frozen<T>`** — one value rather than a collection: written in `init`, read
   with `get`, and there is no `set`. Its only writer holds a write-once

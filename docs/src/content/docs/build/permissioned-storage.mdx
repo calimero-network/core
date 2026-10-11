@@ -96,7 +96,7 @@ a bitset of three independent capabilities:
 | `OpMask::DELETE` | `0b010` | `Delete` (remove a value or entry) |
 | `OpMask::ADMIN` | `0b100` | **Object ownership** — `SetWriters` / writer-set rotation |
 | `OpMask::FULL` | `0b111` | All three; the default a writer gets when granted without a restriction |
-| `OpMask::WRITE_ONCE` | `0b1000` | The first `Put` only: a later `Put` with different bytes is refused. What `Frozen<T>`'s one writer holds, alone |
+| `OpMask::WRITE_ONCE` | `0b1000` | The first `Put`; a second, different `Put` seals the value. What `Frozen<T>`'s one writer holds, alone; a rotation cannot grant it beside any other bit |
 
 The merge check tests individual bits via `OpMask::contains`. A `Put` requires
 `WRITE`; a `Delete` requires `DELETE`; rotating the writer set requires `ADMIN`.
