@@ -451,10 +451,7 @@ pub trait GuardedEntries: GuardedKeys + RekeyTarget {
     fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedWrites<Self>, StoreError>;
     /// Every owner's entry at `key`, ascending by entry id.
     #[doc(hidden)]
-    fn entries_at(
-        &self,
-        key: &Self::Key,
-    ) -> Result<Vec<(AccountId, Written<Self::Value>)>, StoreError>;
+    fn entries_at(&self, key: &Self::Key) -> Result<HeldWrites<Self>, StoreError>;
 }
 
 /// Every entry of a guarded collection with its owner, sealed ones included.
@@ -464,6 +461,13 @@ pub type OwnedWrites<C> = Vec<(
     <C as GuardedKeys>::Key,
     Written<<C as GuardedEntries>::Value>,
 )>;
+
+/// Every owner's entry at one key, sealed ones included.
+#[doc(hidden)]
+pub type HeldWrites<C> = Vec<(AccountId, Written<<C as GuardedEntries>::Value>)>;
+
+/// Every owner's entry at one key, as a listing holds it.
+pub type Holders<C, P> = Vec<(AccountId, Listed<C, P>)>;
 
 /// What a listing of a collection `C` under policy `P` holds for one entry.
 pub type Listed<C, P> = <P as Owning>::Listed<<C as GuardedEntries>::Value>;
@@ -554,7 +558,7 @@ where
     fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedWrites<Self>, StoreError> {
         Self::owned_entries(self, owner)
     }
-    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, Written<V>)>, StoreError> {
+    fn entries_at(&self, key: &K) -> Result<HeldWrites<Self>, StoreError> {
         Self::entries_at(self, key)
     }
 }
@@ -606,7 +610,7 @@ where
     fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedWrites<Self>, StoreError> {
         Self::owned_entries(self, owner)
     }
-    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, Written<V>)>, StoreError> {
+    fn entries_at(&self, key: &K) -> Result<HeldWrites<Self>, StoreError> {
         Self::entries_at(self, key)
     }
 }
@@ -659,7 +663,7 @@ where
     fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedWrites<Self>, StoreError> {
         Self::owned_entries(self, owner)
     }
-    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, Written<V>)>, StoreError> {
+    fn entries_at(&self, key: &K) -> Result<HeldWrites<Self>, StoreError> {
         Self::entries_at(self, key)
     }
 }
@@ -877,7 +881,7 @@ impl<C: GuardedEntries, P: Owning> Guarded<C, P> {
     ///
     /// # Errors
     /// Returns any storage error.
-    pub fn entries_at(&self, key: &C::Key) -> Result<Vec<(AccountId, Listed<C, P>)>, StoreError> {
+    pub fn entries_at(&self, key: &C::Key) -> Result<Holders<C, P>, StoreError> {
         Ok(self
             .inner
             .entries_at(key)?

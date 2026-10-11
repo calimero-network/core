@@ -217,6 +217,9 @@ use crate::interface::{Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
 
+/// Owned entries with their owners, a sealed one as `Written::Conflicted`.
+type OwnedRows<V, K> = Vec<(AccountId, (Written<V>, K))>;
+
 /// Version of a `SortedMap`/`SortedSet` index marker. Bump it when the rows an
 /// index may hold change, so an index built before is rebuilt.
 const SORTED_INDEX_MARKER_VERSION: u8 = 2;
@@ -2044,10 +2047,7 @@ where
 
     /// Every owned entry with its owner, in child order: only `owner`'s when one
     /// is given. Reads the stored bytes of only the entries it returns.
-    fn owned_entries(
-        &self,
-        owner: Option<&AccountId>,
-    ) -> StoreResult<Vec<(AccountId, (Written<V>, K))>> {
+    fn owned_entries(&self, owner: Option<&AccountId>) -> StoreResult<OwnedRows<V, K>> {
         let children = match <Interface<S>>::child_info_for(self.id()) {
             Ok(children) => children,
             Err(StorageError::IndexNotFound(_)) => Vec::new(),
@@ -2058,7 +2058,7 @@ where
 
     /// Every owner's entry at `slot`, ascending by id. One trie bucket holds
     /// them all, since an owned id keeps its slot's prefix.
-    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (Written<V>, K))>>
+    fn entries_at(&self, slot: Id) -> StoreResult<OwnedRows<V, K>>
     where
         K: AsRef<[u8]>,
     {
@@ -2073,7 +2073,7 @@ where
         children: Vec<ChildInfo>,
         owner: Option<&AccountId>,
         wanted: impl Fn(&K) -> bool,
-    ) -> StoreResult<Vec<(AccountId, (Written<V>, K))>> {
+    ) -> StoreResult<OwnedRows<V, K>> {
         let domain = &self.storage.domain;
         let mut out = Vec::new();
         for child in children {

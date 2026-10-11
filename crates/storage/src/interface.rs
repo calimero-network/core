@@ -65,6 +65,9 @@ pub use crate::error::StorageError;
 /// Convenient type alias for the main storage system.
 pub type MainInterface = Interface<MainStorage>;
 
+/// An entity's stored bytes and its index row.
+type LiveRow = (Vec<u8>, Option<EntityIndex>);
+
 /// Whether a root entity's stored `crdt_type` marks it as *opaque* — a root
 /// with no application-defined `Mergeable` merge dispatch.
 ///
@@ -3384,10 +3387,7 @@ impl<S: StorageAdaptor> Interface<S> {
     }
 
     /// The live row at `id`, bytes and index, if `parent` holds it when one is named.
-    fn row_under(
-        id: Id,
-        parent: Option<Id>,
-    ) -> Result<Option<(Vec<u8>, Option<EntityIndex>)>, StorageError> {
+    fn row_under(id: Id, parent: Option<Id>) -> Result<Option<LiveRow>, StorageError> {
         // One row read serves the tombstone check, the merkle_hash and metadata
         // below AND the data: reading the index and the data apart read the
         // same row twice for every child of every collection scan.
