@@ -11247,7 +11247,7 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
 // replica-independent.
 mod apply_auth_at_cut {
     use super::*;
-    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use crate::test_fixtures::{binding_rejection, FixedAuthorizer, TEST_CUT as CUT};
     use calimero_context_config::types::BytecodeId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_types::GroupOp;
@@ -12797,6 +12797,7 @@ mod account_plane_apply {
     use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
     use crate::{
         AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, AccountRoot,
+        BindingRejected,
     };
 
     fn key(seed: u8) -> PrivateKey {
@@ -13339,7 +13340,7 @@ mod account_plane_apply {
         let mut forged =
             calimero_account::AccountMemberEndorsement::sign(&admin_sk, account).unwrap();
         forged.signature = [0u8; 64];
-        let _refused = sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13353,6 +13354,10 @@ mod account_plane_apply {
         )
         .err()
         .expect("a link under a forged endorsement is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::EndorsementInvalid)
+        );
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "naming a member is not endorsing — the signature has to verify"
@@ -13362,7 +13367,7 @@ mod account_plane_apply {
         // signed by a member. Otherwise a genuine endorsement could be paired with
         // an unrelated credential.
         let other_account = AccountGenesis::new(key(8).public_key()).account_id();
-        let _refused = sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13380,6 +13385,10 @@ mod account_plane_apply {
         )
         .err()
         .expect("a link endorsing another account is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::EndorsementAccountMismatch)
+        );
         assert!(live_for(&store, &gid, account).is_empty());
 
         // Endorsed by a member, correctly, for this account → admitted. Note the
@@ -13716,9 +13725,11 @@ mod account_plane_apply {
         let attacker_root = key(0x66);
         let attacker = AccountGenesis::new(attacker_root.public_key()).account_id();
 
-        assert!(
-            withdraw_through_the_relay(&w, attacker, &attacker_root).is_err(),
-            "a withdrawal naming an account the device was not minted for is refused"
+        let refused = withdraw_through_the_relay(&w, attacker, &attacker_root)
+            .expect_err("a withdrawal naming an account the device was not minted for is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::DeviceNotMintedForAccount)
         );
 
         assert!(
@@ -13901,7 +13912,7 @@ mod account_plane_apply {
              ownership, which is exactly why it cannot stand alone"
         );
 
-        let _refused = sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &attacker_sk,
@@ -13913,6 +13924,10 @@ mod account_plane_apply {
         )
         .err()
         .expect("a withdrawal naming an account the device was not minted for is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::DeviceNotMintedForAccount)
+        );
 
         assert!(
             !bindings.is_revoked(&gid, device).unwrap(),
@@ -14067,7 +14082,7 @@ mod account_plane_apply {
 
         // A fellow member signs the revocation. Refused deterministically, as an
         // error, so the op is never logged for the projection to fold.
-        let _refused = sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &attacker_sk,
@@ -14079,6 +14094,10 @@ mod account_plane_apply {
         )
         .err()
         .expect("a non-admin without a proof is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::WithdrawalUnauthorised)
+        );
         assert!(
             !bindings.is_revoked(&gid, device).unwrap(),
             "a non-admin must not be able to spend another member's device id"
@@ -15031,7 +15050,7 @@ mod account_plane_apply {
 
         // `test_meta`'s target, so the replacement still names this namespace.
         let covering = vec![ApplicationId::from([0xCC; 32])];
-        let _refused = crate::apply_group_op_mutations(
+        let refused = crate::apply_group_op_mutations(
             &store,
             &gid,
             &owner_sk.public_key(),
@@ -15040,6 +15059,10 @@ mod account_plane_apply {
             &FixedAuthorizer(true),
         )
         .expect_err("a scope that still covers the namespace is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::NotANarrowing)
+        );
 
         assert_eq!(live_for(&store, &gid, genesis.account_id()).len(), 1);
     }
@@ -15682,7 +15705,7 @@ mod account_plane_apply {
             link_scope(&owner_sk, &sibling_cert, 0),
             link_scope(&stranger_sk, &cert, 0),
         ] {
-            let _refused = sign_apply_local_group_op_borsh(
+            let refused = sign_apply_local_group_op_borsh(
                 &store,
                 &gid,
                 &admin_sk,
@@ -15696,6 +15719,10 @@ mod account_plane_apply {
             )
             .err()
             .expect("a scope that does not authorise this device is refused");
+            assert!(matches!(
+                binding_rejection(&refused),
+                Some(BindingRejected::ScopeInvalid(_))
+            ));
             assert!(
                 live_for(&store, &gid, account).is_empty(),
                 "a scope that does not authorise THIS device admits no link"

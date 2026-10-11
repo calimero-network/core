@@ -431,6 +431,7 @@ pub(crate) fn apply_device_unlinked(
     let self_service = match proof {
         // Unbound: the account's own withdrawal above is all a proof can do here.
         Some(_) if binding.is_none() => false,
+        // Defence in depth: the mint check above leaves no binding to another account.
         Some(_) if !device_belongs_to_account => {
             tracing::warn!(
                 group_id = ?group_id,
@@ -482,6 +483,7 @@ pub(crate) fn apply_device_unlinked(
         if verified.is_none() {
             bail!(BindingRejected::WithdrawalUnauthorised);
         }
+        // Defence in depth: past the mint check a valid proof is always carried above.
         tracing::warn!(
             group_id = ?group_id,
             signer = %ctx.signer(),

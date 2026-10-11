@@ -2546,7 +2546,8 @@ mod tests {
                 &f.ns,
                 &f.device_sk,
                 descope_by_root(&root(&f), f.device),
-            );
+            )
+            .expect("the op applies");
             assert!(
                 AccountBindingRepository::new(&f.state.store)
                     .raw_binding(&f.ns, f.device)
@@ -2580,7 +2581,8 @@ mod tests {
                 &f.ns,
                 &f.device_sk,
                 withdraw(&root(&f), thin),
-            );
+            )
+            .expect("the op applies");
 
             assert!(
                 drops_its_subscriptions(&stream.subscribed.session).await,
@@ -2610,11 +2612,12 @@ mod tests {
                 "precondition: the stream is live and listening"
             );
 
-            let refused = admin_revokes(&f.state.store, &f.ns, f.peer.0, f.device);
+            let refused = admin_revokes(&f.state.store, &f.ns, f.peer.0, f.device)
+                .expect_err("a revocation naming another account is refused");
 
-            assert!(
-                refused.is_err(),
-                "a revocation naming another account is refused"
+            assert_eq!(
+                calimero_governance_store::test_fixtures::binding_rejection(&refused),
+                Some(calimero_governance_store::BindingRejected::DeviceNotMintedForAccount)
             );
             publish_state_change(&f);
             assert!(
