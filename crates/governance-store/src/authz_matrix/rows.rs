@@ -239,9 +239,9 @@ fn descope(world: &World, signer: &Actor, account: &Actor, device: DeviceId) -> 
         !narrowed || (live(&world.store) && !live(&store)),
         "a recorded narrowing drops the device's live binding"
     );
-    // The signer is still read live here, so a foreign signer records nothing
-    // rather than being refused.
-    verdict(applied, narrowed, |_| false)
+    verdict(applied, narrowed, |reason| {
+        matches!(reason, BindingRejected::SignerNotTheAccount)
+    })
 }
 
 /// The actor narrows the other device of its own account.

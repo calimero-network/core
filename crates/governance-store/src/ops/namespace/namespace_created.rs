@@ -327,8 +327,14 @@ pub(crate) fn apply(
                 // meta is written before the op applies), so this is where it
                 // records the pair too. A salt that does not derive the id is
                 // simply not recorded: an established namespace never errors.
+                // A re-arrival is not signer-checked, and its salt and credential are
+                // public, so only the founder's own key may mark the account namespace.
                 if derived {
-                    record_founding(store, &ns_gid, &founder, salt, account_namespace)?;
+                    let marked = account_namespace
+                        && super::member_joined_open::credential_names_signer(
+                            &op.signer, &founder, account,
+                        );
+                    record_founding(store, &ns_gid, &founder, salt, marked)?;
                 }
                 tracing::debug!(
                     namespace_id = %hex::encode(namespace_id.as_bytes()),

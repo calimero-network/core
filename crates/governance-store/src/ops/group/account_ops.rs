@@ -570,7 +570,7 @@ pub(crate) fn apply_device_descoped(
     // Only the account may narrow its own device: any member holds the statement. The
     // signer is named at the op's cut, which a self-descope's own narrowing is not in.
     if ctx.permissions().account_for_signer_at_cut(ctx.signer())? != Some(*account) {
-        bail!("account device descoped: the signer does not speak for this account");
+        bail!(BindingRejected::SignerNotTheAccount);
     }
     // A device keeps its account namespace, recognised here by the REPLICATED
     // registry row: a node-local read would drop a binding this node's peers keep.

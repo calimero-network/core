@@ -758,14 +758,20 @@ impl ScopeState {
                     lww_set(&mut self.target_application, stamp, *application);
                 }
             }
-            // Op-local: only a genesis, parentless and naming the founder the scope
-            // id derives from, marks it, so every one that passes names the same account.
+            // Op-local: only a parentless genesis the founder's own credential key signed,
+            // naming the founder the scope id derives from, marks the scope.
             OpPayload::AccountNamespaceFounded {
                 founder,
                 salt,
                 carried,
             } => {
-                if op.parents.is_empty()
+                let signed_by_founder = matches!(
+                    carried.as_ref(),
+                    OpPayload::DeviceLinked { cert, .. }
+                        if cert.account == *founder && cert.sign_pk == op.authorship.device_key
+                );
+                if signed_by_founder
+                    && op.parents.is_empty()
                     && calimero_account::is_founded_by(op.scope.as_bytes(), founder, salt)
                 {
                     self.account_namespace = Some(*founder);
