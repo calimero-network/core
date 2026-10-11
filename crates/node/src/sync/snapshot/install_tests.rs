@@ -1126,7 +1126,7 @@ fn entity_under(id: Id, parent: Id, storage_type: StorageType) -> SnapshotRecord
 }
 
 /// What the drain of a buffered record finds in a joiner that has installed
-/// `records`, with `pushed` buffered for a schema it later loads.
+/// `records` and linked their tries, with `pushed` buffered for a schema it later loads.
 async fn drained_over(
     records: Vec<SnapshotRecord>,
     claimed: Hash,
@@ -1134,6 +1134,8 @@ async fn drained_over(
 ) -> (Joiner, SnapshotEntityDrainOutcome) {
     let joiner = joiner().await;
     joiner.installs(claimed, records).await.unwrap();
+    let _linked =
+        rebuild_child_tries_after_snapshot(&mut joiner.store.handle(), context()).unwrap();
     let (id, entry, index) = pushed;
     let env = create_runtime_env(
         &joiner.store,
