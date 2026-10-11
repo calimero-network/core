@@ -317,3 +317,6 @@ mod tests {
         assert!(refused.is_err(), "{refused:?}");
     }
 }
+
+#[cfg(test)]
+mod world_tests;
