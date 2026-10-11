@@ -49,7 +49,7 @@ impl Indexed for Note {
     }
 }
 
-fn note(tag: &str, text: &str) -> Note {
+pub(crate) fn note(tag: &str, text: &str) -> Note {
     Note {
         tag: tag.to_owned(),
         text: text.to_owned(),

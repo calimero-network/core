@@ -20,7 +20,10 @@ use serial_test::serial;
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::collections::{Root, UnorderedMap, WriteOnce, Written};
+use crate::collections::{
+    Guarded, GuardedEntries, IndexedMap, Moderation, Once, OwnerOnce, Owning, Root, SortedMap,
+    UnorderedMap, WriteOnce, Written,
+};
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
@@ -29,6 +32,7 @@ use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::map_entry_bytes;
 use crate::tests::common::{account_of_key, conflict_record, test_account};
 use crate::tests::owned_rules::{act_as, apply, conflicted, key, later, signed};
+use crate::tests::policy_matrix::note;
 use crate::written_once::conflict_parts;
 
 /// Plain values, so two nodes holding the same entry hold the same bytes.
@@ -386,6 +390,102 @@ fn a_sealed_entry_stays_in_every_owner_listing() {
     assert_eq!(
         ballots.entries_at(&ballot_key()).expect("at"),
         vec![(voter(), sealed)]
+    );
+}
+
+/// A collection of `C` under policy `P` holding the voter's entry at `k`,
+/// sealed by the phone's and the laptop's `values`.
+fn sealed_collection<C, P>(values: [C::Value; 2]) -> Root<Guarded<C, P>>
+where
+    C: GuardedEntries<Key = String>,
+    P: Owning,
+{
+    env::reset_for_testing();
+    let _ = act_as(&key(0x01));
+    let sealed = Root::new(|| {
+        let mut collection = Guarded::<C, P>::new_with_field_name("sealed");
+        collection.reassign_deterministic_id("sealed");
+        collection
+    });
+    let parent = (**sealed).id();
+    let id = sealed.entry_id_of(&voter(), &ballot_key());
+    let rules = sealed.entry_rules();
+    for ((device, at), value) in [(PHONE, AT), (LAPTOP, AT + 1)].into_iter().zip(values) {
+        let data = map_entry_bytes(id, &ballot_key(), &value);
+        let write = signed(
+            move |metadata| Action::Add {
+                id,
+                data,
+                ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
+                metadata,
+            },
+            voter(),
+            rules,
+            &key(device),
+            at,
+        );
+        apply(write, voter()).expect("each write lands");
+    }
+    sealed
+}
+
+#[test]
+#[serial]
+fn a_sealed_entry_stays_in_every_listing_of_the_collection() {
+    let values = || ["yes".to_owned(), "no".to_owned()];
+
+    let map = sealed_collection::<UnorderedMap<String, String>, OwnerOnce>(values());
+    assert_eq!(
+        map.entries().expect("entries").count(),
+        1,
+        "UnorderedMap::entries"
+    );
+
+    let moderated = sealed_collection::<UnorderedMap<String, String>, Moderation<Once>>(values());
+    assert_eq!(
+        moderated.entries().expect("entries").count(),
+        1,
+        "ModeratedOnce::entries"
+    );
+
+    let sorted = sealed_collection::<SortedMap<String, String>, OwnerOnce>(values());
+    assert_eq!(
+        sorted.entries().expect("entries").count(),
+        1,
+        "SortedMap::entries"
+    );
+    assert_eq!(sorted.keys().expect("keys").count(), 1, "SortedMap::keys");
+    assert_eq!(
+        sorted.values().expect("values").count(),
+        1,
+        "SortedMap::values"
+    );
+    assert_eq!(
+        sorted.range(..).expect("range").count(),
+        1,
+        "SortedMap::range"
+    );
+    assert_eq!(
+        sorted.prefix(b"k").expect("prefix").count(),
+        1,
+        "SortedMap::prefix"
+    );
+    assert_eq!(
+        sorted.page(0, 10).expect("page").len(),
+        1,
+        "SortedMap::page"
+    );
+    assert!(sorted.first().expect("first").is_some(), "SortedMap::first");
+    assert!(sorted.last().expect("last").is_some(), "SortedMap::last");
+
+    let indexed = sealed_collection::<
+        IndexedMap<String, crate::tests::policy_matrix::Note>,
+        OwnerOnce,
+    >([note("t", "yes"), note("t", "no")]);
+    assert_eq!(
+        indexed.entries().expect("entries").count(),
+        1,
+        "IndexedMap::entries"
     );
 }
 
