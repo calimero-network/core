@@ -4572,50 +4572,74 @@ mod snapshot_trust_tests {
         assert_eq!(drain(&alice), SnapshotEntityDrainOutcome::Persisted);
     }
 
+    /// Alice's owned entry signed at `nonce` and shipped dated `updated_at`, as a
+    /// buffer record holds it: its id, bytes and index blob.
+    fn alices_entry(
+        alice: &PrivateKey,
+        account: AccountId,
+        nonce: u64,
+        updated_at: u64,
+    ) -> (Id, Vec<u8>, Vec<u8>) {
+        let id = calimero_storage::tests::common::owned_entry_id(Id::new([0x79; 32]), &account);
+        let data = format!("alice's entry at {nonce}").into_bytes();
+        let mut metadata = Metadata::new(1, nonce);
+        metadata.storage_type = StorageType::User {
+            rules: calimero_storage::entities::EntryRules::OWNED,
+            owner: account,
+            signature_data: signer(alice, nonce),
+        };
+        let payload = Action::Add {
+            id,
+            data: data.clone(),
+            ancestors: vec![],
+            metadata: metadata.clone(),
+        }
+        .payload_for_signing();
+        if let StorageType::User {
+            signature_data: Some(sig),
+            ..
+        } = &mut metadata.storage_type
+        {
+            sig.signature = alice.sign(&payload).unwrap().to_bytes();
+        }
+        metadata.updated_at = updated_at.into();
+        let mut index = EntityIndex::minimal_for_test_with_parent(id, root(), [0; 32]);
+        index.metadata = metadata;
+        let index = super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &data);
+        (id, data, index)
+    }
+
     /// Drains, one after another as buffered snapshot leaves, Alice's owned entry
-    /// signed at each `(nonce, updated_at)`, shipped dated `updated_at`. Returns the
-    /// last outcome and the stored date.
+    /// signed at each `(nonce, updated_at)`. Returns the last outcome and the stored date.
     fn drain_alices_entry(drains: &[(u64, u64)]) -> (SnapshotEntityDrainOutcome, Option<u64>) {
         let alice = PrivateKey::from([0x78; 32]);
         let (group, alice_account) = Group::with_admin(&alice.public_key());
-        let id =
-            calimero_storage::tests::common::owned_entry_id(Id::new([0x79; 32]), &alice_account);
-        let mut outcome = None;
+        let mut last = None;
         for &(nonce, updated_at) in drains {
-            let data = format!("alice's entry at {nonce}").into_bytes();
-            let mut metadata = Metadata::new(1, nonce);
-            metadata.storage_type = StorageType::User {
-                rules: calimero_storage::entities::EntryRules::OWNED,
-                owner: alice_account,
-                signature_data: signer(&alice, nonce),
-            };
-            let payload = Action::Add {
-                id,
-                data: data.clone(),
-                ancestors: vec![],
-                metadata: metadata.clone(),
-            }
-            .payload_for_signing();
-            if let StorageType::User {
-                signature_data: Some(sig),
-                ..
-            } = &mut metadata.storage_type
-            {
-                sig.signature = alice.sign(&payload).unwrap().to_bytes();
-            }
-            metadata.updated_at = updated_at.into();
-            let mut index = EntityIndex::minimal_for_test_with_parent(id, root(), [0; 32]);
-            index.metadata = metadata;
-            outcome = Some(group.drain(
-                id,
-                &data,
-                &super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &data),
-            ));
+            let (id, data, index) = alices_entry(&alice, alice_account, nonce, updated_at);
+            last = Some((id, group.drain(id, &data, &index)));
         }
+        let (id, outcome) = last.expect("at least one drain");
         let stored = crate::delta_store::read_entity_index_direct(&group.store, group.context, id)
             .unwrap()
             .map(|index| index.metadata.updated_at());
-        (outcome.expect("at least one drain"), stored)
+        (outcome, stored)
+    }
+
+    /// The page apply keeps what a since-revoked device wrote, and so must the
+    /// drain: storage is told the account its certificate named.
+    #[test]
+    fn a_buffered_entry_a_since_revoked_device_signed_is_kept() {
+        let alice = PrivateKey::from([0x7A; 32]);
+        let (group, alice_account) = Group::with_admin(&alice.public_key());
+        group.revoke(&alice.public_key());
+        let (id, data, index) = alices_entry(&alice, alice_account, 1, 1);
+
+        assert_eq!(
+            group.drain(id, &data, &index),
+            SnapshotEntityDrainOutcome::Persisted
+        );
+        assert!(group.is_stored(id));
     }
 
     /// `updated_at` is not signed, so a peer serving a snapshot can re-date an
@@ -4976,8 +5000,8 @@ mod snapshot_trust_tests {
         let (data, by_alice) = shared_leaf(anchor, &[alice_account], &alice, 4);
         assert_eq!(
             group.drain_with(anchor, &data, &by_alice, |_| Err(WritersUnavailable::Cut)),
-            SnapshotEntityDrainOutcome::Refused,
-            "storage holds a cell it cannot resolve to no writers, as it holds a repair"
+            SnapshotEntityDrainOutcome::Pending,
+            "storage cannot resolve the cell's writers yet, so the leaf waits"
         );
     }
 
