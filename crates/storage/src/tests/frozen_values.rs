@@ -66,6 +66,38 @@ fn write(add: bool, ids: (Id, Id), value: &str, signer: &SigningKey) -> Result<(
 
 #[test]
 #[serial]
+fn a_frozen_value_too_large_for_a_record_of_two_is_refused_locally() {
+    env::reset_for_testing();
+    env::set_account_id(*account_of_key(&key(FOUNDER)).as_bytes());
+    let large = "x".repeat(600 * 1024);
+    let created = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Root::new(|| Frozen::new(large))
+    }));
+    assert!(created.is_err(), "the oversized genesis value is refused");
+}
+
+#[test]
+#[serial]
+fn a_snapshot_refuses_a_frozen_value_too_large_for_a_record_of_two() {
+    let (charter, founder) = charter();
+    let (anchor, value_id) = charter.ids();
+    let action = build_signed_member_action(
+        false,
+        value_id,
+        anchor,
+        value_bytes(value_id, &"x".repeat(600 * 1024)),
+        later(),
+        &founder,
+        vec![],
+    );
+    let crate::action::Action::Update { data, metadata, .. } = action else {
+        panic!("an update");
+    };
+    assert!(MainInterface::verify_snapshot_member_signature(value_id, &data, &metadata).is_err());
+}
+
+#[test]
+#[serial]
 fn a_frozen_value_reads_back_with_its_writer() {
     let (charter, founder) = charter();
     assert_eq!(charter.get().expect("get"), "be kind");

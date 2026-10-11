@@ -796,8 +796,36 @@ mod tests {
         stepped.new = mixed;
         assert_eq!(
             fold_in(cell(), [&stepped]),
-            None,
-            "a mixed step never takes effect"
+            Some(set(&[0xAA])),
+            "a mixed step counts with its WRITE_ONCE grants dropped"
+        );
+    }
+
+    /// A mixed rotation made before the rule removed someone: it still removes them,
+    /// and the steps built on it still count.
+    #[test]
+    fn a_mixed_rotation_still_revokes_what_it_removed() {
+        let (alice, mallory, bob, carol) = (acct(0xAA), acct(0xEE), acct(0xBB), acct(0xCC));
+        let genesis: Writers = [(alice, OpMask::FULL), (mallory, OpMask::WRITE)].into();
+        let cell = cell_id(Id::new([2; 32]), &genesis);
+        let mixed: Writers = [(alice, OpMask::FULL), (bob, OpMask::WRITE_ONCE)].into();
+        let mut removal = step(1, 0xAA, &[], &[], 1, &[]);
+        removal.prior = genesis;
+        removal.new = mixed.clone();
+        let mut next = step(2, 0xAA, &[], &[], 2, &[1]);
+        next.prior = mixed;
+        next.new = [(alice, OpMask::FULL), (carol, OpMask::FULL)].into();
+
+        let held = fold_in(cell, [&removal]).expect("the removal takes effect");
+        assert!(!held.contains_key(&mallory), "Mallory stays removed");
+        assert_eq!(held, Writers::from([(alice, OpMask::FULL)]));
+        assert_eq!(
+            fold_in(cell, [&removal, &next]),
+            Some(Writers::from([
+                (alice, OpMask::FULL),
+                (carol, OpMask::FULL)
+            ])),
+            "a step built on the mixed set still counts"
         );
     }
 

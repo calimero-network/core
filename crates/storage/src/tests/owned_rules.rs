@@ -204,6 +204,15 @@ fn a_write_once_key_cannot_be_taken_again() {
 
 #[test]
 #[serial]
+fn a_write_once_value_too_large_for_a_record_of_two_is_refused_locally() {
+    let (mut messages, _alice, _id) = alices_message();
+    let large = text(&"x".repeat(600 * 1024));
+    assert!(refused(messages.insert("m2".to_owned(), large)));
+    assert!(!messages.contains(&"m2".to_owned()).expect("contains"));
+}
+
+#[test]
+#[serial]
 fn an_unsigned_stored_write_refuses_a_rewrite_even_signed_by_the_owner() {
     let (messages, alice, id) = alices_message();
     let parent = (**messages).id();

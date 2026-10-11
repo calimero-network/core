@@ -499,6 +499,72 @@ fn a_written_once_value_too_large_for_a_record_of_two_is_refused() {
 
 #[test]
 #[serial]
+fn a_snapshot_refuses_a_written_once_value_too_large_for_a_record_of_two() {
+    let ballots = fresh_node();
+    let large = "x".repeat(600 * 1024);
+    let Action::Add {
+        id, data, metadata, ..
+    } = cast(&ballots, PHONE, &large, AT)
+    else {
+        panic!("a cast is an add");
+    };
+    let parent = ballots_id(&ballots);
+    assert!(
+        MainInterface::verify_snapshot_entity_signature(id, Some(parent), &data, &metadata)
+            .is_err()
+    );
+}
+
+/// A sealed entry under rules the collection does not admit is a planted one,
+/// and reads as absent, as any entry the collection does not admit does.
+#[test]
+#[serial]
+fn a_sealed_entry_the_collection_does_not_admit_reads_as_absent() {
+    let ballots = fresh_node();
+    let (parent, id) = (ballots_id(&ballots), entry_id(&ballots));
+    let planted = EntryRules {
+        immutable: true,
+        moderators: Some(Id::new([0x99; 32])),
+    };
+    for (device, value, at) in [(PHONE, "yes", AT), (LAPTOP, "no", AT + 1)] {
+        let data = map_entry_bytes(id, &ballot_key(), &value.to_owned());
+        let write = signed(
+            move |metadata| Action::Add {
+                id,
+                data,
+                ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
+                metadata,
+            },
+            voter(),
+            planted,
+            &key(device),
+            at,
+        );
+        apply(write, voter()).expect("each write lands");
+    }
+    assert_eq!(read(&ballots), Read::Absent);
+}
+
+/// A stored write whose signature does not cover its bytes cannot be half of a
+/// record no node could verify, so a second value is refused instead.
+#[test]
+#[serial]
+fn a_stored_write_its_signature_does_not_cover_never_enters_a_record() {
+    let ballots = fresh_node();
+    let id = entry_id(&ballots);
+    apply(cast(&ballots, PHONE, "yes", AT), voter()).expect("the first write lands");
+    let merged = map_entry_bytes(id, &ballot_key(), &"merged".to_owned());
+    let _ = MainStorage::storage_write(Key::Entry(id), &merged);
+
+    assert!(matches!(
+        apply(cast(&ballots, LAPTOP, "no", AT + 1), voter()),
+        Err(StorageError::ActionNotAllowed(_))
+    ));
+    assert_ne!(read(&ballots), Read::Conflicted);
+}
+
+#[test]
+#[serial]
 fn a_sealed_entry_s_record_is_never_applied_as_one_write() {
     let record = sealed_leaf();
     let _node = fresh_node();

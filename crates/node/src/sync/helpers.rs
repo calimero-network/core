@@ -3239,7 +3239,7 @@ mod on_behalf_resolution_tests {
             signer: Some(phone),
             on_behalf: None,
         };
-        let authorship = |mask: OpMask| {
+        let authorship = |mask: OpMask, ever: CellWriters| {
             let stamp = StorageType::Shared {
                 writers: [(owner, mask)].into(),
                 signature_data: Some(signed(1)),
@@ -3256,16 +3256,31 @@ mod on_behalf_resolution_tests {
                 &metadata,
                 &value,
                 None,
-                &|_| Ok(CellWriters::Genesis),
+                &|_| Ok(ever.clone()),
             )
         };
+        let rotated = || CellWriters::Rotated([(owner, OpMask::WRITE_ONCE)].into());
 
         assert_eq!(
-            authorship(OpMask::WRITE_ONCE),
+            authorship(OpMask::WRITE_ONCE, CellWriters::Genesis),
             SnapshotAuthorship::Authored(Some(owner)),
             "control: a write-once cell's writer sealed it"
         );
-        assert_eq!(authorship(OpMask::FULL), SnapshotAuthorship::Forged);
+        assert_eq!(
+            authorship(OpMask::FULL, rotated()),
+            SnapshotAuthorship::Authored(Some(owner)),
+            "an admin rotated the cell to write-once"
+        );
+        assert_eq!(
+            authorship(OpMask::FULL, CellWriters::Genesis),
+            SnapshotAuthorship::Unknown,
+            "an admin may have rotated it to write-once where this node has not folded"
+        );
+        assert_eq!(
+            authorship(OpMask::WRITE, CellWriters::Genesis),
+            SnapshotAuthorship::Forged,
+            "no admin, so it never was write-once"
+        );
     }
 
     /// A snapshot keeps what a relay wrote for a member who has since left, as
