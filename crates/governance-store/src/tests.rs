@@ -15289,6 +15289,41 @@ mod account_plane_apply {
         }
     }
 
+    /// The founder's salt and credential are public in its genesis, so another key
+    /// replaying them as an account-namespace genesis must not mark the namespace.
+    #[test]
+    fn only_the_founder_marks_its_account_namespace() {
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+        let store = test_store();
+        let founder_sk = key(0x61);
+        let (genesis, founder, id) =
+            crate::test_fixtures::namespace_genesis_v2_for(&founder_sk, [0x62; 32]);
+        let signed = SignedNamespaceOp::sign(&founder_sk, id.into(), vec![], 1, genesis.clone())
+            .expect("sign the genesis");
+        let _founded = crate::apply_signed_namespace_op(&store, &signed).expect("it founds");
+        let NamespaceOp::Root(RootOp::NamespaceCreatedV2 { account, salt, .. }) = genesis else {
+            unreachable!("the fixture builds a NamespaceCreatedV2")
+        };
+
+        let replay = NamespaceOp::Root(RootOp::AccountNamespaceCreated {
+            founder,
+            account,
+            salt,
+        });
+        let signed = SignedNamespaceOp::sign(&key(0x63), id.into(), vec![], 2, replay)
+            .expect("sign the replay");
+        let _replayed = crate::apply_signed_namespace_op(&store, &signed);
+
+        assert_eq!(
+            crate::NamespaceFoundingRepository::new(&store)
+                .account_namespace_founder(&ContextGroupId::from(id))
+                .expect("read the mark"),
+            None,
+            "a replay by another key marked the founder's namespace as its account namespace"
+        );
+    }
+
     /// The apply pipeline re-runs a mutation before the op-log dedup gate. The signer
     /// is named at the op's cut, so a self-descope's re-run is not refused for having
     /// unbound its own device, and it narrows nothing a second time.
