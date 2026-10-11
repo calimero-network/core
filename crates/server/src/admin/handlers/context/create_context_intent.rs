@@ -14,8 +14,9 @@
 //!
 //! # What is checked here and nowhere else
 //!
-//! **`not_after`**, for the reason `perform_intent` gives: this is the only
-//! place one clock decides, before anything has converged.
+//! **`not_after` against a clock**, for the reason `perform_intent` gives: this
+//! is the only place one clock decides. Peers hold the registration to it only
+//! against its own signed `stamped_at`.
 //!
 //! **That the warrant covers these `init` arguments.** The warrant commits to
 //! them as a hash, and only the party holding the plaintext can compare.
@@ -31,6 +32,7 @@ use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use calimero_account::WarrantStatement;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_server_primitives::admin::{
@@ -102,7 +104,7 @@ pub(crate) fn creation_warrant_authorises(
             "this creation warrant does not cover the init arguments presented with it".to_owned()
         ));
     }
-    if warrant.not_after < now {
+    if warrant.expired_at(now) {
         eyre::bail!(IntentRefusal::NotAuthorized(format!(
             "this creation warrant expired at {} and it is now {now}; mint a fresh one",
             warrant.not_after

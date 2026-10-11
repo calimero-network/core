@@ -32,8 +32,8 @@
 //! signed by the device it names, and both named keys belong to the accounts
 //! named. Whether the author may create contexts in the group, whether the
 //! executor may act for members there, whether either device is revoked, and
-//! whether `not_after` has passed all need a cut or a clock, and belong to the
-//! governance apply path and the relay's API boundary respectively.
+//! whether `not_after` has passed need a cut, a clock or the op's stamp. They
+//! belong to the governance apply path, and expiry also to the relay's API clock.
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::application::ApplicationId;
@@ -85,7 +85,8 @@ pub struct ContextCreationWarrant {
     pub governance_floor: Vec<[u8; 32]>,
     /// Monotonic per author device, like a warrant's.
     pub nonce: u64,
-    /// Wall-clock bound, in seconds, checked only by the executor.
+    /// Deadline, in unix seconds: the relay checks it against its clock, every
+    /// replica against the registration's own signed `stamped_at`.
     pub not_after: u64,
     /// The author device's signature over [`Self::signing_payload`].
     pub signature: [u8; 64],

@@ -29,14 +29,14 @@
 //! an admin has detached the context would otherwise re-register it; the spent
 //! nonce is what stops that.
 //!
-//! **`not_after` is not checked here**, for the reason set out in
-//! [`crate::warrant_gate`]: wall-clock expiry must not gate an apply, or peers
-//! applying at different times stop converging. The relay checks it at its API.
+//! **`not_after` is judged against the op's own signed `stamped_at`**, never a
+//! clock, so peers applying at different times still agree. The stamp is the
+//! relay's, so this holds an honest relay to the deadline and not one that backdates.
 //!
 //! [`GroupOp::ContextRegisteredOnBehalf`]: calimero_context_client::local_governance::GroupOp::ContextRegisteredOnBehalf
 //! [`ContextCreationWarrant`]: calimero_account::ContextCreationWarrant
 
-use calimero_account::{ContextCreationDelegation, VerifiedCreationWarrant};
+use calimero_account::{ContextCreationDelegation, VerifiedCreationWarrant, WarrantStatement};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::application::ApplicationId;
@@ -81,6 +81,9 @@ pub enum CreationRefusal {
     /// The op records a different name than the warrant pins.
     #[error("the registration records a different name than the creation warrant pins")]
     NameMismatch,
+    /// The relay stamped the registration after the warrant's `not_after`.
+    #[error("the creation warrant expired before the registration was stamped; mint a fresh one")]
+    WarrantExpired,
     /// The author's device has been revoked in this group.
     #[error("the author's device has been revoked in this group")]
     AuthorDeviceRevoked,
@@ -135,6 +138,8 @@ pub struct ClaimedRegistration<'a> {
     pub service_name: &'a Option<String>,
     /// Its display name.
     pub name: &'a Option<String>,
+    /// When the relay stamped it, in unix seconds.
+    pub stamped_at: u64,
 }
 
 /// Check everything about a delegated registration that needs no store: the
@@ -170,6 +175,9 @@ pub fn check_warrant_terms(
     }
     if warrant.name != *claim.name {
         return Err(CreationRefusal::NameMismatch);
+    }
+    if warrant.expired_at(claim.stamped_at) {
+        return Err(CreationRefusal::WarrantExpired);
     }
     Ok(warrant)
 }
@@ -254,7 +262,7 @@ mod tests {
     use crate::ops::group::{dispatch, GroupApplyCtx};
     use crate::test_fixtures::{
         enrol_member, nest_for_test, real_join_account, sample_meta_with_admin, test_store,
-        FixedAuthorizer, UnresolvableAuthorizer,
+        FixedAuthorizer, UnresolvableAuthorizer, STAMPED_AT,
     };
     use crate::warrant_gate::WarrantRefusal;
     use crate::{
@@ -388,6 +396,7 @@ mod tests {
                 application_id: &ApplicationId::from(APP),
                 service_name: &Some("chat".to_owned()),
                 name: &Some("general".to_owned()),
+                stamped_at: STAMPED_AT,
             },
             delegation,
         )
@@ -412,6 +421,7 @@ mod tests {
             version: String::new(),
             name: Some("general".to_owned()),
             delegation: Box::new(delegation),
+            stamped_at: STAMPED_AT,
         }
     }
 
@@ -726,6 +736,7 @@ mod tests {
                     application_id: &application_id,
                     service_name: &service_name,
                     name: &name,
+                    stamped_at: STAMPED_AT,
                 },
                 &delegation,
             )
@@ -771,6 +782,7 @@ mod tests {
                 application_id: &ApplicationId::from(APP),
                 service_name: &Some("chat".to_owned()),
                 name: &Some("general".to_owned()),
+                stamped_at: STAMPED_AT,
             },
             &bundle(&w),
         )
@@ -826,6 +838,7 @@ mod tests {
                 application_id: &ApplicationId::from(APP),
                 service_name: &Some("chat".to_owned()),
                 name: &Some("general".to_owned()),
+                stamped_at: STAMPED_AT,
             },
             &bundle(&w),
         )
@@ -853,6 +866,7 @@ mod tests {
                 application_id: &ApplicationId::from(APP),
                 service_name: &Some("chat".to_owned()),
                 name: &Some("general".to_owned()),
+                stamped_at: STAMPED_AT,
             },
             &bundle(&w),
         )
@@ -877,6 +891,7 @@ mod tests {
                 application_id: &ApplicationId::from(APP),
                 service_name: &Some("chat".to_owned()),
                 name: &Some("general".to_owned()),
+                stamped_at: STAMPED_AT,
             },
             &bundle(&w),
         )
@@ -936,6 +951,38 @@ mod tests {
                 .context_metadata(&w.group, &context())
                 .expect("read"),
             None
+        );
+    }
+
+    #[test]
+    fn a_registration_stamped_at_not_after_applies() {
+        let w = world();
+        let last_second = bundle_with(
+            &w,
+            ContextCreationTerms {
+                not_after: STAMPED_AT,
+                ..terms(&w)
+            },
+        );
+        apply(&w, &op(last_second)).expect("stamped on the last live second");
+        assert!(get_group_for_context(&w.store, &context())
+            .expect("read")
+            .is_some());
+    }
+
+    #[test]
+    fn a_registration_stamped_a_second_past_not_after_is_refused() {
+        let w = world();
+        let expired = bundle_with(
+            &w,
+            ContextCreationTerms {
+                not_after: STAMPED_AT - 1,
+                ..terms(&w)
+            },
+        );
+        assert_eq!(
+            refusal(apply(&w, &op(expired))),
+            CreationRefusal::WarrantExpired
         );
     }
 
@@ -1017,6 +1064,7 @@ mod tests {
                 version,
                 name,
                 delegation,
+                stamped_at: STAMPED_AT,
             },
             _ => unreachable!(),
         };
@@ -1124,6 +1172,7 @@ mod tests {
                 application_id: &ApplicationId::from(APP),
                 service_name: &None,
                 name: &None,
+                stamped_at: STAMPED_AT,
             },
             &delegation,
         )

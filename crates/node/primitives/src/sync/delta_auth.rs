@@ -33,7 +33,7 @@
 //! the action bytes via the hash chain.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_account::{Delegation, VerifiedWarrant, Warrant};
+use calimero_account::{Delegation, VerifiedWarrant, Warrant, WarrantStatement};
 use calimero_context_config::types::GovernanceParentEdge;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{domain_hash, PublicKey};
@@ -514,7 +514,7 @@ impl VerifiedEnvelope {
 /// signed stamp rather than a clock, so the relay and every replica agree.
 #[must_use]
 pub fn stamped_after_expiry(warrant: &Warrant, hlc: &HybridTimestamp) -> bool {
-    u64::from(physical_time_secs(hlc)) > warrant.not_after
+    warrant.expired_at(u64::from(physical_time_secs(hlc)))
 }
 
 /// The ONE entry point every receive path uses to check a delta's envelope.

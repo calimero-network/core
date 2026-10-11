@@ -2,7 +2,8 @@
 //! the add/remove/re-add fold the governance state machine has to agree with.
 
 use calimero_account::{
-    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, KemPublicKey,
+    AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId, GovernanceOpKind,
+    KemPublicKey,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
@@ -13,7 +14,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_projection::ScopeState;
 
 use crate::payload_from_group_op;
-use crate::tests::support::{authorship_of, hlc};
+use crate::tests::support::{authorship_of, governance_delegation, hlc};
 
 /// A governance `AccountDeviceLinked` must reach the projection's account
 /// plane and land as a folded device binding.
@@ -418,4 +419,28 @@ fn a_device_label_is_not_projected() {
     );
 
     assert!(payload.is_none());
+}
+
+/// The fold refuses a delegated op stamped past its warrant, as the apply does.
+#[test]
+fn a_delegated_group_op_folds_only_while_its_warrant_is_in_force() {
+    let group = ContextGroupId::from([0x61; 32]);
+    let member = AccountId::from([0x62; 32]);
+    let not_after = 1_700_000_000;
+    let stamped = |stamped_at| GroupOp::OnBehalf {
+        op: Box::new(GroupOp::MemberAdded {
+            member,
+            role: GroupMemberRole::Member,
+        }),
+        delegation: Box::new(governance_delegation(GovernanceOpKind::Group, not_after)),
+        stamped_at,
+    };
+    assert!(
+        payload_from_group_op(group, &stamped(not_after)).is_some(),
+        "stamped on the last live second"
+    );
+    assert!(
+        payload_from_group_op(group, &stamped(not_after + 1)).is_none(),
+        "stamped past not_after"
+    );
 }

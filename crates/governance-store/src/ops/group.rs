@@ -166,6 +166,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             service_name,
             name,
             delegation,
+            stamped_at,
             ..
         } => context_registered_on_behalf::apply(
             ctx,
@@ -175,8 +176,13 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             service_name,
             name,
             delegation,
+            *stamped_at,
         )?,
-        GroupOp::OnBehalf { op, delegation } => on_behalf::apply(ctx, op, delegation)?,
+        GroupOp::OnBehalf {
+            op,
+            delegation,
+            stamped_at,
+        } => on_behalf::apply(ctx, op, delegation, *stamped_at)?,
         GroupOp::FoundingRelayAttested {
             account,
             quote,

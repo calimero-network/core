@@ -2,7 +2,10 @@
 
 use core::num::NonZeroU64;
 
-use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
+use calimero_account::{
+    AccountGenesis, AccountId, DeviceCert, DeviceId, GovernanceDelegation, GovernanceOpKind,
+    GovernanceTerms, GovernanceWarrant, KemPublicKey,
+};
 use calimero_governance_types::JoinAccountCredential;
 use calimero_op::Authorship;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -71,4 +74,32 @@ pub(crate) fn test_join_account_for(sign_pk: PublicKey) -> Box<JoinAccountCreden
         genesis,
         chain: vec![],
     })
+}
+
+/// A relay's bundle for one `kind` op, in force through `not_after`. The fold
+/// never verifies a bundle, so its proofs only need to be well-shaped.
+pub(crate) fn governance_delegation(
+    kind: GovernanceOpKind,
+    not_after: u64,
+) -> GovernanceDelegation {
+    let author_sk = PrivateKey::from([0x6A; 32]);
+    let relay_pk = PrivateKey::from([0x6B; 32]).public_key();
+    let terms = GovernanceTerms {
+        scope: [0x6C; 32],
+        kind,
+        author_account: AccountId::from([0x6D; 32]),
+        executor: AccountId::from([0x6E; 32]),
+        executor_key: relay_pk,
+        op_hash: [0; 32],
+        account_heads: vec![],
+        governance_floor: vec![],
+        nonce: 1,
+        not_after,
+    };
+    GovernanceDelegation {
+        warrant: Box::new(GovernanceWarrant::sign(&author_sk, terms).expect("sign the warrant")),
+        author_proof: test_join_account_for(author_sk.public_key()),
+        executor_proof: test_join_account_for(relay_pk),
+        executor_key: relay_pk,
+    }
 }

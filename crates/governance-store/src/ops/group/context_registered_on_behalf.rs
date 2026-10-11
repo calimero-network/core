@@ -16,6 +16,10 @@ use super::context::GroupApplyCtx;
 use crate::creation_gate::{check_delegated_creation, spend_creation_nonce, ClaimedRegistration};
 use crate::MetadataRepository;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per field of the op being applied"
+)]
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
     context_id: &ContextId,
@@ -24,6 +28,7 @@ pub(crate) fn apply(
     service_name: &Option<String>,
     name: &Option<String>,
     delegation: &ContextCreationDelegation,
+    stamped_at: u64,
 ) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
@@ -39,6 +44,7 @@ pub(crate) fn apply(
             application_id,
             service_name,
             name,
+            stamped_at,
         },
         delegation,
     )?;

@@ -4577,6 +4577,7 @@ pub(super) fn delegated_rotator_is_admin(
     let Some(GroupOp::OnBehalf {
         op: inner,
         delegation,
+        ..
     }) = delegated_inner
     else {
         return Ok(false);

@@ -172,7 +172,8 @@ pub(crate) fn dispatch_root_op(
         RootOp::OnBehalf {
             op: inner,
             delegation,
-        } => on_behalf(ctx, op, inner, delegation),
+            stamped_at,
+        } => on_behalf(ctx, op, inner, delegation, *stamped_at),
     }
 }
 
@@ -327,6 +328,7 @@ fn on_behalf(
     op: &SignedNamespaceOp,
     inner: &RootOp,
     delegation: &calimero_account::GovernanceDelegation,
+    stamped_at: u64,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_group =
@@ -338,6 +340,7 @@ fn on_behalf(
         &op.signer,
         inner,
         delegation,
+        stamped_at,
     )?;
 
     if let RootOp::GroupCreated { group_id, .. } = inner {
