@@ -23,7 +23,7 @@ use calimero_account::{
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
 ///
@@ -46,6 +46,9 @@ use eyre::Result as EyreResult;
 /// replayed link records a binding the account had already authorized — it
 /// gains an attacker nothing, and refusing it would break legitimate re-gossip
 /// of the same op.
+///
+/// Each refusal before the coverage check is decided by the op or its cut, so it is
+/// an error: the projection folds every logged op. The coverage check reads live.
 pub(crate) fn apply_device_linked(
     ctx: &mut GroupApplyCtx<'_>,
     genesis: &AccountGenesis,
@@ -59,9 +62,37 @@ pub(crate) fn apply_device_linked(
     // Which namespaces the root meant this device to reach, and the epoch the
     // binding is stamped at, which a later descope orders itself against.
     if let Err(err) = scope.authorises(cert.account, cert.device) {
-        tracing::warn!(group_id = ?group_id, account = %cert.account, device = %cert.device,
-                       %err, "device link: the scope did not authorise this device");
-        return Ok(());
+        bail!("device link: the scope did not authorise this device: {err}");
+    }
+
+    // The policy gate, in three steps: the endorsement is about this account, it
+    // is validly signed, and its signer is a member at the cut. Membership rows
+    // are keyed by member key and an `AccountId` is a one-way hash, so the account
+    // cannot be looked up in them at all — the endorsement is what bridges the
+    // two, and the only thing that can.
+    //
+    // Membership is resolved at the op's causal cut, like every other apply-time
+    // authority question. Reading live rows would decide against whatever this
+    // replica has folded so far, so a node that had already applied a concurrent
+    // removal of the endorser would refuse a link its peers recorded, and the two
+    // would disagree about who may author with no later op to reconcile them.
+    //
+    // Step one: the endorsement must be about THIS account, or a valid endorsement
+    // of some other account could be presented alongside an unrelated credential.
+    if endorsement.account != cert.account {
+        bail!(BindingRejected::EndorsementAccountMismatch);
+    }
+    // ...and be validly signed by the key it names. Cheap, self-contained, and
+    // checked before the at-cut membership question so a forged endorsement costs
+    // no fold work.
+    // Shadowed by the verified form deliberately: the membership question below
+    // reads the endorser's key, and reading it off the wrapper means it cannot be
+    // read off a struct whose signature was never checked.
+    let Ok(endorsement) = endorsement.verify() else {
+        bail!(BindingRejected::EndorsementInvalid);
+    };
+    if !key_is_member(ctx, &endorsement.member)? {
+        bail!(BindingRejected::AccountNotMember);
     }
     // The account namespace is exempt, recognised node-locally: pairing publishes a
     // device's first link there BEFORE the certificate that would name it.
@@ -85,48 +116,6 @@ pub(crate) fn apply_device_linked(
                            "device link: the carried scope does not reach this group");
             return Ok(());
         }
-    }
-
-    // The policy gate, in three steps: the endorsement is about this account, it
-    // is validly signed, and its signer is a member at the cut. Membership rows
-    // are keyed by member key and an `AccountId` is a one-way hash, so the account
-    // cannot be looked up in them at all — the endorsement is what bridges the
-    // two, and the only thing that can.
-    //
-    // Membership is resolved at the op's causal cut, like every other apply-time
-    // authority question. Reading live rows would decide against whatever this
-    // replica has folded so far, so a node that had already applied a concurrent
-    // removal of the endorser would refuse a link its peers recorded — and since a
-    // refusal writes nothing while the op still occupies its place in the DAG, the
-    // two would disagree about who may author with no later op to reconcile them.
-    //
-    // Step one: the endorsement must be about THIS account, or a valid endorsement
-    // of some other account could be presented alongside an unrelated credential.
-    if endorsement.account != cert.account {
-        log_refusal(
-            &group_id,
-            "device link",
-            &BindingRejected::EndorsementAccountMismatch,
-        );
-        return Ok(());
-    }
-    // ...and be validly signed by the key it names. Cheap, self-contained, and
-    // checked before the at-cut membership question so a forged endorsement costs
-    // no fold work.
-    // Shadowed by the verified form deliberately: the membership question below
-    // reads the endorser's key, and reading it off the wrapper means it cannot be
-    // read off a struct whose signature was never checked.
-    let Ok(endorsement) = endorsement.verify() else {
-        log_refusal(
-            &group_id,
-            "device link",
-            &BindingRejected::EndorsementInvalid,
-        );
-        return Ok(());
-    };
-    if !key_is_member(ctx, &endorsement.member)? {
-        log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
-        return Ok(());
     }
     let store = ctx.store();
     let bindings = AccountBindingRepository::new(store);
@@ -448,8 +437,8 @@ pub(crate) fn apply_device_unlinked(
         Some(proof) => match proof.authorises(*account, *device) {
             Ok(_) => true,
             Err(err) => {
-                // A proof that does not verify is a deterministic refusal, not an
-                // error: every replica reaches it identically from the op alone.
+                // A proof that does not verify is a deterministic refusal of the
+                // self-service claim: every replica reaches it identically from the op alone.
                 // Falling through to the admin path would be wrong — an attacker
                 // could attach a garbage proof to an op they were not otherwise
                 // entitled to author and learn nothing, but a *valid admin* whose
@@ -469,10 +458,7 @@ pub(crate) fn apply_device_unlinked(
 
     // `?` rather than a swallowed `false`: `is_admin` returns
     // `AuthorityUndecidable` when the op's cut is real but unfolded here, and that
-    // must park the apply for retry rather than be read as "not an admin". A
-    // genuine non-admin is a deterministic refusal every replica reaches
-    // identically, so it records nothing and returns `Ok` — erroring would stall
-    // the apply forever on an op that can never succeed.
+    // must park the apply for retry rather than be read as "not an admin".
     if !self_service && !ctx.permissions().is_admin(ctx.signer())? {
         // The account's own withdrawal above still has to reach its other namespaces.
         if let Some(proof) = carried {
@@ -483,6 +469,14 @@ pub(crate) fn apply_device_unlinked(
                 proof: Some(Box::new(proof.clone())),
             });
             return Ok(());
+        }
+        // Without a valid proof every replica refuses alike, from the op and its cut,
+        // and an error keeps the op out of the log so its tombstone is never folded.
+        if verified.is_none() {
+            bail!(
+                "account device unlink refused: signer is neither an admin at the op's cut \
+                 nor the holder of a valid revocation proof"
+            );
         }
         tracing::warn!(
             group_id = ?group_id,
@@ -556,6 +550,9 @@ fn announce_withdrawal(ctx: &mut GroupApplyCtx<'_>, account: &AccountId, device:
 
 /// `GroupOp::AccountDeviceDescoped` - drop a device's binding because the
 /// account replaced its scope with one that no longer reaches this group.
+///
+/// Refusals that do not depend on arrival order are errors, ahead of the one that
+/// does: the projection folds every logged descope as a floor.
 pub(crate) fn apply_device_descoped(
     ctx: &mut GroupApplyCtx<'_>,
     account: &AccountId,
@@ -572,22 +569,10 @@ pub(crate) fn apply_device_descoped(
                        "account device descoped: the scope did not authorise this device");
         return Ok(());
     }
-    // A device keeps its account namespace, recognised here by the REPLICATED
-    // registry row: a node-local read would drop a binding this node's peers keep.
-    if crate::AccountDeviceRegistry::new(ctx.store(), group_id)
-        .device(*device)?
-        .is_some_and(|known| known.proof.statement.account == *account)
-    {
-        tracing::warn!(group_id = ?group_id, %device,
-                       "account device descoped: a device keeps its account namespace");
-        return Ok(());
-    }
     // The op's own application, not the live metadata row: that row moves under
     // `TargetApplicationSet`, so two replicas would answer differently.
     if calimero_account::scope_covers(&scope.statement.applications, application) {
-        tracing::warn!(group_id = ?group_id, %device,
-                       "account device descoped: the carried scope still reaches this group");
-        return Ok(());
+        bail!("account device descoped: the carried scope still reaches this group");
     }
 
     // Only the account may narrow its own device: the statement rides in the clear
@@ -596,8 +581,16 @@ pub(crate) fn apply_device_descoped(
     // Order-safe: the signer resolves through its own binding, which causally
     // precedes any descope it publishes.
     if !ctx.signer_is(account)? {
-        tracing::warn!(group_id = ?group_id, %account, %device, signer = %ctx.signer(),
-                       "account device descoped: the signer does not speak for this account");
+        bail!("account device descoped: the signer does not speak for this account");
+    }
+    // A device keeps its account namespace, recognised here by the REPLICATED
+    // registry row: a node-local read would drop a binding this node's peers keep.
+    if crate::AccountDeviceRegistry::new(ctx.store(), group_id)
+        .device(*device)?
+        .is_some_and(|known| known.proof.statement.account == *account)
+    {
+        tracing::warn!(group_id = ?group_id, %device,
+                       "account device descoped: a device keeps its account namespace");
         return Ok(());
     }
     // No membership gate: a descope only narrows the account's own device, so even
