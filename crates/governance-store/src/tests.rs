@@ -11247,7 +11247,7 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
 // replica-independent.
 mod apply_auth_at_cut {
     use super::*;
-    use crate::test_fixtures::{binding_rejection, FixedAuthorizer, TEST_CUT as CUT};
+    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
     use calimero_context_config::types::BytecodeId;
     use calimero_context_config::MemberCapabilities;
     use calimero_governance_types::GroupOp;
@@ -12794,7 +12794,7 @@ mod account_plane_apply {
     use tokio::sync::broadcast;
 
     use crate::op_events::{self, OpEvent};
-    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use crate::test_fixtures::{binding_rejection, FixedAuthorizer, TEST_CUT as CUT};
     use crate::{
         AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, AccountRoot,
         BindingRejected,
