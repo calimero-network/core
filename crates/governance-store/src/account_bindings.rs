@@ -121,6 +121,18 @@ pub enum BindingRejected {
     /// membership is the caller's question.
     #[error("account is not a member of this group")]
     AccountNotMember,
+    /// The scope a link carries is not the account root's statement for this device.
+    #[error("the device scope does not authorise this device: {0}")]
+    ScopeInvalid(calimero_account::AccountError),
+    /// A withdrawal signed by neither an admin at the op's cut nor the holder of a
+    /// valid revocation proof.
+    #[error(
+        "signer is neither an admin at the op's cut nor the holder of a valid revocation proof"
+    )]
+    WithdrawalUnauthorised,
+    /// A descope whose carried scope still reaches this group narrows nothing.
+    #[error("the carried scope still reaches this group")]
+    NotANarrowing,
 }
 
 impl BindingRejected {
