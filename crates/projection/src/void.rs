@@ -155,7 +155,8 @@ pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
         | OpPayload::TeeAuthoringPolicySet { group, .. }
         | OpPayload::TeeAuthorityEvidence { group, .. }
         | OpPayload::SharedWritersRotated { group, .. }
-        | OpPayload::TargetApplicationSet { group, .. } => Some(*group),
+        | OpPayload::TargetApplicationSet { group, .. }
+        | OpPayload::CascadeUpgraded { group, .. } => Some(*group),
         OpPayload::SubgroupVisibilitySet { scope, .. } => {
             Some(ContextGroupId::from(*scope.as_bytes()))
         }
@@ -287,7 +288,9 @@ fn capability_by_payload(op: &Op, author: AccountId) -> u32 {
         }
         OpPayload::SubgroupCreated { .. } => MemberCapabilities::CAN_CREATE_SUBGROUP.bits(),
         OpPayload::SubgroupDeleted { .. } => MemberCapabilities::CAN_DELETE_SUBGROUP.bits(),
-        OpPayload::TargetApplicationSet { .. } => MemberCapabilities::MANAGE_APPLICATION.bits(),
+        OpPayload::TargetApplicationSet { .. } | OpPayload::CascadeUpgraded { .. } => {
+            MemberCapabilities::MANAGE_APPLICATION.bits()
+        }
         // Opening is the creator's alone and takes no capability (#4522).
         OpPayload::SubgroupVisibilitySet {
             restricted: true, ..

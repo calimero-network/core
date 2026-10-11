@@ -126,13 +126,13 @@ impl AccountRoot {
 
     /// The namespace every device of this account follows.
     ///
-    /// Derived like every other namespace id, from its founder and a salt
-    /// (`calimero_account::founded_namespace_id`): the founder is this root's
+    /// Derived from its founder and a salt under the account-namespace domain
+    /// (`calimero_account::account_namespace_id`): the founder is this root's
     /// account, the salt is [`Self::account_namespace_salt`]. So its genesis is
     /// checked like any other, and it still cannot be found from the account id.
     #[must_use]
     pub fn account_namespace(&self) -> ContextGroupId {
-        ContextGroupId::from(calimero_account::founded_namespace_id(
+        ContextGroupId::from(calimero_account::account_namespace_id(
             &self.account(),
             &self.account_namespace_salt(),
         ))
@@ -3328,7 +3328,7 @@ mod tests {
         let root = AccountRoot {
             secret: PrivateKey::from([0x33; 32]),
         };
-        assert!(calimero_account::is_founded_by(
+        assert!(calimero_account::is_account_namespace_of(
             &root.account_namespace().to_bytes(),
             &root.account(),
             &root.account_namespace_salt(),

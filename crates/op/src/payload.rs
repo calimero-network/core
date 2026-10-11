@@ -386,11 +386,12 @@ pub enum OpPayload {
     },
 
     // ---- application plane ----
-    /// Point `group` at `application`, from a `TargetApplicationSet` or a
-    /// `CascadeUpgrade`. The scope root's target decides which device scopes reach it.
+    /// Point `group` at `application` running `bytecode`. The scope root's target
+    /// decides which device scopes reach it.
     TargetApplicationSet {
         group: ContextGroupId,
         application: ApplicationId,
+        bytecode: [u8; 32],
     },
     /// An account namespace's genesis: the founder's device link it carries, and the account
     /// whose devices it exempts from scope, honoured only if `(founder, salt)` derives the id.
@@ -401,6 +402,14 @@ pub enum OpPayload {
         salt: [u8; 32],
         /// What the genesis folds as besides: the founder's device link, or `Noop`.
         carried: Box<OpPayload>,
+    },
+    /// Move `group` from `from_bytecode` to `application` running `bytecode`, which
+    /// takes effect only where the group then runs `from_bytecode`, as the apply's does.
+    CascadeUpgraded {
+        group: ContextGroupId,
+        from_bytecode: [u8; 32],
+        bytecode: [u8; 32],
+        application: ApplicationId,
     },
 }
 
@@ -432,6 +441,7 @@ impl OpPayload {
             | Self::SharedWritersRotated { .. }
             | Self::MemberLeft { .. }
             | Self::TargetApplicationSet { .. }
+            | Self::CascadeUpgraded { .. }
             | Self::AccountNamespaceFounded { .. } => true,
             Self::Put { .. }
             | Self::Delete { .. }

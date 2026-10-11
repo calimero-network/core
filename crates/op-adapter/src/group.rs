@@ -89,17 +89,25 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
                 applications: verified.applications.clone(),
             })
         }
-        // The target a device scope has to reach. A cascade folds as the target it
-        // names, whichever descendants its apply moved.
+        // The target a device scope has to reach.
         GroupOp::TargetApplicationSet {
-            target_application_id,
-            ..
-        }
-        | GroupOp::CascadeUpgrade {
+            bytecode_id,
             target_application_id,
             ..
         } => Some(OpPayload::TargetApplicationSet {
             group,
+            application: *target_application_id,
+            bytecode: bytecode_id.to_bytes(),
+        }),
+        GroupOp::CascadeUpgrade {
+            from_bytecode_id,
+            bytecode_id,
+            target_application_id,
+            ..
+        } => Some(OpPayload::CascadeUpgraded {
+            group,
+            from_bytecode: from_bytecode_id.to_bytes(),
+            bytecode: bytecode_id.to_bytes(),
             application: *target_application_id,
         }),
         // `proof` is dropped, like `endorsement` on the link above and for the

@@ -34,7 +34,7 @@
 //! account id; its genesis, and so this row, are held only by that namespace's
 //! own members.
 
-use calimero_account::{is_founded_by, AccountId, NAMESPACE_SALT_LEN};
+use calimero_account::{is_account_namespace_of, is_founded_by, AccountId, NAMESPACE_SALT_LEN};
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::Generic as GenericKey;
 use calimero_store::slice::Slice;
@@ -81,7 +81,8 @@ impl<'a> NamespaceFoundingRepository<'a> {
         founder: &AccountId,
         salt: &[u8; NAMESPACE_SALT_LEN],
     ) -> EyreResult<()> {
-        if !is_founded_by(&namespace_id.to_bytes(), founder, salt) {
+        let id = namespace_id.to_bytes();
+        if !is_founded_by(&id, founder, salt) && !is_account_namespace_of(&id, founder, salt) {
             bail!(
                 "refusing to record a founding for namespace {namespace_id:?}: account \
                  {founder} with this salt does not derive that id"

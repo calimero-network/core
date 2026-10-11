@@ -87,6 +87,10 @@ pub(crate) const NAMESPACE_ID_DOMAIN: &[u8] = b"calimero.namespace.id.v1";
 /// distinct from it so a subgroup id can never double as a namespace id.
 pub(crate) const SUBGROUP_ID_DOMAIN: &[u8] = b"calimero.subgroup.id.v1";
 
+/// Domain for the id of an account's own namespace, distinct from
+/// [`NAMESPACE_ID_DOMAIN`] so an ordinary namespace can never pass for one.
+pub(crate) const ACCOUNT_NAMESPACE_ID_DOMAIN: &[u8] = b"calimero.account-namespace.id.v1";
+
 /// Number of hex characters in a [`crate::PairingOffer::confirmation_code`],
 /// excluding its separators. Eight bytes of digest.
 pub(crate) const PAIRING_CONFIRMATION_HEX_LEN: usize = 16;
@@ -163,6 +167,7 @@ pub(crate) const ALL_DOMAINS: &[&[u8]] = &[
     REQUEST_BODY_DOMAIN,
     NAMESPACE_ID_DOMAIN,
     SUBGROUP_ID_DOMAIN,
+    ACCOUNT_NAMESPACE_ID_DOMAIN,
     CREATION_SIGN_DOMAIN,
     CREATION_INIT_DOMAIN,
     GOVERNANCE_SIGN_DOMAIN,

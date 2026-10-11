@@ -189,7 +189,14 @@ pub(crate) fn apply(
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
     // Whether the pair reproduces the id; checked here once, used by both
     // branches below.
-    let derived = calimero_account::is_founded_by(&namespace_id.to_bytes(), &founder, salt);
+    // An account namespace's id is derived under its own domain, so an ordinary
+    // namespace can never be marked as one after the fact.
+    let derive_check = if account_namespace {
+        calimero_account::is_account_namespace_of
+    } else {
+        calimero_account::is_founded_by
+    };
+    let derived = derive_check(&namespace_id.to_bytes(), &founder, salt);
     // Every path that records the account-namespace mark asks this, as the projection does:
     // a re-arrival is not signer-checked, and a genesis's salt and credential are public.
     let marked = account_namespace

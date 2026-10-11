@@ -66,8 +66,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 };
                 let salt: [u8; calimero_account::NAMESPACE_SALT_LEN] =
                     salt.unwrap_or_else(|| rand::rng().random());
-                let group_id =
-                    ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &salt));
+                let derive = if account_namespace {
+                    calimero_account::account_namespace_id
+                } else {
+                    calimero_account::founded_namespace_id
+                };
+                let group_id = ContextGroupId::from(derive(&founder, &salt));
                 (Some(group_id), Some((founder, salt)))
             }
             Some(_) if salt.is_some() => {
@@ -1372,7 +1376,7 @@ mod tests {
 
         assert_eq!(
             created.group_id,
-            ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &SALT))
+            ContextGroupId::from(calimero_account::account_namespace_id(&founder, &SALT))
         );
         assert_eq!(
             created.founding,

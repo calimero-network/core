@@ -1836,8 +1836,8 @@ pub enum RootOp {
         op: Box<RootOp>,
         proof: Box<SignedOwnerOp>,
     },
-    /// [`Self::NamespaceCreatedV2`] for the founder's account namespace, where its devices
-    /// need no scope naming an application. Applied the same way; never delegable.
+    /// [`Self::NamespaceCreatedV2`] for the founder's account namespace, its id derived under
+    /// its own domain, where its devices need no scope naming an application. Never delegable.
     AccountNamespaceCreated {
         founder: AccountId,
         account: Box<JoinAccountCredential>,

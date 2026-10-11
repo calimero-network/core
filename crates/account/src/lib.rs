@@ -124,7 +124,8 @@ pub use crate::governance::{
 pub use crate::label::{DeviceLabel, SignedDeviceLabel, VerifiedDeviceLabel};
 pub use crate::login::{Audience, LoginStatement};
 pub use crate::namespace_id::{
-    created_subgroup_id, founded_namespace_id, is_founded_by, NAMESPACE_SALT_LEN, SUBGROUP_SALT_LEN,
+    account_namespace_id, created_subgroup_id, founded_namespace_id, is_account_namespace_of,
+    is_founded_by, NAMESPACE_SALT_LEN, SUBGROUP_SALT_LEN,
 };
 pub use crate::owner_op::{
     OwnerOpAuthorization, OwnerOpKind, OwnerOpTerms, SignedOwnerOp, VerifiedOwnerOp,

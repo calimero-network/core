@@ -231,8 +231,10 @@ pub struct ScopeState {
     /// The applications of the highest-epoch scope folded for an `(account, device)`;
     /// a tie keeps the greater list, so the fold is order-independent.
     device_scope_applications: BTreeMap<(AccountId, DeviceId), (u32, Vec<ApplicationId>)>,
-    /// The application the scope root targets, one LWW register.
-    target_application: Option<(Stamp, ApplicationId)>,
+    /// The scope root's last `TargetApplicationSet`: its application and bytecode.
+    target_application: Option<(Stamp, ApplicationId, [u8; 32])>,
+    /// The scope root's cascades by stamp: from, to bytecode and application.
+    cascades: BTreeMap<Stamp, ([u8; 32], [u8; 32], ApplicationId)>,
     /// The founder whose account namespace this scope is, from a genesis whose
     /// `(founder, salt)` derives the scope id; only one founder can.
     account_namespace: Option<AccountId>,
@@ -753,9 +755,29 @@ impl ScopeState {
             }
             // ---- application plane ----
             // Only the scope root's target decides which device scopes reach it.
-            OpPayload::TargetApplicationSet { group, application } => {
+            OpPayload::TargetApplicationSet {
+                group,
+                application,
+                bytecode,
+            } => {
+                if group.to_bytes() == *op.scope.as_bytes()
+                    && wins(stamp, self.target_application.as_ref().map(|(at, ..)| at))
+                {
+                    self.target_application = Some((stamp, *application, *bytecode));
+                }
+            }
+            // Resolved when the target is read: whether it applies depends on what the
+            // root runs then, which a streaming fold cannot know mid-stream.
+            OpPayload::CascadeUpgraded {
+                group,
+                from_bytecode,
+                bytecode,
+                application,
+            } => {
                 if group.to_bytes() == *op.scope.as_bytes() {
-                    lww_set(&mut self.target_application, stamp, *application);
+                    let _ = self
+                        .cascades
+                        .insert(stamp, (*from_bytecode, *bytecode, *application));
                 }
             }
             // Op-local: only a parentless genesis the founder's own credential key signed,
@@ -774,7 +796,7 @@ impl ScopeState {
                 );
                 if signed_by_founder
                     && op.parents.is_empty()
-                    && calimero_account::is_founded_by(op.scope.as_bytes(), founder, salt)
+                    && calimero_account::is_account_namespace_of(op.scope.as_bytes(), founder, salt)
                 {
                     self.account_namespace = Some(*founder);
                 }
@@ -1211,11 +1233,37 @@ impl ScopeState {
             .map_or(&[][..], |(_, applications)| applications.as_slice());
         calimero_authz::scope_reaches(
             applications,
-            self.target_application
-                .as_ref()
-                .map(|(_, application)| *application),
+            self.target(),
             self.account_namespace == Some(binding.account),
         )
+    }
+
+    /// The application the scope root targets: its last set, then each later cascade from
+    /// the bytecode it runs by then, earliest stamp first, as the apply moves only a match.
+    fn target_with_bytecode(&self) -> Option<(ApplicationId, [u8; 32])> {
+        let (base, mut current) = match &self.target_application {
+            Some((stamp, application, bytecode)) => (Some(*stamp), Some((*application, *bytecode))),
+            None => (None, None),
+        };
+        let mut applied = BTreeSet::new();
+        loop {
+            let running = current.map_or([0; 32], |(_, bytecode)| bytecode);
+            let next = self.cascades.iter().find(|(stamp, (from, ..))| {
+                base.is_none_or(|base| **stamp > base)
+                    && !applied.contains(*stamp)
+                    && *from == running
+            });
+            let Some((stamp, (_, bytecode, application))) = next else {
+                return current;
+            };
+            let _ = applied.insert(*stamp);
+            current = Some((*application, *bytecode));
+        }
+    }
+
+    fn target(&self) -> Option<ApplicationId> {
+        self.target_with_bytecode()
+            .map(|(application, _)| application)
     }
 
     /// Has a narrowing withdrawn this binding? Read here rather than at fold time,
@@ -1375,10 +1423,7 @@ impl ScopeState {
                 .iter()
                 .map(|(group, ops)| (*group, u64::try_from(ops.len()).unwrap_or(u64::MAX)))
                 .collect(),
-            target_application: self
-                .target_application
-                .as_ref()
-                .map(|(_, application)| *application),
+            target_application: self.target(),
             account_namespace: self.account_namespace,
         }
     }
@@ -1923,6 +1968,30 @@ impl ScopeState {
             hasher.update(account.as_bytes());
             hasher.update(device.as_bytes());
             hasher.update(floor.to_le_bytes());
+        }
+        // What a device's scope reaches, and what it is judged against, decide who may
+        // write as much as the floor does.
+        for ((account, device), (epoch, applications)) in &self.device_scope_applications {
+            hasher.update(account.as_bytes());
+            hasher.update(device.as_bytes());
+            hasher.update(epoch.to_le_bytes());
+            hasher.update(
+                u64::try_from(applications.len())
+                    .unwrap_or(u64::MAX)
+                    .to_le_bytes(),
+            );
+            for application in applications {
+                hasher.update(AsRef::<[u8; 32]>::as_ref(application));
+            }
+        }
+        if let Some((application, bytecode)) = self.target_with_bytecode() {
+            hasher.update(b"target");
+            hasher.update(AsRef::<[u8; 32]>::as_ref(&application));
+            hasher.update(bytecode);
+        }
+        if let Some(founder) = &self.account_namespace {
+            hasher.update(b"account-namespace");
+            hasher.update(founder.as_bytes());
         }
         for (group, admin) in &self.group_admin {
             hasher.update(group.to_bytes());

@@ -158,11 +158,18 @@ fn op_payload_discriminants_are_pinned() {
         OpPayload::TargetApplicationSet {
             group,
             application: calimero_primitives::application::ApplicationId::from([6; 32]),
+            bytecode: [8; 32],
         },
         OpPayload::AccountNamespaceFounded {
             founder: account,
             salt: [7; 32],
             carried: Box::new(OpPayload::Noop),
+        },
+        OpPayload::CascadeUpgraded {
+            group,
+            from_bytecode: [8; 32],
+            bytecode: [9; 32],
+            application: calimero_primitives::application::ApplicationId::from([6; 32]),
         },
     ];
 
@@ -197,10 +204,11 @@ fn op_payload_discriminants_are_pinned() {
             OpPayload::MemberLeft { .. } => 25,
             OpPayload::TargetApplicationSet { .. } => 26,
             OpPayload::AccountNamespaceFounded { .. } => 27,
+            OpPayload::CascadeUpgraded { .. } => 28,
         }
     }
 
-    assert_eq!(all.len(), 28, "every OpPayload variant must be listed");
+    assert_eq!(all.len(), 29, "every OpPayload variant must be listed");
     for payload in &all {
         let bytes = borsh::to_vec(payload).expect("serialize");
         assert_eq!(

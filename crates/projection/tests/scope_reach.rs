@@ -90,6 +90,7 @@ fn target(scope: ScopeId, application: ApplicationId) -> OpPayload {
     OpPayload::TargetApplicationSet {
         group: ContextGroupId::from(*scope.as_bytes()),
         application,
+        bytecode: [0xB1; 32],
     }
 }
 
@@ -128,7 +129,7 @@ fn a_device_is_live_only_where_its_scope_covers_the_target() {
 /// under `salt` derives.
 fn founder_and_scope() -> (Linked, ScopeId) {
     let founder = linked(0x21, &[app(0xE1)]);
-    let scope = ScopeId::from(calimero_account::founded_namespace_id(
+    let scope = ScopeId::from(calimero_account::account_namespace_id(
         &founder.account,
         &SALT,
     ));
@@ -332,4 +333,48 @@ fn a_device_scope_is_part_of_the_convergence_root() {
     };
 
     assert_ne!(with(narrow), with(wide));
+}
+
+fn cascade(scope: ScopeId, from: u8, to: u8, application: ApplicationId) -> OpPayload {
+    OpPayload::CascadeUpgraded {
+        group: ContextGroupId::from(*scope.as_bytes()),
+        from_bytecode: [from; 32],
+        bytecode: [to; 32],
+        application,
+    }
+}
+
+/// Two cascades from the code the root runs: the earlier stamp moves it, the later one
+/// no longer matches, and every arrival order agrees.
+#[test]
+fn concurrent_cascades_settle_the_same_way_in_either_order() {
+    let scope = ScopeId::from([11u8; 32]);
+    let device = linked(0x92, &[app(0xC2)]);
+    let base = [
+        op(scope, 1, vec![], target(scope, app(0xC1))),
+        op(scope, 2, vec![[1; 32]], device.payload),
+    ];
+    let first = op(
+        scope,
+        0x10,
+        vec![[1; 32]],
+        cascade(scope, 0xB1, 0xB2, app(0xC2)),
+    );
+    let second = op(
+        scope,
+        0x20,
+        vec![[1; 32]],
+        cascade(scope, 0xB1, 0xB3, app(0xC3)),
+    );
+
+    let mut forward = base.to_vec();
+    forward.extend([first.clone(), second.clone()]);
+    let mut backward = base.to_vec();
+    backward.extend([second, first]);
+
+    assert_eq!(root(&forward), root(&backward));
+    assert!(
+        live(&forward).contains(&device.device),
+        "the cascade with the earlier stamp decides the target"
+    );
 }

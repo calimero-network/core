@@ -292,7 +292,8 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
             }
             Ok(())
         }
-        OpPayload::TargetApplicationSet { group, .. } => {
+        OpPayload::TargetApplicationSet { group, .. }
+        | OpPayload::CascadeUpgraded { group, .. } => {
             let manage = MemberCapabilities::MANAGE_APPLICATION.bits();
             if acl_at_cut.is_group_admin(&op.author(), *group)
                 || acl_at_cut.capability(group, &op.author(), 0) & manage != 0
