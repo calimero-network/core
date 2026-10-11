@@ -357,6 +357,12 @@ pub(crate) fn apply_device_unlinked(
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
 
+    // A device id is minted for its account, so an op naming another account
+    // withdraws nothing of its; checked on the op alone, ahead of every path below.
+    if !device.is_minted_for(*account) {
+        bail!(BindingRejected::DeviceNotMintedForAccount);
+    }
+
     // A proof establishes that its signer holds the root of the account it NAMES —
     // and nothing else. The `DeviceId` inside is whatever the signer chose; owning
     // that device is not a precondition of signing a statement about it. So the
