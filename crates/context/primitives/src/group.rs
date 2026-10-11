@@ -43,7 +43,8 @@ pub struct CreateGroupRequest {
     /// The salt a namespace root's id is derived with
     /// (`calimero_account::founded_namespace_id(founder, salt)`); `None` draws
     /// a random one. Only the account namespace passes one, derived from the
-    /// account root so every device computes the same id. There is no way to
+    /// account root so every device computes the same id; its id is
+    /// `calimero_account::account_namespace_id(founder, salt)` instead. There is no way to
     /// choose an id outright, and a subgroup's id is always random, so this is
     /// refused with a parent.
     pub salt: Option<[u8; 32]>,
@@ -66,13 +67,13 @@ impl Message for CreateGroupRequest {
 pub struct CreateGroupResponse {
     pub group_id: ContextGroupId,
     /// Set when this created a namespace root, whose id is derived from its
-    /// founder (`calimero_account::founded_namespace_id`). `None` for a
-    /// subgroup.
+    /// founder (`calimero_account::founded_namespace_id`, or `account_namespace_id`
+    /// for the account namespace). `None` for a subgroup.
     pub founding: Option<NamespaceFounding>,
 }
 
 /// What a derived namespace id was derived from: `founded_namespace_id(founder,
-/// salt) == group_id`. Showing both lets a third party confirm who founded the
+/// salt) == group_id`, or `account_namespace_id` for the account namespace. Showing both lets a third party confirm who founded the
 /// namespace without holding any of its governance state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct NamespaceFounding {

@@ -43,7 +43,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // and every replica that applies it keeps the pair
         // (`NamespaceFoundingRepository`). The salt is random unless the caller
         // passes one, which only the account namespace does (its salt is
-        // derived from the account root's secret, deliberately unlinkable).
+        // derived from the account root's secret, deliberately unlinkable), and
+        // its id is `account_namespace_id(founder, salt)`, under its own domain.
         //
         // A subgroup's id is derived too, from the create itself:
         // `created_subgroup_id(creator, parent, restricted, salt)`. It is not a
