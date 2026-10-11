@@ -2387,7 +2387,12 @@ pub struct SignedNamespaceOp {
 ///
 /// v25: `RootOp::OnBehalf` and the group-op wrappers gained the relay's signed
 /// `stamped_at`, judged against the warrant's `not_after` on apply.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 25;
+///
+/// v26: a device link, unlink or descope the apply refuses on the op alone or at its
+/// cut is an error, so it is never logged or folded. Nothing moves on the wire, but a
+/// v25 node logs such an op and its descendants stall on patched nodes: a coordinated
+/// upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,

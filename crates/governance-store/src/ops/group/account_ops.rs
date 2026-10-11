@@ -62,7 +62,7 @@ pub(crate) fn apply_device_linked(
     // Which namespaces the root meant this device to reach, and the epoch the
     // binding is stamped at, which a later descope orders itself against.
     if let Err(err) = scope.authorises(cert.account, cert.device) {
-        bail!("device link: the scope did not authorise this device: {err}");
+        bail!(BindingRejected::ScopeInvalid(err));
     }
 
     // The policy gate, in three steps: the endorsement is about this account, it
@@ -474,10 +474,7 @@ pub(crate) fn apply_device_unlinked(
         // Without a valid proof every replica refuses alike, from the op and its cut,
         // and an error keeps the op out of the log so its tombstone is never folded.
         if verified.is_none() {
-            bail!(
-                "account device unlink refused: signer is neither an admin at the op's cut \
-                 nor the holder of a valid revocation proof"
-            );
+            bail!(BindingRejected::WithdrawalUnauthorised);
         }
         tracing::warn!(
             group_id = ?group_id,
@@ -573,7 +570,7 @@ pub(crate) fn apply_device_descoped(
     // The op's own application, not the live metadata row: that row moves under
     // `TargetApplicationSet`, so two replicas would answer differently.
     if calimero_account::scope_covers(&scope.statement.applications, application) {
-        bail!("account device descoped: the carried scope still reaches this group");
+        bail!(BindingRejected::NotANarrowing);
     }
 
     // A device keeps its account namespace, recognised here by the REPLICATED
@@ -807,11 +804,8 @@ pub(crate) fn apply_keys_rotated(
     Ok(())
 }
 
-/// Log an inadmissible credential at `warn`.
-///
-/// Not an error: the op is validly signed and belongs in the DAG, it simply
-/// records nothing. Returning `Err` would stall the apply and burn no nonce,
-/// leaving the node retrying an op that can never succeed.
+/// Log, at `warn`, a refusal that records nothing but leaves the op logged: one read
+/// from live rows, which replicas could settle differently if it were an error.
 fn log_refusal(group_id: &ContextGroupId, what: &str, reason: &BindingRejected) {
     tracing::warn!(
         group_id = ?group_id,
