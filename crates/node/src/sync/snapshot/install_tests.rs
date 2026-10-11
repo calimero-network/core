@@ -35,7 +35,7 @@ use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
 use calimero_storage::interface::ApplyContext;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use calimero_storage::tests::common::owned_entry_id;
+use calimero_storage::tests::common::{conflict_record, owned_entry_id};
 use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::key::STATE_KEY_LEN;
 use calimero_utils_actix::LazyRecipient;
@@ -1156,6 +1156,94 @@ async fn drained_over(
     })
     .unwrap();
     (joiner, outcome)
+}
+
+/// `writer`'s signature over `data` at `nonce` for `owner`'s written-once entry `id`.
+fn written_once(
+    writer: &PrivateKey,
+    owner: AccountId,
+    id: Id,
+    data: &[u8],
+    nonce: u64,
+) -> SignatureData {
+    let signed = |signature| SignatureData {
+        signature,
+        nonce,
+        signer: Some(writer.public_key()),
+        on_behalf: None,
+    };
+    let mut metadata = Metadata::new(1, 1);
+    metadata.storage_type = StorageType::User {
+        rules: EntryRules {
+            immutable: true,
+            moderators: None,
+        },
+        owner,
+        signature_data: Some(signed([0; 64])),
+    };
+    let payload = Action::Add {
+        id,
+        data: data.to_vec(),
+        ancestors: vec![],
+        metadata,
+    }
+    .payload_for_signing();
+    signed(writer.sign(&payload).unwrap().to_bytes())
+}
+
+/// A sealed entry's record drains as the two writes it holds, each under its own
+/// author, so the joiner stores the record a repair would.
+#[tokio::test]
+async fn a_buffered_sealed_record_drains_to_the_record_repair_stores() {
+    let writer = PrivateKey::from([0x67; 32]);
+    let joiner = joiner().await;
+    let owner = joiner.knows_the_account_of(&writer.public_key());
+    let id = owned_entry_id(Id::new([0x87; 32]), &owner);
+    let unsigned = StorageType::User {
+        rules: EntryRules {
+            immutable: true,
+            moderators: None,
+        },
+        owner,
+        signature_data: None,
+    };
+    let writes = [
+        (b"yes".to_vec(), written_once(&writer, owner, id, b"yes", 1)),
+        (b"no".to_vec(), written_once(&writer, owner, id, b"no", 2)),
+    ];
+    let (record, stamp) = conflict_record(&unsigned, writes);
+    let (_, entry, row) = child(id, &record, &record, stamp);
+    let (records, claimed) = tree_over(&[]);
+    joiner.installs(claimed, records).await.unwrap();
+    let _linked =
+        rebuild_child_tries_after_snapshot(&mut joiner.store.handle(), context()).unwrap();
+    let env = create_runtime_env(
+        &joiner.store,
+        context(),
+        PublicKey::from([2; 32]),
+        AccountId::from([0xAC; 32]),
+    );
+
+    let outcome = with_runtime_env(env.clone(), || {
+        persist_buffered_snapshot_entity(
+            &joiner.store,
+            &NotFolded,
+            context(),
+            *id.as_bytes(),
+            &entry,
+            &row.encode(),
+            &|_| Ok(CellWriters::Genesis),
+        )
+    })
+    .unwrap();
+
+    assert_eq!(outcome, SnapshotEntityDrainOutcome::Persisted);
+    let held = with_runtime_env(env, || Interface::<MainStorage>::find_by_id_raw(id));
+    assert_eq!(
+        held,
+        Some(record),
+        "the drain stores the record repair stores"
+    );
 }
 
 /// Nothing binds an entity the claimed root does not reach, so a declined one is
