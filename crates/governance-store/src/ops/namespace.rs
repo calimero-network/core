@@ -30,6 +30,8 @@ pub(crate) use context::NamespaceApplyCtx;
 use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
 use eyre::Result as EyreResult;
 
+use crate::GenesisKind;
+
 /// Apply a `RootOp` against `ctx`. Thin router — variant-specific
 /// logic lives in the per-op submodules.
 pub(crate) fn dispatch_root_op(
@@ -156,12 +158,19 @@ pub(crate) fn dispatch_root_op(
             founder,
             account,
             salt,
-        } => namespace_created::apply(ctx, op, *founder, account, salt, false),
+        } => namespace_created::apply(ctx, op, *founder, account, salt, GenesisKind::Ordinary),
         RootOp::AccountNamespaceCreated {
             founder,
             account,
             salt,
-        } => namespace_created::apply(ctx, op, *founder, account, salt, true),
+        } => namespace_created::apply(
+            ctx,
+            op,
+            *founder,
+            account,
+            salt,
+            GenesisKind::AccountNamespace,
+        ),
         // `KeyDelivery` has no state mutation of its own here: the actual
         // key-unwrap/store side effect is orchestrated by the outer
         // `apply_signed_op` match in `namespace/governance.rs`, which owns the

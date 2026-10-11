@@ -1200,12 +1200,13 @@ impl ScopeState {
         &self,
         accounts: &BTreeMap<AccountId, AccountBinding>,
     ) -> BTreeMap<DeviceId, DeviceBinding> {
+        let target = self.target();
         let unsuperseded = self.devices.iter().filter(|(device, binding)| {
             accounts
                 .get(&binding.account)
                 .is_none_or(|account| binding.key_epoch >= account.epoch)
                 && !self.is_descoped(**device, binding)
-                && self.reaches(**device, binding)
+                && self.reaches(**device, binding, target)
         });
         unsuperseded
             .map(|(device, binding)| (*device, *binding))
@@ -1226,39 +1227,40 @@ impl ScopeState {
 
     /// Does this binding's scope reach the scope's target at the end of the fold?
     /// Read here, like the floor, so the answer is a function of the op set.
-    fn reaches(&self, device: DeviceId, binding: &DeviceBinding) -> bool {
+    fn reaches(
+        &self,
+        device: DeviceId,
+        binding: &DeviceBinding,
+        target: Option<ApplicationId>,
+    ) -> bool {
         let applications = self
             .device_scope_applications
             .get(&(binding.account, device))
             .map_or(&[][..], |(_, applications)| applications.as_slice());
         calimero_authz::scope_reaches(
             applications,
-            self.target(),
+            target,
             self.account_namespace == Some(binding.account),
         )
     }
 
-    /// The application the scope root targets: its last set, then each later cascade from
-    /// the bytecode it runs by then, earliest stamp first, as the apply moves only a match.
+    /// The application the scope root targets: its last set, then one pass over the later
+    /// cascades in stamp order, each moving it only from the bytecode it runs by then.
     fn target_with_bytecode(&self) -> Option<(ApplicationId, [u8; 32])> {
         let (base, mut current) = match &self.target_application {
             Some((stamp, application, bytecode)) => (Some(*stamp), Some((*application, *bytecode))),
             None => (None, None),
         };
-        let mut applied = BTreeSet::new();
-        loop {
-            let running = current.map_or([0; 32], |(_, bytecode)| bytecode);
-            let next = self.cascades.iter().find(|(stamp, (from, ..))| {
-                base.is_none_or(|base| **stamp > base)
-                    && !applied.contains(*stamp)
-                    && *from == running
-            });
-            let Some((stamp, (_, bytecode, application))) = next else {
-                return current;
-            };
-            let _ = applied.insert(*stamp);
-            current = Some((*application, *bytecode));
+        let later = self
+            .cascades
+            .iter()
+            .filter(|(stamp, _)| base.is_none_or(|base| **stamp > base));
+        for (_, (from, bytecode, application)) in later {
+            if *from == current.map_or([0; 32], |(_, running)| running) {
+                current = Some((*application, *bytecode));
+            }
         }
+        current
     }
 
     fn target(&self) -> Option<ApplicationId> {

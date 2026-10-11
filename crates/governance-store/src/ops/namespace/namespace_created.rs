@@ -57,6 +57,7 @@
 //!        * then `if op.signer != founder` → `SignerNotFounder`.
 //!        * then `if founded_namespace_id(founder, salt) != namespace_id` →
 //!          `IdNotDerivedFromFounder` (#2932).
+//!          An account-namespace genesis checks `account_namespace_id` instead.
 //!        * then establish: write meta `admin == owner == founder`, the founder's
 //!          Admin member row, and the default caps.
 //!
@@ -78,8 +79,8 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::{
-    placeholder_admin_identity, ApplyError, CapabilitiesRepository, MembershipRepository,
-    MetaRepository, NamespaceCreatedRejection,
+    placeholder_admin_identity, ApplyError, CapabilitiesRepository, GenesisKind,
+    MembershipRepository, MetaRepository, NamespaceCreatedRejection,
 };
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
@@ -166,11 +167,12 @@ fn record_founding(
     namespace: &ContextGroupId,
     founder: &AccountId,
     salt: &[u8; 32],
-    account_namespace: bool,
+    kind: GenesisKind,
+    marked: bool,
 ) -> EyreResult<()> {
     let founding = crate::NamespaceFoundingRepository::new(store);
-    founding.record(namespace, founder, salt)?;
-    if account_namespace {
+    founding.record(namespace, founder, salt, kind)?;
+    if marked {
         founding.mark_account_namespace(namespace)?;
     }
     Ok(())
@@ -182,7 +184,7 @@ pub(crate) fn apply(
     founder: AccountId,
     account: &calimero_context_client::local_governance::JoinAccountCredential,
     salt: &[u8; 32],
-    account_namespace: bool,
+    kind: GenesisKind,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let namespace_id = ctx.namespace_id();
@@ -191,15 +193,10 @@ pub(crate) fn apply(
     // branches below.
     // An account namespace's id is derived under its own domain, so an ordinary
     // namespace can never be marked as one after the fact.
-    let derive_check = if account_namespace {
-        calimero_account::is_account_namespace_of
-    } else {
-        calimero_account::is_founded_by
-    };
-    let derived = derive_check(&namespace_id.to_bytes(), &founder, salt);
+    let derived = kind.derives(&namespace_id.to_bytes(), &founder, salt);
     // Every path that records the account-namespace mark asks this, as the projection does:
     // a re-arrival is not signer-checked, and a genesis's salt and credential are public.
-    let marked = account_namespace
+    let marked = kind == GenesisKind::AccountNamespace
         && calimero_authz::founder_signed(
             &founder,
             &account.genesis,
@@ -345,7 +342,7 @@ pub(crate) fn apply(
                 // records the pair too. A salt that does not derive the id is
                 // simply not recorded: an established namespace never errors.
                 if derived {
-                    record_founding(store, &ns_gid, &founder, salt, marked)?;
+                    record_founding(store, &ns_gid, &founder, salt, kind, marked)?;
                 }
                 tracing::debug!(
                     namespace_id = %hex::encode(namespace_id.as_bytes()),
@@ -430,7 +427,8 @@ pub(crate) fn apply(
     // DIFFERENT founder); a SELF-CONSISTENT forgery (signer == founder ==
     // attacker) passes it. The derivation check below is what closes that
     // (#2932, formerly the SECURITY residual here): every namespace id is
-    // `founded_namespace_id(founder, salt)`, so a self-consistent forgery can
+    // `founded_namespace_id(founder, salt)` (`account_namespace_id` for an account
+    // namespace), so a self-consistent forgery can
     // only found an id its own account hashes to, never somebody else's, even
     // on a bare replica where the established gate above protects nothing.
     // `founder` names an account and a signature names a key, so the two halves
@@ -551,7 +549,7 @@ pub(crate) fn apply(
     // Local and hash-neutral like the deny-list: it records a fact the op
     // already carries, so every replica that applies this genesis holds the
     // same row, and any member can show the pair without the founder's node.
-    record_founding(store, &ns_gid, &founder, salt, marked)?;
+    record_founding(store, &ns_gid, &founder, salt, kind, marked)?;
 
     tracing::info!(
         namespace_id = %hex::encode(namespace_id.as_bytes()),
