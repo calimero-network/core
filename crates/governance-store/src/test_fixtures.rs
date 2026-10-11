@@ -522,6 +522,13 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
     }
 }
 
+/// The [`crate::BindingRejected`] anywhere in an apply error's chain.
+pub fn binding_rejection(err: &eyre::Report) -> Option<crate::BindingRejected> {
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<crate::BindingRejected>())
+        .copied()
+}
+
 /// A non-empty causal cut for apply-auth tests. Value is irrelevant — only
 /// non-emptiness matters (see [`FixedAuthorizer`]).
 pub const TEST_CUT: [[u8; 32]; 1] = [[0xAB; 32]];

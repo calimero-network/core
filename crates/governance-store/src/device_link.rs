@@ -1622,7 +1622,7 @@ mod tests {
             )
             .expect("the stranger signs for its own account"),
         };
-        let _refused = crate::sign_apply_local_group_op_borsh(
+        let refused = crate::sign_apply_local_group_op_borsh(
             &store,
             &account_namespace,
             &sk,
@@ -1634,6 +1634,10 @@ mod tests {
         )
         .err()
         .expect("a withdrawal naming an account the device was not minted for is refused");
+        assert_eq!(
+            crate::test_fixtures::binding_rejection(&refused),
+            Some(crate::BindingRejected::DeviceNotMintedForAccount)
+        );
         let spent = certify(own.signing_key(), 0x7A, [0x7A; 32]);
         register(&store, own.signing_key(), &spent, &[]);
         let _applied = crate::sign_apply_local_group_op_borsh(
