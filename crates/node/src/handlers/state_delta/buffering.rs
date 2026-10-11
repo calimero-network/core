@@ -441,6 +441,23 @@ async fn drain_pending_application(input: &StateDeltaContext, context_id: &Conte
 /// [`apply_leaf_with_crdt_merge`] (the same convergent CRDT-merge the live sync
 /// path uses); the record is deleted only on success (idempotent on the key).
 async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId) -> Result<()> {
+    // The drain writes storage outside the executor, which would have re-anchored the root.
+    if drain_absorbed_leaf_records(input, context_id).await? > 0 {
+        crate::sync::helpers::reanchor_after_entity_merge(
+            &input.node_clients.context,
+            *context_id,
+            "absorb drain",
+        )
+        .await;
+    }
+    Ok(())
+}
+
+/// The drain [`drain_absorbed_leaves`] runs, returning how many records it applied.
+async fn drain_absorbed_leaf_records(
+    input: &StateDeltaContext,
+    context_id: &ContextId,
+) -> Result<usize> {
     use borsh::BorshDeserialize;
     use calimero_context::hlc_fence::loaded_reader_bytecode_id;
     use calimero_governance_store::AbsorbRepository;
@@ -452,7 +469,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
     // The schema this node can read right now. `None` ⇒ can't tell readability;
     // leave every leaf record pending.
     let Some(loaded) = loaded_reader_bytecode_id(store, context_id)? else {
-        return Ok(());
+        return Ok(0);
     };
 
     let repo = AbsorbRepository::new(store);
@@ -463,7 +480,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
         .iter()
         .any(|(_, r)| r.leaf.is_some() || r.entity.is_some())
     {
-        return Ok(());
+        return Ok(0);
     }
 
     let identity = choose_owned_identity(&input.node_clients.context, context_id).await?;
@@ -474,16 +491,10 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
         *context_id,
     );
 
-    // Snapshot entities in the page apply's order, so an anchor is stored before the
-    // members whose verdict reads it. A record left pending is retried on later drain
-    // triggers, a bounded number of times (`drain_buffered_snapshot_entity`).
+    // A record left pending is retried on later drain triggers, a bounded number of
+    // times (`drain_buffered_snapshot_entity`).
     let mut pending = pending;
-    pending.sort_by_key(|(_, record)| {
-        record
-            .entity
-            .as_ref()
-            .map(|entity| crate::sync::snapshot::buffered_snapshot_entity_pass(&entity.index))
-    });
+    crate::sync::snapshot::order_buffered_snapshot_entities(&mut pending);
 
     // A shared cell's writers past genesis are read from the governance fold.
     let ever_writers = |cell| {
@@ -496,21 +507,23 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 
     let mut drained = 0usize;
     for ((producing_bytecode_id, delta_id), record) in pending {
-        // Snapshot-entity-shaped records: re-verify + persist the raw `entry` +
-        // `index` blobs via `handle.put` (the snapshot apply path deliberately
-        // bypasses CRDT merge), once the loaded reader matches the schema.
+        // Snapshot-entity-shaped records: re-verify, then apply through storage, once
+        // the loaded reader matches the schema.
         if let Some(entity_absorb) = record.entity.as_ref() {
             if entity_absorb.schema_bytecode_id != loaded {
                 continue;
             }
-            match crate::sync::snapshot::drain_buffered_snapshot_entity(
-                store,
-                &input.node_state.folded_tee(),
-                *context_id,
-                producing_bytecode_id,
-                record,
-                &ever_writers,
-            ) {
+            let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+                crate::sync::snapshot::drain_buffered_snapshot_entity(
+                    store,
+                    &input.node_state.folded_tee(),
+                    *context_id,
+                    producing_bytecode_id,
+                    record,
+                    &ever_writers,
+                )
+            });
+            match outcome {
                 Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Persisted) => drained += 1,
                 Ok(_) => {}
                 Err(err) => warn!(
@@ -569,7 +582,7 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
             "absorb drain: re-applied buffered sync-repair leaves/entities after binary advance"
         );
     }
-    Ok(())
+    Ok(drained)
 }
 
 /// Core drain mechanics, factored out so the decision/delete logic is unit-

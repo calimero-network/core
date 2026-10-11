@@ -17,11 +17,13 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, NodeEvent, SyncStatusPayload,
 };
 use calimero_primitives::hash::Hash;
+use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::child_trie::ChildTrie;
+use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::env::time_now;
 use calimero_storage::index::Index;
-use calimero_storage::interface::Interface;
+use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
 use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_store::key::ContextState as ContextStateKey;
@@ -1396,13 +1398,15 @@ async fn install_staged_snapshot(
     stage: Stage,
     claimed: Hash,
     existing_keys: HashSet<[u8; calimero_store::key::STATE_KEY_LEN]>,
-    declined: HashMap<Id, [u8; 32]>,
+    mut declined: HashMap<Id, [u8; 32]>,
 ) -> Result<()> {
     // The check hashes every entity and rebuilds its trie, so it runs off the
     // async workers.
     tokio::task::spawn_blocking(move || {
         let (store, context_id) = (stage.store().clone(), stage.context_id());
         let mut skip = stage.verify(claimed)?;
+        // Nothing binds what the root does not reach, so it is not kept for a later drain.
+        declined.retain(|id, _| !skip.contains(id));
         skip.extend(declined.keys().copied());
         set_sync_in_progress_marker(&store, context_id, &claimed)?;
         let installed = stage.promote(&existing_keys, &skip)?;
@@ -1494,16 +1498,41 @@ pub(crate) fn buffered_snapshot_entity_pass(index: &[u8]) -> u8 {
     }
 }
 
+/// Orders buffered snapshot entities so one pass drains a whole snapshot: each
+/// after the buffered entities above it, then in [`buffered_snapshot_entity_pass`] order.
+pub(crate) fn order_buffered_snapshot_entities<K>(
+    pending: &mut [(K, calimero_governance_store::AbsorbRecord)],
+) {
+    let parents: HashMap<Id, Id> = pending
+        .iter()
+        .filter_map(|(_, record)| {
+            let entity = record.entity.as_ref()?;
+            let index =
+                borsh::from_slice::<calimero_storage::index::EntityIndex>(&entity.index).ok()?;
+            Some((Id::new(entity.id), index.parent_id()?))
+        })
+        .collect();
+    pending.sort_by_cached_key(|(_, record)| {
+        record.entity.as_ref().map(|entity| {
+            let depth =
+                std::iter::successors(Some(Id::new(entity.id)), |id| parents.get(id).copied())
+                    .take(parents.len().saturating_add(1))
+                    .count();
+            (depth, buffered_snapshot_entity_pass(&entity.index))
+        })
+    });
+}
+
 /// Re-verify and persist a buffered future-schema snapshot entity (PR-6b Task
 /// 6b.7), reaching the verdict `request_and_apply_snapshot_pages` reaches on
-/// it, then `handle.put` the `entry` + `index` blobs under their hashed storage
-/// keys.
+/// it, then write it through the storage apply under the parent this node holds.
+/// Must run inside `with_runtime_env` for `context_id`.
 ///
 /// What the page apply takes from the rest of the snapshot, this reads from the
 /// store: a `SharedMember`'s genesis writers from its stored anchor. A missing
 /// anchor, or a cell whose writers `ever_writers` cannot read yet, leaves the
 /// entity [`Pending`](SnapshotEntityDrainOutcome::Pending); the caller drains in
-/// [`buffered_snapshot_entity_pass`] order so anchors are stored first.
+/// [`order_buffered_snapshot_entities`] order so parents and anchors are stored first.
 pub(crate) fn persist_buffered_snapshot_entity(
     store: &calimero_store::Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
@@ -1630,33 +1659,63 @@ pub(crate) fn persist_buffered_snapshot_entity(
         warn!(%context_id, id = ?id, "absorb entity drain: refusing an entity dated ahead of the clock");
         return Ok(SnapshotEntityDrainOutcome::Refused);
     };
-    let mut handle = store.handle();
-    let _row_state_key = put_entity_row(&mut handle, context_id, id_obj, entry, &dated)?;
+    apply_drained_snapshot_entity(store, folded, context_id, id_obj, entry, &dated)
+}
 
-    // Link into the parent's child trie HERE, not only in the one-shot rebuild
-    // after the snapshot pages land.
-    //
-    // This path runs from `drain_absorbed_leaves`, which fires on a later delta
-    // once the loaded reader has advanced to the entity's schema — long after
-    // `rebuild_child_tries_after_snapshot` has already run. An entity that lands
-    // now would otherwise be present but unenumerable from its parent forever,
-    // because (as that rebuild's own doc notes) re-applying byte-identical
-    // entities never re-links: it goes through the update path, not
-    // `add_child_to`. That is the same permanent, self-stable divergence the
-    // rebuild exists to prevent, arriving through the late door.
-    if let Some(parent_id) = index_entity.parent_id() {
-        link_child_into_parent_trie(
-            &mut handle,
-            context_id,
-            parent_id,
-            calimero_storage::entities::ChildInfo::new(
-                index_entity.id(),
-                index_entity.full_hash(),
-                index_entity.metadata.clone(),
-            ),
-        )?;
+/// Writes a verified buffered entity through the storage apply, as a repair-pushed leaf
+/// is written: it merges with what this node took since the install, and rehashes upward.
+fn apply_drained_snapshot_entity(
+    store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    context_id: ContextId,
+    id: Id,
+    entry: &[u8],
+    index: &calimero_storage::index::EntityIndex,
+) -> Result<SnapshotEntityDrainOutcome> {
+    let held = |id| crate::delta_store::read_entity_index_direct(store, context_id, id);
+    let stored = held(id)?.is_some();
+    let ancestors = match index.parent_id() {
+        _ if stored || id == Id::new(*context_id.as_ref()) => vec![],
+        Some(parent) if held(parent)?.is_some() => {
+            vec![ChildInfo::new(parent, [0; 32], Metadata::default())]
+        }
+        _ => {
+            warn!(%context_id, id = ?id.as_bytes(),
+                "absorb entity drain: its parent is not in this node's tree, deleting");
+            return Ok(SnapshotEntityDrainOutcome::Refused);
+        }
+    };
+    let (data, metadata) = (entry.to_vec(), index.metadata.clone());
+    let action = if stored {
+        Action::Update {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    } else {
+        Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    };
+    let ctx = ApplyContext {
+        signer_account: crate::sync::helpers::signer_account_for(
+            store,
+            folded,
+            &context_id,
+            Some(&index.metadata.storage_type),
+        ),
+        ..ApplyContext::empty()
+    };
+    // Repair holds a refused entity to the same rules, and brings it if peers keep it.
+    if let Err(e) = Interface::<MainStorage>::apply_remote_action(action, &ctx) {
+        warn!(%context_id, id = ?id.as_bytes(), error = ?e,
+            "absorb entity drain: the storage apply refused it, deleting");
+        return Ok(SnapshotEntityDrainOutcome::Refused);
     }
-
     Ok(SnapshotEntityDrainOutcome::Persisted)
 }
 
@@ -1738,31 +1797,6 @@ fn stage_signed_dated(
     stage.put_entity(id, entry, &borsh::to_vec(&dated)?)
 }
 
-/// Writes an entity received in a snapshot: its dated index record and its data,
-/// as the one entity row the storage layer keeps for them (`calimero_storage::row`).
-/// Returns the row's state key, which the install keeps across stale-key cleanup.
-fn put_entity_row(
-    handle: &mut calimero_store::Handle<Store>,
-    context_id: ContextId,
-    id: Id,
-    entry: &[u8],
-    index: &calimero_storage::index::EntityIndex,
-) -> Result<[u8; calimero_store::key::STATE_KEY_LEN]> {
-    let row_state_key = StorageKey::Index(id).to_bytes();
-    let row = calimero_storage::row::encode(
-        id,
-        &calimero_storage::row::Row {
-            index: Some(borsh::to_vec(index)?),
-            data: Some(entry.to_vec()),
-        },
-    );
-    handle.put(
-        &ContextStateKey::new(context_id, row_state_key),
-        &ContextStateValue::from(Slice::from(row)),
-    )?;
-    Ok(row_state_key)
-}
-
 /// The entity whose row sits at `state_key`, or `None` for any other kind of
 /// state row (child trie, sync state).
 fn entity_id_of(state_key: &[u8]) -> Option<Id> {
@@ -1770,21 +1804,6 @@ fn entity_id_of(state_key: &[u8]) -> Option<Id> {
         StorageKey::Index(id) => Some(id),
         _ => None,
     }
-}
-
-/// Insert one parent→child link into the parent's `ChildTrie`, through a raw
-/// store handle.
-///
-/// Shared by the post-snapshot rebuild and the late buffered-entity drain so
-/// the two cannot drift in how a link is written — they are the same operation
-/// arriving at different times.
-fn link_child_into_parent_trie(
-    handle: &mut calimero_store::Handle<calimero_store::Store>,
-    context_id: ContextId,
-    parent_id: Id,
-    child: calimero_storage::entities::ChildInfo,
-) -> Result<()> {
-    link_children_into_parent_trie(handle, context_id, parent_id, vec![child])
 }
 
 /// Link many children of ONE parent, sharing a row cache across them.
@@ -1863,8 +1882,8 @@ fn child_trie_writes(
 /// while the entity rows sit there intact.
 ///
 /// It is a separate pass rather than a hook in the install sites because there
-/// are three of them (the page-apply loop, the re-drive loop, and the buffered
-/// drain), and a link missed by any one is silent. Rebuilding from what
+/// are two of them (the page-apply loop and the re-drive loop), and a link
+/// missed by either is silent. Rebuilding from what
 /// actually landed cannot miss a path.
 ///
 /// Replays the sender's own `full_hash` for each child, so the reconstructed
@@ -2968,7 +2987,7 @@ mod tests {
         let single_store = Store::new(Arc::new(InMemoryDB::owned()));
         let mut single = single_store.handle();
         for child in children.clone() {
-            link_child_into_parent_trie(&mut single, context_id, parent_id, child)
+            link_children_into_parent_trie(&mut single, context_id, parent_id, vec![child])
                 .expect("single link");
         }
 
@@ -3633,6 +3652,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pending, SnapshotEntityDrainOutcome::Pending);
+    }
+
+    /// A snapshot buffered whole drains in one pass only if each entity follows the
+    /// buffered entities above it, whatever order the buffer lists them in.
+    #[test]
+    fn buffered_snapshot_entities_are_ordered_parents_first() {
+        let record = |id: u8, parent: Option<u8>| {
+            let index = match parent {
+                Some(parent) => EntityIndex::minimal_for_test_with_parent(
+                    Id::new([id; 32]),
+                    Id::new([parent; 32]),
+                    [0; 32],
+                ),
+                None => EntityIndex::minimal_for_test(Id::new([id; 32])),
+            };
+            let record = calimero_governance_store::AbsorbRecord::from_snapshot_entity(
+                [id; 32],
+                Vec::new(),
+                borsh::to_vec(&index).unwrap(),
+                [9; 32],
+            );
+            ((), record)
+        };
+        let mut pending = vec![record(3, Some(2)), record(2, Some(1)), record(1, None)];
+
+        order_buffered_snapshot_entities(&mut pending);
+
+        let order: Vec<u8> = pending
+            .iter()
+            .filter_map(|(_, record)| Some(record.entity.as_ref()?.id[0]))
+            .collect();
+        assert_eq!(order, [1, 2, 3]);
     }
 
     #[test]
@@ -4925,8 +4976,8 @@ mod snapshot_trust_tests {
         let (data, by_alice) = shared_leaf(anchor, &[alice_account], &alice, 4);
         assert_eq!(
             group.drain_with(anchor, &data, &by_alice, |_| Err(WritersUnavailable::Cut)),
-            SnapshotEntityDrainOutcome::Persisted,
-            "a genesis writer needs no governance read"
+            SnapshotEntityDrainOutcome::Refused,
+            "storage holds a cell it cannot resolve to no writers, as it holds a repair"
         );
     }
 
