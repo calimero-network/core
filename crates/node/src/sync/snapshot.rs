@@ -4232,6 +4232,7 @@ mod tests {
 #[cfg(test)]
 mod snapshot_trust_tests {
     use std::collections::BTreeMap;
+    use std::rc::Rc;
     use std::sync::Arc;
 
     use calimero_account::AccountId;
@@ -4242,14 +4243,18 @@ mod snapshot_trust_tests {
     use calimero_governance_store::{
         register_context_in_group, AccountBindingRepository, MembershipRepository, MetaRepository,
     };
+    use calimero_node_primitives::sync::storage_bridge::create_runtime_env;
     use calimero_node_primitives::sync::InitProof;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::{PrivateKey, PublicKey};
     use calimero_storage::action::Action;
     use calimero_storage::address::Id;
     use calimero_storage::entities::{Metadata, OpMask, SignatureData, StorageType};
+    use calimero_storage::env::{with_runtime_env, RuntimeEnv};
     use calimero_storage::index::EntityIndex;
+    use calimero_storage::interface::{ApplyContext, Interface};
     use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
+    use calimero_storage::store::MainStorage;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
@@ -4285,7 +4290,34 @@ mod snapshot_trust_tests {
                 .add_member(&group.namespace, &account, GroupMemberRole::Admin)
                 .unwrap();
             register_context_in_group(&group.store, &group.namespace, &group.context).unwrap();
+            with_runtime_env(group.env(|_| Ok(CellWriters::Genesis)), || {
+                Interface::<MainStorage>::apply_action(
+                    Action::Add {
+                        id: root(),
+                        data: b"root".to_vec(),
+                        ancestors: vec![],
+                        metadata: Metadata::new(1, 1),
+                    },
+                    &ApplyContext::empty(),
+                )
+            })
+            .unwrap();
             (group, account)
+        }
+
+        /// A runtime env over the group's store, answering a cell's writers with
+        /// `ever` as the node's repair resolver does.
+        fn env(
+            &self,
+            ever: impl Fn(Id) -> Result<CellWriters, WritersUnavailable> + 'static,
+        ) -> RuntimeEnv {
+            create_runtime_env(
+                &self.store,
+                self.context,
+                PublicKey::from([0; 32]),
+                AccountId::from([0; 32]),
+            )
+            .with_shared_writers(Rc::new(move |cell| ever(cell).ok()))
         }
 
         fn member(&self, key: &PublicKey) -> AccountId {
@@ -4328,6 +4360,11 @@ mod snapshot_trust_tests {
                 &|_| Ok(CellWriters::Genesis),
             )
         }
+    }
+
+    /// The context's root entity, which `Group::with_admin` stores.
+    fn root() -> Id {
+        Id::new(CONTEXT)
     }
 
     fn signed_by(key: &PublicKey) -> Option<SignatureData> {
@@ -4467,18 +4504,13 @@ mod snapshot_trust_tests {
             {
                 sig.signature = signer.sign(&payload).unwrap().to_bytes();
             }
-            let mut index = EntityIndex::minimal_for_test(id);
+            let mut index = EntityIndex::minimal_for_test_with_parent(id, root(), [0; 32]);
             index.metadata = metadata;
-            persist_buffered_snapshot_entity(
-                &group.store,
-                &calimero_governance_store::NotFolded,
-                group.context,
-                *id.as_bytes(),
+            group.drain(
+                id,
                 &data,
                 &super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &data),
-                &|_| Ok(CellWriters::Genesis),
             )
-            .unwrap()
         };
 
         assert_eq!(
@@ -4489,55 +4521,50 @@ mod snapshot_trust_tests {
         assert_eq!(drain(&alice), SnapshotEntityDrainOutcome::Persisted);
     }
 
-    /// Drains, as a buffered snapshot leaf, Alice's owned entry signed at `nonce`
-    /// and shipped dated `updated_at`. Returns the outcome and the stored date.
-    fn drain_alices_entry(
-        nonce: u64,
-        updated_at: u64,
-    ) -> (SnapshotEntityDrainOutcome, Option<u64>) {
+    /// Drains, one after another as buffered snapshot leaves, Alice's owned entry
+    /// signed at each `(nonce, updated_at)`, shipped dated `updated_at`. Returns the
+    /// last outcome and the stored date.
+    fn drain_alices_entry(drains: &[(u64, u64)]) -> (SnapshotEntityDrainOutcome, Option<u64>) {
         let alice = PrivateKey::from([0x78; 32]);
         let (group, alice_account) = Group::with_admin(&alice.public_key());
         let id =
             calimero_storage::tests::common::owned_entry_id(Id::new([0x79; 32]), &alice_account);
-        let data = b"alice's entry".to_vec();
-        let mut metadata = Metadata::new(1, nonce);
-        metadata.storage_type = StorageType::User {
-            rules: calimero_storage::entities::EntryRules::OWNED,
-            owner: alice_account,
-            signature_data: signer(&alice, nonce),
-        };
-        let payload = Action::Add {
-            id,
-            data: data.clone(),
-            ancestors: vec![],
-            metadata: metadata.clone(),
+        let mut outcome = None;
+        for &(nonce, updated_at) in drains {
+            let data = format!("alice's entry at {nonce}").into_bytes();
+            let mut metadata = Metadata::new(1, nonce);
+            metadata.storage_type = StorageType::User {
+                rules: calimero_storage::entities::EntryRules::OWNED,
+                owner: alice_account,
+                signature_data: signer(&alice, nonce),
+            };
+            let payload = Action::Add {
+                id,
+                data: data.clone(),
+                ancestors: vec![],
+                metadata: metadata.clone(),
+            }
+            .payload_for_signing();
+            if let StorageType::User {
+                signature_data: Some(sig),
+                ..
+            } = &mut metadata.storage_type
+            {
+                sig.signature = alice.sign(&payload).unwrap().to_bytes();
+            }
+            metadata.updated_at = updated_at.into();
+            let mut index = EntityIndex::minimal_for_test_with_parent(id, root(), [0; 32]);
+            index.metadata = metadata;
+            outcome = Some(group.drain(
+                id,
+                &data,
+                &super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &data),
+            ));
         }
-        .payload_for_signing();
-        if let StorageType::User {
-            signature_data: Some(sig),
-            ..
-        } = &mut metadata.storage_type
-        {
-            sig.signature = alice.sign(&payload).unwrap().to_bytes();
-        }
-        metadata.updated_at = updated_at.into();
-        let mut index = EntityIndex::minimal_for_test(id);
-        index.metadata = metadata;
-
-        let outcome = persist_buffered_snapshot_entity(
-            &group.store,
-            &calimero_governance_store::NotFolded,
-            group.context,
-            *id.as_bytes(),
-            &data,
-            &super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), &data),
-            &|_| Ok(CellWriters::Genesis),
-        )
-        .unwrap();
         let stored = crate::delta_store::read_entity_index_direct(&group.store, group.context, id)
             .unwrap()
             .map(|index| index.metadata.updated_at());
-        (outcome, stored)
+        (outcome.expect("at least one drain"), stored)
     }
 
     /// `updated_at` is not signed, so a peer serving a snapshot can re-date an
@@ -4545,7 +4572,7 @@ mod snapshot_trust_tests {
     #[test]
     fn a_snapshot_entry_is_stored_under_its_signed_date() {
         assert_eq!(
-            drain_alices_entry(1, calimero_storage::env::time_now()),
+            drain_alices_entry(&[(1, calimero_storage::env::time_now())]),
             (SnapshotEntityDrainOutcome::Persisted, Some(1))
         );
     }
@@ -4556,9 +4583,17 @@ mod snapshot_trust_tests {
     fn a_snapshot_entry_signed_ahead_of_the_clock_is_refused() {
         let ahead = calimero_storage::env::time_now() + 60_000_000_000;
         assert_eq!(
-            drain_alices_entry(ahead, 1),
+            drain_alices_entry(&[(ahead, 1)]),
             (SnapshotEntityDrainOutcome::Refused, None)
         );
+    }
+
+    /// What this node holds of an entry is merged with a buffered copy, not
+    /// overwritten by it: an older signed write does not roll the entry back.
+    #[test]
+    fn a_buffered_entry_does_not_replace_a_newer_one_this_node_holds() {
+        let (_, stored) = drain_alices_entry(&[(2, 2), (1, 1)]);
+        assert_eq!(stored, Some(2), "the drain rolled the entry back");
     }
 
     fn writer_set(accounts: &[AccountId]) -> BTreeMap<AccountId, OpMask> {
@@ -4620,7 +4655,12 @@ mod snapshot_trust_tests {
     /// A `Shared` anchor carrying `writers`, signed by `key` at `at`. Its
     /// `full_hash` names children none of these tests store.
     fn shared_leaf(id: Id, writers: &[AccountId], key: &PrivateKey, at: u64) -> (Vec<u8>, Vec<u8>) {
-        shared_leaf_at(EntityIndex::minimal_for_test(id), writers, key, at)
+        shared_leaf_at(
+            EntityIndex::minimal_for_test_with_parent(id, root(), [0; 32]),
+            writers,
+            key,
+            at,
+        )
     }
 
     fn shared_leaf_at(
@@ -4641,7 +4681,12 @@ mod snapshot_trust_tests {
 
     /// A member of `anchor`, signed by `key` at `at`.
     fn member_leaf(id: Id, anchor: Id, key: &PrivateKey, at: u64) -> (Vec<u8>, Vec<u8>) {
-        member_leaf_at(EntityIndex::minimal_for_test(id), anchor, key, at)
+        member_leaf_at(
+            EntityIndex::minimal_for_test_with_parent(id, anchor, [0; 32]),
+            anchor,
+            key,
+            at,
+        )
     }
 
     fn member_leaf_at(
@@ -4662,7 +4707,7 @@ mod snapshot_trust_tests {
 
     impl Group {
         fn drain(&self, id: Id, data: &[u8], index: &[u8]) -> SnapshotEntityDrainOutcome {
-            self.drain_with(id, data, index, &|_| Ok(CellWriters::Genesis))
+            self.drain_with(id, data, index, |_| Ok(CellWriters::Genesis))
         }
 
         /// Drain with `ever` as the governance fold's ever-writers of any cell.
@@ -4671,17 +4716,19 @@ mod snapshot_trust_tests {
             id: Id,
             data: &[u8],
             index: &[u8],
-            ever: &dyn Fn(Id) -> Result<CellWriters, WritersUnavailable>,
+            ever: impl Fn(Id) -> Result<CellWriters, WritersUnavailable> + Clone + 'static,
         ) -> SnapshotEntityDrainOutcome {
-            persist_buffered_snapshot_entity(
-                &self.store,
-                &calimero_governance_store::NotFolded,
-                self.context,
-                *id.as_bytes(),
-                data,
-                index,
-                ever,
-            )
+            with_runtime_env(self.env(ever.clone()), || {
+                persist_buffered_snapshot_entity(
+                    &self.store,
+                    &calimero_governance_store::NotFolded,
+                    self.context,
+                    *id.as_bytes(),
+                    data,
+                    index,
+                    &ever,
+                )
+            })
             .unwrap()
         }
 
@@ -4728,7 +4775,10 @@ mod snapshot_trust_tests {
         records.sort_by_key(|(_, _, index)| buffered_snapshot_entity_pass(index));
         for (id, data, index) in &records {
             assert_eq!(
-                group.drain_with(*id, data, index, &|_| rotated(&[alice_account])),
+                group.drain_with(*id, data, index, move |_| rotated(&[
+                    alice_account,
+                    bob_account
+                ])),
                 SnapshotEntityDrainOutcome::Persisted
             );
         }
@@ -4748,7 +4798,7 @@ mod snapshot_trust_tests {
 
         let (data, forged) = shared_leaf(anchor, &[alice_account], &mallory, 5);
         assert_eq!(
-            group.drain_with(anchor, &data, &forged, &|cell| {
+            group.drain_with(anchor, &data, &forged, move |cell| {
                 assert_eq!(cell, anchor, "the cell of a Shared leaf is the leaf");
                 Ok(CellWriters::Genesis)
             }),
@@ -4788,7 +4838,7 @@ mod snapshot_trust_tests {
             SnapshotEntityDrainOutcome::Persisted
         );
         assert_eq!(
-            group.drain_with(member, &data, &forged, &|cell| {
+            group.drain_with(member, &data, &forged, move |cell| {
                 assert_eq!(cell, anchor, "the anchor's ever-writers");
                 Ok(CellWriters::Genesis)
             }),
@@ -4817,27 +4867,27 @@ mod snapshot_trust_tests {
         let _ = group.member(&mallory.public_key());
         let anchor = cell_at(0x8A, &[alice_account]);
         let member = member_at(anchor, 0x8B);
-        let ever = |_: Id| rotated(&[alice_account, bob_account]);
+        let ever = move |_: Id| rotated(&[alice_account, bob_account]);
 
         let (anchor_data, anchor_index) = shared_leaf(anchor, &[alice_account], &alice, 3);
         assert_eq!(
-            group.drain_with(anchor, &anchor_data, &anchor_index, &ever),
+            group.drain_with(anchor, &anchor_data, &anchor_index, ever),
             SnapshotEntityDrainOutcome::Persisted
         );
         let (data, by_bob) = member_leaf(member, anchor, &bob, 5);
         assert_eq!(
-            group.drain_with(member, &data, &by_bob, &ever),
+            group.drain_with(member, &data, &by_bob, ever),
             SnapshotEntityDrainOutcome::Persisted,
             "a writer a rotation added signs members of the cell"
         );
         let (data, by_mallory) = member_leaf(member, anchor, &mallory, 6);
         assert_eq!(
-            group.drain_with(member, &data, &by_mallory, &ever),
+            group.drain_with(member, &data, &by_mallory, ever),
             SnapshotEntityDrainOutcome::Refused
         );
         let (data, anchor_by_bob) = shared_leaf(anchor, &[alice_account], &bob, 7);
         assert_eq!(
-            group.drain_with(anchor, &data, &anchor_by_bob, &ever),
+            group.drain_with(anchor, &data, &anchor_by_bob, ever),
             SnapshotEntityDrainOutcome::Persisted,
             "and the cell itself"
         );
@@ -4857,14 +4907,14 @@ mod snapshot_trust_tests {
         let (data, by_bob) = shared_leaf(anchor, &[alice_account], &bob, 3);
         for unavailable in [WritersUnavailable::Cut, WritersUnavailable::OverBudget] {
             assert_eq!(
-                group.drain_with(anchor, &data, &by_bob, &|_| Err(unavailable)),
+                group.drain_with(anchor, &data, &by_bob, move |_| Err(unavailable)),
                 SnapshotEntityDrainOutcome::Pending,
                 "{unavailable:?}"
             );
             assert!(!group.is_stored(anchor));
         }
         assert_eq!(
-            group.drain_with(anchor, &data, &by_bob, &|_| rotated(&[
+            group.drain_with(anchor, &data, &by_bob, move |_| rotated(&[
                 alice_account,
                 bob_account
             ])),
@@ -4874,7 +4924,7 @@ mod snapshot_trust_tests {
 
         let (data, by_alice) = shared_leaf(anchor, &[alice_account], &alice, 4);
         assert_eq!(
-            group.drain_with(anchor, &data, &by_alice, &|_| Err(WritersUnavailable::Cut)),
+            group.drain_with(anchor, &data, &by_alice, |_| Err(WritersUnavailable::Cut)),
             SnapshotEntityDrainOutcome::Persisted,
             "a genesis writer needs no governance read"
         );
