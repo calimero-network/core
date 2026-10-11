@@ -1158,8 +1158,9 @@ async fn drained_over(
     (joiner, outcome)
 }
 
+/// Its parent may still be buffered, so it waits; the drain's pass bound settles it.
 #[tokio::test]
-async fn a_buffered_public_entity_detached_from_the_tree_is_refused_at_drain() {
+async fn a_buffered_public_entity_detached_from_the_tree_is_not_installed_at_drain() {
     let (source, claimed) = source();
     let detached = Id::new([0x61; 32]);
     let SnapshotRecord::Entity { entry, index, .. } = orphan(detached, StorageType::Public) else {
@@ -1168,7 +1169,7 @@ async fn a_buffered_public_entity_detached_from_the_tree_is_refused_at_drain() {
 
     let (joiner, outcome) = drained_over(shipped(&source), claimed, (detached, entry, index)).await;
 
-    assert_eq!(outcome, SnapshotEntityDrainOutcome::Refused);
+    assert_eq!(outcome, SnapshotEntityDrainOutcome::Pending);
     assert!(!joiner.holds(detached));
 }
 

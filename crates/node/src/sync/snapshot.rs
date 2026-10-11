@@ -4406,7 +4406,7 @@ mod snapshot_trust_tests {
     use calimero_account::AccountId;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::test_fixtures::{
-        enrol_member, real_join_account, sample_meta_with_admin,
+        enrol_member, join_account_for, real_join_account, sample_meta_with_admin,
     };
     use calimero_governance_store::{
         register_context_in_group, AccountBindingRepository, MembershipRepository, MetaRepository,
@@ -4935,6 +4935,141 @@ mod snapshot_trust_tests {
                 .and_then(|row| calimero_storage::row::decode(id, row.value.as_ref()))
                 .is_some_and(|row| row.data.is_some())
         }
+
+        fn stored_data(&self, id: Id) -> Option<Vec<u8>> {
+            self.store
+                .handle()
+                .get(&super::ContextStateKey::new(
+                    self.context,
+                    super::StorageKey::Index(id).to_bytes(),
+                ))
+                .unwrap()
+                .and_then(|row| calimero_storage::row::decode(id, row.value.as_ref()))
+                .and_then(|row| row.data)
+        }
+    }
+
+    /// A `Public` leaf holding `data` under `parent`, dated `at`, as a buffer record holds it.
+    fn public_leaf(id: Id, parent: Id, data: &[u8], at: u64) -> Vec<u8> {
+        let mut index = EntityIndex::minimal_for_test_with_parent(id, parent, [0; 32]);
+        index.metadata = Metadata::new(at, at);
+        super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), data)
+    }
+
+    /// A child drained before its buffered parent waits for it rather than being
+    /// dropped: repair may never bring it back once its signer is gone.
+    #[test]
+    fn a_buffered_child_waits_for_its_buffered_parent() {
+        let (group, _) = Group::with_admin(&PrivateKey::from([0xC0; 32]).public_key());
+        let (parent, child) = (Id::new([0xC1; 32]), Id::new([0xC2; 32]));
+
+        assert_eq!(
+            group.drain(child, b"child", &public_leaf(child, parent, b"child", 1)),
+            SnapshotEntityDrainOutcome::Pending
+        );
+        assert_eq!(
+            group.drain(
+                parent,
+                b"parent",
+                &public_leaf(parent, root(), b"parent", 1)
+            ),
+            SnapshotEntityDrainOutcome::Persisted
+        );
+        assert_eq!(
+            group.drain(child, b"child", &public_leaf(child, parent, b"child", 1)),
+            SnapshotEntityDrainOutcome::Persisted
+        );
+        assert!(group.is_stored(child));
+    }
+
+    /// The app-state entry this node holds merges in the app's module, which
+    /// repair dispatches; the drain must not settle it on the host.
+    #[test]
+    fn a_buffered_app_state_entry_over_a_stored_one_is_left_to_repair() {
+        use calimero_storage::collections::ROOT_ENTRY_ID;
+
+        let (group, _) = Group::with_admin(&PrivateKey::from([0xC3; 32]).public_key());
+        assert_eq!(
+            group.drain(
+                ROOT_ENTRY_ID,
+                b"state v1",
+                &public_leaf(ROOT_ENTRY_ID, root(), b"state v1", 1)
+            ),
+            SnapshotEntityDrainOutcome::Persisted
+        );
+        assert_eq!(
+            group.drain(
+                ROOT_ENTRY_ID,
+                b"state v2",
+                &public_leaf(ROOT_ENTRY_ID, root(), b"state v2", 2)
+            ),
+            SnapshotEntityDrainOutcome::Refused
+        );
+        assert_eq!(group.stored_data(ROOT_ENTRY_ID), Some(b"state v1".to_vec()));
+    }
+
+    /// A key two accounts certified writes as the account its live binding names,
+    /// as a delta does. The other account holds only WRITE_ONCE, so a rewrite
+    /// checked as it would be refused.
+    #[test]
+    fn a_shared_rewrite_is_checked_as_the_signers_live_account() {
+        let alice = PrivateKey::from([0xB0; 32]);
+        let (group, _) = Group::with_admin(&alice.public_key());
+        let foreign_root = PrivateKey::from([0xB1; 32]);
+        let foreign_genesis = calimero_account::AccountGenesis::new(foreign_root.public_key());
+        let foreign = foreign_genesis.account_id();
+        // The accounts are tried in byte order, so the foreign one must sort first.
+        let bob = (0xB2..=0xFF_u8)
+            .map(|seed| PrivateKey::from([seed; 32]))
+            .find(|key| real_join_account(&key.public_key()).statement.account > foreign)
+            .expect("some key's account sorts after the foreign one");
+        let bob_account = group.member(&bob.public_key());
+        let claim = join_account_for(
+            &foreign_root,
+            foreign_genesis,
+            &bob.public_key(),
+            [0xB3; 32],
+            0,
+        );
+        let bindings = AccountBindingRepository::new(&group.store);
+        let _foreign_link = bindings
+            .apply_link(
+                &group.namespace,
+                &claim.genesis,
+                &claim.chain,
+                &claim.statement,
+                0,
+            )
+            .unwrap()
+            .expect("the foreign account certifies bob's key");
+        bindings
+            .apply_revocation(&group.namespace, claim.statement.device)
+            .unwrap();
+
+        let writers = BTreeMap::from([(foreign, OpMask::WRITE_ONCE), (bob_account, OpMask::WRITE)]);
+        let anchor = calimero_storage::collections::cell_id(Id::new([0xB4; 32]), &writers);
+        let write = |data: &[u8], at: u64| {
+            let mut metadata = Metadata::new(at, at);
+            metadata.storage_type = StorageType::Shared {
+                writers: writers.clone(),
+                signature_data: signer(&bob, at),
+            };
+            let index = signed_index(
+                EntityIndex::minimal_for_test_with_parent(anchor, root(), [0; 32]),
+                data,
+                metadata,
+                &bob,
+            );
+            group.drain(anchor, data, &index)
+        };
+
+        assert_eq!(write(b"first", 1), SnapshotEntityDrainOutcome::Persisted);
+        assert_eq!(
+            write(b"rewrite", 2),
+            SnapshotEntityDrainOutcome::Persisted,
+            "checked as the foreign account, which may only write once"
+        );
+        assert_eq!(group.stored_data(anchor), Some(b"rewrite".to_vec()));
     }
 
     /// The ever-writers a rotated cell answers with: `accounts`, as a fold would.
