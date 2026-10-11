@@ -222,3 +222,38 @@ fn concurrent_targets_settle_the_same_way_in_either_order() {
         "the rival that ranks first decides the target"
     );
 }
+
+/// A genesis whose carried credential names the founder and the signer's key but
+/// does not verify marks nothing, even folded raw without the apply's check.
+#[test]
+fn a_genesis_carrying_a_credential_that_does_not_verify_marks_nothing() {
+    let (founder, scope) = founder_and_scope();
+    let forger = PrivateKey::from([0x66; 32]).public_key();
+    let OpPayload::DeviceLinked {
+        genesis,
+        chain,
+        mut cert,
+        ..
+    } = founder.payload.clone()
+    else {
+        unreachable!("linked builds a DeviceLinked")
+    };
+    cert.sign_pk = forger;
+    let forged = OpPayload::AccountNamespaceFounded {
+        founder: founder.account,
+        salt: SALT,
+        carried: Box::new(OpPayload::DeviceLinked {
+            genesis,
+            chain,
+            cert,
+            scope_epoch: 0,
+            applications: vec![],
+        }),
+    };
+    let ops = [
+        signed_by(forger, scope, 1, vec![], forged),
+        op(scope, 2, vec![[1; 32]], founder.payload),
+    ];
+
+    assert!(!live(&ops).contains(&founder.device));
+}
