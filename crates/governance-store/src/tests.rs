@@ -13315,7 +13315,7 @@ mod account_plane_apply {
         // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
         // simply has no standing here.
         let stranger = key(7);
-        let _refused = sign_apply_local_group_op_borsh(
+        sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13328,8 +13328,7 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .err()
-        .expect("a link endorsed by a non-member is refused");
+        .unwrap();
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "a valid endorsement from a non-member must not admit a link"
@@ -14909,7 +14908,7 @@ mod account_plane_apply {
 
         // A valid, root-signed narrowing - replayed by a member of this namespace
         // that speaks for some other account.
-        let _refused = crate::apply_group_op_mutations(
+        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
             &store,
             &gid,
             &admin_sk.public_key(),
@@ -14917,8 +14916,9 @@ mod account_plane_apply {
             &CUT,
             &FixedAuthorizer(true),
         )
-        .expect_err("a replay by another account is refused");
+        .unwrap();
 
+        assert_eq!(events, vec![]);
         assert!(
             is_live(&store, &gid, account, device),
             "a replay by a member of another account must not unbind the device"
@@ -15673,7 +15673,7 @@ mod account_plane_apply {
             link_scope(&owner_sk, &sibling_cert, 0),
             link_scope(&stranger_sk, &cert, 0),
         ] {
-            sign_apply_local_group_op_borsh(
+            let _refused = sign_apply_local_group_op_borsh(
                 &store,
                 &gid,
                 &admin_sk,
@@ -15685,7 +15685,8 @@ mod account_plane_apply {
                     scope,
                 },
             )
-            .unwrap();
+            .err()
+            .expect("a scope that does not authorise this device is refused");
             assert!(
                 live_for(&store, &gid, account).is_empty(),
                 "a scope that does not authorise THIS device admits no link"

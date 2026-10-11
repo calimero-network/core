@@ -259,16 +259,3 @@ async fn a_descope_whose_scope_still_reaches_the_group_does_not_narrow_the_devic
         "a scope that still reaches the group narrowed the admin's device at the cut"
     );
 }
-
-#[actix::test]
-async fn a_descope_by_a_signer_of_another_account_does_not_narrow_the_device_at_the_cut() {
-    let world = World::shared();
-    let role =
-        role_after_a_members_descope(&[ApplicationId::from([0xEE; 32])], world.application).await;
-
-    assert_eq!(
-        role,
-        Some(GroupMemberRole::Admin),
-        "a member of another account narrowed the admin's device at the cut"
-    );
-}

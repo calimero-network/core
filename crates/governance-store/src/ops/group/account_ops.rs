@@ -47,8 +47,8 @@ use eyre::{bail, Result as EyreResult};
 /// gains an attacker nothing, and refusing it would break legitimate re-gossip
 /// of the same op.
 ///
-/// Each refusal before the coverage check is decided by the op or its cut, so it is
-/// an error: the projection folds every logged op. The coverage check reads live.
+/// A refusal decided by the op alone is an error: the projection folds every logged
+/// op. The endorser and coverage checks read live rows, so they still record nothing.
 pub(crate) fn apply_device_linked(
     ctx: &mut GroupApplyCtx<'_>,
     genesis: &AccountGenesis,
@@ -92,7 +92,8 @@ pub(crate) fn apply_device_linked(
         bail!(BindingRejected::EndorsementInvalid);
     };
     if !key_is_member(ctx, &endorsement.member)? {
-        bail!(BindingRejected::AccountNotMember);
+        log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
+        return Ok(());
     }
     // The account namespace is exempt, recognised node-locally: pairing publishes a
     // device's first link there BEFORE the certificate that would name it.
@@ -551,8 +552,8 @@ fn announce_withdrawal(ctx: &mut GroupApplyCtx<'_>, account: &AccountId, device:
 /// `GroupOp::AccountDeviceDescoped` - drop a device's binding because the
 /// account replaced its scope with one that no longer reaches this group.
 ///
-/// Refusals that do not depend on arrival order are errors, ahead of the one that
-/// does: the projection folds every logged descope as a floor.
+/// A carried scope that still reaches the group is refused as an error, ahead of the
+/// checks that read live rows: the projection folds every logged descope as a floor.
 pub(crate) fn apply_device_descoped(
     ctx: &mut GroupApplyCtx<'_>,
     account: &AccountId,
@@ -575,14 +576,6 @@ pub(crate) fn apply_device_descoped(
         bail!("account device descoped: the carried scope still reaches this group");
     }
 
-    // Only the account may narrow its own device: the statement rides in the clear
-    // on every link, so any member could otherwise replay a superseded one.
-    //
-    // Order-safe: the signer resolves through its own binding, which causally
-    // precedes any descope it publishes.
-    if !ctx.signer_is(account)? {
-        bail!("account device descoped: the signer does not speak for this account");
-    }
     // A device keeps its account namespace, recognised here by the REPLICATED
     // registry row: a node-local read would drop a binding this node's peers keep.
     if crate::AccountDeviceRegistry::new(ctx.store(), group_id)
@@ -591,6 +584,17 @@ pub(crate) fn apply_device_descoped(
     {
         tracing::warn!(group_id = ?group_id, %device,
                        "account device descoped: a device keeps its account namespace");
+        return Ok(());
+    }
+
+    // Only the account may narrow its own device: the statement rides in the clear
+    // on every link, so any member could otherwise replay a superseded one.
+    //
+    // Order-safe: the signer resolves through its own binding, which causally
+    // precedes any descope it publishes.
+    if !ctx.signer_is(account)? {
+        tracing::warn!(group_id = ?group_id, %account, %device, signer = %ctx.signer(),
+                       "account device descoped: the signer does not speak for this account");
         return Ok(());
     }
     // No membership gate: a descope only narrows the account's own device, so even
