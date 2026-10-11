@@ -1963,6 +1963,46 @@ mod tests {
         assert_eq!(config.remote_root_hash, [1u8; 32]);
     }
 
+    /// A child-list page carrying a leaf too large to be valid hands the leaf back
+    /// for the caller to skip, as the first page does, rather than aborting the walk.
+    #[tokio::test]
+    async fn an_invalid_leaf_on_a_later_page_does_not_abort_the_walk() {
+        use crate::sync::level_sync::tests::Scripted;
+
+        let child = [0x20; 32];
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 1, [0; 32]);
+        let oversized = TreeLeafData::new(child, vec![0; MAX_LEAF_VALUE_SIZE + 1], metadata);
+        let mut transport = Scripted(
+            [StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::TreeNodeChildren {
+                    children: vec![child],
+                    next: None,
+                    leaves: vec![TreeNode::leaf(child, [0; 32], oversized)],
+                },
+                next_nonce: generate_nonce(),
+            }]
+            .into(),
+        );
+        let mut node = TreeNode::internal([0xAA; 32], [0; 32], vec![]);
+        let mut stats = HashComparisonStats::default();
+
+        let leaves = fetch_remaining_children(
+            &mut transport,
+            ContextId::from([0xCA; 32]),
+            PublicKey::from([0; 32]),
+            None,
+            &mut node,
+            [0x10; 32],
+            &mut stats,
+        )
+        .await
+        .expect("an invalid leaf is skipped, not fatal");
+        assert_eq!(node.children, vec![child]);
+        assert_eq!(leaves.len(), 1);
+        assert!(!leaves[0].is_valid(), "the caller skips it as invalid");
+    }
+
     #[test]
     fn test_stats_default() {
         let stats = HashComparisonStats::default();

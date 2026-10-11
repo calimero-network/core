@@ -216,13 +216,18 @@ fn repair(leaf: &Action) {
     }
 }
 
-/// A node's leaf once the voter's phone and laptop cast different ballots.
-fn sealed_leaf() -> Action {
+/// A node once the voter's phone and laptop cast different ballots.
+fn sealed_node() -> Root<Ballots> {
     let ballots = fresh_node();
     for (device, value, at) in [(PHONE, "yes", AT), (LAPTOP, "no", AT + 1)] {
         apply(cast(&ballots, device, value, at), voter()).expect("each write lands");
     }
-    leaf(entry_id(&ballots))
+    ballots
+}
+
+/// A node's leaf once the voter's phone and laptop cast different ballots.
+fn sealed_leaf() -> Action {
+    leaf(entry_id(&sealed_node()))
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +368,26 @@ fn a_redelivery_of_either_write_changes_nothing_once_settled() {
     apply(phone, voter()).expect("a redelivery of either write is accepted");
     apply(laptop, voter()).expect("a redelivery of either write is accepted");
     assert_eq!(held(&ballots), settled);
+}
+
+#[test]
+#[serial]
+fn a_sealed_entry_stays_in_every_owner_listing() {
+    let ballots = sealed_node();
+    assert_eq!(ballots.entries_with_owners().expect("entries").len(), 1);
+    assert_eq!(ballots.entries_by(&voter()).expect("by").len(), 1);
+    assert_eq!(ballots.entries_at(&ballot_key()).expect("at").len(), 1);
+}
+
+#[test]
+#[serial]
+fn a_written_once_value_too_large_for_a_record_of_two_is_refused() {
+    let ballots = fresh_node();
+    let large = "x".repeat(600 * 1024);
+    assert!(matches!(
+        apply(cast(&ballots, PHONE, &large, AT), voter()),
+        Err(StorageError::ActionNotAllowed(_))
+    ));
 }
 
 #[test]

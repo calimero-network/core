@@ -2965,7 +2965,7 @@ mod on_behalf_resolution_tests {
     use calimero_primitives::crdt::CrdtType;
     use calimero_primitives::identity::PublicKey;
     use calimero_storage::address::Id;
-    use calimero_storage::entities::{EntryRules, Metadata, SignatureData, StorageType};
+    use calimero_storage::entities::{EntryRules, Metadata, OpMask, SignatureData, StorageType};
     use calimero_storage::shared_writers::CellWriters;
     use calimero_storage::tests::common::conflict_record;
     use calimero_store::Store;
@@ -3207,6 +3207,47 @@ mod on_behalf_resolution_tests {
             snapshot(sealed_by(w.mallory_pk)),
             SnapshotAuthorship::Forged
         );
+    }
+
+    /// A snapshot's record of two writes to a cell stands only where the cell's
+    /// writers hold `WRITE_ONCE` alone: a mutable cell's history is no seal.
+    #[test]
+    fn a_snapshot_seals_a_cell_only_if_its_writers_write_once() {
+        let w = world();
+        let (phone, owner) = enrolled(&w.store, &w.group, 0x62);
+        let signed = |nonce: u64| SignatureData {
+            signature: [0x77; 64],
+            nonce,
+            signer: Some(phone),
+            on_behalf: None,
+        };
+        let authorship = |mask: OpMask| {
+            let stamp = StorageType::Shared {
+                writers: [(owner, mask)].into(),
+                signature_data: Some(signed(1)),
+            };
+            let (value, storage_type) =
+                conflict_record(&stamp, [(vec![1], signed(1)), (vec![2], signed(2))]);
+            let mut metadata = Metadata::new(1, 1);
+            metadata.storage_type = storage_type;
+            snapshot_leaf_authorship(
+                &w.store,
+                &NotFolded,
+                &w.context,
+                Id::new([0x01; 32]),
+                &metadata,
+                &value,
+                None,
+                &|_| Ok(CellWriters::Genesis),
+            )
+        };
+
+        assert_eq!(
+            authorship(OpMask::WRITE_ONCE),
+            SnapshotAuthorship::Authored,
+            "control: a write-once cell's writer sealed it"
+        );
+        assert_eq!(authorship(OpMask::FULL), SnapshotAuthorship::Forged);
     }
 
     /// A snapshot keeps what a relay wrote for a member who has since left, as

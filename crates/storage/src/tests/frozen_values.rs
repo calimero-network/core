@@ -6,7 +6,10 @@
 //! rewrite or delete it, a stranger trying to write it, a fresh node taking it
 //! at genesis, and sync redelivering it.
 
+use std::collections::BTreeMap;
+
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use ed25519_dalek::SigningKey;
 use serial_test::serial;
 
@@ -15,7 +18,7 @@ use crate::collections::{Frozen, FrozenValue, Root};
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, StorageType};
 use crate::env;
 use crate::index::Index;
-use crate::interface::{Interface, StorageError};
+use crate::interface::{ApplyContext, Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::{
     account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
@@ -24,6 +27,8 @@ use crate::tests::owned_rules::conflicted;
 
 type MainInterface = Interface<MainStorage>;
 
+const FOUNDER: u8 = 0xF0;
+
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
@@ -31,7 +36,7 @@ fn key(seed: u8) -> SigningKey {
 /// The founder's charter, as `init` would create it.
 fn charter() -> (Root<Frozen<String>>, SigningKey) {
     env::reset_for_testing();
-    let founder = key(0xF0);
+    let founder = key(FOUNDER);
     env::set_account_id(*account_of_key(&founder).as_bytes());
     let charter = Root::new(|| Frozen::new("be kind".to_owned()));
     (charter, founder)
@@ -156,29 +161,76 @@ fn reads_sealed() -> bool {
     conflicted(&charter.get().cloned())
 }
 
-/// What a node holds for the cell after the creator's signed `values` reach it
-/// in order, each at `base` plus its offset, the first as a fresh node's genesis
-/// write: the stored bytes, and whether the value reads as sealed.
-fn held_after(base: u64, values: &[(&str, u64)]) -> (Vec<u8>, bool) {
-    let (mut charter, founder) = charter();
+/// What a fresh node holds for the cell's value after the signed `writes`, each
+/// `(signer, value, offset from base)`, reach it in order, judged against
+/// `writers` when given: the stored bytes, and whether the value reads as sealed.
+fn node_after(
+    base: u64,
+    writers: Option<&BTreeMap<AccountId, OpMask>>,
+    writes: &[(u8, &str, u64)],
+) -> (Option<Vec<u8>>, bool) {
+    let (mut charter, _founder) = charter();
     charter.reassign_deterministic_id("charter");
     let (anchor, value_id) = charter.ids();
     charter.commit();
     let _ = MainStorage::storage_remove(Key::Entry(value_id));
-    for (index, (value, offset)) in values.iter().enumerate() {
+    for &(signer, value, offset) in writes {
+        let signer = key(signer);
         let action = build_signed_member_action(
-            index == 0,
+            MainStorage::storage_read(Key::Entry(value_id)).is_none(),
             value_id,
             anchor,
             value_bytes(value_id, value),
             base + offset,
-            &founder,
+            &signer,
             vec![ChildInfo::new(anchor, [0; 32], Metadata::default())],
         );
-        let _ = MainInterface::apply_action(action, &apply_ctx_for(account_of_key(&founder)));
+        let ctx = ApplyContext {
+            effective_writers: writers.cloned(),
+            signer_account: Some(account_of_key(&signer)),
+        };
+        let _ = MainInterface::apply_action(action, &ctx);
     }
-    let bytes = MainStorage::storage_read(Key::Entry(value_id)).expect("a value is held");
-    (bytes, reads_sealed())
+    (
+        MainStorage::storage_read(Key::Entry(value_id)),
+        reads_sealed(),
+    )
+}
+
+/// [`node_after`] for the creator's own `values`, of which one is always held.
+fn held_after(base: u64, values: &[(&str, u64)]) -> (Vec<u8>, bool) {
+    let writes: Vec<_> = values
+        .iter()
+        .map(|&(value, offset)| (FOUNDER, value, offset))
+        .collect();
+    let (bytes, sealed) = node_after(base, None, &writes);
+    (bytes.expect("a value is held"), sealed)
+}
+
+/// A cell granting `WRITE_ONCE` beside a full writer cannot be sealed by the
+/// write-once writer, and a race between the two settles the same everywhere.
+#[test]
+#[serial]
+fn a_write_once_grant_beside_a_full_writer_neither_seals_nor_splits_the_value() {
+    let full = (FOUNDER, "be kind");
+    let once = (0xF1, "be mean");
+    let writers: BTreeMap<AccountId, OpMask> = [
+        (account_of_key(&key(full.0)), OpMask::FULL),
+        (account_of_key(&key(once.0)), OpMask::WRITE_ONCE),
+    ]
+    .into();
+    let base = later();
+    for (full_at, once_at) in [(0, 1), (1, 0)] {
+        let full_write = (full.0, full.1, full_at);
+        let once_write = (once.0, once.1, once_at);
+        let one = node_after(base, Some(&writers), &[full_write, once_write]);
+        let other = node_after(base, Some(&writers), &[once_write, full_write]);
+        assert!(
+            !one.1,
+            "a write-once writer beside a full one cannot seal it"
+        );
+        assert_eq!(one, other, "the arrival order must not pick what is held");
+    }
 }
 
 #[test]
