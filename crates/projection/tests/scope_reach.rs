@@ -378,3 +378,39 @@ fn concurrent_cascades_settle_the_same_way_in_either_order() {
         "the cascade with the earlier stamp decides the target"
     );
 }
+
+/// A cascade that missed stays missed: a later cascade moving the root onto its
+/// `from` does not revive it, as the live apply looks at each cascade once.
+#[test]
+fn a_stale_cascade_stays_skipped_after_a_later_one_moves_the_root() {
+    let scope = ScopeId::from([12u8; 32]);
+    let on_b = linked(0x93, &[app(0xC2)]);
+    let on_c = linked(0x94, &[app(0xC3)]);
+    let ops = [
+        op(scope, 1, vec![], target(scope, app(0xC1))),
+        op(scope, 2, vec![[1; 32]], on_b.payload),
+        op(scope, 3, vec![[2; 32]], on_c.payload),
+        op(
+            scope,
+            0x10,
+            vec![[3; 32]],
+            cascade(scope, 0xB2, 0xB3, app(0xC3)),
+        ),
+        op(
+            scope,
+            0x20,
+            vec![[0x10; 32]],
+            cascade(scope, 0xB1, 0xB2, app(0xC2)),
+        ),
+    ];
+
+    let live = live(&ops);
+    assert!(
+        live.contains(&on_b.device),
+        "the later cascade moves the root to B"
+    );
+    assert!(
+        !live.contains(&on_c.device),
+        "the stale cascade never applies"
+    );
+}
