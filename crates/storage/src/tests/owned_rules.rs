@@ -31,6 +31,8 @@ type Board = Moderated<UnorderedMap<String, LwwRegister<String>>>;
 type Chat = ModeratedOnce<UnorderedMap<String, LwwRegister<String>>>;
 type Notes = Authored<UnorderedMap<String, LwwRegister<String>>>;
 
+const AT: u64 = 1_700_000_000_000_000_000; // a fixed nonce, so two nodes differ only by what they kept
+
 pub(crate) fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
@@ -68,6 +70,11 @@ pub(super) fn refused<T: core::fmt::Debug>(
             StorageError::ActionNotAllowed(_)
         ))
     )
+}
+
+/// Whether a read returned the answer for an entry two different values sealed.
+pub(super) fn conflicted<T>(read: &Result<T, crate::collections::StoreError>) -> bool {
+    read.is_err()
 }
 
 /// A signed owner-stamped action, as a peer's node would produce it.
@@ -233,6 +240,57 @@ fn a_redelivery_of_the_same_bytes_is_accepted() {
         later(),
     );
     apply(again, account_of_key(&alice)).expect("sync redelivers what it already has");
+}
+
+/// What a fresh node holds for Alice's `m1` once her signed `writes` reach it in
+/// order: whether it reads as sealed, its stored bytes and its collection's hash.
+fn alice_node_after(writes: &[(&str, u64)]) -> (bool, Option<Vec<u8>>, Option<[u8; 32]>) {
+    env::reset_for_testing();
+    let alice = key(0xA1);
+    let _ = act_as(&alice);
+    let messages = Root::new(|| {
+        let mut messages = Messages::new_with_field_name("messages");
+        messages.reassign_deterministic_id("messages");
+        messages
+    });
+    let parent = (**messages).id();
+    let id = messages.entry_id(&"m1".to_owned());
+    for &(value, nonce) in writes {
+        let data = map_entry_bytes(id, &"m1".to_owned(), &text(value));
+        let write = signed(
+            move |metadata| Action::Add {
+                id,
+                data,
+                ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
+                metadata,
+            },
+            account_of_key(&alice),
+            messages.entry_rules(),
+            &alice,
+            nonce,
+        );
+        let _ = apply(write, account_of_key(&alice));
+    }
+    let hash = <Index<MainStorage>>::get_hashes_for(parent)
+        .expect("hashes")
+        .map(|(full, _own)| full);
+    (
+        conflicted(&messages.get(&"m1".to_owned())),
+        MainStorage::storage_read(Key::Entry(id)),
+        hash,
+    )
+}
+
+#[test]
+#[serial]
+fn no_node_accepts_a_rewrite_the_owner_signs_with_an_earlier_nonce() {
+    let original = ("hello", AT);
+    for rewrite in [("edited", AT - 1), ("edited", AT)] {
+        let first = alice_node_after(&[original, rewrite]);
+        let second = alice_node_after(&[rewrite, original]);
+        assert!(first.0, "a rewrite at {} must seal the entry", rewrite.1);
+        assert_eq!(first, second, "every node must hold the same sealed entry");
+    }
 }
 
 /// A repair peer labels Alice's signed entry `Custom` so sync defers it to the

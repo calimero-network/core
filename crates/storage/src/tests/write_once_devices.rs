@@ -6,11 +6,9 @@
 //! other's write takes the key as fresh. So a node meets the second write as a
 //! rewrite of an immutable entry.
 //!
-//! When apply kept whichever write reached it first, a node holding the phone's
-//! value refused the laptop's and a node holding the laptop's skipped the
-//! phone's as stale, and the two never agreed on a root hash again. Every node
-//! must keep the same one of the two, whatever order they arrive in: the one
-//! with the lower `(nonce, content hash)`.
+//! Two different values seal the entry: every node keeps the same two writes,
+//! whatever order they arrive in, and reads the entry as conflicted. The same
+//! value written twice settles on its earlier write.
 //!
 //! These tests replay each order on fresh stores, and a repair pushing each
 //! node's leaf to the other, then play an account that does not own the entry
@@ -19,7 +17,6 @@
 use borsh::BorshSerialize;
 use calimero_account::AccountId;
 use serial_test::serial;
-use sha2::{Digest, Sha256};
 
 use crate::action::Action;
 use crate::address::Id;
@@ -27,11 +24,10 @@ use crate::collections::{Root, UnorderedMap, WriteOnce};
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
-use crate::interface::StorageError;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::map_entry_bytes;
 use crate::tests::common::{account_of_key, test_account};
-use crate::tests::owned_rules::{act_as, apply, key, later, signed};
+use crate::tests::owned_rules::{act_as, apply, conflicted, key, later, signed};
 
 /// Plain values, so two nodes holding the same entry hold the same bytes.
 type Ballots = WriteOnce<UnorderedMap<String, String>>;
@@ -121,11 +117,31 @@ fn full_hash_of(id: Id) -> Option<[u8; 32]> {
         .map(|(full, _own)| full)
 }
 
-/// What a node holds: the entries, the signed nonce of the write it kept, and
-/// the hashes a peer compares against its own.
+/// What a read of the voter's ballot returns.
+#[derive(Debug, PartialEq)]
+enum Read {
+    Value(String),
+    Absent,
+    Conflicted,
+}
+
+fn read(ballots: &Root<Ballots>) -> Read {
+    env::set_account_id(*voter().as_bytes());
+    let read = ballots.get(&ballot_key());
+    if conflicted(&read) {
+        return Read::Conflicted;
+    }
+    match read.expect("a read of the ballot") {
+        Some(value) => Read::Value(value),
+        None => Read::Absent,
+    }
+}
+
+/// What a node holds: the voter's ballot as a read returns it, the signed nonce
+/// of the first write it kept, and the hashes a peer compares against its own.
 #[derive(Debug, PartialEq)]
 struct Held {
-    entries: Vec<(AccountId, String, String)>,
+    read: Read,
     nonce: Option<u64>,
     collection_hash: Option<[u8; 32]>,
     root_hash: Option<[u8; 32]>,
@@ -142,7 +158,7 @@ fn held(ballots: &Root<Ballots>) -> Held {
             _ => None,
         });
     Held {
-        entries: ballots.entries_with_owners().expect("entries"),
+        read: read(ballots),
         nonce,
         collection_hash: full_hash_of(ballots_id(ballots)),
         root_hash: full_hash_of(Id::root()),
@@ -171,11 +187,9 @@ fn leaf(id: Id) -> Action {
     }
 }
 
-fn value_of(held: &Held) -> Option<&str> {
-    match held.entries.as_slice() {
-        [(_, _, value)] => Some(value.as_str()),
-        _ => None,
-    }
+/// Apply a peer's leaf as a repair does.
+fn repair(leaf: &Action) {
+    let _ = apply(leaf.clone(), voter());
 }
 
 // ---------------------------------------------------------------------------
@@ -192,43 +206,22 @@ fn two_devices_casting_one_key_converge_whatever_the_order() {
         let laptop_first = node_applying(&[laptop, phone]);
         assert_eq!(
             phone_first, laptop_first,
-            "every node must keep the same ballot once it has seen both \
+            "every node must hold the same entry once it has seen both \
              (phone at {phone_at}, laptop at {laptop_at})"
         );
-        assert_eq!(phone_first.entries.len(), 1, "one ballot per account");
+        assert_eq!(phone_first.read, Read::Conflicted, "two values seal it");
     }
 }
 
 #[test]
 #[serial]
-fn the_earliest_write_is_the_one_kept() {
+fn two_values_from_two_devices_seal_it_from_the_earliest_write() {
     let phone = (PHONE, "yes", AT);
     let laptop = (LAPTOP, "no", AT + 1);
     for writes in [[phone, laptop], [laptop, phone]] {
         let held = node_applying(&writes);
-        assert_eq!(value_of(&held), Some("yes"));
+        assert_eq!(held.read, Read::Conflicted);
         assert_eq!(held.nonce, Some(AT));
-    }
-}
-
-#[test]
-#[serial]
-fn at_one_instant_the_lower_content_hash_is_kept() {
-    let ballots = fresh_node();
-    let id = entry_id(&ballots);
-    let hash = |value: &str| -> [u8; 32] {
-        Sha256::digest(map_entry_bytes(id, &ballot_key(), &value.to_owned())).into()
-    };
-    let expected = if hash("yes") < hash("no") {
-        "yes"
-    } else {
-        "no"
-    };
-
-    let phone = (PHONE, "yes", AT);
-    let laptop = (LAPTOP, "no", AT);
-    for writes in [[phone, laptop], [laptop, phone]] {
-        assert_eq!(value_of(&node_applying(&writes)), Some(expected));
     }
 }
 
@@ -236,15 +229,55 @@ fn at_one_instant_the_lower_content_hash_is_kept() {
 #[serial]
 fn one_value_from_two_devices_settles_on_one_write() {
     // Byte-identical values at two instants hash alike, but a node keeping
-    // the later one would judge a third write against a different nonce.
+    // the later one would seal on a different pair once a third write lands.
     let phone = (PHONE, "yes", AT);
     let laptop = (LAPTOP, "yes", AT + 2);
+    for writes in [[phone, laptop], [laptop, phone]] {
+        let held = node_applying(&writes);
+        assert_eq!(held.read, Read::Value("yes".to_owned()));
+        assert_eq!(held.nonce, Some(AT));
+    }
+
     let between = (PHONE, "no", AT + 1);
     let phone_first = node_applying(&[phone, laptop, between]);
     let laptop_first = node_applying(&[laptop, phone, between]);
     assert_eq!(phone_first, laptop_first);
+    assert_eq!(phone_first.read, Read::Conflicted);
     assert_eq!(phone_first.nonce, Some(AT));
-    assert_eq!(value_of(&phone_first), Some("yes"));
+}
+
+#[test]
+#[serial]
+fn nodes_sealed_by_different_pairs_converge_after_an_exchange() {
+    let first = (PHONE, "a", AT);
+    let second = (LAPTOP, "b", AT + 1);
+    let third = (PHONE, "c", AT + 2);
+    let node = |writes: &[(u8, &str, u64)]| {
+        let ballots = fresh_node();
+        for &(device, value, at) in writes {
+            let _ = apply(cast(&ballots, device, value, at), voter());
+        }
+        ballots
+    };
+    let early_leaf = leaf(entry_id(&node(&[first, second])));
+    let late_leaf = leaf(entry_id(&node(&[second, third])));
+
+    // Each node takes the other's leaf, as HashComparison hands it over.
+    let exchanged = |own: &[(u8, &str, u64)], pushed: &Action| {
+        let ballots = node(own);
+        repair(pushed);
+        let id = entry_id(&ballots);
+        (held(&ballots), MainStorage::storage_read(Key::Entry(id)))
+    };
+    let (early, early_bytes) = exchanged(&[first, second], &late_leaf);
+    let (late, late_bytes) = exchanged(&[second, third], &early_leaf);
+    assert_eq!(
+        early_bytes, late_bytes,
+        "both nodes must store the same bytes"
+    );
+    assert_eq!(early, late);
+    assert_eq!(early.read, Read::Conflicted);
+    assert_eq!(early.nonce, Some(AT));
 }
 
 #[test]
@@ -268,20 +301,20 @@ fn a_repair_pushing_either_node_s_leaf_settles_both() {
         let ballots = fresh_node();
         let (device, value, at) = own;
         apply(cast(&ballots, device, value, at), voter()).expect("a fresh key lands");
-        let _ = apply(pushed.clone(), voter());
+        repair(pushed);
         (held(&ballots), leaf(entry_id(&ballots)))
     };
     let (phone_node, phone_node_leaf) = repaired(phone, &laptop_leaf);
     let (laptop_node, _) = repaired(laptop, &phone_leaf);
     assert_eq!(phone_node, laptop_node);
-    assert_eq!(value_of(&phone_node), Some("no"));
+    assert_eq!(phone_node.read, Read::Conflicted);
 
-    // The node that replaced its value ships a leaf whose signature is the
-    // kept write's, so a third node verifies it.
+    // The sealed node's leaf carries both writes, so a third node holding one
+    // of them verifies it and seals the same way.
     let ballots = fresh_node();
     let (device, value, at) = phone;
     apply(cast(&ballots, device, value, at), voter()).expect("a fresh key lands");
-    apply(phone_node_leaf, voter()).expect("the repaired leaf verifies");
+    repair(&phone_node_leaf);
     assert_eq!(held(&ballots), laptop_node);
 }
 
@@ -292,12 +325,10 @@ fn a_redelivery_of_either_write_changes_nothing_once_settled() {
     let phone = cast(&ballots, PHONE, "yes", AT);
     let laptop = cast(&ballots, LAPTOP, "no", AT + 1);
     apply(phone.clone(), voter()).expect("the first write lands");
+    apply(laptop.clone(), voter()).expect("the second value seals it");
     let settled = held(&ballots);
-    assert!(matches!(
-        apply(laptop, voter()),
-        Err(StorageError::ActionNotAllowed(_))
-    ));
-    apply(phone, voter()).expect("a redelivery of the kept write is accepted");
+    apply(phone, voter()).expect("a redelivery of either write is accepted");
+    apply(laptop, voter()).expect("a redelivery of either write is accepted");
     assert_eq!(held(&ballots), settled);
 }
 
@@ -307,15 +338,13 @@ fn a_redelivery_of_either_write_changes_nothing_once_settled() {
 
 #[test]
 #[serial]
-fn a_later_write_from_another_device_is_refused() {
+fn a_later_write_from_another_device_seals_it() {
     let ballots = fresh_node();
     apply(cast(&ballots, PHONE, "yes", AT), voter()).expect("the first write lands");
-    let settled = held(&ballots);
-    assert!(matches!(
-        apply(cast(&ballots, LAPTOP, "no", later()), voter()),
-        Err(StorageError::ActionNotAllowed(_))
-    ));
-    assert_eq!(held(&ballots), settled);
+    apply(cast(&ballots, LAPTOP, "no", later()), voter()).expect("a second value seals it");
+    let held = held(&ballots);
+    assert_eq!(held.read, Read::Conflicted);
+    assert_eq!(held.nonce, Some(AT));
 }
 
 #[test]

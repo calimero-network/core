@@ -20,6 +20,7 @@ use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::{
     account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
 };
+use crate::tests::owned_rules::conflicted;
 
 type MainInterface = Interface<MainStorage>;
 
@@ -149,18 +150,57 @@ fn nobody_else_can_write_it() {
     assert_eq!(charter.get().expect("get"), "be kind");
 }
 
+/// Whether the charter, read afresh from the store, reads as sealed.
+fn reads_sealed() -> bool {
+    let charter = Root::<Frozen<String>>::fetch().expect("root");
+    conflicted(&charter.get().cloned())
+}
+
+/// What a node holds for the cell after the creator's signed `values` reach it
+/// in order, each at `base` plus its offset, the first as a fresh node's genesis
+/// write: the stored bytes, and whether the value reads as sealed.
+fn held_after(base: u64, values: &[(&str, u64)]) -> (Vec<u8>, bool) {
+    let (mut charter, founder) = charter();
+    charter.reassign_deterministic_id("charter");
+    let (anchor, value_id) = charter.ids();
+    charter.commit();
+    let _ = MainStorage::storage_remove(Key::Entry(value_id));
+    for (index, (value, offset)) in values.iter().enumerate() {
+        let action = build_signed_member_action(
+            index == 0,
+            value_id,
+            anchor,
+            value_bytes(value_id, value),
+            base + offset,
+            &founder,
+            vec![ChildInfo::new(anchor, [0; 32], Metadata::default())],
+        );
+        let _ = MainInterface::apply_action(action, &apply_ctx_for(account_of_key(&founder)));
+    }
+    let bytes = MainStorage::storage_read(Key::Entry(value_id)).expect("a value is held");
+    (bytes, reads_sealed())
+}
+
 #[test]
 #[serial]
-fn a_fresh_node_takes_the_genesis_value_and_then_holds_it() {
+fn two_values_signed_by_its_creator_settle_the_same_on_every_node() {
+    let base = later();
+    let one = held_after(base, &[("be kind", 0), ("be mean", 1)]);
+    let other = held_after(base, &[("be mean", 1), ("be kind", 0)]);
+    assert!(one.1, "two values signed by its creator must seal it");
+    assert_eq!(one, other, "the arrival order must not pick what is held");
+}
+
+#[test]
+#[serial]
+fn a_fresh_node_takes_the_genesis_value_and_a_second_value_seals_it() {
     // A node that has the anchor but not yet the value, as a joiner mid-sync.
     let (charter, founder) = charter();
     let ids = charter.ids();
     let _ = MainStorage::storage_remove(Key::Entry(ids.1));
     write(true, ids, "be kind", &founder).expect("the genesis write lands");
-    assert!(matches!(
-        write(false, ids, "be anything", &founder),
-        Err(StorageError::ActionNotAllowed(_))
-    ));
+    write(false, ids, "be anything", &founder).expect("a second value seals it");
+    assert!(reads_sealed());
 }
 
 #[test]
