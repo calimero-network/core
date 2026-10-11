@@ -392,9 +392,8 @@ pub enum OpPayload {
         group: ContextGroupId,
         application: ApplicationId,
     },
-    /// An account namespace's genesis: the founder's device link it carries, and the
-    /// account whose devices it exempts from scope, honoured only if `(founder, salt)`
-    /// derives the scope id.
+    /// An account namespace's genesis: the founder's device link it carries, and the account
+    /// whose devices it exempts from scope, honoured only if `(founder, salt)` derives the id.
     AccountNamespaceFounded {
         /// The account that founded the namespace.
         founder: AccountId,

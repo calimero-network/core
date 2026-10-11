@@ -15340,9 +15340,8 @@ mod account_plane_apply {
         );
     }
 
-    /// The apply pipeline re-runs a mutation before the op-log dedup gate. The signer
-    /// is named at the op's cut, so a self-descope's re-run is not refused for having
-    /// unbound its own device, and it narrows nothing a second time.
+    /// A re-run before the op-log dedup names the signer at the op's cut, so a self-descope
+    /// is not refused for having unbound its own device, and narrows nothing again.
     #[test]
     fn re_applying_a_descope_narrows_nothing_again() {
         let store = test_store();

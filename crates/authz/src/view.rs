@@ -299,9 +299,8 @@ pub fn founder_signed(
         .is_ok()
 }
 
-/// Whether a device scoped to `applications` reaches a scope targeting `target`:
-/// its own account's namespace always, elsewhere only if the scope covers the target.
-/// Shared with the projection's live device set, so the two cannot disagree.
+/// Whether a device scoped to `applications` reaches a scope targeting `target`: its own
+/// account's namespace always, elsewhere only if the scope covers it. The projection's rule too.
 #[must_use]
 pub fn scope_reaches(
     applications: &[ApplicationId],

@@ -696,7 +696,7 @@ pub(super) fn key_is_member(
 ) -> EyreResult<bool> {
     // The endorsement names a member KEY, but membership is recorded against
     // the account it speaks for, so resolve it at the op's cut first. An
-    // endorser whose key is bound to no account there vouches for nobody — the
+    // endorser whose key is bound to no account there vouches for nobody - the
     // same refusal an unknown key gets, reached one step earlier.
     let endorser_key = *endorser;
     let Some(endorser) = ctx.permissions().account_for_signer_at_cut(&endorser_key)? else {

@@ -2388,8 +2388,8 @@ pub struct SignedNamespaceOp {
 /// cut is an error, so it is never logged or folded. Nothing moves on the wire, but a
 /// v24 node logs such an op and its descendants stall on patched nodes: a coordinated
 /// upgrade.
-/// - core#4547, in the same release: `RootOp::AccountNamespaceCreated` is appended, and
-///   a link's endorser and a descope's signer are named at the op's cut.
+/// - In the same release: `RootOp::AccountNamespaceCreated` is appended, and a link's
+///   endorser and a descope's signer are named at the op's cut.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 25;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
