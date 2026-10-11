@@ -1358,11 +1358,6 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
         refuse_misfiled_owned_entry(child.id(), Some(parent_id), &data)?;
-        if data.len() > written_once::MAX_VALUE_BYTES
-            && Self::is_written_once(&child.element().metadata.storage_type)
-        {
-            refuse_oversized_written_once(&data)?;
-        }
 
         let own_hash = Sha256::digest(&data).into();
 
