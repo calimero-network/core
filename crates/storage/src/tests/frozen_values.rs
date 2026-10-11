@@ -93,7 +93,12 @@ fn a_snapshot_refuses_a_frozen_value_too_large_for_a_record_of_two() {
     let crate::action::Action::Update { data, metadata, .. } = action else {
         panic!("an update");
     };
-    assert!(MainInterface::verify_snapshot_member_signature(value_id, &data, &metadata).is_err());
+    let writers: BTreeMap<AccountId, OpMask> =
+        [(account_of_key(&founder), OpMask::WRITE_ONCE)].into();
+    assert!(
+        MainInterface::verify_snapshot_member_signature(value_id, &data, &metadata, &writers)
+            .is_err()
+    );
 }
 
 #[test]
@@ -193,9 +198,8 @@ fn reads_sealed() -> bool {
     conflicted(&charter.get().cloned())
 }
 
-/// What a fresh node holds for the cell's value after the signed `writes`, each
-/// `(signer, value, offset from base)`, reach it in order, judged against
-/// `writers` when given: the stored bytes, and whether the value reads as sealed.
+/// The stored bytes, and whether they read as sealed, once the signed `writes`
+/// `(signer, value, offset from base)` reach a fresh node in order, under `writers` if given.
 fn node_after(
     base: u64,
     writers: Option<&BTreeMap<AccountId, OpMask>>,

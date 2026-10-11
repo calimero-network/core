@@ -12,7 +12,7 @@ use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::collections::ROOT_ENTRY_ID;
-use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
+use calimero_storage::entities::{ChildInfo, Metadata, OpMask, StorageType};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::shared_writers::{writes_once_only, CellWriters, WritersUnavailable};
@@ -372,8 +372,7 @@ fn user_leaf_author_is_its_owner(
 ///   is documented on
 ///   [`calimero_governance_store::is_currently_authorized_for_context`].
 ///
-/// A sealed written-once entry's leaf is admitted only if each write its record
-/// holds would be.
+/// A sealed written-once entry's leaf is admitted only if each write in its record is.
 pub fn is_leaf_currently_authorized(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
@@ -721,8 +720,7 @@ pub(crate) enum SnapshotAuthorship {
 ///   cut, so this admits a removed writer's own signed leaf served by an
 ///   admitted source, and the leaf of any account a void step's `new` set names.
 ///
-/// A sealed written-once entry's leaf, whose `data` is the record of two writes,
-/// is authored, as its first write's author, only if each write is.
+/// A sealed entry's record (`data`) is authored, as its first write's author, only if each write is.
 #[expect(
     clippy::too_many_arguments,
     reason = "a leaf, its bytes, and the stores and fold that judge it"
@@ -755,15 +753,15 @@ pub(crate) fn snapshot_leaf_authorship(
     };
     // A cell's record is a seal only where its writers write once, or it is a
     // mutable cell's history packed by whoever served it.
-    let cell_writers = match &metadata.storage_type {
-        StorageType::Shared { writers, .. } => Some(Some(writers)),
-        StorageType::SharedMember { .. } => Some(anchor_writers),
+    let cell = match &metadata.storage_type {
+        StorageType::Shared { writers, .. } => Some((leaf_id, Some(writers))),
+        StorageType::SharedMember { anchor, .. } => Some((*anchor, anchor_writers)),
         _ => None,
     };
-    match cell_writers {
-        Some(None) => return SnapshotAuthorship::Unknown,
-        Some(Some(writers)) if !writes_once_only(writers) => return SnapshotAuthorship::Forged,
-        _ => {}
+    if let Some(verdict) =
+        cell.and_then(|(cell, genesis)| cell_seal_verdict(genesis, ever_writers(cell)))
+    {
+        return verdict;
     }
     let verdicts = writes.map(|(_, storage_type)| {
         let mut metadata = metadata.clone();
@@ -787,6 +785,29 @@ pub(crate) fn snapshot_leaf_authorship(
             SnapshotAuthorship::Unknown
         }
         (authored, SnapshotAuthorship::Authored(_)) => authored,
+    }
+}
+
+/// `None` when a cell's record may stand, its writers writing once; else the verdict:
+/// `Unknown` while an admin could have rotated it to write-once where this node has not folded.
+fn cell_seal_verdict(
+    genesis: Option<&std::collections::BTreeMap<calimero_account::AccountId, OpMask>>,
+    ever: Result<CellWriters, WritersUnavailable>,
+) -> Option<SnapshotAuthorship> {
+    let Some(genesis) = genesis else {
+        return Some(SnapshotAuthorship::Unknown);
+    };
+    if writes_once_only(genesis) {
+        return None;
+    }
+    let grants = |writers: &std::collections::BTreeMap<_, OpMask>, bit: OpMask| {
+        writers.values().any(|mask| mask.contains(bit))
+    };
+    match ever {
+        Ok(CellWriters::Rotated(writers)) if grants(&writers, OpMask::WRITE_ONCE) => None,
+        Err(_) => Some(SnapshotAuthorship::Unknown),
+        Ok(_) if grants(genesis, OpMask::ADMIN) => Some(SnapshotAuthorship::Unknown),
+        Ok(_) => Some(SnapshotAuthorship::Forged),
     }
 }
 

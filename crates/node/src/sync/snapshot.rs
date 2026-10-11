@@ -849,10 +849,13 @@ impl SyncManager {
                                             named.metadata.storage_type,
                                             calimero_storage::entities::StorageType::SharedMember { .. }
                                         ) {
+                                            // Its anchor's writers are not at hand; the drain
+                                            // holds the member to them before applying it.
                                             Interface::<MainStorage>::verify_snapshot_member_signature(
                                                 Id::new(*id),
                                                 entry,
                                                 &named.metadata,
+                                                &std::collections::BTreeMap::new(),
                                             )
                                         } else {
                                             Interface::<MainStorage>::verify_snapshot_entity_signature(
@@ -1134,7 +1137,7 @@ impl SyncManager {
                                             };
                                             if let Err(e) =
                                                 Interface::<MainStorage>::verify_snapshot_member_signature(
-                                                    id_obj, &entry, metadata,
+                                                    id_obj, &entry, metadata, writers,
                                                 )
                                             {
                                                 return Err(refused_snapshot_entity(
@@ -1614,8 +1617,8 @@ pub(crate) fn persist_buffered_snapshot_entity(
         | StorageType::User { .. } => None,
     };
 
-    let signature = if anchor_writers.is_some() {
-        Interface::<MainStorage>::verify_snapshot_member_signature(id_obj, entry, metadata)
+    let signature = if let Some(writers) = &anchor_writers {
+        Interface::<MainStorage>::verify_snapshot_member_signature(id_obj, entry, metadata, writers)
     } else {
         Interface::<MainStorage>::verify_snapshot_entity_signature(
             id_obj,

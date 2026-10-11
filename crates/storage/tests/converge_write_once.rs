@@ -169,11 +169,8 @@ fn devices_of_one_account_settle_a_write_once_indexed_map_key() {
         |b| {
             b.indexed.insert(k(), Vote { choice: mine() }).unwrap();
         },
-        // A sealed entry holds no index row, this device's value included.
-        |b| {
-            conflicted(&b.indexed.get(&k()))
-                && b.indexed.query("choice").eq(&mine()).count().unwrap() == 0
-        },
+        // A sealed entry holds no index row at all.
+        |b| conflicted(&b.indexed.get(&k())) && b.indexed.query("choice").count().unwrap() == 0,
     );
 }
 

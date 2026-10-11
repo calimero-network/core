@@ -52,17 +52,18 @@ pub(crate) enum Settled {
 }
 
 /// Settle the authentic `incoming` write against the entry's `stored` bytes and
-/// `stored_type` stamp. Refuses other bytes while the stored write is unsigned.
+/// `stored_type` stamp; refuses other bytes unless `stored_signed` says the stamp signs them.
 pub(crate) fn settle(
     stored_type: &StorageType,
     stored: Vec<u8>,
+    stored_signed: bool,
     incoming: SignedWrite,
 ) -> Result<Settled, StorageError> {
     let held = match conflict_writes(stored_type, &stored) {
         Some((first, second)) => vec![first, second],
         None => match stored_type
             .signature_data()
-            .filter(|sig| sig.signature != [0; 64])
+            .filter(|sig| stored_signed && sig.signature != [0; 64])
         {
             Some(signature_data) => vec![SignedWrite {
                 data: stored,

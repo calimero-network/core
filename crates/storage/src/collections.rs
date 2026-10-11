@@ -1614,12 +1614,22 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// one filed under another parent (see [`Interface::find_child_by_id`]).
     fn find_admitted(&self, id: Id) -> StoreResult<Option<Entry<T>>> {
         let parent = self.id();
-        let entry = self.within(|| <Interface<S>>::find_child_by_id::<Entry<_>>(parent, id))?;
+        let entry = match self.within(|| <Interface<S>>::find_child_by_id::<Entry<_>>(parent, id)) {
+            // A sealed entry this domain does not admit reads as absent, as any other does.
+            Err(StorageError::Conflicted(_)) if !self.admits_stored(id)? => return Ok(None),
+            entry => entry?,
+        };
         Ok(entry.filter(|entry| {
             self.storage
                 .domain
                 .admits(&entry.storage.metadata.storage_type)
         }))
+    }
+
+    /// Whether this collection's domain admits the stamp stored at `id`.
+    fn admits_stored(&self, id: Id) -> StoreResult<bool> {
+        Ok(<Index<S>>::get_metadata(id)?
+            .is_some_and(|metadata| self.storage.domain.admits(&metadata.storage_type)))
     }
 
     /// Whether this write lands in a collection inside frozen data while a value

@@ -235,6 +235,26 @@ impl RotationStep {
     fn concurrent_with(&self, other: &Self) -> bool {
         !self.seen.contains(&other.id) && !other.seen.contains(&self.id)
     }
+
+    /// This step with `WRITE_ONCE` dropped from a set that grants it beside another bit,
+    /// as a rotation made before that was refused could, so its removals still apply.
+    fn without_mixed_write_once(&self) -> Self {
+        let mut step = self.clone();
+        strip_mixed_write_once(&mut step.prior);
+        strip_mixed_write_once(&mut step.new);
+        step
+    }
+}
+
+/// Drop `WRITE_ONCE` from every holder of `writers` if it is granted beside another bit.
+fn strip_mixed_write_once(writers: &mut Writers) {
+    if !mixes_write_once(writers) {
+        return;
+    }
+    for mask in writers.values_mut() {
+        *mask = mask.intersection(OpMask::FULL);
+    }
+    writers.retain(|_, mask| *mask != OpMask::NONE);
 }
 
 /// Where a step or a cut stands in a cell's history.
@@ -309,9 +329,8 @@ fn count_steps<'a>(
             .filter(|&j| step.seen.contains(&steps[j].id))
             .collect();
         let (node, in_effect) = head_of(&steps, &parents, &reps, &past, &genesis);
-        let counts = step.prior == in_effect
-            && RotationStep::is_admin_in(&step.prior, &step.signer_account)
-            && !mixes_write_once(&step.new);
+        let counts =
+            step.prior == in_effect && RotationStep::is_admin_in(&step.prior, &step.signer_account);
         let node = counts.then_some(node);
         let rep = (0..i)
             .find(|&j| parents[j].is_some() && parents[j] == node && steps[j].new == step.new)
@@ -333,7 +352,11 @@ pub fn fold<'a>(
     cell: Id,
     steps: impl IntoIterator<Item = &'a RotationStep>,
 ) -> Result<Option<Writers>, OverBudget> {
-    let Some(counted) = count_steps(cell, steps)? else {
+    let steps: Vec<RotationStep> = steps
+        .into_iter()
+        .map(RotationStep::without_mixed_write_once)
+        .collect();
+    let Some(counted) = count_steps(cell, &steps)? else {
         return Ok(None);
     };
     let Counted {
@@ -354,7 +377,11 @@ pub fn ever_writers<'a>(
     cell: Id,
     steps: impl IntoIterator<Item = &'a RotationStep>,
 ) -> Result<Option<Writers>, OverBudget> {
-    let Some(counted) = count_steps(cell, steps)? else {
+    let steps: Vec<RotationStep> = steps
+        .into_iter()
+        .map(RotationStep::without_mixed_write_once)
+        .collect();
+    let Some(counted) = count_steps(cell, &steps)? else {
         return Ok(None);
     };
     let mut ever = counted.genesis;

@@ -96,10 +96,13 @@ switching a field between the two types needs no migration.
   `Written::Conflicted`: the owner listings through `Owning::Listed`, and the
   map listings through `Guarded` methods that shadow the inner map's (a sorted
   map's index keeps a row for a sealed entry). An `IndexedMap` query matches
-  values, which a sealed entry has none of. A written-once write over `written_once::MAX_VALUE_BYTES` is refused,
-  so a record of two fits one sync leaf. The kept pair is a
-  semilattice, so nodes that saw different pairs store the same bytes after
-  any exchange. A record is never applied as one write
+  values, which a sealed entry has none of. A written-once write over
+  `written_once::MAX_VALUE_BYTES` is refused on every path (apply, the local
+  write, both snapshot verifiers), so a record of two fits one sync leaf. A
+  stored write enters a record only if its signature covers its bytes. A
+  sealed entry its collection's domain does not admit reads as absent. The
+  kept pair is a semilattice, so nodes that saw different pairs store the same
+  bytes after any exchange. A record is never applied as one write
   (`refuse_conflict_record_as_write`): a repair applies it as its two writes,
   each signer resolved on its own (`calimero-node`'s `conflict_leaves`), and a
   snapshot verifies and authors each (`conflict_parts`), so only the writer
@@ -311,10 +314,11 @@ switching a field between the two types needs no migration.
 - A `WriterSetCell<FrozenValue<T>>` built by `new_write_once`: one writer, the
   creating account, with `OpMask::WRITE_ONCE` (`0b1000`) and nothing else. No
   `DELETE`, no `ADMIN`, so the value cannot be removed or its writer rotated.
-- `WRITE_ONCE` is granted only alone: `SharedRotation::refusal` and the fold
-  (`count_steps`) refuse a set granting it beside another bit
-  (`mixes_write_once`), and `enforce_put_mask` refuses a write-once write in
-  such a set, so a write-once writer can never seal what a writer may change.
+- `WRITE_ONCE` is granted only alone: `SharedRotation::refusal` refuses a set
+  granting it beside another bit (`mixes_write_once`), the fold counts such a
+  step with `WRITE_ONCE` dropped (`without_mixed_write_once`, so its removals
+  still apply), and `enforce_put_mask` refuses a write-once write in such a
+  set, so a write-once writer can never seal what a writer may change.
 - `enforce_put_mask` settles a `Put` from a `WRITE_ONCE` writer as any
   written-once entry's write (`written_once::settle`): genesis lands on a fresh
   node, a redelivery changes nothing, and a second value signed by the writer

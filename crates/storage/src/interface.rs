@@ -508,6 +508,28 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
+    /// Whether the stored `data` at `id` is a record, or the write its stamp signs.
+    fn stored_write_verifies(id: Id, data: &[u8], storage_type: &StorageType) -> bool {
+        if written_once::conflict_writes(storage_type, data).is_some() {
+            return true;
+        }
+        let Some(sig_data) = storage_type.signature_data() else {
+            return false;
+        };
+        let metadata = Metadata {
+            storage_type: storage_type.clone(),
+            ..Metadata::default()
+        };
+        let payload = Action::Add {
+            id,
+            data: data.to_vec(),
+            ancestors: vec![],
+            metadata,
+        }
+        .payload_for_signing();
+        Self::snapshot_signature_verifies(sig_data, &payload)
+    }
+
     /// Whether a local write stamped `storage_type` is written once: an immutable
     /// owned entry, or a cell member whose writers hold `WRITE_ONCE` alone.
     fn is_written_once(storage_type: &StorageType) -> bool {
@@ -535,7 +557,15 @@ impl<S: StorageAdaptor> Interface<S> {
             data: data.to_vec(),
             signature_data: *signature_data,
         };
-        written_once::settle(&stored_metadata.storage_type, stored, incoming).map(Some)
+        // A stamp a merge left beside other bytes signs nothing here, so it proves no conflict.
+        let stored_signed = Self::stored_write_verifies(id, &stored, &stored_metadata.storage_type);
+        written_once::settle(
+            &stored_metadata.storage_type,
+            stored,
+            stored_signed,
+            incoming,
+        )
+        .map(Some)
     }
 
     /// Resolve which writer produced `sig_data`'s signature over `payload`,
@@ -933,6 +963,14 @@ impl<S: StorageAdaptor> Interface<S> {
         // A rotation never rewrites a wrapper, so a leaf carries the writers its cell
         // id commits to and is held to them.
         refuse_foreign_entity_at_cell_id(id, metadata, true)?;
+        let written_once = match &metadata.storage_type {
+            StorageType::User { rules, .. } => rules.immutable,
+            StorageType::Shared { writers, .. } => crate::shared_writers::writes_once_only(writers),
+            _ => false,
+        };
+        if written_once {
+            refuse_oversized_written_once(data)?;
+        }
 
         // Public / Frozen don't require signature verification.
         match &metadata.storage_type {
@@ -1073,7 +1111,11 @@ impl<S: StorageAdaptor> Interface<S> {
         id: crate::address::Id,
         data: &[u8],
         metadata: &crate::entities::Metadata,
+        writers: &BTreeMap<AccountId, OpMask>,
     ) -> Result<(), StorageError> {
+        if crate::shared_writers::writes_once_only(writers) {
+            refuse_oversized_written_once(data)?;
+        }
         match written_once::conflict_parts(&metadata.storage_type, data) {
             Some(writes) => writes.iter().try_for_each(|(data, storage_type)| {
                 let metadata = Metadata {
@@ -1358,6 +1400,11 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
         refuse_misfiled_owned_entry(child.id(), Some(parent_id), &data)?;
+        if data.len() > written_once::MAX_VALUE_BYTES
+            && Self::is_written_once(&child.element().metadata.storage_type)
+        {
+            refuse_oversized_written_once(&data)?;
+        }
 
         let own_hash = Sha256::digest(&data).into();
 
