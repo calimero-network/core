@@ -13256,7 +13256,7 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap();
+        .unwrap_err();
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "a valid endorsement from a non-member must not admit a link"
@@ -13279,7 +13279,7 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap();
+        .unwrap_err();
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "naming a member is not endorsing — the signature has to verify"
@@ -13305,7 +13305,7 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap();
+        .unwrap_err();
         assert!(live_for(&store, &gid, account).is_empty());
 
         // Endorsed by a member, correctly, for this account → admitted. Note the
@@ -13982,9 +13982,8 @@ mod account_plane_apply {
         let bindings = AccountBindingRepository::new(&store);
         assert_eq!(live_for(&store, &gid, account).len(), 1);
 
-        // A fellow member signs the revocation. Refused deterministically — the
-        // apply returns Ok (every replica reaches the same verdict, and erroring
-        // would stall on an op that can never succeed) but records nothing.
+        // A fellow member signs the revocation. Refused deterministically, as an
+        // error, so the op is never logged for the projection to fold.
         sign_apply_local_group_op_borsh(
             &store,
             &gid,
@@ -13995,7 +13994,7 @@ mod account_plane_apply {
                 proof: None,
             },
         )
-        .unwrap();
+        .unwrap_err();
         assert!(
             !bindings.is_revoked(&gid, device).unwrap(),
             "a non-admin must not be able to spend another member's device id"
@@ -14834,7 +14833,7 @@ mod account_plane_apply {
 
         // A valid, root-signed narrowing - replayed by a member of this namespace
         // that speaks for some other account.
-        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+        let _refused = crate::apply_group_op_mutations(
             &store,
             &gid,
             &admin_sk.public_key(),
@@ -14842,9 +14841,8 @@ mod account_plane_apply {
             &CUT,
             &FixedAuthorizer(true),
         )
-        .unwrap();
+        .expect_err("a replay by another account is refused");
 
-        assert_eq!(events, vec![]);
         assert!(
             is_live(&store, &gid, account, device),
             "a replay by a member of another account must not unbind the device"
@@ -14948,7 +14946,7 @@ mod account_plane_apply {
 
         // `test_meta`'s target, so the replacement still names this namespace.
         let covering = vec![ApplicationId::from([0xCC; 32])];
-        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+        let _refused = crate::apply_group_op_mutations(
             &store,
             &gid,
             &owner_sk.public_key(),
@@ -14956,10 +14954,9 @@ mod account_plane_apply {
             &CUT,
             &FixedAuthorizer(true),
         )
-        .unwrap();
+        .expect_err("a scope that still covers the namespace is refused");
 
         assert_eq!(live_for(&store, &gid, genesis.account_id()).len(), 1);
-        assert_eq!(events, vec![]);
     }
 
     /// The op carries the application its publisher resolved, so a replica whose

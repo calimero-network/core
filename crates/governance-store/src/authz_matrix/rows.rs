@@ -118,11 +118,10 @@ fn open_chain_key_pull(world: &World, actor: &Actor) -> Outcome {
 }
 
 /// Sign and apply `op` in the world's namespace on a private copy. A refused op
-/// is logged and records nothing, so each row reads the effect it wanted.
+/// records nothing, so each row reads the effect it wanted.
 fn publish(world: &World, signer: &PrivateKey, op: GroupOp) -> Store {
     let store = world.fork();
-    let _signed = sign_apply_local_group_op_borsh(&store, &world.namespace, signer, op)
-        .expect("the apply records or declines the op; it does not fail");
+    let _applied = sign_apply_local_group_op_borsh(&store, &world.namespace, signer, op);
     store
 }
 
