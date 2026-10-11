@@ -1726,7 +1726,7 @@ fn apply_drained_snapshot_entity(
             crate::sync::helpers::stored_custom_type(id)
         }) != crate::sync::helpers::LeafDisposition::Apply
         {
-            warn!(%context_id, id = ?id.as_bytes(),
+            debug!(%context_id, id = ?id.as_bytes(),
                 "absorb entity drain: it merges in the app's module, leaving it to repair");
             return Ok(SnapshotEntityDrainOutcome::Refused);
         }
@@ -5026,9 +5026,34 @@ mod snapshot_trust_tests {
         assert_eq!(group.stored_data(ROOT_ENTRY_ID), Some(b"state v1".to_vec()));
     }
 
-    /// A key two accounts certified writes as the account its live binding names,
-    /// as a delta does. The other account holds only WRITE_ONCE, so a rewrite
-    /// checked as it would be refused.
+    /// A public custom entry this node holds merges by the app's rule, which repair
+    /// dispatches; the drain must not settle it on the host.
+    #[test]
+    fn a_buffered_custom_entry_over_a_stored_one_is_left_to_repair() {
+        let (group, _) = Group::with_admin(&PrivateKey::from([0xC4; 32]).public_key());
+        let entry = Id::new([0xC5; 32]);
+        let custom = |data: &[u8], at: u64| {
+            let mut index = EntityIndex::minimal_for_test_with_parent(entry, root(), [0; 32]);
+            index.metadata = Metadata::new(at, at);
+            index.metadata.crdt_type = Some(calimero_primitives::crdt::CrdtType::Custom(
+                calimero_primitives::crdt::CustomTypeId::of("app::Tally"),
+            ));
+            super::leaf::rows::with_own_hash(&borsh::to_vec(&index).unwrap(), data)
+        };
+
+        assert_eq!(
+            group.drain(entry, b"tally v1", &custom(b"tally v1", 1)),
+            SnapshotEntityDrainOutcome::Persisted
+        );
+        assert_eq!(
+            group.drain(entry, b"tally v2", &custom(b"tally v2", 2)),
+            SnapshotEntityDrainOutcome::Refused
+        );
+        assert_eq!(group.stored_data(entry), Some(b"tally v1".to_vec()));
+    }
+
+    /// A key two accounts certified writes as its live account, as a delta does; the
+    /// other account holds only WRITE_ONCE, which would refuse the rewrite.
     #[test]
     fn a_shared_rewrite_is_checked_as_the_signers_live_account() {
         let alice = PrivateKey::from([0xB0; 32]);

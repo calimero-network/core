@@ -737,9 +737,8 @@ pub(crate) fn snapshot_leaf_authorship(
     else {
         return SnapshotAuthorship::Unknown;
     };
-    // A certificate does not prove its account holds the key, so the leaf stands
-    // if any account that certified the key may have written it. The live one, if
-    // it does, is the account a delta of the same key is checked as.
+    // Any account that certified the key may have written the leaf; the live one, if it
+    // did, is preferred, as a delta of the key is checked as it.
     let live = calimero_governance_store::member_account_in_namespace(store, &group_id, &signer)
         .ok()
         .flatten();
