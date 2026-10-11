@@ -13619,7 +13619,11 @@ mod account_plane_apply {
 
     /// The account's root withdraws its own second device, through the relay,
     /// in the namespace — where an account's devices are revoked.
-    fn withdraw_through_the_relay(w: &UnboundSecondDevice, account: AccountId, root: &PrivateKey) {
+    fn withdraw_through_the_relay(
+        w: &UnboundSecondDevice,
+        account: AccountId,
+        root: &PrivateKey,
+    ) -> eyre::Result<()> {
         let proof = SignedDeviceRevocation {
             genesis: AccountGenesis::new(root.public_key()),
             chain: vec![],
@@ -13636,7 +13640,7 @@ mod account_plane_apply {
                 proof: Some(proof),
             },
         )
-        .unwrap();
+        .map(|_| ())
     }
 
     fn admit(w: &UnboundSecondDevice) -> eyre::Result<()> {
@@ -13664,7 +13668,8 @@ mod account_plane_apply {
                 panic!("admitted while the device stands (subgroup: {in_subgroup}): {err}")
             });
 
-            withdraw_through_the_relay(&w, w.account, &w.root);
+            withdraw_through_the_relay(&w, w.account, &w.root)
+                .expect("the account withdraws its own device");
 
             let bindings = AccountBindingRepository::new(&w.store);
             assert!(
@@ -13711,7 +13716,10 @@ mod account_plane_apply {
         let attacker_root = key(0x66);
         let attacker = AccountGenesis::new(attacker_root.public_key()).account_id();
 
-        withdraw_through_the_relay(&w, attacker, &attacker_root);
+        assert!(
+            withdraw_through_the_relay(&w, attacker, &attacker_root).is_err(),
+            "a withdrawal naming an account the device was not minted for is refused"
+        );
 
         assert!(
             !AccountBindingRepository::new(&w.store)
@@ -13893,7 +13901,7 @@ mod account_plane_apply {
              ownership, which is exactly why it cannot stand alone"
         );
 
-        sign_apply_local_group_op_borsh(
+        let _refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &attacker_sk,
@@ -13903,7 +13911,8 @@ mod account_plane_apply {
                 proof: Some(forged),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a withdrawal naming an account the device was not minted for is refused");
 
         assert!(
             !bindings.is_revoked(&gid, device).unwrap(),
