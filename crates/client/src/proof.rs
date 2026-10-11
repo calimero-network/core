@@ -2,7 +2,7 @@
 //!
 //! A bearer token says "someone authenticated once". A request-carried proof
 //! says "the holder of this device key is making *this* call" — it commits to
-//! the method, the path and the body, so it cannot be lifted off one request
+//! the method, the path and query, and the body, so it cannot be lifted off one request
 //! and replayed on another. That is what lets a client talk to a relay it has
 //! no account on: nothing was ever issued to it.
 //!
@@ -98,9 +98,8 @@ impl RequestProofSigner {
 
     /// Sign one request and return the `X-Calimero-Proof` value.
     ///
-    /// `path` must be what the node will see and must carry no query string:
-    /// the signature covers the path alone, and a mismatch reads as a bad
-    /// signature rather than as a bad path.
+    /// `path` must be the path and query exactly as the node will see them; a
+    /// mismatch reads as a bad signature rather than as a bad path.
     ///
     /// `body` must be the exact bytes that will be sent. Serializing again
     /// between here and the wire would produce a second spelling — a signature

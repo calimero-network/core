@@ -5,6 +5,7 @@ use std::task::{Context, Poll};
 use crate::proof_auth::{ProofPolicy, Refusal, MAX_PROVEN_BODY, PROOF_HEADER};
 use axum::body::Body;
 use axum::extract::OriginalUri;
+use axum::http::uri::PathAndQuery;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -533,10 +534,15 @@ where
                                     .get::<OriginalUri>()
                                     .map_or_else(|| uri.clone(), |original| original.0.clone());
 
+                                // The request target as it reached this listener, query
+                                // included, since a query can name the object acted on.
+                                let target = full_uri
+                                    .path_and_query()
+                                    .map_or(full_uri.path(), PathAndQuery::as_str);
                                 let (account, device) = match policy.admit(
                                     header.as_bytes(),
                                     method.as_str(),
-                                    full_uri.path(),
+                                    target,
                                     &bytes,
                                     now_secs(),
                                 ) {

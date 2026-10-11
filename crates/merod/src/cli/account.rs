@@ -532,12 +532,9 @@ pub struct SignRequestCommand {
     #[arg(long)]
     method: String,
 
-    /// The path, WITHOUT the query string.
+    /// The path and query, exactly as they will be sent (`/admin-api/blobs?hash=..`).
     ///
-    /// Excluded deliberately: a proxy may rewrite a query — a token parameter
-    /// most of all — and signing over bytes something else is entitled to
-    /// change means failing for reasons the caller cannot see. Anything that
-    /// must be bound belongs in the body.
+    /// Signed byte for byte: a re-encoded or reordered query is another request.
     #[arg(long)]
     path: String,
 

@@ -299,6 +299,7 @@ or clients will see periodic disconnects.
 You can prefix every server base path by setting the `NODE_PATH_PREFIX`
 environment variable (e.g. `NODE_PATH_PREFIX=/node1` moves the admin API to
 `/node1/admin-api`). Useful when fronting several nodes behind one hostname.
+Prefer it to a proxy that strips the prefix: a request proof signs the path and query the node receives, so the proxy must forward both unchanged.
 :::
 
 ## Next

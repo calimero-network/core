@@ -155,12 +155,12 @@ impl ProofPolicy {
     ///
     /// `now` is supplied rather than read, so the one time-dependent rule here
     /// is testable without moving a clock — the same reason the intent handler
-    /// separates its own.
+    /// separates its own. `target` is the path and query from the request line.
     pub(crate) fn admit(
         &self,
         header: &[u8],
         method: &str,
-        path: &str,
+        target: &str,
         body: &[u8],
         now: u64,
     ) -> Result<(AccountId, DeviceId), Refusal> {
@@ -179,7 +179,7 @@ impl ProofPolicy {
         }
 
         let caller = proof
-            .verify(&self.node_key, method, path, body, now, CLOCK_SKEW_SECS)
+            .verify(&self.node_key, method, target, body, now, CLOCK_SKEW_SECS)
             .map_err(|_ignored| Refusal::Unverified)?;
 
         Ok((caller.account, caller.device))

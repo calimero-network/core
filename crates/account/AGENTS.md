@@ -234,7 +234,7 @@ Every public item is re-exported flat from `src/lib.rs`, so `calimero_account::D
 
 ## The request-carried proof
 
-`RequestSig` (`src/request.rs`) signs one call — method, path, a hash of the
+`RequestSig` (`src/request.rs`) signs one call — method, path and query, a hash of the
 body, and a window — and `CallerProof` (`src/caller.rs`) is the chain a caller
 presents: `account_proof` → optional `session` → `request`. `CallerProof::verify`
 is the whole check, ordered cheapest-first so a stale proof is refused before any

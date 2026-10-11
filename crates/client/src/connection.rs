@@ -14,7 +14,7 @@ use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::sync::Mutex;
-use url::Url;
+use url::{Position, Url};
 
 // Local crate
 use crate::errors::ClientError;
@@ -161,9 +161,8 @@ where
 
 /// What a request signature commits to.
 ///
-/// `path` is the URL path the node will see, with no query string: the
-/// signature covers the path alone, and a mismatch surfaces as a bad signature
-/// rather than as a bad path. `body` is the exact bytes that will be sent —
+/// `path` is the path and query the node will see, as `reqwest` serializes them:
+/// the signature covers both, and a mismatch surfaces as a bad signature. `body` is the exact bytes that will be sent —
 /// serializing again between here and the wire would sign something that never
 /// travelled.
 #[derive(Clone, Copy, Debug)]
@@ -431,7 +430,7 @@ where
             true,
             RequestFacts {
                 method: "PUT",
-                path: url.path(),
+                path: &url[Position::BeforePath..Position::AfterQuery],
                 body: &data,
             },
             |auth_header, proof_header| {
@@ -459,7 +458,7 @@ where
                 true,
                 RequestFacts {
                     method: "GET",
-                    path: url.path(),
+                    path: &url[Position::BeforePath..Position::AfterQuery],
                     body: &[],
                 },
                 |auth_header, proof_header| {
@@ -489,7 +488,7 @@ where
                 true,
                 RequestFacts {
                     method: "HEAD",
-                    path: url.path(),
+                    path: &url[Position::BeforePath..Position::AfterQuery],
                     body: &[],
                 },
                 |auth_header, proof_header| {
@@ -540,7 +539,7 @@ where
                 req_type.is_idempotent(),
                 RequestFacts {
                     method: req_type.as_str(),
-                    path: url.path(),
+                    path: &url[Position::BeforePath..Position::AfterQuery],
                     body: &body_bytes,
                 },
                 |auth_header, proof_header| {
