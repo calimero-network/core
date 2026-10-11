@@ -34,7 +34,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use calimero_account::{AccountId, DeviceId, KemPublicKey};
+use calimero_account::{
+    AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::ScopeId;
 use calimero_primitives::application::ApplicationId;
@@ -274,6 +276,27 @@ impl AclView {
             self.account_namespace.as_ref() == Some(account),
         )
     }
+}
+
+/// Whether a genesis carrying `cert` for `founder` was signed by that credential's own
+/// key: the one check the apply and the projection make before honouring its mark.
+#[must_use]
+pub fn founder_signed(
+    founder: &AccountId,
+    genesis: &AccountGenesis,
+    chain: &[RootKeyHandoff],
+    cert: &DeviceCert,
+    signer: &PublicKey,
+) -> bool {
+    cert.account == *founder
+        && cert.sign_pk == *signer
+        && AccountProof {
+            genesis: *genesis,
+            chain: chain.to_vec(),
+            statement: *cert,
+        }
+        .verify(*founder)
+        .is_ok()
 }
 
 /// Whether a device scoped to `applications` reaches a scope targeting `target`:

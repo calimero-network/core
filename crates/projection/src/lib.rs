@@ -767,8 +767,10 @@ impl ScopeState {
             } => {
                 let signed_by_founder = matches!(
                     carried.as_ref(),
-                    OpPayload::DeviceLinked { cert, .. }
-                        if cert.account == *founder && cert.sign_pk == op.authorship.device_key
+                    OpPayload::DeviceLinked { genesis, chain, cert, .. }
+                        if calimero_authz::founder_signed(
+                            founder, genesis, chain, cert, &op.authorship.device_key,
+                        )
                 );
                 if signed_by_founder
                     && op.parents.is_empty()

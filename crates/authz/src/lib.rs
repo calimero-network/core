@@ -39,5 +39,6 @@ pub use crate::authorize::{authorize, required_mask_for};
 pub use crate::error::Rejected;
 pub use crate::inheritance::MemberPathAtCut;
 pub use crate::view::{
-    scope_reaches, AccountBinding, AclView, DeviceBinding, SubgroupEdge, TeeEvidence,
+    founder_signed, scope_reaches, AccountBinding, AclView, DeviceBinding, SubgroupEdge,
+    TeeEvidence,
 };

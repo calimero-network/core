@@ -190,6 +190,16 @@ pub(crate) fn apply(
     // Whether the pair reproduces the id; checked here once, used by both
     // branches below.
     let derived = calimero_account::is_founded_by(&namespace_id.to_bytes(), &founder, salt);
+    // Every path that records the account-namespace mark asks this, as the projection does:
+    // a re-arrival is not signer-checked, and a genesis's salt and credential are public.
+    let marked = account_namespace
+        && calimero_authz::founder_signed(
+            &founder,
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+            &op.signer,
+        );
 
     // ---- Load the root meta and decide established-ness FIRST. ----
     // The established check (NOT the structural parents/signer checks) is the
@@ -327,13 +337,7 @@ pub(crate) fn apply(
                 // meta is written before the op applies), so this is where it
                 // records the pair too. A salt that does not derive the id is
                 // simply not recorded: an established namespace never errors.
-                // A re-arrival is not signer-checked, and its salt and credential are
-                // public, so only the founder's own key may mark the account namespace.
                 if derived {
-                    let marked = account_namespace
-                        && super::member_joined_open::credential_names_signer(
-                            &op.signer, &founder, account,
-                        );
                     record_founding(store, &ns_gid, &founder, salt, marked)?;
                 }
                 tracing::debug!(
@@ -540,7 +544,7 @@ pub(crate) fn apply(
     // Local and hash-neutral like the deny-list: it records a fact the op
     // already carries, so every replica that applies this genesis holds the
     // same row, and any member can show the pair without the founder's node.
-    record_founding(store, &ns_gid, &founder, salt, account_namespace)?;
+    record_founding(store, &ns_gid, &founder, salt, marked)?;
 
     tracing::info!(
         namespace_id = %hex::encode(namespace_id.as_bytes()),
