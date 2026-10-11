@@ -162,9 +162,9 @@ where
 /// What a request signature commits to.
 ///
 /// `path` is the path and query the node will see, as `reqwest` serializes them:
-/// the signature covers both, and a mismatch surfaces as a bad signature. `body` is the exact bytes that will be sent —
-/// serializing again between here and the wire would sign something that never
-/// travelled.
+/// the signature covers both, and a mismatch surfaces as a bad signature.
+/// `body` is the exact bytes that will be sent: serializing again between here
+/// and the wire would sign something that never travelled.
 #[derive(Clone, Copy, Debug)]
 struct RequestFacts<'a> {
     method: &'a str,

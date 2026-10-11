@@ -1127,7 +1127,8 @@ mod tests {
     }
 
     /// Send `GET sent` through the real guard with a two-link proof signed over
-    /// `signed`, and return the status the client sees.
+    /// `signed`, and return the status the client sees. Nested as in production,
+    /// so a guard reading the stripped `Uri` instead of `OriginalUri` fails.
     async fn proven_request(signed: &str, sent: &str) -> StatusCode {
         let root = PrivateKey::from([1; 32]);
         let genesis = AccountGenesis::new(root.public_key());
@@ -1160,12 +1161,14 @@ mod tests {
         };
 
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-        Router::new()
-            .route("/admin-api/contexts", get(|| async { "ok" }))
+        let guarded = Router::new()
+            .route("/contexts", get(|| async { "ok" }))
             .layer(super::guard_layer(
                 Arc::new(AuthService::new(Vec::new(), token_manager(&storage).await)),
                 Some(policy),
-            ))
+            ));
+        Router::new()
+            .nest("/admin-api", guarded)
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
