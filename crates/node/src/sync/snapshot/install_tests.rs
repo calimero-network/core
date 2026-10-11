@@ -1240,7 +1240,7 @@ async fn a_sealed_cell_value_of_two_writes_under_the_cap_installs_and_drains() {
         };
         let write = |byte: u8, nonce| {
             let data = vec![byte; 300 * 1024];
-            let stamp = signed_stamp(&writer, value, &data, &member, nonce);
+            let stamp = signed_stamp(&writer, value, &data, member, nonce);
             (data, *stamp.signature_data().expect("signed"))
         };
         let unsigned = StorageType::SharedMember {
@@ -1252,7 +1252,7 @@ async fn a_sealed_cell_value_of_two_writes_under_the_cap_installs_and_drains() {
             anchor,
             b"anchor",
             b"anchor",
-            signed_stamp(&writer, anchor, b"anchor", &shared, 1),
+            signed_stamp(&writer, anchor, b"anchor", shared, 1),
         );
         let (_, entry, row) = child(value, &record, &record, stamp);
         let env = create_runtime_env(

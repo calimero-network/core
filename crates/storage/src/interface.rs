@@ -1113,18 +1113,15 @@ impl<S: StorageAdaptor> Interface<S> {
         metadata: &crate::entities::Metadata,
         writers: &BTreeMap<AccountId, OpMask>,
     ) -> Result<(), StorageError> {
-        if crate::shared_writers::writes_once_only(writers) {
-            refuse_oversized_written_once(data)?;
-        }
         match written_once::conflict_parts(&metadata.storage_type, data) {
             Some(writes) => writes.iter().try_for_each(|(data, storage_type)| {
                 let metadata = Metadata {
                     storage_type: storage_type.clone(),
                     ..metadata.clone()
                 };
-                Self::verify_snapshot_member_write(id, data, &metadata)
+                Self::verify_snapshot_member_write(id, data, &metadata, writers)
             }),
-            None => Self::verify_snapshot_member_write(id, data, metadata),
+            None => Self::verify_snapshot_member_write(id, data, metadata, writers),
         }
     }
 
@@ -1134,9 +1131,14 @@ impl<S: StorageAdaptor> Interface<S> {
         id: crate::address::Id,
         data: &[u8],
         metadata: &crate::entities::Metadata,
+        writers: &BTreeMap<AccountId, OpMask>,
     ) -> Result<(), StorageError> {
         use crate::action::Action;
         use crate::entities::StorageType;
+
+        if crate::shared_writers::writes_once_only(writers) {
+            refuse_oversized_written_once(data)?;
+        }
 
         let StorageType::SharedMember { signature_data, .. } = &metadata.storage_type else {
             return Err(StorageError::InvalidData(
