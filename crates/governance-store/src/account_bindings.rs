@@ -133,6 +133,9 @@ pub enum BindingRejected {
     /// A descope whose carried scope still reaches this group narrows nothing.
     #[error("the carried scope still reaches this group")]
     NotANarrowing,
+    /// A withdrawal naming an account its device id was not minted for.
+    #[error("the device id was not minted for the account the op names")]
+    DeviceNotMintedForAccount,
 }
 
 impl BindingRejected {
