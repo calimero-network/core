@@ -15340,6 +15340,41 @@ mod account_plane_apply {
         );
     }
 
+    /// A namespace founded as an ordinary one stays one: its own founder's device cannot
+    /// mark it as the account namespace with a later genesis.
+    #[test]
+    fn an_ordinary_namespace_is_never_marked_after_the_fact() {
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+        let store = test_store();
+        let founder_sk = key(0x64);
+        let (genesis, founder, id) =
+            crate::test_fixtures::namespace_genesis_v2_for(&founder_sk, [0x65; 32]);
+        let signed = SignedNamespaceOp::sign(&founder_sk, id.into(), vec![], 1, genesis.clone())
+            .expect("sign the genesis");
+        let _founded = crate::apply_signed_namespace_op(&store, &signed).expect("it founds");
+        let NamespaceOp::Root(RootOp::NamespaceCreatedV2 { account, salt, .. }) = genesis else {
+            unreachable!("the fixture builds a NamespaceCreatedV2")
+        };
+
+        let mark = NamespaceOp::Root(RootOp::AccountNamespaceCreated {
+            founder,
+            account,
+            salt,
+        });
+        let signed = SignedNamespaceOp::sign(&founder_sk, id.into(), vec![], 2, mark)
+            .expect("sign the mark");
+        let _applied = crate::apply_signed_namespace_op(&store, &signed);
+
+        assert_eq!(
+            crate::NamespaceFoundingRepository::new(&store)
+                .account_namespace_founder(&ContextGroupId::from(id))
+                .expect("read the mark"),
+            None,
+            "the founder marked an ordinary namespace as its account namespace"
+        );
+    }
+
     /// A re-run before the op-log dedup names the signer at the op's cut, so a self-descope
     /// is not refused for having unbound its own device, and narrows nothing again.
     #[test]

@@ -257,3 +257,79 @@ fn a_genesis_carrying_a_credential_that_does_not_verify_marks_nothing() {
 
     assert!(!live(&ops).contains(&founder.device));
 }
+
+/// An account-namespace genesis for a namespace founded as an ordinary one marks
+/// nothing, even signed by the founder's own device.
+#[test]
+fn an_ordinary_namespace_cannot_be_marked_after_the_fact() {
+    let founder = linked(0x71, &[app(0xE1)]);
+    let ordinary = ScopeId::from(calimero_account::founded_namespace_id(
+        &founder.account,
+        &SALT,
+    ));
+    let ops = [signed_by(
+        founder.device_key,
+        ordinary,
+        1,
+        vec![],
+        founded(&founder, SALT),
+    )];
+
+    assert!(!live(&ops).contains(&founder.device));
+}
+
+fn root(ops: &[Op]) -> [u8; 32] {
+    let mut state = ScopeState::default();
+    for op in ops {
+        state.apply(op);
+    }
+    state.root()
+}
+
+#[test]
+fn the_target_is_part_of_the_convergence_root() {
+    let scope = ScopeId::from([9u8; 32]);
+
+    assert_ne!(
+        root(&[op(scope, 1, vec![], target(scope, app(0xC1)))]),
+        root(&[op(scope, 1, vec![], target(scope, app(0xC2)))]),
+    );
+}
+
+#[test]
+fn the_account_namespace_mark_is_part_of_the_convergence_root() {
+    // The founder's device unscoped, so the mark changes no live device.
+    let (_, scope) = founder_and_scope();
+    let founder = linked(0x21, &[]);
+    let marked = [signed_by(
+        founder.device_key,
+        scope,
+        1,
+        vec![],
+        founded(&founder, SALT),
+    )];
+    let unmarked = [signed_by(
+        founder.device_key,
+        scope,
+        1,
+        vec![],
+        founder.payload.clone(),
+    )];
+
+    assert_ne!(root(&marked), root(&unmarked));
+}
+
+#[test]
+fn a_device_scope_is_part_of_the_convergence_root() {
+    let scope = ScopeId::from([10u8; 32]);
+    let narrow = linked(0x81, &[app(0xC1)]);
+    let wide = linked(0x81, &[app(0xC1), app(0xC2)]);
+    let with = |device: Linked| {
+        root(&[
+            op(scope, 1, vec![], target(scope, app(0xC1))),
+            op(scope, 2, vec![[1; 32]], device.payload),
+        ])
+    };
+
+    assert_ne!(with(narrow), with(wide));
+}

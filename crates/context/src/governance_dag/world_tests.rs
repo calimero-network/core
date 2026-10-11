@@ -540,3 +540,39 @@ async fn another_accounts_proof_does_not_withdraw_a_device_at_the_cut() {
         "another account's proof withdrew the admin's device at the cut"
     );
 }
+
+/// A cascade from code the namespace does not run moves nothing in the apply, so it
+/// must not move the target a device scope is judged against either.
+#[actix::test]
+async fn a_cascade_that_moves_nothing_leaves_the_target() {
+    let (world, store) = world_targeting(World::shared().application).await;
+    let device_sk = link_a_device_of_the_admin(
+        &store,
+        world,
+        0xDB,
+        &[world.application],
+        Endorsement::Member,
+    )
+    .await;
+    let cascade = GroupOp::CascadeUpgrade {
+        from_bytecode_id: BytecodeId::from([0xB9; 32]),
+        bytecode_id: BytecodeId::from([0xBA; 32]),
+        target_application_id: ApplicationId::from([0xEE; 32]),
+        to_state_version: 0,
+        migration: None,
+        cascade_hlc: calimero_storage::logical_clock::HybridTimestamp::default(),
+        package: "matrix.app".to_owned(),
+        version: "2.0.0".to_owned(),
+    };
+    publish(&store, &world.namespace, &world.owner_sk, &cascade)
+        .await
+        .expect("the owner publishes a cascade from code nobody runs");
+
+    let role = role_after_promotion_by(&store, world, &device_sk).await;
+
+    assert_eq!(
+        role,
+        Some(GroupMemberRole::Admin),
+        "a cascade the apply did not apply moved the target out of the device's scope"
+    );
+}
