@@ -73,7 +73,37 @@ fn a_frozen_value_too_large_for_a_record_of_two_is_refused_locally() {
     let created = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         Root::new(|| Frozen::new(large))
     }));
-    assert!(created.is_err(), "the oversized genesis value is refused");
+    let refusal = created
+        .err()
+        .and_then(|panic| panic.downcast_ref::<String>().cloned())
+        .expect("the oversized genesis value is refused");
+    assert!(
+        refusal.contains("ActionNotAllowed")
+            && refusal.contains(&crate::written_once::MAX_VALUE_BYTES.to_string()),
+        "refused by the written-once cap, not something else: {refusal}"
+    );
+}
+
+/// Two values each under the cap make a record over it, which a snapshot still takes.
+#[test]
+#[serial]
+fn a_snapshot_takes_a_sealed_value_of_two_writes_under_the_cap() {
+    let (first, second) = ("y".repeat(300 * 1024), "n".repeat(300 * 1024));
+    let (record, sealed) = node_after(
+        later(),
+        None,
+        &[(FOUNDER, &first, 0), (FOUNDER, &second, 1)],
+    );
+    let record = record.expect("a record is held");
+    assert!(sealed, "control: the two values sealed it");
+    let (_, value_id) = Root::<Frozen<String>>::fetch().expect("root").ids();
+    let metadata = <Index<MainStorage>>::get_metadata(value_id)
+        .expect("metadata")
+        .expect("held");
+    let writers: BTreeMap<AccountId, OpMask> =
+        [(account_of_key(&key(FOUNDER)), OpMask::WRITE_ONCE)].into();
+    MainInterface::verify_snapshot_member_signature(value_id, &record, &metadata, &writers)
+        .expect("each write is under the cap");
 }
 
 #[test]
