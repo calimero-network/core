@@ -13315,7 +13315,7 @@ mod account_plane_apply {
         // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
         // simply has no standing here.
         let stranger = key(7);
-        sign_apply_local_group_op_borsh(
+        let _refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13328,7 +13328,8 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap_err();
+        .err()
+        .expect("a link endorsed by a non-member is refused");
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "a valid endorsement from a non-member must not admit a link"
@@ -13339,7 +13340,7 @@ mod account_plane_apply {
         let mut forged =
             calimero_account::AccountMemberEndorsement::sign(&admin_sk, account).unwrap();
         forged.signature = [0u8; 64];
-        sign_apply_local_group_op_borsh(
+        let _refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13351,7 +13352,8 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap_err();
+        .err()
+        .expect("a link under a forged endorsement is refused");
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "naming a member is not endorsing — the signature has to verify"
@@ -13361,7 +13363,7 @@ mod account_plane_apply {
         // signed by a member. Otherwise a genuine endorsement could be paired with
         // an unrelated credential.
         let other_account = AccountGenesis::new(key(8).public_key()).account_id();
-        sign_apply_local_group_op_borsh(
+        let _refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13377,7 +13379,8 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap_err();
+        .err()
+        .expect("a link endorsing another account is refused");
         assert!(live_for(&store, &gid, account).is_empty());
 
         // Endorsed by a member, correctly, for this account → admitted. Note the
@@ -14056,7 +14059,7 @@ mod account_plane_apply {
 
         // A fellow member signs the revocation. Refused deterministically, as an
         // error, so the op is never logged for the projection to fold.
-        sign_apply_local_group_op_borsh(
+        let _refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &attacker_sk,
@@ -14066,7 +14069,8 @@ mod account_plane_apply {
                 proof: None,
             },
         )
-        .unwrap_err();
+        .err()
+        .expect("a non-admin without a proof is refused");
         assert!(
             !bindings.is_revoked(&gid, device).unwrap(),
             "a non-admin must not be able to spend another member's device id"
