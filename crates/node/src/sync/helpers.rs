@@ -722,7 +722,7 @@ pub(crate) enum SnapshotAuthorship {
 ///   admitted source, and the leaf of any account a void step's `new` set names.
 ///
 /// A sealed written-once entry's leaf, whose `data` is the record of two writes,
-/// is authored only if each write is.
+/// is authored, as its first write's author, only if each write is.
 #[expect(
     clippy::too_many_arguments,
     reason = "a leaf, its bytes, and the stores and fold that judge it"
@@ -778,12 +778,15 @@ pub(crate) fn snapshot_leaf_authorship(
             ever_writers,
         )
     });
-    if verdicts.contains(&SnapshotAuthorship::Forged) {
-        SnapshotAuthorship::Forged
-    } else if verdicts.contains(&SnapshotAuthorship::Unknown) {
-        SnapshotAuthorship::Unknown
-    } else {
-        SnapshotAuthorship::Authored
+    let [first, second] = verdicts;
+    match (first, second) {
+        (SnapshotAuthorship::Forged, _) | (_, SnapshotAuthorship::Forged) => {
+            SnapshotAuthorship::Forged
+        }
+        (SnapshotAuthorship::Unknown, _) | (_, SnapshotAuthorship::Unknown) => {
+            SnapshotAuthorship::Unknown
+        }
+        (authored, SnapshotAuthorship::Authored(_)) => authored,
     }
 }
 
@@ -3213,7 +3216,10 @@ mod on_behalf_resolution_tests {
             repaired(sealed_by(phone)),
             "control: both writes are the owner's"
         );
-        assert_eq!(snapshot(sealed_by(phone)), SnapshotAuthorship::Authored);
+        assert_eq!(
+            snapshot(sealed_by(phone)),
+            SnapshotAuthorship::Authored(Some(owner))
+        );
         assert!(!repaired(sealed_by(w.mallory_pk)));
         assert_eq!(
             snapshot(sealed_by(w.mallory_pk)),
@@ -3256,7 +3262,7 @@ mod on_behalf_resolution_tests {
 
         assert_eq!(
             authorship(OpMask::WRITE_ONCE),
-            SnapshotAuthorship::Authored,
+            SnapshotAuthorship::Authored(Some(owner)),
             "control: a write-once cell's writer sealed it"
         );
         assert_eq!(authorship(OpMask::FULL), SnapshotAuthorship::Forged);
