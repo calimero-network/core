@@ -634,10 +634,10 @@ fn tee_only_leaf_admitted<W>(
 /// What a snapshot leaf's signer proves about who wrote it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SnapshotAuthorship {
-    /// The signer's account is the leaf's owner or one of its writers, or the
-    /// leaf names no account to check against (Public, Frozen, or a context in
-    /// no group).
-    Authored,
+    /// The signer's account is the leaf's owner or one of its writers, carried as
+    /// the account storage checks the write against; `None` when the leaf names no
+    /// account to check (Public, Frozen, or a context in no group).
+    Authored(Option<calimero_account::AccountId>),
     /// The signer's account is known and is neither the owner nor a writer. The
     /// leaf is a forgery by whoever signed it; drop it.
     Forged,
@@ -697,7 +697,7 @@ pub(crate) fn snapshot_leaf_authorship(
 ) -> SnapshotAuthorship {
     let group_id = match calimero_governance_store::get_group_for_context(store, context_id) {
         Ok(Some(group_id)) => group_id,
-        Ok(None) => return SnapshotAuthorship::Authored,
+        Ok(None) => return SnapshotAuthorship::Authored(None),
         Err(_) => return SnapshotAuthorship::Unknown,
     };
     let verdict = |account: Option<calimero_account::AccountId>| {
@@ -741,10 +741,13 @@ pub(crate) fn snapshot_leaf_authorship(
     // A certificate does not prove its account holds the key, so the leaf stands
     // if any account that certified the key may have written it.
     let verdicts: Vec<_> = accounts.into_iter().map(|a| verdict(Some(a))).collect();
-    if verdicts.is_empty() {
+    if let Some(authored) = verdicts
+        .iter()
+        .find(|v| matches!(v, SnapshotAuthorship::Authored(_)))
+    {
+        *authored
+    } else if verdicts.is_empty() {
         verdict(None)
-    } else if verdicts.contains(&SnapshotAuthorship::Authored) {
-        SnapshotAuthorship::Authored
     } else if verdicts.contains(&SnapshotAuthorship::Unknown) {
         SnapshotAuthorship::Unknown
     } else {
@@ -783,12 +786,16 @@ struct SignerAccounts<F> {
 }
 
 impl<F: Fn() -> calimero_account::AccountId> SignerAccounts<F> {
-    fn is_in<W>(
+    /// The account `writers` names the signer by, if any.
+    fn named_in<W>(
         &self,
         writers: &std::collections::BTreeMap<calimero_account::AccountId, W>,
-    ) -> bool {
-        writers.contains_key(&self.account)
-            || writers.contains_key(self.mapped.get_or_init(&self.map))
+    ) -> Option<calimero_account::AccountId> {
+        if writers.contains_key(&self.account) {
+            return Some(self.account);
+        }
+        let mapped = *self.mapped.get_or_init(&self.map);
+        writers.contains_key(&mapped).then_some(mapped)
     }
 }
 
@@ -810,7 +817,7 @@ fn authorship_verdict<W>(
     ever_writers: impl FnOnce(Id) -> Result<CellWriters, WritersUnavailable>,
 ) -> SnapshotAuthorship {
     let Some(signer) = extract_author_from_leaf_authorization(Some(storage_type)) else {
-        return SnapshotAuthorship::Authored;
+        return SnapshotAuthorship::Authored(None);
     };
     let Some(account) = signer_account(&signer) else {
         return SnapshotAuthorship::Unknown;
@@ -839,10 +846,10 @@ fn authorship_verdict<W>(
     };
     // The genesis writers a leaf carries settle the question when they name the signer;
     // otherwise the cell's ever-writers do, since a rotation may have added it.
-    let (cell, genesis_names_signer) = match storage_type {
+    let (cell, genesis_names) = match storage_type {
         StorageType::User { owner, .. } => {
             return if *owner == author {
-                SnapshotAuthorship::Authored
+                SnapshotAuthorship::Authored(Some(author))
             } else {
                 SnapshotAuthorship::Forged
             }
@@ -855,21 +862,25 @@ fn authorship_verdict<W>(
             {
                 return SnapshotAuthorship::Forged;
             }
-            (leaf_id, signer_as.is_in(writers))
+            (leaf_id, signer_as.named_in(writers))
         }
         StorageType::SharedMember { anchor, .. } => (
             *anchor,
-            anchor_writers.is_some_and(|writers| signer_as.is_in(writers)),
+            anchor_writers.and_then(|writers| signer_as.named_in(writers)),
         ),
         // No signer, so returned above.
-        StorageType::Public | StorageType::Frozen => return SnapshotAuthorship::Authored,
+        StorageType::Public | StorageType::Frozen => return SnapshotAuthorship::Authored(None),
     };
-    if genesis_names_signer {
-        return SnapshotAuthorship::Authored;
+    if let Some(named) = genesis_names {
+        return SnapshotAuthorship::Authored(Some(named));
     }
     match ever_writers(cell) {
-        Ok(CellWriters::Rotated(ever)) if signer_as.is_in(&ever) => SnapshotAuthorship::Authored,
-        Ok(_) => SnapshotAuthorship::Forged,
+        Ok(CellWriters::Rotated(ever)) => signer_as
+            .named_in(&ever)
+            .map_or(SnapshotAuthorship::Forged, |named| {
+                SnapshotAuthorship::Authored(Some(named))
+            }),
+        Ok(CellWriters::Genesis) => SnapshotAuthorship::Forged,
         // Not readable yet, or past the fold's budget: an honest hole, never a verdict.
         Err(WritersUnavailable::Cut | WritersUnavailable::OverBudget) => {
             SnapshotAuthorship::Unknown
@@ -2550,7 +2561,7 @@ mod snapshot_authorship_tests {
         };
         assert_eq!(
             verdict_with(&entry, None, Some(ALICE), never_asked),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(AccountId::from(ALICE)))
         );
         assert_eq!(
             verdict_with(&entry, None, Some(BOB), never_asked),
@@ -2564,7 +2575,7 @@ mod snapshot_authorship_tests {
         let entry = shared(&[ALICE]);
         assert_eq!(
             verdict_with(&entry, None, Some(ALICE), never_asked),
-            SnapshotAuthorship::Authored,
+            SnapshotAuthorship::Authored(Some(AccountId::from(ALICE))),
             "a genesis writer needs no governance read"
         );
         assert_eq!(verdict(&entry, None, Some(BOB)), SnapshotAuthorship::Forged);
@@ -2578,7 +2589,7 @@ mod snapshot_authorship_tests {
                 assert_eq!(cell, leaf_of(&entry), "the cell is the leaf itself");
                 ever(&[ALICE, BOB])
             }),
-            SnapshotAuthorship::Authored,
+            SnapshotAuthorship::Authored(Some(AccountId::from(BOB))),
             "bob was added by a rotation, and the leaf carries only the genesis set"
         );
         assert_eq!(
@@ -2631,7 +2642,7 @@ mod snapshot_authorship_tests {
         let anchor = writers(&[ALICE]);
         assert_eq!(
             verdict_with(&member(), Some(&anchor), Some(ALICE), never_asked),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(AccountId::from(ALICE)))
         );
         assert_eq!(
             verdict(&member(), Some(&anchor), Some(BOB)),
@@ -2652,12 +2663,12 @@ mod snapshot_authorship_tests {
                 assert_eq!(cell, CELL, "the anchor's ever-writers");
                 ever(&[ALICE, BOB])
             }),
-            SnapshotAuthorship::Authored,
+            SnapshotAuthorship::Authored(Some(AccountId::from(BOB))),
             "rotations do not re-sign members, so a removed writer's member stands"
         );
         assert_eq!(
             verdict_with(&member(), None, Some(BOB), |_| ever(&[ALICE, BOB])),
-            SnapshotAuthorship::Authored,
+            SnapshotAuthorship::Authored(Some(AccountId::from(BOB))),
             "the ever-writers already hold the genesis set"
         );
     }
@@ -2689,7 +2700,10 @@ mod snapshot_authorship_tests {
             |_, _| panic!("a direct write is not asked the on-behalf rule"),
             never_asked,
         );
-        assert_eq!(verdict, SnapshotAuthorship::Authored);
+        assert_eq!(
+            verdict,
+            SnapshotAuthorship::Authored(Some(AccountId::TEE_AUTHORITY))
+        );
     }
 
     #[test]
@@ -2703,7 +2717,7 @@ mod snapshot_authorship_tests {
             |_, _| panic!("a leaf with no signer must not be resolved"),
             |_| panic!("a leaf with no signer must not be resolved"),
         );
-        assert_eq!(verdict, SnapshotAuthorship::Authored);
+        assert_eq!(verdict, SnapshotAuthorship::Authored(None));
     }
 
     const RELAY: [u8; 32] = [0x7E; 32];
@@ -2752,7 +2766,7 @@ mod snapshot_authorship_tests {
         };
         assert_eq!(
             verdict_for(&entry(ALICE), None, Some(true)),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(AccountId::from(ALICE)))
         );
         assert_eq!(
             verdict_for(&entry(ALICE), None, Some(false)),
@@ -2784,7 +2798,7 @@ mod snapshot_authorship_tests {
         };
         assert_eq!(
             verdict_for(&entry(&[ALICE]), None, Some(true)),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(AccountId::from(ALICE)))
         );
         assert_eq!(
             verdict_for(&entry(&[RELAY]), None, Some(true)),
@@ -2808,7 +2822,7 @@ mod snapshot_authorship_tests {
         };
         assert_eq!(
             verdict_for(&member, Some(&writers(&[ALICE])), Some(true)),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(AccountId::from(ALICE)))
         );
         assert_eq!(
             verdict_for(&member, Some(&writers(&[RELAY])), Some(true)),
@@ -2957,7 +2971,7 @@ mod on_behalf_resolution_tests {
 
         assert_eq!(
             snapshot(&w, owned(*victim.as_bytes(), victim_pk, None)),
-            SnapshotAuthorship::Authored,
+            SnapshotAuthorship::Authored(Some(victim)),
             "the victim's own entry was judged against the attacker's account"
         );
     }
@@ -3024,7 +3038,7 @@ mod on_behalf_resolution_tests {
         let w = world();
         assert_eq!(
             snapshot(&w, owned(ALICE, w.relay_pk, Some(ALICE))),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(AccountId::from(ALICE)))
         );
         assert_eq!(
             snapshot(&w, owned(ALICE, w.mallory_pk, Some(ALICE))),
@@ -3036,7 +3050,7 @@ mod on_behalf_resolution_tests {
             .expect("alice leaves");
         assert_eq!(
             snapshot(&w, owned(ALICE, w.relay_pk, Some(ALICE))),
-            SnapshotAuthorship::Authored,
+            SnapshotAuthorship::Authored(Some(AccountId::from(ALICE))),
             "a cold joiner keeps the state written for a member who left"
         );
         assert!(

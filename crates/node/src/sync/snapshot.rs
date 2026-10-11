@@ -79,6 +79,8 @@ const SNAPSHOT_PAGE_FORMAT_V2: u8 = 0xFF;
 /// Exactly 16 bytes to match SCOPE_SIZE.
 const SYNC_IN_PROGRESS_SCOPE: [u8; SCOPE_SIZE] = *b"sync-in-progres\0";
 
+const MAX_BUFFERED_ENTITY_DEPTH: usize = 256; // bounds the drain order's walk up a buffered chain
+
 /// Whether a snapshot `Entity` whose sender stamped `schema_bytecode_id` is readable
 /// by a receiver whose loaded reader is `loaded_bytecode_id` (PR-6b Task 6b.7).
 ///
@@ -967,7 +969,7 @@ impl SyncManager {
                                         None,
                                         &ever_writers,
                                     ) {
-                                        SnapshotAuthorship::Authored => {}
+                                        SnapshotAuthorship::Authored(_) => {}
                                         SnapshotAuthorship::Forged => {
                                             return Err(refused_snapshot_entity(
                                                 context_id,
@@ -1159,7 +1161,7 @@ impl SyncManager {
                                                 Some(writers),
                                                 &ever_writers,
                                             ) {
-                                                SnapshotAuthorship::Authored => {}
+                                                SnapshotAuthorship::Authored(_) => {}
                                                 SnapshotAuthorship::Forged => {
                                                     return Err(refused_snapshot_entity(
                                                         context_id,
@@ -1498,41 +1500,70 @@ pub(crate) fn buffered_snapshot_entity_pass(index: &[u8]) -> u8 {
     }
 }
 
-/// Orders buffered snapshot entities so one pass drains a whole snapshot: each
-/// after the buffered entities above it, then in [`buffered_snapshot_entity_pass`] order.
+/// Keeps the buffered snapshot entities `loaded` can read, ordered so one pass drains a
+/// whole snapshot: each after the buffered entities above it, then by [`buffered_snapshot_entity_pass`].
 pub(crate) fn order_buffered_snapshot_entities<K>(
-    pending: &mut [(K, calimero_governance_store::AbsorbRecord)],
+    pending: &mut Vec<(K, calimero_governance_store::AbsorbRecord)>,
+    loaded: [u8; 32],
 ) {
-    let parents: HashMap<Id, Id> = pending
+    pending.retain(|(_, record)| {
+        record
+            .entity
+            .as_ref()
+            .is_none_or(|entity| entity.schema_bytecode_id == loaded)
+    });
+    let parents: HashMap<Id, Option<Id>> = pending
         .iter()
         .filter_map(|(_, record)| {
             let entity = record.entity.as_ref()?;
             let index =
                 borsh::from_slice::<calimero_storage::index::EntityIndex>(&entity.index).ok()?;
-            Some((Id::new(entity.id), index.parent_id()?))
+            Some((Id::new(entity.id), index.parent_id()))
         })
         .collect();
+    let depths = buffered_entity_depths(&parents);
     pending.sort_by_cached_key(|(_, record)| {
         record.entity.as_ref().map(|entity| {
-            let depth =
-                std::iter::successors(Some(Id::new(entity.id)), |id| parents.get(id).copied())
-                    .take(parents.len().saturating_add(1))
-                    .count();
+            let depth = depths.get(&Id::new(entity.id)).copied().unwrap_or(0);
             (depth, buffered_snapshot_entity_pass(&entity.index))
         })
     });
 }
 
-/// Re-verify and persist a buffered future-schema snapshot entity (PR-6b Task
-/// 6b.7), reaching the verdict `request_and_apply_snapshot_pages` reaches on
-/// it, then write it through the storage apply under the parent this node holds.
-/// Must run inside `with_runtime_env` for `context_id`.
-///
-/// What the page apply takes from the rest of the snapshot, this reads from the
-/// store: a `SharedMember`'s genesis writers from its stored anchor. A missing
-/// anchor, or a cell whose writers `ever_writers` cannot read yet, leaves the
-/// entity [`Pending`](SnapshotEntityDrainOutcome::Pending); the caller drains in
-/// [`order_buffered_snapshot_entities`] order so parents and anchors are stored first.
+/// How many buffered entities sit above each one, memoized. A chain deeper than
+/// [`MAX_BUFFERED_ENTITY_DEPTH`], or a cycle, counts as that depth.
+fn buffered_entity_depths(parents: &HashMap<Id, Option<Id>>) -> HashMap<Id, usize> {
+    let mut depths: HashMap<Id, usize> = HashMap::with_capacity(parents.len());
+    'entities: for &start in parents.keys() {
+        let mut path = Vec::new();
+        let mut at = start;
+        let mut above = loop {
+            if let Some(&depth) = depths.get(&at) {
+                break Some(depth);
+            }
+            if path.len() > MAX_BUFFERED_ENTITY_DEPTH {
+                let _previous = depths.insert(start, MAX_BUFFERED_ENTITY_DEPTH);
+                continue 'entities;
+            }
+            path.push(at);
+            match parents.get(&at) {
+                Some(Some(parent)) if parents.contains_key(parent) => at = *parent,
+                _ => break None,
+            }
+        };
+        for id in path.into_iter().rev() {
+            let depth = above.map_or(0, |above: usize| {
+                above.saturating_add(1).min(MAX_BUFFERED_ENTITY_DEPTH)
+            });
+            let _previous = depths.insert(id, depth);
+            above = Some(depth);
+        }
+    }
+    depths
+}
+
+/// Re-verifies a buffered snapshot entity as the page apply would, then writes it through
+/// the storage apply. Runs inside `with_runtime_env`; what cannot be decided yet stays pending.
 pub(crate) fn persist_buffered_snapshot_entity(
     store: &calimero_store::Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
@@ -1636,7 +1667,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
     // The signature check does not ask whose account the signer speaks for, so
     // a leaf under another account's `owner`, or a writer set its signer is not
     // in, passes it. The page apply refuses such a leaf, and so must this late one.
-    match crate::sync::helpers::snapshot_leaf_authorship(
+    let signer_account = match crate::sync::helpers::snapshot_leaf_authorship(
         store,
         folded,
         &context_id,
@@ -1645,7 +1676,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
         anchor_writers.as_ref(),
         ever_writers,
     ) {
-        SnapshotAuthorship::Authored => {}
+        SnapshotAuthorship::Authored(account) => account,
         SnapshotAuthorship::Unknown => return Ok(SnapshotEntityDrainOutcome::Pending),
         SnapshotAuthorship::Forged => {
             warn!(%context_id, id = ?id,
@@ -1653,24 +1684,33 @@ pub(crate) fn persist_buffered_snapshot_entity(
                  writer the cell has ever had, deleting");
             return Ok(SnapshotEntityDrainOutcome::Refused);
         }
-    }
+    };
 
     let Some(dated) = signed_dated(&index_entity) else {
         warn!(%context_id, id = ?id, "absorb entity drain: refusing an entity dated ahead of the clock");
         return Ok(SnapshotEntityDrainOutcome::Refused);
     };
-    apply_drained_snapshot_entity(store, folded, context_id, id_obj, entry, &dated)
+    // Storage asks the host for the cell's writers too, and refuses while they cannot be read.
+    let cell = match &metadata.storage_type {
+        StorageType::Shared { .. } => Some(id_obj),
+        StorageType::SharedMember { anchor, .. } => Some(*anchor),
+        StorageType::Public | StorageType::Frozen | StorageType::User { .. } => None,
+    };
+    if cell.is_some_and(|cell| ever_writers(cell).is_err()) {
+        return Ok(SnapshotEntityDrainOutcome::Pending);
+    }
+    apply_drained_snapshot_entity(store, context_id, id_obj, entry, &dated, signer_account)
 }
 
 /// Writes a verified buffered entity through the storage apply, as a repair-pushed leaf
 /// is written: it merges with what this node took since the install, and rehashes upward.
 fn apply_drained_snapshot_entity(
     store: &Store,
-    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: ContextId,
     id: Id,
     entry: &[u8],
     index: &calimero_storage::index::EntityIndex,
+    signer_account: Option<calimero_account::AccountId>,
 ) -> Result<SnapshotEntityDrainOutcome> {
     let held = |id| crate::delta_store::read_entity_index_direct(store, context_id, id);
     let stored = held(id)?.is_some();
@@ -1701,22 +1741,39 @@ fn apply_drained_snapshot_entity(
             metadata,
         }
     };
+    // The account the certificate history resolved, as the page apply judged it: a
+    // since-revoked device's entry is still its account's.
     let ctx = ApplyContext {
-        signer_account: crate::sync::helpers::signer_account_for(
-            store,
-            folded,
-            &context_id,
-            Some(&index.metadata.storage_type),
-        ),
+        signer_account,
         ..ApplyContext::empty()
     };
-    // Repair holds a refused entity to the same rules, and brings it if peers keep it.
-    if let Err(e) = Interface::<MainStorage>::apply_remote_action(action, &ctx) {
-        warn!(%context_id, id = ?id.as_bytes(), error = ?e,
-            "absorb entity drain: the storage apply refused it, deleting");
-        return Ok(SnapshotEntityDrainOutcome::Refused);
+    match Interface::<MainStorage>::apply_remote_action(action, &ctx) {
+        Ok(()) => Ok(SnapshotEntityDrainOutcome::Persisted),
+        Err(e) if storage_error_is_transient(&e) => {
+            warn!(%context_id, id = ?id.as_bytes(), error = ?e,
+                "absorb entity drain: the storage apply failed, leaving pending");
+            Ok(SnapshotEntityDrainOutcome::Pending)
+        }
+        // Repair holds a refused entity to the same rules, and brings it if peers keep it.
+        Err(e) => {
+            warn!(%context_id, id = ?id.as_bytes(), error = ?e,
+                "absorb entity drain: the storage apply refused it, deleting");
+            Ok(SnapshotEntityDrainOutcome::Refused)
+        }
     }
-    Ok(SnapshotEntityDrainOutcome::Persisted)
+}
+
+/// Whether a storage error could clear on a later pass: a read, write or merge that
+/// failed, not a verdict on the entity's authorization or shape.
+fn storage_error_is_transient(error: &calimero_storage::interface::StorageError) -> bool {
+    use calimero_storage::interface::StorageError;
+    matches!(
+        error,
+        StorageError::StoreError(_)
+            | StorageError::IndexNotFound(_)
+            | StorageError::NotFound(_)
+            | StorageError::MergeFailure(_)
+    )
 }
 
 /// Drain one buffered snapshot-entity record through
@@ -3654,36 +3711,96 @@ mod tests {
         assert_eq!(pending, SnapshotEntityDrainOutcome::Pending);
     }
 
+    /// A buffered snapshot entity record under `parent`, stamped with `schema`.
+    fn buffered_entity(
+        id: Id,
+        parent: Option<Id>,
+        schema: [u8; 32],
+    ) -> ((), calimero_governance_store::AbsorbRecord) {
+        let index = match parent {
+            Some(parent) => EntityIndex::minimal_for_test_with_parent(id, parent, [0; 32]),
+            None => EntityIndex::minimal_for_test(id),
+        };
+        let record = calimero_governance_store::AbsorbRecord::from_snapshot_entity(
+            *id.as_bytes(),
+            Vec::new(),
+            borsh::to_vec(&index).unwrap(),
+            schema,
+        );
+        ((), record)
+    }
+
+    fn drain_order(pending: &[((), calimero_governance_store::AbsorbRecord)]) -> Vec<Id> {
+        pending
+            .iter()
+            .filter_map(|(_, record)| Some(Id::new(record.entity.as_ref()?.id)))
+            .collect()
+    }
+
     /// A snapshot buffered whole drains in one pass only if each entity follows the
-    /// buffered entities above it, whatever order the buffer lists them in.
+    /// buffered entities above it, and only what the loaded reader can read is taken.
     #[test]
     fn buffered_snapshot_entities_are_ordered_parents_first() {
-        let record = |id: u8, parent: Option<u8>| {
-            let index = match parent {
-                Some(parent) => EntityIndex::minimal_for_test_with_parent(
-                    Id::new([id; 32]),
-                    Id::new([parent; 32]),
-                    [0; 32],
-                ),
-                None => EntityIndex::minimal_for_test(Id::new([id; 32])),
-            };
-            let record = calimero_governance_store::AbsorbRecord::from_snapshot_entity(
-                [id; 32],
-                Vec::new(),
-                borsh::to_vec(&index).unwrap(),
-                [9; 32],
-            );
-            ((), record)
+        let at = |n: u8| Id::new([n; 32]);
+        let mut pending = vec![
+            buffered_entity(at(3), Some(at(2)), [9; 32]),
+            buffered_entity(at(4), Some(at(1)), [8; 32]),
+            buffered_entity(at(2), Some(at(1)), [9; 32]),
+            buffered_entity(at(1), None, [9; 32]),
+        ];
+
+        order_buffered_snapshot_entities(&mut pending, [9; 32]);
+
+        assert_eq!(drain_order(&pending), [at(1), at(2), at(3)]);
+    }
+
+    /// A crafted chain or cycle costs a bounded walk: past the cap, and around a
+    /// cycle, every record sorts at the cap, after an honest tree.
+    #[test]
+    fn a_long_or_cyclic_buffered_chain_sorts_at_the_cap() {
+        let at = |n: u16| {
+            let mut bytes = [0xC0; 32];
+            bytes[..2].copy_from_slice(&n.to_be_bytes());
+            Id::new(bytes)
         };
-        let mut pending = vec![record(3, Some(2)), record(2, Some(1)), record(1, None)];
-
-        order_buffered_snapshot_entities(&mut pending);
-
-        let order: Vec<u8> = pending
-            .iter()
-            .filter_map(|(_, record)| Some(record.entity.as_ref()?.id[0]))
+        let schema = [9; 32];
+        let chain = 400_u16;
+        let mut pending: Vec<_> = (0..chain)
+            .map(|n| buffered_entity(at(n), n.checked_sub(1).map(at), schema))
             .collect();
-        assert_eq!(order, [1, 2, 3]);
+        let (x, y) = (Id::new([0xE1; 32]), Id::new([0xE2; 32]));
+        pending.push(buffered_entity(x, Some(y), schema));
+        pending.push(buffered_entity(y, Some(x), schema));
+        pending.reverse();
+
+        order_buffered_snapshot_entities(&mut pending, schema);
+
+        let order = drain_order(&pending);
+        let head: Vec<Id> = (0..chain).take(MAX_BUFFERED_ENTITY_DEPTH).map(at).collect();
+        assert_eq!(
+            order[..head.len()],
+            head[..],
+            "the chain's top drains in order"
+        );
+        let tail = &order[head.len()..];
+        assert_eq!(tail.len(), usize::from(chain) - head.len() + 2);
+        assert!(
+            tail.contains(&x) && tail.contains(&y),
+            "a cycle sorts at the cap"
+        );
+    }
+
+    #[test]
+    fn only_io_lookup_and_merge_failures_keep_a_drained_entity_pending() {
+        use calimero_storage::interface::StorageError;
+
+        assert!(storage_error_is_transient(&StorageError::StoreError(
+            eyre::eyre!("disk")
+        )));
+        assert!(!storage_error_is_transient(
+            &StorageError::ActionNotAllowed(String::new())
+        ));
+        assert!(!storage_error_is_transient(&StorageError::InvalidSignature));
     }
 
     #[test]
@@ -4490,7 +4607,7 @@ mod snapshot_trust_tests {
         };
         assert_eq!(
             group.authorship(alices_entry(&alice)),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(alice_account))
         );
         assert_eq!(
             group.authorship(alices_entry(&mallory)),
@@ -4504,7 +4621,7 @@ mod snapshot_trust_tests {
         };
         assert_eq!(
             group.authorship(shared(&alice)),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(alice_account))
         );
         assert_eq!(
             group.authorship(shared(&mallory)),
@@ -5090,7 +5207,7 @@ mod snapshot_trust_tests {
                 owner: alice_account,
                 signature_data: signed_by(&alice),
             }),
-            SnapshotAuthorship::Authored
+            SnapshotAuthorship::Authored(Some(alice_account))
         );
     }
 

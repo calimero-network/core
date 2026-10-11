@@ -484,6 +484,9 @@ async fn drain_absorbed_leaf_records(
     }
 
     let identity = choose_owned_identity(&input.node_clients.context, context_id).await?;
+    // Held to the end: each apply below rehashes ancestors an execution may be rehashing.
+    // Nothing under it re-enters the executor, and no await follows.
+    let _guard = input.node_clients.context.acquire_lock(context_id).await;
     let account = calimero_governance_store::account_for_context(store, context_id)?;
     let runtime_env = crate::sync::helpers::with_repair_cell_writers(
         create_runtime_env(store, *context_id, identity, account),
@@ -494,7 +497,7 @@ async fn drain_absorbed_leaf_records(
     // A record left pending is retried on later drain triggers, a bounded number of
     // times (`drain_buffered_snapshot_entity`).
     let mut pending = pending;
-    crate::sync::snapshot::order_buffered_snapshot_entities(&mut pending);
+    crate::sync::snapshot::order_buffered_snapshot_entities(&mut pending, loaded);
 
     // A shared cell's writers past genesis are read from the governance fold.
     let ever_writers = |cell| {
