@@ -15,6 +15,7 @@ use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
     AccountBindingRepository, DeviceBinding, GroupKeyring, NamespaceRepository,
+    NodeDeviceRepository,
 };
 
 impl Handler<AddGroupMembersRequest> for ContextManager {
@@ -160,13 +161,14 @@ pub(crate) async fn deliver_group_key(
         return Ok(());
     };
     let deliveries = key_deliveries(
+        datastore,
         member_key,
         member_account,
         devices,
         sk,
         group_id,
         &group_key,
-    );
+    )?;
     if deliveries.is_empty() {
         warn!(%member_account, "no group key was delivered to the added member; it must pull the key itself");
     }
@@ -221,14 +223,30 @@ fn deliverable_key(
 }
 
 fn key_deliveries(
+    store: &calimero_store::Store,
     member_key: Option<PublicKey>,
     member_account: AccountId,
     devices: &BTreeMap<AccountId, Vec<DeviceBinding>>,
     sk: &PrivateKey,
     group_id: &ContextGroupId,
     group_key: &[u8; 32],
-) -> Vec<(KeyEnvelope, PublicKey)> {
-    match member_key {
+) -> eyre::Result<Vec<(KeyEnvelope, PublicKey)>> {
+    // Spent in this node's account namespace; its unlink has not reached here yet.
+    let spent = NodeDeviceRepository::new(store).spent_in_own_account()?;
+    let mut live = Vec::new();
+    for binding in devices
+        .get(&member_account)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        if !spent(member_account, binding.device)? {
+            live.push(binding);
+        } else if member_key == Some(binding.sign_pk) {
+            return Ok(Vec::new());
+        }
+    }
+
+    Ok(match member_key {
         Some(key) => {
             match GroupKeyring::wrap_for_member(sk, &key, &group_id.to_bytes(), group_key) {
                 Ok(envelope) => vec![(envelope, key)],
@@ -238,11 +256,8 @@ fn key_deliveries(
                 }
             }
         }
-        None => devices
-            .get(&member_account)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
+        None => live
+            .into_iter()
             .filter_map(|binding| {
                 match GroupKeyring::wrap_for_device(
                     sk,
@@ -260,7 +275,7 @@ fn key_deliveries(
                 }
             })
             .collect(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -321,13 +336,15 @@ mod tests {
         let account = enrol(&store, &ns, &member);
 
         let deliveries = key_deliveries(
+            &store,
             None,
             account,
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         assert_eq!(deliveries.len(), 1);
         let (envelope, recipient) = &deliveries[0];
@@ -373,13 +390,15 @@ mod tests {
             .expect("revoke");
 
         let deliveries = key_deliveries(
+            &store,
             None,
             root.account(),
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         let recipients: Vec<PublicKey> = deliveries.iter().map(|(_, key)| *key).collect();
         assert_eq!(
@@ -401,13 +420,15 @@ mod tests {
         let account = account_for(&PrivateKey::random(&mut rng).public_key());
 
         let deliveries = key_deliveries(
+            &store,
             None,
             account,
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         assert!(deliveries.is_empty());
     }
@@ -425,13 +446,15 @@ mod tests {
         let unusable = PublicKey::from([0u8; 32]);
 
         let deliveries = key_deliveries(
+            &store,
             Some(unusable),
             account_for(&unusable),
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         assert!(deliveries.is_empty());
     }
@@ -448,13 +471,15 @@ mod tests {
         let account = enrol(&store, &ns, &member);
 
         let deliveries = key_deliveries(
+            &store,
             Some(member),
             account,
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         assert_eq!(deliveries.len(), 1);
         let (envelope, recipient) = &deliveries[0];

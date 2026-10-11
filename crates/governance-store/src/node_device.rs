@@ -1258,6 +1258,22 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(revoked)
     }
 
+    /// Whether this node's account namespace spent an account's device, reading
+    /// that namespace once for a batch; always false on a node following none.
+    ///
+    /// # Errors
+    /// Propagates the store read failure, here or from the returned check.
+    pub fn spent_in_own_account(
+        &self,
+    ) -> EyreResult<impl Fn(AccountId, DeviceId) -> EyreResult<bool> + 'a> {
+        let account_namespace = self.account_namespace()?;
+        let bindings = crate::AccountBindingRepository::new(self.store);
+        Ok(move |account, device| match &account_namespace {
+            Some(namespace) => bindings.is_spent(namespace, account, device),
+            None => Ok(false),
+        })
+    }
+
     /// This node's device, unless it has been revoked somewhere.
     ///
     /// A device revoked anywhere has a spent id: one row serves every namespace

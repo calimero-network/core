@@ -9,7 +9,7 @@ use calimero_account::{AccountProof, DeviceCert};
 use calimero_crypto::Nonce;
 use calimero_governance_store::{
     AccountBindingRepository, CapabilitiesRepository, GroupKeyring, MembershipRepository,
-    MetaRepository, NamespaceRepository,
+    MetaRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
@@ -696,6 +696,25 @@ impl SyncManager {
                 }
             };
 
+        // Spent in this node's account namespace; its unlink has not reached here yet.
+        let spent = NodeDeviceRepository::new(&store).spent_in_own_account()?;
+        if spent(joiner_account, joiner_device)? {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "rejecting namespace join: the joining device was withdrawn by its account"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "the joining device was withdrawn by its account".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
         // A device the namespace revoked, or narrowed out and has not linked again,
         // is served nothing, whether or not its account is a member.
         if AccountBindingRepository::new(&store).device_is_withdrawn(
@@ -1080,22 +1099,39 @@ impl SyncManager {
         // Authorisation check: the joiner must reach the subgroup via the
         // Open-chain inheritance walk and must not have been removed from it.
         // An inherited path implies every intermediate ancestor was Open.
-        let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
-            &store,
-            &subgroup_gid,
-            &joiner_public_key,
-        )?
+        let Some(joiner) = AccountBindingRepository::new(&store)
+            .binding_for_sign_pk(&ContextGroupId::from(namespace_id), &joiner_public_key)?
         else {
             // A key bound to no account reaches the subgroup by no path.
             return Err(eyre::eyre!(
                 "joiner identity is bound to no account in this namespace"
             ));
         };
-        if !MembershipRepository::new(&store).is_live_member(&subgroup_gid, &joiner_account)? {
+        if !MembershipRepository::new(&store).is_live_member(&subgroup_gid, &joiner.account)? {
             let msg = StreamMessage::Message {
                 sequence_id: 0,
                 payload: MessagePayload::OpenSubgroupJoinRejected {
                     reason: "joiner has no membership path to subgroup".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // Spent in this node's account namespace; its unlink has not reached here yet.
+        let spent = NodeDeviceRepository::new(&store).spent_in_own_account()?;
+        if spent(joiner.account, joiner.device)? {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                subgroup_id = %hex::encode(subgroup_id),
+                %joiner_public_key,
+                "rejecting open-subgroup join: the joining device was withdrawn by its account"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "the joining device was withdrawn by its account".to_owned(),
                 },
                 next_nonce: nonce,
             };
