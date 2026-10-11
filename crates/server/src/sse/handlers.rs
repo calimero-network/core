@@ -2107,8 +2107,8 @@ mod tests {
         use super::*;
         use crate::admin::caller_scope::{list_scope, ListScope};
         use crate::test_support::{
-            admin_state, apply_through_governance, descope_by_root, revoke_through_governance,
-            seed_device_members, withdrawal_by_root,
+            admin_revokes, admin_state, apply_through_governance, descope_by_root,
+            revoke_through_governance, seed_device_members, withdrawal_by_root,
         };
         use crate::ws::{authorize_group_subscriptions, caller_may_observe_context};
 
@@ -2598,10 +2598,10 @@ mod tests {
             assert_withdrawing_a_device_bound_nowhere_ends_its_stream(descope_by_root).await;
         }
 
-        /// The op names an account, but a revocation tombstones the device id
-        /// itself, so a stream on that device stops whichever account is named.
+        /// A device id is minted for its account, so a revocation naming another
+        /// account is refused and the device's stream keeps serving.
         #[actix::test]
-        async fn a_device_revoked_under_another_accounts_name_loses_its_open_stream() {
+        async fn a_revocation_under_another_accounts_name_leaves_the_stream_open() {
             let f = fixture().await;
             let mut stream = open_stream(&f, 1, (f.account, f.device)).await;
             publish_state_change(&f);
@@ -2610,11 +2610,16 @@ mod tests {
                 "precondition: the stream is live and listening"
             );
 
-            revoke_through_governance(&f.state.store, &f.ns, f.peer.0, f.device);
+            let refused = admin_revokes(&f.state.store, &f.ns, f.peer.0, f.device);
 
             assert!(
-                drops_its_subscriptions(&stream.subscribed.session).await,
-                "a revocation naming another account still spends this device"
+                refused.is_err(),
+                "a revocation naming another account is refused"
+            );
+            publish_state_change(&f);
+            assert!(
+                receives(&mut stream, Duration::from_secs(5)).await,
+                "the device keeps its stream"
             );
         }
 
