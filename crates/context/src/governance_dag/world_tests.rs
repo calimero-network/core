@@ -454,7 +454,6 @@ async fn this_nodes_own_account_namespace_row_exempts_no_namespace_from_scope() 
 async fn concurrent_targets_settle_the_same_way_in_either_order() {
     let mut roles = Vec::new();
     for rival_first in [false, true] {
-        // Signing is deterministic, so each pass builds the same history.
         let (world, store) = world_targeting(World::shared().application).await;
         let device_sk = link_a_device_of_the_admin(
             &store,
@@ -470,13 +469,17 @@ async fn concurrent_targets_settle_the_same_way_in_either_order() {
             sign_next(&store, &world.namespace, signer, sealed)
         };
         let id = |op: &SignedNamespaceOp| op.content_hash().expect("hash the op");
-        let restated = concurrent(&world.owner_sk, world.application);
-        // A rival the deterministic order ranks above the restated target, so the
-        // device is out of scope wherever the two meet.
-        let rival = (0xE0..=0xFF)
-            .map(|byte| concurrent(&admin.sign_sk, ApplicationId::from([byte; 32])))
-            .find(|rival| id(rival) > id(&restated))
-            .expect("some rival target ranks above the restated one");
+        // Sealing draws a fresh nonce, so re-sign until the rival ranks above the
+        // restated target and the device is out of scope wherever the two meet.
+        let (restated, rival) = std::iter::repeat_with(|| {
+            (
+                concurrent(&world.owner_sk, world.application),
+                concurrent(&admin.sign_sk, ApplicationId::from([0xEE; 32])),
+            )
+        })
+        .take(64)
+        .find(|(restated, rival)| id(rival) > id(restated))
+        .expect("a rival that ranks above the restated target");
         let order = if rival_first {
             [&rival, &restated]
         } else {
