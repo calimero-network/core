@@ -457,7 +457,7 @@ A revoked, descoped or withdrawn device keeps its account's membership, so no me
 The WS fan-out and every SSE event task also listen to the governance op events (`next_withdrawal`): a `DeviceRevoked`, `DeviceDescoped` or `DeviceWithdrawn` re-derives the grants that watch its namespace, and a lagged listener re-derives every grant.
 Each listener subscribes before it re-derives what it already holds, and an SSE event task re-derives its session on every (re)connect, so a withdrawal applied while no task listened is not missed.
 A subscribe re-derives once more after it records its ids, since a withdrawal committed between its gate and that write finds nothing to drop.
-A descope or withdrawal skips connections anchored on another account; a revocation does not, since its tombstone spends the device id whatever account the op names.
+A descope or withdrawal skips connections anchored on another account; a revocation does not, since its tombstone spends the device id, and the apply refuses one naming an account the id was not minted for.
 A re-derivation vouches only for the ids it checked, so an id a subscribe added meanwhile stays stale.
 
 The caller identity itself (`EventCaller`) is deliberately not persisted on an

@@ -335,6 +335,16 @@ pub(crate) fn revoke_through_governance(
     account: calimero_account::AccountId,
     device: calimero_primitives::identity::DeviceId,
 ) {
+    admin_revokes(store, namespace, account, device).expect("the op applies");
+}
+
+/// [`revoke_through_governance`], returning the apply's result.
+pub(crate) fn admin_revokes(
+    store: &Store,
+    namespace: &calimero_context_config::types::ContextGroupId,
+    account: calimero_account::AccountId,
+    device: calimero_primitives::identity::DeviceId,
+) -> eyre::Result<()> {
     use calimero_governance_store::test_fixtures::enrol_member;
     use calimero_governance_store::MembershipRepository;
     use calimero_primitives::context::GroupMemberRole;
@@ -345,7 +355,13 @@ pub(crate) fn revoke_through_governance(
     MembershipRepository::new(store)
         .add_member(namespace, &admin, GroupMemberRole::Admin)
         .unwrap();
-    apply_through_governance(
+    calimero_governance_store::MetaRepository::new(store)
+        .save(
+            namespace,
+            &calimero_governance_store::test_fixtures::test_meta(),
+        )
+        .unwrap();
+    calimero_governance_store::sign_apply_local_group_op_borsh(
         store,
         namespace,
         &admin_sk,
@@ -354,7 +370,8 @@ pub(crate) fn revoke_through_governance(
             device,
             proof: None,
         },
-    );
+    )
+    .map(|_| ())
 }
 
 /// The account whose root is `root` withdrawing its own `device`, by root-signed proof.
