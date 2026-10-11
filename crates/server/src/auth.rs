@@ -610,10 +610,8 @@ where
                 // `PermissionValidator` matches full request paths (e.g.
                 // `/admin-api/contexts`, `/jsonrpc`). This guard runs inside a
                 // nested router, so `parts.uri` has had the mount prefix stripped
-                // (`/contexts`, `/`); recover the full path from `OriginalUri`,
-                // which axum's `nest` inserts. Non-nested mounts (e.g. the `/ws`
-                // route) have no `OriginalUri`, so fall back to the request URI,
-                // which is already the full path there.
+                // (`/contexts`, `/`); recover the full path from `OriginalUri`, which
+                // the outermost router sets on every request, `/ws` included.
                 let full_uri = parts
                     .extensions
                     .get::<OriginalUri>()
@@ -1126,9 +1124,8 @@ mod tests {
         );
     }
 
-    /// Send `GET sent` through the real guard with a two-link proof signed over
-    /// `signed`, and return the status the client sees. Nested as in production,
-    /// so a guard reading the stripped `Uri` instead of `OriginalUri` fails.
+    /// `GET sent` through the real guard, nested as in production, with a proof
+    /// signed over `signed`; a guard reading the stripped `Uri` fails it.
     async fn proven_request(signed: &str, sent: &str) -> StatusCode {
         let root = PrivateKey::from([1; 32]);
         let genesis = AccountGenesis::new(root.public_key());
