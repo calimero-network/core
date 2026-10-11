@@ -4351,7 +4351,8 @@ mod join_responder_tests {
     };
     use calimero_governance_store::{
         AccountBindingRepository, CapabilitiesRepository, DenyListRepository, GroupKeyring,
-        MembershipRepository, MetaRepository, NamespaceRepository, ReentryRepository,
+        MembershipRepository, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+        ReentryRepository,
     };
     use calimero_network_primitives::stream::Stream;
     use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
@@ -4871,6 +4872,52 @@ mod join_responder_tests {
     }
 
     #[tokio::test]
+    async fn a_device_spent_in_this_nodes_account_namespace_is_served_no_subgroup_key() {
+        let r = responder().await;
+        let member = inherited_member(&r);
+        assert_eq!(
+            join_subgroup(&r, &member).await,
+            Some(true),
+            "precondition: before the withdrawal the inherited member is served the key"
+        );
+
+        let device = AccountBindingRepository::new(&r.store)
+            .binding_for_sign_pk(&ns(), &member.public_key())
+            .unwrap()
+            .expect("the member's device is bound here")
+            .device;
+        let account_namespace = ContextGroupId::from([0xAE; 32]);
+        NodeDeviceRepository::new(&r.store)
+            .store_account_namespace(&account_namespace)
+            .unwrap();
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&account_namespace, device)
+            .unwrap();
+
+        let reply = exchange(
+            &r.sm,
+            &member,
+            InitPayload::OpenSubgroupJoinRequest {
+                namespace_id: NAMESPACE,
+                subgroup_id: SUBGROUP,
+                joiner_public_key: member.public_key(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                &reply,
+                Some(StreamMessage::Message {
+                    payload: MessagePayload::OpenSubgroupJoinRejected { reason },
+                    ..
+                }) if reason.contains("withdrawn by its account")
+            ),
+            "a device spent in this node's account namespace must be refused the subgroup key, \
+             got {reply:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn inbound_sync_does_not_admit_a_member_removed_from_an_open_subgroup() {
         let r = responder().await;
         let member = inherited_member(&r);
@@ -4902,7 +4949,7 @@ mod namespace_join_device_tests {
     };
     use calimero_governance_store::{
         AccountBindingRepository, GroupKeyring, MembershipRepository, MetaRepository,
-        NamespaceRepository,
+        NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_network_primitives::stream::Stream;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -5121,6 +5168,173 @@ mod namespace_join_device_tests {
         assert!(
             served(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x04)).await),
             "a device linked again above its floor is served the key"
+        );
+    }
+
+    /// A device of a member account never bound in the namespace, and a sibling
+    /// device of that account bound there, each with the credential it presents.
+    struct TwoDevices {
+        account: calimero_account::AccountId,
+        sibling_sk: PrivateKey,
+        sibling: Box<JoinAccountCredential>,
+        lost_sk: PrivateKey,
+        lost: Box<JoinAccountCredential>,
+    }
+
+    fn two_devices_of_a_member(store: &Store) -> TwoDevices {
+        let ns = ContextGroupId::from(NAMESPACE);
+        let (root_sk, genesis) = calimero_governance_store::test_fixtures::test_account_root();
+        let device = |seed: u8| {
+            let sk = PrivateKey::from([seed; 32]);
+            let credential = calimero_governance_store::test_fixtures::join_account_for(
+                &root_sk,
+                genesis,
+                &sk.public_key(),
+                [seed; 32],
+                0,
+            );
+            (sk, credential)
+        };
+        let (sibling_sk, sibling) = device(0x77);
+        let (lost_sk, lost) = device(0x78);
+        let _bound = AccountBindingRepository::new(store)
+            .apply_link(&ns, &sibling.genesis, &sibling.chain, &sibling.statement, 0)
+            .expect("store")
+            .expect("bind the sibling device");
+        MembershipRepository::new(store)
+            .add_member(&ns, &sibling.statement.account, GroupMemberRole::Member)
+            .expect("seat the account");
+        TwoDevices {
+            account: sibling.statement.account,
+            sibling_sk,
+            sibling,
+            lost_sk,
+            lost,
+        }
+    }
+
+    fn served(reply: &Result<Vec<u8>, String>) -> bool {
+        reply.as_ref().is_ok_and(|key| !key.is_empty())
+    }
+
+    fn withdrawn_by_its_account(reply: &Result<Vec<u8>, String>) -> bool {
+        reply
+            .as_ref()
+            .is_err_and(|reason| reason.contains("withdrawn by its account"))
+    }
+
+    /// A device spent in this node's account namespace is refused N's key before
+    /// the carried unlink reaches N; a live sibling device is still served.
+    #[tokio::test]
+    async fn a_device_spent_in_this_nodes_account_namespace_is_not_served_the_namespace_key() {
+        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let account_namespace = ContextGroupId::from([0xAC; 32]);
+        let admin_sk = PrivateKey::from([0x63; 32]);
+        let admitter = found(&store, &admin_sk);
+        let d = two_devices_of_a_member(&store);
+        assert!(
+            served(
+                &join_presenting(
+                    &sm,
+                    &d.lost_sk,
+                    &d.lost,
+                    invitation(&admin_sk, admitter, 0x07)
+                )
+                .await
+            ),
+            "precondition: a device of a member account, never bound here, is served the key"
+        );
+
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&account_namespace)
+            .expect("follow the account namespace");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, d.lost.statement.device)
+            .expect("revoke the device in the account namespace");
+
+        let reply = join_presenting(
+            &sm,
+            &d.lost_sk,
+            &d.lost,
+            invitation(&admin_sk, admitter, 0x08),
+        )
+        .await;
+        assert!(
+            withdrawn_by_its_account(&reply),
+            "a device spent in this node's account namespace must be refused, got {reply:?}"
+        );
+        let sibling = join_presenting(
+            &sm,
+            &d.sibling_sk,
+            &d.sibling,
+            invitation(&admin_sk, admitter, 0x09),
+        )
+        .await;
+        assert!(
+            served(&sibling),
+            "a live sibling device must still be served, got {sibling:?}"
+        );
+    }
+
+    /// The account root's own withdrawal spends the device as a revocation does.
+    #[tokio::test]
+    async fn a_device_its_account_root_withdrew_in_this_nodes_account_namespace_is_not_served() {
+        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let account_namespace = ContextGroupId::from([0xAD; 32]);
+        let admin_sk = PrivateKey::from([0x64; 32]);
+        let admitter = found(&store, &admin_sk);
+        let d = two_devices_of_a_member(&store);
+
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&account_namespace)
+            .expect("follow the account namespace");
+        AccountBindingRepository::new(&store)
+            .withdraw_for_account(&account_namespace, d.account, d.lost.statement.device)
+            .expect("withdraw the device in the account namespace");
+
+        let reply = join_presenting(
+            &sm,
+            &d.lost_sk,
+            &d.lost,
+            invitation(&admin_sk, admitter, 0x0A),
+        )
+        .await;
+        assert!(
+            withdrawn_by_its_account(&reply),
+            "a device its account root withdrew in this node's account namespace must be \
+             refused, got {reply:?}"
+        );
+    }
+
+    /// A node holding its account root reads the account namespace it derives.
+    #[tokio::test]
+    async fn a_root_holder_refuses_a_device_spent_in_the_account_namespace_it_derives() {
+        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let admin_sk = PrivateKey::from([0x65; 32]);
+        let admitter = found(&store, &admin_sk);
+        let d = two_devices_of_a_member(&store);
+        let devices = NodeDeviceRepository::new(&store);
+        let root = devices.provision_account_root().expect("provision a root");
+        let account_namespace = root.account_namespace();
+        assert_eq!(
+            devices.account_namespace().expect("read"),
+            Some(account_namespace),
+            "precondition: the account namespace is derived from the root"
+        );
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, d.lost.statement.device)
+            .expect("revoke the device in the account namespace");
+
+        let reply = join_presenting(
+            &sm,
+            &d.lost_sk,
+            &d.lost,
+            invitation(&admin_sk, admitter, 0x0B),
+        )
+        .await;
+        assert!(
+            withdrawn_by_its_account(&reply),
+            "a device spent in this node's derived account namespace must be refused, got {reply:?}"
         );
     }
 

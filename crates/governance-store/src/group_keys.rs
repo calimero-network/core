@@ -1241,6 +1241,41 @@ mod recipient_tests {
         (device, account)
     }
 
+    /// The rotation fan-out leaves out a device this node's account namespace spent
+    /// and still addresses its live sibling.
+    #[test]
+    fn a_device_spent_in_this_nodes_account_namespace_is_left_out_of_the_fan_out() {
+        let store = test_store();
+        let gid = test_group_id();
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let root = devices.account_root().expect("read").expect("root");
+        let (sibling, account) = link_device(&store, gid, root.signing_key(), 7);
+        let (lost, _) = link_device(&store, gid, root.signing_key(), 8);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .expect("add");
+        let account_namespace = devices
+            .account_namespace()
+            .expect("read")
+            .expect("a root holder derives its account namespace");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, lost)
+            .expect("revoke");
+
+        let recipients = GroupKeyring::new(&store, gid)
+            .current_key_recipients()
+            .expect("list");
+        let addressed: Vec<DeviceId> = recipients
+            .iter()
+            .filter_map(|e| e.recipient.device())
+            .collect();
+        assert_eq!(
+            addressed,
+            vec![sibling],
+            "only the live sibling must be addressed; got {recipients:?}"
+        );
+    }
+
     #[test]
     fn build_rotation_wraps_exactly_the_recipients_it_is_given() {
         // The point of taking a list rather than discovering one: what goes out

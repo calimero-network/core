@@ -341,6 +341,54 @@ mod tests {
         ));
     }
 
+    /// A device this node's account namespace spent gets no delivery; its live
+    /// sibling still does.
+    #[test]
+    fn a_device_spent_in_this_nodes_account_namespace_gets_no_delivery() {
+        use calimero_governance_store::test_fixtures::{join_account_for, record_credential};
+        use calimero_governance_store::NodeDeviceRepository;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0x01; 32]);
+        let group = ContextGroupId::from([0x02; 32]);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("provision the root");
+        let device = |seed: u8| {
+            let sign_pk = PrivateKey::from([seed; 32]).public_key();
+            let credential =
+                join_account_for(root.signing_key(), root.genesis(), &sign_pk, [seed; 32], 0);
+            record_credential(&store, &ns, &credential);
+            (sign_pk, credential.statement.device)
+        };
+        let (sibling_pk, _) = device(0x71);
+        let (_, lost) = device(0x72);
+        let account_namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("a root holder derives its account namespace");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, lost)
+            .expect("revoke");
+
+        let deliveries = key_deliveries(
+            None,
+            root.account(),
+            &devices_in(&store, &ns),
+            &admin_sk,
+            &group,
+            &GROUP_KEY,
+        );
+
+        let recipients: Vec<PublicKey> = deliveries.iter().map(|(_, key)| *key).collect();
+        assert_eq!(
+            recipients,
+            vec![sibling_pk],
+            "only the live sibling must be delivered to"
+        );
+    }
+
     #[test]
     fn an_account_with_no_device_gets_nothing() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
