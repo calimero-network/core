@@ -1444,7 +1444,7 @@ mod tests {
                 GroupOp::AccountDeviceUnlinked {
                     account: other.statement.account,
                     device: other.statement.device,
-                    proof: None,
+                    proof: Some(revocation_of(&root, &other)),
                 },
             )
             .await
