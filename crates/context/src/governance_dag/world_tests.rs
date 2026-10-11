@@ -259,3 +259,42 @@ async fn a_descope_whose_scope_still_reaches_the_group_does_not_narrow_the_devic
         "a scope that still reaches the group narrowed the admin's device at the cut"
     );
 }
+
+#[actix::test]
+async fn another_accounts_proof_does_not_withdraw_a_device_at_the_cut() {
+    let (world, store) = world_with_a_logged_admin().await;
+    let admin = world.actor(ActorState::NamespaceAdmin);
+    let member = world.actor(ActorState::DirectMember);
+    // The member's own root signs "my account withdraws device D" for the admin's D.
+    let proof = calimero_account::SignedDeviceRevocation {
+        genesis: AccountGenesis::new(member.root.public_key()),
+        chain: vec![],
+        statement: calimero_account::DeviceRevocation::sign(
+            &member.root,
+            member.account,
+            admin.device,
+            0,
+        )
+        .expect("the member's root signs the statement"),
+    };
+    let unlink = GroupOp::AccountDeviceUnlinked {
+        account: member.account,
+        device: admin.device,
+        proof: Some(proof),
+    };
+    let _applied = publish(&store, &world.namespace, &member.sign_sk, &unlink).await;
+    assert!(
+        !AccountBindingRepository::new(&store)
+            .is_revoked(&world.namespace, admin.device)
+            .expect("read a tombstone"),
+        "control: the apply records no revocation of the admin's device"
+    );
+
+    let role = role_after_promotion_by(&store, world, &admin.sign_sk).await;
+
+    assert_eq!(
+        role,
+        Some(GroupMemberRole::Admin),
+        "another account's proof withdrew the admin's device at the cut"
+    );
+}
