@@ -181,10 +181,10 @@ fn message_key(channel: &str, id: &str) -> String {
 /// so each row's author is the holder of its key whose message it is.
 /// `holders` is the collection's `entries_at`. A holder is used once, so two
 /// authors of equal messages at one key are both named.
-/// The holders of a written-once key that have a value: a sealed entry has none.
-fn written_values(held: Vec<(AccountId, Written<Message>)>) -> Vec<(AccountId, Message)> {
-    held.into_iter()
-        .filter_map(|(owner, entry)| Some((owner, entry.value()?)))
+/// The written-once entries that hold a value: a sealed one has none to show.
+fn with_values<K>(rows: impl IntoIterator<Item = (K, Written<Message>)>) -> Vec<(K, Message)> {
+    rows.into_iter()
+        .filter_map(|(key, entry)| Some((key, entry.value()?)))
         .collect()
 }
 
@@ -278,9 +278,10 @@ impl TeamSpace {
     /// Two authors' messages at one id both appear, each with its author.
     pub fn channel(&self, channel: String) -> app::Result<Vec<MessageView>> {
         let prefix = format!("{channel}/");
-        message_views(self.messages.prefix(prefix.as_bytes())?, |key| {
-            Ok(written_values(self.messages.entries_at(key)?))
-        })
+        message_views(
+            with_values(self.messages.prefix(prefix.as_bytes())?),
+            |key| Ok(with_values(self.messages.entries_at(key)?)),
+        )
     }
 
     // ── moderated, immutable announcements ─────────────────────────────────
@@ -308,8 +309,8 @@ impl TeamSpace {
 
     /// Every announcement, by id: one row per author holding the id.
     pub fn announcements(&self) -> app::Result<Vec<MessageView>> {
-        let mut views = message_views(self.announcements.entries()?, |key| {
-            Ok(written_values(self.announcements.entries_at(key)?))
+        let mut views = message_views(with_values(self.announcements.entries()?), |key| {
+            Ok(with_values(self.announcements.entries_at(key)?))
         })?;
         views.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(views)

@@ -68,7 +68,7 @@
 
 use core::fmt;
 use core::marker::PhantomData;
-use core::ops::Deref;
+use core::ops::{Deref, RangeBounds};
 use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -156,6 +156,10 @@ impl<V> Written<V> {
 
 /// An owning policy whose entries their owner may still change.
 pub trait OwnerEdits: Owning {}
+
+/// An owning policy whose entries are written once, so two values seal one.
+/// Its collections list a sealed entry as [`Written::Conflicted`].
+pub trait OnceOnly: Owning {}
 
 /// Only the account that inserted an entry may update or remove it.
 #[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
@@ -293,6 +297,8 @@ impl Owning for OwnerOnce {
     }
 }
 
+impl OnceOnly for OwnerOnce {}
+
 impl Policy for ContentHash {
     const CRDT_TYPE: CrdtType = CrdtType::FrozenStorage;
 
@@ -345,6 +351,7 @@ impl<E: Edits> Owning for Moderation<E> {
     }
 }
 impl OwnerEdits for Moderation<Editable> {}
+impl OnceOnly for Moderation<Once> {}
 
 impl<E: Edits> Moderation<E> {
     fn with_moderators(moderators: BTreeSet<AccountId>) -> Self {
@@ -785,6 +792,118 @@ impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
     ) -> Result<Option<crate::entities::Metadata>, StoreError> {
         <Index<C::Storage>>::get_metadata(self.entry_id_of(owner, key))
             .map_err(StoreError::StorageError)
+    }
+}
+
+/// A written-once map lists a sealed entry as [`Written::Conflicted`]; these shadow
+/// the map's own listings, which only hold values.
+impl<K, V, S, P> Guarded<UnorderedMap<K, V, S>, P>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+    P: OnceOnly,
+{
+    /// Every entry.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, Written<V>)> + '_, StoreError> {
+        self.inner.writes()
+    }
+}
+
+impl<K, V, S, P> Guarded<IndexedMap<K, V, S>, P>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+    P: OnceOnly,
+{
+    /// Every entry.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, Written<V>)> + '_, StoreError> {
+        self.inner.writes()
+    }
+}
+
+impl<K, V, S, P> Guarded<SortedMap<K, V, S>, P>
+where
+    K: BorshSerialize + BorshDeserialize + Ord + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+    P: OnceOnly,
+{
+    /// Every entry in ascending key order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, Written<V>)>, StoreError> {
+        Ok(self.inner.written_entries()?.into_iter())
+    }
+
+    /// Every key in ascending order, a sealed entry's included.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError> {
+        Ok(self.inner.written_entries()?.into_iter().map(|(k, _)| k))
+    }
+
+    /// Every entry's value or seal in ascending key order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn values(&self) -> Result<impl Iterator<Item = Written<V>>, StoreError> {
+        Ok(self.inner.written_entries()?.into_iter().map(|(_, v)| v))
+    }
+
+    /// The entries whose keys fall within `range`, in ascending order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn range<R: RangeBounds<K>>(
+        &self,
+        range: R,
+    ) -> Result<impl Iterator<Item = (K, Written<V>)>, StoreError> {
+        Ok(self.inner.written_range(range)?.into_iter())
+    }
+
+    /// The entries whose key bytes start with `prefix`, in ascending order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<impl Iterator<Item = (K, Written<V>)>, StoreError> {
+        Ok(self.inner.written_prefix(prefix)?.into_iter())
+    }
+
+    /// A page of `limit` entries from `offset`, in ascending key order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn page(&self, offset: usize, limit: usize) -> Result<Vec<(K, Written<V>)>, StoreError> {
+        self.inner.written_page(offset, limit)
+    }
+
+    /// The entry with the smallest key, if any.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn first(&self) -> Result<Option<(K, Written<V>)>, StoreError> {
+        self.inner.written_first()
+    }
+
+    /// The entry with the largest key, if any.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn last(&self) -> Result<Option<(K, Written<V>)>, StoreError> {
+        self.inner.written_last()
     }
 }
 

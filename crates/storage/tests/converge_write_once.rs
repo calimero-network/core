@@ -21,7 +21,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::collections::{
     Frozen, IndexValue, Indexed, IndexedMap, MergeStrategy, Mergeable, ModeratedOnce, SortedMap,
-    StoreError, UnorderedMap, WriteOnce,
+    StoreError, UnorderedMap, WriteOnce, Written,
 };
 use calimero_storage::testing::converge;
 use calimero_storage::{env, rekey_field_if_supported, StorageError};
@@ -145,7 +145,11 @@ fn assert_one_ballot_everywhere(
 fn devices_of_one_account_settle_a_write_once_unordered_map_key() {
     assert_sealed_everywhere(
         |b| b.unordered.insert(k(), mine()).unwrap(),
-        |b| conflicted(&b.unordered.get(&k())) && b.unordered.entries().unwrap().count() == 0,
+        |b| {
+            conflicted(&b.unordered.get(&k()))
+                && b.unordered.entries().unwrap().collect::<Vec<_>>()
+                    == vec![(k(), Written::Conflicted)]
+        },
     );
 }
 

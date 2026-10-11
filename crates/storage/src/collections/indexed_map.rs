@@ -746,6 +746,14 @@ where
         self.inner.entries()
     }
 
+    /// [`entries`](Self::entries), a sealed entry as `Written::Conflicted`.
+    pub(crate) fn writes(&self) -> Result<impl Iterator<Item = (K, Written<V>)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        self.inner.writes()
+    }
+
     /// The value at `key`, if any.
     ///
     /// # Errors

@@ -98,8 +98,8 @@ mod authored_common;
 pub mod guarded;
 pub use guarded::{
     Authored, ContentAddressed, ContentHash, Editable, Edits, Guarded, GuardedEntries, GuardedKeys,
-    Moderated, ModeratedOnce, Moderation, Once, Owner, OwnerEdits, OwnerOnce, Owning, Policy,
-    WriteOnce, Written,
+    Moderated, ModeratedOnce, Moderation, Once, OnceOnly, Owner, OwnerEdits, OwnerOnce, Owning,
+    Policy, WriteOnce, Written,
 };
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
@@ -219,6 +219,9 @@ use crate::{AtomicUnit, Collection};
 
 /// Owned entries with their owners, a sealed one as `Written::Conflicted`.
 type OwnedRows<V, K> = Vec<(AccountId, (Written<V>, K))>;
+
+/// A keyed entry with its id, a sealed one as `Written::Conflicted`.
+type KeyedRow<V, K> = (Id, (Written<V>, K));
 
 /// Version of a `SortedMap`/`SortedSet` index marker. Bump it when the rows an
 /// index may hold change, so an index built before is rebuilt.
@@ -2027,22 +2030,36 @@ where
         Ok(entry.filter(|(_, key)| self.filed_under(id, key.as_ref())))
     }
 
-    /// Every entry with its id, in child order. An entry whose key does not fit
-    /// its id is skipped; one the child list names but storage cannot load is an
-    /// error, as in [`entries`](Collection::entries).
-    fn keyed_entries(&self) -> StoreResult<impl Iterator<Item = StoreResult<(Id, (V, K))>> + '_> {
+    /// Every entry with its id in child order, a sealed one as `Written::Conflicted`; an
+    /// unfit key is skipped, an unloadable child is an error ([`entries`](Collection::entries)).
+    fn keyed_writes(&self) -> StoreResult<impl Iterator<Item = StoreResult<KeyedRow<V, K>>> + '_> {
         let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
         Ok(ids
             .into_iter()
             .filter_map(move |id| match self.find_admitted(id) {
-                Ok(Some(entry)) => self
-                    .key_fits(id, &entry.item)
-                    .then_some(Ok((id, entry.item))),
+                Ok(Some(entry)) => self.key_fits(id, &entry.item).then(|| {
+                    let (value, key) = entry.item;
+                    Ok((id, (Written::Value(value), key)))
+                }),
                 Ok(None) => Some(Err(StoreError::StorageError(StorageError::NotFound(id)))),
-                // A written-once entry two values sealed has no value to list.
-                Err(StoreError::StorageError(StorageError::Conflicted(_))) => None,
+                Err(StoreError::StorageError(StorageError::Conflicted(_))) => self
+                    .sealed_key(id)
+                    .transpose()
+                    .map(|key| key.map(|key| (id, (Written::Conflicted, key)))),
                 Err(error) => Some(Err(error)),
             }))
+    }
+
+    /// The `(entry, key)` at `id`, a sealed one as `Written::Conflicted`, if this
+    /// collection admits it and its key fits.
+    fn get_keyed_written(&self, id: Id) -> StoreResult<Option<(Written<V>, K)>> {
+        match self.find_keyed(id) {
+            Ok(entry) => Ok(entry.map(|entry| (Written::Value(entry.item.0), entry.item.1))),
+            Err(StoreError::StorageError(StorageError::Conflicted(_))) => {
+                Ok(self.sealed_key(id)?.map(|key| (Written::Conflicted, key)))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Every owned entry with its owner, in child order: only `owner`'s when one
@@ -2084,14 +2101,10 @@ where
             {
                 continue;
             }
-            let entry = match self.find_keyed(child.id()) {
-                Ok(entry) => entry.map(|entry| (Written::Value(entry.item.0), entry.item.1)),
-                Err(StoreError::StorageError(StorageError::Conflicted(_))) => self
-                    .sealed_key(child.id())?
-                    .map(|key| (Written::Conflicted, key)),
-                Err(error) => return Err(error),
-            };
-            if let Some(entry) = entry.filter(|(_, key)| wanted(key)) {
+            if let Some(entry) = self
+                .get_keyed_written(child.id())?
+                .filter(|(_, key)| wanted(key))
+            {
                 out.push((stamped, entry));
             }
         }

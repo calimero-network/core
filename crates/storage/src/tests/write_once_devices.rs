@@ -32,7 +32,7 @@ use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::map_entry_bytes;
 use crate::tests::common::{account_of_key, conflict_record, test_account};
 use crate::tests::owned_rules::{act_as, apply, conflicted, key, later, signed};
-use crate::tests::policy_matrix::note;
+use crate::tests::policy_matrix::{note, Note};
 use crate::written_once::conflict_parts;
 
 /// Plain values, so two nodes holding the same entry hold the same bytes.
@@ -433,58 +433,55 @@ where
 #[serial]
 fn a_sealed_entry_stays_in_every_listing_of_the_collection() {
     let values = || ["yes".to_owned(), "no".to_owned()];
+    let sealed = || vec![(ballot_key(), Written::<String>::Conflicted)];
 
     let map = sealed_collection::<UnorderedMap<String, String>, OwnerOnce>(values());
-    assert_eq!(
-        map.entries().expect("entries").count(),
-        1,
-        "UnorderedMap::entries"
-    );
+    let listed: Vec<_> = map.entries().expect("entries").collect();
+    assert_eq!(listed, sealed(), "UnorderedMap::entries");
 
     let moderated = sealed_collection::<UnorderedMap<String, String>, Moderation<Once>>(values());
-    assert_eq!(
-        moderated.entries().expect("entries").count(),
-        1,
-        "ModeratedOnce::entries"
-    );
+    let listed: Vec<_> = moderated.entries().expect("entries").collect();
+    assert_eq!(listed, sealed(), "ModeratedOnce::entries");
 
     let sorted = sealed_collection::<SortedMap<String, String>, OwnerOnce>(values());
+    let listed: Vec<_> = sorted.entries().expect("entries").collect();
+    assert_eq!(listed, sealed(), "SortedMap::entries");
+    let keys: Vec<_> = sorted.keys().expect("keys").collect();
+    assert_eq!(keys, vec![ballot_key()], "SortedMap::keys");
+    let values_listed: Vec<_> = sorted.values().expect("values").collect();
     assert_eq!(
-        sorted.entries().expect("entries").count(),
-        1,
-        "SortedMap::entries"
-    );
-    assert_eq!(sorted.keys().expect("keys").count(), 1, "SortedMap::keys");
-    assert_eq!(
-        sorted.values().expect("values").count(),
-        1,
+        values_listed,
+        vec![Written::Conflicted],
         "SortedMap::values"
     );
+    let listed: Vec<_> = sorted.range(..).expect("range").collect();
+    assert_eq!(listed, sealed(), "SortedMap::range");
+    let listed: Vec<_> = sorted.prefix(b"k").expect("prefix").collect();
+    assert_eq!(listed, sealed(), "SortedMap::prefix");
     assert_eq!(
-        sorted.range(..).expect("range").count(),
-        1,
-        "SortedMap::range"
-    );
-    assert_eq!(
-        sorted.prefix(b"k").expect("prefix").count(),
-        1,
-        "SortedMap::prefix"
-    );
-    assert_eq!(
-        sorted.page(0, 10).expect("page").len(),
-        1,
+        sorted.page(0, 10).expect("page"),
+        sealed(),
         "SortedMap::page"
     );
-    assert!(sorted.first().expect("first").is_some(), "SortedMap::first");
-    assert!(sorted.last().expect("last").is_some(), "SortedMap::last");
-
-    let indexed = sealed_collection::<
-        IndexedMap<String, crate::tests::policy_matrix::Note>,
-        OwnerOnce,
-    >([note("t", "yes"), note("t", "no")]);
     assert_eq!(
-        indexed.entries().expect("entries").count(),
-        1,
+        sorted.first().expect("first"),
+        sealed().pop(),
+        "SortedMap::first"
+    );
+    assert_eq!(
+        sorted.last().expect("last"),
+        sealed().pop(),
+        "SortedMap::last"
+    );
+
+    let indexed = sealed_collection::<IndexedMap<String, Note>, OwnerOnce>([
+        note("t", "yes"),
+        note("t", "no"),
+    ]);
+    let listed: Vec<_> = indexed.entries().expect("entries").collect();
+    assert_eq!(
+        listed,
+        vec![(ballot_key(), Written::<Note>::Conflicted)],
         "IndexedMap::entries"
     );
 }

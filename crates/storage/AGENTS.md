@@ -91,10 +91,12 @@ switching a field between the two types needs no migration.
   arrive. One kept write is the value. Two seal the entry: its stored bytes
   become a conflict record (`calimero.written-once.conflict.v1` then borsh of
   both signed writes), stamped with the first write's signature, and a read
-  returns `StorageError::Conflicted`. The owner listings of a written-once
-  policy return `Written<V>` per entry (`Owning::Listed`), so a sealed entry
-  stays listed as `Written::Conflicted`; the inner collection's listings leave
-  it out. A written-once write over `written_once::MAX_VALUE_BYTES` is refused,
+  returns `StorageError::Conflicted`. Every listing of a written-once policy
+  (`OnceOnly`) returns `Written<V>` per entry, so a sealed entry stays listed as
+  `Written::Conflicted`: the owner listings through `Owning::Listed`, and the
+  map listings through `Guarded` methods that shadow the inner map's (a sorted
+  map's index keeps a row for a sealed entry). An `IndexedMap` query matches
+  values, which a sealed entry has none of. A written-once write over `written_once::MAX_VALUE_BYTES` is refused,
   so a record of two fits one sync leaf. The kept pair is a
   semilattice, so nodes that saw different pairs store the same bytes after
   any exchange. A record is never applied as one write

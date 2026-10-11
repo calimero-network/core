@@ -465,6 +465,16 @@ where
     pub(crate) fn raw_entries_with_ids(
         &self,
     ) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError> {
+        Ok(self
+            .raw_writes_with_ids()?
+            .filter_map(|(id, key, entry)| Some((id, key, entry.value()?))))
+    }
+
+    /// [`raw_entries_with_ids`](Self::raw_entries_with_ids) with a sealed entry as
+    /// `Written::Conflicted`.
+    fn raw_writes_with_ids(
+        &self,
+    ) -> Result<impl Iterator<Item = (Id, K, Written<V>)> + '_, StoreError> {
         // ITER_DROP diagnostic: the inner iterator yields `Result<…>`;
         // an `Err` means the parent's children list advertises an id
         // whose entry can't be loaded (e.g. `NotFound` from a
@@ -476,8 +486,8 @@ where
         let collection_id = self.inner.id();
         // The inner collection yields `(V, K)`; the public contract is
         // `(K, V)`, so flip it back here.
-        Ok(self.inner.keyed_entries()?.filter_map(move |result| match result {
-            Ok((id, (value, key))) => Some((id, key, value)),
+        Ok(self.inner.keyed_writes()?.filter_map(move |result| match result {
+            Ok((id, (entry, key))) => Some((id, key, entry)),
             Err(error) => {
                 tracing::error!(
                     target: "calimero_storage::iter_drop",
@@ -491,6 +501,18 @@ where
                 None
             }
         }).fuse())
+    }
+
+    /// Every entry, a sealed one as `Written::Conflicted`; what a written-once
+    /// collection's `entries` lists.
+    pub(crate) fn writes(&self) -> Result<impl Iterator<Item = (K, Written<V>)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        Ok(self
+            .raw_writes_with_ids()?
+            .filter(|(id, key, _)| self.inner.filed_under(*id, key.as_ref()))
+            .map(|(_, key, entry)| (key, entry)))
     }
 
     /// Entries in a deterministic, replica-independent order: sorted by
