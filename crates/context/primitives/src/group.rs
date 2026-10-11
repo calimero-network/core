@@ -73,8 +73,9 @@ pub struct CreateGroupResponse {
 }
 
 /// What a derived namespace id was derived from: `founded_namespace_id(founder,
-/// salt) == group_id`, or `account_namespace_id` for the account namespace. Showing both lets a third party confirm who founded the
-/// namespace without holding any of its governance state.
+/// salt) == group_id`, or `account_namespace_id` for the account namespace.
+/// Showing both lets a third party confirm who founded the namespace without
+/// holding any of its governance state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct NamespaceFounding {
     pub founder: AccountId,

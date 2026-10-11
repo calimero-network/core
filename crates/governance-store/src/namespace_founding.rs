@@ -88,12 +88,7 @@ impl<'a> NamespaceFoundingRepository<'a> {
     }
 
     /// Record that `founder` founded `namespace_id` with `salt` through a `kind` genesis.
-    ///
-    /// Refused unless the pair reproduces the id under that kind; a record that does
-    /// not is a caller bug and would prove nothing. Idempotent for the same pair; a
-    /// different pair for the same id is refused rather than overwritten,
-    /// since exactly one pair reproduces a derived id and replacing it would
-    /// destroy the only copy of the right one.
+    /// Refused unless the pair derives the id under that kind; idempotent, never overwritten.
     ///
     /// # Errors
     /// A pair that does not reproduce the id, a conflicting record, or the

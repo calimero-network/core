@@ -426,11 +426,11 @@ pub(crate) fn apply(
     // On its own this check only blocks MISMATCHED forgeries (a signer naming a
     // DIFFERENT founder); a SELF-CONSISTENT forgery (signer == founder ==
     // attacker) passes it. The derivation check below is what closes that
-    // (#2932, formerly the SECURITY residual here): every namespace id is
+    // (formerly the SECURITY residual here): every namespace id is
     // `founded_namespace_id(founder, salt)` (`account_namespace_id` for an account
-    // namespace), so a self-consistent forgery can
-    // only found an id its own account hashes to, never somebody else's, even
-    // on a bare replica where the established gate above protects nothing.
+    // namespace), so a self-consistent forgery can only found an id its own
+    // account hashes to, never somebody else's, even on a bare replica where the
+    // established gate above protects nothing.
     // `founder` names an account and a signature names a key, so the two halves
     // of "the signer IS the founder" come from the credential: it must certify
     // this founder's account, and it must certify the key that signed the op.
