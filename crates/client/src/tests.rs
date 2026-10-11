@@ -1546,17 +1546,17 @@ mod request_proof {
         let _ignored: serde_json::Value = conn.get("admin-api/contexts").await.unwrap();
     }
 
-    /// The signature commits to the method and the path the node received —
-    /// not to the variant name, and not to anything after a `?`.
+    /// The signature commits to the method and the path and query the node
+    /// received, not to the variant name.
     #[tokio::test]
-    async fn the_proof_commits_to_the_method_and_the_path_the_node_sees() {
+    async fn the_proof_commits_to_the_method_and_the_path_and_query_the_node_sees() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/admin-api/contexts"))
             .respond_with(move |req: &Request| {
                 let proof = decode(req);
                 assert_eq!(proof.request.method, "GET");
-                assert_eq!(proof.request.path, "/admin-api/contexts");
+                assert_eq!(proof.request.path, "/admin-api/contexts?limit=5");
                 assert!(
                     proof.session.is_none(),
                     "with_device_key is the two-link chain"

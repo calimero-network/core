@@ -952,6 +952,10 @@ mod tests {
     use axum::response::Response;
     use axum::routing::get;
     use axum::Router;
+    use calimero_account::{
+        AccountGenesis, AccountProof, CallerProof, DeviceCert, KemPublicKey, RequestSig,
+    };
+    use calimero_primitives::identity::{DeviceId, PrivateKey};
     use mero_auth::auth::permissions::PermissionValidator;
     use mero_auth::auth::token::TokenManager;
     use mero_auth::config::JwtConfig;
@@ -959,6 +963,8 @@ mod tests {
     use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
     use mero_auth::AuthService;
     use tower::ServiceExt as _;
+
+    use crate::proof_auth::ProofPolicy;
 
     /// Build the request the guard hands to the validator: only the method and
     /// the full path are read by `determine_required_permissions`.
@@ -1020,13 +1026,11 @@ mod tests {
         Deleted,
     }
 
-    /// Drive one request through the real guard over an in-memory auth service,
-    /// so the assertions land on the response a client actually receives.
-    async fn guarded_request(fate: KeyFate) -> Response {
-        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+    /// An in-memory token manager, the half of the auth service every guard test needs.
+    async fn token_manager(storage: &Arc<dyn Storage>) -> TokenManager {
+        let secrets = Arc::new(SecretManager::new(Arc::clone(storage)));
         secrets.initialize().await.unwrap();
-        let token_manager = TokenManager::new(
+        TokenManager::new(
             JwtConfig {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
@@ -1036,9 +1040,16 @@ mod tests {
                 ),
                 node_host: None,
             },
-            Arc::clone(&storage),
+            Arc::clone(storage),
             secrets,
-        );
+        )
+    }
+
+    /// Drive one request through the real guard over an in-memory auth service,
+    /// so the assertions land on the response a client actually receives.
+    async fn guarded_request(fate: KeyFate) -> Response {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let token_manager = token_manager(&storage).await;
 
         let key_manager = KeyManager::new(Arc::clone(&storage));
         let mut key = Key::new_root_key_with_permissions(
@@ -1107,6 +1118,131 @@ mod tests {
             resp.headers().get("X-Auth-Error").is_none(),
             "an absent key must not be reported as revoked",
         );
+    }
+
+    /// Send `GET sent` through the real guard with a two-link proof signed over
+    /// `signed`, and return the status the client sees.
+    async fn proven_request(signed: &str, sent: &str) -> StatusCode {
+        let root = PrivateKey::from([1; 32]);
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let device_sk = PrivateKey::from([51; 32]);
+        let cert = DeviceCert::sign(
+            &root,
+            account,
+            DeviceId::mint(account, [0x22; 16]),
+            &device_sk.public_key(),
+            &KemPublicKey::from([9; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let now = super::now_secs();
+        let proof = CallerProof {
+            account_proof: AccountProof {
+                genesis,
+                chain: vec![],
+                statement: cert,
+            },
+            session: None,
+            request: RequestSig::sign(&device_sk, "GET", signed, b"", now, now + 60).unwrap(),
+        };
+        let policy = ProofPolicy {
+            node_key: PrivateKey::from([4; 32]).public_key(),
+            node_account: account,
+            delegated_access: false,
+        };
+
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        Router::new()
+            .route("/admin-api/contexts", get(|| async { "ok" }))
+            .layer(super::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager(&storage).await)),
+                Some(policy),
+            ))
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(sent)
+                    .header(
+                        "x-calimero-proof",
+                        hex::encode(borsh::to_vec(&proof).unwrap()),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The query picks the object on several routes, so the proof covers it
+    /// byte for byte as the request line carries it.
+    #[tokio::test]
+    async fn a_proof_admits_the_exact_path_and_query_it_signed() {
+        for target in [
+            "/admin-api/contexts",
+            "/admin-api/contexts?",
+            "/admin-api/contexts?limit=5&q=a%2Fb",
+        ] {
+            assert_eq!(
+                proven_request(target, target).await,
+                StatusCode::OK,
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_proof_refuses_any_other_path_or_query() {
+        for (case, signed, sent) in [
+            (
+                "added query",
+                "/admin-api/contexts",
+                "/admin-api/contexts?limit=5",
+            ),
+            (
+                "added parameter",
+                "/admin-api/contexts?a=1",
+                "/admin-api/contexts?a=1&b=2",
+            ),
+            (
+                "reordered query",
+                "/admin-api/contexts?a=1&b=2",
+                "/admin-api/contexts?b=2&a=1",
+            ),
+            (
+                "decoded escape",
+                "/admin-api/contexts?q=a%2Fb",
+                "/admin-api/contexts?q=a/b",
+            ),
+            (
+                "recased escape",
+                "/admin-api/contexts?q=a%2Fb",
+                "/admin-api/contexts?q=a%2fb",
+            ),
+            (
+                "empty query dropped",
+                "/admin-api/contexts?",
+                "/admin-api/contexts",
+            ),
+            (
+                "empty query added",
+                "/admin-api/contexts",
+                "/admin-api/contexts?",
+            ),
+            (
+                "different path",
+                "/admin-api/namespaces?a=1",
+                "/admin-api/contexts?a=1",
+            ),
+        ] {
+            assert_eq!(
+                proven_request(signed, sent).await,
+                StatusCode::UNAUTHORIZED,
+                "{case}: signed {signed}, sent {sent}",
+            );
+        }
     }
 
     /// A revoked token must map to `403 Forbidden` with `X-Auth-Error:
