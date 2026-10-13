@@ -1350,12 +1350,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                                             emit(XCallOutcome::Ok);
                                         }
                                         Err(err) => {
+                                            // The target method's error bytes or
+                                            // panic text are app data; `warn` is
+                                            // shipped off the node, so it gets
+                                            // them elided.
+                                            let shown = err
+                                                .downcast_ref::<FunctionCallError>()
+                                                .map_or_else(
+                                                    || err.to_string(),
+                                                    FunctionCallError::redacted,
+                                                );
                                             warn!(
                                                 %context_id,
                                                 target_context = ?target_context_id,
                                                 function = %function,
-                                                %err,
+                                                err = %shown,
                                                 "Cross-context call target method returned an error"
+                                            );
+                                            debug!(
+                                                %context_id,
+                                                function = %function,
+                                                %err,
+                                                "Cross-context call target method's error"
                                             );
                                             emit(XCallOutcome::ExecError {
                                                 message: err.to_string(),

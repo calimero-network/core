@@ -16,7 +16,7 @@ use futures_util::StreamExt;
 use mero_auth::auth::permissions::{
     ContextPermission, Permission, PermissionValidator, ResourceScope, UserScope,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::auth::GrantedPermissions;
 
@@ -190,12 +190,51 @@ pub(crate) async fn execute_request(
 
     refuse_discarded_write(request.context_id, &outcome)?;
 
-    let log_index_width = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
-    for (i, log) in outcome.logs.iter().enumerate() {
-        info!("execution log {i:>log_index_width$}| {}", log);
-    }
+    log_guest_logs(&outcome.logs);
 
     Ok(ExecutionResponse::new(method_output(outcome.returns)?))
+}
+
+/// Logs a run's guest log lines by audience, as the runtime does for each one.
+///
+/// A guest's log line is app text over app state, and `info` is what a node
+/// ships off the machine to its operator. The caller already gets the lines in
+/// the response, so `info` keeps their count and size and the text is at
+/// `trace` under `runtime::guest::log`, the target the runtime uses for it.
+pub(crate) fn log_guest_logs(logs: &[String]) {
+    if logs.is_empty() {
+        return;
+    }
+    info!(
+        lines = logs.len(),
+        bytes = logs.iter().map(String::len).sum::<usize>(),
+        "execution logs"
+    );
+    let log_index_width = logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
+    for (i, log) in logs.iter().enumerate() {
+        trace!(target: "runtime::guest::log", "execution log {i:>log_index_width$}| {log}");
+    }
+}
+
+/// Logs a failed execute request without the method's own error text.
+///
+/// `FunctionCallError` carries what the method returned as its error, or the
+/// guest's panic text: app data, which the caller already receives. At
+/// `error`, which is shipped off the node, it is logged by kind and size only;
+/// the text is at `debug`. Every other error is the node's own and is logged
+/// whole.
+pub(crate) fn log_execution_failure(err: &ExecutionError) {
+    match err {
+        ExecutionError::FunctionCallError(message) => {
+            error!(
+                kind = "FunctionCallError",
+                message_len = message.len(),
+                "Request failed"
+            );
+            debug!(%message, "Request failed: the method's error");
+        }
+        other => error!(err = ?other, "Request failed"),
+    }
 }
 
 /// What a method's run answers a client with: its JSON output, nothing, or the
@@ -346,5 +385,127 @@ mod grant_tests {
 
         assert!(!may_execute(true, None, &ctx, "set"));
         assert!(may_execute(false, None, &ctx, "set"));
+    }
+}
+
+/// What an execute request logs at `info` and above, the levels a node ships
+/// off the machine (merod's default filter is `calimero_=info`).
+#[cfg(test)]
+mod log_tests {
+    use std::io::{Result as IoResult, Write};
+    use std::sync::{Arc, Mutex};
+
+    use calimero_server_primitives::jsonrpc::ExecutionError;
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::fmt::layer;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry;
+
+    use super::{log_execution_failure, log_guest_logs};
+
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> IoResult<usize> {
+            self.0
+                .lock()
+                .expect("log buffer poisoned")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> IoResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Everything logged at `level` or above while `body` runs, retried once
+    /// with the interest cache rebuilt (see the runtime's `capture_logs`).
+    fn capture(level: LevelFilter, body: impl Fn()) -> String {
+        let once = |rebuild: bool| {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&buffer);
+            let subscriber = registry().with(
+                layer()
+                    .with_ansi(false)
+                    .with_writer(move || Buffer(Arc::clone(&sink)))
+                    .with_filter(level),
+            );
+            tracing::subscriber::with_default(subscriber, || {
+                if rebuild {
+                    tracing::callsite::rebuild_interest_cache();
+                }
+                body();
+            });
+            let bytes = buffer.lock().expect("log buffer poisoned").clone();
+            String::from_utf8(bytes).expect("formatted output must be utf-8")
+        };
+        let captured = once(false);
+        if captured.is_empty() {
+            once(true)
+        } else {
+            captured
+        }
+    }
+
+    /// Every guest log line used to be written at `info` verbatim, undoing
+    /// the runtime's length-only line for the same text.
+    #[test]
+    fn guest_log_lines_are_counted_at_info_not_written() {
+        let logs = vec![
+            "balance of alice is topsecret-42".to_owned(),
+            "ok".to_owned(),
+        ];
+
+        let info = capture(LevelFilter::INFO, || log_guest_logs(&logs));
+        assert!(
+            info.contains("execution logs"),
+            "the run's logs are still noted: {info}"
+        );
+        assert!(info.contains("lines=2"), "with their count: {info}");
+        assert!(
+            !info.contains("topsecret"),
+            "a guest log line was logged at info: {info}"
+        );
+
+        let trace = capture(LevelFilter::TRACE, || log_guest_logs(&logs));
+        assert!(
+            trace.contains("topsecret-42"),
+            "the text is still there at trace: {trace}"
+        );
+    }
+
+    /// A method's error is app data; the request failure used to log it whole
+    /// at `error`.
+    #[test]
+    fn a_method_error_is_logged_by_kind_at_error() {
+        let err = ExecutionError::FunctionCallError(
+            "the method call returned an error: topsecret balance 42 < 100".to_owned(),
+        );
+
+        let info = capture(LevelFilter::INFO, || log_execution_failure(&err));
+        assert!(
+            info.contains("Request failed"),
+            "the failure is still logged: {info}"
+        );
+        assert!(info.contains("FunctionCallError"), "with its kind: {info}");
+        assert!(
+            !info.contains("topsecret"),
+            "a method's error was logged at info or above: {info}"
+        );
+
+        let debug = capture(LevelFilter::DEBUG, || log_execution_failure(&err));
+        assert!(
+            debug.contains("topsecret"),
+            "the text is still there at debug: {debug}"
+        );
+    }
+
+    /// The node's own errors carry no app data and stay whole.
+    #[test]
+    fn a_node_error_is_logged_whole() {
+        let err = ExecutionError::SerdeError {
+            message: "expected a JSON object".to_owned(),
+        };
+        let info = capture(LevelFilter::INFO, || log_execution_failure(&err));
+        assert!(info.contains("expected a JSON object"), "{info}");
     }
 }

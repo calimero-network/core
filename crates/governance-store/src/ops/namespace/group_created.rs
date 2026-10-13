@@ -221,9 +221,8 @@ pub(crate) fn apply(
     // it reads the real visibility from the store. A born-Open subgroup is
     // therefore already Open at admit time, so the TEE is skipped (it reads
     // via inheritance) and no transient direct TEE row is left
-    // behind. `restricted: true` (the default) preserves legacy behavior,
-    // and the absent-key ⇒ Restricted default in `capabilities.rs` stays as
-    // a safety net for old state.
+    // behind. The absent-key ⇒ Restricted default in `capabilities.rs` stays
+    // as a safety net for old state.
     //
     // ONLY write birth visibility on the genuine FIRST create. Birth
     // visibility is an initial condition, not idempotent state: a duplicate
