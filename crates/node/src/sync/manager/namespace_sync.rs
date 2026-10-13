@@ -132,6 +132,27 @@ fn join_target_group(
 /// names a handful of admitters.
 const MAX_ADMITTER_MACHINES_DIALED: usize = 8;
 
+/// What entitles the party a join bundle is served to.
+#[derive(Clone, Copy)]
+enum BundleGrant<'a> {
+    /// A joiner presenting an invitation the responder validated.
+    Invitation(&'a calimero_context_config::types::SignedGroupOpenInvitation),
+    /// A member following a namespace it already holds a direct root row in.
+    Follow,
+}
+
+/// A validated request for the join bundle, as `serve_join_bundle` takes it.
+struct BundleRequest<'a> {
+    namespace_id: [u8; 32],
+    /// The group being joined: the invitation's target, or the namespace root
+    /// for a follow.
+    group_id: calimero_context_config::types::ContextGroupId,
+    application_id: [u8; 32],
+    joiner_public_key: PublicKey,
+    joiner_account: calimero_account::AccountId,
+    grant: BundleGrant<'a>,
+}
+
 impl SyncManager {
     /// Actively request governance catch-up from a specific peer whose
     /// identity we don't yet recognize as a context member.
@@ -568,8 +589,29 @@ impl SyncManager {
 
     /// Handle an incoming `NamespaceFollowRequest` on the responder side.
     ///
-    /// Not served yet: every follow is answered `NamespaceJoinRejected`, which
-    /// the follower treats like any refusal and takes to the next peer.
+    /// The join bootstrap without the invitation, for an account an admin
+    /// already placed at the namespace root. The member row is the authority, so
+    /// nothing is admitted, endorsed, pre-registered or re-roled here: the
+    /// follower is served the bundle the join serves, at the role it holds.
+    ///
+    /// Checked in order, each refusal named like the join's:
+    ///
+    /// 1. the credential names an account and certifies this request's key
+    ///    (`verified_joiner_account`, as the join);
+    /// 2. the re-entry gate admits it, else `removed`. The join's gate is keyed
+    ///    by the invitation nonce and a follow has none, so this reads the
+    ///    nonce-free half of it: a `Removed` block, which survives a member-row
+    ///    write and is lifted only by an admin's `MemberAdded`. A `Left` block
+    ///    is not checked: a member that left holds no row and is refused below;
+    /// 3. that account holds a direct row at the namespace root, else
+    ///    `not a member`. A subgroup row or an inherited membership is not
+    ///    enough: the bundle carries the namespace key;
+    /// 4. the device is neither withdrawn nor re-keyed past, as the join.
+    ///
+    /// Only an anchor of the namespace (admin, `ReadOnlyTee` or `RelayTee`,
+    /// the set `key_delivery_anchors` names) serves the bundle. Any other
+    /// responder answers an empty one, which the follower reads as "try the
+    /// next peer": it cannot keep a key from a non-anchor anyway.
     pub(super) async fn handle_namespace_follow_request(
         &self,
         namespace_id: [u8; 32],
@@ -578,17 +620,122 @@ impl SyncManager {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
-        debug!(
-            namespace_id = %hex::encode(namespace_id),
-            %joiner_public_key,
-            credential_len = joiner_credential_bytes.len(),
-            "refusing namespace follow: not implemented"
-        );
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_governance_store::ReentryRepository;
+        use calimero_store::key::GroupExitReason;
+
+        let namespace = ContextGroupId::from(namespace_id);
+        let store = self.context_client.datastore_handle().into_inner();
+
+        let (joiner_account, joiner_device, joiner_device_epoch) =
+            match Self::verified_joiner_account(joiner_credential_bytes, &joiner_public_key) {
+                Ok(joiner) => joiner,
+                Err(reason) => {
+                    return Self::refuse_follow(
+                        stream,
+                        nonce,
+                        format!("join credential rejected: {reason}"),
+                    )
+                    .await;
+                }
+            };
+
+        // Asked before the row, so a removed member hears it was removed rather
+        // than that it is no member; a row beside a `Removed` block is refused
+        // too, since only an admin's re-add lifts the block.
+        if let Some(GroupExitReason::Removed) =
+            ReentryRepository::new(&store).block_of(&namespace, &joiner_account)?
+        {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "refusing namespace follow: the account was removed from this namespace"
+            );
+            return Self::refuse_follow(stream, nonce, "removed".to_owned()).await;
+        }
+
+        if !MembershipRepository::new(&store).has_direct_member(&namespace, &joiner_account)? {
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "refusing namespace follow: the account holds no row at the namespace root"
+            );
+            return Self::refuse_follow(stream, nonce, "not a member".to_owned()).await;
+        }
+
+        if let Some(reason) = Self::withdrawn_device_refusal(
+            &store,
+            &namespace,
+            joiner_account,
+            joiner_device,
+            joiner_device_epoch,
+            &joiner_public_key,
+            "namespace follow",
+        )? {
+            return Self::refuse_follow(stream, nonce, reason.to_owned()).await;
+        }
+
+        let Some(meta) = MetaRepository::new(&store).load(&namespace)? else {
+            return Self::refuse_follow(stream, nonce, "group not found".to_owned()).await;
+        };
+
+        // Whether this node is an anchor, asked of the key it wraps under: the
+        // follower keeps the key only when that key is an anchor's. A store
+        // failure propagates rather than reading as "not an anchor".
+        let own_key = NamespaceRepository::new(&store)
+            .resolve_identity(&namespace)?
+            .map(|(public_key, _)| public_key);
+        let is_anchor = match own_key {
+            Some(own_key) => MembershipRepository::new(&store)
+                .anchor_device_keys(&namespace)?
+                .contains(&own_key),
+            None => false,
+        };
+        if !is_anchor {
+            debug!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "namespace follow: this node is not an anchor of the namespace, \
+                 answering with an empty bundle"
+            );
+            let empty = JoinBundle::empty();
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinResponse {
+                    key_envelope_bytes: empty.key_envelope_bytes,
+                    context_ids: empty.context_ids,
+                    application_id: *empty.application_id.as_ref(),
+                    governance_ops: empty.governance_ops,
+                    default_capabilities: empty.default_capabilities,
+                    admitter_endorsement_bytes: empty.admitter_endorsement_bytes,
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        self.serve_join_bundle(
+            &store,
+            BundleRequest {
+                namespace_id,
+                group_id: namespace,
+                application_id: *meta.target.application_id.as_ref(),
+                joiner_public_key,
+                joiner_account,
+                grant: BundleGrant::Follow,
+            },
+            stream,
+            nonce,
+        )
+        .await
+    }
+
+    /// Answer a follow with `NamespaceJoinRejected`, the join's refusal.
+    async fn refuse_follow(stream: &mut Stream, nonce: Nonce, reason: String) -> eyre::Result<()> {
         let msg = StreamMessage::Message {
             sequence_id: 0,
-            payload: MessagePayload::NamespaceJoinRejected {
-                reason: "follow not implemented".to_owned(),
-            },
+            payload: MessagePayload::NamespaceJoinRejected { reason },
             next_nonce: nonce,
         };
         crate::sync::stream::send(stream, &msg, None).await?;
@@ -610,9 +757,7 @@ impl SyncManager {
     ) -> eyre::Result<()> {
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::types::SignedGroupOpenInvitation;
-        use calimero_governance_store::enumerate_group_contexts;
         use calimero_governance_store::NamespaceMembershipService;
-        use calimero_governance_store::ReentryRepository;
 
         let invitation: SignedGroupOpenInvitation = match borsh::from_slice(invitation_bytes) {
             Ok(inv) => inv,
@@ -728,46 +873,21 @@ impl SyncManager {
             };
 
         // A device the namespace revoked, or narrowed out and has not linked again,
-        // is served nothing, whether or not its account is a member.
-        if AccountBindingRepository::new(&store).device_is_withdrawn(
-            &namespace,
-            joiner_account,
-            joiner_device,
-        )? {
-            warn!(
-                namespace_id = %hex::encode(namespace_id),
-                %joiner_public_key,
-                "rejecting namespace join: the joining device was revoked or narrowed out of this namespace"
-            );
-            let msg = StreamMessage::Message {
-                sequence_id: 0,
-                payload: MessagePayload::NamespaceJoinRejected {
-                    reason: "the joining device was revoked or narrowed out of this namespace"
-                        .to_owned(),
-                },
-                next_nonce: nonce,
-            };
-            crate::sync::stream::send(stream, &msg, None).await?;
-            return Ok(());
-        }
-
-        // A certificate at an epoch the device has been re-keyed past names a key it
-        // retired: served, the old key would receive every later namespace key.
-        if AccountBindingRepository::new(&store).device_epoch_superseded(
+        // is served nothing, whether or not its account is a member; nor is a key
+        // its device was re-keyed past.
+        if let Some(reason) = Self::withdrawn_device_refusal(
+            &store,
             &namespace,
             joiner_account,
             joiner_device,
             joiner_device_epoch,
+            &joiner_public_key,
+            "namespace join",
         )? {
-            warn!(
-                namespace_id = %hex::encode(namespace_id),
-                %joiner_public_key,
-                "rejecting namespace join: the joining key was re-keyed past"
-            );
             let msg = StreamMessage::Message {
                 sequence_id: 0,
                 payload: MessagePayload::NamespaceJoinRejected {
-                    reason: "the joining device was re-keyed past this key".to_owned(),
+                    reason: reason.to_owned(),
                 },
                 next_nonce: nonce,
             };
@@ -775,7 +895,52 @@ impl SyncManager {
             return Ok(());
         }
 
-        let already_member = MembershipRepository::new(&store)
+        self.serve_join_bundle(
+            &store,
+            BundleRequest {
+                namespace_id,
+                group_id,
+                application_id: *meta.target.application_id.as_ref(),
+                joiner_public_key,
+                joiner_account,
+                grant: BundleGrant::Invitation(&invitation),
+            },
+            stream,
+            nonce,
+        )
+        .await
+    }
+
+    /// Serve the join bundle to a party already validated, and send it.
+    ///
+    /// Shared by the join and the follow, so both hand over the same thing: the
+    /// covering key wrapped for the party's key, the contexts, the namespace's
+    /// governance history and its default capabilities. Everything that admits
+    /// someone (the re-entry gate, the admission role, the endorsement and the
+    /// pre-register) applies to an invitation only, and only to a party not
+    /// already recorded; a follow is always a recorded member and admits nobody.
+    async fn serve_join_bundle(
+        &self,
+        store: &calimero_store::Store,
+        request: BundleRequest<'_>,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_governance_store::enumerate_group_contexts;
+        use calimero_governance_store::NamespaceMembershipService;
+        use calimero_governance_store::ReentryRepository;
+
+        let BundleRequest {
+            namespace_id,
+            group_id,
+            application_id,
+            joiner_public_key,
+            joiner_account,
+            grant,
+        } = request;
+        let namespace = calimero_context_config::types::ContextGroupId::from(namespace_id);
+
+        let already_member = MembershipRepository::new(store)
             .has_direct_member(&group_id, &joiner_account)
             .unwrap_or(false);
         // Skipped for an identity that is already a member: the block governs
@@ -783,14 +948,17 @@ impl SyncManager {
         // perfectly ordinary re-sync or a retried join round — and since a
         // successful join consumes the invitation, gating them would reject every
         // repeat request they ever make with their own invitation.
-        let admission = if already_member {
-            Ok(())
-        } else {
-            ReentryRepository::new(&store).require_invitation_admits(
-                &group_id,
-                &joiner_account,
-                invitation.invitation.invitation_nonce,
-            )
+        let admission = match grant {
+            _ if already_member => Ok(()),
+            BundleGrant::Invitation(invitation) => ReentryRepository::new(store)
+                .require_invitation_admits(
+                    &group_id,
+                    &joiner_account,
+                    invitation.invitation.invitation_nonce,
+                ),
+            // A follow admits nobody: the caller checked the row, and this is the
+            // backstop should it be gone by now.
+            BundleGrant::Follow => Err(eyre::eyre!("not a member")),
         };
         if let Err(err) = admission {
             warn!(
@@ -812,23 +980,25 @@ impl SyncManager {
 
         // Refuse a role the invitation may not grant before any key is wrapped;
         // a member already recorded keeps the role it holds.
-        let admitted_role = if already_member {
-            None
-        } else {
-            match NamespaceMembershipService::new(&store, namespace_id.into())
-                .admission_role(&invitation, false)
-            {
-                Ok(role) => Some(role),
-                Err(err) => {
-                    let msg = StreamMessage::Message {
-                        sequence_id: 0,
-                        payload: MessagePayload::NamespaceJoinRejected {
-                            reason: format!("invitation rejected: {err}"),
-                        },
-                        next_nonce: nonce,
-                    };
-                    crate::sync::stream::send(stream, &msg, None).await?;
-                    return Ok(());
+        let admitted_role = match grant {
+            _ if already_member => None,
+            BundleGrant::Follow => None,
+            BundleGrant::Invitation(invitation) => {
+                match NamespaceMembershipService::new(store, namespace_id.into())
+                    .admission_role(invitation, false)
+                {
+                    Ok(role) => Some(role),
+                    Err(err) => {
+                        let msg = StreamMessage::Message {
+                            sequence_id: 0,
+                            payload: MessagePayload::NamespaceJoinRejected {
+                                reason: format!("invitation rejected: {err}"),
+                            },
+                            next_nonce: nonce,
+                        };
+                        crate::sync::stream::send(stream, &msg, None).await?;
+                        return Ok(());
+                    }
                 }
             }
         };
@@ -842,7 +1012,7 @@ impl SyncManager {
         // a key DID arrive, neither side logs a thing: the join reports success
         // and every op and delta afterwards fails to decrypt. `key_covering_group`
         // is the same mapping every writer uses.
-        let key_group_id = calimero_governance_store::key_covering_group(&store, &group_id)?;
+        let key_group_id = calimero_governance_store::key_covering_group(store, &group_id)?;
 
         let covered_by_namespace = key_group_id != group_id;
 
@@ -896,12 +1066,12 @@ impl SyncManager {
         let covering_key = if covered_by_namespace {
             None
         } else {
-            GroupKeyring::new(&store, key_group_id).load_current_key()?
+            GroupKeyring::new(store, key_group_id).load_current_key()?
         };
         let key_envelope_bytes = match covering_key {
             Some((_key_id, group_key)) => {
                 let ns_identity =
-                    NamespaceRepository::new(&store).resolve_identity_record(&namespace)?;
+                    NamespaceRepository::new(store).resolve_identity_record(&namespace)?;
                 match ns_identity {
                     Some(record) => {
                         let sender_sk =
@@ -946,27 +1116,33 @@ impl SyncManager {
         //
         // Signed over the payload the apply gate checks, so what this node
         // asserts and what every other node verifies are the same bytes.
-        let admitter_endorsement_bytes =
-            match calimero_governance_store::NamespaceMembershipService::endorse_join(
-                &store,
-                &namespace,
-                &joiner_account,
-                &invitation,
-            ) {
-                Ok(Some(endorsement)) => borsh::to_vec(&endorsement).ok(),
-                Ok(None) => {
-                    debug!(
-                        namespace_id = %hex::encode(namespace_id),
-                        "namespace join: this node is not an admitter for the invitation, \
-                         answering without an endorsement"
-                    );
-                    None
+        //
+        // A follow admits nobody, so there is nothing to endorse.
+        let admitter_endorsement_bytes = match grant {
+            BundleGrant::Follow => None,
+            BundleGrant::Invitation(invitation) => {
+                match calimero_governance_store::NamespaceMembershipService::endorse_join(
+                    store,
+                    &namespace,
+                    &joiner_account,
+                    invitation,
+                ) {
+                    Ok(Some(endorsement)) => borsh::to_vec(&endorsement).ok(),
+                    Ok(None) => {
+                        debug!(
+                            namespace_id = %hex::encode(namespace_id),
+                            "namespace join: this node is not an admitter for the invitation, \
+                             answering without an endorsement"
+                        );
+                        None
+                    }
+                    Err(err) => {
+                        warn!(%err, "namespace join: could not sign the admitter endorsement");
+                        None
+                    }
                 }
-                Err(err) => {
-                    warn!(%err, "namespace join: could not sign the admitter endorsement");
-                    None
-                }
-            };
+            }
+        };
 
         // Pre-register the joiner as a group member so that when it opens a sync
         // stream, this node's membership check passes immediately.
@@ -985,14 +1161,13 @@ impl SyncManager {
         };
         if let Some(role) = recorded_role {
             if let Err(e) =
-                MembershipRepository::new(&store).add_member(&group_id, &joiner_account, role)
+                MembershipRepository::new(store).add_member(&group_id, &joiner_account, role)
             {
                 warn!(%e, "failed to pre-register joiner as group member");
             }
         }
 
-        let context_ids = enumerate_group_contexts(&store, &group_id, 0, usize::MAX)?;
-        let application_id: [u8; 32] = *meta.target.application_id.as_ref();
+        let context_ids = enumerate_group_contexts(store, &group_id, 0, usize::MAX)?;
 
         for ctx_id in &context_ids {
             let ci_key = calimero_store::key::ContextIdentity::new(*ctx_id, joiner_public_key);
@@ -1014,7 +1189,7 @@ impl SyncManager {
         // `DefaultCapabilitiesSet` ops because the local store is
         // updated as those ops apply). `unwrap_or(0)` matches the
         // pre-existing semantics for "default key absent."
-        let default_capabilities = CapabilitiesRepository::new(&store)
+        let default_capabilities = CapabilitiesRepository::new(store)
             .default_capabilities(&namespace)?
             .unwrap_or(0);
 
@@ -1043,6 +1218,43 @@ impl SyncManager {
         };
         crate::sync::stream::send(stream, &msg, None).await?;
         Ok(())
+    }
+
+    /// Why a joining device is served nothing, or `None` when it may be served.
+    ///
+    /// A device the namespace revoked, or narrowed out and has not linked again,
+    /// is refused whether or not its account is a member. So is a certificate at
+    /// an epoch the device has been re-keyed past: it names a key the device
+    /// retired, and served, that key would receive every later namespace key.
+    fn withdrawn_device_refusal(
+        store: &calimero_store::Store,
+        namespace: &calimero_context_config::types::ContextGroupId,
+        account: calimero_account::AccountId,
+        device: calimero_account::DeviceId,
+        device_epoch: u32,
+        joiner_public_key: &PublicKey,
+        label: &str,
+    ) -> eyre::Result<Option<&'static str>> {
+        let bindings = AccountBindingRepository::new(store);
+        if bindings.device_is_withdrawn(namespace, account, device)? {
+            warn!(
+                namespace_id = %hex::encode(namespace.to_bytes()),
+                %joiner_public_key,
+                "rejecting {label}: the joining device was revoked or narrowed out of this namespace"
+            );
+            return Ok(Some(
+                "the joining device was revoked or narrowed out of this namespace",
+            ));
+        }
+        if bindings.device_epoch_superseded(namespace, account, device, device_epoch)? {
+            warn!(
+                namespace_id = %hex::encode(namespace.to_bytes()),
+                %joiner_public_key,
+                "rejecting {label}: the joining key was re-keyed past"
+            );
+            return Ok(Some("the joining device was re-keyed past this key"));
+        }
+        Ok(None)
     }
 
     /// Handle an incoming `OpenSubgroupJoinRequest` (issue #2357) on the
@@ -5005,6 +5217,233 @@ mod join_responder_tests {
                 })
             ),
             "a proven follow must be answered by the follow handler, got {reply:?}"
+        );
+    }
+
+    /// Follow as `follower`, proving its own key and presenting its credential.
+    async fn follow(r: &Responder, follower: &PrivateKey) -> Option<StreamMessage<'static>> {
+        exchange(&r.sm, follower, follow_request(follower)).await
+    }
+
+    /// Seat `key`'s account directly at the namespace root, with a live binding.
+    fn seated(store: &Store, key: &PrivateKey, role: GroupMemberRole) -> AccountId {
+        let account = enrol_member(store, &ns(), &key.public_key());
+        MembershipRepository::new(store)
+            .add_member(&ns(), &account, role)
+            .unwrap();
+        account
+    }
+
+    /// A responder that holds the namespace key but is run by a plain member,
+    /// so it is no anchor of the namespace.
+    async fn plain_member_responder() -> Responder {
+        let (sm, store, tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let admin = party(0x50);
+        let admin_account = seated(&store, &admin, GroupMemberRole::Admin);
+        MetaRepository::new(&store)
+            .save(&ns(), &sample_meta_with_admin(admin_account))
+            .unwrap();
+        let own = party(0x51);
+        let _ = seated(&store, &own, GroupMemberRole::Member);
+        NamespaceRepository::new(&store)
+            .store_identity(&ns(), &own.public_key(), &[0x51; 32])
+            .unwrap();
+        GroupKeyring::new(&store, ns())
+            .store_key(&[0x77; 32])
+            .expect("hold the namespace key");
+        Responder {
+            sm,
+            store,
+            admin,
+            _tmp: tmp,
+        }
+    }
+
+    /// The bundle a follow was answered with, or a panic naming the reply.
+    fn bundle(reply: Option<StreamMessage<'static>>) -> (Vec<u8>, Vec<Vec<u8>>, u32, bool) {
+        match reply {
+            Some(StreamMessage::Message {
+                payload:
+                    MessagePayload::NamespaceJoinResponse {
+                        key_envelope_bytes,
+                        governance_ops,
+                        default_capabilities,
+                        admitter_endorsement_bytes,
+                        ..
+                    },
+                ..
+            }) => (
+                key_envelope_bytes,
+                governance_ops,
+                default_capabilities,
+                admitter_endorsement_bytes.is_some(),
+            ),
+            other => panic!("expected a bundle, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_follow_by_an_account_with_no_root_row_is_refused_as_not_a_member() {
+        let r = responder().await;
+        let stranger = party(0x40);
+        let _ = enrol_member(&r.store, &ns(), &stranger.public_key());
+
+        let reply = follow(&r, &stranger).await;
+
+        assert_eq!(refusal(&reply), Some("not a member"), "{reply:?}");
+        assert_eq!(
+            role_held(&r, &stranger),
+            None,
+            "a refused follow records nothing"
+        );
+    }
+
+    /// A row in a subgroup is not a row at the root: the follow is for the
+    /// namespace, and only a direct root member may be served its key.
+    #[tokio::test]
+    async fn a_follow_by_a_subgroup_only_member_is_refused_as_not_a_member() {
+        let r = responder().await;
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        MetaRepository::new(&r.store)
+            .save(&subgroup, &sample_meta_with_admin(account_of(&r.admin)))
+            .unwrap();
+        NamespaceRepository::new(&r.store)
+            .nest(&ns(), &subgroup)
+            .unwrap();
+        let member = party(0x42);
+        let account = enrol_member(&r.store, &ns(), &member.public_key());
+        MembershipRepository::new(&r.store)
+            .add_member(&subgroup, &account, GroupMemberRole::Member)
+            .unwrap();
+
+        let reply = follow(&r, &member).await;
+
+        assert_eq!(refusal(&reply), Some("not a member"), "{reply:?}");
+    }
+
+    /// A removal as `MemberRemoved` applies it: the row goes, the account is
+    /// deny-listed, and a `Removed` re-entry block is written.
+    #[tokio::test]
+    async fn a_follow_by_a_removed_member_is_refused_as_removed() {
+        let r = responder().await;
+        let removed = party(0x41);
+        let account = seated(&r.store, &removed, GroupMemberRole::Member);
+        MembershipRepository::new(&r.store)
+            .remove_member(&ns(), &account)
+            .unwrap();
+        DenyListRepository::new(&r.store)
+            .mark(&ns(), &account)
+            .unwrap();
+        ReentryRepository::new(&r.store)
+            .block(&ns(), &account, GroupExitReason::Removed)
+            .unwrap();
+
+        let reply = follow(&r, &removed).await;
+
+        assert_eq!(refusal(&reply), Some("removed"), "{reply:?}");
+    }
+
+    /// The re-entry block outlives a member row, so a removed account is refused
+    /// even where a row for it is still on disk.
+    #[tokio::test]
+    async fn a_row_beside_a_removed_block_is_still_refused_as_removed() {
+        let r = responder().await;
+        let removed = party(0x47);
+        let account = seated(&r.store, &removed, GroupMemberRole::Member);
+        ReentryRepository::new(&r.store)
+            .block(&ns(), &account, GroupExitReason::Removed)
+            .unwrap();
+
+        let reply = follow(&r, &removed).await;
+
+        assert_eq!(refusal(&reply), Some("removed"), "{reply:?}");
+    }
+
+    /// Control for the test above: an admin's re-add lifts the block, and the
+    /// re-added member is served.
+    #[tokio::test]
+    async fn a_re_added_member_is_served_its_follow() {
+        let r = responder().await;
+        let readded = party(0x43);
+        let account = seated(&r.store, &readded, GroupMemberRole::Member);
+        ReentryRepository::new(&r.store)
+            .block(&ns(), &account, GroupExitReason::Removed)
+            .unwrap();
+        ReentryRepository::new(&r.store)
+            .clear_block(&ns(), &account)
+            .unwrap();
+
+        let (key_envelope_bytes, ..) = bundle(follow(&r, &readded).await);
+
+        assert!(!key_envelope_bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_follow_from_a_revoked_device_of_a_member_is_refused() {
+        let r = responder().await;
+        let follower = party(0x44);
+        let _ = seated(&r.store, &follower, GroupMemberRole::Member);
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(
+                &ns(),
+                real_join_account(&follower.public_key()).statement.device,
+            )
+            .unwrap();
+
+        let reply = follow(&r, &follower).await;
+
+        assert!(
+            refusal(&reply).is_some_and(|reason| reason.contains("revoked")),
+            "{reply:?}"
+        );
+    }
+
+    /// A responder that is not an anchor answers, with nothing in it: the
+    /// follower takes the empty key as "try the next peer".
+    #[tokio::test]
+    async fn a_plain_member_responder_answers_a_follow_with_an_empty_bundle() {
+        let r = plain_member_responder().await;
+        let follower = party(0x45);
+        let _ = seated(&r.store, &follower, GroupMemberRole::Member);
+
+        let (key_envelope_bytes, governance_ops, default_capabilities, endorsed) =
+            bundle(follow(&r, &follower).await);
+
+        assert!(key_envelope_bytes.is_empty(), "a non-anchor serves no key");
+        assert!(governance_ops.is_empty());
+        assert_eq!(default_capabilities, 0);
+        assert!(!endorsed);
+    }
+
+    #[tokio::test]
+    async fn an_admin_responder_serves_a_follower_the_key_at_its_existing_role() {
+        let r = responder().await;
+        let follower = party(0x46);
+        let _ = seated(&r.store, &follower, GroupMemberRole::ReadOnly);
+        let defaults = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
+        CapabilitiesRepository::new(&r.store)
+            .set_default_capabilities(&ns(), defaults)
+            .unwrap();
+
+        let (key_envelope_bytes, _ops, default_capabilities, endorsed) =
+            bundle(follow(&r, &follower).await);
+
+        let envelope: calimero_governance_types::KeyEnvelope =
+            borsh::from_slice(&key_envelope_bytes).expect("a key envelope");
+        let key = GroupKeyring::unwrap_for_recipient(
+            &follower,
+            &NAMESPACE,
+            Some(&r.admin.public_key()),
+            &envelope,
+        )
+        .expect("the follower opens the envelope with its own key");
+        assert_eq!(key, [0x77; 32], "the namespace key is served");
+        assert_eq!(default_capabilities, defaults);
+        assert!(!endorsed, "a follow admits nothing, so nothing is endorsed");
+        assert_eq!(
+            role_held(&r, &follower),
+            Some(GroupMemberRole::ReadOnly),
+            "a follow does not change the member's role"
         );
     }
 }
