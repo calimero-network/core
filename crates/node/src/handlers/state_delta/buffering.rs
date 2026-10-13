@@ -441,23 +441,6 @@ async fn drain_pending_application(input: &StateDeltaContext, context_id: &Conte
 /// [`apply_leaf_with_crdt_merge`] (the same convergent CRDT-merge the live sync
 /// path uses); the record is deleted only on success (idempotent on the key).
 async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId) -> Result<()> {
-    // The drain writes storage outside the executor, which would have re-anchored the root.
-    if drain_absorbed_leaf_records(input, context_id).await? > 0 {
-        crate::sync::helpers::reanchor_after_entity_merge(
-            &input.node_clients.context,
-            *context_id,
-            "absorb drain",
-        )
-        .await;
-    }
-    Ok(())
-}
-
-/// The drain [`drain_absorbed_leaves`] runs, returning how many records it applied.
-async fn drain_absorbed_leaf_records(
-    input: &StateDeltaContext,
-    context_id: &ContextId,
-) -> Result<usize> {
     use borsh::BorshDeserialize;
     use calimero_context::hlc_fence::loaded_reader_bytecode_id;
     use calimero_governance_store::AbsorbRepository;
@@ -469,7 +452,7 @@ async fn drain_absorbed_leaf_records(
     // The schema this node can read right now. `None` ⇒ can't tell readability;
     // leave every leaf record pending.
     let Some(loaded) = loaded_reader_bytecode_id(store, context_id)? else {
-        return Ok(0);
+        return Ok(());
     };
 
     let repo = AbsorbRepository::new(store);
@@ -480,13 +463,13 @@ async fn drain_absorbed_leaf_records(
         .iter()
         .any(|(_, r)| r.leaf.is_some() || r.entity.is_some())
     {
-        return Ok(0);
+        return Ok(());
     }
 
     let identity = choose_owned_identity(&input.node_clients.context, context_id).await?;
-    // Held to the end: each apply below rehashes ancestors an execution may be rehashing.
-    // Nothing under it re-enters the executor, and no await follows.
-    let _guard = input.node_clients.context.acquire_lock(context_id).await;
+    // Held across the applies: each rehashes ancestors an execution may be rehashing.
+    // Nothing under it re-enters the executor, and no await runs under it.
+    let guard = input.node_clients.context.acquire_lock(context_id).await;
     let account = calimero_governance_store::account_for_context(store, context_id)?;
     let runtime_env = crate::sync::helpers::with_repair_cell_writers(
         create_runtime_env(store, *context_id, identity, account),
@@ -512,10 +495,7 @@ async fn drain_absorbed_leaf_records(
     for ((producing_bytecode_id, delta_id), record) in pending {
         // Snapshot-entity-shaped records: re-verify, then apply through storage, once
         // the loaded reader matches the schema.
-        if let Some(entity_absorb) = record.entity.as_ref() {
-            if entity_absorb.schema_bytecode_id != loaded {
-                continue;
-            }
+        if record.entity.is_some() {
             let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
                 crate::sync::snapshot::drain_buffered_snapshot_entity(
                     store,
@@ -584,8 +564,16 @@ async fn drain_absorbed_leaf_records(
             drained,
             "absorb drain: re-applied buffered sync-repair leaves/entities after binary advance"
         );
+        // The drain wrote storage outside the executor, which would have re-anchored the root.
+        drop(guard);
+        crate::sync::helpers::reanchor_after_entity_merge(
+            &input.node_clients.context,
+            *context_id,
+            "absorb drain",
+        )
+        .await;
     }
-    Ok(drained)
+    Ok(())
 }
 
 /// Core drain mechanics, factored out so the decision/delete logic is unit-

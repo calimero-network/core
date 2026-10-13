@@ -1522,45 +1522,26 @@ pub(crate) fn order_buffered_snapshot_entities<K>(
             Some((Id::new(entity.id), index.parent_id()))
         })
         .collect();
-    let depths = buffered_entity_depths(&parents);
+    // How many buffered entities sit above one; a chain past the cap, or a cycle, counts as the cap.
+    let depth = |mut at| {
+        let mut d = 0;
+        while let Some(Some(p)) = parents.get(&at) {
+            if d == MAX_BUFFERED_ENTITY_DEPTH || !parents.contains_key(p) {
+                break;
+            }
+            at = *p;
+            d += 1;
+        }
+        d
+    };
     pending.sort_by_cached_key(|(_, record)| {
         record.entity.as_ref().map(|entity| {
-            let depth = depths.get(&Id::new(entity.id)).copied().unwrap_or(0);
-            (depth, buffered_snapshot_entity_pass(&entity.index))
+            (
+                depth(Id::new(entity.id)),
+                buffered_snapshot_entity_pass(&entity.index),
+            )
         })
     });
-}
-
-/// How many buffered entities sit above each one, memoized. A chain deeper than
-/// [`MAX_BUFFERED_ENTITY_DEPTH`], or a cycle, counts as that depth.
-fn buffered_entity_depths(parents: &HashMap<Id, Option<Id>>) -> HashMap<Id, usize> {
-    let mut depths: HashMap<Id, usize> = HashMap::with_capacity(parents.len());
-    'entities: for &start in parents.keys() {
-        let mut path = Vec::new();
-        let mut at = start;
-        let mut above = loop {
-            if let Some(&depth) = depths.get(&at) {
-                break Some(depth);
-            }
-            if path.len() > MAX_BUFFERED_ENTITY_DEPTH {
-                let _previous = depths.insert(start, MAX_BUFFERED_ENTITY_DEPTH);
-                continue 'entities;
-            }
-            path.push(at);
-            match parents.get(&at) {
-                Some(Some(parent)) if parents.contains_key(parent) => at = *parent,
-                _ => break None,
-            }
-        };
-        for id in path.into_iter().rev() {
-            let depth = above.map_or(0, |above: usize| {
-                above.saturating_add(1).min(MAX_BUFFERED_ENTITY_DEPTH)
-            });
-            let _previous = depths.insert(id, depth);
-            above = Some(depth);
-        }
-    }
-    depths
 }
 
 /// Re-verifies a buffered snapshot entity as the page apply would, then writes it through
@@ -4943,15 +4924,7 @@ mod snapshot_trust_tests {
         }
 
         fn is_stored(&self, id: Id) -> bool {
-            self.store
-                .handle()
-                .get(&super::ContextStateKey::new(
-                    self.context,
-                    super::StorageKey::Index(id).to_bytes(),
-                ))
-                .unwrap()
-                .and_then(|row| calimero_storage::row::decode(id, row.value.as_ref()))
-                .is_some_and(|row| row.data.is_some())
+            self.stored_data(id).is_some()
         }
 
         fn stored_data(&self, id: Id) -> Option<Vec<u8>> {

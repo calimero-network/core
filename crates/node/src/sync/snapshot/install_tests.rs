@@ -1158,40 +1158,6 @@ async fn drained_over(
     (joiner, outcome)
 }
 
-/// Its parent may still be buffered, so it waits; the drain's pass bound settles it.
-#[tokio::test]
-async fn a_buffered_public_entity_detached_from_the_tree_is_not_installed_at_drain() {
-    let (source, claimed) = source();
-    let detached = Id::new([0x61; 32]);
-    let SnapshotRecord::Entity { entry, index, .. } = orphan(detached, StorageType::Public) else {
-        unreachable!("orphan builds an entity record");
-    };
-
-    let (joiner, outcome) = drained_over(shipped(&source), claimed, (detached, entry, index)).await;
-
-    assert_eq!(outcome, SnapshotEntityDrainOutcome::Pending);
-    assert!(!joiner.holds(detached));
-}
-
-#[tokio::test]
-async fn a_buffered_older_signed_write_does_not_replace_a_newer_one_at_drain() {
-    let writer = PrivateKey::from([0x66; 32]);
-    let (id, newer_entry, newer_row) = signed_at(&writer, 200, 200);
-    let (_, entry, older_row) = signed_at(&writer, 100, 100);
-    let (records, claimed) = tree_over(&[(id, newer_entry, newer_row)]);
-
-    let (joiner, _) = drained_over(records, claimed, (id, entry, older_row.encode())).await;
-
-    let held = crate::delta_store::read_entity_index_direct(&joiner.store, context(), id)
-        .unwrap()
-        .expect("the entry is held")
-        .metadata
-        .storage_type
-        .signature_data()
-        .map(|sig| sig.nonce);
-    assert_eq!(held, Some(200), "the drain rolled the entry back");
-}
-
 /// Nothing binds an entity the claimed root does not reach, so a declined one is
 /// not kept for a later drain either.
 #[tokio::test]

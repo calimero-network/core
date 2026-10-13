@@ -746,13 +746,10 @@ pub(crate) fn snapshot_leaf_authorship(
         .into_iter()
         .map(|a| (a, verdict(Some(a))))
         .collect();
-    let authored = verdicts
+    if let Some((_, v)) = verdicts
         .iter()
-        .filter(|(_, v)| matches!(v, SnapshotAuthorship::Authored(_)));
-    if let Some((_, v)) = authored
-        .clone()
-        .find(|(a, _)| Some(*a) == live)
-        .or_else(|| authored.clone().next())
+        .filter(|(_, v)| matches!(v, SnapshotAuthorship::Authored(_)))
+        .min_by_key(|(a, _)| Some(*a) != live)
     {
         *v
     } else if verdicts.is_empty() {
