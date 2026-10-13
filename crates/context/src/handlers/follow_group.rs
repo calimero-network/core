@@ -334,10 +334,11 @@ impl Follow {
         {
             Ok(bundle) => bundle,
             Err(err) => {
-                let Some(reason) = follow_refusal(&err) else {
-                    return Err(err.wrap_err("follow: no peer served the namespace"));
-                };
-                warn!(?group_id, %err, reason, "every peer asked declined the follow");
+                // Every way a follow can fail to get served is either a
+                // membership verdict or worth retrying, so none of them is an
+                // untyped 500: what no rule names is `no peer served the follow`.
+                let reason = follow_refusal(&err).unwrap_or("no peer served the follow");
+                warn!(?group_id, err = %format!("{err:#}"), reason, "the follow was not served");
                 return Err(self.refused(reason));
             }
         };
@@ -508,8 +509,11 @@ impl Follow {
 
 /// The refusal an exhausted follow amounts to.
 ///
-/// A membership refusal from a peer the caller named decides it. Otherwise it
-/// is counted over distinct peers:
+/// A membership refusal from a peer the caller named decides it, then a
+/// deadline that passed with a named anchor never reached. Otherwise it is
+/// counted over distinct peers (only `not a member` and `removed` are
+/// membership refusals; `namespace not held` from a peer outside the namespace
+/// is not):
 ///
 /// A membership refusal stands only when every peer that declined gave one: a
 /// peer that answered keyless had found the account a member (it checks that
@@ -524,6 +528,11 @@ fn follow_refusal(err: &eyre::Report) -> Option<&'static str> {
         Some("removed") => return Some("removed"),
         Some("not a member") => return Some("not a member"),
         _ => {}
+    }
+    // The follow's deadline passed while an anchor the caller named never
+    // answered the dial: offline, or unreachable from here.
+    if exhausted.deadline_passed && exhausted.named_unreached > 0 {
+        return Some("no anchor reachable");
     }
     let peers = exhausted.rejected_peers;
     if peers == 0 {
@@ -944,6 +953,8 @@ mod tests {
             unusable_answers,
             opaque_errors,
             named_refusal: None,
+            deadline_passed: false,
+            named_unreached: 0,
         }
         .into()
     }
@@ -966,6 +977,8 @@ mod tests {
                 unusable_answers: 0,
                 opaque_errors: 2,
                 named_refusal: Some("removed".to_owned()),
+                deadline_passed: false,
+                named_unreached: 0,
             }
             .into())
         });
@@ -991,6 +1004,46 @@ mod tests {
                 .expect("read the meta")
                 .is_none(),
             "the meta the follow seeded is taken down"
+        );
+    }
+
+    /// With the anchor offline, the only peer that answered is one that does not
+    /// hold the namespace (a LAN node found by mDNS). That is no membership
+    /// verdict: the follow is refused as retryable, never as `not a member`.
+    #[actix::test]
+    async fn a_peer_that_does_not_hold_the_namespace_never_makes_a_follow_final() {
+        let w = world(true);
+        let answer: calimero_node_primitives::test_fixtures::JoinAnswer = Arc::new(|| {
+            Err(NamespaceJoinExhausted {
+                label: "follow",
+                attempts: 32,
+                last_rejection: Some("namespace not held".to_owned()),
+                last_connect_err: Some("anchor offline".to_owned()),
+                rejected_peers: 1,
+                refusals: vec!["namespace not held".to_owned()],
+                unusable_answers: 0,
+                opaque_errors: 0,
+                named_refusal: None,
+                deadline_passed: false,
+                named_unreached: 0,
+            }
+            .into())
+        });
+        let harness = actor::over_answering_joins_with(w.store.clone(), answer).await;
+
+        let err = follow(&harness, &w)
+            .await
+            .expect_err("nobody served the follow");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<ContextError>(),
+                Some(ContextError::FollowRefused {
+                    reason: "no peer served the follow",
+                    ..
+                })
+            ),
+            "got: {err:#}"
         );
     }
 
@@ -1040,6 +1093,8 @@ mod tests {
                 unusable_answers: 0,
                 opaque_errors: 2,
                 named_refusal: named_refusal.map(str::to_owned),
+                deadline_passed: false,
+                named_unreached: 0,
             }
             .into()
         };
@@ -1052,6 +1107,46 @@ mod tests {
             follow_refusal(&stray_errors(None)),
             None,
             "the same refusal from a discovered peer does not"
+        );
+        assert_eq!(
+            follow_refusal(&exhausted(&["namespace not held"], 0, 0, 1)),
+            None,
+            "a peer outside the namespace gives no membership verdict"
+        );
+        assert_eq!(
+            follow_refusal(&exhausted(
+                &["namespace not held", "group not found"],
+                0,
+                0,
+                2
+            )),
+            None
+        );
+        let deadline = |named_unreached: usize| -> eyre::Report {
+            NamespaceJoinExhausted {
+                label: "follow",
+                attempts: 32,
+                last_rejection: None,
+                last_connect_err: None,
+                rejected_peers: 1,
+                refusals: Vec::new(),
+                unusable_answers: 1,
+                opaque_errors: 0,
+                named_refusal: None,
+                deadline_passed: true,
+                named_unreached,
+            }
+            .into()
+        };
+        assert_eq!(
+            follow_refusal(&deadline(1)),
+            Some("no anchor reachable"),
+            "the named anchor never answered the dial before the deadline"
+        );
+        assert_eq!(
+            follow_refusal(&deadline(0)),
+            Some("no anchor answered"),
+            "every named anchor was reached; the keyless answer decides"
         );
         assert_eq!(follow_refusal(&eyre::eyre!("no mesh peers")), None);
     }

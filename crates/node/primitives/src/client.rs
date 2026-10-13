@@ -89,6 +89,11 @@ pub struct NamespaceJoinExhausted {
     /// the peers the caller named. Final: the loop stops on it, and it decides
     /// the follow's answer whatever other peers said.
     pub named_refusal: Option<String>,
+    /// A follow's overall deadline ended it before any peer served it.
+    pub deadline_passed: bool,
+    /// With `deadline_passed`: how many of the peers the caller named never
+    /// opened a stream. All of them means no anchor was reachable.
+    pub named_unreached: usize,
 }
 
 /// Parameters for a direct namespace join (or follow) request.

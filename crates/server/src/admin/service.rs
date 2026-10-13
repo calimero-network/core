@@ -1366,8 +1366,10 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // A follow the namespace declined. Who said no decides what the caller does
     // next: membership refusals (`not a member`, `removed`) are `403`, since only
     // an admin adding the account back helps; every other reason (no anchor
-    // answered, a peer too old to serve a follow, this node's own device link
-    // not yet logged) is a `503`, because the identical call can succeed later.
+    // answered, none reachable before the follow's deadline, a peer too old to
+    // serve a follow, this node's own device link not yet logged, nobody serving
+    // it at all) is a `503`, because the identical call can succeed later. The
+    // context handler types every way a follow goes unserved, so none is a 500.
     // The reason stays in the message either way.
     if let Some(calimero_context::error::ContextError::FollowRefused { reason, .. }) =
         err.downcast_ref::<calimero_context::error::ContextError>()
@@ -2535,6 +2537,8 @@ mod parse_api_error_tests {
                     "device binding not published",
                     StatusCode::SERVICE_UNAVAILABLE,
                 ),
+                ("no anchor reachable", StatusCode::SERVICE_UNAVAILABLE),
+                ("no peer served the follow", StatusCode::SERVICE_UNAVAILABLE),
             ] {
                 let err = ContextError::FollowRefused {
                     namespace_id: "a1".to_owned(),

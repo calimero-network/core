@@ -113,7 +113,10 @@ pub enum ContextError {
     /// opaque error, which is what a release without follow sends), or
     /// `device binding not published` (the follow got in, but this node's own
     /// device link could not be logged, so peers cannot resolve its key yet; a
-    /// retry of the follow completes it).
+    /// retry of the follow completes it), `no anchor reachable` (the follow's
+    /// deadline passed with a named anchor never reached), or `no peer served
+    /// the follow` (anything else that left it unserved). Only the first two
+    /// are final for the caller.
     #[error("namespace {namespace_id} could not be followed: {reason}")]
     FollowRefused {
         /// Hex rendering of the namespace (for the message only).

@@ -145,37 +145,59 @@ enum BundleGrant<'a> {
 /// follow responder sends them.
 const MEMBERSHIP_REFUSALS: [&str; 2] = ["not a member", "removed"];
 
-/// The typed error a join or follow ends with when no peer completed it.
-fn exhausted_error(
-    label: &'static str,
-    attempts: usize,
+/// How long a follow may take in all before it answers. Well inside meroctl's
+/// five-minute request timeout, and long enough for a mesh to form and a few
+/// anchors to be tried.
+const FOLLOW_DEADLINE: std::time::Duration = std::time::Duration::from_secs(75);
+
+/// What a join or follow learned from the peers it tried.
+#[derive(Default)]
+struct JoinTally {
+    /// Every peer that declined, for any reason; excluded from later rounds.
+    rejected_peers: std::collections::HashSet<libp2p::PeerId>,
     last_rejection: Option<String>,
     last_connect_err: Option<String>,
-    rejected_peers: usize,
+    /// How each declining peer declined, once per peer.
     declined: std::collections::HashMap<libp2p::PeerId, Declined>,
-    named_refusal: Option<String>,
-) -> eyre::Report {
-    let mut refusals = Vec::new();
-    let (mut unusable_answers, mut opaque_errors) = (0, 0);
-    for verdict in declined.into_values() {
-        match verdict {
-            Declined::Refused(reason) => refusals.push(reason),
-            Declined::Unusable => unusable_answers += 1,
-            Declined::Opaque => opaque_errors += 1,
+    /// Every peer a stream was opened to.
+    opened: std::collections::HashSet<libp2p::PeerId>,
+}
+
+impl JoinTally {
+    /// The typed error a join or follow ends with when no peer completed it.
+    /// `deadline_unreached` is `Some(named peers never reached)` when a follow's
+    /// deadline ended it.
+    fn exhausted(
+        &mut self,
+        label: &'static str,
+        attempts: usize,
+        named_refusal: Option<String>,
+        deadline_unreached: Option<usize>,
+    ) -> eyre::Report {
+        let mut refusals = Vec::new();
+        let (mut unusable_answers, mut opaque_errors) = (0, 0);
+        for verdict in std::mem::take(&mut self.declined).into_values() {
+            match verdict {
+                Declined::Refused(reason) => refusals.push(reason),
+                Declined::Unusable => unusable_answers += 1,
+                Declined::Opaque => opaque_errors += 1,
+            }
         }
+        NamespaceJoinExhausted {
+            label,
+            attempts,
+            last_rejection: self.last_rejection.take(),
+            last_connect_err: self.last_connect_err.take(),
+            rejected_peers: self.rejected_peers.len(),
+            refusals,
+            unusable_answers,
+            opaque_errors,
+            named_refusal,
+            deadline_passed: deadline_unreached.is_some(),
+            named_unreached: deadline_unreached.unwrap_or(0),
+        }
+        .into()
     }
-    NamespaceJoinExhausted {
-        label,
-        attempts,
-        last_rejection,
-        last_connect_err,
-        rejected_peers,
-        refusals,
-        unusable_answers,
-        opaque_errors,
-        named_refusal,
-    }
-    .into()
 }
 
 /// How one peer declined a join or follow, for [`NamespaceJoinExhausted`].
@@ -645,15 +667,17 @@ impl SyncManager {
     ///
     /// 1. the credential names an account and certifies this request's key
     ///    (`verified_joiner_account`, as the join);
-    /// 2. the re-entry gate admits it, else `removed`. The join's gate is keyed
+    /// 2. this node holds the namespace (its meta), else `namespace not held`,
+    ///    never a membership verdict it has no basis for;
+    /// 3. the re-entry gate admits it, else `removed`. The join's gate is keyed
     ///    by the invitation nonce and a follow has none, so this reads the
     ///    nonce-free half of it: a `Removed` block, which survives a member-row
     ///    write and is lifted only by an admin's `MemberAdded`. A `Left` block
     ///    is not checked: a member that left holds no row and is refused below;
-    /// 3. that account holds a direct row at the namespace root, else
+    /// 4. that account holds a direct row at the namespace root, else
     ///    `not a member`. A subgroup row or an inherited membership is not
     ///    enough: the bundle carries the namespace key;
-    /// 4. the device is neither withdrawn nor re-keyed past, as the join.
+    /// 5. the device is neither withdrawn nor re-keyed past, as the join.
     ///
     /// Only an anchor of the namespace (admin, `ReadOnlyTee` or `RelayTee`,
     /// the set `key_delivery_anchors` names) serves the bundle. Any other
@@ -686,6 +710,14 @@ impl SyncManager {
                     .await;
                 }
             };
+
+        // A node that does not hold the namespace knows nothing of its members,
+        // so it must not answer "not a member": that is a membership verdict,
+        // and the follower takes it as final. Asked first, as the join asks
+        // for the group before anything else.
+        let Some(meta) = MetaRepository::new(&store).load(&namespace)? else {
+            return Self::refuse_follow(stream, nonce, "namespace not held".to_owned()).await;
+        };
 
         // Asked before the row, so a removed member hears it was removed rather
         // than that it is no member; a row beside a `Removed` block is refused
@@ -721,10 +753,6 @@ impl SyncManager {
         )? {
             return Self::refuse_follow(stream, nonce, reason.to_owned()).await;
         }
-
-        let Some(meta) = MetaRepository::new(&store).load(&namespace)? else {
-            return Self::refuse_follow(stream, nonce, "group not found".to_owned()).await;
-        };
 
         // Whether this node is an anchor, asked of the key it wraps under: the
         // follower keeps the key only when that key is an anchor's. A store
@@ -1773,15 +1801,9 @@ impl SyncManager {
         // via `excluded_peers` so the next round skips them at the
         // connect layer rather than re-opening a transport just to
         // get rejected again.
-        let mut rejected_peers: std::collections::HashSet<libp2p::PeerId> =
-            std::collections::HashSet::new();
-        let mut last_rejection: Option<String> = None;
-        let mut last_connect_err: Option<String> = None;
-        // How each declining peer declined, once per peer, for the typed
-        // exhaustion error. A peer is excluded once it declines, so this is
-        // its one answer; keyed anyway so the counts are of peers, not attempts.
-        let mut declined: std::collections::HashMap<libp2p::PeerId, Declined> =
-            std::collections::HashMap::new();
+        // Who declined and how, and who opened a stream at all, for the typed
+        // exhaustion error. See [`JoinTally`].
+        let mut tally = JoinTally::default();
         // Cap on protocol-level retries, bounding the total post-open
         // exchanges so a mesh full of stale peers cannot deadlock the join.
         //
@@ -1850,249 +1872,275 @@ impl SyncManager {
         // stream attempts. Failures are ordinary — an address is a snapshot
         // from mint time — and none of them should fail a join that gossip may
         // still complete.
-        self.dial_admitters(admitter_routes).await;
+        // A follow is bounded in wall clock as a whole. A named anchor that is
+        // offline is never excluded (only an answer excludes a peer), so every
+        // remaining attempt would re-dial it at up to a connect timeout apiece,
+        // and the sync driver runs one join or follow at a time. The join keeps
+        // its old shape.
+        let deadline = match params.kind {
+            NamespaceJoinKind::Follow { .. } => Some(FOLLOW_DEADLINE),
+            NamespaceJoinKind::Invitation { .. } => None,
+        };
+        let attempts = async {
+            self.dial_admitters(admitter_routes).await;
 
-        for protocol_attempt in 1..=MAX_PROTOCOL_RETRIES {
-            let (mut stream, peer) = match super::namespace_join::open_namespace_join_stream(
-                &*self.sync_network,
-                params.namespace_id,
-                super::namespace_join::ConnectBudget {
-                    open_timeout: self.sync_config.open_stream_timeout,
-                    mesh_retries: crate::sync::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
-                    mesh_retry_delay: std::time::Duration::from_millis(
-                        crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
-                    ),
-                    discovery_wait: self.sync_config.namespace_discovery_wait,
-                },
-                &rejected_peers,
-                &admitter_peers,
-            )
-            .await
-            {
-                Ok(opened) => opened,
-                Err(open_err) => {
-                    if last_rejection.is_none() {
-                        // First attempt's connect loop exhausted with
-                        // no prior protocol-level success. The
-                        // connect loop has its own mesh-retry budget;
-                        // re-running it immediately would repeat the
-                        // same exhaustion with no state change.
-                        // Surface the connect_err directly.
-                        return Err(open_err);
+            for protocol_attempt in 1..=MAX_PROTOCOL_RETRIES {
+                let (mut stream, peer) = match super::namespace_join::open_namespace_join_stream(
+                    &*self.sync_network,
+                    params.namespace_id,
+                    super::namespace_join::ConnectBudget {
+                        open_timeout: self.sync_config.open_stream_timeout,
+                        mesh_retries: crate::sync::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
+                        mesh_retry_delay: std::time::Duration::from_millis(
+                            crate::sync::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+                        ),
+                        discovery_wait: self.sync_config.namespace_discovery_wait,
+                    },
+                    &tally.rejected_peers,
+                    &admitter_peers,
+                )
+                .await
+                {
+                    Ok((stream, peer)) => {
+                        let _ = tally.opened.insert(peer);
+                        (stream, peer)
                     }
-                    // Connect failure *after* at least one peer has
-                    // rejected: do not bail. The mesh may surface a
-                    // fresh peer on a later protocol attempt that
-                    // wasn't visible during this one (mesh-formation
-                    // delay, peer just finished processing the
-                    // namespace governance DAG, etc.). Record the err
-                    // for the exhaustion diagnostic and let the loop
-                    // continue.
-                    debug!(
-                        namespace_id = %hex::encode(params.namespace_id),
-                        attempt = protocol_attempt,
-                        error = %open_err,
-                        "namespace join: connect failed after prior rejection, will retry"
-                    );
-                    last_connect_err = Some(open_err.to_string());
-                    continue;
-                }
-            };
+                    Err(open_err) => {
+                        if tally.last_rejection.is_none() {
+                            // First attempt's connect loop exhausted with
+                            // no prior protocol-level success. The
+                            // connect loop has its own mesh-retry budget;
+                            // re-running it immediately would repeat the
+                            // same exhaustion with no state change.
+                            // Surface the connect_err directly.
+                            return Err(open_err);
+                        }
+                        // Connect failure *after* at least one peer has
+                        // rejected: do not bail. The mesh may surface a
+                        // fresh peer on a later protocol attempt that
+                        // wasn't visible during this one (mesh-formation
+                        // delay, peer just finished processing the
+                        // namespace governance DAG, etc.). Record the err
+                        // for the exhaustion diagnostic and let the loop
+                        // continue.
+                        debug!(
+                            namespace_id = %hex::encode(params.namespace_id),
+                            attempt = protocol_attempt,
+                            error = %open_err,
+                            "namespace join: connect failed after prior rejection, will retry"
+                        );
+                        tally.last_connect_err = Some(open_err.to_string());
+                        continue;
+                    }
+                };
 
-            let msg = StreamMessage::Init {
-                context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
-                party_id: params.joiner_public_key,
-                pop: join_pop,
-                payload: match &params.kind {
-                    NamespaceJoinKind::Invitation { invitation_bytes } => {
-                        InitPayload::NamespaceJoinRequest {
+                let msg = StreamMessage::Init {
+                    context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+                    party_id: params.joiner_public_key,
+                    pop: join_pop,
+                    payload: match &params.kind {
+                        NamespaceJoinKind::Invitation { invitation_bytes } => {
+                            InitPayload::NamespaceJoinRequest {
+                                namespace_id: params.namespace_id,
+                                invitation_bytes: invitation_bytes.clone(),
+                                joiner_public_key: params.joiner_public_key,
+                                joiner_credential_bytes: params.joiner_credential_bytes.clone(),
+                            }
+                        }
+                        NamespaceJoinKind::Follow { .. } => InitPayload::NamespaceFollowRequest {
                             namespace_id: params.namespace_id,
-                            invitation_bytes: invitation_bytes.clone(),
                             joiner_public_key: params.joiner_public_key,
                             joiner_credential_bytes: params.joiner_credential_bytes.clone(),
-                        }
-                    }
-                    NamespaceJoinKind::Follow { .. } => InitPayload::NamespaceFollowRequest {
-                        namespace_id: params.namespace_id,
-                        joiner_public_key: params.joiner_public_key,
-                        joiner_credential_bytes: params.joiner_credential_bytes.clone(),
+                        },
                     },
-                },
-                next_nonce: rand::rng().random(),
-            };
+                    next_nonce: rand::rng().random(),
+                };
 
-            if let Err(send_err) = crate::sync::stream::send(&mut stream, &msg, None).await {
-                debug!(
-                    namespace_id = %hex::encode(params.namespace_id),
-                    %peer,
-                    error = %send_err,
-                    "namespace join: send failed, marking peer rejected, trying next peer"
-                );
-                rejected_peers.insert(peer);
-                continue;
-            }
+                if let Err(send_err) = crate::sync::stream::send(&mut stream, &msg, None).await {
+                    debug!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        %peer,
+                        error = %send_err,
+                        "namespace join: send failed, marking peer rejected, trying next peer"
+                    );
+                    tally.rejected_peers.insert(peer);
+                    continue;
+                }
 
-            match crate::sync::stream::recv(&mut stream, None, self.sync_config.timeout).await {
-                Ok(Some(StreamMessage::Message {
-                    payload:
-                        MessagePayload::NamespaceJoinResponse {
+                match crate::sync::stream::recv(&mut stream, None, self.sync_config.timeout).await {
+                    Ok(Some(StreamMessage::Message {
+                        payload:
+                            MessagePayload::NamespaceJoinResponse {
+                                key_envelope_bytes,
+                                context_ids,
+                                application_id,
+                                governance_ops,
+                                default_capabilities,
+                                admitter_endorsement_bytes,
+                            },
+                        ..
+                    })) => {
+                        // A peer that is not an admitter answers honestly and
+                        // simply has no endorsement to give. That is not this
+                        // peer's failure and not a reason to fail the join —
+                        // another mesh peer may well be an admitter — so it is
+                        // treated like a rejection and the loop moves on.
+                        //
+                        // Without this the first non-admitter to answer would end
+                        // the join: the bundle comes back whole, so nothing reads
+                        // as an error until the joiner refuses to publish an
+                        // unendorsed membership, by which point the peers that
+                        // could have endorsed it were never asked. Peer preference
+                        // makes that unlikely rather than impossible, and "unlikely"
+                        // is how a join becomes flaky in a mesh whose members are
+                        // mostly not admitters.
+                        //
+                        // A follow needs no endorsement (the member row is the
+                        // authority) but does need the key: a responder that is not
+                        // an anchor of the namespace answers with an empty envelope,
+                        // and the follower asks the next peer.
+                        let unusable = match params.kind {
+                            NamespaceJoinKind::Invitation { .. } => {
+                                admitter_endorsement_bytes.is_none().then(|| {
+                                    format!("peer {peer} served the bundle but is not an admitter")
+                                })
+                            }
+                            NamespaceJoinKind::Follow { .. } => key_envelope_bytes
+                                .is_empty()
+                                .then(|| format!("peer {peer} served no key: not an anchor")),
+                        };
+                        if let Some(detail) = unusable {
+                            debug!(
+                                namespace_id = %hex::encode(params.namespace_id),
+                                %peer,
+                                attempt = protocol_attempt,
+                                %detail,
+                                "namespace {label}: responder cannot complete it, trying next peer"
+                            );
+                            tally.rejected_peers.insert(peer);
+                            let _ = tally.declined.insert(peer, Declined::Unusable);
+                            tally.last_rejection = Some(detail);
+                            continue;
+                        }
+
+                        return Ok(JoinBundle {
                             key_envelope_bytes,
                             context_ids,
-                            application_id,
+                            application_id: application_id.into(),
                             governance_ops,
                             default_capabilities,
                             admitter_endorsement_bytes,
-                        },
-                    ..
-                })) => {
-                    // A peer that is not an admitter answers honestly and
-                    // simply has no endorsement to give. That is not this
-                    // peer's failure and not a reason to fail the join —
-                    // another mesh peer may well be an admitter — so it is
-                    // treated like a rejection and the loop moves on.
-                    //
-                    // Without this the first non-admitter to answer would end
-                    // the join: the bundle comes back whole, so nothing reads
-                    // as an error until the joiner refuses to publish an
-                    // unendorsed membership, by which point the peers that
-                    // could have endorsed it were never asked. Peer preference
-                    // makes that unlikely rather than impossible, and "unlikely"
-                    // is how a join becomes flaky in a mesh whose members are
-                    // mostly not admitters.
-                    //
-                    // A follow needs no endorsement (the member row is the
-                    // authority) but does need the key: a responder that is not
-                    // an anchor of the namespace answers with an empty envelope,
-                    // and the follower asks the next peer.
-                    let unusable = match params.kind {
-                        NamespaceJoinKind::Invitation { .. } => {
-                            admitter_endorsement_bytes.is_none().then(|| {
-                                format!("peer {peer} served the bundle but is not an admitter")
-                            })
-                        }
-                        NamespaceJoinKind::Follow { .. } => key_envelope_bytes
-                            .is_empty()
-                            .then(|| format!("peer {peer} served no key: not an anchor")),
-                    };
-                    if let Some(detail) = unusable {
+                            // Who answered. The joiner may need to come back to
+                            // this exact peer to have an unsealable join wrapped
+                            // and published, and only the requester knows which
+                            // peer that was.
+                            admitter_peer: Some(peer),
+                        });
+                    }
+                    Ok(Some(StreamMessage::Message {
+                        payload: MessagePayload::NamespaceJoinRejected { reason },
+                        ..
+                    })) => {
                         debug!(
                             namespace_id = %hex::encode(params.namespace_id),
                             %peer,
+                            %reason,
                             attempt = protocol_attempt,
-                            %detail,
-                            "namespace {label}: responder cannot complete it, trying next peer"
+                            "namespace join: peer rejected, trying next peer"
                         );
-                        rejected_peers.insert(peer);
-                        let _ = declined.insert(peer, Declined::Unusable);
-                        last_rejection = Some(detail);
+                        tally.rejected_peers.insert(peer);
+                        let _ = tally
+                            .declined
+                            .insert(peer, Declined::Refused(reason.clone()));
+                        // A follow's membership refusal from a peer the caller named
+                        // is final: the caller named the namespace's anchors, which
+                        // hold its membership history, so no other peer can change
+                        // the answer, and asking them costs minutes. A discovered
+                        // peer's refusal may be stale or from outside the namespace,
+                        // so it only joins the count. The join is unchanged.
+                        let named_refusal = matches!(params.kind, NamespaceJoinKind::Follow { .. })
+                            && admitter_peers.contains(&peer)
+                            && MEMBERSHIP_REFUSALS.contains(&reason.as_str());
+                        tally.last_rejection = Some(reason.clone());
+                        if named_refusal {
+                            info!(
+                                namespace_id = %hex::encode(params.namespace_id),
+                                %peer,
+                                %reason,
+                                "namespace follow: a named anchor refused on membership; not asking further peers"
+                            );
+                            return Err(tally.exhausted(
+                                label,
+                                protocol_attempt,
+                                Some(reason),
+                                None,
+                            ));
+                        }
                         continue;
                     }
-
-                    return Ok(JoinBundle {
-                        key_envelope_bytes,
-                        context_ids,
-                        application_id: application_id.into(),
-                        governance_ops,
-                        default_capabilities,
-                        admitter_endorsement_bytes,
-                        // Who answered. The joiner may need to come back to
-                        // this exact peer to have an unsealable join wrapped
-                        // and published, and only the requester knows which
-                        // peer that was.
-                        admitter_peer: Some(peer),
-                    });
-                }
-                Ok(Some(StreamMessage::Message {
-                    payload: MessagePayload::NamespaceJoinRejected { reason },
-                    ..
-                })) => {
-                    debug!(
-                        namespace_id = %hex::encode(params.namespace_id),
-                        %peer,
-                        %reason,
-                        attempt = protocol_attempt,
-                        "namespace join: peer rejected, trying next peer"
-                    );
-                    rejected_peers.insert(peer);
-                    let _ = declined.insert(peer, Declined::Refused(reason.clone()));
-                    // A follow's membership refusal from a peer the caller named
-                    // is final: the caller named the namespace's anchors, which
-                    // hold its membership history, so no other peer can change
-                    // the answer, and asking them costs minutes. A discovered
-                    // peer's refusal may be stale or from outside the namespace,
-                    // so it only joins the count. The join is unchanged.
-                    let named_refusal = matches!(params.kind, NamespaceJoinKind::Follow { .. })
-                        && admitter_peers.contains(&peer)
-                        && MEMBERSHIP_REFUSALS.contains(&reason.as_str());
-                    last_rejection = Some(reason.clone());
-                    if named_refusal {
-                        info!(
+                    Ok(other) => {
+                        // What a responder that cannot decode the request answers.
+                        if matches!(other, Some(StreamMessage::OpaqueError)) {
+                            let _ = tally.declined.insert(peer, Declined::Opaque);
+                        }
+                        let detail = format!(
+                            "unexpected response variant: {:?}",
+                            other.as_ref().map(std::mem::discriminant)
+                        );
+                        debug!(
                             namespace_id = %hex::encode(params.namespace_id),
                             %peer,
-                            %reason,
-                            "namespace follow: a named anchor refused on membership; not asking further peers"
+                            %detail,
+                            "namespace join: unexpected response, marking peer rejected"
                         );
-                        return Err(exhausted_error(
-                            label,
-                            protocol_attempt,
-                            last_rejection,
-                            last_connect_err,
-                            rejected_peers.len(),
-                            declined,
-                            Some(reason),
-                        ));
+                        tally.rejected_peers.insert(peer);
+                        // Carry the unexpected-response detail into
+                        // `last_rejection` so the exhaustion error keeps
+                        // diagnostic context if every retry hits this arm.
+                        tally.last_rejection = Some(detail);
+                        continue;
                     }
-                    continue;
-                }
-                Ok(other) => {
-                    // What a responder that cannot decode the request answers.
-                    if matches!(other, Some(StreamMessage::OpaqueError)) {
-                        let _ = declined.insert(peer, Declined::Opaque);
+                    Err(recv_err) => {
+                        let detail = format!("recv failed: {recv_err}");
+                        debug!(
+                            namespace_id = %hex::encode(params.namespace_id),
+                            %peer,
+                            %detail,
+                            "namespace join: recv failed, marking peer rejected, trying next peer"
+                        );
+                        tally.rejected_peers.insert(peer);
+                        // Same rationale as the `Ok(other)` arm above —
+                        // carry the recv failure into `last_rejection` so
+                        // the exhaustion error remains informative.
+                        tally.last_rejection = Some(detail);
+                        continue;
                     }
-                    let detail = format!(
-                        "unexpected response variant: {:?}",
-                        other.as_ref().map(std::mem::discriminant)
-                    );
-                    debug!(
-                        namespace_id = %hex::encode(params.namespace_id),
-                        %peer,
-                        %detail,
-                        "namespace join: unexpected response, marking peer rejected"
-                    );
-                    rejected_peers.insert(peer);
-                    // Carry the unexpected-response detail into
-                    // `last_rejection` so the exhaustion error keeps
-                    // diagnostic context if every retry hits this arm.
-                    last_rejection = Some(detail);
-                    continue;
-                }
-                Err(recv_err) => {
-                    let detail = format!("recv failed: {recv_err}");
-                    debug!(
-                        namespace_id = %hex::encode(params.namespace_id),
-                        %peer,
-                        %detail,
-                        "namespace join: recv failed, marking peer rejected, trying next peer"
-                    );
-                    rejected_peers.insert(peer);
-                    // Same rationale as the `Ok(other)` arm above —
-                    // carry the recv failure into `last_rejection` so
-                    // the exhaustion error remains informative.
-                    last_rejection = Some(detail);
-                    continue;
                 }
             }
-        }
 
-        Err(exhausted_error(
-            label,
-            MAX_PROTOCOL_RETRIES,
-            last_rejection,
-            last_connect_err,
-            rejected_peers.len(),
-            declined,
-            None,
-        ))
+            Err(tally.exhausted(label, MAX_PROTOCOL_RETRIES, None, None))
+        };
+
+        let Some(deadline) = deadline else {
+            return attempts.await;
+        };
+        match time::timeout(deadline, attempts).await {
+            Ok(outcome) => outcome,
+            Err(_elapsed) => {
+                let unreached = admitter_peers
+                    .iter()
+                    .filter(|peer| !tally.opened.contains(peer))
+                    .count();
+                warn!(
+                    namespace_id = %hex::encode(params.namespace_id),
+                    named = admitter_peers.len(),
+                    unreached,
+                    deadline_secs = deadline.as_secs(),
+                    "namespace follow: deadline passed before any anchor served it"
+                );
+                Err(tally.exhausted(label, MAX_PROTOCOL_RETRIES, None, Some(unreached)))
+            }
+        }
     }
 
     /// Pull all namespace governance ops from a peer.
@@ -5419,6 +5467,25 @@ mod join_responder_tests {
         );
     }
 
+    /// A node that does not hold the namespace has no basis for a membership
+    /// verdict, so it says it does not hold it rather than "not a member",
+    /// which the follower would take as final.
+    #[tokio::test]
+    async fn a_node_that_does_not_hold_the_namespace_never_answers_not_a_member() {
+        let (sm, store, tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let r = Responder {
+            sm,
+            store,
+            admin: party(0x50),
+            _tmp: tmp,
+        };
+        let follower = party(0x47);
+
+        let reply = follow(&r, &follower).await;
+
+        assert_eq!(refusal(&reply), Some("namespace not held"), "{reply:?}");
+    }
+
     /// A row in a subgroup is not a row at the root: the follow is for the
     /// namespace, and only a direct root member may be served its key.
     #[tokio::test]
@@ -5743,6 +5810,44 @@ mod namespace_follow_requester_tests {
         assert_eq!(exhausted.attempts, 1, "terminal on the first answer");
         assert_eq!(exhausted.rejected_peers, 1, "nobody else was asked");
         mock.assert_all_consumed();
+    }
+
+    /// The named anchor is offline and the only other peer serves no key: the
+    /// follow ends at its deadline, saying the named anchor was never reached,
+    /// instead of re-dialing it for every remaining attempt (minutes in all).
+    #[tokio::test(start_paused = true)]
+    async fn a_follow_whose_named_anchor_is_offline_ends_at_its_deadline() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (anchor, stray) = (PeerId::random(), PeerId::random());
+        mock.push_subscribed_peers(vec![stray]);
+        // The anchor is tried first and never opens; the stray answers keyless.
+        // Every later open fails too (the mock's empty queue is an error).
+        let _ = mock.push_open_stream_err("anchor offline");
+        let keyless = answer(mock.push_open_stream_ok_with_peer(), Vec::new());
+        let (sm, _store, _tmp) = manager(Arc::clone(&mock)).await;
+        sm.local_peer_id
+            .set(PeerId::random())
+            .expect("set the local peer id");
+        let started = tokio::time::Instant::now();
+
+        let err = follow_naming(&sm, anchor).await;
+        let _asked = keyless.await.unwrap();
+
+        assert!(
+            started.elapsed() <= super::FOLLOW_DEADLINE + Duration::from_secs(1),
+            "answered within the deadline, took {:?}",
+            started.elapsed()
+        );
+        let exhausted = err
+            .downcast_ref::<calimero_node_primitives::client::NamespaceJoinExhausted>()
+            .unwrap_or_else(|| panic!("a typed exhaustion, got {err:#}"));
+        assert!(exhausted.deadline_passed);
+        assert_eq!(
+            exhausted.named_unreached, 1,
+            "the named anchor never opened"
+        );
+        assert_eq!(exhausted.unusable_answers, 1, "the stray's keyless answer");
+        assert_eq!(exhausted.named_refusal, None);
     }
 
     /// Control: the same refusal from a peer the caller did not name only joins

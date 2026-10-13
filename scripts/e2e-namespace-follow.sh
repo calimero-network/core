@@ -305,12 +305,19 @@ while :; do
   status=$(follow "$NS" "$PEERS" "$APP_ID")
   echo "     follow after removal: $status in $(($(date +%s) - started))s"
   answered "follow after removal" "$status"
-  if [ "$status" = "403" ]; then
-    case "$(body)" in
-      *removed* | *"not a member"*) break ;;
-      *) fail "follow after removal: 403 without a reason: $(body)" ;;
-    esac
-  fi
+  # The named anchor's refusal is final and must say why. A 5xx means the
+  # refusal was lost on the way (the regression this leg exists for), so it
+  # fails at once rather than being retried. A 200 is node-2 not yet having
+  # applied the removal itself, which is worth another try.
+  case "$status" in
+    403)
+      case "$(body)" in
+        *'"removed"'* | *": removed"*) break ;;
+        *) fail "follow after removal: 403 but not \"removed\": $(body)" ;;
+      esac
+      ;;
+    5*) fail "follow after removal: $status: $(body)" ;;
+  esac
   i=$((i + 1))
   [ $i -lt 30 ] || fail "follow after removal: never refused in 30 tries, last $status: $(body)"
   sleep 2
