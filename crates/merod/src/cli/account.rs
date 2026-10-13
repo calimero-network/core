@@ -234,7 +234,7 @@ pub struct SignCertCommand {
 /// already spent for this device with a `403`, before running anything; one
 /// nonce on warrants for two relays is two warrants, each spendable once. A gap
 /// in the sequence is how a member learns the relay withheld a request.
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 pub struct WarrantCommand {
     /// The context the intent runs in, 64 hex chars.
     #[arg(long, value_name = "HEX")]
@@ -315,6 +315,29 @@ pub struct WarrantCommand {
     /// disagree.
     #[arg(long, value_name = "HEX")]
     credential: String,
+}
+
+impl std::fmt::Debug for WarrantCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarrantCommand")
+            .field("context", &self.context)
+            .field("method", &self.method)
+            .field("args", &self.args)
+            .field("executor", &self.executor)
+            .field("executor_key", &self.executor_key)
+            .field("release_bytecode_id", &self.release_bytecode_id)
+            .field("release_version", &self.release_version)
+            .field("nonce", &self.nonce)
+            .field("valid_for", &self.valid_for)
+            .field("not_after", &self.not_after)
+            .field("device_secret_file", &self.device_secret_file)
+            .field(
+                "device_secret",
+                &self.device_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("credential", &self.credential)
+            .finish()
+    }
 }
 
 impl WarrantCommand {
@@ -409,7 +432,7 @@ impl WarrantCommand {
 /// integrator re-deriving the domain hash and the borsh layout by hand is
 /// exactly that drift, and it fails in the direction where the copy passes its
 /// own checks and the product refuses the result.
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 pub struct LoginStatementCommand {
     /// The challenge this node issued, 64 hex chars.
     ///
@@ -499,6 +522,25 @@ pub struct LoginStatementCommand {
     valid_for: u64,
 }
 
+impl std::fmt::Debug for LoginStatementCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginStatementCommand")
+            .field("challenge", &self.challenge)
+            .field("node", &self.node)
+            .field("session_key", &self.session_key)
+            .field("generate_session_key", &self.generate_session_key)
+            .field("device_secret_file", &self.device_secret_file)
+            .field(
+                "device_secret",
+                &self.device_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("audience", &self.audience)
+            .field("credential", &self.credential)
+            .field("valid_for", &self.valid_for)
+            .finish()
+    }
+}
+
 /// Map the `--audience` spelling onto the variant it names.
 ///
 /// A thin alias over [`calimero_account::Audience::from_spelling`], kept because
@@ -521,7 +563,7 @@ fn parse_audience(spelling: &str) -> calimero_account::Audience {
 /// chain it is the ephemeral session key `login-statement --generate-session-key`
 /// printed. The node's verifier accepts both, so the choice here is about where
 /// the key lives rather than about what the node will take.
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 pub struct SignRequestCommand {
     /// The HTTP method, exactly as it will be sent.
     ///
@@ -599,6 +641,24 @@ pub struct SignRequestCommand {
     /// request itself — that is a different encoding, not a shorter one.
     #[arg(long, value_name = "HEX", requires = "credential")]
     session: Option<String>,
+}
+
+impl std::fmt::Debug for SignRequestCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignRequestCommand")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field("body", &self.body)
+            .field("signer_secret_file", &self.signer_secret_file)
+            .field(
+                "signer_secret",
+                &self.signer_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("valid_for", &self.valid_for)
+            .field("credential", &self.credential)
+            .field("session", &self.session)
+            .finish()
+    }
 }
 
 /// Decode a hex-encoded, borsh-serialized link of the chain.
@@ -1484,6 +1544,85 @@ mod tests {
         ])
         .expect_err("the file and the inline flag must not be combined");
         assert!(err.to_string().contains("device-secret"), "{err}");
+    }
+
+    #[test]
+    fn warrant_debug_omits_the_device_secret() {
+        use clap::Parser;
+
+        let secret = "a7".repeat(32);
+        let command = WarrantCommand::try_parse_from([
+            "warrant",
+            "--context",
+            "context",
+            "--method",
+            "transfer_funds",
+            "--executor",
+            &"22".repeat(32),
+            "--executor-key",
+            &"33".repeat(32),
+            "--release-bytecode-id",
+            &"44".repeat(32),
+            "--nonce",
+            "1",
+            "--device-secret",
+            &secret,
+            "--credential",
+            "aabb",
+        ])
+        .expect("parse");
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains(&secret), "{shown}");
+        assert!(shown.contains("transfer_funds"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn login_statement_debug_omits_the_device_secret() {
+        use clap::Parser;
+
+        let secret = "a7".repeat(32);
+        let command = LoginStatementCommand::try_parse_from([
+            "login-statement",
+            "--challenge",
+            &"22".repeat(32),
+            "--node",
+            &"33".repeat(32),
+            "--generate-session-key",
+            "--device-secret",
+            &secret,
+            "--audience",
+            "https://app.example",
+        ])
+        .expect("parse");
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains(&secret), "{shown}");
+        assert!(shown.contains("https://app.example"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+    }
+
+    #[test]
+    fn sign_request_debug_omits_the_signer_secret() {
+        use clap::Parser;
+
+        let secret = "a7".repeat(32);
+        let command = SignRequestCommand::try_parse_from([
+            "sign-request",
+            "--method",
+            "GET",
+            "--path",
+            "/admin-api/contexts",
+            "--signer-secret",
+            &secret,
+        ])
+        .expect("parse");
+        let shown = format!("{command:?}");
+
+        assert!(!shown.contains(&secret), "{shown}");
+        assert!(shown.contains("/admin-api/contexts"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
     }
 
     /// A file's contents are trimmed, `-` reads the stream given, and an empty

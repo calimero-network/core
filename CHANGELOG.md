@@ -4,6 +4,18 @@
 
 ### Added
 
+- **A node behind an auth proxy can seal logins and logged-in calls.**
+  `[server.sealed] forward_auth` names the auth service the proxy asks (a
+  loopback `http` origin, e.g. `http://127.0.0.1:3001`; anything else fails
+  startup). In `auth_mode = "proxy"`, merod then forwards an opened `/auth/` or
+  `/admin/` request to it, and asks its `/auth/validate` about any other
+  guarded route, as the proxy's forward-auth would. A refusal comes back
+  sealed and the route is never reached; an admission sets the `X-Auth-*`
+  identity from the auth service's answer only, and those headers are now
+  stripped from every envelope. Without it, an opened request still reaches
+  only routes served without a credential (`sealed_route_unguarded`). Off
+  unless configured; ignored under embedded auth. (#4545)
+
 - **A warrant names the one device that may spend it.** A warrant named only
   the executor account, and each relay spends nonces in its own ledger, so two
   devices of one operator account could each spend the same warrant and
@@ -478,6 +490,51 @@
   [#3528])
 
 ### Fixed
+
+- **A node no longer ships application data in its logs.** merod's default
+  filter (`merod`, `calimero_*` and `mero_auth` at `info`) sends `info` and above
+  to whoever runs the node's log pipeline, which on a TEE node is a party the
+  application's data must not reach. Five places logged that data there; each
+  now follows the rule the runtime already used for guest output: size at
+  `info`/`warn`/`error`, text at `debug`/`trace`.
+  - Every guest `env::log` line, written at `info` after each JSON-RPC/WS
+    execute. Now: the count and size at `info`; the lines at `trace` under
+    `runtime::guest::log`.
+  - The JSON-RPC and WebSocket "Request failed" line, which logged the whole
+    `ExecutionError`, including a method's error payload or panic text. Now a
+    `FunctionCallError` is logged by kind and size; the node's own errors stay
+    whole.
+  - The runtime's "WASM method execution failed", whose `error_debug` and
+    `error_message` carried a guest panic's text. Now
+    `FunctionCallError::redacted` is logged.
+  - `panic_utf8`'s "Guest panic captured", which carried the panic text at
+    `error`.
+  - The context crate's cross-context call warning, which carried the target
+    method's error. Now `redacted`.
+
+  Covered by tests that capture what each path logs at `info` with a planted
+  secret.
+
+- **QUIC no longer lets a peer crash a node or grow its memory without
+  bound.** `quinn-proto`, which the libp2p QUIC transport uses, moves from
+  0.11.15 to 0.11.19 for RUSTSEC-2026-0338 (zero-length STREAM frames panic
+  it), -0339 (pending connection-ID retirements grow without bound), -0340 (a
+  peer's minimum ACK delay can panic it), -0341 (the stream reassembly guard
+  can be bypassed) and -0342 (zero-length DATAGRAM frames bypass the receive
+  buffer limit). Every node listens on QUIC by default. (#4553)
+
+- **A governance op parked for want of its key is judged at its own cut.**
+  Such an op now folds as a hole until a replay judges it against the
+  membership at its own parents, and as a `Noop` once that replay refuses it,
+  so a member's op this node could not read on arrival no longer grants what
+  a keyed node refused. The op keeps its place in the DAG, and the startup
+  sweep replays sealed root ops too. The only new state is a node-local row
+  per parked op; an op parked by an earlier build folds as before. (#4520)
+
+- **The application list reports each application's services.**
+  `GET /admin-api/applications` now fills `services` as the single read does,
+  and blob delete therefore refuses the blobs of an installed app's named
+  services, as it already did for its bytecode. (#4542)
 
 - **A served signed write is dated by its signature.** A signed `User`,
   `Shared` or `SharedMember` write committed to its nonce but not to

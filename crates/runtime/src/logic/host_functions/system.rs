@@ -364,13 +364,20 @@ impl VMHostFunctions<'_> {
         let line = location.line();
         let column = location.column();
 
+        // The panic text is the guest's own and can hold its state, so `error`
+        // (shipped off the node) gets its size; the text is at `debug`.
         error!(
             target: "runtime::host::system",
-            message = %panic_message,
+            message_len = panic_message.len(),
             file = %file,
             line,
             column,
             "Guest panic captured"
+        );
+        debug!(
+            target: "runtime::host::system",
+            message = %panic_message,
+            "Guest panic message"
         );
 
         Err(HostError::Panic {

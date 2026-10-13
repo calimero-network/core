@@ -260,6 +260,11 @@ jobs:
           unchanged \`imageVersion\` cannot be told apart from the one already
           deployed, which is how a fleet keeps quietly running the old binary.
 
+          \`mero-tee/build-inputs.lock.json\` is re-pinned too: the image build checks
+          every archive it downloads against it, merod's among them, and the new
+          digests come from this release's \`SHA256SUMS\`. Check that they match
+          the release before merging.
+
           **This repository was missing from the fleet list until \`0.11.0-rc.39\`.**
           It sat on merod \`0.11.0-rc.35\` across four releases — 37 commits,
           including every account, session and warrant change that delegated
