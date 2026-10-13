@@ -141,6 +141,16 @@ enum BundleGrant<'a> {
     Follow,
 }
 
+/// How one peer declined a join or follow, for [`NamespaceJoinExhausted`].
+enum Declined {
+    /// It sent `NamespaceJoinRejected` with this reason.
+    Refused(String),
+    /// It served a bundle the request cannot use.
+    Unusable,
+    /// It answered an opaque error.
+    Opaque,
+}
+
 /// A validated request for the join bundle, as `serve_join_bundle` takes it.
 struct BundleRequest<'a> {
     namespace_id: [u8; 32],
@@ -1730,10 +1740,11 @@ impl SyncManager {
             std::collections::HashSet::new();
         let mut last_rejection: Option<String> = None;
         let mut last_connect_err: Option<String> = None;
-        // What each declining peer said, for the typed exhaustion error.
-        let mut refusals: Vec<String> = Vec::new();
-        let mut unusable_answers = 0usize;
-        let mut opaque_errors = 0usize;
+        // How each declining peer declined, once per peer, for the typed
+        // exhaustion error. A peer is excluded once it declines, so this is
+        // its one answer; keyed anyway so the counts are of peers, not attempts.
+        let mut declined: std::collections::HashMap<libp2p::PeerId, Declined> =
+            std::collections::HashMap::new();
         // Cap on protocol-level retries, bounding the total post-open
         // exchanges so a mesh full of stale peers cannot deadlock the join.
         //
@@ -1935,7 +1946,7 @@ impl SyncManager {
                             "namespace {label}: responder cannot complete it, trying next peer"
                         );
                         rejected_peers.insert(peer);
-                        unusable_answers += 1;
+                        let _ = declined.insert(peer, Declined::Unusable);
                         last_rejection = Some(detail);
                         continue;
                     }
@@ -1966,14 +1977,14 @@ impl SyncManager {
                         "namespace join: peer rejected, trying next peer"
                     );
                     rejected_peers.insert(peer);
-                    refusals.push(reason.clone());
+                    let _ = declined.insert(peer, Declined::Refused(reason.clone()));
                     last_rejection = Some(reason);
                     continue;
                 }
                 Ok(other) => {
                     // What a responder that cannot decode the request answers.
                     if matches!(other, Some(StreamMessage::OpaqueError)) {
-                        opaque_errors += 1;
+                        let _ = declined.insert(peer, Declined::Opaque);
                     }
                     let detail = format!(
                         "unexpected response variant: {:?}",
@@ -2010,6 +2021,15 @@ impl SyncManager {
             }
         }
 
+        let mut refusals = Vec::new();
+        let (mut unusable_answers, mut opaque_errors) = (0, 0);
+        for verdict in declined.into_values() {
+            match verdict {
+                Declined::Refused(reason) => refusals.push(reason),
+                Declined::Unusable => unusable_answers += 1,
+                Declined::Opaque => opaque_errors += 1,
+            }
+        }
         Err(NamespaceJoinExhausted {
             label,
             attempts: MAX_PROTOCOL_RETRIES,

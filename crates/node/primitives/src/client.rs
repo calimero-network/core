@@ -74,14 +74,15 @@ pub struct NamespaceJoinExhausted {
     pub last_rejection: Option<String>,
     /// The last failure to open a stream after a peer had declined.
     pub last_connect_err: Option<String>,
-    /// Every peer that declined, for any reason.
+    /// Every distinct peer that declined, for any reason (send and receive
+    /// failures included, which the counts below leave out).
     pub rejected_peers: usize,
-    /// The reasons peers sent in `NamespaceJoinRejected`, in arrival order.
+    /// The reasons peers sent in `NamespaceJoinRejected`, one per peer.
     pub refusals: Vec<String>,
-    /// Peers that answered a bundle this request cannot use: no endorsement for
-    /// a join, no key for a follow.
+    /// Distinct peers that answered a bundle this request cannot use: no
+    /// endorsement for a join, no key for a follow.
     pub unusable_answers: usize,
-    /// Peers that answered with an opaque error.
+    /// Distinct peers that answered with an opaque error.
     pub opaque_errors: usize,
 }
 

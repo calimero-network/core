@@ -717,15 +717,69 @@ pub async fn link_own_device(
         endorsement,
         scope: Box::new(scope),
     };
+    // `Ok` means the op was signed and applied into the local log; the publish
+    // after that is best-effort and sync carries it to peers that missed it.
     let report =
         crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, link)
             .await?;
+    record_own_link(store, namespace, &cert.sign_pk)?;
     debug!(
         namespace_id = ?namespace,
         device = %cert.device,
         published = report.is_some(),
         "linked this node's own device under a member's endorsement"
     );
+    Ok(())
+}
+
+/// 16-byte `Generic` scope of the own-link marker: one row per namespace.
+const OWN_LINK_SCOPE: [u8; 16] = *b"calimero-ownlink";
+
+fn own_link_key(namespace: &ContextGroupId) -> calimero_store::key::Generic {
+    calimero_store::key::Generic::new(OWN_LINK_SCOPE, namespace.to_bytes())
+}
+
+/// Node-local: this node logged its own device link for `sign_pk` in
+/// `namespace` ([`link_own_device`] succeeded locally). Never gossiped.
+fn record_own_link(
+    store: &Store,
+    namespace: &ContextGroupId,
+    sign_pk: &calimero_primitives::identity::PublicKey,
+) -> EyreResult<()> {
+    let data = calimero_store::types::GenericData::from(calimero_store::slice::Slice::from(
+        AsRef::<[u8; 32]>::as_ref(sign_pk).to_vec(),
+    ));
+    store.handle().put(&own_link_key(namespace), &data)?;
+    Ok(())
+}
+
+/// Whether this node logged its own device link for `sign_pk` in `namespace`.
+///
+/// What a follow is complete on: the local binding a follow writes first is
+/// node-local and tells peers nothing, so a follow whose own link was never
+/// logged has to run again rather than be read as done.
+///
+/// # Errors
+/// The store read.
+pub fn own_link_logged(
+    store: &Store,
+    namespace: &ContextGroupId,
+    sign_pk: &calimero_primitives::identity::PublicKey,
+) -> EyreResult<bool> {
+    let handle = store.handle();
+    let Some(data) = handle.get(&own_link_key(namespace))? else {
+        return Ok(false);
+    };
+    let bytes: &[u8] = data.as_ref();
+    Ok(bytes == AsRef::<[u8; 32]>::as_ref(sign_pk).as_slice())
+}
+
+/// Drop the own-link marker for `namespace`, when this node leaves it.
+///
+/// # Errors
+/// The store write.
+pub fn forget_own_link(store: &Store, namespace: &ContextGroupId) -> EyreResult<()> {
+    store.handle().delete(&own_link_key(namespace))?;
     Ok(())
 }
 
@@ -1171,6 +1225,14 @@ mod tests {
             Some(account),
             "the follower's key has to resolve to its account"
         );
+        assert!(
+            own_link_logged(&store, &ns, &follower_sk.public_key()).expect("read the marker"),
+            "a logged link is recorded, so a later follow can tell it is complete"
+        );
+        assert!(
+            !own_link_logged(&store, &ns, &anchor_sk.public_key()).expect("read the marker"),
+            "the marker names the key it was logged for"
+        );
     }
 
     /// Control: the follower's own key cannot vouch for it, because that key is
@@ -1224,6 +1286,10 @@ mod tests {
         .await;
 
         assert!(refused.is_err());
+        assert!(
+            !own_link_logged(&store, &ns, &follower_sk.public_key()).expect("read the marker"),
+            "nothing was logged, so nothing is marked"
+        );
     }
 
     /// The whole point, through the real publish path: a namespace gained after

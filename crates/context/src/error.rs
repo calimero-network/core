@@ -110,7 +110,10 @@ pub enum ContextError {
     /// for this account), `removed` (an admin removed it and has not re-added
     /// it), `no anchor answered` (every peer reached holds no standing to serve
     /// the key), or `peer does not support follow` (every peer answered with an
-    /// opaque error, which is what a release without follow sends).
+    /// opaque error, which is what a release without follow sends), or
+    /// `device binding not published` (the follow got in, but this node's own
+    /// device link could not be logged, so peers cannot resolve its key yet; a
+    /// retry of the follow completes it).
     #[error("namespace {namespace_id} could not be followed: {reason}")]
     FollowRefused {
         /// Hex rendering of the namespace (for the message only).

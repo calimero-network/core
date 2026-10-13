@@ -196,7 +196,14 @@ impl Follow {
         let key_ready = self.await_key().await?;
 
         if key_ready {
-            self.link_own_device(&credential, &admitted.bundle).await;
+            // Without its own link logged this node's key resolves to nothing on
+            // its peers, so the follow is not reported done. Membership, key and
+            // local binding stay: the next follow, which runs again because the
+            // marker is absent, completes it.
+            if let Err(err) = self.link_own_device(&credential, &admitted.bundle).await {
+                warn!(?group_id, %err, "could not log this node's own device link");
+                return Err(self.refused("device binding not published"));
+            }
             // Every device this account already certified belongs here too, as
             // after a join. After the own link: their links are endorsed by this
             // node's key, which peers resolve only once that link has applied.
@@ -243,8 +250,9 @@ impl Follow {
         self.response(key_ready)
     }
 
-    /// A direct root row for `account`, this node's key bound to it, and a key
-    /// held: a follow (or a join) already completed here.
+    /// A direct root row for `account`, this node's key bound to it, a key held
+    /// and its own device link logged: a follow already completed here. The
+    /// local binding alone is not enough, since it tells peers nothing.
     fn already_follows(&self, account: AccountId) -> eyre::Result<bool> {
         let datastore = &self.datastore;
         let group_id = self.group_id;
@@ -257,7 +265,8 @@ impl Follow {
             )? == Some(account)
             && GroupKeyring::new(datastore, group_id)
                 .load_current_key()?
-                .is_some())
+                .is_some()
+            && calimero_governance_store::own_link_logged(datastore, &group_id, &self.identity)?)
     }
 
     /// Seed the namespace's meta when it is unknown here, as the join does from
@@ -417,29 +426,21 @@ impl Follow {
     }
 
     /// Publish this node's own device link, endorsed by the anchor that served
-    /// the follow. Best effort: the follow is recorded either way, and the
-    /// failure is logged for an operator to relink.
+    /// the follow, and mark it logged. An `Err` means nothing was logged, so the
+    /// follow is not complete: the marker stays absent and the next follow runs
+    /// again and asks for a fresh endorsement.
     async fn link_own_device(
         &self,
         credential: &calimero_context_client::local_governance::JoinAccountCredential,
         bundle: &JoinBundle,
-    ) {
-        let Some(bytes) = bundle.admitter_endorsement_bytes.as_deref() else {
-            warn!(
-                group_id = ?self.group_id,
-                "the anchor sent no endorsement, so this node's key stays bound to no \
-                 account on its peers until a member carries its link"
-            );
-            return;
-        };
-        let endorsement = match borsh::from_slice::<AccountMemberEndorsement>(bytes) {
-            Ok(endorsement) => endorsement,
-            Err(err) => {
-                warn!(group_id = ?self.group_id, %err, "the anchor's endorsement did not decode");
-                return;
-            }
-        };
-        if let Err(err) = calimero_governance_store::link_own_device(
+    ) -> eyre::Result<()> {
+        let bytes = bundle
+            .admitter_endorsement_bytes
+            .as_deref()
+            .ok_or_else(|| eyre::eyre!("the anchor sent no endorsement of this account"))?;
+        let endorsement = borsh::from_slice::<AccountMemberEndorsement>(bytes)
+            .map_err(|err| eyre::eyre!("the anchor's endorsement did not decode: {err}"))?;
+        calimero_governance_store::link_own_device(
             &self.datastore,
             &self.node_client,
             &self.ack_router,
@@ -449,9 +450,6 @@ impl Follow {
             endorsement,
         )
         .await
-        {
-            warn!(group_id = ?self.group_id, %err, "could not publish this node's own device link");
-        }
     }
 
     /// Take down what a follow seeded for a namespace it did not get into: the
@@ -509,19 +507,31 @@ impl Follow {
     }
 }
 
-/// The refusal an exhausted follow amounts to, when every peer said the same
-/// kind of thing. A peer's explicit reason wins, the removal first.
+/// The refusal an exhausted follow amounts to, counted over distinct peers.
+///
+/// A membership refusal stands only when every peer that declined gave one: a
+/// peer that answered keyless had found the account a member (it checks that
+/// first), so beside it a refusal is a peer behind on governance, and the
+/// outcome is that no anchor answered. Among membership refusals the removal
+/// wins, being the more specific.
 fn follow_refusal(err: &eyre::Report) -> Option<&'static str> {
     let exhausted = err.downcast_ref::<NamespaceJoinExhausted>()?;
-    let said = |reason: &str| exhausted.refusals.iter().any(|r| r == reason);
-    let all = |count: usize| exhausted.rejected_peers > 0 && count == exhausted.rejected_peers;
-    if said("removed") {
-        Some("removed")
-    } else if said("not a member") {
-        Some("not a member")
-    } else if all(exhausted.unusable_answers) {
+    let peers = exhausted.rejected_peers;
+    if peers == 0 {
+        return None;
+    }
+    let count = |reason: &str| exhausted.refusals.iter().filter(|r| *r == reason).count();
+    let (removed, not_member) = (count("removed"), count("not a member"));
+    let membership = removed + not_member;
+    if membership == peers {
+        Some(if removed > 0 {
+            "removed"
+        } else {
+            "not a member"
+        })
+    } else if exhausted.unusable_answers > 0 && exhausted.unusable_answers + membership == peers {
         Some("no anchor answered")
-    } else if all(exhausted.opaque_errors) {
+    } else if exhausted.opaque_errors == peers {
         Some("peer does not support follow")
     } else {
         None
@@ -786,6 +796,129 @@ mod tests {
         assert_eq!(w.held(), None, "the plain member's key is not installed");
     }
 
+    /// The follow logs its own `AccountDeviceLinked`, signed by this node and
+    /// carrying its own certificate under the anchor's endorsement, and that op
+    /// alone binds this node's key on a peer that knew nothing of it.
+    #[actix::test]
+    async fn a_follow_logs_its_own_link_and_a_peer_binds_its_key_from_it() {
+        use calimero_context_client::local_governance::{GroupOp, NamespaceOp};
+        use calimero_governance_store::NamespaceOpLogService;
+
+        let w = world(true);
+        let harness =
+            actor::over_answering_joins(w.store.clone(), Some(w.bundle_from(&w.anchor))).await;
+        let _followed = follow(&harness, &w).await.expect("the follow completes");
+
+        let logged = NamespaceOpLogService::new(&w.store, NS.into())
+            .collect_signed_group_ops_for_group(NS)
+            .expect("read the op log");
+        let own_link = logged
+            .into_iter()
+            .map(|entry| entry.signed_op)
+            .find(|op| {
+                op.signer == w.follower
+                    && matches!(
+                        &op.op,
+                        NamespaceOp::Group { encrypted, .. }
+                            if matches!(
+                                GroupKeyring::decrypt_op(&KEY, encrypted),
+                                Ok(GroupOp::AccountDeviceLinked { .. })
+                            )
+                    )
+            })
+            .expect("the follow logged a device link signed by this node");
+        let NamespaceOp::Group { encrypted, .. } = &own_link.op else {
+            unreachable!("matched as a group op above");
+        };
+        let Ok(GroupOp::AccountDeviceLinked {
+            cert, endorsement, ..
+        }) = GroupKeyring::decrypt_op(&KEY, encrypted)
+        else {
+            unreachable!("matched as a device link above");
+        };
+        assert_eq!(cert.sign_pk, w.follower, "its own certificate");
+        assert_eq!(cert.account, w.account);
+        assert_eq!(
+            endorsement.member,
+            w.anchor.public_key(),
+            "the anchor's endorsement"
+        );
+        assert_eq!(endorsement.account, w.account);
+
+        // A peer: the anchor bound, the admin's row for this account, the key,
+        // and no binding for this node's key.
+        let peer = Store::new(Arc::new(InMemoryDB::owned()));
+        let anchor_account = enrol(&peer, &w.group, &w.anchor.public_key());
+        let members = MembershipRepository::new(&peer);
+        members
+            .add_member(&w.group, &anchor_account, GroupMemberRole::Admin)
+            .expect("the anchor's row");
+        members
+            .add_member(&w.group, &w.account, GroupMemberRole::Member)
+            .expect("the admin's MemberAdded");
+        let _key_id = GroupKeyring::new(&peer, w.group)
+            .store_key(&KEY)
+            .expect("the peer holds the key");
+        assert_eq!(
+            calimero_governance_store::member_account_in_namespace(&peer, &w.group, &w.follower)
+                .expect("resolve the key"),
+            None,
+            "control: the peer cannot resolve this node's key before the link"
+        );
+
+        calimero_governance_store::apply_signed_namespace_op(&peer, &own_link)
+            .expect("the peer applies the link");
+
+        assert_eq!(
+            calimero_governance_store::member_account_in_namespace(&peer, &w.group, &w.follower)
+                .expect("resolve the key"),
+            Some(w.account),
+            "the peer resolves this node's key to its account"
+        );
+    }
+
+    /// A follow whose own link cannot be logged is not reported done, and the
+    /// next follow is not a no-op: it asks again and completes.
+    #[actix::test]
+    async fn a_follow_without_an_endorsement_is_not_done_and_the_next_one_completes_it() {
+        let w = world(true);
+        let mut unendorsed = w.bundle_from(&w.anchor);
+        unendorsed.admitter_endorsement_bytes = None;
+        let first = actor::over_answering_joins(w.store.clone(), Some(unendorsed)).await;
+
+        let err = follow(&first, &w)
+            .await
+            .expect_err("no endorsement, no own link, no completed follow");
+        assert!(
+            matches!(
+                err.downcast_ref::<ContextError>(),
+                Some(ContextError::FollowRefused {
+                    reason: "device binding not published",
+                    ..
+                })
+            ),
+            "got: {err:#}"
+        );
+        assert!(
+            !calimero_governance_store::own_link_logged(&w.store, &w.group, &w.follower)
+                .expect("read the marker")
+        );
+        drop(first);
+
+        let second =
+            actor::over_answering_joins(w.store.clone(), Some(w.bundle_from(&w.anchor))).await;
+        let followed = follow(&second, &w)
+            .await
+            .expect("the retry asks again and completes");
+
+        assert!(followed.key_ready);
+        assert!(
+            calimero_governance_store::own_link_logged(&w.store, &w.group, &w.follower)
+                .expect("read the marker"),
+            "the retry logged the link the first follow could not"
+        );
+    }
+
     fn exhausted(
         refusals: &[&str],
         unusable_answers: usize,
@@ -813,8 +946,19 @@ mod tests {
             Some("removed")
         );
         assert_eq!(
-            follow_refusal(&exhausted(&["not a member"], 1, 0, 2)),
+            follow_refusal(&exhausted(&["not a member", "not a member"], 0, 0, 2)),
             Some("not a member")
+        );
+        assert_eq!(
+            follow_refusal(&exhausted(&["removed"], 1, 0, 2)),
+            Some("no anchor answered"),
+            "a peer that served keyless found the account a member, so a lone \
+             refusal beside it does not decide"
+        );
+        assert_eq!(
+            follow_refusal(&exhausted(&["not a member"], 0, 0, 2)),
+            None,
+            "one peer's word with another peer unaccounted for is passed through"
         );
         assert_eq!(
             follow_refusal(&exhausted(&[], 3, 0, 3)),
