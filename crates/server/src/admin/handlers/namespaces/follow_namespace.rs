@@ -65,8 +65,8 @@ pub async fn handler(
         })
         .await
         // `ContextError::FollowRefused` is typed: `parse_api_error` answers a
-        // membership refusal with `403` and an unanswered or unfinished follow
-        // with a retryable `503`.
+        // subgroup id with `400`, a membership or device-scope refusal with
+        // `403`, and an unanswered or unfinished follow with a retryable `503`.
         .map_err(parse_api_error);
 
     match result {

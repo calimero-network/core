@@ -55,9 +55,8 @@ pub enum NamespaceJoinKind {
 /// How long the requester spends on one follow before it answers, from the
 /// moment the sync driver takes it up. The context handler times the whole
 /// request (queue wait included) against the same budget, so a follow answers
-/// in under a minute end to end: inside mero-js's request timeout (65 s, being
-/// raised to 120 s) and far
-/// inside meroctl's five minutes. The driver runs one join or follow at a time,
+/// in under a minute end to end: inside mero-js's 120 s follow timeout and
+/// meroctl's five minutes. The driver runs one join or follow at a time,
 /// so this also bounds how long one follow can hold up the next.
 pub const FOLLOW_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
 
@@ -67,8 +66,9 @@ pub const FOLLOW_DEADLINE: std::time::Duration = std::time::Duration::from_secs(
 /// follow reports "not a member" or "removed" when a peer said so, "no anchor
 /// answered" when every peer served no key, and "peer does not support follow"
 /// when every peer answered with an opaque error, which is what a responder
-/// that cannot decode the request sends. A membership refusal from a peer the
-/// caller named ends a follow at once (`named_refusal`). The message is the one
+/// that cannot decode the request sends. A final refusal (`not a member`,
+/// `removed`, `not a namespace root`) from a peer the caller named ends a follow
+/// at once (`named_refusal`). The message is the one
 /// the untyped error carried.
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -94,8 +94,8 @@ pub struct NamespaceJoinExhausted {
     pub unusable_answers: usize,
     /// Distinct peers that answered with an opaque error.
     pub opaque_errors: usize,
-    /// A follow's membership refusal (`not a member` or `removed`) from one of
-    /// the peers the caller named. Final: the loop stops on it, and it decides
+    /// A follow's final refusal (`not a member`, `removed` or `not a namespace
+    /// root`) from one of the peers the caller named. Final: the loop stops on it, and it decides
     /// the follow's answer whatever other peers said.
     pub named_refusal: Option<String>,
     /// A follow's overall deadline ended it before any peer served it.

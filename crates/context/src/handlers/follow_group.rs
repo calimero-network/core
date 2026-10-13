@@ -589,9 +589,9 @@ impl Follow {
 
 /// The refusal an exhausted follow amounts to.
 ///
-/// A membership refusal from a peer the caller named decides it, then a
-/// deadline that passed with a named anchor never reached. Otherwise it is
-/// counted over distinct peers (only `not a member` and `removed` are
+/// A final refusal (membership, or `not a namespace root`) from a peer the
+/// caller named decides it, then a deadline that passed with a named anchor
+/// never reached. Otherwise it is counted over distinct peers (only `not a member` and `removed` are
 /// membership refusals; `namespace not held` from a peer outside the namespace
 /// is not):
 ///
