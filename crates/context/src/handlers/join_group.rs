@@ -101,10 +101,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // repeat join is the re-sync path.
                 if MetaRepository::new(&datastore).load(&group_id)?.is_some() {
                     if let Ok(account) = account_for_group(&datastore, &group_id) {
-                        let membership = MembershipRepository::new(&datastore);
-                        if !membership.has_direct_member(&group_id, &account)?
-                            && membership.is_live_member(&group_id, &account)?
-                        {
+                        if member_by_inheritance(&datastore, &group_id, &account)? {
                             info!(
                                 ?group_id,
                                 %joiner_identity,
@@ -1028,6 +1025,21 @@ enum JoinKeyAction {
     Displace { held_key_id: [u8; 32] },
 }
 
+/// Whether `account` belongs to `group` only by inheritance: live there through
+/// an Open link to a parent it is a member of, with no row of its own.
+///
+/// Such an account has nothing to join, and an admitter refuses the attempt; a
+/// direct member's repeat join is the re-sync path, so it is not one of these.
+fn member_by_inheritance(
+    store: &calimero_store::Store,
+    group: &ContextGroupId,
+    account: &calimero_account::AccountId,
+) -> eyre::Result<bool> {
+    let membership = MembershipRepository::new(store);
+    Ok(!membership.has_direct_member(group, account)?
+        && membership.is_live_member(group, account)?)
+}
+
 /// Decide between the key a join response carried and the one already held.
 ///
 /// The join response wins, and that is a deliberate reversal (#3891). This
@@ -1228,6 +1240,27 @@ mod tests {
     use super::*;
     use crate::handlers::ensure_account_namespace::ensure_account_namespace;
     use crate::test_support::{actor, certify_device};
+
+    /// Only an account that is in the group through its parent, and has no row
+    /// of its own, is answered without a join. Everyone else still asks an
+    /// admitter: a direct member to re-sync, and a removed or outside account
+    /// to be refused there.
+    #[test]
+    fn only_an_inherited_member_skips_the_join() {
+        use calimero_governance_store::authz_matrix::{ActorState, World};
+
+        let world = World::shared();
+        for &state in ActorState::ALL {
+            let actor = world.actor(state);
+            let skips = member_by_inheritance(&world.store, &world.subject, &actor.account)
+                .expect("read membership");
+            let inherited = matches!(
+                state,
+                ActorState::InheritedAdmin | ActorState::InheritedMember
+            );
+            assert_eq!(skips, inherited, "{}", state.label());
+        }
+    }
 
     /// A join response's key displaces an unattested held key (#3891).
     ///
