@@ -1111,14 +1111,11 @@ impl ScopeState {
                 .entry((cert.account, cert.device))
                 .or_default();
             *recorded = (*recorded).max(scope_epoch);
-            let scope = (scope_epoch, applications.to_vec());
             let reach = self
                 .device_scope_applications
                 .entry((cert.account, cert.device))
-                .or_insert_with(|| scope.clone());
-            if scope > *reach {
-                *reach = scope;
-            }
+                .or_default();
+            *reach = std::mem::take(reach).max((scope_epoch, applications.to_vec()));
         }
         let Ok(verified) = admitted else {
             // Deterministically inadmissible on every node, so ignoring it keeps
@@ -1247,10 +1244,10 @@ impl ScopeState {
     /// The application the scope root targets: its last set, then one pass over the later
     /// cascades in stamp order, each moving it only from the bytecode it runs by then.
     fn target_with_bytecode(&self) -> Option<(ApplicationId, [u8; 32])> {
-        let (base, mut current) = match &self.target_application {
-            Some((stamp, application, bytecode)) => (Some(*stamp), Some((*application, *bytecode))),
-            None => (None, None),
-        };
+        let base = self.target_application.map(|(stamp, ..)| stamp);
+        let mut current = self
+            .target_application
+            .map(|(_, application, bytecode)| (application, bytecode));
         let later = self
             .cascades
             .iter()

@@ -20,6 +20,8 @@ use super::*;
 use crate::scope_projection::ScopeProjections;
 use crate::test_support::device_scope;
 
+const DEVICE_SEED: u8 = 0xD2; // key and id material of the one linked device
+
 fn sign_next(
     store: &Store,
     namespace: &ContextGroupId,
@@ -125,12 +127,11 @@ enum Endorsement {
     NonMember,
 }
 
-/// A member publishes a link of a new device of the admin's account, its key from
-/// `seed`, scoped to `applications`. Returns the device's key.
+/// A member publishes a link of a new device of the admin's account, scoped to
+/// `applications`. Returns the device's key.
 async fn link_a_device_of_the_admin(
     store: &Store,
     world: &World,
-    seed: u8,
     applications: &[ApplicationId],
     vouched: Endorsement,
 ) -> PrivateKey {
@@ -140,13 +141,13 @@ async fn link_a_device_of_the_admin(
         Endorsement::NonMember => world.actor(ActorState::NonMember),
         Endorsement::Member | Endorsement::Forged => member,
     };
-    let device_sk = PrivateKey::from([seed; 32]);
+    let device_sk = PrivateKey::from([DEVICE_SEED; 32]);
     let cert = DeviceCert::sign(
         &admin.root,
         admin.account,
-        DeviceId::mint(admin.account, [seed; 16]),
+        DeviceId::mint(admin.account, [DEVICE_SEED; 16]),
         &device_sk.public_key(),
-        &KemPublicKey::from([seed ^ 0x01; 32]),
+        &KemPublicKey::from([DEVICE_SEED ^ 0x01; 32]),
         0,
         0,
     )
@@ -169,7 +170,7 @@ async fn link_a_device_of_the_admin(
 
 /// [`link_a_device_of_the_admin`] under an endorsement whose signature does not verify.
 async fn link_under_a_forged_endorsement(store: &Store, world: &World) -> PrivateKey {
-    let device_sk = link_a_device_of_the_admin(store, world, 0xD2, &[], Endorsement::Forged).await;
+    let device_sk = link_a_device_of_the_admin(store, world, &[], Endorsement::Forged).await;
     assert!(
         AccountBindingRepository::new(store)
             .binding_for_sign_pk(&world.namespace, &device_sk.public_key())
@@ -290,8 +291,7 @@ async fn a_descope_whose_scope_still_reaches_the_group_does_not_narrow_the_devic
 #[actix::test]
 async fn a_device_linked_under_a_non_members_endorsement_does_not_speak_for_its_account() {
     let (world, store) = world_with_a_logged_admin().await;
-    let device_sk =
-        link_a_device_of_the_admin(&store, world, 0xDA, &[], Endorsement::NonMember).await;
+    let device_sk = link_a_device_of_the_admin(&store, world, &[], Endorsement::NonMember).await;
 
     let role = role_after_promotion_by(&store, world, &device_sk).await;
 
@@ -325,14 +325,14 @@ fn target(application: ApplicationId) -> GroupOp {
 }
 
 /// A private copy of the world with a logged admin and the namespace pointed at
-/// `application` in the op log.
-async fn world_targeting(application: ApplicationId) -> (&'static World, Store) {
+/// the world's application in the op log.
+async fn world_targeting() -> (&'static World, Store) {
     let (world, store) = world_with_a_logged_admin().await;
     publish(
         &store,
         &world.namespace,
         &world.owner_sk,
-        &target(application),
+        &target(world.application),
     )
     .await
     .expect("the owner sets the namespace's target");
@@ -341,15 +341,9 @@ async fn world_targeting(application: ApplicationId) -> (&'static World, Store) 
 
 #[actix::test]
 async fn a_device_scoped_to_the_namespace_application_speaks_for_its_account() {
-    let (world, store) = world_targeting(World::shared().application).await;
-    let device_sk = link_a_device_of_the_admin(
-        &store,
-        world,
-        0xD4,
-        &[world.application],
-        Endorsement::Member,
-    )
-    .await;
+    let (world, store) = world_targeting().await;
+    let device_sk =
+        link_a_device_of_the_admin(&store, world, &[world.application], Endorsement::Member).await;
 
     let role = role_after_promotion_by(&store, world, &device_sk).await;
 
@@ -362,10 +356,10 @@ async fn a_device_scoped_to_the_namespace_application_speaks_for_its_account() {
 
 #[actix::test]
 async fn a_device_scoped_away_from_the_namespace_does_not_speak_for_its_account() {
-    let (world, store) = world_targeting(World::shared().application).await;
+    let (world, store) = world_targeting().await;
     let elsewhere = ApplicationId::from([0xEE; 32]);
     let device_sk =
-        link_a_device_of_the_admin(&store, world, 0xD5, &[elsewhere], Endorsement::Member).await;
+        link_a_device_of_the_admin(&store, world, &[elsewhere], Endorsement::Member).await;
 
     let role = role_after_promotion_by(&store, world, &device_sk).await;
 
@@ -378,10 +372,10 @@ async fn a_device_scoped_away_from_the_namespace_does_not_speak_for_its_account(
 
 #[actix::test]
 async fn a_device_scoped_away_from_the_namespace_writes_for_no_account_at_the_cut() {
-    let (world, store) = world_targeting(World::shared().application).await;
+    let (world, store) = world_targeting().await;
     let elsewhere = ApplicationId::from([0xEE; 32]);
     let device_sk =
-        link_a_device_of_the_admin(&store, world, 0xD6, &[elsewhere], Endorsement::Member).await;
+        link_a_device_of_the_admin(&store, world, &[elsewhere], Endorsement::Member).await;
 
     let (projection, _namespace, heads) =
         ScopeProjections::ephemeral_projection(&store, &world.namespace)
@@ -402,15 +396,9 @@ async fn a_device_scoped_away_from_the_namespace_writes_for_no_account_at_the_cu
 
 #[actix::test]
 async fn a_device_stops_speaking_for_its_account_once_the_target_leaves_its_scope() {
-    let (world, store) = world_targeting(World::shared().application).await;
-    let device_sk = link_a_device_of_the_admin(
-        &store,
-        world,
-        0xD7,
-        &[world.application],
-        Endorsement::Member,
-    )
-    .await;
+    let (world, store) = world_targeting().await;
+    let device_sk =
+        link_a_device_of_the_admin(&store, world, &[world.application], Endorsement::Member).await;
     publish(
         &store,
         &world.namespace,
@@ -437,7 +425,7 @@ async fn this_nodes_own_account_namespace_row_exempts_no_namespace_from_scope() 
         .expect("record a node-local account namespace");
     let elsewhere = ApplicationId::from([0xEE; 32]);
     let device_sk =
-        link_a_device_of_the_admin(&store, world, 0xD8, &[elsewhere], Endorsement::Member).await;
+        link_a_device_of_the_admin(&store, world, &[elsewhere], Endorsement::Member).await;
 
     let role = role_after_promotion_by(&store, world, &device_sk).await;
 
@@ -454,15 +442,10 @@ async fn this_nodes_own_account_namespace_row_exempts_no_namespace_from_scope() 
 async fn concurrent_targets_settle_the_same_way_in_either_order() {
     let mut roles = Vec::new();
     for rival_first in [false, true] {
-        let (world, store) = world_targeting(World::shared().application).await;
-        let device_sk = link_a_device_of_the_admin(
-            &store,
-            world,
-            0xD9,
-            &[world.application],
-            Endorsement::Member,
-        )
-        .await;
+        let (world, store) = world_targeting().await;
+        let device_sk =
+            link_a_device_of_the_admin(&store, world, &[world.application], Endorsement::Member)
+                .await;
         let admin = world.actor(ActorState::NamespaceAdmin);
         let concurrent = |signer: &PrivateKey, application: ApplicationId| {
             let sealed = sealed_group_op(&store, &world.namespace, &target(application));
@@ -545,15 +528,9 @@ async fn another_accounts_proof_does_not_withdraw_a_device_at_the_cut() {
 /// must not move the target a device scope is judged against either.
 #[actix::test]
 async fn a_cascade_that_moves_nothing_leaves_the_target() {
-    let (world, store) = world_targeting(World::shared().application).await;
-    let device_sk = link_a_device_of_the_admin(
-        &store,
-        world,
-        0xDB,
-        &[world.application],
-        Endorsement::Member,
-    )
-    .await;
+    let (world, store) = world_targeting().await;
+    let device_sk =
+        link_a_device_of_the_admin(&store, world, &[world.application], Endorsement::Member).await;
     let cascade = GroupOp::CascadeUpgrade {
         from_bytecode_id: BytecodeId::from([0xB9; 32]),
         bytecode_id: BytecodeId::from([0xBA; 32]),
