@@ -118,8 +118,9 @@ pub enum ContextError {
     /// the follow` (anything else that left it unserved), `follow in progress`
     /// (another follow of the namespace is running here), or `device not scoped
     /// for this application` (this device's scope does not reach the
-    /// namespace's application). `not a member`, `removed` and the scope
-    /// refusal are final for the caller; the rest are retryable.
+    /// namespace's application), or `not a namespace root` (the id names a
+    /// subgroup). `not a member`, `removed`, the scope refusal and `not a
+    /// namespace root` are final for the caller; the rest are retryable.
     #[error("namespace {namespace_id} could not be followed: {reason}")]
     FollowRefused {
         /// Hex rendering of the namespace (for the message only).
