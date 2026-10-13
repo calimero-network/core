@@ -58,8 +58,9 @@ pub enum NamespaceJoinKind {
 /// follow reports "not a member" or "removed" when a peer said so, "no anchor
 /// answered" when every peer served no key, and "peer does not support follow"
 /// when every peer answered with an opaque error, which is what a responder
-/// that cannot decode the request sends. The message is the one the untyped
-/// error carried.
+/// that cannot decode the request sends. A membership refusal from a peer the
+/// caller named ends a follow at once (`named_refusal`). The message is the one
+/// the untyped error carried.
 #[derive(Debug, thiserror::Error)]
 #[error(
     "namespace {label} exhausted {attempts} protocol attempts (last rejection: {last_rejection:?}, \
@@ -84,6 +85,10 @@ pub struct NamespaceJoinExhausted {
     pub unusable_answers: usize,
     /// Distinct peers that answered with an opaque error.
     pub opaque_errors: usize,
+    /// A follow's membership refusal (`not a member` or `removed`) from one of
+    /// the peers the caller named. Final: the loop stops on it, and it decides
+    /// the follow's answer whatever other peers said.
+    pub named_refusal: Option<String>,
 }
 
 /// Parameters for a direct namespace join (or follow) request.

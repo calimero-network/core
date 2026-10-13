@@ -141,6 +141,43 @@ enum BundleGrant<'a> {
     Follow,
 }
 
+/// The refusals that answer whether an account belongs in a namespace, as the
+/// follow responder sends them.
+const MEMBERSHIP_REFUSALS: [&str; 2] = ["not a member", "removed"];
+
+/// The typed error a join or follow ends with when no peer completed it.
+fn exhausted_error(
+    label: &'static str,
+    attempts: usize,
+    last_rejection: Option<String>,
+    last_connect_err: Option<String>,
+    rejected_peers: usize,
+    declined: std::collections::HashMap<libp2p::PeerId, Declined>,
+    named_refusal: Option<String>,
+) -> eyre::Report {
+    let mut refusals = Vec::new();
+    let (mut unusable_answers, mut opaque_errors) = (0, 0);
+    for verdict in declined.into_values() {
+        match verdict {
+            Declined::Refused(reason) => refusals.push(reason),
+            Declined::Unusable => unusable_answers += 1,
+            Declined::Opaque => opaque_errors += 1,
+        }
+    }
+    NamespaceJoinExhausted {
+        label,
+        attempts,
+        last_rejection,
+        last_connect_err,
+        rejected_peers,
+        refusals,
+        unusable_answers,
+        opaque_errors,
+        named_refusal,
+    }
+    .into()
+}
+
 /// How one peer declined a join or follow, for [`NamespaceJoinExhausted`].
 enum Declined {
     /// It sent `NamespaceJoinRejected` with this reason.
@@ -1978,7 +2015,33 @@ impl SyncManager {
                     );
                     rejected_peers.insert(peer);
                     let _ = declined.insert(peer, Declined::Refused(reason.clone()));
-                    last_rejection = Some(reason);
+                    // A follow's membership refusal from a peer the caller named
+                    // is final: the caller named the namespace's anchors, which
+                    // hold its membership history, so no other peer can change
+                    // the answer, and asking them costs minutes. A discovered
+                    // peer's refusal may be stale or from outside the namespace,
+                    // so it only joins the count. The join is unchanged.
+                    let named_refusal = matches!(params.kind, NamespaceJoinKind::Follow { .. })
+                        && admitter_peers.contains(&peer)
+                        && MEMBERSHIP_REFUSALS.contains(&reason.as_str());
+                    last_rejection = Some(reason.clone());
+                    if named_refusal {
+                        info!(
+                            namespace_id = %hex::encode(params.namespace_id),
+                            %peer,
+                            %reason,
+                            "namespace follow: a named anchor refused on membership; not asking further peers"
+                        );
+                        return Err(exhausted_error(
+                            label,
+                            protocol_attempt,
+                            last_rejection,
+                            last_connect_err,
+                            rejected_peers.len(),
+                            declined,
+                            Some(reason),
+                        ));
+                    }
                     continue;
                 }
                 Ok(other) => {
@@ -2021,26 +2084,15 @@ impl SyncManager {
             }
         }
 
-        let mut refusals = Vec::new();
-        let (mut unusable_answers, mut opaque_errors) = (0, 0);
-        for verdict in declined.into_values() {
-            match verdict {
-                Declined::Refused(reason) => refusals.push(reason),
-                Declined::Unusable => unusable_answers += 1,
-                Declined::Opaque => opaque_errors += 1,
-            }
-        }
-        Err(NamespaceJoinExhausted {
+        Err(exhausted_error(
             label,
-            attempts: MAX_PROTOCOL_RETRIES,
+            MAX_PROTOCOL_RETRIES,
             last_rejection,
             last_connect_err,
-            rejected_peers: rejected_peers.len(),
-            refusals,
-            unusable_answers,
-            opaque_errors,
-        }
-        .into())
+            rejected_peers.len(),
+            declined,
+            None,
+        ))
     }
 
     /// Pull all namespace governance ops from a peer.
@@ -5632,6 +5684,93 @@ mod namespace_follow_requester_tests {
                 .await
                 .expect("responder: send the reply");
         })
+    }
+
+    /// Answer one request on `end` with `NamespaceJoinRejected { reason }`.
+    fn answer_refusal(mut end: Stream, reason: &'static str) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let _request = crate::sync::stream::recv(&mut end, None, Duration::from_secs(5))
+                .await
+                .expect("responder: recv the request");
+            let reply = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: reason.to_owned(),
+                },
+                next_nonce: [0; 12],
+            };
+            crate::sync::stream::send(&mut end, &reply, None)
+                .await
+                .expect("responder: send the reply");
+        })
+    }
+
+    /// Follow `NAMESPACE` naming `named` in its peer addresses.
+    async fn follow_naming(sm: &crate::sync::manager::SyncManager, named: PeerId) -> eyre::Report {
+        sm.initiate_namespace_join(NamespaceJoinParams {
+            namespace_id: NAMESPACE,
+            kind: NamespaceJoinKind::Follow {
+                peer_addrs: vec![format!("/ip4/127.0.0.1/tcp/4103/p2p/{named}")],
+            },
+            joiner_public_key: PrivateKey::from([0x43; 32]).public_key(),
+            joiner_credential_bytes: vec![1, 2, 3],
+        })
+        .await
+        .expect_err("no peer serves the follow")
+    }
+
+    /// The anchor the caller named refuses on membership: the follow ends on
+    /// that one answer, without asking the other peer in reach (which would
+    /// otherwise cost a connect round per remaining attempt, minutes in all).
+    #[tokio::test(start_paused = true)]
+    async fn a_named_anchors_membership_refusal_ends_the_follow_at_once() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let anchor = PeerId::random();
+        mock.push_subscribed_peers(vec![anchor, PeerId::random()]);
+        let refused = answer_refusal(mock.push_open_stream_ok_with_peer(), "removed");
+        let (sm, _store, _tmp) = manager(Arc::clone(&mock)).await;
+        sm.local_peer_id
+            .set(PeerId::random())
+            .expect("set the local peer id");
+
+        let err = follow_naming(&sm, anchor).await;
+        refused.await.unwrap();
+
+        let exhausted = err
+            .downcast_ref::<calimero_node_primitives::client::NamespaceJoinExhausted>()
+            .unwrap_or_else(|| panic!("a typed exhaustion, got {err:#}"));
+        assert_eq!(exhausted.named_refusal.as_deref(), Some("removed"));
+        assert_eq!(exhausted.attempts, 1, "terminal on the first answer");
+        assert_eq!(exhausted.rejected_peers, 1, "nobody else was asked");
+        mock.assert_all_consumed();
+    }
+
+    /// Control: the same refusal from a peer the caller did not name only joins
+    /// the count, and the follow goes on to the next peer.
+    #[tokio::test(start_paused = true)]
+    async fn a_discovered_peers_membership_refusal_is_not_final() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (anchor, stray) = (PeerId::random(), PeerId::random());
+        mock.push_subscribed_peers(vec![anchor, stray]);
+        // The named anchor is asked first (preferred) and answers opaquely; the
+        // discovered peer then refuses.
+        let opaque = answer_opaque(mock.push_open_stream_ok_with_peer());
+        let refused = answer_refusal(mock.push_open_stream_ok_with_peer(), "removed");
+        let (sm, _store, _tmp) = manager(Arc::clone(&mock)).await;
+        sm.local_peer_id
+            .set(PeerId::random())
+            .expect("set the local peer id");
+
+        let err = follow_naming(&sm, anchor).await;
+        opaque.await.unwrap();
+        refused.await.unwrap();
+
+        let exhausted = err
+            .downcast_ref::<calimero_node_primitives::client::NamespaceJoinExhausted>()
+            .unwrap_or_else(|| panic!("a typed exhaustion, got {err:#}"));
+        assert_eq!(exhausted.named_refusal, None);
+        assert_eq!(exhausted.rejected_peers, 2, "both peers were asked");
+        assert_eq!(exhausted.refusals, vec!["removed".to_owned()]);
     }
 
     /// When every peer declines, the error says how, so a caller can tell an

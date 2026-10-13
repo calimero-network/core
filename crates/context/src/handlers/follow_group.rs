@@ -506,7 +506,10 @@ impl Follow {
     }
 }
 
-/// The refusal an exhausted follow amounts to, counted over distinct peers.
+/// The refusal an exhausted follow amounts to.
+///
+/// A membership refusal from a peer the caller named decides it. Otherwise it
+/// is counted over distinct peers:
 ///
 /// A membership refusal stands only when every peer that declined gave one: a
 /// peer that answered keyless had found the account a member (it checks that
@@ -515,6 +518,13 @@ impl Follow {
 /// wins, being the more specific.
 fn follow_refusal(err: &eyre::Report) -> Option<&'static str> {
     let exhausted = err.downcast_ref::<NamespaceJoinExhausted>()?;
+    // A peer the caller named is an anchor it trusts to know the membership,
+    // so its refusal is the answer whatever stray peers said.
+    match exhausted.named_refusal.as_deref() {
+        Some("removed") => return Some("removed"),
+        Some("not a member") => return Some("not a member"),
+        _ => {}
+    }
     let peers = exhausted.rejected_peers;
     if peers == 0 {
         return None;
@@ -933,8 +943,55 @@ mod tests {
             refusals: refusals.iter().map(|r| (*r).to_owned()).collect(),
             unusable_answers,
             opaque_errors,
+            named_refusal: None,
         }
         .into()
+    }
+
+    /// The anchor the caller named refused on membership, while stray peers in
+    /// reach (older builds, nodes outside the namespace) answered with errors:
+    /// the follow is refused as `removed`, not failed as a 500, and what it
+    /// seeded is taken down.
+    #[actix::test]
+    async fn a_named_anchors_refusal_beats_stray_peers_errors() {
+        let w = world(true);
+        let answer: calimero_node_primitives::test_fixtures::JoinAnswer = Arc::new(|| {
+            Err(NamespaceJoinExhausted {
+                label: "follow",
+                attempts: 3,
+                last_rejection: Some("removed".to_owned()),
+                last_connect_err: None,
+                rejected_peers: 3,
+                refusals: vec!["removed".to_owned()],
+                unusable_answers: 0,
+                opaque_errors: 2,
+                named_refusal: Some("removed".to_owned()),
+            }
+            .into())
+        });
+        let harness = actor::over_answering_joins_with(w.store.clone(), answer).await;
+
+        let err = follow(&harness, &w)
+            .await
+            .expect_err("the named anchor refused");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<ContextError>(),
+                Some(ContextError::FollowRefused {
+                    reason: "removed",
+                    ..
+                })
+            ),
+            "got: {err:#}"
+        );
+        assert!(
+            MetaRepository::new(&w.store)
+                .load(&w.group)
+                .expect("read the meta")
+                .is_none(),
+            "the meta the follow seeded is taken down"
+        );
     }
 
     /// How an exhausted follow reads to its caller.
@@ -971,6 +1028,30 @@ mod tests {
             follow_refusal(&exhausted(&[], 1, 1, 2)),
             None,
             "a mix says nothing typed; the exhaustion is passed through"
+        );
+        let stray_errors = |named_refusal: Option<&str>| -> eyre::Report {
+            NamespaceJoinExhausted {
+                label: "follow",
+                attempts: 1,
+                last_rejection: None,
+                last_connect_err: None,
+                rejected_peers: 3,
+                refusals: vec!["not a member".to_owned()],
+                unusable_answers: 0,
+                opaque_errors: 2,
+                named_refusal: named_refusal.map(str::to_owned),
+            }
+            .into()
+        };
+        assert_eq!(
+            follow_refusal(&stray_errors(Some("not a member"))),
+            Some("not a member"),
+            "a named anchor's refusal wins over stray errors"
+        );
+        assert_eq!(
+            follow_refusal(&stray_errors(None)),
+            None,
+            "the same refusal from a discovered peer does not"
         );
         assert_eq!(follow_refusal(&eyre::eyre!("no mesh peers")), None);
     }
