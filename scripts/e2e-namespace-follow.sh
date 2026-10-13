@@ -61,6 +61,9 @@ HTTP_TIMEOUT="${HTTP_TIMEOUT:-120}"
 
 KEY="follow-key"
 VALUE="written-by-node-1"
+KEY2="follow-key-2"
+VALUE2="written-by-node-2"
+VALUE3="rewritten-by-node-1-after-the-re-add"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -109,10 +112,11 @@ login() { # login <node url>
     -d "$login_body" | jq -r '.data.access_token // empty'
 }
 
-# read_key <node url> <token> <context id>: the value kv-store holds for $KEY,
-# or "ERR:<status>:<body>" when the call does not succeed.
+# read_key <node url> <token> <context id> [key]: the value kv-store holds for
+# the key ($KEY by default), or "ERR:<status>:<body>" when the call does not
+# succeed.
 read_key() {
-  rpc=$(jq -n --arg c "$3" --arg k "$KEY" \
+  rpc=$(jq -n --arg c "$3" --arg k "${4:-$KEY}" \
     '{jsonrpc: "2.0", id: 1, method: "execute",
       params: {contextId: $c, method: "get", argsJson: {key: $k}}}')
   status=$(api POST "$1/jsonrpc" "$2" "$rpc")
@@ -262,6 +266,30 @@ follow_until_ready() {
   ok "$1: 200, namespaceId $NS, memberAccount $ACCOUNT2, keyReady true"
 }
 
+# set_key <label> <node url> <token> <key> <value>: write through kv-store.
+set_key() {
+  rpc=$(jq -n --arg c "$CTX" --arg k "$4" --arg v "$5" \
+    '{jsonrpc: "2.0", id: 1, method: "execute",
+      params: {contextId: $c, method: "set", argsJson: {key: $k, value: $v}}}')
+  status=$(api POST "$2/jsonrpc" "$3" "$rpc")
+  expect_200 "$1" "$status"
+  [ "$(jq -r 'has("error")' "$WORK/body")" = "false" ] || fail "$1 errored: $(body)"
+}
+
+# wait_read <label> <node url> <token> <key> <value>: poll a read until it
+# holds the value, for a write another node made.
+wait_read() {
+  i=0
+  while :; do
+    got=$(read_key "$2" "$3" "$CTX" "$4")
+    [ "$got" = "$5" ] && break
+    i=$((i + 1))
+    [ $i -lt 60 ] || fail "$1: never read $4=$5 in 60s, last: $got"
+    sleep 1
+  done
+  ok "$1: reads $4=$5"
+}
+
 # wait_for_value <label>: node-2 joins the context on its own (auto-follow)
 # and syncs it; poll the read until it holds node-1's value.
 wait_for_value() {
@@ -291,6 +319,12 @@ while :; do
 done
 ok "node-2 lists context $CTX"
 wait_for_value "after the first follow"
+
+# node-2 writes and node-1 reads it: node-1 accepts node-2's delta only if it
+# resolves node-2's key to its account, which the follower's own device link
+# (endorsed by node-1) is what establishes.
+set_key "set on node-2" "$NODE2_URL" "$TOKEN2" "$KEY2" "$VALUE2"
+wait_read "node-1 after node-2's write" "$NODE1_URL" "$TOKEN1" "$KEY2" "$VALUE2"
 
 # ---- 4. remove: refused, and no read ----
 status=$(api POST "$NODE1_URL/admin-api/groups/$NS/members/remove" "$TOKEN1" \
@@ -376,5 +410,10 @@ done
 ok "meroctl namespace follow after re-add: namespaceId $NS, memberAccount $ACCOUNT2, keyReady true"
 
 wait_for_value "after the re-add"
+
+# The removal rotated the namespace key and the re-add delivered the new one:
+# a value node-1 writes now is sealed under it, and node-2 must read it.
+set_key "set on node-1 after the re-add" "$NODE1_URL" "$TOKEN1" "$KEY" "$VALUE3"
+wait_read "node-2 after the re-key" "$NODE2_URL" "$TOKEN2" "$KEY" "$VALUE3"
 
 echo "== $PASS passed, 0 failed =="

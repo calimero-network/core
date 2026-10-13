@@ -115,8 +115,11 @@ pub enum ContextError {
     /// device link could not be logged, so peers cannot resolve its key yet; a
     /// retry of the follow completes it), `no anchor reachable` (the follow's
     /// deadline passed with a named anchor never reached), or `no peer served
-    /// the follow` (anything else that left it unserved). Only the first two
-    /// are final for the caller.
+    /// the follow` (anything else that left it unserved), `follow in progress`
+    /// (another follow of the namespace is running here), or `device not scoped
+    /// for this application` (this device's scope does not reach the
+    /// namespace's application). `not a member`, `removed` and the scope
+    /// refusal are final for the caller; the rest are retryable.
     #[error("namespace {namespace_id} could not be followed: {reason}")]
     FollowRefused {
         /// Hex rendering of the namespace (for the message only).

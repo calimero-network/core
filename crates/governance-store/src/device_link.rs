@@ -704,6 +704,20 @@ pub async fn link_own_device(
             cert.device
         )
     })?;
+    // The reach test the apply gate makes (and `plan_carried_link` before it).
+    // The gate refuses an out-of-scope link without an error, so publishing
+    // one would log it, mark it done and leave every peer refusing it.
+    if NodeDeviceRepository::new(store).account_namespace()? != Some(*namespace) {
+        let application = MetaRepository::new(store)
+            .load(namespace)?
+            .map(|meta| meta.target.application_id);
+        if !calimero_account::scope_covers(&scope.statement.applications, application) {
+            return Err(OwnLinkOutOfScope {
+                device: cert.device,
+            }
+            .into());
+        }
+    }
     eyre::ensure!(
         GroupKeyring::new(store, *namespace)
             .load_current_key()?
@@ -730,6 +744,16 @@ pub async fn link_own_device(
         "linked this node's own device under a member's endorsement"
     );
     Ok(())
+}
+
+/// This device's scope does not reach the namespace's application, so its own
+/// link would be refused by every peer. Typed so a follow can say so: only the
+/// account holder widening the scope helps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("device {device}'s scope does not reach this namespace's application")]
+pub struct OwnLinkOutOfScope {
+    /// The device whose scope falls short.
+    pub device: DeviceId,
 }
 
 /// 16-byte `Generic` scope of the own-link marker: one row per namespace.
@@ -1260,6 +1284,53 @@ mod tests {
             member_account_in_namespace(&store, &ns, &follower_sk.public_key())
                 .expect("resolve the key"),
             None
+        );
+    }
+
+    /// A device whose scope does not reach the namespace's application links
+    /// nothing: the peers' gate would refuse it silently, and the marker would
+    /// then claim a link nobody holds.
+    #[actix::test]
+    async fn a_followers_own_link_out_of_its_scope_is_refused_typed_and_unmarked() {
+        let (store, node_client, ack_router, ns, anchor_sk, follower_sk, credential, _tmp) =
+            a_follower().await;
+        let root = NodeDeviceRepository::new(&store)
+            .account_root()
+            .expect("read the root")
+            .expect("the follower's root");
+        // The account namespace holds this device's row, scoped to APP_TWO only,
+        // while the namespace followed targets APP_ONE.
+        register(&store, root.signing_key(), &credential, &[APP_TWO]);
+        let mut meta = MetaRepository::new(&store)
+            .load(&ns)
+            .expect("read the meta")
+            .expect("the fixture's namespace");
+        meta.target.application_id = app(APP_ONE);
+        MetaRepository::new(&store)
+            .save(&ns, &meta)
+            .expect("target APP_ONE");
+        let endorsement = AccountMemberEndorsement::sign(&anchor_sk, credential.statement.account)
+            .expect("the anchor vouches");
+
+        let refused = link_own_device(
+            &store,
+            &node_client,
+            &ack_router,
+            &ns,
+            &follower_sk,
+            &credential,
+            endorsement,
+        )
+        .await
+        .expect_err("out of scope");
+
+        assert!(
+            refused.downcast_ref::<OwnLinkOutOfScope>().is_some(),
+            "{refused:#}"
+        );
+        assert!(
+            !own_link_logged(&store, &ns, &follower_sk.public_key()).expect("read the marker"),
+            "nothing logged, nothing marked"
         );
     }
 

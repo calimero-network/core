@@ -14,6 +14,7 @@ use calimero_governance_store::{
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{
     NamespaceJoinExhausted, NamespaceJoinKind, NamespaceJoinParams, OpenSubgroupJoinParams,
+    FOLLOW_DEADLINE,
 };
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
@@ -144,11 +145,6 @@ enum BundleGrant<'a> {
 /// The refusals that answer whether an account belongs in a namespace, as the
 /// follow responder sends them.
 const MEMBERSHIP_REFUSALS: [&str; 2] = ["not a member", "removed"];
-
-/// How long a follow may take in all before it answers. Well inside meroctl's
-/// five-minute request timeout, and long enough for a mesh to form and a few
-/// anchors to be tried.
-const FOLLOW_DEADLINE: std::time::Duration = std::time::Duration::from_secs(75);
 
 /// What a join or follow learned from the peers it tried.
 #[derive(Default)]
@@ -668,7 +664,8 @@ impl SyncManager {
     /// 1. the credential names an account and certifies this request's key
     ///    (`verified_joiner_account`, as the join);
     /// 2. this node holds the namespace (its meta), else `namespace not held`,
-    ///    never a membership verdict it has no basis for;
+    ///    never a membership verdict it has no basis for, and the id names a
+    ///    namespace root, else `not a namespace root`;
     /// 3. the re-entry gate admits it, else `removed`. The join's gate is keyed
     ///    by the invitation nonce and a follow has none, so this reads the
     ///    nonce-free half of it: a `Removed` block, which survives a member-row
@@ -718,6 +715,11 @@ impl SyncManager {
         let Some(meta) = MetaRepository::new(&store).load(&namespace)? else {
             return Self::refuse_follow(stream, nonce, "namespace not held".to_owned()).await;
         };
+        // A follow serves the namespace root's bundle and nothing below it: a
+        // subgroup id (a Restricted one above all) must not get its key here.
+        if NamespaceRepository::new(&store).resolve(&namespace)? != namespace {
+            return Self::refuse_follow(stream, nonce, "not a namespace root".to_owned()).await;
+        }
 
         // Asked before the row, so a removed member hears it was removed rather
         // than that it is no member; a row beside a `Removed` block is refused
@@ -4888,12 +4890,22 @@ mod join_responder_tests {
         party: &PrivateKey,
         payload: InitPayload,
     ) -> Option<StreamMessage<'static>> {
+        exchange_proving(sm, party, payload, NAMESPACE).await
+    }
+
+    /// [`exchange`], with the proof bound to `proven` (the id the payload names).
+    async fn exchange_proving(
+        sm: &SyncManager,
+        party: &PrivateKey,
+        payload: InitPayload,
+        proven: [u8; 32],
+    ) -> Option<StreamMessage<'static>> {
         let peer = PeerId::random();
         let party_id = party.public_key();
         let proof = InitProof {
             signature: party
                 .sign(&InitProof::message(
-                    &ContextId::from(NAMESPACE),
+                    &ContextId::from(proven),
                     &party_id,
                     &peer.to_bytes(),
                 ))
@@ -5509,6 +5521,38 @@ mod join_responder_tests {
         assert_eq!(refusal(&reply), Some("not a member"), "{reply:?}");
     }
 
+    /// A follow names a namespace root. A subgroup id, which this node holds
+    /// and the follower's account is a root member of, is refused before any
+    /// key is wrapped: a Restricted subgroup's key must not leave this way.
+    #[tokio::test]
+    async fn a_follow_naming_a_subgroup_is_refused_as_not_a_namespace_root() {
+        let r = responder().await;
+        let subgroup = ContextGroupId::from(SUBGROUP);
+        MetaRepository::new(&r.store)
+            .save(&subgroup, &sample_meta_with_admin(account_of(&r.admin)))
+            .unwrap();
+        NamespaceRepository::new(&r.store)
+            .nest(&ns(), &subgroup)
+            .unwrap();
+        let member = party(0x48);
+        let account = seated(&r.store, &member, GroupMemberRole::Member);
+        // A row in the subgroup too, so only the root check stands between the
+        // follower and the subgroup's key.
+        MembershipRepository::new(&r.store)
+            .add_member(&subgroup, &account, GroupMemberRole::Member)
+            .unwrap();
+        let credential = real_join_account(&member.public_key());
+        let payload = InitPayload::NamespaceFollowRequest {
+            namespace_id: SUBGROUP,
+            joiner_public_key: member.public_key(),
+            joiner_credential_bytes: borsh::to_vec(&credential).unwrap(),
+        };
+
+        let reply = exchange_proving(&r.sm, &member, payload, SUBGROUP).await;
+
+        assert_eq!(refusal(&reply), Some("not a namespace root"), "{reply:?}");
+    }
+
     /// A removal as `MemberRemoved` applies it: the row goes, the account is
     /// deny-listed, and a `Removed` re-entry block is written.
     #[tokio::test]
@@ -5834,7 +5878,8 @@ mod namespace_follow_requester_tests {
         let _asked = keyless.await.unwrap();
 
         assert!(
-            started.elapsed() <= super::FOLLOW_DEADLINE + Duration::from_secs(1),
+            started.elapsed()
+                <= calimero_node_primitives::client::FOLLOW_DEADLINE + Duration::from_secs(1),
             "answered within the deadline, took {:?}",
             started.elapsed()
         );

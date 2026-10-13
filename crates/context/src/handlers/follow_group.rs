@@ -28,7 +28,7 @@ use calimero_governance_store::{
     account_for_group, AccountBindingRepository, GroupKeyring, MembershipRepository,
     MetaRepository, NamespaceRepository,
 };
-use calimero_node_primitives::client::{NamespaceJoinExhausted, NodeClient};
+use calimero_node_primitives::client::{NamespaceJoinExhausted, NodeClient, FOLLOW_DEADLINE};
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -63,6 +63,16 @@ impl Handler<FollowGroupRequest> for ContextManager {
         }: FollowGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        // One follow per namespace at a time, claimed here on the actor so two
+        // requests cannot both pass the check.
+        let Some(in_flight) = InFlight::claim(&self.follows_in_flight, namespace_id) else {
+            return ActorResponse::reply(Err(ContextError::FollowRefused {
+                namespace_id: hex::encode(namespace_id.to_bytes()),
+                reason: "follow in progress",
+            }
+            .into()));
+        };
+
         // Read before the identity call below notes participation, so a refused
         // follow knows whether that note was its own to take back.
         let was_participating =
@@ -101,7 +111,47 @@ impl Handler<FollowGroupRequest> for ContextManager {
             bytecode_id,
             was_participating,
         };
-        ActorResponse::r#async(async move { follow.run().await }.into_actor(self))
+        ActorResponse::r#async(
+            async move {
+                let outcome = follow.run().await;
+                drop(in_flight);
+                outcome
+            }
+            .into_actor(self),
+        )
+    }
+}
+
+/// A namespace's claim on [`ContextManager::follows_in_flight`], released on
+/// drop, so a follow that errors, panics or is dropped mid-way releases it too.
+struct InFlight {
+    set: Arc<std::sync::Mutex<std::collections::HashSet<ContextGroupId>>>,
+    namespace: ContextGroupId,
+}
+
+impl InFlight {
+    /// Claim `namespace`, or `None` when a follow of it is already running.
+    fn claim(
+        set: &Arc<std::sync::Mutex<std::collections::HashSet<ContextGroupId>>>,
+        namespace: ContextGroupId,
+    ) -> Option<Self> {
+        let mut held = set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.insert(namespace).then(|| Self {
+            set: Arc::clone(set),
+            namespace,
+        })
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut held = self
+            .set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _released = held.remove(&self.namespace);
     }
 }
 
@@ -202,7 +252,18 @@ impl Follow {
             // marker is absent, completes it.
             if let Err(err) = self.link_own_device(&credential, &admitted.bundle).await {
                 warn!(?group_id, %err, "could not log this node's own device link");
-                return Err(self.refused("device binding not published"));
+                // A scope that does not reach the namespace's application is
+                // final until the account holder widens it; anything else is
+                // retried by the next follow.
+                let reason = if err
+                    .downcast_ref::<calimero_governance_store::OwnLinkOutOfScope>()
+                    .is_some()
+                {
+                    "device not scoped for this application"
+                } else {
+                    "device binding not published"
+                };
+                return Err(self.refused(reason));
             }
             // Every device this account already certified belongs here too, as
             // after a join. After the own link: their links are endorsed by this
@@ -322,16 +383,33 @@ impl Follow {
         // Unlike the join, no fallback to an empty bundle: the join can still
         // publish a membership the invitation authorises, while a follow has
         // nothing to publish until an anchor has served it.
-        let bundle = match self
-            .node_client
-            .request_namespace_follow(
-                namespace_id,
-                self.peer_addrs.clone(),
-                self.identity,
-                borsh::to_vec(credential)?,
-            )
-            .await
-        {
+        // Timed here as well as in the requester: the requester's deadline
+        // starts when the serial sync driver takes the request up, and this one
+        // when it is sent, so time spent queued behind other joins counts.
+        let request = self.node_client.request_namespace_follow(
+            namespace_id,
+            self.peer_addrs.clone(),
+            self.identity,
+            borsh::to_vec(credential)?,
+        );
+        let answered = match tokio::time::timeout(FOLLOW_DEADLINE, request).await {
+            Ok(answered) => answered,
+            Err(_elapsed) => {
+                let reason = if self.peer_addrs.is_empty() {
+                    "no peer served the follow"
+                } else {
+                    "no anchor reachable"
+                };
+                warn!(
+                    ?group_id,
+                    deadline_secs = FOLLOW_DEADLINE.as_secs(),
+                    reason,
+                    "the follow was not served within its deadline"
+                );
+                return Err(self.refused(reason));
+            }
+        };
+        let bundle = match answered {
             Ok(bundle) => bundle,
             Err(err) => {
                 // Every way a follow can fail to get served is either a
@@ -967,7 +1045,7 @@ mod tests {
     async fn a_named_anchors_refusal_beats_stray_peers_errors() {
         let w = world(true);
         let answer: calimero_node_primitives::test_fixtures::JoinAnswer = Arc::new(|| {
-            Err(NamespaceJoinExhausted {
+            Some(Err(NamespaceJoinExhausted {
                 label: "follow",
                 attempts: 3,
                 last_rejection: Some("removed".to_owned()),
@@ -980,7 +1058,7 @@ mod tests {
                 deadline_passed: false,
                 named_unreached: 0,
             }
-            .into())
+            .into()))
         });
         let harness = actor::over_answering_joins_with(w.store.clone(), answer).await;
 
@@ -1014,7 +1092,7 @@ mod tests {
     async fn a_peer_that_does_not_hold_the_namespace_never_makes_a_follow_final() {
         let w = world(true);
         let answer: calimero_node_primitives::test_fixtures::JoinAnswer = Arc::new(|| {
-            Err(NamespaceJoinExhausted {
+            Some(Err(NamespaceJoinExhausted {
                 label: "follow",
                 attempts: 32,
                 last_rejection: Some("namespace not held".to_owned()),
@@ -1027,7 +1105,7 @@ mod tests {
                 deadline_passed: false,
                 named_unreached: 0,
             }
-            .into())
+            .into()))
         });
         let harness = actor::over_answering_joins_with(w.store.clone(), answer).await;
 
@@ -1044,6 +1122,135 @@ mod tests {
                 })
             ),
             "got: {err:#}"
+        );
+    }
+
+    /// A second follow of a namespace while one is running is refused at once,
+    /// so a client retrying a slow follow cannot pile follows onto the sync
+    /// driver. Once the first ends, the namespace is free again.
+    #[actix::test]
+    async fn a_second_concurrent_follow_of_a_namespace_is_refused() {
+        tokio::time::pause();
+        let w = world(true);
+        let hold: calimero_node_primitives::test_fixtures::JoinAnswer = Arc::new(|| None);
+        let harness = actor::over_answering_joins_with(w.store.clone(), hold).await;
+
+        let first = actix::spawn(harness.manager.send(w.request()));
+        // Let the first follow reach the actor and claim the namespace.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let second = follow(&harness, &w)
+            .await
+            .expect_err("a follow of this namespace is running");
+        assert!(
+            matches!(
+                second.downcast_ref::<ContextError>(),
+                Some(ContextError::FollowRefused {
+                    reason: "follow in progress",
+                    ..
+                })
+            ),
+            "got: {second:#}"
+        );
+
+        let _first = first
+            .await
+            .expect("the task completes")
+            .expect("the manager answers");
+        let third = follow(&harness, &w)
+            .await
+            .expect_err("still unanswered, but no longer in progress");
+        assert!(
+            !matches!(
+                third.downcast_ref::<ContextError>(),
+                Some(ContextError::FollowRefused {
+                    reason: "follow in progress",
+                    ..
+                })
+            ),
+            "the namespace is released when a follow ends: {third:#}"
+        );
+    }
+
+    /// The follow's deadline runs from when it was asked, not from when the
+    /// serial sync driver took it up: a request that sits in the queue unserved
+    /// still ends within the budget, as retryable.
+    #[actix::test]
+    async fn a_follow_held_in_the_queue_ends_within_its_deadline() {
+        tokio::time::pause();
+        let w = world(true);
+        let hold: calimero_node_primitives::test_fixtures::JoinAnswer = Arc::new(|| None);
+        let harness = actor::over_answering_joins_with(w.store.clone(), hold).await;
+        let started = tokio::time::Instant::now();
+
+        let err = follow(&harness, &w).await.expect_err("never served");
+
+        let took = started.elapsed();
+        assert!(
+            took <= FOLLOW_DEADLINE + NAMESPACE_MESH_GRACE + std::time::Duration::from_secs(1),
+            "took {took:?}"
+        );
+        assert!(
+            matches!(
+                err.downcast_ref::<ContextError>(),
+                Some(ContextError::FollowRefused {
+                    reason: "no peer served the follow",
+                    ..
+                })
+            ),
+            "got: {err:#}"
+        );
+    }
+
+    /// A device whose scope does not reach the namespace's application cannot
+    /// link there, and peers would refuse a link it published anyway: the
+    /// follow says so and is not marked done.
+    #[actix::test]
+    async fn a_follow_by_a_device_scoped_elsewhere_is_refused_as_out_of_scope() {
+        let w = world(true);
+        let harness =
+            actor::over_answering_joins(w.store.clone(), Some(w.bundle_from(&w.anchor))).await;
+        // This node's own device, recorded in its account namespace with a
+        // scope reaching another application only.
+        let account_namespace = ensure_account_namespace(&w.store, &harness.context_client)
+            .await
+            .expect("the ensure runs")
+            .expect("the holder creates its account namespace");
+        let credential = crate::join_credential::build(&w.store, &w.group, &w.follower)
+            .expect("this node's credential");
+        let root = NodeDeviceRepository::new(&w.store)
+            .account_root()
+            .expect("read the root")
+            .expect("the holder's root");
+        let scope = crate::account_namespace::next_device_scope(
+            &w.store,
+            Some(account_namespace),
+            &root,
+            &credential,
+            &[ApplicationId::from([0xEE; 32])],
+        )
+        .expect("sign a narrow scope");
+        let _recorded =
+            calimero_governance_store::AccountDeviceRegistry::new(&w.store, account_namespace)
+                .record(&credential, &scope)
+                .expect("record the narrowed device");
+
+        let err = follow(&harness, &w)
+            .await
+            .expect_err("the device may not speak for this application");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<ContextError>(),
+                Some(ContextError::FollowRefused {
+                    reason: "device not scoped for this application",
+                    ..
+                })
+            ),
+            "got: {err:#}"
+        );
+        assert!(
+            !calimero_governance_store::own_link_logged(&w.store, &w.group, &w.follower)
+                .expect("read the marker")
         );
     }
 

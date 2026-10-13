@@ -62,7 +62,7 @@ tempfile.workspace = true
 calimero-store-rocksdb.workspace = true
 camino.workspace = true
 # Module compiles run on the node's global runtime, which must be multi-threaded.
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 # Hand-written wasm modules for the execute-gate tests.
 wat.workspace = true
 # Ids of a cell's members and owned entries, for tests that play a run writing them.

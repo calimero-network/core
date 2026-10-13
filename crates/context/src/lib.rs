@@ -461,6 +461,12 @@ pub struct ContextManager {
 
     /// Full-text search; `None` unless [`Self::with_search`] set it.
     pub(crate) search: Option<Arc<calimero_search::SearchService>>,
+
+    /// Namespaces a follow is running for. One at a time per namespace: the
+    /// sync driver serves joins and follows one by one, so a client retrying a
+    /// slow follow would otherwise queue follows behind it, and a refused
+    /// follow's teardown could remove what a concurrent one just set up.
+    pub(crate) follows_in_flight: Arc<std::sync::Mutex<HashSet<ContextGroupId>>>,
 }
 
 /// Creates a new `ContextManager`.
@@ -502,6 +508,7 @@ impl ContextManager {
                 scope_projection::ScopeProjections::new(),
             )),
             search: None,
+            follows_in_flight: Arc::default(),
         }
     }
 

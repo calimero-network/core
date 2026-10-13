@@ -17,7 +17,7 @@ use calimero_server_primitives::admin::{
     FollowNamespaceApiRequest, FollowNamespaceApiResponse, FollowNamespaceApiResponseData,
 };
 use reqwest::StatusCode;
-use tracing::{debug, error, info};
+use tracing::{debug, info, warn};
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::handlers::validation::ValidatedJson;
@@ -89,8 +89,10 @@ pub async fn handler(
             }
             .into_response()
         }
+        // A refusal (4xx/5xx with a reason) is the expected answer to a follow
+        // nobody could serve or the namespace declined, not a server fault.
         Err(err) => {
-            error!(namespace_id = %namespace_id_str, error = ?err, "Failed to follow namespace");
+            warn!(namespace_id = %namespace_id_str, status = %err.status_code, message = %err.message, "Follow refused");
             err.into_response()
         }
     }

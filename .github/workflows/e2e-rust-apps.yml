@@ -60,6 +60,8 @@ on:
       - "scripts/path-dep-closure.py"
       - "scripts/build-all-apps.sh"
       - "scripts/check-embedded-abi.sh"
+      - "workflows/namespace-follow.yml"
+      - "scripts/e2e-namespace-follow.sh"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
@@ -117,6 +119,8 @@ on:
       - "scripts/path-dep-closure.py"
       - "scripts/build-all-apps.sh"
       - "scripts/check-embedded-abi.sh"
+      - "workflows/namespace-follow.yml"
+      - "scripts/e2e-namespace-follow.sh"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"

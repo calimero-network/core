@@ -1284,7 +1284,7 @@ pub(crate) mod actor {
     ) -> Harness {
         let answer = bundle.map(
             |bundle| -> calimero_node_primitives::test_fixtures::JoinAnswer {
-                Arc::new(move || Ok(bundle.clone()))
+                Arc::new(move || Some(Ok(bundle.clone())))
             },
         );
         build(store, answer, None, None).await

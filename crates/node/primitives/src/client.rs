@@ -52,6 +52,15 @@ pub enum NamespaceJoinKind {
     Follow { peer_addrs: Vec<String> },
 }
 
+/// How long the requester spends on one follow before it answers, from the
+/// moment the sync driver takes it up. The context handler times the whole
+/// request (queue wait included) against the same budget, so a follow answers
+/// in under a minute end to end: inside mero-js's request timeout (65 s, being
+/// raised to 120 s) and far
+/// inside meroctl's five minutes. The driver runs one join or follow at a time,
+/// so this also bounds how long one follow can hold up the next.
+pub const FOLLOW_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// Every peer a direct namespace join or follow reached declined to complete it.
 ///
 /// Typed so a caller can tell the refusals apart without parsing the message: a

@@ -1205,12 +1205,15 @@ fn owner_guard_status(refusal: &calimero_governance_store::OwnerGuardRefusal) ->
 
 /// The status a `ContextError::FollowRefused` is answered with, by its reason.
 ///
-/// Only the two membership refusals are final for the caller; an unknown
+/// Only the two membership refusals and a device scope that does not reach the
+/// namespace's application are final for the caller; an unknown
 /// reason is taken as retryable, since a new reason added to the context
 /// handler is far likelier to be a transient one than a new kind of "no".
 fn follow_refusal_status(reason: &str) -> StatusCode {
     match reason {
-        "not a member" | "removed" => StatusCode::FORBIDDEN,
+        "not a member" | "removed" | "device not scoped for this application" => {
+            StatusCode::FORBIDDEN
+        }
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
@@ -2539,6 +2542,11 @@ mod parse_api_error_tests {
                 ),
                 ("no anchor reachable", StatusCode::SERVICE_UNAVAILABLE),
                 ("no peer served the follow", StatusCode::SERVICE_UNAVAILABLE),
+                ("follow in progress", StatusCode::SERVICE_UNAVAILABLE),
+                (
+                    "device not scoped for this application",
+                    StatusCode::FORBIDDEN,
+                ),
             ] {
                 let err = ContextError::FollowRefused {
                     namespace_id: "a1".to_owned(),

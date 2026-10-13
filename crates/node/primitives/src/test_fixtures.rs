@@ -268,13 +268,14 @@ pub async fn node_client_over_answering_joins(
     node_client_over_answering_joins_with(
         datastore,
         network_client,
-        std::sync::Arc::new(move || Ok(bundle.clone())),
+        std::sync::Arc::new(move || Some(Ok(bundle.clone()))),
     )
     .await
 }
 
-/// What a scripted responder answers each namespace-join or follow request with.
-pub type JoinAnswer = std::sync::Arc<dyn Fn() -> eyre::Result<JoinBundle> + Send + Sync>;
+/// What a scripted responder answers each namespace-join or follow request
+/// with. `None` holds the request unanswered, as a busy sync driver would.
+pub type JoinAnswer = std::sync::Arc<dyn Fn() -> Option<eyre::Result<JoinBundle>> + Send + Sync>;
 
 /// [`node_client_over_answering_joins`], answering every request with what
 /// `answer` returns, so a test can script the requester's error as well.
@@ -312,8 +313,14 @@ pub async fn node_client_over_answering_joins_with(
     // Detached: the client awaits the oneshot, so the answer has to come from
     // somewhere other than the task making the request.
     let _responder = tokio::spawn(async move {
+        let mut held = Vec::new();
         while let Some((_params, reply)) = ns_join_rx.recv().await {
-            let _ignored = reply.send(answer());
+            match answer() {
+                Some(outcome) => {
+                    let _ignored = reply.send(outcome);
+                }
+                None => held.push(reply),
+            }
         }
     });
 
