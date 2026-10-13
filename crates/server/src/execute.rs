@@ -450,15 +450,27 @@ mod log_tests {
     /// the runtime's length-only line for the same text.
     #[test]
     fn guest_log_lines_are_counted_at_info_not_written() {
-        let logs = vec!["balance of alice is topsecret-42".to_owned(), "ok".to_owned()];
+        let logs = vec![
+            "balance of alice is topsecret-42".to_owned(),
+            "ok".to_owned(),
+        ];
 
         let info = capture(LevelFilter::INFO, || log_guest_logs(&logs));
-        assert!(info.contains("execution logs"), "the run's logs are still noted: {info}");
+        assert!(
+            info.contains("execution logs"),
+            "the run's logs are still noted: {info}"
+        );
         assert!(info.contains("lines=2"), "with their count: {info}");
-        assert!(!info.contains("topsecret"), "a guest log line was logged at info: {info}");
+        assert!(
+            !info.contains("topsecret"),
+            "a guest log line was logged at info: {info}"
+        );
 
         let trace = capture(LevelFilter::TRACE, || log_guest_logs(&logs));
-        assert!(trace.contains("topsecret-42"), "the text is still there at trace: {trace}");
+        assert!(
+            trace.contains("topsecret-42"),
+            "the text is still there at trace: {trace}"
+        );
     }
 
     /// A method's error is app data; the request failure used to log it whole
@@ -470,12 +482,21 @@ mod log_tests {
         );
 
         let info = capture(LevelFilter::INFO, || log_execution_failure(&err));
-        assert!(info.contains("Request failed"), "the failure is still logged: {info}");
+        assert!(
+            info.contains("Request failed"),
+            "the failure is still logged: {info}"
+        );
         assert!(info.contains("FunctionCallError"), "with its kind: {info}");
-        assert!(!info.contains("topsecret"), "a method's error was logged at info or above: {info}");
+        assert!(
+            !info.contains("topsecret"),
+            "a method's error was logged at info or above: {info}"
+        );
 
         let debug = capture(LevelFilter::DEBUG, || log_execution_failure(&err));
-        assert!(debug.contains("topsecret"), "the text is still there at debug: {debug}");
+        assert!(
+            debug.contains("topsecret"),
+            "the text is still there at debug: {debug}"
+        );
     }
 
     /// The node's own errors carry no app data and stay whole.
