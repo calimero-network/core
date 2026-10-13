@@ -999,6 +999,7 @@ fn the_projection_decides_unless_a_removal_is_recorded() {
 }
 
 mod blob_share_install {
+    use calimero_node_primitives::test_fixtures::signed_wasm;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::{Context, ContextId};
@@ -1076,5 +1077,73 @@ mod blob_share_install {
             .expect("the stub stays");
         assert_eq!(row.size, 0, "raw wasm must not fill the stub");
         assert!(application.is_none());
+    }
+
+    /// A signed bundle a peer shared that derives some other id than the one the
+    /// group named is refused before anything is written.
+    #[tokio::test]
+    #[serial(boot_test_node)]
+    async fn a_shared_bundle_deriving_another_id_writes_no_application() {
+        let node = boot_test_node().await;
+        let bundle = signed_wasm(b"a bundle the group did not name");
+        let (blob_id, _size) = node
+            .node_client
+            .add_blob(bundle.as_slice(), Some(bundle.len() as u64), None)
+            .await
+            .expect("the shared bytes");
+        let application_id = ApplicationId::from(NAMED);
+        let context_id = ContextId::from(CONTEXT);
+        {
+            let mut handle = node.store.handle();
+            handle
+                .put(&key::ApplicationMeta::new(application_id), &stub(blob_id))
+                .expect("seed the stub");
+            handle
+                .put(
+                    &key::ContextMeta::new(context_id),
+                    &types::ContextMeta::new(
+                        key::ApplicationMeta::new(application_id),
+                        [0; 32],
+                        Vec::new(),
+                        None,
+                    ),
+                )
+                .expect("register the context");
+        }
+        let installed_ids = || {
+            node.node_client
+                .list_applications()
+                .expect("list applications")
+                .into_iter()
+                .map(|app| app.id)
+                .collect::<Vec<_>>()
+        };
+        let before = installed_ids();
+
+        let context = Context::new(context_id, application_id, Hash::from([0; 32]));
+        let mut application = None;
+        let outcome = node
+            .sync_manager
+            .install_bundle_after_blob_sharing(&context_id, &blob_id, &context, &mut application)
+            .await;
+
+        assert_eq!(
+            installed_ids(),
+            before,
+            "no row may be written under the id the bundle derives"
+        );
+        assert!(application.is_none());
+        let err = outcome.expect_err("a bundle of another id must be refused");
+        assert!(
+            format!("{err:#}").contains("application mismatch"),
+            "refused for the id, not another reason: {err:#}"
+        );
+        let row = node
+            .store
+            .handle()
+            .get(&key::ApplicationMeta::new(application_id))
+            .expect("row read")
+            .expect("the stub stays");
+        assert_eq!(row.size, 0, "the stub is left as it was");
     }
 }

@@ -3370,4 +3370,7 @@ impl SignedGroupOp {
 }
 
 #[cfg(test)]
+mod authz_classification;
+
+#[cfg(test)]
 mod tests;

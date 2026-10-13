@@ -94,6 +94,10 @@ impl<'a> VoidJudge<'a> {
 }
 
 impl AtCutAuthorizer for VoidJudge<'_> {
+    fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
+        Some(&self.0)
+    }
+
     fn is_admin_at_cut(&self, _: &ContextGroupId, _: &PublicKey, _: &[[u8; 32]]) -> Option<bool> {
         None
     }
@@ -211,6 +215,10 @@ impl AtCutAuthorizer for VoidJudge<'_> {
 }
 
 impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
+    fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
+        Some(self)
+    }
+
     fn is_admin_at_cut(
         &self,
         group: &ContextGroupId,

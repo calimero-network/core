@@ -13,9 +13,11 @@ use std::sync::Arc;
 
 use calimero_context_client::messages::{ExecuteError, ReadAs};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_governance_store::{
-    register_context_in_group, GroupKeyring, MembershipRepository, MetaRepository,
-    NamespaceRepository, NodeDeviceRepository,
+    register_context_in_group, unregister_context_from_group, CapabilitiesRepository,
+    DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    NodeDeviceRepository,
 };
 use calimero_node_primitives::test_fixtures::signed_wasm;
 use calimero_primitives::application::ApplicationId;
@@ -58,6 +60,26 @@ const MANIFEST: &str = r#"{
     "events": []
 }"#;
 
+/// Exports one view, `read_private`, that reads a private-storage key and
+/// returns nothing. Memory layout: the 32-byte zero key at 0, its
+/// `{ptr, len}` descriptor at 64.
+const PRIVATE_MODULE: &str = r#"
+    (module
+        (import "env" "private_storage_read" (func $read (param i64 i64) (result i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 64)
+            "\00\00\00\00\00\00\00\00\20\00\00\00\00\00\00\00")
+        (func (export "read_private")
+            (drop (call $read (i64.const 64) (i64.const 0)))))
+"#;
+
+const PRIVATE_MANIFEST: &str = r#"{
+    "schema_version": "wasm-abi/1",
+    "types": {},
+    "methods": [{"name": "read_private", "params": [], "intent": "read_only"}],
+    "events": []
+}"#;
+
 /// Module compiles run on the node's global runtime, which must be
 /// multi-threaded; `actix::test` runs on a current-thread one.
 fn global_runtime() {
@@ -78,6 +100,8 @@ fn global_runtime() {
 
 struct Fixture {
     harness: actor::Harness,
+    store: Store,
+    group_id: ContextGroupId,
     context_id: ContextId,
     /// This node's own signing key in the context: the executor of every run.
     node_key: PublicKey,
@@ -93,6 +117,10 @@ struct Fixture {
 /// and one account that is a member through a device binding and nothing
 /// else, as a thin client that joined through a relay is.
 async fn fixture() -> Fixture {
+    fixture_for(MODULE, MANIFEST).await
+}
+
+async fn fixture_for(module: &str, manifest: &str) -> Fixture {
     global_runtime();
     let store = Store::new(Arc::new(InMemoryDB::owned()));
     NodeDeviceRepository::new(&store)
@@ -100,9 +128,9 @@ async fn fixture() -> Fixture {
         .expect("provision the account root an initialised node has");
     let harness = actor::over(store.clone()).await;
 
-    let wasm = wat::parse_str(MODULE).expect("parse the module");
+    let wasm = wat::parse_str(module).expect("parse the module");
     let manifest: calimero_wasm_abi::schema::Manifest =
-        serde_json::from_str(MANIFEST).expect("parse the manifest");
+        serde_json::from_str(manifest).expect("parse the manifest");
     let wasm = calimero_wasm_abi::embed::write_embedded_state_schema(&wasm, &manifest)
         .expect("embed the manifest");
     let (blob_id, size) = harness
@@ -210,6 +238,8 @@ async fn fixture() -> Fixture {
 
     Fixture {
         harness,
+        store,
+        group_id,
         context_id,
         node_key,
         caller,
@@ -323,6 +353,100 @@ async fn a_non_member_is_refused_whatever_device_it_names() {
         })
         .await
         .expect_err("a stranger's read is refused");
+    assert!(
+        matches!(err, ExecuteError::NotAMember { .. }),
+        "expected NotAMember, got {err:?}"
+    );
+}
+
+/// A read on an account's behalf has no private store: the node-local bucket is
+/// keyed by context alone, so handing it over would share it across accounts.
+#[actix::test]
+async fn a_read_on_an_accounts_behalf_gets_no_private_storage() {
+    let fx = fixture_for(PRIVATE_MODULE, PRIVATE_MANIFEST).await;
+    let own = fx
+        .harness
+        .context_client
+        .execute(
+            &fx.context_id,
+            &fx.node_key,
+            "read_private".to_owned(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("control: the node's own run reads its private storage");
+    assert!(own.returns.is_ok(), "control: {:?}", own.returns);
+
+    let err = fx
+        .harness
+        .context_client
+        .query_as(
+            &fx.context_id,
+            ReadAs {
+                account: fx.caller,
+                device: Some(fx.caller_device),
+            },
+            &fx.node_key,
+            "read_private".to_owned(),
+            Vec::new(),
+        )
+        .await
+        .expect_err("a read on an account's behalf must not reach private storage");
+    assert!(
+        matches!(err, ExecuteError::PrivateStorageUnavailable { .. }),
+        "expected PrivateStorageUnavailable, got {err:?}"
+    );
+}
+
+/// An account that inherits its way into an Open subgroup stops being a member
+/// of its contexts once the subgroup deny-lists it, though it keeps the seat above.
+#[actix::test]
+async fn an_inheritor_removed_from_the_context_group_is_refused() {
+    let fx = fixture().await;
+    let child = ContextGroupId::from([0x6D; 32]);
+    let parent_meta = MetaRepository::new(&fx.store)
+        .load(&fx.group_id)
+        .expect("load the group meta")
+        .expect("the group has meta");
+    MetaRepository::new(&fx.store)
+        .save(&child, &parent_meta)
+        .expect("save the subgroup meta");
+    GroupKeyring::new(&fx.store, child)
+        .store_key(&[0x33; 32])
+        .expect("store the subgroup key");
+    NamespaceRepository::new(&fx.store)
+        .nest(&fx.group_id, &child)
+        .expect("nest the subgroup");
+    CapabilitiesRepository::new(&fx.store)
+        .set_subgroup_visibility(&child, VisibilityMode::Open)
+        .expect("open the subgroup");
+    CapabilitiesRepository::new(&fx.store)
+        .set_member_capability(
+            &fx.group_id,
+            &fx.caller,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+        )
+        .expect("let the caller join open subgroups");
+    unregister_context_from_group(&fx.store, &fx.group_id, &fx.context_id)
+        .expect("leave the parent group");
+    register_context_in_group(&fx.store, &child, &fx.context_id).expect("join the subgroup");
+
+    let read = ReadAs {
+        account: fx.caller,
+        device: Some(fx.caller_device),
+    };
+    fx.who_am_i(read)
+        .await
+        .expect("control: an inheritor reads the subgroup's context");
+
+    DenyListRepository::new(&fx.store)
+        .mark(&child, &fx.caller)
+        .expect("remove the caller from the subgroup");
+    let err = fx
+        .who_am_i(read)
+        .await
+        .expect_err("a removed inheritor's read is refused");
     assert!(
         matches!(err, ExecuteError::NotAMember { .. }),
         "expected NotAMember, got {err:?}"

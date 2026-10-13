@@ -210,19 +210,23 @@ async fn handle_request_inner(
 
                 let result = exec_request
                     .handle(state, auth_key, auth_node_owner, auth_account, granted)
-                    .await
-                    .to_res_body();
+                    .await;
 
+                // Logged before it becomes a response body: a method's error
+                // is app data and is kept out of `error` (see
+                // `log_execution_failure`). An internal error is logged by
+                // `to_res_body`.
                 match &result {
-                    ResponseBody::Error(err) => {
-                        error!(?err, "Request failed");
+                    Err(RpcError::MethodCallError(err)) => {
+                        crate::execute::log_execution_failure(err);
                     }
-                    ResponseBody::Result(_) => {
+                    Err(RpcError::InternalError(_)) => {}
+                    Ok(_) => {
                         info!("Request completed successfully");
                     }
                 }
 
-                result
+                result.to_res_body()
             }
             RequestPayload::SyncStatus(status_request) => {
                 let span = tracing::Span::current();

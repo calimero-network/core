@@ -947,12 +947,40 @@ bump_tee() {
   # honours it rather than rediscovering it in CI.
   [ -n "${next:-}" ] && bump_tee_companions "$next"
 
+  # The image build checks every archive it downloads (merod, meroctl and
+  # mero-auth among them) against `mero-tee/build-inputs.lock.json`, so a new
+  # merodVersion with the old lock builds nothing. The consumer ships the
+  # script that rewrites the lock from each publisher's checksum file, core's
+  # SHA256SUMS for this release included; run it rather than know its format.
+  bump_tee_build_inputs
+
   # Anything under `mero-tee/` also trips that repository's docs guard, which
   # demands a docs/** or README.md change alongside. That is not a formality
   # here: the pinned versions are written out in the docs, and they had already
   # drifted two releases behind the file they describe. Rewriting them keeps the
   # documented values true AND satisfies the guard — one action, both reasons.
   bump_tee_docs "$VERSION" "${next:-}"
+}
+
+# Re-pin the image's downloaded build inputs for the versions just written.
+# Optional, like the companions: a consumer without the script pins nothing.
+# It fetches checksum files, so --no-lock (fixture runs, offline previews)
+# skips it and says so; the consumer's CI then names the stale lock.
+bump_tee_build_inputs() {
+  local pin="$DIR/scripts/release/pin-build-inputs.sh"
+  if [ ! -f "$pin" ]; then
+    note "no scripts/release/pin-build-inputs.sh — this image pins no build inputs"
+    return 0
+  fi
+  if [ "$NO_LOCK" -eq 1 ]; then
+    note "WARNING: --no-lock: mero-tee/build-inputs.lock.json NOT re-pinned;"
+    note "         the image build refuses merod $VERSION until it is"
+    return 0
+  fi
+  bash "$pin" --root "$DIR" \
+    || die "pin-build-inputs.sh failed; the image build would refuse merod $VERSION"
+  record_change "mero-tee/build-inputs.lock.json"
+  note "build-inputs.lock.json re-pinned for merod $VERSION"
 }
 
 # The two files that carry `imageVersion` under different names. Both optional:

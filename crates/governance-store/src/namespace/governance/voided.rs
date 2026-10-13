@@ -17,7 +17,7 @@ use super::super::op_log::Hole;
 use super::NamespaceGovernance;
 use crate::authorizer::GroupRows;
 use crate::op_budget::OpBudget;
-use crate::void_ledger::{VoidLedger, STORED_BEFORE};
+use crate::void_ledger::{Parked, VoidLedger, STORED_BEFORE};
 use crate::{
     cascade_remove_member_from_group_tree, restore_member_context_identities,
     CapabilitiesRepository, GroupKeyring, MembershipRepository, NamespaceOpLogService,
@@ -99,6 +99,61 @@ impl NamespaceGovernance<'_> {
     /// refused still takes its place in the log, so the DAG moves on.
     pub(super) fn admit_unreadable(&self, op: &SignedNamespaceOp) -> EyreResult<bool> {
         OpBudget::unreadable(self.store).admit_op(op)
+    }
+
+    /// Mark an op kept unread as parked, for a replay to judge; clear a mark an
+    /// earlier, unfinished arrival of an op now read on arrival left behind.
+    pub(super) fn mark_parked(
+        &self,
+        op: &SignedNamespaceOp,
+        delta_id: [u8; 32],
+        parked: bool,
+    ) -> EyreResult<()> {
+        let ledger = VoidLedger::new(self.store, self.namespace_id);
+        if parked {
+            ledger.note_parked(delta_id)
+        } else if crate::unified_op_decode::can_be_parked(&op.op) {
+            ledger.forget_parked(delta_id)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Record a replay's verdict on a parked op, and drop what the authorizer folded
+    /// when it changed. Logged rather than raised: an unrecorded verdict leaves a hole.
+    pub(super) fn settle_parked(&self, op: &SignedNamespaceOp, applied: bool) {
+        let settled = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))
+            .and_then(|id| {
+                VoidLedger::new(self.store, self.namespace_id).settle_parked(id, applied)
+            });
+        match settled {
+            Ok(true) => self.authorizer.forget(),
+            Ok(false) => {}
+            Err(err) => tracing::warn!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                %err,
+                "could not record a replay's verdict on a parked op; it stays a hole"
+            ),
+        }
+    }
+
+    /// What a replay owes `op` if this node parked it and none has applied it yet. An
+    /// unreadable mark reads as undecided: the op is still judged at its cut.
+    pub(super) fn parked_state(&self, op: &SignedNamespaceOp) -> Option<Parked> {
+        let parked = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))
+            .and_then(|id| VoidLedger::new(self.store, self.namespace_id).parked(id));
+        parked.unwrap_or_else(|err| {
+            tracing::warn!(
+                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                %err,
+                "could not read whether an op is parked"
+            );
+            Some(Parked::Undecided)
+        })
     }
 
     /// How `op` is stored: whole, or as the hole that keeps its place in the log when

@@ -88,6 +88,22 @@ fn upgrade_info_to_api_data(info: &GroupUpgradeInfo) -> GroupUpgradeStatusApiDat
     }
 }
 
+/// The op's `restricted` flag for a create request's `visibility`: absent means
+/// Open, because creating Restricted and flipping to Open is not equivalent to
+/// creating Open (a namespace member outside the subgroup parks the flip).
+/// An unrecognized value is a `400`.
+pub(crate) fn restricted_from(visibility: Option<&str>) -> Result<bool, ApiError> {
+    match visibility {
+        None => Ok(false),
+        Some(v) if v.eq_ignore_ascii_case("open") => Ok(false),
+        Some(v) if v.eq_ignore_ascii_case("restricted") => Ok(true),
+        Some(other) => Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("invalid visibility '{other}': expected \"open\" or \"restricted\""),
+        }),
+    }
+}
+
 pub fn parse_group_id(s: &str) -> Result<ContextGroupId, ApiError> {
     let bytes = hex::decode(s).map_err(|e| {
         // Keep the client message generic but preserve the parse cause server-side.
@@ -143,7 +159,15 @@ fn parse_account(s: &str) -> Result<calimero_account::AccountId, ApiError> {
 mod tests {
     use calimero_primitives::identity::PublicKey;
 
-    use super::{parse_account, parse_context_id};
+    use super::{parse_account, parse_context_id, restricted_from};
+
+    #[test]
+    fn a_named_visibility_is_honoured() {
+        assert!(!restricted_from(None).unwrap());
+        assert!(!restricted_from(Some("open")).unwrap());
+        assert!(restricted_from(Some("restricted")).unwrap());
+        assert!(restricted_from(Some("Restricted")).unwrap());
+    }
 
     /// Base58 was accepted here and no longer is.
     ///

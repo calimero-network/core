@@ -3928,7 +3928,11 @@ pub(super) mod group_key_recovery_anchor_tests {
     use tempfile::TempDir;
     use tokio::sync::{broadcast, mpsc};
 
-    use super::{open_subgroup_envelope_acceptable, MessagePayload, PeerId, StreamMessage};
+    use super::open_subgroup_key_tests::spawn_responder;
+    use super::{
+        open_subgroup_envelope_acceptable, MessagePayload, OpenSubgroupJoinParams, PeerId,
+        StreamMessage,
+    };
     use crate::sync::network::mock::MockSyncNetwork;
     use crate::sync::{SyncConfig, SyncManager};
     use crate::NodeState;
@@ -4254,6 +4258,76 @@ pub(super) mod group_key_recovery_anchor_tests {
             held_key(&store),
             None,
             "a plain member is not an anchor, however validly it signs"
+        );
+        mock.assert_all_consumed();
+    }
+
+    /// Run an open-subgroup join whose mesh peers answer, in order, with a key
+    /// wrapped by each of `wrappers`; `owner_sk` is the namespace's anchor.
+    async fn join_open_subgroup_served_by(
+        owner_sk: &PrivateKey,
+        wrappers: &[&PrivateKey],
+    ) -> (eyre::Result<Vec<u8>>, Vec<Vec<u8>>, Arc<MockSyncNetwork>) {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let (sm, store, _tmp) = manager(Arc::clone(&mock)).await;
+        // No network actor runs here, so the peer id the join proof binds is seeded.
+        sm.local_peer_id
+            .set(peer(0x40))
+            .expect("peer id not yet set");
+        let (joiner_bytes, joiner_sk) = secret(0x41);
+        let joiner_pk = joiner_sk.public_key();
+        joiner_state(&store, &joiner_pk, &joiner_bytes, &owner_sk.public_key());
+
+        let served: Vec<Vec<u8>> = wrappers
+            .iter()
+            .map(|wrapper| envelope(wrapper, &joiner_pk, &[0x81; 32]))
+            .collect();
+        let peers = (1u8..).take(served.len()).map(peer).collect();
+        mock.push_subscribed_peers_for(namespace_topic(), peers);
+        for bytes in &served {
+            let _responder = spawn_responder(mock.push_open_stream_ok_with_peer(), bytes.clone());
+        }
+
+        let joined = sm
+            .initiate_open_subgroup_join(OpenSubgroupJoinParams {
+                namespace_id: NAMESPACE,
+                subgroup_id: NAMESPACE,
+                joiner_public_key: joiner_pk,
+            })
+            .await;
+        (joined, served, mock)
+    }
+
+    /// A key holder that is not an anchor is walked past on the join, and the
+    /// anchor's key behind it is the one taken.
+    #[tokio::test]
+    async fn an_open_subgroup_join_takes_the_anchors_key_past_a_non_anchor() {
+        let (_, owner_sk) = secret(0x42);
+        let (_, other_sk) = secret(0x43);
+
+        let (joined, served, mock) =
+            join_open_subgroup_served_by(&owner_sk, &[&other_sk, &owner_sk]).await;
+
+        assert_eq!(
+            joined.expect("the anchor served the key"),
+            served[1],
+            "the join must take the anchor's envelope, not the first one offered"
+        );
+        mock.assert_all_consumed();
+    }
+
+    /// With no anchor answering, the join fails rather than taking a key from a
+    /// sender nothing vouches for.
+    #[tokio::test]
+    async fn an_open_subgroup_join_served_only_by_a_non_anchor_fails() {
+        let (_, owner_sk) = secret(0x52);
+        let (_, other_sk) = secret(0x53);
+
+        let (joined, _served, mock) = join_open_subgroup_served_by(&owner_sk, &[&other_sk]).await;
+
+        assert!(
+            joined.is_err(),
+            "a key signed by a non-anchor must not complete the join"
         );
         mock.assert_all_consumed();
     }

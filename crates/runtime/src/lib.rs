@@ -730,19 +730,29 @@ impl Module {
                 message.as_str()
             };
 
-            error!(
+            // A guest panic's text and a method's error bytes are app data,
+            // and `error` is shipped off the node: it gets the error with
+            // those elided (`FunctionCallError::redacted`), `debug` the rest.
+            debug!(
                 %context_id,
                 method,
                 error_debug = ?err,
                 error_message = %message_str,
+                "WASM method execution failed: detail"
+            );
+
+            let err: FunctionCallError = match err.downcast::<VMLogicError>() {
+                Ok(err) => err.try_into()?,
+                Err(err) => err.into(),
+            };
+            error!(
+                %context_id,
+                method,
+                error = %err.redacted(),
                 wasm_trace = trace_joined.as_deref(),
                 "WASM method execution failed"
             );
-
-            return match err.downcast::<VMLogicError>() {
-                Ok(err) => Ok(Some(err.try_into()?)),
-                Err(err) => Ok(Some(err.into())),
-            };
+            return Ok(Some(err));
         }
 
         Ok(None)
@@ -2492,6 +2502,129 @@ mod pending_delta_tests {
         assert!(
             outcome.artifact.is_empty(),
             "the run shipped an action pushed before it started"
+        );
+    }
+}
+
+/// What a failed run logs at `info` and above, the levels a node ships off the
+/// machine (merod's default filter is `calimero_=info`).
+#[cfg(test)]
+mod failure_log_tests {
+    use std::io::{Result as IoResult, Write};
+    use std::sync::{Arc, Mutex};
+
+    use calimero_primitives::identity::AccountId;
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::fmt::layer;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry;
+
+    use super::*;
+    use crate::store::InMemoryStorage;
+
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> IoResult<usize> {
+            self.0
+                .lock()
+                .expect("log buffer poisoned")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> IoResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Everything logged at `info` or above while `body` runs. Retried once
+    /// with the interest cache rebuilt, as `logic.rs`'s `capture_logs` explains.
+    fn capture_info(body: impl Fn()) -> String {
+        let once = |rebuild: bool| {
+            let buffer = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&buffer);
+            let subscriber = registry().with(
+                layer()
+                    .with_ansi(false)
+                    .with_writer(move || Buffer(Arc::clone(&sink)))
+                    .with_filter(LevelFilter::INFO),
+            );
+            tracing::subscriber::with_default(subscriber, || {
+                if rebuild {
+                    tracing::callsite::rebuild_interest_cache();
+                }
+                body();
+            });
+            let bytes = buffer.lock().expect("log buffer poisoned").clone();
+            String::from_utf8(bytes).expect("formatted output must be utf-8")
+        };
+        let captured = once(false);
+        if captured.is_empty() {
+            once(true)
+        } else {
+            captured
+        }
+    }
+
+    /// A guest panic's message is app data. The run used to log it at `error`
+    /// twice over (`error_debug` and `error_message`), undoing the length-only
+    /// line the panic path writes a few frames earlier.
+    #[test]
+    fn a_guest_panic_message_is_not_logged_at_info_or_above() {
+        let wat = r#"
+            (module
+                (import "env" "panic_utf8" (func $panic_utf8 (param i64 i64)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "topsecret-balance-42")
+                (data (i32.const 32) "lib.rs")
+                (func (export "panic_func")
+                    ;; message buffer at 200: ptr 0, len 20
+                    (i64.store (i32.const 200) (i64.const 0))
+                    (i64.store (i32.const 208) (i64.const 20))
+                    ;; location at 100: file ptr 32, len 6, line 7, column 3
+                    (i64.store (i32.const 100) (i64.const 32))
+                    (i64.store (i32.const 108) (i64.const 6))
+                    (i32.store (i32.const 116) (i32.const 7))
+                    (i32.store (i32.const 120) (i32.const 3))
+                    (call $panic_utf8 (i64.const 200) (i64.const 100))
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let engine = Engine::default();
+        let module = engine.compile(&wasm).expect("Failed to compile module");
+
+        let output = capture_info(|| {
+            let mut storage = InMemoryStorage::default();
+            let outcome = module
+                .run(
+                    [0; 32].into(),
+                    AccountId::from([0; 32]),
+                    [0; 32].into(),
+                    "panic_func",
+                    &[],
+                    &mut storage,
+                    None,
+                    None,
+                )
+                .expect("Failed to run module");
+            assert!(
+                matches!(
+                    &outcome.returns,
+                    Err(FunctionCallError::HostError(HostError::Panic { message, .. }))
+                        if message == "topsecret-balance-42"
+                ),
+                "the caller still gets the panic message: {:?}",
+                outcome.returns
+            );
+        });
+
+        assert!(
+            output.contains("WASM method execution failed"),
+            "the failure is still logged: {output}"
+        );
+        assert!(
+            !output.contains("topsecret"),
+            "a guest panic message was logged at info or above: {output}"
         );
     }
 }
