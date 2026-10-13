@@ -51,6 +51,8 @@ ALWAYS = (
     "scripts/tests/needs-windows-ci-test.py",
     "scripts/e2e-fixture-registry.sh",
     "workflows/auth-seam.yml",
+    "workflows/namespace-follow.yml",
+    "scripts/e2e-namespace-follow.sh",
     "apps/kv-store/*",
     "crates/utils/fs/*",
     "crates/merod/tests/watchdog_live.rs",

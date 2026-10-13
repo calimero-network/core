@@ -306,6 +306,89 @@ jobs:
         if: always()
         run: merobox stop --no-docker --all || true
 
+  # ── Namespace follow: two nodes, admin adds an account, its node follows ──
+  # Binary mode like auth-seam: embedded auth on both nodes, raw HTTP assertions
+  # in scripts/e2e-namespace-follow.sh. The re-add leg goes through meroctl, which
+  # the merod image does not carry, so it is built here on Build Image's cache.
+  namespace-follow:
+    name: Namespace follow (two-node e2e)
+    needs: [build-image, build-apps]
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v8
+        with:
+          name: merod-image
+          path: /tmp
+
+      - name: Extract merod binary from image
+        run: |
+          zstd -d /tmp/merod-local.tar.zst --stdout | docker load
+          id=$(docker create merod:local)
+          docker cp "$id:/usr/local/bin/merod" ./merod
+          docker rm "$id"
+          chmod +x ./merod
+
+      - name: Download app bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-app-bundles
+          path: dist
+
+      # Reads Build Image's warm cache; that job is its one saver.
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: merod-release-fast
+          save-if: false
+
+      # meroctl links librocksdb-sys, whose bindgen needs libclang.
+      - name: Check libclang
+        uses: ./.github/actions/check-libclang
+
+      - name: Build meroctl
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+        run: |
+          cargo build -p meroctl --release --target x86_64-unknown-linux-gnu
+          cp "${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-gnu/release/meroctl" ./meroctl
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run namespace-follow e2e (merobox, embedded auth)
+        env:
+          # As auth-seam: provision each node's admin account at init and tell the
+          # script which credentials to log in with. CI-only test values.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
+          MERO_E2E_USER: dev
+          MERO_E2E_PASS: dev-password
+          CALIMERO_REGISTRY_MODE: dht
+        run: |
+          export MEROCTL="$GITHUB_WORKSPACE/meroctl"
+          merobox bootstrap run workflows/namespace-follow.yml \
+            --no-docker --binary-path ./merod --auth-mode embedded
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          for f in data/namespace-follow-*/logs/*.log; do
+            echo "=== $f ==="
+            tail -n 300 "$f" || true
+          done
+
+      - name: Stop nodes
+        if: always()
+        run: merobox stop --no-docker --all || true
+
   # The TEE relay topology: merod in PROXY auth mode with delegated access,
   # behind Traefik and a standalone mero-auth serving device-key login, as
   # mero-tee runs a fleet relay. Every other scenario reaches a node on its own
@@ -822,16 +905,16 @@ jobs:
 
   comment:
     name: Report Failed Workflow
-    needs: [plan, test, test-mock-tee, auth-seam, relay-device-login, projection-coverage, key-recovery-coverage]
+    needs: [plan, test, test-mock-tee, auth-seam, namespace-follow, relay-device-login, projection-coverage, key-recovery-coverage]
     runs-on: ubuntu-latest
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Check if main job failed or was cancelled
         id: check_status
         run: |
-          if [ "${{ needs.plan.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.test-mock-tee.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.relay-device-login.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
+          if [ "${{ needs.plan.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.test-mock-tee.result }}" != "success" ] || [ "${{ needs.auth-seam.result }}" != "success" ] || [ "${{ needs.namespace-follow.result }}" != "success" ] || [ "${{ needs.relay-device-login.result }}" != "success" ] || [ "${{ needs.projection-coverage.result }}" != "success" ] || [ "${{ needs.key-recovery-coverage.result }}" != "success" ]; then
             echo "job_failed=true" >> $GITHUB_OUTPUT
-            if [ "${{ needs.plan.result }}" == "cancelled" ] || [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.test-mock-tee.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.relay-device-login.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
+            if [ "${{ needs.plan.result }}" == "cancelled" ] || [ "${{ needs.test.result }}" == "cancelled" ] || [ "${{ needs.test-mock-tee.result }}" == "cancelled" ] || [ "${{ needs.auth-seam.result }}" == "cancelled" ] || [ "${{ needs.namespace-follow.result }}" == "cancelled" ] || [ "${{ needs.relay-device-login.result }}" == "cancelled" ] || [ "${{ needs.projection-coverage.result }}" == "cancelled" ] || [ "${{ needs.key-recovery-coverage.result }}" == "cancelled" ]; then
               echo "was_cancelled=true" >> $GITHUB_OUTPUT
             else
               echo "was_cancelled=false" >> $GITHUB_OUTPUT
@@ -846,8 +929,8 @@ jobs:
           message="## E2E Rust Apps Failed
 
           One or more jobs in this workflow (the merobox scenario groups
-          and their plan, auth-seam, relay-device-login, projection-coverage,
-          key-recovery-coverage) failed.
+          and their plan, auth-seam, namespace-follow, relay-device-login,
+          projection-coverage, key-recovery-coverage) failed.
 
           Please check the workflow logs for more details."
 

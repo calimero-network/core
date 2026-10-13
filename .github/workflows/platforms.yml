@@ -30,6 +30,8 @@ on:
       - "tools/**"
       - "apps/kv-store/**"
       - "workflows/auth-seam.yml"
+      - "workflows/namespace-follow.yml"
+      - "scripts/e2e-namespace-follow.sh"
       - ".github/workflows/platforms.yml"
       - ".github/actions/setup-merobox/**"
       - "scripts/needs-windows-ci.py"
@@ -223,14 +225,17 @@ jobs:
       - name: Install NASM
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
 
+      # meroctl too: the namespace-follow lane drives one leg through it.
       - name: Build merod
-        run: cargo build -p merod
+        run: cargo build -p merod -p meroctl
 
       - name: Upload merod.exe
         uses: actions/upload-artifact@v7
         with:
           name: windows-merod
-          path: target/debug/merod.exe
+          path: |
+            target/debug/merod.exe
+            target/debug/meroctl.exe
           retention-days: 2
 
   # wasm is architecture-independent, so the bundle is built on Linux, which
@@ -311,6 +316,67 @@ jobs:
         if: failure()
         shell: bash
         run: cat data/auth-seam-1/logs/*.log || true
+
+      - name: Stop nodes
+        if: always()
+        shell: bash
+        run: merobox stop --no-docker --all || true
+
+  # Two Windows nodes, an admin adding an account and that account's node
+  # following the namespace (workflows/namespace-follow.yml).
+  windows-namespace-follow:
+    name: Windows e2e (namespace follow, binary mode)
+    needs: [windows-merod, kv-store-bundle]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download merod.exe
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-merod
+          path: bin/
+
+      - name: Download the app bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: platforms-app-bundles
+          path: dist/
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run namespace-follow e2e (merobox, embedded auth)
+        shell: bash
+        env:
+          # As windows-auth-seam: minted at merod init, and the script logs in
+          # with them. CI-only values for ephemeral localhost nodes.
+          MERO_AUTH_ADMIN_USER: dev
+          MERO_AUTH_ADMIN_PASSWORD: dev-password
+          MERO_E2E_USER: dev
+          MERO_E2E_PASS: dev-password
+        run: |
+          export MEROCTL="$GITHUB_WORKSPACE/bin/meroctl.exe"
+          merobox bootstrap run workflows/namespace-follow.yml \
+            --no-docker --binary-path bin/merod.exe --auth-mode embedded
+
+      - name: Logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          for f in data/namespace-follow-*/logs/*.log; do
+            echo "=== $f ==="
+            tail -n 300 "$f" || true
+          done
 
       - name: Stop nodes
         if: always()
@@ -462,7 +528,7 @@ jobs:
   # A red scheduled run is otherwise read by nobody: keep one open issue for it.
   report:
     name: Report the nightly
-    needs: [gate, windows-secrets, windows-node-smoke, windows-merod, kv-store-bundle, windows-auth-seam, windows-node-workflow, build-binaries]
+    needs: [gate, windows-secrets, windows-node-smoke, windows-merod, kv-store-bundle, windows-auth-seam, windows-namespace-follow, windows-node-workflow, build-binaries]
     if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5

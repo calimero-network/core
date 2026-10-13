@@ -1,0 +1,57 @@
+name: "Namespace follow — two-node e2e"
+description: >
+  Proves the follow end to end: an admin adds an account at a namespace root
+  (POST /admin-api/groups/{ns}/members), and that account's node joins with
+  no invitation (POST /admin-api/namespaces/{ns}/follow, dialling the admin's
+  externalAddrs from GET /admin-api/identity), then reads a value the admin
+  wrote. After a removal its next follow is refused (403) and its read fails;
+  after a re-add it follows again (through `meroctl namespace follow`) and
+  reads.
+
+  The assertions live in scripts/e2e-namespace-follow.sh: it needs raw HTTP
+  status codes and bodies per request, which the step vocabulary does not
+  expose, hence a script step, as in workflows/auth-seam.yml. It reads the
+  kv-store bundle from dist/ (or KV_STORE_MPK) and installs it on both nodes.
+
+# Embedded auth is binary-mode only, as in auth-seam.yml.
+no_docker: true
+auth_mode: embedded
+
+nuke_on_start: true
+
+# Isolated, as `--e2e-mode` runs: bootstrap list cleared, mDNS on, so the two
+# nodes find each other and nothing outside the machine. On the public network
+# a follow that is refused walks every connected stranger before it answers,
+# and node-1's externalAddrs is a circuit through a public relay.
+e2e_mode: true
+
+nodes:
+  count: 2
+  prefix: namespace-follow
+  # Node i gets base + i - 1 for each port: RPC 4101/4102, P2P 4103/4104. The
+  # ranges must not overlap (node-2's RPC port would be node-1's swarm), and
+  # must stay off 2428/2528, which a local Desktop node holds. The script reads
+  # each node's RPC port from its config, so a CLI `--e2e-mode` run, which
+  # picks free ports itself, works too.
+  base_port: 4103
+  base_rpc_port: 4101
+
+steps:
+  # The admin account is minted at `merod init` from MERO_AUTH_ADMIN_USER /
+  # MERO_AUTH_ADMIN_PASSWORD; the script logs in to both nodes with
+  # MERO_E2E_USER / MERO_E2E_PASS, which must match.
+  - name: "Run the namespace-follow assertions"
+    type: script
+    script: scripts/e2e-namespace-follow.sh
+    target: local
+
+stop_all_nodes: true
+nuke_on_end: true
+
+# How to run (from the repo root):
+#   (cd apps/kv-store && cargo mero bundle --dev --no-icon)   # -> dist/*.mpk
+#   export MERO_AUTH_ADMIN_USER=dev MERO_AUTH_ADMIN_PASSWORD=dev-password
+#   export MERO_E2E_USER=dev MERO_E2E_PASS=dev-password
+#   PATH="$PWD/target/release:$PATH" merobox bootstrap run \
+#     workflows/namespace-follow.yml --no-docker \
+#     --binary-path ./target/release/merod --auth-mode embedded
