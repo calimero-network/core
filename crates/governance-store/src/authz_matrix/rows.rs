@@ -14,7 +14,7 @@ use super::{
     assert_covered, assert_matches, observe, Actor, ActorState, GatedOp, Home, OpTable, Outcome,
     Row, World, NAMESPACE_MEMBERS, SUBJECT_MEMBERS,
 };
-use crate::test_fixtures::{device_kem_secret, device_scope};
+use crate::test_fixtures::{binding_rejection, device_kem_secret, device_scope};
 use crate::warrant_gate::{check_delegated_delta, WarrantRefusal};
 use crate::{
     build_group_key_delivery, sign_apply_local_group_op_borsh, AccountBindingRepository,
@@ -135,11 +135,8 @@ fn verdict(
     let Err(err) = applied else {
         return effect.into();
     };
-    let reason = err
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<BindingRejected>());
     assert!(
-        reason.is_some_and(refused),
+        binding_rejection(&err).as_ref().is_some_and(refused),
         "not the refusal this row expects: {err:#}"
     );
     assert!(!effect, "a refused op wrote its effect");
