@@ -396,6 +396,39 @@ pub struct JoinGroupResponse {
     pub member_account: AccountId,
 }
 
+/// Follow a namespace whose root already holds a member row for this node's
+/// account: the join without an invitation, authorised by that row.
+#[derive(Debug)]
+pub struct FollowGroupRequest {
+    /// The namespace to follow. Always a namespace root.
+    pub namespace_id: ContextGroupId,
+    /// Multiaddrs of anchors to ask first, each ending in `/p2p/<peer id>`.
+    /// Unsigned hints: a wrong one costs a failed dial.
+    pub peer_addrs: Vec<String>,
+    /// The namespace's application, seeded into its meta when it is unknown
+    /// here, as an invitation's `application_id` seeds a join's.
+    pub application_id: ApplicationId,
+    /// The application's bytecode, when the caller knows it. Zero (unset)
+    /// otherwise, which governance fills in.
+    pub bytecode_id: Option<[u8; 32]>,
+}
+
+impl Message for FollowGroupRequest {
+    type Result = eyre::Result<FollowGroupResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct FollowGroupResponse {
+    pub namespace_id: ContextGroupId,
+    /// The key this node signs the namespace's ops with.
+    pub member_identity: PublicKey,
+    /// The account the member row is keyed by. See [`JoinGroupResponse`].
+    pub member_account: AccountId,
+    /// Whether a usable group key is held. `false` means followed, key pending:
+    /// it arrives by a later delivery or pull, and writes wait for it.
+    pub key_ready: bool,
+}
+
 #[derive(Debug)]
 pub struct ListAllGroupsRequest {
     pub offset: usize,

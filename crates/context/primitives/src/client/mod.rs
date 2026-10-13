@@ -28,12 +28,13 @@ use crate::group::{
     AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest, CascadeStatusEntry,
     CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
     CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
-    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetCascadeStatusRequest,
-    GetContextMetadataRequest, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupMetadataRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
-    GetMemberCapabilitiesResponse, GetMemberMetadataRequest, GetMigrationStatusRequest,
-    GetNamespaceIdentityRequest, GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry,
-    GroupInfoResponse, GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
+    DeleteNamespaceResponse, DetachContextFromGroupRequest, FollowGroupRequest,
+    FollowGroupResponse, GetCascadeStatusRequest, GetContextMetadataRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
+    GetMemberMetadataRequest, GetMigrationStatusRequest, GetNamespaceIdentityRequest,
+    GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry, GroupInfoResponse,
+    GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
     IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
     JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
     JoinSubgroupInheritanceResponse, LabelDeviceRequest, LeaveContextRequest, LeaveContextResponse,
@@ -2098,6 +2099,12 @@ impl ContextClient {
         JoinGroup,
         JoinGroupRequest,
         eyre::Result<JoinGroupResponse>
+    );
+    forward_to_actor!(
+        follow_group,
+        FollowGroup,
+        FollowGroupRequest,
+        eyre::Result<FollowGroupResponse>
     );
     forward_to_actor!(
         list_all_groups,

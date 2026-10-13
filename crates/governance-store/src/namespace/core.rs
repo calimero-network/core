@@ -838,6 +838,18 @@ impl<'a> NamespaceRepository<'a> {
         Ok(())
     }
 
+    /// Stop recording that this node takes part in `namespace_id`, and nothing
+    /// else: no key, op or row of the namespace is touched.
+    ///
+    /// For a caller that noted participation for an attempt that then failed, so
+    /// the startup sweep does not keep subscribing to a namespace this node never
+    /// got into. Leaving one it did get into is `delete_namespace_local_state`.
+    pub fn forget_participation(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        handle.delete(&NamespaceParticipation::new(namespace_id.to_bytes()))?;
+        Ok(())
+    }
+
     /// Enumerate every namespace this node holds an identity for.
     ///
     /// A `NamespaceParticipation` row is written exactly once per namespace the

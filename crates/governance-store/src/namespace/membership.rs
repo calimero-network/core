@@ -281,6 +281,29 @@ impl<'a> NamespaceMembershipService<'a> {
             .contains(sender))
     }
 
+    /// Whether a follow's key may be installed, judged by its sender: a trusted
+    /// anchor of `namespace` (admin, `ReadOnlyTee` or `RelayTee`, with a live
+    /// binding) at the state applied here.
+    ///
+    /// The follow's sibling of [`Self::join_key_sender_trusted`]. A follow
+    /// presents no invitation, so no inviter or admitter vouches for anyone, and
+    /// it is always for the namespace root, which inherits from nothing. What is
+    /// left is the anchor set, the same one a responder checks itself against
+    /// before it serves a follow at all.
+    ///
+    /// # Errors
+    /// When the anchor set cannot be read. That is not "untrusted", so it is
+    /// propagated rather than answered `false`.
+    pub fn follow_key_sender_trusted(
+        store: &Store,
+        namespace: &ContextGroupId,
+        sender: &PublicKey,
+    ) -> EyreResult<bool> {
+        Ok(MembershipRepository::new(store)
+            .anchor_device_keys(namespace)?
+            .contains(sender))
+    }
+
     /// Whether this node may admit a claim of `invitation`.
     ///
     /// Endorse `member`'s join under `signed_invitation`, if this node may.

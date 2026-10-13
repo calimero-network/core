@@ -52,6 +52,39 @@ pub enum NamespaceJoinKind {
     Follow { peer_addrs: Vec<String> },
 }
 
+/// Every peer a direct namespace join or follow reached declined to complete it.
+///
+/// Typed so a caller can tell the refusals apart without parsing the message: a
+/// follow reports "not a member" or "removed" when a peer said so, "no anchor
+/// answered" when every peer served no key, and "peer does not support follow"
+/// when every peer answered with an opaque error, which is what a responder
+/// that cannot decode the request sends. The message is the one the untyped
+/// error carried.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "namespace {label} exhausted {attempts} protocol attempts (last rejection: {last_rejection:?}, \
+     last connect_err: {last_connect_err:?}, {rejected_peers} peer(s) rejected)"
+)]
+pub struct NamespaceJoinExhausted {
+    /// `"join"` or `"follow"`.
+    pub label: &'static str,
+    /// The protocol attempts made.
+    pub attempts: usize,
+    /// The last reason a peer gave, or what made its answer unusable.
+    pub last_rejection: Option<String>,
+    /// The last failure to open a stream after a peer had declined.
+    pub last_connect_err: Option<String>,
+    /// Every peer that declined, for any reason.
+    pub rejected_peers: usize,
+    /// The reasons peers sent in `NamespaceJoinRejected`, in arrival order.
+    pub refusals: Vec<String>,
+    /// Peers that answered a bundle this request cannot use: no endorsement for
+    /// a join, no key for a follow.
+    pub unusable_answers: usize,
+    /// Peers that answered with an opaque error.
+    pub opaque_errors: usize,
+}
+
 /// Parameters for a direct namespace join (or follow) request.
 #[derive(Debug)]
 pub struct NamespaceJoinParams {

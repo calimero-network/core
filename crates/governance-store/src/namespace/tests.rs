@@ -13227,6 +13227,33 @@ fn a_join_key_is_trusted_from_the_inviter_an_admitter_or_an_anchor_and_nobody_el
     assert!(trusted(&tree.owner, None));
 }
 
+/// A follow's key is installed only from an anchor of the namespace: there is
+/// no invitation, so nobody else vouches for the sender.
+#[test]
+fn a_follow_key_is_trusted_from_an_anchor_of_the_namespace_and_nobody_else() {
+    let tree = anchored_tree();
+    let plain = PrivateKey::from([0x94u8; 32]).public_key();
+    let plain_account = enrol_member(&tree.store, &tree.namespace, &plain);
+    MembershipRepository::new(&tree.store)
+        .add_member(&tree.namespace, &plain_account, GroupMemberRole::Member)
+        .unwrap();
+    let trusted = |sender: &PublicKey| {
+        NamespaceMembershipService::follow_key_sender_trusted(&tree.store, &tree.namespace, sender)
+            .unwrap()
+    };
+
+    assert!(trusted(&tree.owner), "the namespace's admin is an anchor");
+    assert!(
+        !trusted(&plain),
+        "a plain member of the root holds the key but is no anchor"
+    );
+    assert!(
+        !trusted(&tree.member),
+        "a member of a subgroup is nobody at the root"
+    );
+    assert!(!trusted(&PrivateKey::from([0x95u8; 32]).public_key()));
+}
+
 /// A `KeyDelivery` is accepted only from a trusted anchor of the group it
 /// delivers for (#3871).
 ///

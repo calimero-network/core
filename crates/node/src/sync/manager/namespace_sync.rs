@@ -13,7 +13,7 @@ use calimero_governance_store::{
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{
-    NamespaceJoinKind, NamespaceJoinParams, OpenSubgroupJoinParams,
+    NamespaceJoinExhausted, NamespaceJoinKind, NamespaceJoinParams, OpenSubgroupJoinParams,
 };
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
@@ -731,6 +731,35 @@ impl SyncManager {
         .await
     }
 
+    /// This node's endorsement of a follower's account, borsh-encoded, or `None`
+    /// when it holds no identity here or cannot sign one.
+    ///
+    /// Only called once the follower's credential and its direct root row have
+    /// been checked, which is what an endorsement asserts: this account is a
+    /// member, vouched for by a member key.
+    fn endorse_follower(
+        store: &calimero_store::Store,
+        namespace: &calimero_context_config::types::ContextGroupId,
+        account: calimero_account::AccountId,
+    ) -> Option<Vec<u8>> {
+        let (_, secret) = match NamespaceRepository::new(store).resolve_identity(namespace) {
+            Ok(Some(identity)) => identity,
+            Ok(None) => return None,
+            Err(err) => {
+                warn!(%err, "namespace follow: could not read this node's identity to endorse");
+                return None;
+            }
+        };
+        let signer = calimero_primitives::identity::PrivateKey::from(secret);
+        match calimero_account::AccountMemberEndorsement::sign(&signer, account) {
+            Ok(endorsement) => borsh::to_vec(&endorsement).ok(),
+            Err(err) => {
+                warn!(%err, "namespace follow: could not sign the follower's endorsement");
+                None
+            }
+        }
+    }
+
     /// Answer a follow with `NamespaceJoinRejected`, the join's refusal.
     async fn refuse_follow(stream: &mut Stream, nonce: Nonce, reason: String) -> eyre::Result<()> {
         let msg = StreamMessage::Message {
@@ -1117,9 +1146,13 @@ impl SyncManager {
         // Signed over the payload the apply gate checks, so what this node
         // asserts and what every other node verifies are the same bytes.
         //
-        // A follow admits nobody, so there is nothing to endorse.
+        // A follow admits nobody, so there is no admission to endorse. What it
+        // carries instead is this anchor's `AccountMemberEndorsement` of the
+        // follower's account: the follower publishes its own device link under
+        // it, since a key bound to no account here cannot vouch for itself and
+        // nothing else binds a member that never joins (no `MemberJoined*`).
         let admitter_endorsement_bytes = match grant {
-            BundleGrant::Follow => None,
+            BundleGrant::Follow => Self::endorse_follower(store, &namespace, joiner_account),
             BundleGrant::Invitation(invitation) => {
                 match calimero_governance_store::NamespaceMembershipService::endorse_join(
                     store,
@@ -1697,6 +1730,10 @@ impl SyncManager {
             std::collections::HashSet::new();
         let mut last_rejection: Option<String> = None;
         let mut last_connect_err: Option<String> = None;
+        // What each declining peer said, for the typed exhaustion error.
+        let mut refusals: Vec<String> = Vec::new();
+        let mut unusable_answers = 0usize;
+        let mut opaque_errors = 0usize;
         // Cap on protocol-level retries, bounding the total post-open
         // exchanges so a mesh full of stale peers cannot deadlock the join.
         //
@@ -1898,6 +1935,7 @@ impl SyncManager {
                             "namespace {label}: responder cannot complete it, trying next peer"
                         );
                         rejected_peers.insert(peer);
+                        unusable_answers += 1;
                         last_rejection = Some(detail);
                         continue;
                     }
@@ -1928,10 +1966,15 @@ impl SyncManager {
                         "namespace join: peer rejected, trying next peer"
                     );
                     rejected_peers.insert(peer);
+                    refusals.push(reason.clone());
                     last_rejection = Some(reason);
                     continue;
                 }
                 Ok(other) => {
+                    // What a responder that cannot decode the request answers.
+                    if matches!(other, Some(StreamMessage::OpaqueError)) {
+                        opaque_errors += 1;
+                    }
                     let detail = format!(
                         "unexpected response variant: {:?}",
                         other.as_ref().map(std::mem::discriminant)
@@ -1967,14 +2010,17 @@ impl SyncManager {
             }
         }
 
-        eyre::bail!(
-            "namespace {label} exhausted {} protocol attempts (last rejection: {:?}, \
-             last connect_err: {:?}, {} peer(s) rejected)",
-            MAX_PROTOCOL_RETRIES,
+        Err(NamespaceJoinExhausted {
+            label,
+            attempts: MAX_PROTOCOL_RETRIES,
             last_rejection,
             last_connect_err,
-            rejected_peers.len()
-        )
+            rejected_peers: rejected_peers.len(),
+            refusals,
+            unusable_answers,
+            opaque_errors,
+        }
+        .into())
     }
 
     /// Pull all namespace governance ops from a peer.
@@ -5259,8 +5305,11 @@ mod join_responder_tests {
         }
     }
 
+    /// A served bundle's key envelope, ops, default capabilities and endorsement.
+    type Served = (Vec<u8>, Vec<Vec<u8>>, u32, Option<Vec<u8>>);
+
     /// The bundle a follow was answered with, or a panic naming the reply.
-    fn bundle(reply: Option<StreamMessage<'static>>) -> (Vec<u8>, Vec<Vec<u8>>, u32, bool) {
+    fn bundle(reply: Option<StreamMessage<'static>>) -> Served {
         match reply {
             Some(StreamMessage::Message {
                 payload:
@@ -5276,7 +5325,7 @@ mod join_responder_tests {
                 key_envelope_bytes,
                 governance_ops,
                 default_capabilities,
-                admitter_endorsement_bytes.is_some(),
+                admitter_endorsement_bytes,
             ),
             other => panic!("expected a bundle, got {other:?}"),
         }
@@ -5412,14 +5461,14 @@ mod join_responder_tests {
         assert!(key_envelope_bytes.is_empty(), "a non-anchor serves no key");
         assert!(governance_ops.is_empty());
         assert_eq!(default_capabilities, 0);
-        assert!(!endorsed);
+        assert!(endorsed.is_none());
     }
 
     #[tokio::test]
     async fn an_admin_responder_serves_a_follower_the_key_at_its_existing_role() {
         let r = responder().await;
         let follower = party(0x46);
-        let _ = seated(&r.store, &follower, GroupMemberRole::ReadOnly);
+        let follower_account = seated(&r.store, &follower, GroupMemberRole::ReadOnly);
         let defaults = MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
         CapabilitiesRepository::new(&r.store)
             .set_default_capabilities(&ns(), defaults)
@@ -5439,7 +5488,15 @@ mod join_responder_tests {
         .expect("the follower opens the envelope with its own key");
         assert_eq!(key, [0x77; 32], "the namespace key is served");
         assert_eq!(default_capabilities, defaults);
-        assert!(!endorsed, "a follow admits nothing, so nothing is endorsed");
+        let endorsement: calimero_account::AccountMemberEndorsement =
+            borsh::from_slice(&endorsed.expect("the anchor vouches for the follower's account"))
+                .expect("an account endorsement");
+        let endorsement = endorsement.verify().expect("signed by the key it names");
+        assert_eq!(endorsement.member, r.admin.public_key(), "by the anchor");
+        assert_eq!(
+            endorsement.account, follower_account,
+            "of the follower's account"
+        );
         assert_eq!(
             role_held(&r, &follower),
             Some(GroupMemberRole::ReadOnly),
@@ -5542,6 +5599,59 @@ mod namespace_follow_requester_tests {
             );
         }
         mock.assert_all_consumed();
+    }
+
+    /// Answer one request on `end` with an opaque error, which is what a
+    /// responder that cannot decode the request sends.
+    fn answer_opaque(mut end: Stream) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let _request = crate::sync::stream::recv(&mut end, None, Duration::from_secs(5))
+                .await
+                .expect("responder: recv the request");
+            crate::sync::stream::send(&mut end, &StreamMessage::OpaqueError, None)
+                .await
+                .expect("responder: send the reply");
+        })
+    }
+
+    /// When every peer declines, the error says how, so a caller can tell an
+    /// old responder (an opaque error each) from peers that served no key.
+    ///
+    /// Paused: once both peers are excluded, each remaining attempt sits out the
+    /// connect loop's mesh retries, minutes of wall clock in all.
+    #[tokio::test(start_paused = true)]
+    async fn an_exhausted_follow_counts_how_each_peer_declined() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        mock.push_subscribed_peers(vec![PeerId::random(), PeerId::random()]);
+        let first = answer_opaque(mock.push_open_stream_ok_with_peer());
+        let second = answer_opaque(mock.push_open_stream_ok_with_peer());
+        let (sm, _store, _tmp) = manager(Arc::clone(&mock)).await;
+        sm.local_peer_id
+            .set(PeerId::random())
+            .expect("set the local peer id");
+
+        let err = sm
+            .initiate_namespace_join(NamespaceJoinParams {
+                namespace_id: NAMESPACE,
+                kind: NamespaceJoinKind::Follow {
+                    peer_addrs: Vec::new(),
+                },
+                joiner_public_key: PrivateKey::from([0x42; 32]).public_key(),
+                joiner_credential_bytes: vec![1, 2, 3],
+            })
+            .await
+            .expect_err("no peer can serve the follow");
+        first.await.unwrap();
+        second.await.unwrap();
+
+        let exhausted = err
+            .downcast_ref::<calimero_node_primitives::client::NamespaceJoinExhausted>()
+            .unwrap_or_else(|| panic!("a typed exhaustion, got {err:#}"));
+        assert_eq!(exhausted.label, "follow");
+        assert_eq!(exhausted.rejected_peers, 2);
+        assert_eq!(exhausted.opaque_errors, 2);
+        assert_eq!(exhausted.unusable_answers, 0);
+        assert!(exhausted.refusals.is_empty());
     }
 }
 

@@ -7,7 +7,7 @@ use calimero_governance_store::authz_matrix::{
 use calimero_governance_store::test_fixtures::signed_invitation_for;
 use calimero_primitives::identity::PrivateKey;
 
-use super::{install_join_key, settle_join_key, GroupKeyring, JoinKey};
+use super::{install_join_key, settle_join_key, GroupKeyring, JoinKey, KeyVoucher};
 
 const TABLES: &[OpTable] = &[OpTable {
     op: GatedOp::AcceptNamespaceJoinKey,
@@ -52,7 +52,7 @@ fn accept_namespace_join_key(world: &World, actor: &Actor) -> Outcome {
             namespace,
             &joiner,
             &envelope,
-            &invitation,
+            KeyVoucher::Invitation(&invitation),
         ),
         Some(state) => settle_join_key(
             &store,
@@ -60,7 +60,7 @@ fn accept_namespace_join_key(world: &World, actor: &Actor) -> Outcome {
             namespace,
             &joiner,
             &envelope,
-            &invitation,
+            KeyVoucher::Invitation(&invitation),
             state,
         ),
     };

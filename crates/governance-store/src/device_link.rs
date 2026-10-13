@@ -6,7 +6,7 @@
 //! and one key wrap. One publish path for all three callers: pairing's fan-out,
 //! the auto-bind on gaining a namespace, and the relink that repairs drift.
 
-use calimero_account::{AccountMemberEndorsement, DeviceId};
+use calimero_account::{AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId, DeviceScope};
 use calimero_context_client::group::BindOutcome;
 use calimero_context_client::local_governance::{AckRouter, GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
@@ -628,6 +628,107 @@ pub async fn publish_carried_link(
     AccountBindingRepository::new(store).is_device_linked(namespace, device)
 }
 
+/// The root-signed scope this node's own device presents in a link it publishes.
+///
+/// The registry's statement when the account namespace holds one for this
+/// device, re-presented as a sibling's link does. Otherwise, on the account
+/// holder, a statement its root signs for every application at epoch `0`, which
+/// is what the holder's own device holds anyway. A paired device with no registry
+/// row has neither: it holds no root, and nothing it may sign stands in for one.
+fn own_device_scope(
+    store: &Store,
+    credential: &AccountProof<DeviceCert>,
+) -> EyreResult<Option<AccountProof<DeviceScope>>> {
+    let devices = NodeDeviceRepository::new(store);
+    let cert = &credential.statement;
+    if let Some(account_namespace) = devices.account_namespace()? {
+        if let Some(known) =
+            AccountDeviceRegistry::new(store, account_namespace).device(cert.device)?
+        {
+            return Ok(Some(known.scope));
+        }
+    }
+    let Some(root) = devices.account_root()? else {
+        return Ok(None);
+    };
+    if root.account() != cert.account {
+        return Ok(None);
+    }
+    let statement = DeviceScope::sign(root.signing_key(), cert.account, cert.device, vec![], 0, 0)
+        .map_err(|err| eyre::eyre!("failed to sign this device's scope: {err}"))?;
+    Ok(Some(AccountProof {
+        genesis: credential.genesis,
+        chain: credential.chain.clone(),
+        statement,
+    }))
+}
+
+/// Publish this node's own device link into `namespace`, under a member's
+/// endorsement of this node's account.
+///
+/// For a member that follows a namespace an admin added its account to. A join
+/// binds the joiner's key with the credential on its join op, and the founder's
+/// genesis does the same; a follow publishes neither, so without this every peer
+/// reads this node's key as bound to no account and refuses what it signs. The
+/// node cannot vouch for itself, since its key is exactly what is unbound, so the
+/// endorsement comes from the anchor that served the follow
+/// (`AccountMemberEndorsement` of this account, which the apply gate checks is a
+/// member's at the op's cut).
+///
+/// `credential` is the one the follow presented (`join_credential::build`). The
+/// op is sealed under the namespace key like every other link, so it needs one
+/// held here.
+///
+/// # Errors
+/// Nothing is published on an error: the endorsement names another account, no
+/// scope can be presented, no namespace key is held, or the publish failed.
+pub async fn link_own_device(
+    store: &Store,
+    node_client: &NodeClient,
+    ack_router: &AckRouter,
+    namespace: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    credential: &AccountProof<DeviceCert>,
+    endorsement: AccountMemberEndorsement,
+) -> EyreResult<()> {
+    let cert = credential.statement;
+    eyre::ensure!(
+        endorsement.account == cert.account,
+        "the endorsement is of account {} but this device belongs to {}",
+        endorsement.account,
+        cert.account
+    );
+    let scope = own_device_scope(store, credential)?.ok_or_else(|| {
+        eyre::eyre!(
+            "device {} has no scope to present: no registry row and no account root here",
+            cert.device
+        )
+    })?;
+    eyre::ensure!(
+        GroupKeyring::new(store, *namespace)
+            .load_current_key()?
+            .is_some(),
+        "no namespace key held to seal the link under"
+    );
+    let link = GroupOp::AccountDeviceLinked {
+        genesis: credential.genesis,
+        chain: credential.chain.clone(),
+        cert,
+        endorsement,
+        scope: Box::new(scope),
+    };
+    let report =
+        crate::sign_apply_and_publish(store, node_client, ack_router, namespace, signer_sk, link)
+            .await?;
+    debug!(
+        namespace_id = ?namespace,
+        device = %cert.device,
+        published = report.is_some(),
+        "linked this node's own device under a member's endorsement"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use calimero_account::{
@@ -985,6 +1086,144 @@ mod tests {
         };
 
         assert_eq!(planned(&store, &ns, &cert), BindOutcome::OwnDevice);
+    }
+
+    /// A follower: its account holds a direct row an admin wrote, its key is
+    /// bound to nothing, and it holds the account root and the namespace key.
+    /// The fixture's admin is the anchor that would have served the follow.
+    async fn a_follower() -> (
+        Store,
+        NodeClient,
+        AckRouter,
+        ContextGroupId,
+        PrivateKey,
+        PrivateKey,
+        AccountProof<DeviceCert>,
+        tempfile::TempDir,
+    ) {
+        let (store, node_client, ack_router, ns_id, anchor_sk, tmp, _msgs) =
+            namespace_publish_fixture().await;
+        let ns = ContextGroupId::from(ns_id.to_bytes());
+        let _key_id = GroupKeyring::new(&store, ns)
+            .store_key(&[0x42; 32])
+            .expect("hold the namespace key");
+        let root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the follower's root");
+        let account = root.account();
+        MembershipRepository::new(&store)
+            .add_member(&ns, &account, GroupMemberRole::Member)
+            .expect("the admin's MemberAdded");
+        let follower_sk = PrivateKey::from([0x62; 32]);
+        let statement = DeviceCert::sign(
+            root.signing_key(),
+            account,
+            calimero_account::DeviceId::mint(account, [0x63; 16]),
+            &follower_sk.public_key(),
+            &KemPublicKey::from([0x64; 32]),
+            0,
+            0,
+        )
+        .expect("certify the follower's device");
+        let credential = AccountProof {
+            genesis: root.genesis(),
+            chain: vec![],
+            statement,
+        };
+        (
+            store,
+            node_client,
+            ack_router,
+            ns,
+            anchor_sk,
+            follower_sk,
+            credential,
+            tmp,
+        )
+    }
+
+    /// A follow publishes no join, so its own link is what binds the follower's
+    /// key. Applied on a store where that key is bound to nothing, which is every
+    /// peer's position, it binds under the anchor's endorsement.
+    #[actix::test]
+    async fn a_followers_own_link_binds_its_key_under_an_anchors_endorsement() {
+        let (store, node_client, ack_router, ns, anchor_sk, follower_sk, credential, _tmp) =
+            a_follower().await;
+        let account = credential.statement.account;
+        let endorsement =
+            AccountMemberEndorsement::sign(&anchor_sk, account).expect("the anchor vouches");
+
+        link_own_device(
+            &store,
+            &node_client,
+            &ack_router,
+            &ns,
+            &follower_sk,
+            &credential,
+            endorsement,
+        )
+        .await
+        .expect("the link publishes");
+
+        assert_eq!(
+            member_account_in_namespace(&store, &ns, &follower_sk.public_key())
+                .expect("resolve the key"),
+            Some(account),
+            "the follower's key has to resolve to its account"
+        );
+    }
+
+    /// Control: the follower's own key cannot vouch for it, because that key is
+    /// exactly what is bound to nothing yet.
+    #[actix::test]
+    async fn a_followers_own_link_does_not_bind_under_its_own_endorsement() {
+        let (store, node_client, ack_router, ns, _anchor_sk, follower_sk, credential, _tmp) =
+            a_follower().await;
+        let endorsement =
+            AccountMemberEndorsement::sign(&follower_sk, credential.statement.account)
+                .expect("the follower vouches for itself");
+
+        let _published = link_own_device(
+            &store,
+            &node_client,
+            &ack_router,
+            &ns,
+            &follower_sk,
+            &credential,
+            endorsement,
+        )
+        .await;
+
+        assert_eq!(
+            member_account_in_namespace(&store, &ns, &follower_sk.public_key())
+                .expect("resolve the key"),
+            None
+        );
+    }
+
+    /// An endorsement of another account is refused before anything is signed.
+    #[actix::test]
+    async fn a_followers_own_link_refuses_an_endorsement_of_another_account() {
+        let (store, node_client, ack_router, ns, anchor_sk, follower_sk, credential, _tmp) =
+            a_follower().await;
+        let other =
+            calimero_account::AccountGenesis::new(PrivateKey::from([0x65; 32]).public_key())
+                .account_id();
+        let endorsement =
+            AccountMemberEndorsement::sign(&anchor_sk, other).expect("the anchor vouches");
+
+        let refused = link_own_device(
+            &store,
+            &node_client,
+            &ack_router,
+            &ns,
+            &follower_sk,
+            &credential,
+            endorsement,
+        )
+        .await;
+
+        assert!(refused.is_err());
     }
 
     /// The whole point, through the real publish path: a namespace gained after

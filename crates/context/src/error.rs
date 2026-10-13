@@ -103,6 +103,22 @@ pub enum ContextError {
         reached_a_peer: bool,
     },
 
+    /// A follow of a namespace was declined, by the peers asked or by this
+    /// node's own view once it had synced.
+    ///
+    /// `reason` is one of: `not a member` (no direct row at the namespace root
+    /// for this account), `removed` (an admin removed it and has not re-added
+    /// it), `no anchor answered` (every peer reached holds no standing to serve
+    /// the key), or `peer does not support follow` (every peer answered with an
+    /// opaque error, which is what a release without follow sends).
+    #[error("namespace {namespace_id} could not be followed: {reason}")]
+    FollowRefused {
+        /// Hex rendering of the namespace (for the message only).
+        namespace_id: String,
+        /// Why, from the list above.
+        reason: &'static str,
+    },
+
     #[error("node is not a member of group '{group_id}'")]
     NotAGroupMember {
         /// Hex rendering of the target group id (for the message only).

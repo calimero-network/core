@@ -30,6 +30,11 @@ pub struct JoinBundle {
     /// cannot authorise a membership. The joiner must then reach one that can;
     /// publishing without an endorsement is refused by every peer at apply.
     ///
+    /// For a follow it is an `AccountMemberEndorsement` of the follower's
+    /// account instead, signed by the anchor that served it: a follow admits
+    /// nobody, and the follower needs a member's vouch to publish its own device
+    /// link, since nothing else binds a member that never joins.
+    ///
     /// Borsh bytes rather than the type, to keep this crate off
     /// `calimero-governance-types`.
     pub admitter_endorsement_bytes: Option<Vec<u8>>,

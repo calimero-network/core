@@ -293,102 +293,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         group_id,
                         &sk,
                         envelope,
-                        &invitation,
+                        KeyVoucher::Invitation(&invitation),
                     )?;
                     if let JoinKey::Provisional(key_id) = join_key_state {
                         provisional.arm(key_id);
                     }
                 }
 
-                // Issue #2256 / PR #2368: write the namespace's
-                // `default_capabilities` from the join bundle BEFORE
-                // applying the catch-up governance ops below.
-                //
-                // The catch-up batch contains the `MemberJoined` ops of
-                // OTHER members who joined before us. Each one runs
-                // `add_group_member` → `add_group_member_with_keys`,
-                // which materializes that member's per-member
-                // capability row by copying `default_capabilities` — but
-                // ONLY if `default_capabilities` is already set in the
-                // local store. If we set it afterwards (the previous
-                // ordering), every member applied during catch-up was
-                // recorded with NO per-member capability row, so a later
-                // `MemberJoinedOpen` from them failed
-                // `check_group_membership_path` with "no membership
-                // path" (their `CAN_JOIN_OPEN_SUBGROUPS` bit was never
-                // materialized on this node). Setting it first fixes
-                // that for the catch-up apply AND the `sync_namespace`
-                // pull below.
-                //
-                // A `DefaultCapabilitiesSet` op inside the catch-up
-                // batch still wins: it is applied after this write and
-                // overwrites the bundle value (authoritative-op-wins).
-                // The `is_none()` guard keeps this a no-op when a prior
-                // op already set the value.
-                if CapabilitiesRepository::new(&datastore).default_capabilities(&group_id)?.is_none() {
-                    CapabilitiesRepository::new(&datastore).set_default_capabilities(&group_id, join_result.default_capabilities, )?;
-                }
-
-                // Apply governance ops so the local DAG is up to date.
-                //
-                // Note on dropped divergence reports: the `divergence`
-                // field of `NamespaceApplyOutcome::Applied` is not
-                // routed to the reconcile-via-anchor path from here.
-                // This is acceptable for the join-response replay
-                // path specifically: the joiner is rebuilding state
-                // from a snapshot the inviter assembled, so a
-                // divergence between the snapshot and a signed
-                // `MemberRemoved` / `MemberLeft` claim it carries
-                // would indicate inviter-side inconsistency rather
-                // than the partition-window scenario reconcile is
-                // designed to heal. The next signed op the joiner
-                // sees post-join takes the gossip-receive path,
-                // which does route divergence to reconcile — so the
-                // recovery path is not permanently closed. Wiring
-                // reconcile in from here would require plumbing the
-                // node-side `SyncManager` into the context crate,
-                // which the layering prohibits.
-                let mut any_applied = false;
-                // Parents first, and only ops of this namespace: the responder
-                // serves them in hash order.
-                let catch_up_ops = calimero_governance_types::order_parents_first(
-                    join_result
-                        .governance_ops
-                        .iter()
-                        .filter_map(|bytes| borsh::from_slice::<SignedNamespaceOp>(bytes).ok())
-                        .filter(|op| op.namespace_id.to_bytes() == namespace_id)
-                        .collect(),
-                    |op| op,
-                );
-                for op in catch_up_ops {
-                    match context_client.apply_signed_namespace_op(op).await {
-                        Ok(NamespaceApplyOutcome::Applied { .. }) => {
-                            any_applied = true;
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(?e, "failed to apply governance op from join response");
-                        }
-                    }
-                }
-                // FSM notify after the batch — closes the gap where a
-                // joiner that catches up exclusively via the direct join
-                // response never tells the readiness FSM about its DAG
-                // advance. Same pattern as the receive-path notifies in
-                // `crates/node/src/handlers/network_event/namespace.rs`.
-                if any_applied {
-                    node_client.notify_namespace_op_applied(namespace_id);
-                }
-
-                // Pull any governance ops published during (or just before) the
-                // join window that weren't in the join response snapshot.
-                // Direct stream request — does not depend on gossip delivery.
-                if let Err(e) = node_client.sync_namespace(namespace_id).await {
-                    warn!(
-                        ?e,
-                        "failed to trigger post-join namespace governance pull (non-fatal)"
-                    );
-                }
+                apply_join_bundle(&datastore, &context_client, &node_client, namespace_id, group_id, &join_result).await?;
 
                 // Add the joiner as a direct member of the namespace. The
                 // call reads `default_capabilities` from the local store
@@ -484,7 +396,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         group_id,
                         &sk,
                         envelope,
-                        &invitation,
+                        KeyVoucher::Invitation(&invitation),
                         join_key_state,
                     )?;
                     provisional.disarm();
@@ -720,104 +632,17 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 }
 
                 if let Some(rx) = op_event_rx.as_mut() {
-                    let deadline = Instant::now() + key_delivery_fallback_wait;
-                    loop {
-                        // Re-check the store on every iteration: the apply
-                        // path emits the event AFTER `store_group_key`, so
-                        // any successful unwrap is observable as an
-                        // already-stored key by the time we get woken.
-                        // This also catches races where an event was
-                        // dropped via `RecvError::Lagged` before we got to
-                        // it (broadcast channel is process-wide and other
-                        // tasks may flood it).
-                        //
-                        // Soft-fail on transient store errors: a single
-                        // failed read should not abort the join — the loop
-                        // already retries on every event tick and the
-                        // deadline branch handles permanent failure. This
-                        // mirrors the `RecvError::Lagged` arm's "we'll
-                        // observe it next tick" semantics.
-                        match GroupKeyring::new(&datastore, group_id).load_current_key() {
-                            Ok(Some(_)) => {
-                                info!(
-                                    ?group_id,
-                                    "group key acquired via gossip KeyDelivery fallback"
-                                );
-                                break;
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                warn!(
-                                    ?group_id,
-                                    ?e,
-                                    "transient store error during KeyDelivery wait — retrying"
-                                );
-                            }
+                    if !await_group_key(&datastore, group_id, joiner_identity, rx, key_delivery_fallback_wait).await? {
+                        // Phase 12 (#2237) deferred this from a typed `Err` to a `warn!` +
+                        // Ok-no-key. Restoring the typed-error contract: callers must be
+                        // able to distinguish "joined and ready" from "joined but unusable
+                        // yet", so the admin endpoint surfaces a failure clients can retry
+                        // instead of writing to a context whose key has not arrived.
+                        return Err(crate::error::ContextError::JoinKeyDeliveryTimedOut {
+                            group_id: group_id.to_string(),
+                            waited_secs: key_delivery_fallback_wait.as_secs(),
                         }
-                        let now = Instant::now();
-                        if now >= deadline {
-                            // Phase 12 (#2237) deferred this from a typed
-                            // `Err` to a `warn!` + Ok-no-key. Restoring the
-                            // typed-error contract: callers must be able to
-                            // distinguish "joined and ready" from "joined
-                            // but unusable yet". Returning Err here means
-                            // the admin endpoint surfaces a failure that
-                            // clients can retry, instead of clients
-                            // proceeding to write to a context whose
-                            // group key has not yet arrived.
-                            return Err(crate::error::ContextError::JoinKeyDeliveryTimedOut {
-                                group_id: group_id.to_string(),
-                                waited_secs: key_delivery_fallback_wait.as_secs(),
-                            }
-                            .into());
-                        }
-                        let remaining = deadline - now;
-                        match tokio::time::timeout(remaining, rx.recv()).await {
-                            Ok(Ok(OpEvent::GroupKeyDelivered {
-                                group_id: g,
-                                recipient,
-                            })) if g == group_id.to_bytes() && recipient == joiner_identity => {
-                                // Loop back to re-read the store — the
-                                // emitter publishes AFTER store_group_key
-                                // succeeded, so the next iteration's
-                                // `load_current_group_key` will hit and
-                                // break cleanly.
-                                continue;
-                            }
-                            Ok(Ok(_)) => continue, // unrelated event
-                            Ok(Err(RecvError::Lagged(_))) => {
-                                // Broadcast capacity exceeded — relevant
-                                // events may have been dropped. Re-check
-                                // store; if the key arrived during the
-                                // overflow window we'll observe it on the
-                                // next iteration and break cleanly.
-                                continue;
-                            }
-                            Ok(Err(RecvError::Closed)) => {
-                                // The static `op_events::NOTIFIER` cannot
-                                // be dropped at runtime today, so this
-                                // branch is functionally unreachable. If
-                                // a future refactor changes that, surface
-                                // a typed Err for the same reason the
-                                // deadline branch above does — joining
-                                // without a usable group key would leave
-                                // the caller in the "joined but unusable"
-                                // condition this PR's typed-error contract
-                                // is meant to prevent. `break` here would
-                                // bypass the deadline check and fall
-                                // through to `Ok(JoinGroupResponse)`;
-                                // `continue` would tight-loop on a
-                                // permanently-closed channel until the
-                                // deadline fires. Returning Err is the
-                                // only outcome consistent with the
-                                // contract.
-                                return Err(eyre::eyre!(
-                                    "KeyDelivery channel closed before group key arrived for {group_id:?}: \
-                                     join cannot proceed without a usable group key"
-                                ));
-                            }
-                            Err(_) => continue, // timeout slice — outer deadline check handles exit
-                        }
+                        .into());
                     }
                 }
 
@@ -873,96 +698,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         }, )?;
                 }
 
-                let contexts = &join_result.context_ids;
-
-                if let Some(meta) = MetaRepository::new(&datastore).load(&group_id)? {
-                    if meta.auto_join {
-                        info!(
-                            ?group_id,
-                            context_count = contexts.len(),
-                            "auto-join: contexts from direct join response"
-                        );
-                        // Batch all ContextIdentity writes in a single handle to
-                        // avoid per-context mutex acquisition overhead.
-                        {
-                            let mut handle = datastore.handle();
-                            for context_id in contexts {
-                                let ci_key =
-                                    key::ContextIdentity::new(*context_id, joiner_identity);
-                                if !handle.has(&ci_key)? {
-                                    // Keyless membership marker — `joiner_identity`
-                                    // is the node's namespace identity, whose key is
-                                    // resolved live at read time rather than copied.
-                                    handle.put(
-                                        &ci_key,
-                                        &calimero_store::types::ContextIdentity { private_key: None },
-                                    )?;
-                                }
-                            }
-                        }
-
-                        // Register the context-under-group mapping
-                        // (`ContextGroupRef`) directly from the bundle's
-                        // `context_ids`. The bundle's `governance_ops`
-                        // normally include a `ContextRegistered` op
-                        // that would write the same mapping on apply,
-                        // but the op list can be an incomplete snapshot
-                        // — missing the op leaves the mapping unwritten
-                        // and `get_group_for_context` returns `None`.
-                        // Idempotent with the governance-op path.
-                        for context_id in contexts {
-                            if let Err(err) = calimero_governance_store::register_context_in_group(
-                                &datastore, &group_id, context_id,
-                            ) {
-                                warn!(
-                                    %context_id,
-                                    ?err,
-                                    "failed to register context under group during join"
-                                );
-                            }
-                        }
-
-                        for context_id in contexts {
-                            let config = if !context_client.has_context(context_id)? {
-                                let zero_app =
-                                    calimero_primitives::application::ApplicationId::from(
-                                        [0u8; 32],
-                                    );
-                                let app_id = join_result.application_id;
-                                let resolved = if app_id != zero_app {
-                                    Some(app_id)
-                                } else {
-                                    MetaRepository::new(&datastore).load(&group_id)?
-                                        .map(|m| m.target.application_id)
-                                        .filter(|id| *id != zero_app)
-                                };
-                                let svc_name =
-                                    calimero_governance_store::get_context_service_name(&datastore, context_id)?;
-                                Some(ContextConfigParams {
-                                    application_id: resolved,
-                                    application_revision: 0,
-                                    members_revision: 0,
-                                    service_name: svc_name,
-                                })
-                            } else {
-                                None
-                            };
-
-                            if let Err(e) = context_client
-                                .sync_context_config(*context_id, config)
-                                .await
-                            {
-                                warn!(%context_id, ?e, "failed to sync context config");
-                            }
-                            if let Err(e) = node_client.subscribe(context_id).await {
-                                warn!(%context_id, ?e, "failed to subscribe to context");
-                            }
-                            if let Err(e) = node_client.sync(Some(context_id), None).await {
-                                warn!(%context_id, ?e, "failed to trigger context sync");
-                            }
-                        }
-                    }
-                }
+                auto_join_bundle_contexts(&datastore, &context_client, &node_client, group_id, joiner_identity, &join_result).await?;
 
                 if let Err(e) = node_client.sync(None, None).await {
                     warn!(?e, "failed to trigger global sync after join");
@@ -989,6 +725,312 @@ impl Handler<JoinGroupRequest> for ContextManager {
             .into_actor(self),
         )
     }
+}
+
+/// Take in a join bundle's default capabilities and governance ops, then pull
+/// whatever the snapshot missed. Shared by the join and the follow.
+pub(super) async fn apply_join_bundle(
+    datastore: &calimero_store::Store,
+    context_client: &calimero_context_client::client::ContextClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    namespace_id: [u8; 32],
+    group_id: ContextGroupId,
+    join_result: &JoinBundle,
+) -> eyre::Result<()> {
+    // Issue #2256 / PR #2368: write the namespace's
+    // `default_capabilities` from the join bundle BEFORE
+    // applying the catch-up governance ops below.
+    //
+    // The catch-up batch contains the `MemberJoined` ops of
+    // OTHER members who joined before us. Each one runs
+    // `add_group_member` → `add_group_member_with_keys`,
+    // which materializes that member's per-member
+    // capability row by copying `default_capabilities` — but
+    // ONLY if `default_capabilities` is already set in the
+    // local store. If we set it afterwards (the previous
+    // ordering), every member applied during catch-up was
+    // recorded with NO per-member capability row, so a later
+    // `MemberJoinedOpen` from them failed
+    // `check_group_membership_path` with "no membership
+    // path" (their `CAN_JOIN_OPEN_SUBGROUPS` bit was never
+    // materialized on this node). Setting it first fixes
+    // that for the catch-up apply AND the `sync_namespace`
+    // pull below.
+    //
+    // A `DefaultCapabilitiesSet` op inside the catch-up
+    // batch still wins: it is applied after this write and
+    // overwrites the bundle value (authoritative-op-wins).
+    // The `is_none()` guard keeps this a no-op when a prior
+    // op already set the value.
+    if CapabilitiesRepository::new(datastore)
+        .default_capabilities(&group_id)?
+        .is_none()
+    {
+        CapabilitiesRepository::new(datastore)
+            .set_default_capabilities(&group_id, join_result.default_capabilities)?;
+    }
+
+    // Apply governance ops so the local DAG is up to date.
+    //
+    // Note on dropped divergence reports: the `divergence`
+    // field of `NamespaceApplyOutcome::Applied` is not
+    // routed to the reconcile-via-anchor path from here.
+    // This is acceptable for the join-response replay
+    // path specifically: the joiner is rebuilding state
+    // from a snapshot the inviter assembled, so a
+    // divergence between the snapshot and a signed
+    // `MemberRemoved` / `MemberLeft` claim it carries
+    // would indicate inviter-side inconsistency rather
+    // than the partition-window scenario reconcile is
+    // designed to heal. The next signed op the joiner
+    // sees post-join takes the gossip-receive path,
+    // which does route divergence to reconcile — so the
+    // recovery path is not permanently closed. Wiring
+    // reconcile in from here would require plumbing the
+    // node-side `SyncManager` into the context crate,
+    // which the layering prohibits.
+    let mut any_applied = false;
+    // Parents first, and only ops of this namespace: the responder
+    // serves them in hash order.
+    let catch_up_ops = calimero_governance_types::order_parents_first(
+        join_result
+            .governance_ops
+            .iter()
+            .filter_map(|bytes| borsh::from_slice::<SignedNamespaceOp>(bytes).ok())
+            .filter(|op| op.namespace_id.to_bytes() == namespace_id)
+            .collect(),
+        |op| op,
+    );
+    for op in catch_up_ops {
+        match context_client.apply_signed_namespace_op(op).await {
+            Ok(NamespaceApplyOutcome::Applied { .. }) => {
+                any_applied = true;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(?e, "failed to apply governance op from join response");
+            }
+        }
+    }
+    // FSM notify after the batch — closes the gap where a
+    // joiner that catches up exclusively via the direct join
+    // response never tells the readiness FSM about its DAG
+    // advance. Same pattern as the receive-path notifies in
+    // `crates/node/src/handlers/network_event/namespace.rs`.
+    if any_applied {
+        node_client.notify_namespace_op_applied(namespace_id);
+    }
+
+    // Pull any governance ops published during (or just before) the
+    // join window that weren't in the join response snapshot.
+    // Direct stream request — does not depend on gossip delivery.
+    if let Err(e) = node_client.sync_namespace(namespace_id).await {
+        warn!(
+            ?e,
+            "failed to trigger post-join namespace governance pull (non-fatal)"
+        );
+    }
+    Ok(())
+}
+
+/// Wait up to `wait` for a usable key of `group_id` to land, re-reading the store
+/// on every `OpEvent` tick. `Ok(false)` when the deadline passes without one.
+/// Shared by the join and the follow, which differ only in what a timeout means.
+pub(super) async fn await_group_key(
+    datastore: &calimero_store::Store,
+    group_id: ContextGroupId,
+    joiner_identity: calimero_primitives::identity::PublicKey,
+    rx: &mut tokio::sync::broadcast::Receiver<OpEvent>,
+    wait: Duration,
+) -> eyre::Result<bool> {
+    let deadline = Instant::now() + wait;
+    loop {
+        // Re-check the store on every iteration: the apply
+        // path emits the event AFTER `store_group_key`, so
+        // any successful unwrap is observable as an
+        // already-stored key by the time we get woken.
+        // This also catches races where an event was
+        // dropped via `RecvError::Lagged` before we got to
+        // it (broadcast channel is process-wide and other
+        // tasks may flood it).
+        //
+        // Soft-fail on transient store errors: a single
+        // failed read should not abort the join — the loop
+        // already retries on every event tick and the
+        // deadline branch handles permanent failure. This
+        // mirrors the `RecvError::Lagged` arm's "we'll
+        // observe it next tick" semantics.
+        match GroupKeyring::new(datastore, group_id).load_current_key() {
+            Ok(Some(_)) => {
+                info!(
+                    ?group_id,
+                    "group key acquired via gossip KeyDelivery fallback"
+                );
+                return Ok(true);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(
+                    ?group_id,
+                    ?e,
+                    "transient store error during KeyDelivery wait — retrying"
+                );
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            // What a timeout means is the caller's: the join fails typed, the
+            // follow reports the key as pending.
+            return Ok(false);
+        }
+        let remaining = deadline - now;
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(OpEvent::GroupKeyDelivered {
+                group_id: g,
+                recipient,
+            })) if g == group_id.to_bytes() && recipient == joiner_identity => {
+                // Loop back to re-read the store — the
+                // emitter publishes AFTER store_group_key
+                // succeeded, so the next iteration's
+                // `load_current_group_key` will hit and
+                // break cleanly.
+                continue;
+            }
+            Ok(Ok(_)) => continue, // unrelated event
+            Ok(Err(RecvError::Lagged(_))) => {
+                // Broadcast capacity exceeded — relevant
+                // events may have been dropped. Re-check
+                // store; if the key arrived during the
+                // overflow window we'll observe it on the
+                // next iteration and break cleanly.
+                continue;
+            }
+            Ok(Err(RecvError::Closed)) => {
+                // The static `op_events::NOTIFIER` cannot
+                // be dropped at runtime today, so this
+                // branch is functionally unreachable. If
+                // a future refactor changes that, surface
+                // a typed Err for the same reason the
+                // deadline branch above does — joining
+                // without a usable group key would leave
+                // the caller in the "joined but unusable"
+                // condition this PR's typed-error contract
+                // is meant to prevent. `break` here would
+                // bypass the deadline check and fall
+                // through to the caller's success;
+                // `continue` would tight-loop on a
+                // permanently-closed channel until the
+                // deadline fires. Returning Err is the
+                // only outcome consistent with the
+                // contract.
+                return Err(eyre::eyre!(
+                    "KeyDelivery channel closed before group key arrived for {group_id:?}: \
+                     join cannot proceed without a usable group key"
+                ));
+            }
+            Err(_) => continue, // timeout slice — outer deadline check handles exit
+        }
+    }
+}
+
+/// Mark, register, configure, subscribe to and sync the contexts a join bundle
+/// names, when the group auto-joins. Shared by the join and the follow.
+pub(super) async fn auto_join_bundle_contexts(
+    datastore: &calimero_store::Store,
+    context_client: &calimero_context_client::client::ContextClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    group_id: ContextGroupId,
+    joiner_identity: calimero_primitives::identity::PublicKey,
+    join_result: &JoinBundle,
+) -> eyre::Result<()> {
+    let contexts = &join_result.context_ids;
+
+    if let Some(meta) = MetaRepository::new(datastore).load(&group_id)? {
+        if meta.auto_join {
+            info!(
+                ?group_id,
+                context_count = contexts.len(),
+                "auto-join: contexts from direct join response"
+            );
+            // Batch all ContextIdentity writes in a single handle to
+            // avoid per-context mutex acquisition overhead.
+            {
+                let mut handle = datastore.handle();
+                for context_id in contexts {
+                    let ci_key = key::ContextIdentity::new(*context_id, joiner_identity);
+                    if !handle.has(&ci_key)? {
+                        // Keyless membership marker — `joiner_identity`
+                        // is the node's namespace identity, whose key is
+                        // resolved live at read time rather than copied.
+                        handle.put(
+                            &ci_key,
+                            &calimero_store::types::ContextIdentity { private_key: None },
+                        )?;
+                    }
+                }
+            }
+
+            // Register the context-under-group mapping
+            // (`ContextGroupRef`) directly from the bundle's
+            // `context_ids`. The bundle's `governance_ops`
+            // normally include a `ContextRegistered` op
+            // that would write the same mapping on apply,
+            // but the op list can be an incomplete snapshot
+            // — missing the op leaves the mapping unwritten
+            // and `get_group_for_context` returns `None`.
+            // Idempotent with the governance-op path.
+            for context_id in contexts {
+                if let Err(err) = calimero_governance_store::register_context_in_group(
+                    datastore, &group_id, context_id,
+                ) {
+                    warn!(
+                        %context_id,
+                        ?err,
+                        "failed to register context under group during join"
+                    );
+                }
+            }
+
+            for context_id in contexts {
+                let config = if !context_client.has_context(context_id)? {
+                    let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
+                    let app_id = join_result.application_id;
+                    let resolved = if app_id != zero_app {
+                        Some(app_id)
+                    } else {
+                        MetaRepository::new(datastore)
+                            .load(&group_id)?
+                            .map(|m| m.target.application_id)
+                            .filter(|id| *id != zero_app)
+                    };
+                    let svc_name =
+                        calimero_governance_store::get_context_service_name(datastore, context_id)?;
+                    Some(ContextConfigParams {
+                        application_id: resolved,
+                        application_revision: 0,
+                        members_revision: 0,
+                        service_name: svc_name,
+                    })
+                } else {
+                    None
+                };
+
+                if let Err(e) = context_client
+                    .sync_context_config(*context_id, config)
+                    .await
+                {
+                    warn!(%context_id, ?e, "failed to sync context config");
+                }
+                if let Err(e) = node_client.subscribe(context_id).await {
+                    warn!(%context_id, ?e, "failed to subscribe to context");
+                }
+                if let Err(e) = node_client.sync(Some(context_id), None).await {
+                    warn!(%context_id, ?e, "failed to trigger context sync");
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What to do with the group key a join response carried.
@@ -1029,14 +1071,14 @@ fn join_key_action(held_key_id: Option<[u8; 32]>, offered_key_id: [u8; 32]) -> J
 }
 
 /// Removes a provisionally stored join key if the join ends before it settles.
-struct ProvisionalKey {
+pub(super) struct ProvisionalKey {
     datastore: calimero_store::Store,
     group_id: ContextGroupId,
     key_id: Option<[u8; 32]>,
 }
 
 impl ProvisionalKey {
-    fn new(datastore: calimero_store::Store, group_id: ContextGroupId) -> Self {
+    pub(super) fn new(datastore: calimero_store::Store, group_id: ContextGroupId) -> Self {
         Self {
             datastore,
             group_id,
@@ -1044,11 +1086,11 @@ impl ProvisionalKey {
         }
     }
 
-    fn arm(&mut self, key_id: [u8; 32]) {
+    pub(super) fn arm(&mut self, key_id: [u8; 32]) {
         self.key_id = Some(key_id);
     }
 
-    fn disarm(&mut self) {
+    pub(super) fn disarm(&mut self) {
         self.key_id = None;
     }
 }
@@ -1065,9 +1107,45 @@ impl Drop for ProvisionalKey {
     }
 }
 
+/// Who may hand this node a group key in a join or follow response.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum KeyVoucher<'a> {
+    /// A join: the invitation's inviter or admitters, or an anchor of the group
+    /// or an ancestor it inherits from.
+    Invitation(&'a SignedGroupOpenInvitation),
+    /// A follow: an anchor of the namespace, and nobody else, since no
+    /// invitation vouches for anyone.
+    NamespaceAnchors,
+}
+
+impl KeyVoucher<'_> {
+    /// Whether `sender`'s key may be installed for `group_id`.
+    fn trusts(
+        self,
+        datastore: &calimero_store::Store,
+        namespace_id: [u8; 32],
+        group_id: ContextGroupId,
+        sender: &calimero_primitives::identity::PublicKey,
+    ) -> eyre::Result<bool> {
+        let namespace = ContextGroupId::from(namespace_id);
+        match self {
+            Self::Invitation(invitation) => NamespaceMembershipService::join_key_sender_trusted(
+                datastore,
+                &namespace,
+                &group_id,
+                sender,
+                Some(invitation),
+            ),
+            Self::NamespaceAnchors => {
+                NamespaceMembershipService::follow_key_sender_trusted(datastore, &namespace, sender)
+            }
+        }
+    }
+}
+
 /// What became of the group key a join response carried.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum JoinKey {
+pub(super) enum JoinKey {
     /// Installed, or already held.
     Held,
     /// Stored on the sender's say-so alone, until the response's ops have applied.
@@ -1078,29 +1156,23 @@ enum JoinKey {
 
 /// Settle the key after the response's governance ops have applied: they may
 /// be what binds the sender, so a provisional key is kept or dropped now.
-fn settle_join_key(
+pub(super) fn settle_join_key(
     datastore: &calimero_store::Store,
     namespace_id: [u8; 32],
     group_id: ContextGroupId,
     sk: &PrivateKey,
     envelope: &KeyEnvelope,
-    invitation: &SignedGroupOpenInvitation,
+    voucher: KeyVoucher<'_>,
     state: JoinKey,
 ) -> eyre::Result<JoinKey> {
     match state {
         JoinKey::Held => Ok(JoinKey::Held),
         JoinKey::Refused => {
-            install_join_key(datastore, namespace_id, group_id, sk, envelope, invitation)
+            install_join_key(datastore, namespace_id, group_id, sk, envelope, voucher)
         }
         JoinKey::Provisional(key_id) => {
             let keyring = GroupKeyring::new(datastore, group_id);
-            let vouched = NamespaceMembershipService::join_key_sender_trusted(
-                datastore,
-                &ContextGroupId::from(namespace_id),
-                &group_id,
-                &envelope.sender,
-                Some(invitation),
-            )?;
+            let vouched = voucher.trusts(datastore, namespace_id, group_id, &envelope.sender)?;
             match keyring.load_key_by_id(&key_id)? {
                 Some(group_key) if vouched => {
                     let _ = crate::group_key_pull::adopt_pulled_group_key(
@@ -1122,13 +1194,13 @@ fn settle_join_key(
 
 /// Install the join response's key. An unvouched sender's key is held only
 /// provisionally (its binding may be sealed under it) and never displaces one.
-fn install_join_key(
+pub(super) fn install_join_key(
     datastore: &calimero_store::Store,
     namespace_id: [u8; 32],
     group_id: ContextGroupId,
     sk: &PrivateKey,
     envelope: &KeyEnvelope,
-    invitation: &SignedGroupOpenInvitation,
+    voucher: KeyVoucher<'_>,
 ) -> eyre::Result<JoinKey> {
     // Unwrapping verifies the signature of the sender the trust check names.
     let group_key = GroupKeyring::unwrap_for_recipient(sk, &group_id.to_bytes(), None, envelope)?;
@@ -1145,13 +1217,7 @@ fn install_join_key(
         return Ok(JoinKey::Held);
     }
 
-    let vouched = NamespaceMembershipService::join_key_sender_trusted(
-        datastore,
-        &ContextGroupId::from(namespace_id),
-        &group_id,
-        &envelope.sender,
-        Some(invitation),
-    )?;
+    let vouched = voucher.trusts(datastore, namespace_id, group_id, &envelope.sender)?;
     if !vouched {
         return match action {
             JoinKeyAction::Seed => {
@@ -1549,7 +1615,7 @@ mod tests {
                 self.group,
                 &self.joiner,
                 &self.envelope,
-                &self.invitation,
+                KeyVoucher::Invitation(&self.invitation),
             )
             .expect("the install runs")
         }
@@ -1561,7 +1627,7 @@ mod tests {
                 self.group,
                 &self.joiner,
                 &self.envelope,
-                &self.invitation,
+                KeyVoucher::Invitation(&self.invitation),
                 state,
             )
             .expect("the settle runs")
@@ -1702,7 +1768,7 @@ mod tests {
             join.group,
             &join.joiner,
             &join.envelope,
-            &join.invitation,
+            KeyVoucher::Invitation(&join.invitation),
         )
         .expect("the install runs");
 
