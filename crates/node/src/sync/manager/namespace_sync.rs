@@ -1454,6 +1454,10 @@ impl SyncManager {
             std::collections::HashSet::new();
         let mut last_rejection: Option<String> = None;
         let mut last_connect_err: Option<String> = None;
+        // Rounds whose connect found no peer after some peer refused; see where
+        // it is counted.
+        let mut connect_failures_after_rejection = 0usize;
+        const MAX_CONNECT_FAILURES_AFTER_REJECTION: usize = 2;
         // Cap on protocol-level retries, bounding the total post-open
         // exchanges so a mesh full of stale peers cannot deadlock the join.
         //
@@ -1542,13 +1546,27 @@ impl SyncManager {
                     // namespace governance DAG, etc.). Record the err
                     // for the exhaustion diagnostic and let the loop
                     // continue.
+                    last_connect_err = Some(open_err.to_string());
+                    connect_failures_after_rejection += 1;
+                    // Every peer that answered refused, and the connect loop,
+                    // which already spent its own mesh-retry budget, found no
+                    // other. One more round for a peer that is still joining
+                    // the mesh; after that, retrying only repeats the same
+                    // empty search (32 rounds of it was minutes) while the
+                    // caller waits, so give the refusal back.
+                    if connect_failures_after_rejection >= MAX_CONNECT_FAILURES_AFTER_REJECTION {
+                        eyre::bail!(
+                            "namespace join refused: {} ({} peer(s) refused; no other peer to ask)",
+                            last_rejection.as_deref().unwrap_or("no reason given"),
+                            rejected_peers.len()
+                        );
+                    }
                     debug!(
                         namespace_id = %hex::encode(params.namespace_id),
                         attempt = protocol_attempt,
                         error = %open_err,
                         "namespace join: connect failed after prior rejection, will retry"
                     );
-                    last_connect_err = Some(open_err.to_string());
                     continue;
                 }
             };

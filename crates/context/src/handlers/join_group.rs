@@ -93,6 +93,32 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     &invitation,
                 )?;
 
+                // Already a member of the group, by inheritance: an Open
+                // subgroup of a namespace this node belongs to. Nothing is
+                // joined, so answer here rather than ask an admitter, which
+                // refuses an Open-chain subgroup join and leaves the request
+                // retrying for minutes. A direct member goes on as before: its
+                // repeat join is the re-sync path.
+                if MetaRepository::new(&datastore).load(&group_id)?.is_some() {
+                    if let Ok(account) = account_for_group(&datastore, &group_id) {
+                        let membership = MembershipRepository::new(&datastore);
+                        if !membership.has_direct_member(&group_id, &account)?
+                            && membership.is_live_member(&group_id, &account)?
+                        {
+                            info!(
+                                ?group_id,
+                                %joiner_identity,
+                                "already a member of the group by inheritance; nothing to join"
+                            );
+                            return Ok(JoinGroupResponse {
+                                group_id,
+                                member_identity: joiner_identity,
+                                member_account: account,
+                            });
+                        }
+                    }
+                }
+
                 // -------------------------------------------------------
                 // Phase 1: Set up local state.
                 // -------------------------------------------------------
