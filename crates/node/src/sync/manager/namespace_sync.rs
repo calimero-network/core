@@ -12,7 +12,9 @@ use calimero_governance_store::{
     MetaRepository, NamespaceRepository,
 };
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
+use calimero_node_primitives::client::{
+    NamespaceJoinKind, NamespaceJoinParams, OpenSubgroupJoinParams,
+};
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
 use calimero_primitives::context::ContextId;
@@ -562,6 +564,35 @@ impl SyncManager {
             verified.device,
             verified.device_epoch,
         ))
+    }
+
+    /// Handle an incoming `NamespaceFollowRequest` on the responder side.
+    ///
+    /// Not served yet: every follow is answered `NamespaceJoinRejected`, which
+    /// the follower treats like any refusal and takes to the next peer.
+    pub(super) async fn handle_namespace_follow_request(
+        &self,
+        namespace_id: [u8; 32],
+        joiner_public_key: PublicKey,
+        joiner_credential_bytes: &[u8],
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        debug!(
+            namespace_id = %hex::encode(namespace_id),
+            %joiner_public_key,
+            credential_len = joiner_credential_bytes.len(),
+            "refusing namespace follow: not implemented"
+        );
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::NamespaceJoinRejected {
+                reason: "follow not implemented".to_owned(),
+            },
+            next_nonce: nonce,
+        };
+        crate::sync::stream::send(stream, &msg, None).await?;
+        Ok(())
     }
 
     /// Handle an incoming NamespaceJoinRequest on the responder side.
@@ -1486,8 +1517,26 @@ impl SyncManager {
         // Only an admitter can complete this join, so trying one first is not a
         // preference so much as the difference between a round trip that can
         // succeed and one that can only be refused.
-        let admitter_routes =
-            Self::admitter_routes(&params.invitation_bytes, &self.local_peer_id().await);
+        //
+        // A follow carries no invitation; the addresses its caller handed in
+        // take the same part, so they are dialed and preferred the same way.
+        let local_peer = self.local_peer_id().await;
+        let admitter_routes = match &params.kind {
+            NamespaceJoinKind::Invitation { invitation_bytes } => {
+                Self::admitter_routes(invitation_bytes, &local_peer)
+            }
+            NamespaceJoinKind::Follow { peer_addrs } => {
+                super::namespace_join::group_admitter_routes(
+                    peer_addrs,
+                    MAX_ADMITTER_MACHINES_DIALED,
+                    &local_peer,
+                )
+            }
+        };
+        let label = match params.kind {
+            NamespaceJoinKind::Invitation { .. } => "join",
+            NamespaceJoinKind::Follow { .. } => "follow",
+        };
         let admitter_peers: Vec<libp2p::PeerId> =
             admitter_routes.iter().map(|(peer, _)| *peer).collect();
 
@@ -1557,11 +1606,20 @@ impl SyncManager {
                 context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
                 party_id: params.joiner_public_key,
                 pop: join_pop,
-                payload: InitPayload::NamespaceJoinRequest {
-                    namespace_id: params.namespace_id,
-                    invitation_bytes: params.invitation_bytes.clone(),
-                    joiner_public_key: params.joiner_public_key,
-                    joiner_credential_bytes: params.joiner_credential_bytes.clone(),
+                payload: match &params.kind {
+                    NamespaceJoinKind::Invitation { invitation_bytes } => {
+                        InitPayload::NamespaceJoinRequest {
+                            namespace_id: params.namespace_id,
+                            invitation_bytes: invitation_bytes.clone(),
+                            joiner_public_key: params.joiner_public_key,
+                            joiner_credential_bytes: params.joiner_credential_bytes.clone(),
+                        }
+                    }
+                    NamespaceJoinKind::Follow { .. } => InitPayload::NamespaceFollowRequest {
+                        namespace_id: params.namespace_id,
+                        joiner_public_key: params.joiner_public_key,
+                        joiner_credential_bytes: params.joiner_credential_bytes.clone(),
+                    },
                 },
                 next_nonce: rand::rng().random(),
             };
@@ -1604,14 +1662,28 @@ impl SyncManager {
                     // makes that unlikely rather than impossible, and "unlikely"
                     // is how a join becomes flaky in a mesh whose members are
                     // mostly not admitters.
-                    if admitter_endorsement_bytes.is_none() {
-                        let detail =
-                            format!("peer {peer} served the bundle but is not an admitter");
+                    //
+                    // A follow needs no endorsement (the member row is the
+                    // authority) but does need the key: a responder that is not
+                    // an anchor of the namespace answers with an empty envelope,
+                    // and the follower asks the next peer.
+                    let unusable = match params.kind {
+                        NamespaceJoinKind::Invitation { .. } => {
+                            admitter_endorsement_bytes.is_none().then(|| {
+                                format!("peer {peer} served the bundle but is not an admitter")
+                            })
+                        }
+                        NamespaceJoinKind::Follow { .. } => key_envelope_bytes
+                            .is_empty()
+                            .then(|| format!("peer {peer} served no key: not an anchor")),
+                    };
+                    if let Some(detail) = unusable {
                         debug!(
                             namespace_id = %hex::encode(params.namespace_id),
                             %peer,
                             attempt = protocol_attempt,
-                            "namespace join: responder is not an admitter, trying next peer"
+                            %detail,
+                            "namespace {label}: responder cannot complete it, trying next peer"
                         );
                         rejected_peers.insert(peer);
                         last_rejection = Some(detail);
@@ -1684,7 +1756,7 @@ impl SyncManager {
         }
 
         eyre::bail!(
-            "namespace join exhausted {} protocol attempts (last rejection: {:?}, \
+            "namespace {label} exhausted {} protocol attempts (last rejection: {:?}, \
              last connect_err: {:?}, {} peer(s) rejected)",
             MAX_PROTOCOL_RETRIES,
             last_rejection,
@@ -4886,6 +4958,151 @@ mod join_responder_tests {
             .sm
             .peer_is_group_member(&r.store, subgroup, &member.public_key())
             .unwrap());
+    }
+
+    fn follow_request(joiner_public_key: &PrivateKey) -> InitPayload {
+        let credential = real_join_account(&joiner_public_key.public_key());
+        InitPayload::NamespaceFollowRequest {
+            namespace_id: NAMESPACE,
+            joiner_public_key: joiner_public_key.public_key(),
+            joiner_credential_bytes: borsh::to_vec(&credential).unwrap(),
+        }
+    }
+
+    /// A follow serves the namespace key to the key it names, so that key must
+    /// be the one the dialer proved on this transport: proving one key and
+    /// naming another is refused before the follow handler sees it.
+    #[tokio::test]
+    async fn a_follow_naming_a_key_other_than_the_proven_one_is_refused() {
+        let r = responder().await;
+        let dialer = party(0x31);
+        let named = party(0x32);
+
+        let reply = exchange(&r.sm, &dialer, follow_request(&named)).await;
+
+        assert!(
+            matches!(reply, Some(StreamMessage::OpaqueError)),
+            "a follow for a key the dialer did not prove must be refused at the gate, got {reply:?}"
+        );
+    }
+
+    /// Control for the test above: the same follow naming the proven key passes
+    /// the gate and is answered by the follow handler.
+    #[tokio::test]
+    async fn a_follow_naming_the_proven_key_reaches_the_follow_handler() {
+        let r = responder().await;
+        let dialer = party(0x33);
+
+        let reply = exchange(&r.sm, &dialer, follow_request(&dialer)).await;
+
+        assert!(
+            matches!(
+                reply,
+                Some(StreamMessage::Message {
+                    payload: MessagePayload::NamespaceJoinResponse { .. }
+                        | MessagePayload::NamespaceJoinRejected { .. },
+                    ..
+                })
+            ),
+            "a proven follow must be answered by the follow handler, got {reply:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod namespace_follow_requester_tests {
+    //! The follow's requester side, against a scripted network.
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_network_primitives::stream::Stream;
+    use calimero_node_primitives::client::{NamespaceJoinKind, NamespaceJoinParams};
+    use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+    use calimero_primitives::identity::PrivateKey;
+    use libp2p::PeerId;
+
+    use super::group_key_recovery_anchor_tests::manager;
+    use crate::sync::network::mock::MockSyncNetwork;
+
+    const NAMESPACE: [u8; 32] = [0x7A; 32];
+
+    /// Answer one request on `end` with a bundle carrying `key_envelope_bytes`
+    /// and no endorsement, and hand back the payload it was asked with.
+    fn answer(
+        mut end: Stream,
+        key_envelope_bytes: Vec<u8>,
+    ) -> tokio::task::JoinHandle<InitPayload> {
+        tokio::spawn(async move {
+            let request = crate::sync::stream::recv(&mut end, None, Duration::from_secs(5))
+                .await
+                .expect("responder: recv the request")
+                .expect("responder: a request arrived");
+            let StreamMessage::Init { payload, .. } = request else {
+                panic!("responder: expected an Init, got {request:?}");
+            };
+            let reply = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinResponse {
+                    key_envelope_bytes,
+                    context_ids: Vec::new(),
+                    application_id: [0; 32],
+                    governance_ops: Vec::new(),
+                    default_capabilities: 0,
+                    admitter_endorsement_bytes: None,
+                },
+                next_nonce: [0; 12],
+            };
+            crate::sync::stream::send(&mut end, &reply, None)
+                .await
+                .expect("responder: send the reply");
+            payload
+        })
+    }
+
+    /// A follow asks with `NamespaceFollowRequest`, skips a responder that
+    /// served no key (not an anchor), and takes a keyed bundle without an
+    /// endorsement: the member row is the authority, not an admitter.
+    #[tokio::test]
+    async fn a_follow_skips_a_keyless_answer_and_takes_an_unendorsed_keyed_one() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        mock.push_subscribed_peers(vec![PeerId::random(), PeerId::random()]);
+        let keyless = answer(mock.push_open_stream_ok_with_peer(), Vec::new());
+        let keyed = answer(mock.push_open_stream_ok_with_peer(), vec![0xAB]);
+        let (sm, _store, _tmp) = manager(Arc::clone(&mock)).await;
+        sm.local_peer_id
+            .set(PeerId::random())
+            .expect("set the local peer id");
+        let follower = PrivateKey::from([0x41; 32]).public_key();
+
+        let bundle = sm
+            .initiate_namespace_join(NamespaceJoinParams {
+                namespace_id: NAMESPACE,
+                kind: NamespaceJoinKind::Follow {
+                    peer_addrs: Vec::new(),
+                },
+                joiner_public_key: follower,
+                joiner_credential_bytes: vec![1, 2, 3],
+            })
+            .await
+            .expect("the follow completes on the keyed answer");
+
+        assert_eq!(bundle.key_envelope_bytes, vec![0xAB]);
+        assert!(bundle.admitter_endorsement_bytes.is_none());
+        for asked in [keyless.await.unwrap(), keyed.await.unwrap()] {
+            assert!(
+                matches!(
+                    &asked,
+                    InitPayload::NamespaceFollowRequest {
+                        namespace_id: NAMESPACE,
+                        joiner_public_key,
+                        joiner_credential_bytes,
+                    } if *joiner_public_key == follower && joiner_credential_bytes == &[1, 2, 3]
+                ),
+                "the follower must ask with a follow request, got {asked:?}"
+            );
+        }
+        mock.assert_all_consumed();
     }
 }
 

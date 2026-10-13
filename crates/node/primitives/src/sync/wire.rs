@@ -615,6 +615,35 @@ pub enum InitPayload {
         namespace_id: [u8; 32],
         challenge: [u8; 32],
     },
+
+    /// Direct request to follow a namespace whose root already holds a member
+    /// row for the requester's account: the join bootstrap without an
+    /// invitation.
+    ///
+    /// An admin wrote that row (`MemberAdded`), so the authority is already in
+    /// the governance graph; this only asks a trusted anchor for what the
+    /// member's node needs to start participating (the wrapped group key,
+    /// contexts, governance ops). The responder names the account from
+    /// `joiner_credential_bytes` exactly as it does for
+    /// [`Self::NamespaceJoinRequest`], checks the row and the re-entry gate, and
+    /// answers [`MessagePayload::NamespaceJoinResponse`] or
+    /// [`MessagePayload::NamespaceJoinRejected`]. A responder that is not an
+    /// anchor answers with an empty key envelope and the follower asks the next
+    /// peer. Requires the same proof of possession as the join, bound to
+    /// `namespace_id`, and `joiner_public_key` must be the proven key.
+    ///
+    /// **Borsh ordering**: appended at the tail of `InitPayload`. An older
+    /// responder cannot decode it and drops the stream.
+    NamespaceFollowRequest {
+        namespace_id: [u8; 32],
+        /// The follower's public key for ECDH key wrapping; must equal the
+        /// `party_id` the stream's proof of possession proved.
+        joiner_public_key: PublicKey,
+        /// Borsh-serialized `JoinAccountCredential` certifying
+        /// `joiner_public_key`, so the responder can name the account whose
+        /// member row it checks.
+        joiner_credential_bytes: Vec<u8>,
+    },
 }
 
 /// What a TEE node sends back to a member that offered it a challenge: the same
@@ -992,6 +1021,37 @@ pub enum MessagePayload<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The follow request is appended after every variant that existed before
+    /// it, so it takes the next discriminant and leaves theirs unchanged.
+    #[test]
+    fn namespace_follow_request_is_appended_and_round_trips() {
+        let offer = borsh::to_vec(&InitPayload::TeeAdmissionChallengeOffer {
+            namespace_id: [0; 32],
+            challenge: [0; 32],
+        })
+        .expect("serialize the offer");
+        let request = InitPayload::NamespaceFollowRequest {
+            namespace_id: [3u8; 32],
+            joiner_public_key: PublicKey::from([4u8; 32]),
+            joiner_credential_bytes: vec![5, 6, 7],
+        };
+        let encoded = borsh::to_vec(&request).expect("serialize");
+        assert_eq!(encoded[0], offer[0] + 1, "follow must be the last variant");
+
+        match borsh::from_slice::<InitPayload>(&encoded).expect("deserialize") {
+            InitPayload::NamespaceFollowRequest {
+                namespace_id,
+                joiner_public_key,
+                joiner_credential_bytes,
+            } => {
+                assert_eq!(namespace_id, [3u8; 32]);
+                assert_eq!(joiner_public_key, PublicKey::from([4u8; 32]));
+                assert_eq!(joiner_credential_bytes, vec![5, 6, 7]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
 
     #[test]
     fn test_init_payload_tree_node_request() {

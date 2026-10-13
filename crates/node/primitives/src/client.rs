@@ -40,11 +40,23 @@ pub use blob::{BlobManager, BlobPresence, BlobRejected};
 pub use provider_order::{order_candidates, MemberRoles, MemberRolesSlot};
 pub use recent_providers::RecentProviders;
 
-/// Parameters for a direct namespace join request.
+/// What admits a direct namespace join, and where its admitters are.
+#[derive(Debug)]
+pub enum NamespaceJoinKind {
+    /// A signed invitation (borsh `SignedGroupOpenInvitation`); its
+    /// `admitter_addrs` are dialed before discovery.
+    Invitation { invitation_bytes: Vec<u8> },
+    /// The member row an admin already wrote for this node's account at the
+    /// namespace root. `peer_addrs` play the part of an invitation's
+    /// `admitter_addrs`: dialed first and preferred by the connect loop.
+    Follow { peer_addrs: Vec<String> },
+}
+
+/// Parameters for a direct namespace join (or follow) request.
 #[derive(Debug)]
 pub struct NamespaceJoinParams {
     pub namespace_id: [u8; 32],
-    pub invitation_bytes: Vec<u8>,
+    pub kind: NamespaceJoinKind,
     pub joiner_public_key: PublicKey,
     /// Borsh-serialized `JoinAccountCredential`, so the responder can name this
     /// joiner's ACCOUNT before it serves any state. See the wire variant.
@@ -260,7 +272,7 @@ impl SyncClient {
         let (tx, rx) = oneshot::channel();
         let params = NamespaceJoinParams {
             namespace_id,
-            invitation_bytes,
+            kind: NamespaceJoinKind::Invitation { invitation_bytes },
             joiner_public_key,
             joiner_credential_bytes,
         };
@@ -270,6 +282,34 @@ impl SyncClient {
             .map_err(|_| eyre::eyre!("namespace join channel closed"))?;
         rx.await
             .map_err(|_| eyre::eyre!("namespace join response channel dropped"))?
+    }
+
+    /// Send a direct namespace follow request and await the bundle.
+    ///
+    /// The join without an invitation: the namespace root already holds a
+    /// member row for this node's account, so a trusted anchor serves the
+    /// bundle on that authority. `peer_addrs` (multiaddrs ending in `/p2p/<id>`)
+    /// are dialed and tried first, as an invitation's admitter addresses are.
+    pub async fn request_namespace_follow(
+        &self,
+        namespace_id: [u8; 32],
+        peer_addrs: Vec<String>,
+        joiner_public_key: PublicKey,
+        joiner_credential_bytes: Vec<u8>,
+    ) -> eyre::Result<JoinBundle> {
+        let (tx, rx) = oneshot::channel();
+        let params = NamespaceJoinParams {
+            namespace_id,
+            kind: NamespaceJoinKind::Follow { peer_addrs },
+            joiner_public_key,
+            joiner_credential_bytes,
+        };
+        self.ns_join_tx
+            .send((params, tx))
+            .await
+            .map_err(|_| eyre::eyre!("namespace join channel closed"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("namespace follow response channel dropped"))?
     }
 
     /// Send a direct open-subgroup join request to a mesh peer and await
@@ -1287,6 +1327,25 @@ impl NodeClient {
             .request_namespace_join(
                 namespace_id,
                 invitation_bytes,
+                joiner_public_key,
+                joiner_credential_bytes,
+            )
+            .await
+    }
+
+    /// Follow a namespace whose root holds a member row for this node's
+    /// account. See [`SyncClient::request_namespace_follow`].
+    pub async fn request_namespace_follow(
+        &self,
+        namespace_id: [u8; 32],
+        peer_addrs: Vec<String>,
+        joiner_public_key: PublicKey,
+        joiner_credential_bytes: Vec<u8>,
+    ) -> eyre::Result<JoinBundle> {
+        self.sync_client
+            .request_namespace_follow(
+                namespace_id,
+                peer_addrs,
                 joiner_public_key,
                 joiner_credential_bytes,
             )

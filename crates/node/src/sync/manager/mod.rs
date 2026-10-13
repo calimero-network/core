@@ -301,8 +301,8 @@ impl Clone for SyncManager {
 ///
 /// `true` for payloads that serve context state to the caller (deltas, DAG
 /// heads, snapshots, HashComparison tree nodes, LevelWise level nodes) or that
-/// pre-register the caller's identity (namespace / open-subgroup joins) — these
-/// are exactly the paths where an unauthenticated `party_id` would let a peer
+/// pre-register or serve the caller's identity (namespace joins and follows,
+/// open-subgroup joins) — these are exactly the paths where an unauthenticated `party_id` would let a peer
 /// be served as, or registered as, an identity it does not control.
 ///
 /// `false` for:
@@ -324,6 +324,7 @@ const fn payload_requires_init_pop(payload: &InitPayload) -> bool {
             | InitPayload::TreeNodeChildrenRequest { .. }
             | InitPayload::LevelWiseRequest { .. }
             | InitPayload::NamespaceJoinRequest { .. }
+            | InitPayload::NamespaceFollowRequest { .. }
             | InitPayload::OpenSubgroupJoinRequest { .. }
             | InitPayload::RelaySealedJoinRequest { .. }
             | InitPayload::TeeAdmissionRequest { .. }
@@ -348,6 +349,7 @@ fn payload_names_another_context(init_context: &ContextId, payload: &InitPayload
         InitPayload::BlobShare { .. }
         | InitPayload::NamespaceBackfillRequest { .. }
         | InitPayload::NamespaceJoinRequest { .. }
+        | InitPayload::NamespaceFollowRequest { .. }
         | InitPayload::OpenSubgroupJoinRequest { .. }
         | InitPayload::GroupKeyRequest { .. }
         | InitPayload::GroupKeyRequestWithResponderProof { .. }
@@ -3660,6 +3662,7 @@ impl SyncManager {
             // real `context_id`.
             let pop_context = match &payload {
                 InitPayload::NamespaceJoinRequest { namespace_id, .. }
+                | InitPayload::NamespaceFollowRequest { namespace_id, .. }
                 | InitPayload::OpenSubgroupJoinRequest { namespace_id, .. }
                 | InitPayload::RelaySealedJoinRequest { namespace_id, .. }
                 | InitPayload::TeeAdmissionRequest { namespace_id, .. }
@@ -3677,6 +3680,9 @@ impl SyncManager {
             // a caller can't prove possession of one key and register another.
             let join_binding_ok = match &payload {
                 InitPayload::NamespaceJoinRequest {
+                    joiner_public_key, ..
+                }
+                | InitPayload::NamespaceFollowRequest {
                     joiner_public_key, ..
                 }
                 | InitPayload::OpenSubgroupJoinRequest {
@@ -3742,6 +3748,23 @@ impl SyncManager {
             self.handle_namespace_join_request(
                 *namespace_id,
                 invitation_bytes,
+                *joiner_public_key,
+                joiner_credential_bytes,
+                stream,
+                nonce,
+            )
+            .await?;
+            return Ok(Some(()));
+        }
+
+        if let InitPayload::NamespaceFollowRequest {
+            namespace_id,
+            joiner_public_key,
+            ref joiner_credential_bytes,
+        } = &payload
+        {
+            self.handle_namespace_follow_request(
+                *namespace_id,
                 *joiner_public_key,
                 joiner_credential_bytes,
                 stream,
@@ -4145,7 +4168,8 @@ impl SyncManager {
             InitPayload::NamespaceBackfillRequest { .. } => {
                 unreachable!("handled by early return above")
             }
-            InitPayload::NamespaceJoinRequest { .. } => {
+            InitPayload::NamespaceJoinRequest { .. }
+            | InitPayload::NamespaceFollowRequest { .. } => {
                 unreachable!("handled by early return above")
             }
             InitPayload::OpenSubgroupJoinRequest { .. } => {
@@ -4541,6 +4565,12 @@ mod init_pop_gate_tests {
             InitPayload::NamespaceJoinRequest {
                 namespace_id: [0; 32],
                 invitation_bytes: vec![],
+                joiner_public_key: [0; 32].into(),
+                joiner_credential_bytes: vec![],
+            },
+            // Serves the namespace key to the key it names, like the join.
+            InitPayload::NamespaceFollowRequest {
+                namespace_id: [0; 32],
                 joiner_public_key: [0; 32].into(),
                 joiner_credential_bytes: vec![],
             },
