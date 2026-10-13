@@ -491,6 +491,30 @@
 
 ### Fixed
 
+- **A node no longer ships application data in its logs.** merod's default
+  filter (`merod`, `calimero_*` and `mero_auth` at `info`) sends `info` and above
+  to whoever runs the node's log pipeline, which on a TEE node is a party the
+  application's data must not reach. Five places logged that data there; each
+  now follows the rule the runtime already used for guest output: size at
+  `info`/`warn`/`error`, text at `debug`/`trace`.
+  - Every guest `env::log` line, written at `info` after each JSON-RPC/WS
+    execute. Now: the count and size at `info`; the lines at `trace` under
+    `runtime::guest::log`.
+  - The JSON-RPC and WebSocket "Request failed" line, which logged the whole
+    `ExecutionError`, including a method's error payload or panic text. Now a
+    `FunctionCallError` is logged by kind and size; the node's own errors stay
+    whole.
+  - The runtime's "WASM method execution failed", whose `error_debug` and
+    `error_message` carried a guest panic's text. Now
+    `FunctionCallError::redacted` is logged.
+  - `panic_utf8`'s "Guest panic captured", which carried the panic text at
+    `error`.
+  - The context crate's cross-context call warning, which carried the target
+    method's error. Now `redacted`.
+
+  Covered by tests that capture what each path logs at `info` with a planted
+  secret.
+
 - **QUIC no longer lets a peer crash a node or grow its memory without
   bound.** `quinn-proto`, which the libp2p QUIC transport uses, moves from
   0.11.15 to 0.11.19 for RUSTSEC-2026-0338 (zero-length STREAM frames panic
