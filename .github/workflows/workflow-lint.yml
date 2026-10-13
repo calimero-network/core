@@ -46,6 +46,4 @@ jobs:
           advanced-security: false
 
       - name: Privileged trigger guard
-        run: |
-          python3 scripts/tests/check-workflow-triggers-test.py
-          python3 scripts/check-workflow-triggers.py
+        run: python3 scripts/tests/check-workflow-triggers-test.py

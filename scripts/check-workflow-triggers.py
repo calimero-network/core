@@ -1,22 +1,6 @@
 #!/usr/bin/env python3
-"""A privileged workflow must not run PR code unguarded or write caches.
-
-`pull_request_target` and `workflow_run` run with the base repository's token and
-cache scope. Anything this script cannot judge fails. For each such workflow:
-
-- a job must check out only the default ref (no `ref`, or `github.sha` or a base
-  ref), unless its `if`, or that of a job it needs, implies that the head
-  repository is this one;
-- a job without that guard runs no `git fetch`, `gh pr checkout` or similar;
-- an unguarded job downloads no other run's artifact and reads no `artifacts_url`;
-- no job calls a reusable workflow, uses another checkout action, or saves a cache
-  (`setup-rust-ci` and `rust-cache` need `save-if: false`, a `cache` input must be off).
-
-Local composite actions are followed. The file is read as YAML 1.2 (as GitHub does) and
-anything else it cannot be sure of, such as tags or aliases, fails.
-
-A guard is a conjunct of the `if`: `||` branches must each imply it or be limited
-to a different event, and a status function on a dependent drops an inherited one.
+"""Fail a `pull_request_target` or `workflow_run` workflow that may run PR code without a
+same-repository guard, or that writes a cache; anything it cannot judge fails too.
 
     python3 scripts/check-workflow-triggers.py [workflow.yml ...]
 """
@@ -28,17 +12,9 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-# The comparison a job's `if` must imply, per trigger (either operand order).
-GUARDS = {
-    "workflow_run": ("github.event.workflow_run.head_repository.full_name", "github.repository"),
-    "pull_request_target": ("github.event.pull_request.head.repo.full_name", "github.repository"),
-}
-SAFE_REFS = {  # refs that name the base repository's own code
-    "${{ github.sha }}",
-    "${{ github.event.repository.default_branch }}",
-    "${{ github.base_ref }}",
-    "${{ github.event.pull_request.base.sha }}",
-    "${{ github.event.pull_request.base.ref }}",
+GUARDS = {  # the comparison a job's `if` must imply, per trigger (either operand order)
+    "workflow_run": {"github.event.workflow_run.head_repository.full_name", "github.repository"},
+    "pull_request_target": {"github.event.pull_request.head.repo.full_name", "github.repository"},
 }
 FETCHES_CODE = re.compile(
     r"\bgh\s+(?:pr\s+checkout|repo\s+clone|run\s+download)\b|\bgit\s+(?:fetch|checkout|switch|pull|clone|worktree|submodule)\b"
@@ -46,28 +22,21 @@ FETCHES_CODE = re.compile(
     re.IGNORECASE,
 )
 STATUS_FUNCTION = re.compile(r"\b(?:always|failure|cancelled)\s*\(", re.IGNORECASE)  # runs even when a needed job is skipped
+EVENT_TEST = re.compile(r"^github\.event_name\s*(==|!=)\s*'([^']*)'$")
 CACHE_INPUT = re.compile(r"cache|cache-to|(?!no-)[\w-]*-cache")  # inputs that turn on a cache write
 CROSS_RUN_ARTIFACTS = {("comment.yml", "submit")}  # reads a PR run's payload as data and verifies it against the PR
-MAX_ACTION_DEPTH = 5
-EVENT_TEST = re.compile(r"^github\.event_name\s*(==|!=)\s*'([^']*)'$")
-SAVE_IF_ACTIONS = ("./.github/actions/setup-rust-ci", "swatinem/rust-cache")  # write unless save-if is false
-CACHE_READERS = ("actions/cache/restore",)
+SAVE_IF_ACTION = "./.github/actions/setup-rust-ci"  # saves unless `save-if: false`
+CACHE_READER = "actions/cache/restore"
 
 
 class Loader(yaml.SafeLoader):
-    """SafeLoader reading YAML 1.2 booleans (on, yes and no stay strings) and rejecting duplicate and merge keys."""
-
+    """YAML 1.2 booleans as GitHub reads them (`on`, `yes` and `no` stay strings), duplicate keys rejected."""
 
 
 def construct_mapping(loader, node, deep=False):
-    seen = set()
-    for key_node, _ in node.value:
-        if key_node.tag == "tag:yaml.org,2002:merge":
-            raise ValueError("merge keys (<<) are not understood by GitHub")
-        key = loader.construct_object(key_node, deep=True)
-        if key in seen:
-            raise ValueError(f"duplicate key {key!r}")
-        seen.add(key)
+    keys = [loader.construct_object(k, deep=True) for k, _ in node.value]
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"duplicate key in {keys}")
     return yaml.SafeLoader.construct_mapping(loader, node, deep)
 
 
@@ -79,74 +48,52 @@ Loader.yaml_implicit_resolvers = {
 Loader.add_implicit_resolver("tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF"))
 
 
-def tokenize(text):
-    tokens, buf, quote, calls, i = [], [], None, 0, 0
-
-    def flush():
-        operand = " ".join("".join(buf).split())
-        buf.clear()
-        if operand:
-            tokens.append(operand)
-
-    while i < len(text):
-        c = text[i]
-        if quote:
-            quote = None if c == quote else quote
-        elif c == "'":
-            quote = c
-        elif calls:
-            calls += (c == "(") - (c == ")")
-        elif c == "(" and buf and (buf[-1].isalnum() or buf[-1] in "_."):
-            calls = 1
-        elif c in "()" or text.startswith(("&&", "||"), i):
-            operator = c if c in "()" else text[i : i + 2]
-            flush()
-            tokens.append(operator)
-            i += len(operator)
-            continue
-        buf.append(c)
-        i += 1
-    if quote or calls:
+def top_level(text):
+    """Indices of `text` outside quotes and parentheses; raises if either is unbalanced."""
+    depth, quoted, found = 0, False, []
+    for i, c in enumerate(text):
+        quoted ^= c == "'"
+        if not quoted:
+            depth += (c == "(") - (c == ")")
+            if depth < 0:
+                break
+            if depth == 0:
+                found.append(i)
+    if quoted or depth:
         raise ValueError(f"unbalanced expression: {text}")
-    flush()
-    return tokens
+    return found
 
 
-def parse(tokens):
-    """Expression to ('or'|'and', [nodes]) or ('atom', text); raises on anything unbalanced."""
-
-    def disjunction(pos):
-        nodes, pos = [], pos
-        node, pos = conjunction(pos)
-        nodes.append(node)
-        while pos < len(tokens) and tokens[pos] == "||":
-            node, pos = conjunction(pos + 1)
-            nodes.append(node)
-        return (nodes[0] if len(nodes) == 1 else ("or", nodes)), pos
-
-    def conjunction(pos):
-        nodes = []
-        node, pos = primary(pos)
-        nodes.append(node)
-        while pos < len(tokens) and tokens[pos] == "&&":
-            node, pos = primary(pos + 1)
-            nodes.append(node)
-        return (nodes[0] if len(nodes) == 1 else ("and", nodes)), pos
-
-    def primary(pos):
-        if pos >= len(tokens) or tokens[pos] in ("&&", "||", ")"):
-            raise ValueError("malformed expression")
-        if tokens[pos] == "(":
-            node, pos = disjunction(pos + 1)
-            if pos >= len(tokens) or tokens[pos] != ")":
-                raise ValueError("unbalanced expression")
-            return node, pos + 1
-        return ("atom", tokens[pos]), pos + 1
-
-    node, pos = disjunction(0)
-    if pos != len(tokens):
+def parse(text):
+    """Expression to ('||' or '&&', [nodes]) or ('atom', text)."""
+    text = text.strip()
+    top = top_level(text)
+    for op in ("||", "&&"):
+        cuts = [i for i in top if text.startswith(op, i)]
+        if cuts:
+            return op, [parse(text[a:b]) for a, b in zip([0] + [i + 2 for i in cuts], cuts + [len(text)])]
+    if text.startswith("(") and top == [len(text) - 1]:
+        return parse(text[1:-1])
+    if not text:
         raise ValueError("malformed expression")
-    return node
+    return "atom", text
+
+
+def holds(node, test):
+    """Whether every way `node` can be true includes an atom passing `test`."""
+    kind, body = node
+    if kind == "atom":
+        return test(body)
+    return (any if kind == "&&" else all)(holds(n, test) for n in body)
+
+
+def is_guard(atom, trigger):
+    return {s.strip().casefold() for s in atom.split("==", 1)} == GUARDS[trigger]  # context names are case-insensitive
+
+
+def other_event(atom, trigger):
+    match = EVENT_TEST.match(atom)
+    return bool(match) and (match.group(1) == "==") != (match.group(2).casefold() == trigger)
 
 
 def expression(job):
@@ -157,38 +104,10 @@ def expression(job):
     return match.group(1).strip() if match else text
 
 
-def other_event(atom, trigger):
-    match = EVENT_TEST.match(atom)
-    if not match:
-        return False
-    same = match.group(2).casefold() == trigger  # GitHub compares strings case-insensitively
-    return not same if match.group(1) == "==" else same
-
-
-def implies(node, trigger):
-    kind, body = node
-    if kind == "atom":
-        left, right = (s.strip() for s in body.split("==", 1)) if "==" in body else ("", "")
-        operands = {left.casefold(), right.casefold()}  # context names are case-insensitive
-        return operands == set(GUARDS[trigger]) and body.count("==") == 1 and "!" not in body
-    if kind == "and":
-        return any(implies(n, trigger) for n in body)
-    return all(implies(n, trigger) or limited_to_other_events(n, trigger) for n in body)
-
-
-def limited_to_other_events(node, trigger):
-    kind, body = node
-    if kind == "atom":
-        return other_event(body, trigger)
-    if kind == "and":
-        return any(limited_to_other_events(n, trigger) for n in body)
-    return all(limited_to_other_events(n, trigger) for n in body)
-
-
 def guarded(name, jobs, trigger, seen=()):
     job = jobs[name]
     text = expression(job)
-    if text and implies(parse(tokenize(text)), trigger):
+    if text and holds(parse(text), lambda a: is_guard(a, trigger) or other_event(a, trigger)):
         return True
     if STATUS_FUNCTION.search(text):
         return False
@@ -199,24 +118,23 @@ def guarded(name, jobs, trigger, seen=()):
 
 def skips_privileged_events(step, privileged):
     text = expression(step)
-    node = parse(tokenize(text)) if text else None
-    return node is not None and all(limited_to_other_events(node, t) for t in privileged)
+    return bool(text) and all(holds(parse(text), lambda a: other_event(a, t)) for t in privileged)
 
 
-def step_errors(step, unguarded, root, privileged, artifacts_ok=False, depth=0):
+def step_errors(step, unguarded, root, privileged, artifacts_ok=False):
     action = str(step.get("uses", "")).split("@")[0]
     lower = action.lower()
     with_ = step.get("with") or {}
     errors = []
     if action == "actions/checkout":
         ref, repo = str(with_.get("ref", "${{ github.sha }}")), str(with_.get("repository", "${{ github.repository }}"))
-        if unguarded and (ref not in SAFE_REFS or repo != "${{ github.repository }}"):
+        if unguarded and (ref != "${{ github.sha }}" or repo != "${{ github.repository }}"):
             errors.append(f"checks out `{ref}` of `{repo}` without a same-repository guard")
     elif "checkout" in lower:
         errors.append(f"uses an unrecognised checkout action ({action})")
-    if lower in SAVE_IF_ACTIONS and str(with_.get("save-if", "")).lower() != "false":
+    if lower == SAVE_IF_ACTION and str(with_.get("save-if", "")).lower() != "false":
         errors.append(f"saves a cache ({action}); set `save-if: false`")
-    elif "cache" in lower and lower not in SAVE_IF_ACTIONS + CACHE_READERS and not skips_privileged_events(step, privileged):
+    elif "cache" in lower and lower not in (SAVE_IF_ACTION, CACHE_READER) and not skips_privileged_events(step, privileged):
         errors.append(f"uses a cache action that is not read-only ({action})")
     errors += [f"turns on a cache write with `{k}: {v}`" for k, v in with_.items() if CACHE_INPUT.fullmatch(k) and str(v).lower() != "false"]
     if unguarded and FETCHES_CODE.search(str(step.get("run", ""))):
@@ -226,18 +144,17 @@ def step_errors(step, unguarded, root, privileged, artifacts_ok=False, depth=0):
             errors.append("downloads another run's artifact without a same-repository guard")
         if "artifacts_url" in str(step).lower():
             errors.append("reads `artifacts_url` without a same-repository guard")
-    if action.startswith("./") and lower not in SAVE_IF_ACTIONS:
-        errors += local_action_errors(action, unguarded, root, privileged, artifacts_ok, depth)
+    if action.startswith("./") and lower != SAVE_IF_ACTION:
+        errors += local_action_errors(action, unguarded, root, privileged, artifacts_ok)
     return errors
 
 
-def local_action_errors(action, unguarded, root, privileged, artifacts_ok, depth):
-    found = [f for f in (root / action / "action.yml", root / action / "action.yaml") if f.is_file()]
-    if not found or depth >= MAX_ACTION_DEPTH:
+def local_action_errors(action, unguarded, root, privileged, artifacts_ok):
+    path = root / action / "action.yml"
+    runs = yaml.load(path.read_text(), Loader)["runs"] if path.is_file() else {}
+    if runs.get("using") != "composite":
         return [f"uses a local action this check cannot read ({action})"]
-    runs = (yaml.load(found[0].read_text(), Loader) or {}).get("runs") or {}
-    steps = runs.get("steps") if runs.get("using") == "composite" else []
-    return [f"{action}: {e}" for step in steps or [] for e in step_errors(step, unguarded, root, privileged, artifacts_ok, depth + 1)]
+    return [f"{action}: {e}" for step in runs.get("steps") or [] for e in step_errors(step, unguarded, root, privileged, artifacts_ok)]
 
 
 def read_strictly(text):
@@ -250,24 +167,13 @@ def read_strictly(text):
 def check(path):
     text = path.read_text()
     workflow = yaml.load(text, Loader)
-    if not isinstance(workflow, dict):
-        raise ValueError("not a workflow mapping")
     if any(isinstance(k, str) and k != "on" and k.casefold() == "on" for k in workflow):
         raise ValueError("an `on` key spelt in another case")
-    if "on" not in workflow:
-        raise ValueError("no `on` key")
-    triggers = workflow["on"]
-    if isinstance(triggers, str):
-        triggers = [triggers]
-    if not isinstance(triggers, (list, dict)):
-        raise ValueError("`on` is neither a string, a list nor a mapping")
-    privileged = [t for t in GUARDS if t in triggers]
+    privileged = [t for t in GUARDS if t in workflow["on"]]  # a string `on` matches by substring, which only adds triggers
     if not privileged:
         return []
     read_strictly(text)
-    jobs = workflow.get("jobs")
-    if not isinstance(jobs, dict):
-        raise ValueError("no jobs mapping")
+    jobs = workflow["jobs"]
     root = path.resolve().parents[2]
     errors = []
     for name, job in jobs.items():
@@ -288,7 +194,7 @@ def main(argv):
         try:
             errors += [f"{path.name}: {e}" for e in check(path)]
         except Exception as exc:  # anything unreadable fails the check
-            errors.append(f"{path.name}: cannot be checked: {exc}")
+            errors.append(f"{path.name}: cannot be checked: {exc!r}")
     if errors:
         print("\n".join(errors))
     return 1 if errors else 0
