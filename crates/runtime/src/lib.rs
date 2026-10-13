@@ -2520,6 +2520,7 @@ mod failure_log_tests {
     use tracing_subscriber::registry;
 
     use super::*;
+    use crate::store::InMemoryStorage;
 
     struct Buffer(Arc<Mutex<Vec<u8>>>);
     impl Write for Buffer {
