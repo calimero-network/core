@@ -65,7 +65,7 @@ pub struct CorsConfig {
 
 /// How the node treats traffic that is not sealed to its attested transport key
 /// (`[server.sealed]`). See [`crate::sealed`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct SealedConfig {
@@ -81,17 +81,42 @@ pub struct SealedConfig {
     /// of sending its bearer token through the proxy in the clear.
     #[serde(default)]
     pub required: bool,
+
+    /// Under `auth_mode = "proxy"`, the origin of the auth service the proxy
+    /// asks about each request (forward-auth), e.g. `http://127.0.0.1:3001`.
+    ///
+    /// The proxy cannot see inside a sealed request, so without this an opened
+    /// request may reach only what the node serves without a credential, and
+    /// every logged-in call (login, queries, event streams) has to travel in
+    /// the clear. With it, the node asks the auth service itself what the proxy
+    /// would have asked, and forwards `/auth/` and `/admin/` to it, so those
+    /// calls can be sealed too. Loopback `http` only: tokens are sent there in
+    /// the clear. Ignored under embedded auth, which checks every request
+    /// itself. See [`crate::sealed::ForwardAuth`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_auth: Option<String>,
 }
 
 impl SealedConfig {
     #[must_use]
     pub const fn new(required: bool) -> Self {
-        Self { required }
+        Self {
+            required,
+            forward_auth: None,
+        }
+    }
+
+    /// Ask the auth service at `origin` about sealed requests; see
+    /// [`Self::forward_auth`].
+    #[must_use]
+    pub fn with_forward_auth(mut self, origin: impl Into<String>) -> Self {
+        self.forward_auth = Some(origin.into());
+        self
     }
 
     #[must_use]
     pub const fn is_default(&self) -> bool {
-        !self.required
+        !self.required && self.forward_auth.is_none()
     }
 }
 
