@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "route": "POST /admin-api/namespaces/{namespace_id}/follow",
+    "reason": "Added by the namespace-follow feature; mero-js ships the client (followNamespace, feat/follow-namespace) but no e2e yet. A success needs two nodes: an admin adds the follower's account to a namespace, then the follower calls the route with the admin's GET /identity externalAddrs, so the test belongs in the multinode suite. Drop this entry when that e2e lands."
+  }
+]

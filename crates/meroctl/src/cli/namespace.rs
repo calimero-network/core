@@ -7,6 +7,7 @@ use crate::cli::Environment;
 pub mod create;
 pub mod create_group;
 pub mod delete;
+pub mod follow;
 pub mod get;
 pub mod groups;
 pub mod invite;
@@ -28,6 +29,9 @@ pub const EXAMPLES: &str = r"
   # Invite another node and join namespace
   $ meroctl --node node1 namespace invite <namespace_id>
   $ meroctl --node node2 namespace join <namespace_id> '<invitation_json>'
+
+  # Follow a namespace node2's account was added to, from node1's addresses
+  $ meroctl --node node2 namespace follow <namespace_id> --peer <multiaddr> --application-id <app_id>
 
   # List groups inside namespace and create a subgroup
   $ meroctl --node node1 namespace groups <namespace_id>
@@ -53,6 +57,7 @@ pub enum NamespaceSubCommands {
     Delete(delete::DeleteCommand),
     Invite(invite::InviteCommand),
     Join(join::JoinCommand),
+    Follow(follow::FollowCommand),
     /// Voluntarily leave a namespace (cascades through descendant groups).
     Leave(leave::LeaveCommand),
     Groups(groups::GroupsCommand),
@@ -71,6 +76,7 @@ impl NamespaceCommand {
             NamespaceSubCommands::Delete,
             NamespaceSubCommands::Invite,
             NamespaceSubCommands::Join,
+            NamespaceSubCommands::Follow,
             NamespaceSubCommands::Leave,
             NamespaceSubCommands::Groups,
             NamespaceSubCommands::CreateGroup,

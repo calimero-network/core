@@ -59,7 +59,9 @@ static NAMESPACE_REGEX: LazyLock<Regex> =
 static NAMESPACE_READ_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/(identity|groups)$").unwrap());
 
-/// Membership operations on a namespace, plus `admit`.
+/// Membership operations on a namespace, plus `admit`. `follow` sits with
+/// `join`: both put this node into the namespace, one by invitation and one
+/// because an admin already added the account.
 ///
 /// `admit` publishes a join a keyholder signed but cannot publish itself, and
 /// its caller holds **only a key** — no account on this node and no way to be
@@ -69,7 +71,7 @@ static NAMESPACE_READ_REGEX: LazyLock<Regex> =
 /// by a caller holding nothing is a separate change: the route has to leave the
 /// protected router entirely, the way the intent pair already has.
 static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave|admit)$").unwrap()
+    Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|follow|leave|admit)$").unwrap()
 });
 
 /// The group reads whose handlers narrow to the caller, and ONLY those: the
@@ -1621,6 +1623,34 @@ mod tests {
         assert!(!validator.validate_permissions(&["namespace:manage[ns-2]".to_owned()], &required));
     }
 
+    /// A follow is scoped exactly as a join: `namespace:manage` on the namespace
+    /// it names, and nothing node-wide.
+    #[test]
+    fn following_a_namespace_is_scoped_like_joining_it() {
+        let validator = PermissionValidator::new();
+        for route in ["join", "follow"] {
+            let post = Request::builder()
+                .method(Method::POST)
+                .uri(format!("/admin-api/namespaces/ns-1/{route}"))
+                .body(Body::empty())
+                .unwrap();
+            let required = validator.determine_required_permissions(&post);
+            assert!(
+                matches!(
+                    required.as_slice(),
+                    [Permission::Namespace(NamespacePermission::Manage(_))]
+                ),
+                "{route}: expected a scoped namespace permission, got {required:?}",
+            );
+            assert!(
+                validator.validate_permissions(&["namespace:manage[ns-1]".to_owned()], &required)
+            );
+            assert!(
+                !validator.validate_permissions(&["namespace:manage[ns-2]".to_owned()], &required)
+            );
+        }
+    }
+
     /// A delegated caller can read a namespace it is in, and an operator token
     /// still reaches every one.
     ///
@@ -2059,6 +2089,7 @@ mod tests {
             (Method::POST, "/admin-api/namespaces/ns-1/groups"),
             (Method::POST, "/admin-api/namespaces/ns-1/invite"),
             (Method::POST, "/admin-api/namespaces/ns-1/join"),
+            (Method::POST, "/admin-api/namespaces/ns-1/follow"),
             (Method::POST, "/admin-api/namespaces/ns-1/leave"),
             (Method::GET, "/admin-api/namespaces/for-application/app-1"),
             // Group governance

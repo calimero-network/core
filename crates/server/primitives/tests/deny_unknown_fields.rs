@@ -62,6 +62,7 @@ fn every_request_body_is_a_closed_set() {
         admin::SetSubgroupVisibilityApiRequest,
         admin::CreateGroupInvitationApiRequest,
         admin::JoinGroupApiRequest,
+        admin::FollowNamespaceApiRequest,
         admin::AccountPairInitApiRequest,
         admin::AccountSignWithRootApiRequest,
         admin::AccountPairCompleteApiRequest,

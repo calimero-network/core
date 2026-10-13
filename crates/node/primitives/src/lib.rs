@@ -24,6 +24,8 @@ pub use dag_compaction::DagCompactionConfig;
 pub mod tombstone_gc;
 pub use tombstone_gc::GcConfig;
 pub mod delta_buffer;
+pub mod dialable;
+pub use dialable::dialable_self_addrs;
 pub mod join_bundle;
 pub use join_bundle::JoinBundle;
 pub mod messages;

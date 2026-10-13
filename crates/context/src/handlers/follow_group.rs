@@ -33,7 +33,7 @@ use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::join_group::{
     apply_join_bundle, auto_join_bundle_contexts, await_group_key, install_join_key,
@@ -243,10 +243,9 @@ impl Follow {
 
         info!(
             ?group_id,
-            identity = %self.identity,
-            key_ready,
-            "followed a namespace this account was added to"
+            key_ready, "followed a namespace this account was added to"
         );
+        debug!(?group_id, identity = %self.identity, "follow signs as this identity");
         self.response(key_ready)
     }
 

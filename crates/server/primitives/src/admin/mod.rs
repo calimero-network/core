@@ -3274,6 +3274,86 @@ pub struct JoinNamespaceApiResponse {
     pub data: JoinNamespaceApiResponseData,
 }
 
+/// Request for `POST namespaces/:id/follow`: follow a namespace this node's
+/// account was added to, with no invitation.
+///
+/// The ids are hex strings rather than typed, so that a bad one is a `400`
+/// naming the field instead of a body that fails to deserialize.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FollowNamespaceApiRequest {
+    /// Multiaddrs ending in `/p2p/<peer id>` of nodes that hold the namespace,
+    /// tried before the namespace topic. Empty means the topic alone.
+    #[serde(default)]
+    pub peer_addrs: Vec<String>,
+    /// The application the namespace runs, 64 hex. Seeds the namespace's
+    /// target when this node does not know the namespace yet.
+    pub application_id: String,
+    /// The application's bytecode blob, 64 hex. Absent leaves it for
+    /// governance to fill in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytecode_id: Option<String>,
+}
+
+impl FollowNamespaceApiRequest {
+    /// The most peer addresses a caller can make this node dial.
+    pub const MAX_PEER_ADDRS: usize = 64;
+    /// The longest peer address accepted.
+    pub const MAX_PEER_ADDR_LEN: usize = 512;
+}
+
+impl Validate for FollowNamespaceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        if self.peer_addrs.len() > Self::MAX_PEER_ADDRS {
+            errors.push(ValidationError::ValueTooLarge {
+                field: "peerAddrs",
+                max: Self::MAX_PEER_ADDRS as u64,
+                actual: self.peer_addrs.len() as u64,
+            });
+        }
+        if let Some(addr) = self
+            .peer_addrs
+            .iter()
+            .find(|addr| addr.len() > Self::MAX_PEER_ADDR_LEN)
+        {
+            errors.push(ValidationError::StringTooLong {
+                field: "peerAddrs[]",
+                max: Self::MAX_PEER_ADDR_LEN,
+                actual: addr.len(),
+            });
+        }
+        errors.extend(validate_hex_string(
+            &self.application_id,
+            "applicationId",
+            32,
+        ));
+        if let Some(bytecode_id) = &self.bytecode_id {
+            errors.extend(validate_hex_string(bytecode_id, "bytecodeId", 32));
+        }
+        errors
+    }
+}
+
+/// Response for `POST namespaces/:id/follow`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowNamespaceApiResponseData {
+    pub namespace_id: String,
+    /// The account this node follows as, 64 hex characters.
+    pub member_account: String,
+    /// Whether the namespace key had arrived by the time the node answered.
+    /// `false` is a real state, not a failure: the node follows and the key is
+    /// on its way, and calling the route again completes the follow once it is.
+    pub key_ready: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowNamespaceApiResponse {
+    pub data: FollowNamespaceApiResponseData,
+}
+
 // ---- List All Groups ----
 
 // ---- Update Member Role ----
@@ -4341,6 +4421,7 @@ mod tests {
             device_certified: false,
             account_namespace_id: None,
             revoked_from: None,
+            external_addrs: Vec::new(),
         };
         let json = serde_json::to_value(&data).expect("serialize");
         assert!(json.get("revokedFrom").is_none());
@@ -4357,6 +4438,70 @@ mod tests {
             json["revokedFrom"]["deviceId"],
             serde_json::json!(hex::encode([0x55; 32]))
         );
+    }
+
+    /// A node predating `externalAddrs` answers without it, and a client built
+    /// after must still read that answer, as "no address reported".
+    #[test]
+    fn an_identity_without_external_addrs_still_parses() {
+        let data: NodeIdentityApiResponseData = serde_json::from_value(serde_json::json!({
+            "accountId": hex::encode([0x11; 32]),
+            "publicKey": hex::encode([0x22; 32]),
+            "accountRootPublicKey": hex::encode([0x33; 32]),
+        }))
+        .expect("an older node's identity must still deserialize");
+        assert!(data.external_addrs.is_empty());
+    }
+
+    fn a_follow(application_id: &str, bytecode_id: Option<&str>) -> FollowNamespaceApiRequest {
+        FollowNamespaceApiRequest {
+            peer_addrs: vec!["/ip4/1.2.3.4/udp/2528/quic-v1/p2p/12D3KooWGPZS1ZG9".to_owned()],
+            application_id: application_id.to_owned(),
+            bytecode_id: bytecode_id.map(str::to_owned),
+        }
+    }
+
+    /// Both ids are hex strings on the wire, so a malformed one has to be a
+    /// `400` that names the field, not a follow that seeds a garbage target.
+    #[test]
+    fn a_follow_with_an_id_that_is_not_64_hex_is_refused_naming_it() {
+        let app = hex::encode([0x11; 32]);
+        let bytecode = hex::encode([0x22; 32]);
+        assert!(a_follow(&app, Some(&bytecode)).validate().is_empty());
+        assert!(a_follow(&app, None).validate().is_empty());
+
+        let short = a_follow("abcd", None).validate();
+        assert!(short.iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidLength { field, .. } if *field == "applicationId"
+        )));
+
+        let not_hex = "zz".repeat(32);
+        let bad_bytecode = a_follow(&app, Some(&not_hex)).validate();
+        assert!(bad_bytecode.iter().any(|e| matches!(
+            e,
+            ValidationError::InvalidHexEncoding { field, .. } if *field == "bytecodeId"
+        )));
+    }
+
+    /// The addresses are dialed, so how many and how long is bounded.
+    #[test]
+    fn follow_peer_addrs_are_bounded() {
+        let app = hex::encode([0x11; 32]);
+        let mut too_many = a_follow(&app, None);
+        too_many.peer_addrs =
+            vec!["/ip4/1.2.3.4/tcp/1".to_owned(); FollowNamespaceApiRequest::MAX_PEER_ADDRS + 1];
+        assert!(too_many.validate().iter().any(|e| matches!(
+            e,
+            ValidationError::ValueTooLarge { field, .. } if *field == "peerAddrs"
+        )));
+
+        let mut too_long = a_follow(&app, None);
+        too_long.peer_addrs = vec!["a".repeat(FollowNamespaceApiRequest::MAX_PEER_ADDR_LEN + 1)];
+        assert!(too_long.validate().iter().any(|e| matches!(
+            e,
+            ValidationError::StringTooLong { field, .. } if *field == "peerAddrs[]"
+        )));
     }
 
     #[test]
@@ -5001,6 +5146,14 @@ pub struct NodeIdentityApiResponseData {
     /// revocation has reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_from: Option<RevokedFromApiEntry>,
+    /// Addresses other peers can dial this node on: its confirmed external
+    /// addresses, each ending in `/p2p/<this node's peer id>`. What a follower
+    /// passes as `peerAddrs` to reach this node. Empty when the swarm has
+    /// confirmed none yet.
+    ///
+    /// Defaulted, so a response from a node predating the field still deserializes.
+    #[serde(default)]
+    pub external_addrs: Vec<String>,
 }
 
 /// Which account withdrew this node's device, and which device it was.

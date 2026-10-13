@@ -262,6 +262,7 @@ Alias: `ns`. Namespaces are root groups (application instances).
 | `delete` (`del`) `<NAMESPACE_ID>`  | Delete a namespace.                               | `NAMESPACE_ID`                                |
 | `invite <NAMESPACE_ID>`            | Create an invitation for a namespace.             | `NAMESPACE_ID`, `--expiration-timestamp`, `--recursive`, `--admitter`, `--admitter-addr` (see [below](#invitation-admitters-and-addresses)) |
 | `join <NAMESPACE_ID> <INVITATION>` | Join a namespace using an invitation.             | `NAMESPACE_ID`, invitation JSON                              |
+| `follow <NAMESPACE_ID>`            | Follow a namespace this node's account was added to, with no invitation. Prints `namespaceId`, `memberAccount`, `keyReady`; `keyReady` false means run it again once the key arrives. | `NAMESPACE_ID`, `--peer <MULTIADDR>` (repeatable; another node's `account show` lists its external addresses), `--application-id`, `--bytecode-id` |
 | `leave <NAMESPACE_ID>`             | Leave a namespace (cascades through descendants). | `NAMESPACE_ID`                                               |
 | `groups <NAMESPACE_ID>`            | List direct groups under a namespace.             | `NAMESPACE_ID`                                               |
 | `create-group <NAMESPACE_ID>`      | Create a child group in a namespace.              | `NAMESPACE_ID`, `--alias`                                    |
@@ -271,6 +272,7 @@ Alias: `ns`. Namespaces are root groups (application instances).
 ```sh
 meroctl --node node1 namespace create --application-id <app_id>
 meroctl --node node2 namespace join <namespace_id> '<invitation_json>'
+meroctl --node node2 namespace follow <namespace_id> --peer <node1_multiaddr> --application-id <app_id>
 ```
 
 ---

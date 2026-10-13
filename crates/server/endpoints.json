@@ -94,6 +94,7 @@
   "POST /admin-api/namespaces/{namespace_id}/account/revoke",
   "POST /admin-api/namespaces/{namespace_id}/admin",
   "POST /admin-api/namespaces/{namespace_id}/admit",
+  "POST /admin-api/namespaces/{namespace_id}/follow",
   "POST /admin-api/namespaces/{namespace_id}/groups",
   "POST /admin-api/namespaces/{namespace_id}/invite",
   "POST /admin-api/namespaces/{namespace_id}/join",

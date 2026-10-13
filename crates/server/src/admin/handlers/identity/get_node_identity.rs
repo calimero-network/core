@@ -199,6 +199,16 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
         }
     };
 
+    // Where peers can dial this node, formatted exactly as an invitation's
+    // admitter hints are, so a follower can hand these straight to
+    // `POST /namespaces/:id/follow` on another node. Confirmed external
+    // addresses only: an empty list means none confirmed yet, never an error.
+    let status = state.node_client.network_status().await;
+    let external_addrs = calimero_node_primitives::dialable_self_addrs(
+        &status.local_peer_id,
+        &status.external_addrs,
+    );
+
     ApiResponse {
         payload: NodeIdentityApiResponse {
             data: NodeIdentityApiResponseData {
@@ -219,6 +229,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
                 device_certified,
                 account_namespace_id,
                 revoked_from,
+                external_addrs,
             },
         },
     }

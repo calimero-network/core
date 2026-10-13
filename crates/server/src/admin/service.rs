@@ -497,6 +497,12 @@ pub(crate) fn setup(
             "/namespaces/{namespace_id}/join",
             post(namespaces::join_namespace::handler),
         )
+        // A member an admin added follows without an invitation: the anchors
+        // serve it the key once they find its row.
+        .route(
+            "/namespaces/{namespace_id}/follow",
+            post(namespaces::follow_namespace::handler),
+        )
         .route(
             "/namespaces/{namespace_id}/admit",
             post(namespaces::admit_join::handler),
@@ -1197,6 +1203,18 @@ fn owner_guard_status(refusal: &calimero_governance_store::OwnerGuardRefusal) ->
     }
 }
 
+/// The status a `ContextError::FollowRefused` is answered with, by its reason.
+///
+/// Only the two membership refusals are final for the caller; an unknown
+/// reason is taken as retryable, since a new reason added to the context
+/// handler is far likelier to be a transient one than a new kind of "no".
+fn follow_refusal_status(reason: &str) -> StatusCode {
+    match reason {
+        "not a member" | "removed" => StatusCode::FORBIDDEN,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
 pub fn parse_api_error(err: Report) -> ApiError {
     // A root-guard refusal: the owner-level op's proof, or its absence.
     if let Some(refusal) = err.downcast_ref::<calimero_governance_store::OwnerGuardRefusal>() {
@@ -1345,6 +1363,20 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // 500: `504` when no peer of the namespace answered at all, which is what a
     // client sees while the inviting node is offline, and `503` when one answered
     // but is not an admitter the invitation names.
+    // A follow the namespace declined. Who said no decides what the caller does
+    // next: membership refusals (`not a member`, `removed`) are `403`, since only
+    // an admin adding the account back helps; every other reason (no anchor
+    // answered, a peer too old to serve a follow, this node's own device link
+    // not yet logged) is a `503`, because the identical call can succeed later.
+    // The reason stays in the message either way.
+    if let Some(calimero_context::error::ContextError::FollowRefused { reason, .. }) =
+        err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: follow_refusal_status(reason),
+            message: format!("{err:#}"),
+        };
+    }
     if let Some(calimero_context::error::ContextError::JoinNotEndorsed { reached_a_peer }) =
         err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -2483,6 +2515,38 @@ mod parse_api_error_tests {
                 let api = parse_api_error(err.into());
                 assert_eq!(api.status_code, StatusCode::CONFLICT, "{message}");
                 assert_eq!(api.message, message);
+            }
+        }
+
+        /// A follow refused on membership is final for the caller (`403`); one
+        /// nobody could serve, or one whose own device link is not logged yet,
+        /// is worth retrying (`503`). The reason survives into the message.
+        #[test]
+        fn follow_refusals_map_by_whether_a_retry_can_help() {
+            for (reason, status) in [
+                ("not a member", StatusCode::FORBIDDEN),
+                ("removed", StatusCode::FORBIDDEN),
+                ("no anchor answered", StatusCode::SERVICE_UNAVAILABLE),
+                (
+                    "peer does not support follow",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                ),
+                (
+                    "device binding not published",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                ),
+            ] {
+                let err = ContextError::FollowRefused {
+                    namespace_id: "a1".to_owned(),
+                    reason,
+                };
+                let api = parse_api_error(eyre::Report::from(err).wrap_err("follow failed"));
+                assert_eq!(api.status_code, status, "{reason}");
+                assert!(
+                    api.message.contains(reason),
+                    "the reason must reach the caller: {}",
+                    api.message
+                );
             }
         }
 

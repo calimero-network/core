@@ -19,13 +19,13 @@ use calimero_server_primitives::admin::{
     AccountDevicesApiResponse, AccountPairInitApiRequest, AccountSignWithRootApiRequest,
     AccountSignWithRootApiResponse, AddGroupMembersApiRequest, ChangeNamespaceAdminApiRequest,
     ContextIdentitiesResponseData, CreateContextRequest, CreateContextResponseData,
-    GetGroupUpgradeStatusApiResponse, GetMigrationStatusApiResponse, GetNamespaceApiResponse,
-    GetTeeAdmissionPolicyApiResponse, GroupInfoApiResponse, IntentRelayApiResponse,
-    JoinGroupApiResponse, JoinNamespaceApiResponse, LinkAccountDeviceApiRequest,
-    LinkAccountDeviceApiResponse, ListGroupMembersApiResponse, ListNamespacesApiResponse,
-    NodeIdentityApiResponse, OwnerDeleteGroupApiRequest, ReparentGroupApiRequest,
-    ReparentGroupApiResponse, SetTeeAdmissionPolicyApiRequest, TransferOwnershipApiRequest,
-    UpgradeGroupApiResponse,
+    FollowNamespaceApiRequest, FollowNamespaceApiResponse, GetGroupUpgradeStatusApiResponse,
+    GetMigrationStatusApiResponse, GetNamespaceApiResponse, GetTeeAdmissionPolicyApiResponse,
+    GroupInfoApiResponse, IntentRelayApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
+    LinkAccountDeviceApiRequest, LinkAccountDeviceApiResponse, ListGroupMembersApiResponse,
+    ListNamespacesApiResponse, NodeIdentityApiResponse, OwnerDeleteGroupApiRequest,
+    ReparentGroupApiRequest, ReparentGroupApiResponse, SetTeeAdmissionPolicyApiRequest,
+    TransferOwnershipApiRequest, UpgradeGroupApiResponse,
 };
 use calimero_server_primitives::jsonrpc::{ExecutionRequest, ExecutionResponse};
 
@@ -98,6 +98,10 @@ wire_fixtures! {
     // Same values as the group join, but the namespace endpoint names the id
     // `namespaceId`. Pinned separately so the two cannot drift back together.
     join_namespace_res: JoinNamespaceApiResponse => "namespaces/join.res.json",
+    // The follow route mero-js already ships against. `keyReady: false` is a
+    // success the caller retries on, so the fixture pins that state.
+    follow_namespace_req: FollowNamespaceApiRequest => "namespaces/follow.req.json",
+    follow_namespace_res: FollowNamespaceApiResponse => "namespaces/follow.res.json",
     // `founding` is what a client checks a namespace id against: every id is
     // derived from it, so a rename or a retype shows up here as a diff.
     get_namespace_res: GetNamespaceApiResponse => "namespaces/get.res.json",

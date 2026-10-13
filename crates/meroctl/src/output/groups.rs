@@ -2,18 +2,18 @@ use calimero_context_config::MemberCapabilities;
 use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
     CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
-    DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GetTeeAdmissionPolicyApiResponse,
-    GroupInfoApiResponse, JoinContextApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
-    LeaveContextApiResponse, LeaveGroupApiResponse, LeaveNamespaceApiResponse,
-    ListGroupContextsApiResponse, ListGroupMembersApiResponse, ListMemberDevicesApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
-    PairDeviceInitApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
-    RevokeDeviceApiResponse, SealToAccountApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
-    SetTeeAdmissionPolicyApiResponse, SyncGroupApiResponse, TeeAdmissionMode,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    DetachContextFromGroupApiResponse, FollowNamespaceApiResponse,
+    GetGroupUpgradeStatusApiResponse, GetMemberCapabilitiesApiResponse, GetMetadataApiResponse,
+    GetTeeAdmissionPolicyApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
+    JoinGroupApiResponse, JoinNamespaceApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
+    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
+    ListMemberDevicesApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
+    ListSubgroupsApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RemoveGroupMembersApiResponse,
+    ReparentGroupApiResponse, RevokeDeviceApiResponse, SealToAccountApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
+    SetSubgroupVisibilityApiResponse, SetTeeAdmissionPolicyApiResponse, SyncGroupApiResponse,
+    TeeAdmissionMode, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -115,6 +115,13 @@ impl Report for NodeIdentityApiResponse {
                 .as_deref()
                 .unwrap_or("none - the account holder names it"),
         ]);
+        // What another node passes as `--peer` to `namespace follow`.
+        let external_addrs = if self.data.external_addrs.is_empty() {
+            "none confirmed yet".to_owned()
+        } else {
+            self.data.external_addrs.join("\n")
+        };
+        let _ = table.add_row(vec!["External addresses", &external_addrs]);
         println!("{table}");
     }
 }
@@ -518,6 +525,28 @@ impl Report for JoinNamespaceApiResponse {
         let _ = table.add_row(vec![
             "Member Identity",
             &self.data.member_identity.to_string(),
+        ]);
+        println!("{table}");
+    }
+}
+
+impl Report for FollowNamespaceApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Namespace Followed").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Namespace ID", &self.data.namespace_id]);
+        let _ = table.add_row(vec!["Member Account", &self.data.member_account]);
+        // `false` is not a failure: the node follows and the key is on its way.
+        let _ = table.add_row(vec![
+            "Key Ready",
+            if self.data.key_ready {
+                "yes"
+            } else {
+                "no - run the follow again once the key arrives"
+            },
         ]);
         println!("{table}");
     }

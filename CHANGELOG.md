@@ -4,6 +4,16 @@
 
 ### Added
 
+- **A node can follow a namespace its account was added to, with no
+  invitation.** `POST admin-api/namespaces/:namespace_id/follow` takes
+  `{ peerAddrs, applicationId, bytecodeId? }` and answers `{ namespaceId,
+  memberAccount, keyReady }`; `keyReady: false` is a success the caller retries
+  on. A refusal is `403` for `not a member` / `removed` and a retryable `503`
+  otherwise, with the reason in the message. Scoped like `join`
+  (`namespace:manage`). `GET admin-api/identity` gains `externalAddrs`, the
+  multiaddrs a follower passes as `peerAddrs`, and `meroctl namespace follow
+  <namespace_id> --peer <multiaddr>... --application-id <id>` drives the route.
+
 - **A node behind an auth proxy can seal logins and logged-in calls.**
   `[server.sealed] forward_auth` names the auth service the proxy asks (a
   loopback `http` origin, e.g. `http://127.0.0.1:3001`; anything else fails

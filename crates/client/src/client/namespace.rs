@@ -2,8 +2,9 @@ use calimero_server_primitives::admin::{
     AccountApplicationsApiResponse, AccountDevicesApiResponse, AccountPairCompleteApiRequest,
     AccountPairInitApiRequest, AdmitJoinApiRequest, AdmitJoinApiResponse,
     CreateGroupInvitationApiRequest, CreateNamespaceApiRequest, CreateNamespaceApiResponse,
-    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, GetNamespaceApiResponse,
-    JoinGroupApiRequest, JoinNamespaceApiResponse, LabelDeviceApiRequest, LabelDeviceApiResponse,
+    DeleteNamespaceApiRequest, DeleteNamespaceApiResponse, FollowNamespaceApiRequest,
+    FollowNamespaceApiResponse, GetNamespaceApiResponse, JoinGroupApiRequest,
+    JoinNamespaceApiResponse, LabelDeviceApiRequest, LabelDeviceApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, NamespaceApiResponse,
     NodeIdentityApiResponse, PairDeviceCompleteApiResponse, PairDeviceInitApiResponse,
     RelinkDeviceApiRequest, RelinkDeviceApiResponse, RescopeDeviceApiRequest,
@@ -257,6 +258,27 @@ where
             .connection
             .post_with_timeout(
                 &format!("admin-api/namespaces/{namespace_id}/join"),
+                request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    /// Follow a namespace this node's account was added to, with no
+    /// invitation: the anchors serve the key once they find the account's row.
+    ///
+    /// `keyReady: false` in the answer is a success the caller retries on, not
+    /// a failure: the node follows and the key is still on its way.
+    pub async fn follow_namespace(
+        &self,
+        namespace_id: &str,
+        request: FollowNamespaceApiRequest,
+    ) -> Result<FollowNamespaceApiResponse> {
+        let response = self
+            .connection
+            .post_with_timeout(
+                &format!("admin-api/namespaces/{namespace_id}/follow"),
                 request,
                 NETWORK_BOUND_REQUEST_TIMEOUT,
             )

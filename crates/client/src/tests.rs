@@ -582,6 +582,48 @@ async fn join_namespace() {
 }
 
 #[tokio::test]
+async fn follow_namespace() {
+    let app = "11".repeat(32);
+    let peer = "/ip4/10.0.0.1/tcp/2528/p2p/12D3KooWTEST".to_owned();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/namespaces/{GID}/follow")))
+        // The body mero-js sends, field for field: camelCase, and no
+        // `bytecodeId` key at all when the caller names none.
+        .and(body_json(serde_json::json!({
+            "peerAddrs": [peer.clone()],
+            "applicationId": app.clone(),
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "namespaceId": GID,
+                "memberAccount": ZERO_HEX,
+                "keyReady": false
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client
+        .follow_namespace(
+            GID,
+            calimero_server_primitives::admin::FollowNamespaceApiRequest {
+                peer_addrs: vec![peer],
+                application_id: app,
+                bytecode_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.data.namespace_id, GID);
+    assert_eq!(resp.data.member_account, ZERO_HEX);
+    assert!(!resp.data.key_ready);
+}
+
+#[tokio::test]
 async fn list_namespace_groups() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
