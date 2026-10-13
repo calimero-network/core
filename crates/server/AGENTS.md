@@ -340,7 +340,7 @@ with no binding is unaffected.
 that ends outside the TD cannot read it. The client opens a session with a Noise
 NK handshake (`sealed/session.rs`, via `snow`) to the node's X25519 transport
 key, which `/tee/attest` binds into the quote on `bindTransportKey`. Requests are
-sealed under the session and responses stream back in sealed frames. Six rules:
+sealed under the session and responses stream back in sealed frames. Seven rules:
 
 - **It wraps the router from outside** (`lib.rs`, `ServiceBuilder` around the
   merged router), not as a route. The opened request is handed back to the router
@@ -372,6 +372,16 @@ sealed under the session and responses stream back in sealed frames. Six rules:
   `sealed_route_unguarded`. Matched exactly, never by prefix. Keep the list in
   step with the public router in `admin/service.rs`: a route added there is not
   sealable in proxy mode until it is added here, which is the safe direction.
+- **`forward_auth` replaces that refusal with the proxy's own check**
+  (`sealed/forward_auth.rs`, `[server.sealed] forward_auth`, loopback `http`
+  only). An opened request outside the uncredentialed set is sent to the auth
+  service's `/auth/validate` with its token, method, URI and the outer hop's
+  host, exactly as traefik's `auth-node` sends them; `/auth/` and `/admin/`
+  are forwarded to the auth service whole. The four `X-Auth-*` headers are
+  stripped from every envelope and set only from an admission. Never add a rule
+  of merod's own here: the auth service is the one authority, and a route must
+  be reachable sealed exactly when it is reachable through the proxy. An
+  unreachable auth service is a `502`, never a pass.
 - **The wire format is shared with mero-js** (`src/sealed/sealed.ts`,
   `src/sealed/noise.ts`). The vectors in `sealed/tests.rs` are repeated there
   verbatim, and mero-js runs the handshake itself, so change both or neither.
