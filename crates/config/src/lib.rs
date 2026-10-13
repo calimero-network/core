@@ -800,6 +800,27 @@ mod tests {
         );
     }
 
+    /// `forward_auth` is opt-in too, round-trips, and a config without it is
+    /// written back without it.
+    #[test]
+    fn server_sealed_forward_auth_round_trips_and_is_written_only_when_set() {
+        let config: super::ServerConfig =
+            toml::from_str("listen = []\n[sealed]\nforward_auth = \"http://127.0.0.1:3001\"\n")
+                .expect("server config parses");
+        assert_eq!(
+            config.sealed.forward_auth.as_deref(),
+            Some("http://127.0.0.1:3001")
+        );
+        assert!(!config.sealed.required);
+        assert!(toml::to_string(&config)
+            .unwrap()
+            .contains("forward_auth = \"http://127.0.0.1:3001\""));
+
+        let absent: super::ServerConfig = toml::from_str("listen = []\n").unwrap();
+        assert!(absent.sealed.forward_auth.is_none());
+        assert!(!toml::to_string(&absent).unwrap().contains("forward_auth"));
+    }
+
     /// Reading the proxy's identity headers is opt-in: an existing config has
     /// no `proxy_identity` and must keep treating every caller as the proxy
     /// left it, and a node that never turned it on does not grow the key.
