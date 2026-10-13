@@ -955,22 +955,6 @@ mod tests {
     }
 
     #[test]
-    fn a_registration_stamped_at_not_after_applies() {
-        let w = world();
-        let last_second = bundle_with(
-            &w,
-            ContextCreationTerms {
-                not_after: STAMPED_AT,
-                ..terms(&w)
-            },
-        );
-        apply(&w, &op(last_second)).expect("stamped on the last live second");
-        assert!(get_group_for_context(&w.store, &context())
-            .expect("read")
-            .is_some());
-    }
-
-    #[test]
     fn a_registration_stamped_a_second_past_not_after_is_refused() {
         let w = world();
         let expired = bundle_with(

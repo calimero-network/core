@@ -55,6 +55,8 @@ use calimero_app_downloader::registry::RegistryCoords;
 use calimero_context_client::local_governance::GroupOp;
 use eyre::Result as EyreResult;
 
+use crate::creation_gate::ClaimedRegistration;
+
 /// Apply a `GroupOp` against `ctx`. Returns `Ok(true)` if the variant
 /// was recognized and applied; `Ok(false)` if the variant is one this
 /// dispatcher does not handle (caller decides whether to error or
@@ -168,16 +170,16 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             delegation,
             stamped_at,
             ..
-        } => context_registered_on_behalf::apply(
-            ctx,
-            context_id,
-            application_id,
-            blob_id,
-            service_name,
-            name,
-            delegation,
-            *stamped_at,
-        )?,
+        } => {
+            let claim = ClaimedRegistration {
+                context_id,
+                application_id,
+                service_name,
+                name,
+                stamped_at: *stamped_at,
+            };
+            context_registered_on_behalf::apply(ctx, claim, blob_id, delegation)?
+        }
         GroupOp::OnBehalf {
             op,
             delegation,

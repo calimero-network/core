@@ -455,8 +455,6 @@ fn warrant_authorises_intent(
         ));
     }
 
-    // The relay's clock check, by the comparison every replica makes on the
-    // stamp: a warrant is live through the whole second `not_after` names.
     if warrant.expired_at(now) {
         eyre::bail!(IntentRefusal::NotAuthorized(format!(
             "this warrant expired at {} and it is now {now}; mint a fresh one",

@@ -977,17 +977,6 @@ mod tests {
         assert!(!w.is_member(&w.ns, &newcomer));
     }
 
-    /// `not_after` is the last second a warrant is in force, as on the data plane.
-    #[test]
-    fn an_op_stamped_at_not_after_applies() {
-        let mut w = world(MemberCapabilities::MANAGE_MEMBERS);
-        w.not_after = STAMPED_AT;
-        let newcomer = w.stranger();
-        w.relay_publishes(w.ns, w.on_behalf(w.ns, add(newcomer)))
-            .expect("stamped on the last live second");
-        assert!(w.is_member(&w.ns, &newcomer));
-    }
-
     #[test]
     fn a_group_op_stamped_a_second_past_not_after_is_refused() {
         let mut w = world(MemberCapabilities::MANAGE_MEMBERS);

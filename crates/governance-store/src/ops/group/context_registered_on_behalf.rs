@@ -5,9 +5,7 @@
 //! author instead of against the signer.
 
 use calimero_account::ContextCreationDelegation;
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
 use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use eyre::Result as EyreResult;
 
@@ -16,20 +14,19 @@ use super::context::GroupApplyCtx;
 use crate::creation_gate::{check_delegated_creation, spend_creation_nonce, ClaimedRegistration};
 use crate::MetadataRepository;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one argument per field of the op being applied"
-)]
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
-    context_id: &ContextId,
-    application_id: &ApplicationId,
+    claim: ClaimedRegistration<'_>,
     blob_id: &BlobId,
-    service_name: &Option<String>,
-    name: &Option<String>,
     delegation: &ContextCreationDelegation,
-    stamped_at: u64,
 ) -> EyreResult<()> {
+    let ClaimedRegistration {
+        context_id,
+        application_id,
+        service_name,
+        name,
+        ..
+    } = claim;
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
@@ -39,13 +36,7 @@ pub(crate) fn apply(
         ctx.permissions(),
         group_id,
         signer,
-        ClaimedRegistration {
-            context_id,
-            application_id,
-            service_name,
-            name,
-            stamped_at,
-        },
+        claim,
         delegation,
     )?;
     // Validated before anything is written: a name the metadata rules refuse
