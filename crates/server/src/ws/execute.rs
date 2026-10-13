@@ -105,7 +105,7 @@ pub(crate) async fn handle(
             Err(err) => internal_error(err),
         },
         Err(err) => {
-            error!(?err, "Request failed");
+            crate::execute::log_execution_failure(&err);
             match serde_json::to_value(err) {
                 Ok(value) => ResponseBody::Error(ResponseBodyError::HandlerError(value)),
                 Err(err) => internal_error(err),

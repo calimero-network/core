@@ -51,9 +51,8 @@ pub struct CreateGroupRequest {
     pub application_id: Option<ApplicationId>, // `None` only for the app-less account namespace
     pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
-    /// Subgroup visibility at birth (#2771). `true` = Restricted (default,
-    /// preserves legacy behavior), `false` = born-Open. Only meaningful when
-    /// `parent_group_id` is set (subgroup creation); ignored for root
+    /// Subgroup visibility at birth: `true` = Restricted, `false` = born-Open.
+    /// Only meaningful when `parent_group_id` is set (subgroup creation); ignored for root
     /// creation, which has no `GroupCreated` op.
     pub restricted: bool,
 }

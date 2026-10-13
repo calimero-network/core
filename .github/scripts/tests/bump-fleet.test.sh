@@ -532,6 +532,42 @@ expect_exit 0 "a two-field image version still bumps" \
   bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
 expect_file "$D/mero-tee/versions.json" '"imageVersion": "2.4.1"' "  missing patch reads as 0 and becomes 1"
 
+# The image build checks each download against build-inputs.lock.json, so a
+# bump must re-pin it with the consumer's own script. A stub stands in for it:
+# it records how it was called and writes the lock from the new versions.json.
+mkpinner() {
+  mkdir -p "$1/scripts/release"
+  cat > "$1/scripts/release/pin-build-inputs.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\$1" = "--root" ] || exit 9
+echo "\$@" > "\$2/pin-args"
+[ -z "${2:-}" ] || exit ${2:-}
+python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["merodVersion"]; print(json.dumps({"merod":{"version":v}}))' \
+  "\$2/mero-tee/versions.json" > "\$2/mero-tee/build-inputs.lock.json"
+EOF
+}
+
+D=$(mkfixture tee-pin); mkversions "$D" 2.3.56 0.11.0-rc.35; mkpinner "$D"; commit "$D"
+expect_exit 0 "the build-input lock is re-pinned for the new merod" \
+  env CHANGED_FILES_OUT="$D/changed" bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/pin-args" "--root $D" "  the consumer's own script ran, rooted at the consumer"
+expect_file "$D/mero-tee/build-inputs.lock.json" '"version": "0.11.0-rc.39"' "  ...after versions.json moved, so it pins the new merod"
+expect_file "$D/changed" 'mero-tee/build-inputs.lock.json' "  ...and the lock is staged with the bump"
+
+D=$(mkfixture tee-pin-fails); mkversions "$D" 2.3.56 0.11.0-rc.35; mkpinner "$D" 1; commit "$D"
+expect_exit 1 "a failed re-pin stops the bump, rather than opening a PR the image cannot build" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+
+D=$(mkfixture tee-pin-nolock); mkversions "$D" 2.3.56 0.11.0-rc.35; mkpinner "$D"; commit "$D"
+expect_exit 0 "--no-lock skips the re-pin (it fetches checksums)" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D" --no-lock
+if [ -f "$D/pin-args" ]; then
+  bad "  the pin script did not run" "it ran under --no-lock"
+else
+  ok "  the pin script did not run"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
