@@ -21,10 +21,11 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::collections::{
     Frozen, IndexValue, Indexed, IndexedMap, MergeStrategy, Mergeable, ModeratedOnce, SortedMap,
-    StoreError, UnorderedMap, WriteOnce, Written,
+    UnorderedMap, WriteOnce, Written,
 };
 use calimero_storage::testing::converge;
-use calimero_storage::{env, rekey_field_if_supported, StorageError};
+use calimero_storage::tests::common::conflicted;
+use calimero_storage::{env, rekey_field_if_supported};
 use serial_test::serial;
 
 const REPLICAS: usize = 3;
@@ -89,14 +90,6 @@ impl calimero_storage::collections::rekey::RekeyTarget for Ballots {
 /// A value naming the device that wrote it, so two devices' writes differ.
 fn mine() -> u64 {
     u64::from(env::device_id()[0])
-}
-
-/// Whether a read returned the answer for an entry two different values sealed.
-fn conflicted<T>(read: &Result<T, StoreError>) -> bool {
-    matches!(
-        read,
-        Err(StoreError::StorageError(StorageError::Conflicted(_)))
-    )
 }
 
 /// The key every device casts its ballot at.

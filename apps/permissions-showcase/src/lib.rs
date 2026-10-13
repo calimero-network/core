@@ -175,12 +175,6 @@ fn message_key(channel: &str, id: &str) -> String {
     format!("{channel}/{id}")
 }
 
-/// Views of `rows`, read across every owner, each with its author.
-///
-/// A row doesn't say whose it is, and one key has a row per owner holding it,
-/// so each row's author is the holder of its key whose message it is.
-/// `holders` is the collection's `entries_at`. A holder is used once, so two
-/// authors of equal messages at one key are both named.
 /// The written-once entries that hold a value: a sealed one has none to show.
 fn with_values<K>(rows: impl IntoIterator<Item = (K, Written<Message>)>) -> Vec<(K, Message)> {
     rows.into_iter()
@@ -188,6 +182,12 @@ fn with_values<K>(rows: impl IntoIterator<Item = (K, Written<Message>)>) -> Vec<
         .collect()
 }
 
+/// Views of `rows`, read across every owner, each with its author.
+///
+/// A row doesn't say whose it is, and one key has a row per owner holding it,
+/// so each row's author is the holder of its key whose message it is.
+/// `holders` is the collection's `entries_at`. A holder is used once, so two
+/// authors of equal messages at one key are both named.
 fn message_views(
     rows: impl IntoIterator<Item = (String, Message)>,
     holders: impl Fn(&String) -> app::Result<Vec<(AccountId, Message)>>,

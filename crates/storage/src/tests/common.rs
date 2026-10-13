@@ -29,19 +29,26 @@ pub fn conflict_record(
     storage_type: &StorageType,
     writes: [(Vec<u8>, SignatureData); 2],
 ) -> (Vec<u8>, StorageType) {
-    let kept = written_once::kept(
-        writes
-            .into_iter()
-            .map(|(data, signature_data)| SignedWrite {
-                data,
-                signature_data,
-            })
-            .collect(),
-    );
-    let stamp = written_once::with_signature(storage_type, kept[0].signature_data);
+    let [first, second] = writes.map(|(data, signature_data)| SignedWrite {
+        data,
+        signature_data,
+    });
+    let kept = written_once::kept((first, None), second);
+    let stamp = written_once::with_signature(storage_type, kept.0.signature_data);
     (
         written_once::settled_bytes(kept).expect("a record encodes"),
         stamp,
+    )
+}
+
+/// Whether a read returned the answer for an entry two different values sealed.
+#[must_use]
+pub fn conflicted<T>(read: &Result<T, crate::collections::StoreError>) -> bool {
+    matches!(
+        read,
+        Err(crate::collections::StoreError::StorageError(
+            crate::error::StorageError::Conflicted(_)
+        ))
     )
 }
 

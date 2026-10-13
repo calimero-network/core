@@ -22,8 +22,8 @@ use crate::interface::{ApplyContext, Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::{
     account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
+    conflicted,
 };
-use crate::tests::owned_rules::conflicted;
 
 type MainInterface = Interface<MainStorage>;
 

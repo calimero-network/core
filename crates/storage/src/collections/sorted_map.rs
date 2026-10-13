@@ -983,7 +983,10 @@ where
 
     /// The entries whose key passes `keep`, in key order and then id order, a
     /// sealed one as `Written::Conflicted`.
-    fn sorted_written(&self, keep: impl Fn(&K) -> bool) -> Result<Vec<(K, Written<V>)>, StoreError>
+    pub(crate) fn sorted_written(
+        &self,
+        keep: impl Fn(&K) -> bool,
+    ) -> Result<Vec<(K, Written<V>)>, StoreError>
     where
         K: AsRef<[u8]>,
     {
@@ -1240,14 +1243,6 @@ where
             .iter_written()?
             .max_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)))
             .map(|(_, k, v)| (k, v)))
-    }
-
-    /// Every entry in ascending key order, a sealed one as `Written::Conflicted`.
-    pub(crate) fn written_entries(&self) -> Result<Vec<(K, Written<V>)>, StoreError>
-    where
-        K: AsRef<[u8]>,
-    {
-        self.sorted_written(|_| true)
     }
 }
 

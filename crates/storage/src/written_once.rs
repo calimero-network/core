@@ -11,7 +11,7 @@ use core::cmp::Ordering;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::constants::MAX_LEAF_VALUE_SIZE;
-use crate::entities::{SignatureData, StorageType};
+use crate::entities::{Metadata, SignatureData, StorageType};
 use crate::error::StorageError;
 use crate::hash_meter::{Digest, Sha256};
 
@@ -60,15 +60,18 @@ pub(crate) fn settle(
     incoming: SignedWrite,
 ) -> Result<Settled, StorageError> {
     let held = match conflict_writes(stored_type, &stored) {
-        Some((first, second)) => vec![first, second],
+        Some((first, second)) => (first, Some(second)),
         None => match stored_type
             .signature_data()
             .filter(|sig| stored_signed && sig.signature != [0; 64])
         {
-            Some(signature_data) => vec![SignedWrite {
-                data: stored,
-                signature_data: *signature_data,
-            }],
+            Some(signature_data) => (
+                SignedWrite {
+                    data: stored,
+                    signature_data: *signature_data,
+                },
+                None,
+            ),
             None if stored == incoming.data => return Ok(Settled::Unchanged),
             None => {
                 return Err(StorageError::ActionNotAllowed(
@@ -78,13 +81,11 @@ pub(crate) fn settle(
             }
         },
     };
-    let mut writes = held.clone();
-    writes.push(incoming);
-    let keeps = kept(writes);
+    let keeps = kept(held.clone(), incoming);
     if keeps == held {
         return Ok(Settled::Unchanged);
     }
-    let signature_data = keeps[0].signature_data;
+    let signature_data = keeps.0.signature_data;
     Ok(Settled::Store {
         data: settled_bytes(keeps)?,
         signature_data,
@@ -92,11 +93,9 @@ pub(crate) fn settle(
 }
 
 /// The bytes an entry stores for its kept writes: the one value, or the record of two.
-pub(crate) fn settled_bytes(kept: Vec<SignedWrite>) -> Result<Vec<u8>, StorageError> {
-    let mut kept = kept.into_iter();
-    let (Some(first), second) = (kept.next(), kept.next()) else {
-        return Ok(Vec::new());
-    };
+pub(crate) fn settled_bytes(
+    (first, second): (SignedWrite, Option<SignedWrite>),
+) -> Result<Vec<u8>, StorageError> {
     let Some(second) = second else {
         return Ok(first.data);
     };
@@ -107,15 +106,17 @@ pub(crate) fn settled_bytes(kept: Vec<SignedWrite>) -> Result<Vec<u8>, StorageEr
     Ok(bytes)
 }
 
-/// The writes an entry keeps of `writes`: the lowest, and the lowest whose bytes differ.
-pub(crate) fn kept(mut writes: Vec<SignedWrite>) -> Vec<SignedWrite> {
+/// The writes kept of `held` and `incoming`: the lowest, and the lowest whose bytes differ.
+pub(crate) fn kept(
+    (first, second): (SignedWrite, Option<SignedWrite>),
+    incoming: SignedWrite,
+) -> (SignedWrite, Option<SignedWrite>) {
+    // A copy of `incoming` fills a missing second: a duplicate changes neither pick.
+    let mut writes = [first, second.unwrap_or_else(|| incoming.clone()), incoming];
     writes.sort_by(SignedWrite::order);
-    let mut writes = writes.into_iter();
-    let Some(first) = writes.next() else {
-        return Vec::new();
-    };
-    let second = writes.find(|write| write.data != first.data);
-    core::iter::once(first).chain(second).collect()
+    let [lowest, rest @ ..] = writes;
+    let second = rest.into_iter().find(|write| write.data != lowest.data);
+    (lowest, second)
 }
 
 /// The two writes `data` records, if it is the conflict record of an entry stamped
@@ -150,6 +151,27 @@ pub fn conflict_parts(
             with_signature(storage_type, write.signature_data),
         )
     }))
+}
+
+/// Run `f` on each plain write `data` stands for under `metadata`: a conflict
+/// record's two in order, each under the stamp it was signed with, else `data` itself.
+pub fn each_write<E>(
+    metadata: &Metadata,
+    data: &[u8],
+    mut f: impl FnMut(&[u8], &Metadata) -> Result<(), E>,
+) -> Result<(), E> {
+    let Some(writes) = conflict_parts(&metadata.storage_type, data) else {
+        return f(data, metadata);
+    };
+    writes.into_iter().try_for_each(|(data, storage_type)| {
+        f(
+            &data,
+            &Metadata {
+                storage_type,
+                ..metadata.clone()
+            },
+        )
+    })
 }
 
 /// `storage_type` carrying `signature` in place of its own.
@@ -193,7 +215,7 @@ mod tests {
                 on_behalf: Some(AccountId::from([byte; 32])),
             },
         };
-        let record = settled_bytes(vec![write(1), write(2)]).expect("a record encodes");
+        let record = settled_bytes((write(1), Some(write(2)))).expect("a record encodes");
         assert!(
             record.len() <= MAX_LEAF_VALUE_SIZE,
             "{} bytes",

@@ -872,16 +872,9 @@ impl<S: StorageAdaptor> Interface<S> {
         metadata: &crate::entities::Metadata,
     ) -> Result<(), StorageError> {
         // A sealed entry stands only if each write its record holds verifies.
-        let verdict = match written_once::conflict_parts(&metadata.storage_type, data) {
-            Some(writes) => writes.iter().try_for_each(|(data, storage_type)| {
-                let metadata = Metadata {
-                    storage_type: storage_type.clone(),
-                    ..metadata.clone()
-                };
-                Self::verify_snapshot_entity_signature_inner(id, parent, data, &metadata)
-            }),
-            None => Self::verify_snapshot_entity_signature_inner(id, parent, data, metadata),
-        };
+        let verdict = written_once::each_write(metadata, data, |data, metadata| {
+            Self::verify_snapshot_entity_signature_inner(id, parent, data, metadata)
+        });
         if verdict.is_err() {
             // Name the storage type and the entity, because the error variant
             // cannot. One `InvalidSignature` is returned by three different arms,
@@ -1113,58 +1106,40 @@ impl<S: StorageAdaptor> Interface<S> {
         metadata: &crate::entities::Metadata,
         writers: &BTreeMap<AccountId, OpMask>,
     ) -> Result<(), StorageError> {
-        match written_once::conflict_parts(&metadata.storage_type, data) {
-            Some(writes) => writes.iter().try_for_each(|(data, storage_type)| {
-                let metadata = Metadata {
-                    storage_type: storage_type.clone(),
-                    ..metadata.clone()
-                };
-                Self::verify_snapshot_member_write(id, data, &metadata, writers)
-            }),
-            None => Self::verify_snapshot_member_write(id, data, metadata, writers),
-        }
-    }
-
-    /// [`verify_snapshot_member_signature`](Self::verify_snapshot_member_signature)
-    /// for one signed write.
-    fn verify_snapshot_member_write(
-        id: crate::address::Id,
-        data: &[u8],
-        metadata: &crate::entities::Metadata,
-        writers: &BTreeMap<AccountId, OpMask>,
-    ) -> Result<(), StorageError> {
         use crate::action::Action;
         use crate::entities::StorageType;
 
-        if crate::shared_writers::writes_once_only(writers) {
-            refuse_oversized_written_once(data)?;
-        }
+        written_once::each_write(metadata, data, |data, metadata| {
+            if crate::shared_writers::writes_once_only(writers) {
+                refuse_oversized_written_once(data)?;
+            }
 
-        let StorageType::SharedMember { signature_data, .. } = &metadata.storage_type else {
-            return Err(StorageError::InvalidData(
-                "verify_snapshot_member_signature: storage_type is not SharedMember".to_owned(),
-            ));
-        };
-        refuse_entity_at_reserved_id(id, metadata)?;
-        refuse_foreign_entity_at_cell_id(id, metadata, true)?;
-        let Some(sig_data) = signature_data.as_ref() else {
-            return Err(StorageError::InvalidSignature);
-        };
-        if sig_data.signature == [0u8; 64] {
-            return Err(StorageError::InvalidSignature);
-        }
-        let action = Action::Add {
-            id,
-            data: data.to_vec(),
-            ancestors: vec![],
-            metadata: metadata.clone(),
-        };
-        let payload = action.payload_for_signing();
-        if Self::snapshot_signature_verifies(sig_data, &payload) {
-            Ok(())
-        } else {
-            Err(StorageError::InvalidSignature)
-        }
+            let StorageType::SharedMember { signature_data, .. } = &metadata.storage_type else {
+                return Err(StorageError::InvalidData(
+                    "verify_snapshot_member_signature: storage_type is not SharedMember".to_owned(),
+                ));
+            };
+            refuse_entity_at_reserved_id(id, metadata)?;
+            refuse_foreign_entity_at_cell_id(id, metadata, true)?;
+            let Some(sig_data) = signature_data.as_ref() else {
+                return Err(StorageError::InvalidSignature);
+            };
+            if sig_data.signature == [0u8; 64] {
+                return Err(StorageError::InvalidSignature);
+            }
+            let action = Action::Add {
+                id,
+                data: data.to_vec(),
+                ancestors: vec![],
+                metadata: metadata.clone(),
+            };
+            let payload = action.payload_for_signing();
+            if Self::snapshot_signature_verifies(sig_data, &payload) {
+                Ok(())
+            } else {
+                Err(StorageError::InvalidSignature)
+            }
+        })
     }
 
     /// Persist the signed `signature_data` produced by the runtime's

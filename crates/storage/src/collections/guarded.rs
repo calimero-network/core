@@ -841,7 +841,7 @@ where
     /// # Errors
     /// Returns any storage error.
     pub fn entries(&self) -> Result<impl Iterator<Item = (K, Written<V>)>, StoreError> {
-        Ok(self.inner.written_entries()?.into_iter())
+        Ok(self.inner.sorted_written(|_| true)?.into_iter())
     }
 
     /// Every key in ascending order, a sealed entry's included.
@@ -849,7 +849,7 @@ where
     /// # Errors
     /// Returns any storage error.
     pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError> {
-        Ok(self.inner.written_entries()?.into_iter().map(|(k, _)| k))
+        Ok(self.entries()?.map(|(k, _)| k))
     }
 
     /// Every entry's value or seal in ascending key order.
@@ -857,7 +857,7 @@ where
     /// # Errors
     /// Returns any storage error.
     pub fn values(&self) -> Result<impl Iterator<Item = Written<V>>, StoreError> {
-        Ok(self.inner.written_entries()?.into_iter().map(|(_, v)| v))
+        Ok(self.entries()?.map(|(_, v)| v))
     }
 
     /// The entries whose keys fall within `range`, in ascending order.

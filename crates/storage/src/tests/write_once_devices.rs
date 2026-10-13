@@ -30,8 +30,8 @@ use crate::index::Index;
 use crate::interface::{MainInterface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::map_entry_bytes;
-use crate::tests::common::{account_of_key, conflict_record, test_account};
-use crate::tests::owned_rules::{act_as, apply, conflicted, key, later, signed};
+use crate::tests::common::{account_of_key, conflict_record, conflicted, test_account};
+use crate::tests::owned_rules::{act_as, apply, key, later, signed};
 use crate::tests::policy_matrix::{note, Note};
 use crate::written_once::conflict_parts;
 

@@ -22,7 +22,7 @@ use crate::index::Index;
 use crate::interface::{Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::{
-    account_of_key, apply_ctx_for, map_entry_bytes, pubkey_of, sign_action,
+    account_of_key, apply_ctx_for, conflicted, map_entry_bytes, pubkey_of, sign_action,
 };
 
 type MainInterface = Interface<MainStorage>;
@@ -68,16 +68,6 @@ pub(super) fn refused<T: core::fmt::Debug>(
         result,
         Err(crate::collections::StoreError::StorageError(
             StorageError::ActionNotAllowed(_)
-        ))
-    )
-}
-
-/// Whether a read returned the answer for an entry two different values sealed.
-pub(super) fn conflicted<T>(read: &Result<T, crate::collections::StoreError>) -> bool {
-    matches!(
-        read,
-        Err(crate::collections::StoreError::StorageError(
-            StorageError::Conflicted(_)
         ))
     )
 }

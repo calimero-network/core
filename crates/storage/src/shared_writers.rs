@@ -288,8 +288,8 @@ pub fn shared_anchors(actions: &[Action]) -> BTreeSet<Id> {
 }
 
 /// The steps of one cell, ordered by causality, and which of them count.
-struct Counted<'a> {
-    steps: Vec<&'a RotationStep>,
+struct Counted {
+    steps: Vec<RotationStep>,
     /// `parents[i]` is the node step `i` is built on, `None` if it does not count.
     parents: Vec<Option<Node>>,
     /// `reps[i]` is step `i`'s first twin, so a step built on either of two identical
@@ -299,12 +299,16 @@ struct Counted<'a> {
     genesis: Writers,
 }
 
-/// Order `steps` and decide which count, or `None` when no step binds the genesis.
+/// Order `steps`, each without a mixed `WRITE_ONCE`, and decide which count, or `None`
+/// when no step binds the genesis.
 fn count_steps<'a>(
     cell: Id,
     steps: impl IntoIterator<Item = &'a RotationStep>,
-) -> Result<Option<Counted<'a>>, OverBudget> {
-    let mut steps: Vec<&RotationStep> = steps.into_iter().collect();
+) -> Result<Option<Counted>, OverBudget> {
+    let mut steps: Vec<RotationStep> = steps
+        .into_iter()
+        .map(RotationStep::without_mixed_write_once)
+        .collect();
     // An ancestor's past is a strict subset of its descendant's, so this is a
     // causal order: every step comes after the steps it has seen.
     steps.sort_by_key(|step| (step.seen.len(), step.id));
@@ -352,11 +356,7 @@ pub fn fold<'a>(
     cell: Id,
     steps: impl IntoIterator<Item = &'a RotationStep>,
 ) -> Result<Option<Writers>, OverBudget> {
-    let steps: Vec<RotationStep> = steps
-        .into_iter()
-        .map(RotationStep::without_mixed_write_once)
-        .collect();
-    let Some(counted) = count_steps(cell, &steps)? else {
+    let Some(counted) = count_steps(cell, steps)? else {
         return Ok(None);
     };
     let Counted {
@@ -377,11 +377,7 @@ pub fn ever_writers<'a>(
     cell: Id,
     steps: impl IntoIterator<Item = &'a RotationStep>,
 ) -> Result<Option<Writers>, OverBudget> {
-    let steps: Vec<RotationStep> = steps
-        .into_iter()
-        .map(RotationStep::without_mixed_write_once)
-        .collect();
-    let Some(counted) = count_steps(cell, &steps)? else {
+    let Some(counted) = count_steps(cell, steps)? else {
         return Ok(None);
     };
     let mut ever = counted.genesis;
@@ -402,7 +398,7 @@ pub fn ever_writers<'a>(
 /// The node in effect over the steps `cut` (causally ordered and closed under
 /// `seen`), and its writer set.
 fn head_of(
-    steps: &[&RotationStep],
+    steps: &[RotationStep],
     parents: &[Option<Node>],
     reps: &[usize],
     cut: &[usize],
@@ -434,7 +430,7 @@ fn head_of(
     // A step and every step its signer's `ADMIN` was granted by, transitively.
     let chain = |i: usize| core::iter::successors(Some(i), |at| grants.get(at).copied().flatten());
     let removes = |r: usize, x: usize| {
-        let (remover, step) = (steps[r], steps[x]);
+        let (remover, step) = (&steps[r], &steps[x]);
         remover.signer_account != step.signer_account
             && remover.concurrent_with(step)
             && remover.removes(&step.signer_account)
@@ -447,7 +443,7 @@ fn head_of(
         .flat_map(|&r| counted.iter().map(move |&s| (r, s)))
         .filter(|&(r, s)| {
             r < s
-                && steps[r].concurrent_with(steps[s])
+                && steps[r].concurrent_with(&steps[s])
                 && hits(r, s).next().is_some()
                 && hits(s, r).next().is_some()
         })
@@ -589,7 +585,7 @@ fn settle(
 
 /// The step on `i`'s chain that granted its signer `ADMIN`, or `None` when the
 /// signer has held it since genesis.
-fn grant_of(steps: &[&RotationStep], parents: &[Option<Node>], i: usize) -> Option<usize> {
+fn grant_of(steps: &[RotationStep], parents: &[Option<Node>], i: usize) -> Option<usize> {
     let account = &steps[i].signer_account;
     let mut node = parents[i].as_ref()?;
     loop {
