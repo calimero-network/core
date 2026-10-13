@@ -138,7 +138,7 @@ impl SetAdminCommand {
         )
         .await?;
 
-        info!("Admin account provisioned (user: {username}); start the node and log in");
+        info!("Admin account provisioned; start the node and log in");
 
         Ok(())
     }
