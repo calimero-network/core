@@ -231,15 +231,15 @@ fn key_deliveries(
     group_id: &ContextGroupId,
     group_key: &[u8; 32],
 ) -> eyre::Result<Vec<(KeyEnvelope, PublicKey)>> {
-    // Spent in this node's account namespace; its unlink has not reached here yet.
-    let spent = NodeDeviceRepository::new(store).spent_in_own_account()?;
     let mut live = Vec::new();
     for binding in devices
         .get(&member_account)
         .map(Vec::as_slice)
         .unwrap_or_default()
     {
-        if !spent(member_account, binding.device)? {
+        if !NodeDeviceRepository::new(store)
+            .is_spent_in_own_account(member_account, binding.device)?
+        {
             live.push(binding);
         } else if member_key == Some(binding.sign_pk) {
             return Ok(Vec::new());

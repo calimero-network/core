@@ -1662,8 +1662,6 @@ impl<'a> NamespaceGovernance<'a> {
         let Some(recipient) =
             GroupKeyring::new(self.store, group_gid).key_recipient_for_requester(&requester)?
         else {
-            // `key_recipient_for_requester` logs a device withdrawn by its account
-            // itself; this records every refusal.
             tracing::debug!(
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 group_id = %hex::encode(group_id),

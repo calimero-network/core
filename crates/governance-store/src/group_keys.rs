@@ -965,9 +965,6 @@ impl<'a> GroupKeyring<'a> {
     /// Resolution is **per member, device-first**: a member row names an
     /// account, and that account is addressed only through its live devices.
     ///
-    /// A device this node's own account namespace spent is left out too, though
-    /// its unlink has not reached this namespace yet.
-    ///
     /// A member whose every device has been revoked or superseded receives
     /// **nothing** until they enroll a new one. That is the correct outcome and
     /// not an oversight — the revoked device is still running on a node that
@@ -993,13 +990,12 @@ impl<'a> GroupKeyring<'a> {
         let devices =
             AccountBindingRepository::new(self.store).live_devices_by_account(&namespace)?;
 
-        let spent = NodeDeviceRepository::new(self.store).spent_in_own_account()?;
-
         let mut out = Vec::with_capacity(members.len());
         for (member, _) in members {
             for binding in devices.get(&member).map(Vec::as_slice).unwrap_or(&[]) {
-                // Spent in this node's account namespace; its unlink has not reached here yet.
-                if spent(member, binding.device)? {
+                if NodeDeviceRepository::new(self.store)
+                    .is_spent_in_own_account(member, binding.device)?
+                {
                     continue;
                 }
                 out.push(EntitledRecipient {
@@ -1079,14 +1075,7 @@ impl<'a> GroupKeyring<'a> {
             // invitation, or TEE admission — never through this pull.
             return Ok(None);
         };
-        // Spent in this node's account namespace; its unlink has not reached here yet.
-        let spent = NodeDeviceRepository::new(self.store).spent_in_own_account()?;
-        if spent(account, claimed)? {
-            tracing::debug!(
-                group_id = %hex::encode(self.group_id.to_bytes()),
-                requester = %requester.identity,
-                "not serving group key: the requester's device was withdrawn by its account"
-            );
+        if NodeDeviceRepository::new(self.store).is_spent_in_own_account(account, claimed)? {
             return Ok(None);
         }
         let bindings = AccountBindingRepository::new(self.store);

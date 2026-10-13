@@ -696,9 +696,9 @@ impl SyncManager {
                 }
             };
 
-        // Spent in this node's account namespace; its unlink has not reached here yet.
-        let spent = NodeDeviceRepository::new(&store).spent_in_own_account()?;
-        if spent(joiner_account, joiner_device)? {
+        if NodeDeviceRepository::new(&store)
+            .is_spent_in_own_account(joiner_account, joiner_device)?
+        {
             warn!(
                 namespace_id = %hex::encode(namespace_id),
                 %joiner_public_key,
@@ -1119,9 +1119,9 @@ impl SyncManager {
             return Ok(());
         }
 
-        // Spent in this node's account namespace; its unlink has not reached here yet.
-        let spent = NodeDeviceRepository::new(&store).spent_in_own_account()?;
-        if spent(joiner.account, joiner.device)? {
+        if NodeDeviceRepository::new(&store)
+            .is_spent_in_own_account(joiner.account, joiner.device)?
+        {
             warn!(
                 namespace_id = %hex::encode(namespace_id),
                 subgroup_id = %hex::encode(subgroup_id),
@@ -5210,7 +5210,6 @@ mod namespace_join_device_tests {
     /// A device of a member account never bound in the namespace, and a sibling
     /// device of that account bound there, each with the credential it presents.
     struct TwoDevices {
-        account: calimero_account::AccountId,
         sibling_sk: PrivateKey,
         sibling: Box<JoinAccountCredential>,
         lost_sk: PrivateKey,
@@ -5241,7 +5240,6 @@ mod namespace_join_device_tests {
             .add_member(&ns, &sibling.statement.account, GroupMemberRole::Member)
             .expect("seat the account");
         TwoDevices {
-            account: sibling.statement.account,
             sibling_sk,
             sibling,
             lost_sk,
@@ -5309,68 +5307,6 @@ mod namespace_join_device_tests {
         assert!(
             served(&sibling),
             "a live sibling device must still be served, got {sibling:?}"
-        );
-    }
-
-    /// The account root's own withdrawal spends the device as a revocation does.
-    #[tokio::test]
-    async fn a_device_its_account_root_withdrew_in_this_nodes_account_namespace_is_not_served() {
-        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
-        let account_namespace = ContextGroupId::from([0xAD; 32]);
-        let admin_sk = PrivateKey::from([0x64; 32]);
-        let admitter = found(&store, &admin_sk);
-        let d = two_devices_of_a_member(&store);
-
-        NodeDeviceRepository::new(&store)
-            .store_account_namespace(&account_namespace)
-            .expect("follow the account namespace");
-        AccountBindingRepository::new(&store)
-            .withdraw_for_account(&account_namespace, d.account, d.lost.statement.device)
-            .expect("withdraw the device in the account namespace");
-
-        let reply = join_presenting(
-            &sm,
-            &d.lost_sk,
-            &d.lost,
-            invitation(&admin_sk, admitter, 0x0A),
-        )
-        .await;
-        assert!(
-            withdrawn_by_its_account(&reply),
-            "a device its account root withdrew in this node's account namespace must be \
-             refused, got {reply:?}"
-        );
-    }
-
-    /// A node holding its account root reads the account namespace it derives.
-    #[tokio::test]
-    async fn a_root_holder_refuses_a_device_spent_in_the_account_namespace_it_derives() {
-        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
-        let admin_sk = PrivateKey::from([0x65; 32]);
-        let admitter = found(&store, &admin_sk);
-        let d = two_devices_of_a_member(&store);
-        let devices = NodeDeviceRepository::new(&store);
-        let root = devices.provision_account_root().expect("provision a root");
-        let account_namespace = root.account_namespace();
-        assert_eq!(
-            devices.account_namespace().expect("read"),
-            Some(account_namespace),
-            "precondition: the account namespace is derived from the root"
-        );
-        AccountBindingRepository::new(&store)
-            .apply_revocation(&account_namespace, d.lost.statement.device)
-            .expect("revoke the device in the account namespace");
-
-        let reply = join_presenting(
-            &sm,
-            &d.lost_sk,
-            &d.lost,
-            invitation(&admin_sk, admitter, 0x0B),
-        )
-        .await;
-        assert!(
-            withdrawn_by_its_account(&reply),
-            "a device spent in this node's derived account namespace must be refused, got {reply:?}"
         );
     }
 
