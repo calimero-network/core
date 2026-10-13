@@ -142,9 +142,10 @@ enum BundleGrant<'a> {
     Follow,
 }
 
-/// The refusals that answer whether an account belongs in a namespace, as the
-/// follow responder sends them.
-const MEMBERSHIP_REFUSALS: [&str; 2] = ["not a member", "removed"];
+/// The follow responder's refusals that no other peer can overturn: whether the
+/// account belongs in the namespace, and whether the id names a namespace root
+/// at all. From a peer the caller named, any of them ends the follow.
+const FINAL_FOLLOW_REFUSALS: [&str; 3] = ["not a member", "removed", "not a namespace root"];
 
 /// What a join or follow learned from the peers it tried.
 #[derive(Default)]
@@ -2054,22 +2055,23 @@ impl SyncManager {
                         let _ = tally
                             .declined
                             .insert(peer, Declined::Refused(reason.clone()));
-                        // A follow's membership refusal from a peer the caller named
-                        // is final: the caller named the namespace's anchors, which
-                        // hold its membership history, so no other peer can change
-                        // the answer, and asking them costs minutes. A discovered
+                        // A follow's final refusal (membership, or an id that is no
+                        // namespace root) from a peer the caller named ends it: the
+                        // caller named the namespace's anchors, which hold its
+                        // history, so no other peer can change the answer, and
+                        // asking them costs minutes. A discovered
                         // peer's refusal may be stale or from outside the namespace,
                         // so it only joins the count. The join is unchanged.
                         let named_refusal = matches!(params.kind, NamespaceJoinKind::Follow { .. })
                             && admitter_peers.contains(&peer)
-                            && MEMBERSHIP_REFUSALS.contains(&reason.as_str());
+                            && FINAL_FOLLOW_REFUSALS.contains(&reason.as_str());
                         tally.last_rejection = Some(reason.clone());
                         if named_refusal {
                             info!(
                                 namespace_id = %hex::encode(params.namespace_id),
                                 %peer,
                                 %reason,
-                                "namespace follow: a named anchor refused on membership; not asking further peers"
+                                "namespace follow: a named anchor gave a final refusal; not asking further peers"
                             );
                             return Err(tally.exhausted(
                                 label,
@@ -5851,6 +5853,34 @@ mod namespace_follow_requester_tests {
             .downcast_ref::<calimero_node_primitives::client::NamespaceJoinExhausted>()
             .unwrap_or_else(|| panic!("a typed exhaustion, got {err:#}"));
         assert_eq!(exhausted.named_refusal.as_deref(), Some("removed"));
+        assert_eq!(exhausted.attempts, 1, "terminal on the first answer");
+        assert_eq!(exhausted.rejected_peers, 1, "nobody else was asked");
+        mock.assert_all_consumed();
+    }
+
+    /// The anchor the caller named says the id is a subgroup: no other peer can
+    /// make it a namespace root, so the follow ends on that answer too.
+    #[tokio::test(start_paused = true)]
+    async fn a_named_anchors_not_a_root_refusal_ends_the_follow_at_once() {
+        let mock = Arc::new(MockSyncNetwork::default());
+        let anchor = PeerId::random();
+        mock.push_subscribed_peers(vec![anchor, PeerId::random()]);
+        let refused = answer_refusal(mock.push_open_stream_ok_with_peer(), "not a namespace root");
+        let (sm, _store, _tmp) = manager(Arc::clone(&mock)).await;
+        sm.local_peer_id
+            .set(PeerId::random())
+            .expect("set the local peer id");
+
+        let err = follow_naming(&sm, anchor).await;
+        refused.await.unwrap();
+
+        let exhausted = err
+            .downcast_ref::<calimero_node_primitives::client::NamespaceJoinExhausted>()
+            .unwrap_or_else(|| panic!("a typed exhaustion, got {err:#}"));
+        assert_eq!(
+            exhausted.named_refusal.as_deref(),
+            Some("not a namespace root")
+        );
         assert_eq!(exhausted.attempts, 1, "terminal on the first answer");
         assert_eq!(exhausted.rejected_peers, 1, "nobody else was asked");
         mock.assert_all_consumed();

@@ -1206,7 +1206,8 @@ fn owner_guard_status(refusal: &calimero_governance_store::OwnerGuardRefusal) ->
 /// The status a `ContextError::FollowRefused` is answered with, by its reason.
 ///
 /// Only the two membership refusals and a device scope that does not reach the
-/// namespace's application are final for the caller; an unknown
+/// namespace's application (`403`), and an id that names a subgroup (`400`),
+/// are final for the caller; an unknown
 /// reason is taken as retryable, since a new reason added to the context
 /// handler is far likelier to be a transient one than a new kind of "no".
 fn follow_refusal_status(reason: &str) -> StatusCode {
@@ -1214,6 +1215,7 @@ fn follow_refusal_status(reason: &str) -> StatusCode {
         "not a member" | "removed" | "device not scoped for this application" => {
             StatusCode::FORBIDDEN
         }
+        "not a namespace root" => StatusCode::BAD_REQUEST,
         _ => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
@@ -1356,6 +1358,24 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: err.to_string(),
         };
     }
+    // A follow the namespace declined. Who said no decides what the caller does
+    // next. The membership refusals (`not a member`, `removed`) and a device
+    // scope that does not reach the namespace's application are `403`, since
+    // only an admin can change them. An id that names a subgroup is a \`400\`.
+    // Every other reason (no anchor answered, none
+    // reachable before the deadline, a peer too old to serve a follow, this
+    // node's own device link not yet logged, nobody serving it at all) is a
+    // `503`, because the identical call can succeed later. The context handler
+    // types every way a follow goes unserved, so none is a 500. The reason stays
+    // in the message either way.
+    if let Some(calimero_context::error::ContextError::FollowRefused { reason, .. }) =
+        err.downcast_ref::<calimero_context::error::ContextError>()
+    {
+        return ApiError {
+            status_code: follow_refusal_status(reason),
+            message: format!("{err:#}"),
+        };
+    }
     // The node cannot decide this op's authority YET — it is missing history or a
     // key it is entitled to, and the apply burned nothing, so the identical call
     // succeeds once it has caught up. `503` rather than the generic `500` because
@@ -1366,22 +1386,6 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // 500: `504` when no peer of the namespace answered at all, which is what a
     // client sees while the inviting node is offline, and `503` when one answered
     // but is not an admitter the invitation names.
-    // A follow the namespace declined. Who said no decides what the caller does
-    // next: membership refusals (`not a member`, `removed`) are `403`, since only
-    // an admin adding the account back helps; every other reason (no anchor
-    // answered, none reachable before the follow's deadline, a peer too old to
-    // serve a follow, this node's own device link not yet logged, nobody serving
-    // it at all) is a `503`, because the identical call can succeed later. The
-    // context handler types every way a follow goes unserved, so none is a 500.
-    // The reason stays in the message either way.
-    if let Some(calimero_context::error::ContextError::FollowRefused { reason, .. }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
-    {
-        return ApiError {
-            status_code: follow_refusal_status(reason),
-            message: format!("{err:#}"),
-        };
-    }
     if let Some(calimero_context::error::ContextError::JoinNotEndorsed { reached_a_peer }) =
         err.downcast_ref::<calimero_context::error::ContextError>()
     {
@@ -2547,6 +2551,7 @@ mod parse_api_error_tests {
                     "device not scoped for this application",
                     StatusCode::FORBIDDEN,
                 ),
+                ("not a namespace root", StatusCode::BAD_REQUEST),
             ] {
                 let err = ContextError::FollowRefused {
                     namespace_id: "a1".to_owned(),

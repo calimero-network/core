@@ -8,7 +8,8 @@
   invitation.** `POST admin-api/namespaces/:namespace_id/follow` takes
   `{ peerAddrs, applicationId, bytecodeId? }` and answers `{ namespaceId,
   memberAccount, keyReady }`; `keyReady: false` is a success the caller retries
-  on. A refusal is `403` for `not a member` / `removed` and a retryable `503`
+  on. A refusal is `400` for `not a namespace root`, `403` for `not a member` /
+  `removed` / `device not scoped for this application`, and a retryable `503`
   otherwise, with the reason in the message. Scoped like `join`
   (`namespace:manage`). `GET admin-api/identity` gains `externalAddrs`, the
   multiaddrs a follower passes as `peerAddrs`, and `meroctl namespace follow

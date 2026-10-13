@@ -92,9 +92,11 @@ impl Handler<FollowGroupRequest> for ContextManager {
         // A known subgroup resolves to its namespace. The bundle a follow is
         // served is the root's, and the row it rests on is a root row.
         if resolved != namespace_id {
-            return ActorResponse::reply(Err(eyre::eyre!(
-                "{namespace_id:?} is a subgroup of {resolved:?}; a follow names a namespace root"
-            )));
+            return ActorResponse::reply(Err(ContextError::FollowRefused {
+                namespace_id: hex::encode(namespace_id.to_bytes()),
+                reason: "not a namespace root",
+            }
+            .into()));
         }
 
         let follow = Follow {
@@ -605,6 +607,7 @@ fn follow_refusal(err: &eyre::Report) -> Option<&'static str> {
     match exhausted.named_refusal.as_deref() {
         Some("removed") => return Some("removed"),
         Some("not a member") => return Some("not a member"),
+        Some("not a namespace root") => return Some("not a namespace root"),
         _ => {}
     }
     // The follow's deadline passed while an anchor the caller named never
@@ -1309,6 +1312,11 @@ mod tests {
             follow_refusal(&stray_errors(Some("not a member"))),
             Some("not a member"),
             "a named anchor's refusal wins over stray errors"
+        );
+        assert_eq!(
+            follow_refusal(&stray_errors(Some("not a namespace root"))),
+            Some("not a namespace root"),
+            "a named anchor saying the id is a subgroup ends the follow too"
         );
         assert_eq!(
             follow_refusal(&stray_errors(None)),
