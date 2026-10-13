@@ -586,7 +586,9 @@ impl InitCommand {
                 password,
             )
             .await?;
-            info!("Created the admin account (user: {username})");
+            // Not the name: `merod init` runs under systemd on a hosted node, whose
+            // journal is shipped off the machine. The operator typed it.
+            info!("Created the admin account");
         }
 
         info!("Generated identity: {:?}", identity.public().to_peer_id());

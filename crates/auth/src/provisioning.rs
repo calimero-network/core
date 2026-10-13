@@ -65,10 +65,9 @@ pub async fn provision_admin_key(
         .await
         .map_err(|err| eyre::eyre!("Failed to store admin root key: {err}"))?;
 
-    info!(
-        user = %crate::utils::sanitize_for_log(username),
-        "Provisioned the admin root key"
-    );
+    // The key id, not the login name: `info` is shipped off a hosted node, and
+    // the name is half of the admin's credential.
+    info!(%key_id, "Provisioned the admin root key");
 
     Ok(key_id)
 }

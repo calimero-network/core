@@ -109,7 +109,11 @@ impl AppSource for HttpRegistry {
                 req.version
             );
         };
-        info!(%url, application_id = ?req.application_id, "fetching application from registry");
+        info!(
+            url = %calimero_primitives::utils::loggable_url(&url),
+            application_id = ?req.application_id,
+            "fetching application from registry"
+        );
 
         // No host guard beyond the plain-http check in `new`: `url` is this node's own
         // configured base, which is routinely private or air-gapped.
