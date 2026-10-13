@@ -20,6 +20,7 @@ ignore = [
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto, via libp2p-dns; pending libp2p upgrade" },
     { id = "RUSTSEC-2026-0097", reason = "rand, transitive; pending upstream upgrade" },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing attack, transitive; no upstream fix available" },
+    { id = "RUSTSEC-2026-0344", reason = "ruzstd 0.5 via object 0.32 via wasmer-compiler 6.1, which only writes object files; the decompressor runs only on a parsed file's compressed section, which nothing here reads. Fixed in ruzstd 0.9.1, which object 0.32 cannot take; pending a wasmer upgrade" },
 ]
 
 [bans]
