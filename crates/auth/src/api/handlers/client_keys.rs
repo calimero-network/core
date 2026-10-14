@@ -67,12 +67,12 @@ fn is_node_control_permission(permission: &str) -> bool {
     category.eq_ignore_ascii_case("admin") || category.eq_ignore_ascii_case("keys")
 }
 
-fn is_grantable_to_client_key(permission: &str, context_bound: bool) -> bool {
+fn is_grantable_to_client_key(permission: &str, bound: bool) -> bool {
     if !is_node_control_permission(permission) {
         return true;
     }
 
-    permission == ADMIN_PERMISSION && !context_bound
+    permission == ADMIN_PERMISSION && !bound
 }
 
 /// Client list handler
@@ -206,21 +206,21 @@ pub async fn generate_client_key_handler(
         all_permissions.push(default_permission);
     }
 
-    if let Some(application_id) = request
+    let application_id = request
         .application_id
         .as_deref()
         .map(sanitize_identifier)
-        .filter(|id| !id.is_empty())
-    {
-        all_permissions.push(crate::auth::bindings::application_binding(&application_id));
+        .filter(|id| !id.is_empty());
+    if let Some(application_id) = &application_id {
+        all_permissions.push(crate::auth::bindings::application_binding(application_id));
     }
 
-    // Add and validate additional permissions
-    let context_bound = !context_id.is_empty() || !context_identity.is_empty();
+    // A bound key acts only inside its binding, which `admin` would void.
+    let bound = !context_id.is_empty() || !context_identity.is_empty() || application_id.is_some();
 
     if let Some(additional_perms) = request.permissions {
         for perm in additional_perms {
-            if !is_grantable_to_client_key(&perm, context_bound) {
+            if !is_grantable_to_client_key(&perm, bound) {
                 return error_response(
                     StatusCode::BAD_REQUEST,
                     format!(
@@ -692,6 +692,30 @@ mod tests {
             );
         }
 
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn an_application_bound_client_key_cannot_be_admin() {
+        let (state, headers) = admin_state().await;
+
+        let response = generate_client_key_handler(
+            Extension(Arc::clone(&state)),
+            headers,
+            ValidatedJson(GenerateClientKeyRequest {
+                context_id: None,
+                context_identity: None,
+                permissions: Some(vec!["admin".to_owned()]),
+                target_node_url: None,
+                application_id: Some("app-a".to_owned()),
+                ttl_secs: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
         assert!(clients.is_empty(), "no key may be stored: {clients:?}");
     }
