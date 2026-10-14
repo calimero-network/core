@@ -1258,6 +1258,23 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(revoked)
     }
 
+    /// Whether this node's own account namespace revoked or withdrew the device, which
+    /// counts as spent before its unlink reaches the namespace served; false if it follows none.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn is_spent_in_own_account(
+        &self,
+        account: AccountId,
+        device: DeviceId,
+    ) -> EyreResult<bool> {
+        match self.account_namespace()? {
+            Some(namespace) => crate::AccountBindingRepository::new(self.store)
+                .is_spent(&namespace, account, device),
+            None => Ok(false),
+        }
+    }
+
     /// This node's device, unless it has been revoked somewhere.
     ///
     /// A device revoked anywhere has a spent id: one row serves every namespace

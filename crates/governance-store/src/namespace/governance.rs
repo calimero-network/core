@@ -1662,17 +1662,11 @@ impl<'a> NamespaceGovernance<'a> {
         let Some(recipient) =
             GroupKeyring::new(self.store, group_gid).key_recipient_for_requester(&requester)?
         else {
-            // `info`, not `debug`: this is the audit record of refusing to hand a
-            // scope key to a device that is no longer entitled to it. At `debug` a
-            // node running the default filter emits nothing, so an operator asking
-            // "did we ever serve the key back to the laptop I revoked?" has no
-            // evidence either way — and neither does any test.
             tracing::debug!(
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 group_id = %hex::encode(group_id),
                 requester = %requester.identity,
-                "not serving group key: the requester's account has no live device matching \
-                 the one it named"
+                "not serving group key: the requester named no device this node may deliver to"
             );
             return Ok((Vec::new(), responder_identity));
         };

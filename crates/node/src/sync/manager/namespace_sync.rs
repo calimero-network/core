@@ -9,7 +9,7 @@ use calimero_account::{AccountProof, DeviceCert};
 use calimero_crypto::Nonce;
 use calimero_governance_store::{
     AccountBindingRepository, CapabilitiesRepository, GroupKeyring, MembershipRepository,
-    MetaRepository, NamespaceRepository,
+    MetaRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::client::{NamespaceJoinParams, OpenSubgroupJoinParams};
@@ -696,6 +696,25 @@ impl SyncManager {
                 }
             };
 
+        if NodeDeviceRepository::new(&store)
+            .is_spent_in_own_account(joiner_account, joiner_device)?
+        {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                %joiner_public_key,
+                "rejecting namespace join: the joining device was withdrawn by its account"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::NamespaceJoinRejected {
+                    reason: "the joining device was withdrawn by its account".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
         // A device the namespace revoked, or narrowed out and has not linked again,
         // is served nothing, whether or not its account is a member.
         if AccountBindingRepository::new(&store).device_is_withdrawn(
@@ -1080,22 +1099,39 @@ impl SyncManager {
         // Authorisation check: the joiner must reach the subgroup via the
         // Open-chain inheritance walk and must not have been removed from it.
         // An inherited path implies every intermediate ancestor was Open.
-        let Some(joiner_account) = calimero_governance_store::member_account_in_namespace(
-            &store,
-            &subgroup_gid,
-            &joiner_public_key,
-        )?
+        let Some(joiner) = AccountBindingRepository::new(&store)
+            .binding_for_sign_pk(&ContextGroupId::from(namespace_id), &joiner_public_key)?
         else {
             // A key bound to no account reaches the subgroup by no path.
             return Err(eyre::eyre!(
                 "joiner identity is bound to no account in this namespace"
             ));
         };
-        if !MembershipRepository::new(&store).is_live_member(&subgroup_gid, &joiner_account)? {
+        if !MembershipRepository::new(&store).is_live_member(&subgroup_gid, &joiner.account)? {
             let msg = StreamMessage::Message {
                 sequence_id: 0,
                 payload: MessagePayload::OpenSubgroupJoinRejected {
                     reason: "joiner has no membership path to subgroup".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            crate::sync::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        if NodeDeviceRepository::new(&store)
+            .is_spent_in_own_account(joiner.account, joiner.device)?
+        {
+            warn!(
+                namespace_id = %hex::encode(namespace_id),
+                subgroup_id = %hex::encode(subgroup_id),
+                %joiner_public_key,
+                "rejecting open-subgroup join: the joining device was withdrawn by its account"
+            );
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "the joining device was withdrawn by its account".to_owned(),
                 },
                 next_nonce: nonce,
             };
@@ -4369,7 +4405,8 @@ mod join_responder_tests {
     };
     use calimero_governance_store::{
         AccountBindingRepository, CapabilitiesRepository, DenyListRepository, GroupKeyring,
-        MembershipRepository, MetaRepository, NamespaceRepository, ReentryRepository,
+        MembershipRepository, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+        ReentryRepository,
     };
     use calimero_network_primitives::stream::Stream;
     use calimero_node_primitives::sync::{InitPayload, InitProof, MessagePayload, StreamMessage};
@@ -4889,6 +4926,52 @@ mod join_responder_tests {
     }
 
     #[tokio::test]
+    async fn a_device_spent_in_this_nodes_account_namespace_is_served_no_subgroup_key() {
+        let r = responder().await;
+        let member = inherited_member(&r);
+        assert_eq!(
+            join_subgroup(&r, &member).await,
+            Some(true),
+            "precondition: before the withdrawal the inherited member is served the key"
+        );
+
+        let device = AccountBindingRepository::new(&r.store)
+            .binding_for_sign_pk(&ns(), &member.public_key())
+            .unwrap()
+            .expect("the member's device is bound here")
+            .device;
+        let account_namespace = ContextGroupId::from([0xAE; 32]);
+        NodeDeviceRepository::new(&r.store)
+            .store_account_namespace(&account_namespace)
+            .unwrap();
+        AccountBindingRepository::new(&r.store)
+            .apply_revocation(&account_namespace, device)
+            .unwrap();
+
+        let reply = exchange(
+            &r.sm,
+            &member,
+            InitPayload::OpenSubgroupJoinRequest {
+                namespace_id: NAMESPACE,
+                subgroup_id: SUBGROUP,
+                joiner_public_key: member.public_key(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                &reply,
+                Some(StreamMessage::Message {
+                    payload: MessagePayload::OpenSubgroupJoinRejected { reason },
+                    ..
+                }) if reason.contains("withdrawn by its account")
+            ),
+            "a device spent in this node's account namespace must be refused the subgroup key, \
+             got {reply:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn inbound_sync_does_not_admit_a_member_removed_from_an_open_subgroup() {
         let r = responder().await;
         let member = inherited_member(&r);
@@ -4920,7 +5003,7 @@ mod namespace_join_device_tests {
     };
     use calimero_governance_store::{
         AccountBindingRepository, GroupKeyring, MembershipRepository, MetaRepository,
-        NamespaceRepository,
+        NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_network_primitives::stream::Stream;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -5139,6 +5222,109 @@ mod namespace_join_device_tests {
         assert!(
             served(join(&sm, descoped_sk, invitation(&admin_sk, admitter, 0x04)).await),
             "a device linked again above its floor is served the key"
+        );
+    }
+
+    /// A device of a member account never bound in the namespace, and a sibling
+    /// device of that account bound there, each with the credential it presents.
+    struct TwoDevices {
+        sibling_sk: PrivateKey,
+        sibling: Box<JoinAccountCredential>,
+        lost_sk: PrivateKey,
+        lost: Box<JoinAccountCredential>,
+    }
+
+    fn two_devices_of_a_member(store: &Store) -> TwoDevices {
+        let ns = ContextGroupId::from(NAMESPACE);
+        let (root_sk, genesis) = calimero_governance_store::test_fixtures::test_account_root();
+        let device = |seed: u8| {
+            let sk = PrivateKey::from([seed; 32]);
+            let credential = calimero_governance_store::test_fixtures::join_account_for(
+                &root_sk,
+                genesis,
+                &sk.public_key(),
+                [seed; 32],
+                0,
+            );
+            (sk, credential)
+        };
+        let (sibling_sk, sibling) = device(0x77);
+        let (lost_sk, lost) = device(0x78);
+        let _bound = AccountBindingRepository::new(store)
+            .apply_link(&ns, &sibling.genesis, &sibling.chain, &sibling.statement, 0)
+            .expect("store")
+            .expect("bind the sibling device");
+        MembershipRepository::new(store)
+            .add_member(&ns, &sibling.statement.account, GroupMemberRole::Member)
+            .expect("seat the account");
+        TwoDevices {
+            sibling_sk,
+            sibling,
+            lost_sk,
+            lost,
+        }
+    }
+
+    fn served(reply: &Result<Vec<u8>, String>) -> bool {
+        reply.as_ref().is_ok_and(|key| !key.is_empty())
+    }
+
+    fn withdrawn_by_its_account(reply: &Result<Vec<u8>, String>) -> bool {
+        reply
+            .as_ref()
+            .is_err_and(|reason| reason.contains("withdrawn by its account"))
+    }
+
+    /// A device spent in this node's account namespace is refused N's key before
+    /// the carried unlink reaches N; a live sibling device is still served.
+    #[tokio::test]
+    async fn a_device_spent_in_this_nodes_account_namespace_is_not_served_the_namespace_key() {
+        let (sm, store, _tmp) = manager(Arc::new(MockSyncNetwork::default())).await;
+        let account_namespace = ContextGroupId::from([0xAC; 32]);
+        let admin_sk = PrivateKey::from([0x63; 32]);
+        let admitter = found(&store, &admin_sk);
+        let d = two_devices_of_a_member(&store);
+        assert!(
+            served(
+                &join_presenting(
+                    &sm,
+                    &d.lost_sk,
+                    &d.lost,
+                    invitation(&admin_sk, admitter, 0x07)
+                )
+                .await
+            ),
+            "precondition: a device of a member account, never bound here, is served the key"
+        );
+
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&account_namespace)
+            .expect("follow the account namespace");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, d.lost.statement.device)
+            .expect("revoke the device in the account namespace");
+
+        let reply = join_presenting(
+            &sm,
+            &d.lost_sk,
+            &d.lost,
+            invitation(&admin_sk, admitter, 0x08),
+        )
+        .await;
+        assert!(
+            withdrawn_by_its_account(&reply),
+            "a device spent in this node's account namespace must be refused, got {reply:?}"
+        );
+        let sibling = join_presenting(
+            &sm,
+            &d.sibling_sk,
+            &d.sibling,
+            invitation(&admin_sk, admitter, 0x09),
+        )
+        .await;
+        assert!(
+            served(&sibling),
+            "a live sibling device must still be served, got {sibling:?}"
         );
     }
 

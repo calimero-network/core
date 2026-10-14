@@ -15,6 +15,7 @@ use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 use calimero_governance_store::{
     AccountBindingRepository, DeviceBinding, GroupKeyring, NamespaceRepository,
+    NodeDeviceRepository,
 };
 
 impl Handler<AddGroupMembersRequest> for ContextManager {
@@ -160,13 +161,14 @@ pub(crate) async fn deliver_group_key(
         return Ok(());
     };
     let deliveries = key_deliveries(
+        datastore,
         member_key,
         member_account,
         devices,
         sk,
         group_id,
         &group_key,
-    );
+    )?;
     if deliveries.is_empty() {
         warn!(%member_account, "no group key was delivered to the added member; it must pull the key itself");
     }
@@ -221,14 +223,30 @@ fn deliverable_key(
 }
 
 fn key_deliveries(
+    store: &calimero_store::Store,
     member_key: Option<PublicKey>,
     member_account: AccountId,
     devices: &BTreeMap<AccountId, Vec<DeviceBinding>>,
     sk: &PrivateKey,
     group_id: &ContextGroupId,
     group_key: &[u8; 32],
-) -> Vec<(KeyEnvelope, PublicKey)> {
-    match member_key {
+) -> eyre::Result<Vec<(KeyEnvelope, PublicKey)>> {
+    let mut live = Vec::new();
+    for binding in devices
+        .get(&member_account)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        if !NodeDeviceRepository::new(store)
+            .is_spent_in_own_account(member_account, binding.device)?
+        {
+            live.push(binding);
+        } else if member_key == Some(binding.sign_pk) {
+            return Ok(Vec::new());
+        }
+    }
+
+    Ok(match member_key {
         Some(key) => {
             match GroupKeyring::wrap_for_member(sk, &key, &group_id.to_bytes(), group_key) {
                 Ok(envelope) => vec![(envelope, key)],
@@ -238,11 +256,8 @@ fn key_deliveries(
                 }
             }
         }
-        None => devices
-            .get(&member_account)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
+        None => live
+            .into_iter()
             .filter_map(|binding| {
                 match GroupKeyring::wrap_for_device(
                     sk,
@@ -260,7 +275,7 @@ fn key_deliveries(
                 }
             })
             .collect(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -321,13 +336,15 @@ mod tests {
         let account = enrol(&store, &ns, &member);
 
         let deliveries = key_deliveries(
+            &store,
             None,
             account,
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         assert_eq!(deliveries.len(), 1);
         let (envelope, recipient) = &deliveries[0];
@@ -339,6 +356,56 @@ mod tests {
             envelope.recipient,
             EnvelopeRecipient::Device { .. }
         ));
+    }
+
+    /// A device this node's account namespace spent gets no delivery; its live
+    /// sibling still does.
+    #[test]
+    fn a_device_spent_in_this_nodes_account_namespace_gets_no_delivery() {
+        use calimero_governance_store::test_fixtures::{join_account_for, record_credential};
+        use calimero_governance_store::NodeDeviceRepository;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ns = ContextGroupId::from([0x01; 32]);
+        let group = ContextGroupId::from([0x02; 32]);
+        let admin_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("provision the root");
+        let device = |seed: u8| {
+            let sign_pk = PrivateKey::from([seed; 32]).public_key();
+            let credential =
+                join_account_for(root.signing_key(), root.genesis(), &sign_pk, [seed; 32], 0);
+            record_credential(&store, &ns, &credential);
+            (sign_pk, credential.statement.device)
+        };
+        let (sibling_pk, _) = device(0x71);
+        let (_, lost) = device(0x72);
+        let account_namespace = NodeDeviceRepository::new(&store)
+            .account_namespace()
+            .expect("read")
+            .expect("a root holder derives its account namespace");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, lost)
+            .expect("revoke");
+
+        let deliveries = key_deliveries(
+            &store,
+            None,
+            root.account(),
+            &devices_in(&store, &ns),
+            &admin_sk,
+            &group,
+            &GROUP_KEY,
+        )
+        .expect("build the deliveries");
+
+        let recipients: Vec<PublicKey> = deliveries.iter().map(|(_, key)| *key).collect();
+        assert_eq!(
+            recipients,
+            vec![sibling_pk],
+            "only the live sibling must be delivered to"
+        );
     }
 
     #[test]
@@ -353,13 +420,15 @@ mod tests {
         let account = account_for(&PrivateKey::random(&mut rng).public_key());
 
         let deliveries = key_deliveries(
+            &store,
             None,
             account,
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         assert!(deliveries.is_empty());
     }
@@ -377,13 +446,15 @@ mod tests {
         let unusable = PublicKey::from([0u8; 32]);
 
         let deliveries = key_deliveries(
+            &store,
             Some(unusable),
             account_for(&unusable),
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         assert!(deliveries.is_empty());
     }
@@ -400,13 +471,15 @@ mod tests {
         let account = enrol(&store, &ns, &member);
 
         let deliveries = key_deliveries(
+            &store,
             Some(member),
             account,
             &devices_in(&store, &ns),
             &admin_sk,
             &group,
             &GROUP_KEY,
-        );
+        )
+        .expect("build the deliveries");
 
         assert_eq!(deliveries.len(), 1);
         let (envelope, recipient) = &deliveries[0];
