@@ -180,10 +180,22 @@ fn sync_target(path: &str) -> Option<Option<&str>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use mero_auth::auth::bindings::ClientKeyBindings;
+    use tower::ServiceExt as _;
+
     use super::{
         refusal, sync_target, APPLICATION_REFUSAL, CONTEXT_REFUSAL, GROUP_REFUSAL, INSTALL_REFUSAL,
         SYNC_ALL_REFUSAL,
     };
+    use crate::auth::ClientKeyScope;
+    use crate::test_support::protected_router;
 
     const MINE: &str = "aa";
     const OTHER: &str = "bb";
@@ -274,6 +286,45 @@ mod tests {
         assert_eq!(sync_target("/contexts/abc/resync"), None);
         assert_eq!(sync_target("/contexts/sync/abc/extra"), None);
         assert_eq!(sync_target("/groups/abc/sync"), None);
+    }
+
+    async fn get_as_bound_key(
+        router: axum::Router,
+        bound: u8,
+        context: u8,
+    ) -> (StatusCode, String) {
+        let scope = ClientKeyScope(ClientKeyBindings::from_permissions(&[format!(
+            "context[{},identity]",
+            ContextId::from([bound; 32])
+        )]));
+        let mut request = Request::get(format!("/contexts/{}", ContextId::from([context; 32])))
+            .body(Body::empty())
+            .expect("a request");
+        drop(request.extensions_mut().insert(scope));
+
+        let response = router.oneshot(request).await.expect("the route answers");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read the response");
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[actix::test]
+    async fn the_admin_router_refuses_a_bound_key_naming_another_context() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (router, _blobs) = protected_router(&store).await;
+
+        let (status, body) = get_as_bound_key(router.clone(), 0xA1, 0xB2).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains(CONTEXT_REFUSAL), "{body}");
+
+        let (status, body) = get_as_bound_key(router, 0xA1, 0xA1).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the bound context reaches its handler: {body}"
+        );
     }
 }
 
