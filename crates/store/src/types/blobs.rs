@@ -48,3 +48,8 @@ impl PredefinedEntry for key::BlobOwner {
     type Codec = Borsh;
     type DataType<'a> = ();
 }
+
+impl PredefinedEntry for key::PrefetchedBlob {
+    type Codec = Borsh;
+    type DataType<'a> = ();
+}

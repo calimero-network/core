@@ -420,6 +420,11 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         std::sync::Arc::clone(&scope_projections),
     );
 
+    let prefetch_sweep = crate::handlers::blob_announce::spawn_prefetch_sweep(
+        node_client.clone(),
+        context_client.clone(),
+    );
+
     // Drain locally-applied delta notifications from the execute path
     // and register them into the in-memory DeltaStore. Replaces the
     // per-interval-sync `load_persisted_deltas` rescan that existed
@@ -830,6 +835,7 @@ pub async fn start(mut config: NodeConfig) -> eyre::Result<()> {
         ("peer_identity_invalidation", peer_identity_invalidation),
         ("local_delta_drainer", drainer),
         ("tee_scheduler", tee_scheduler),
+        ("prefetch_sweep", prefetch_sweep),
     ] {
         handle.abort();
         if let Err(err) = handle.await {

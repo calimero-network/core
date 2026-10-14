@@ -200,6 +200,13 @@ pub enum Column {
     /// context's own run created. Reading one as the other would widen
     /// either what an account-scoped caller reads or what peers are served.
     BlobOwner,
+    /// One empty row per blob reference a prefetch took for a context, keyed
+    /// `context_id(32) ‖ blob_id(32)` (see `key::PrefetchedBlob`).
+    ///
+    /// Written only where a fleet node's prefetch stored the bytes, so each row is
+    /// exactly one reference, released once this node stops serving the context.
+    /// A blob freed by any path drops its rows. Node-local, not synchronized.
+    PrefetchedBlob,
     /// A snapshot being installed, keyed `context_id(32) ‖ state_key(33)` like
     /// `State`: it is checked here as a tree and only then moved into `State`,
     /// so an unchecked snapshot is never read as the context's state. Node-local,

@@ -25,7 +25,7 @@
 //! retry bolted on here.
 
 use core::time::Duration;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use calimero_context_client::client::ContextClient;
@@ -38,7 +38,7 @@ use calimero_primitives::identity::{MemberIdentity, PublicKey};
 use futures_util::StreamExt;
 use libp2p::PeerId;
 use tokio::sync::Semaphore;
-use tokio::time::Instant;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
 use crate::handlers::blob_protocol::is_signed_context_member;
@@ -67,6 +67,7 @@ const MEMBER_PREFETCH_WINDOW: Duration = Duration::from_secs(24 * 60 * 60); // h
 const MIN_PREFETCH_CHARGE_BYTES: u64 = 1024 * 1024; // so a failed or empty fetch is not free
 const MIN_PREFETCH_SUCCESS_COST_BYTES: u64 = 64 * 1024; // probes, headers and a stored file per blob
 const PREFETCH_FRAMING_BYTES: u64 = 64 * 1024; // headers and chunk framing over a transfer's payload
+const PREFETCH_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60); // how often prefetches for contexts no longer served are released
 
 /// Global prefetch budget, shared by every inbound announcement.
 static PREFETCH_SLOTS: Semaphore = Semaphore::const_new(PREFETCH_CONCURRENCY);
@@ -284,6 +285,12 @@ async fn prefetch_announced_blob(
     let cost = match outcome {
         Ok(Ok(Some(_))) => {
             info!(%blob_id, %context_id, size, received, "prefetched announced blob");
+            if let Err(err) = node_client
+                .record_prefetched_blob(&context_id, &blob_id)
+                .await
+            {
+                warn!(%blob_id, %context_id, %err, "failed to record the prefetched blob");
+            }
             received.max(MIN_PREFETCH_SUCCESS_COST_BYTES)
         }
         Ok(Ok(None)) => {
@@ -307,6 +314,62 @@ async fn prefetch_announced_blob(
     member_prefetch.settle(cost);
 
     Ok(())
+}
+
+/// A context is released only when two sweeps in a row find it unserved, so a group move
+/// between detach and register, or a lookup that misreads once, does not cost it its blobs.
+async fn release_unserved_prefetches(
+    node_client: &NodeClient,
+    context_client: &ContextClient,
+    unserved_before: &mut BTreeSet<ContextId>,
+) -> eyre::Result<()> {
+    let mut unserved_now = BTreeSet::new();
+    for context_id in node_client.prefetched_blob_contexts()? {
+        match is_availability_node_for(node_client, context_client, &context_id) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(err) => {
+                warn!(%context_id, %err, "could not tell whether this node still serves the context");
+                continue;
+            }
+        }
+        if !unserved_before.contains(&context_id) {
+            let _new = unserved_now.insert(context_id);
+            continue;
+        }
+        match node_client.release_prefetched_blobs(&context_id).await {
+            Ok(()) => {
+                info!(%context_id, "released the blobs prefetched for a context no longer served")
+            }
+            Err(err) => {
+                warn!(%context_id, %err, "failed to release the blobs prefetched for the context");
+                let _failed = unserved_now.insert(context_id);
+            }
+        }
+    }
+    *unserved_before = unserved_now;
+    Ok(())
+}
+
+/// Release unserved prefetches at startup and then every [`PREFETCH_SWEEP_INTERVAL`].
+pub(crate) fn spawn_prefetch_sweep(
+    node_client: NodeClient,
+    context_client: ContextClient,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(PREFETCH_SWEEP_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut unserved_before = BTreeSet::new();
+        loop {
+            let _ = interval.tick().await;
+            if let Err(err) =
+                release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+                    .await
+            {
+                warn!(%err, "failed to sweep the prefetched blobs of contexts no longer served");
+            }
+        }
+    })
 }
 
 /// Whether `announcement` carries a valid membership proof for its context,
@@ -576,8 +639,16 @@ mod tests {
     async fn availability_node_over(
         network: NetworkClient,
     ) -> (NodeClient, ContextClient, TempDir, TempDir) {
+        node_over(GroupMemberRole::ReadOnlyTee, network).await
+    }
+
+    /// A node whose own key holds `role` for the test context.
+    async fn node_over(
+        role: GroupMemberRole,
+        network: NetworkClient,
+    ) -> (NodeClient, ContextClient, TempDir, TempDir) {
         let tee = PrivateKey::from(TEE);
-        let mut members = vec![(GroupMemberRole::ReadOnlyTee, tee.public_key())];
+        let mut members = vec![(role, tee.public_key())];
         for key in [
             MEMBER,
             OTHER_MEMBER,
@@ -1123,6 +1194,116 @@ mod tests {
         node.0.record_blob_owner(&context(), &blob).expect("record");
         let second = announcement_of(blob, &PrivateKey::from(OTHER_MEMBER), peer, now_secs());
         assert!(!starts_a_fetch(&node, peer, second).await, "held here");
+    }
+
+    /// A node whose own key holds `role`, holding bytes a prefetch took for `context`.
+    async fn node_with_a_prefetch(
+        role: GroupMemberRole,
+        context: ContextId,
+    ) -> (NodeClient, ContextClient, BlobId, TempDir, TempDir) {
+        let (node_client, context_client, data, blobs) =
+            node_over(role, NetworkClient::new(LazyRecipient::new())).await;
+        let (blob, _size) = node_client
+            .add_blob(&b"prefetched for a context"[..], None, None)
+            .await
+            .expect("store bytes");
+        node_client
+            .record_prefetched_blob(&context, &blob)
+            .await
+            .expect("record the prefetch");
+        (node_client, context_client, blob, data, blobs)
+    }
+
+    #[tokio::test]
+    async fn the_sweep_keeps_what_was_prefetched_for_a_context_this_node_serves() {
+        let (node_client, context_client, blob, _data, _blobs) =
+            node_with_a_prefetch(GroupMemberRole::ReadOnlyTee, context()).await;
+
+        let mut unserved_before = BTreeSet::new();
+        for _ in 0..2 {
+            release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+                .await
+                .expect("sweep");
+        }
+
+        assert!(node_client.has_blob(&blob).expect("read"));
+    }
+
+    /// A node that is a member but no longer a TEE member of the context, so it
+    /// is no longer an availability node for it.
+    #[tokio::test]
+    async fn the_sweep_releases_what_was_prefetched_once_this_node_stops_serving_the_context() {
+        let (node_client, context_client, blob, _data, _blobs) =
+            node_with_a_prefetch(GroupMemberRole::Member, context()).await;
+
+        let mut unserved_before = BTreeSet::new();
+        release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+            .await
+            .expect("sweep");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "one unserved sweep keeps them"
+        );
+        release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+            .await
+            .expect("sweep");
+
+        assert!(!node_client.has_blob(&blob).expect("read"));
+    }
+
+    #[tokio::test]
+    async fn the_sweep_releases_what_was_prefetched_for_a_context_this_node_no_longer_has() {
+        let deleted = ContextId::from([0xC9; 32]);
+        let (node_client, context_client, blob, _data, _blobs) =
+            node_with_a_prefetch(GroupMemberRole::ReadOnlyTee, deleted).await;
+
+        let mut unserved_before = BTreeSet::new();
+        release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+            .await
+            .expect("sweep");
+        assert!(
+            node_client.has_blob(&blob).expect("read"),
+            "one unserved sweep keeps them"
+        );
+        release_unserved_prefetches(&node_client, &context_client, &mut unserved_before)
+            .await
+            .expect("sweep");
+
+        assert!(!node_client.has_blob(&blob).expect("read"));
+    }
+
+    /// A prefetch records the reference it took, so releasing the context's
+    /// prefetches frees the bytes. Real time: the peer answers from another thread.
+    #[tokio::test]
+    #[serial(blob_prefetch_slots)]
+    async fn a_prefetch_records_the_reference_it_took() {
+        let served = vec![0x5F; 1024];
+        let (node_client, context_client, _data, _blobs) =
+            availability_node_over(network_of_one_peer(Some(served.clone()))).await;
+        let (blob, _size) = node_client
+            .add_blob(served.as_slice(), None, None)
+            .await
+            .expect("hash the served bytes");
+        let _deleted = node_client.delete_blob(blob).await.expect("forget them");
+        let peer = PeerId::random();
+
+        let announced = BlobAnnouncement {
+            size: served.len() as u64,
+            ..announcement_of(blob, &PrivateKey::from(OTHER_MEMBER), peer, now_secs())
+        };
+        prefetch_announced_blob(&node_client, &context_client, peer, announced)
+            .await
+            .expect("prefetch");
+        assert!(node_client.has_blob(&blob).expect("read"), "prefetched");
+
+        node_client
+            .release_prefetched_blobs(&context())
+            .await
+            .expect("release");
+        assert!(
+            !node_client.has_blob(&blob).expect("read"),
+            "the prefetch's reference was its own"
+        );
     }
 
     #[test]

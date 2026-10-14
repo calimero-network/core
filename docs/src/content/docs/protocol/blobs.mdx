@@ -216,6 +216,10 @@ What the connection buffered for a stream but nothing read is not counted, so ea
 Bytes any holder sends count against the announcer, so a peer serving junk, or any partial transfer, ahead of the real holder can make the prefetch fail; the blob is still fetchable from its uploader.
 An announcement dropped because both slots are busy costs nothing.
 A dropped prefetch costs availability for one blob, never correctness.
+A prefetch records the one reference it took, as a `PrefetchedBlob` row.
+That reference is released when the context is deleted.
+It is also released by a sweep that runs hourly, once two sweeps in a row (an hour apart) find this node no longer serves the context (deleted, left, or no longer a TEE member).
+A blob a served context holds is never released, and other owners' references keep the bytes.
 
 Announcing is best-effort in the same spirit, and **the producer does not wait
 for it**: the notices are sent detached, so `blob_announce_to_context` returns
