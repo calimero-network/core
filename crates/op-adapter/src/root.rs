@@ -4,7 +4,7 @@
 use calimero_account::WarrantStatement;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
-use calimero_governance_types::RootOp;
+use calimero_governance_types::{JoinAccountCredential, RootOp};
 use calimero_op::{OpPayload, ScopeId, SeatDevice};
 use calimero_primitives::context::GroupMemberRole;
 
@@ -145,6 +145,7 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
                 // A join op carries no scope statement; it binds at epoch 0,
                 // as the live apply does.
                 scope_epoch: 0,
+                applications: vec![],
             }
         } else {
             OpPayload::Noop
@@ -219,23 +220,38 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         // The admin half needs no arm: the root's `admin_identity` reaches the
         // cut through `auth_cut_context`, which reads it from the root meta that
         // genesis wrote. Only the device link is missing here.
-        RootOp::NamespaceCreatedV2 { account, .. } => {
-            Some(if credential_binds_the_member(op) {
-                OpPayload::DeviceLinked {
-                    genesis: account.genesis,
-                    chain: account.chain.clone(),
-                    cert: account.statement,
-                    // A join op carries no scope statement; it binds at epoch 0,
-                    // as the live apply does.
-                    scope_epoch: 0,
-                }
-            } else {
-                OpPayload::Noop
-            })
-        }
+        RootOp::NamespaceCreatedV2 { account, .. } => Some(founder_link(op, account)),
+        // The same genesis, carrying the founder whose devices its account
+        // namespace exempts from scope; the projection checks the id derives from it.
+        RootOp::AccountNamespaceCreated {
+            founder,
+            account,
+            salt,
+        } => Some(OpPayload::AccountNamespaceFounded {
+            founder: *founder,
+            salt: *salt,
+            carried: Box::new(founder_link(op, account)),
+        }),
         // Out-of-model: `KeyDelivery` is key transport, not authorization
         // state. (`RootOp` is `#[non_exhaustive]`, so a `_` arm is mandatory.)
         _ => None,
+    }
+}
+
+/// The founder's device link a genesis carries, or `Noop` when the credential is
+/// not the founder's.
+fn founder_link(op: &RootOp, account: &JoinAccountCredential) -> OpPayload {
+    if !credential_binds_the_member(op) {
+        return OpPayload::Noop;
+    }
+    OpPayload::DeviceLinked {
+        genesis: account.genesis,
+        chain: account.chain.clone(),
+        cert: account.statement,
+        // A genesis carries no scope statement; it binds at epoch 0, for every
+        // application, as the live apply does.
+        scope_epoch: 0,
+        applications: vec![],
     }
 }
 

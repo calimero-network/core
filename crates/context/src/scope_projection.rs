@@ -30,6 +30,7 @@ use calimero_governance_store::{
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
 };
 use calimero_op::{Op, OpPayload, ScopeId};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::{Acting, AuthorityBase, CutAncestry, ScopeState};
@@ -2244,6 +2245,35 @@ impl ScopeProjections {
         )
     }
 
+    /// The account `key` speaks for at the cut, `Some(None)` when nothing binds it
+    /// there. `None` on incomplete ancestry.
+    #[must_use]
+    pub fn signer_account_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        key: &PublicKey,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        Some(bound_account(&view, key))
+    }
+
+    /// Does a device of `account` scoped to `applications` reach `group`'s namespace
+    /// at the cut? `None` on incomplete ancestry.
+    #[must_use]
+    pub fn scope_reaches_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        account: &AccountId,
+        applications: &[ApplicationId],
+        heads: &[[u8; 32]],
+    ) -> Option<bool> {
+        let (view, _, _) = self.auth_cut_context(store, group, heads)?;
+        Some(view.scope_reaches(account, applications))
+    }
+
     /// If the cut holds a revocation of `account`'s `device`, or a narrowing past every
     /// link, the widest link epoch folded for it there. `None` on incomplete ancestry.
     #[must_use]
@@ -3514,6 +3544,7 @@ mod tests {
                 chain: account.chain.clone(),
                 cert: account.statement,
                 scope_epoch: 0,
+                applications: vec![],
             },
             "open-subgroup inheritance join folds its credential and no membership"
         );

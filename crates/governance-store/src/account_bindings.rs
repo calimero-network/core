@@ -136,6 +136,9 @@ pub enum BindingRejected {
     /// A withdrawal naming an account its device id was not minted for.
     #[error("the device id was not minted for the account the op names")]
     DeviceNotMintedForAccount,
+    /// A descope whose signer does not speak for the account at the op's cut.
+    #[error("the signer does not speak for the account at the op's cut")]
+    SignerNotTheAccount,
 }
 
 impl BindingRejected {

@@ -1509,7 +1509,7 @@ pub fn root_op_is_sealable(op: &RootOp) -> bool {
         // publish it, not who may read it.
         RootOp::RootGuarded { op, .. } => root_op_is_sealable(op),
         // Genesis, before any key exists.
-        RootOp::NamespaceCreatedV2 { .. } => false,
+        RootOp::NamespaceCreatedV2 { .. } | RootOp::AccountNamespaceCreated { .. } => false,
     }
 }
 
@@ -1847,6 +1847,13 @@ pub enum RootOp {
         op: Box<RootOp>,
         proof: Box<SignedOwnerOp>,
     },
+    /// [`Self::NamespaceCreatedV2`] for the founder's account namespace, its id derived under
+    /// its own domain, where its devices need no scope naming an application. Never delegable.
+    AccountNamespaceCreated {
+        founder: AccountId,
+        account: Box<JoinAccountCredential>,
+        salt: [u8; 32],
+    },
 }
 
 impl RootOp {
@@ -1935,6 +1942,9 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::OnBehalf { .. }) => "root_on_behalf",
             NamespaceOp::Root(RootOp::RootGuarded { .. }) => "root_guarded",
             NamespaceOp::Root(RootOp::NamespaceCreatedV2 { .. }) => "namespace_created_v2",
+            NamespaceOp::Root(RootOp::AccountNamespaceCreated { .. }) => {
+                "account_namespace_created"
+            }
             NamespaceOp::Root(RootOp::MemberJoinedViaTeeAttestation { .. }) => {
                 "member_joined_via_tee_root"
             }
@@ -2391,7 +2401,8 @@ pub struct SignedNamespaceOp {
 /// v26: a device link, unlink or descope the apply refuses on the op alone or at its
 /// cut is an error, so it is never logged or folded. Nothing moves on the wire, but a
 /// v25 node logs such an op and its descendants stall on patched nodes: a coordinated
-/// upgrade.
+/// upgrade. `RootOp::AccountNamespaceCreated` is appended, and a link's endorser and a
+/// descope's signer are named at the op's cut.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
 
 /// The first schema whose apply refuses owner-level ops that carry no root

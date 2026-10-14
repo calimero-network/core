@@ -1,8 +1,8 @@
 //! What a derived namespace id was derived from: its founder and salt.
 //!
 //! Every namespace root gets `calimero_account::founded_namespace_id(founder,
-//! salt)` as its id, and its
-//! genesis (`RootOp::NamespaceCreatedV2`) carries the salt (see
+//! salt)` as its id, except an account namespace (`RootOp::AccountNamespaceCreated`),
+//! which gets `account_namespace_id(founder, salt)`; its genesis carries the salt (see
 //! `calimero_account`'s `namespace_id` module for why). This row is where a node
 //! keeps that pair so it can show it: anyone holding both can confirm which
 //! account founded the namespace without holding any of its governance state.
@@ -34,7 +34,7 @@
 //! account id; its genesis, and so this row, are held only by that namespace's
 //! own members.
 
-use calimero_account::{is_founded_by, AccountId, NAMESPACE_SALT_LEN};
+use calimero_account::{is_account_namespace_of, is_founded_by, AccountId, NAMESPACE_SALT_LEN};
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::key::Generic as GenericKey;
 use calimero_store::slice::Slice;
@@ -53,6 +53,29 @@ fn key(namespace_id: &ContextGroupId) -> GenericKey {
     GenericKey::new(FOUNDING_SCOPE, namespace_id.to_bytes())
 }
 
+/// Which genesis founded a namespace, and so which derivation its id must match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GenesisKind {
+    Ordinary,
+    AccountNamespace,
+}
+
+impl GenesisKind {
+    /// Does `founder` with `salt` derive `id` under this kind's domain?
+    #[must_use]
+    pub fn derives(
+        self,
+        id: &[u8; 32],
+        founder: &AccountId,
+        salt: &[u8; NAMESPACE_SALT_LEN],
+    ) -> bool {
+        match self {
+            Self::Ordinary => is_founded_by(id, founder, salt),
+            Self::AccountNamespace => is_account_namespace_of(id, founder, salt),
+        }
+    }
+}
+
 /// Read/write access to the founding records of namespaces this node founded.
 pub struct NamespaceFoundingRepository<'a> {
     store: &'a Store,
@@ -64,13 +87,8 @@ impl<'a> NamespaceFoundingRepository<'a> {
         Self { store }
     }
 
-    /// Record that `founder` founded `namespace_id` with `salt`.
-    ///
-    /// Refused unless the pair reproduces the id — a record that does not is a
-    /// caller bug and would prove nothing. Idempotent for the same pair; a
-    /// different pair for the same id is refused rather than overwritten,
-    /// since exactly one pair reproduces a derived id and replacing it would
-    /// destroy the only copy of the right one.
+    /// Record that `founder` founded `namespace_id` with `salt` through a `kind` genesis.
+    /// Refused unless the pair derives the id under that kind; idempotent, never overwritten.
     ///
     /// # Errors
     /// A pair that does not reproduce the id, a conflicting record, or the
@@ -80,8 +98,9 @@ impl<'a> NamespaceFoundingRepository<'a> {
         namespace_id: &ContextGroupId,
         founder: &AccountId,
         salt: &[u8; NAMESPACE_SALT_LEN],
+        kind: GenesisKind,
     ) -> EyreResult<()> {
-        if !is_founded_by(&namespace_id.to_bytes(), founder, salt) {
+        if !kind.derives(&namespace_id.to_bytes(), founder, salt) {
             bail!(
                 "refusing to record a founding for namespace {namespace_id:?}: account \
                  {founder} with this salt does not derive that id"
@@ -131,6 +150,35 @@ impl<'a> NamespaceFoundingRepository<'a> {
         let mut salt_bytes = [0u8; NAMESPACE_SALT_LEN];
         salt_bytes.copy_from_slice(salt);
         Ok(Some((AccountId::from(founder_bytes), salt_bytes)))
+    }
+}
+
+/// Namespaces whose genesis marked them as their founder's account namespace
+/// (`RootOp::AccountNamespaceCreated`), recorded by that apply on every replica.
+const ACCOUNT_SCOPE: [u8; 16] = *b"calimero-nsacctn";
+
+fn account_key(namespace_id: &ContextGroupId) -> GenericKey {
+    GenericKey::new(ACCOUNT_SCOPE, namespace_id.to_bytes())
+}
+
+impl NamespaceFoundingRepository<'_> {
+    /// Mark `namespace_id` as its founder's account namespace.
+    pub fn mark_account_namespace(&self, namespace_id: &ContextGroupId) -> EyreResult<()> {
+        let data = GenericData::from(Slice::from(vec![1u8]));
+        self.store.handle().put(&account_key(namespace_id), &data)?;
+        Ok(())
+    }
+
+    /// The founder whose account namespace `namespace_id` is, or `None` when its
+    /// genesis marked no account namespace (or has not applied here).
+    pub fn account_namespace_founder(
+        &self,
+        namespace_id: &ContextGroupId,
+    ) -> EyreResult<Option<AccountId>> {
+        if !self.store.handle().has(&account_key(namespace_id))? {
+            return Ok(None);
+        }
+        Ok(self.get(namespace_id)?.map(|(founder, _)| founder))
     }
 }
 
@@ -214,7 +262,7 @@ impl NamespaceFoundingRepository<'_> {
 
 #[cfg(test)]
 mod tests {
-    use calimero_account::founded_namespace_id;
+    use calimero_account::{account_namespace_id, founded_namespace_id};
 
     use super::*;
     use crate::test_fixtures::test_store;
@@ -234,7 +282,8 @@ mod tests {
         let store = test_store();
         let repo = NamespaceFoundingRepository::new(&store);
         assert_eq!(repo.get(&derived()).unwrap(), None);
-        repo.record(&derived(), &founder(), &SALT).unwrap();
+        repo.record(&derived(), &founder(), &SALT, GenesisKind::Ordinary)
+            .unwrap();
         assert_eq!(repo.get(&derived()).unwrap(), Some((founder(), SALT)));
     }
 
@@ -242,8 +291,10 @@ mod tests {
     fn recording_the_same_pair_again_is_a_no_op() {
         let store = test_store();
         let repo = NamespaceFoundingRepository::new(&store);
-        repo.record(&derived(), &founder(), &SALT).unwrap();
-        repo.record(&derived(), &founder(), &SALT).unwrap();
+        repo.record(&derived(), &founder(), &SALT, GenesisKind::Ordinary)
+            .unwrap();
+        repo.record(&derived(), &founder(), &SALT, GenesisKind::Ordinary)
+            .unwrap();
         assert_eq!(repo.get(&derived()).unwrap(), Some((founder(), SALT)));
     }
 
@@ -252,11 +303,34 @@ mod tests {
         let store = test_store();
         let repo = NamespaceFoundingRepository::new(&store);
         let random = ContextGroupId::from([0x5a; 32]);
-        assert!(repo.record(&random, &founder(), &SALT).is_err());
         assert!(repo
-            .record(&derived(), &AccountId::from([0x12; 32]), &SALT)
+            .record(&random, &founder(), &SALT, GenesisKind::Ordinary)
+            .is_err());
+        assert!(repo
+            .record(
+                &derived(),
+                &AccountId::from([0x12; 32]),
+                &SALT,
+                GenesisKind::Ordinary
+            )
             .is_err());
         assert_eq!(repo.get(&random).unwrap(), None);
+        assert_eq!(repo.get(&derived()).unwrap(), None);
+    }
+
+    #[test]
+    fn a_pair_is_refused_under_the_other_genesis_kind() {
+        let store = test_store();
+        let repo = NamespaceFoundingRepository::new(&store);
+        let account = ContextGroupId::from(account_namespace_id(&founder(), &SALT));
+        assert!(repo
+            .record(&derived(), &founder(), &SALT, GenesisKind::AccountNamespace)
+            .is_err());
+        assert!(repo
+            .record(&account, &founder(), &SALT, GenesisKind::Ordinary)
+            .is_err());
+        repo.record(&account, &founder(), &SALT, GenesisKind::AccountNamespace)
+            .unwrap();
         assert_eq!(repo.get(&derived()).unwrap(), None);
     }
 
@@ -264,7 +338,8 @@ mod tests {
     fn records_are_per_namespace() {
         let store = test_store();
         let repo = NamespaceFoundingRepository::new(&store);
-        repo.record(&derived(), &founder(), &SALT).unwrap();
+        repo.record(&derived(), &founder(), &SALT, GenesisKind::Ordinary)
+            .unwrap();
         let other = ContextGroupId::from(founded_namespace_id(&founder(), &[0x23; 32]));
         assert_eq!(repo.get(&other).unwrap(), None);
     }

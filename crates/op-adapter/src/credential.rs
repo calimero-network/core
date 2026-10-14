@@ -124,6 +124,9 @@ pub(crate) fn credential_binds_the_member(op: &RootOp) -> bool {
         // the principal the op names" question applies unchanged.
         RootOp::NamespaceCreatedV2 {
             founder, account, ..
+        }
+        | RootOp::AccountNamespaceCreated {
+            founder, account, ..
         } => join_credential_binds(founder, account),
         _ => false,
     }

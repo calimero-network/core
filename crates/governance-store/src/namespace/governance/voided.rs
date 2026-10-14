@@ -212,6 +212,7 @@ impl NamespaceGovernance<'_> {
                 | RootOp::MemberJoinedOpen { .. }
                 | RootOp::MemberJoinedViaTeeAttestation { .. }
                 | RootOp::NamespaceCreatedV2 { .. }
+                | RootOp::AccountNamespaceCreated { .. }
         ) {
             return Ok(false);
         }

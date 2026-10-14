@@ -175,9 +175,9 @@ fn device_link(world: &World, actor: &Actor) -> Outcome {
         .expect("read live bindings")
         .iter()
         .any(|binding| binding.device == device);
-    // A non-member endorser is still resolved from live rows, so the link records
-    // nothing rather than being refused.
-    verdict(applied, linked, |_| false)
+    verdict(applied, linked, |reason| {
+        matches!(reason, BindingRejected::AccountNotMember)
+    })
 }
 
 /// The actor withdraws another member's device, with no proof from its account.
@@ -236,9 +236,9 @@ fn descope(world: &World, signer: &Actor, account: &Actor, device: DeviceId) -> 
         !narrowed || (live(&world.store) && !live(&store)),
         "a recorded narrowing drops the device's live binding"
     );
-    // The signer is still read live here, so a foreign signer records nothing
-    // rather than being refused.
-    verdict(applied, narrowed, |_| false)
+    verdict(applied, narrowed, |reason| {
+        matches!(reason, BindingRejected::SignerNotTheAccount)
+    })
 }
 
 /// The actor narrows the other device of its own account.
