@@ -896,7 +896,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 31] = [
+    const REGISTRY: [Entry; 32] = [
         (
             "unordered_map_insert",
             FlatPerEntry,

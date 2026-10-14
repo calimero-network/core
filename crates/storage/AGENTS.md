@@ -325,8 +325,10 @@ switching a field between the two types needs no migration.
   `created_at` and `order` are written at link, a re-link keeps them, and a
   value write rewrites only `updated_at`. A path that changes a linked child's
   `created_at` or `order` must drop the parent's tree, as `set_storage_type`
-  does. Only a collection with more than `LEAF_MAX` children builds one, so a
-  small vector pays nothing on its writes. Nothing in it is synced or hashed.
+  does. Only a collection with more than `LEAF_MAX` children builds one; every
+  link still pays one index read to look for its header (beside the admitted
+  count's), and a link under a tree rewrites one leaf and the header (~0.5M
+  gas per mero-chat send). Nothing in it is synced or hashed.
   `order_index/tests.rs` checks it against a sorted model through leaf and
   inner splits and through a vector's local, applied and bypassing changes;
   `positions_count_only_admitted_entries_as_the_trie_changes` (in

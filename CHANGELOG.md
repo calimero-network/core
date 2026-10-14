@@ -491,6 +491,23 @@
 
 ### Fixed
 
+- **A large vector reads a position in constant rows.** A position is a
+  child's rank in `(created_at, order, id)` order, and the child trie is keyed
+  by the random ids pushes mint, so `Vector::get`, `AuthoredVector::get` and
+  `owner_of`, and every positional read loaded and sorted every child, once
+  per call. mero-chat's `get_messages`, which asks for the newest 20, read
+  ~1.3 rows per message in the channel and ran out of gas between 16,000 and
+  20,000 messages. A node-local counted B+ tree over the sort keys
+  (`order_index.rs`, beside the admitted count of #4232: never synced or
+  hashed) now answers them, one row per level. Measured on the real mero-chat
+  contract (`chat_wall`, rc.83 with this change): `get_messages` at 16,000
+  messages goes from 962M gas (20,467 reads) to 18.2M (264 reads), and stays
+  there at 40,000; `send_message`, which now carries the tree, goes from ~4.3M
+  to ~4.9M. The first positional read of a vector with more than 128 children
+  builds the tree, which a snapshot install or an older binary leaves stale
+  for the next read to rebuild; every link pays one more node-local read to
+  look for it. No format change.
+
 - **A node no longer ships application data in its logs.** merod's default
   filter (`merod`, `calimero_*` and `mero_auth` at `info`) sends `info` and above
   to whoever runs the node's log pipeline, which on a TEE node is a party the

@@ -106,7 +106,7 @@ fn the_tree_answers_as_a_sorted_list_through_links_and_unlinks() {
         change(parent, &mut changes, None, Some(&next));
         let _new = model.insert(SortKey::of(&next));
         linked.push(next);
-        if rng.next() % 4 == 0 {
+        if rng.next().is_multiple_of(4) {
             let gone = linked.swap_remove(rng.below(linked.len()));
             change(parent, &mut changes, Some(&gone), None);
             let _removed = model.remove(&SortKey::of(&gone));
@@ -118,7 +118,7 @@ fn the_tree_answers_as_a_sorted_list_through_links_and_unlinks() {
         let gone = linked.swap_remove(rng.below(linked.len()));
         change(parent, &mut changes, Some(&gone), None);
         let _removed = model.remove(&SortKey::of(&gone));
-        if linked.len() % 2_000 == 0 {
+        if linked.len().is_multiple_of(2_000) {
             assert_answers_as(parent, &model, "shrinking");
         }
     }
@@ -133,7 +133,7 @@ fn a_change_the_tree_cannot_carry_leaves_it_stale() {
     env::reset_for_testing();
     let parent = Id::random();
     let held = child(1, 0);
-    record::<MainStorage>(parent, &Domain::Open, root(0), &[held.clone()]);
+    record::<MainStorage>(parent, &Domain::Open, root(0), core::slice::from_ref(&held));
 
     let mut changes = 0;
     change(parent, &mut changes, None, Some(&held));
