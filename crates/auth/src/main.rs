@@ -116,6 +116,8 @@ async fn main() -> Result<()> {
 
     let auth_service = AuthService::new(providers, token_manager);
 
+    config.development.warn_rejected_trusted_callback_origins();
+
     // Start the server
     info!("Starting auth server on {}", config.listen_addr);
 
