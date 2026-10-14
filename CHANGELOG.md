@@ -491,6 +491,66 @@
 
 ### Fixed
 
+- **A written-once entry that receives two signed values is sealed.** A
+  `WriteOnce`, `ModeratedOnce` or `Frozen` entry given two different authentic
+  values by the party allowed to write it now keeps both signed writes as
+  proof, and a read answers `StorageError::Conflicted`. Every listing of a
+  written-once collection yields `Written<V>` (`Value` or `Conflicted`) per
+  entry, so one sealed entry never fails a whole listing. `WRITE_ONCE` may
+  only be granted alone. (breaking for app authors: a second value no longer
+  loses quietly, and written-once listings change type) (#4550)
+
+- **A delegated op past its warrant's expiry is refused on every replica.**
+  `GroupOp::OnBehalf`, `GroupOp::ContextRegisteredOnBehalf` and
+  `RootOp::OnBehalf` carry the relay's signed `stamped_at`, and every replica
+  refuses one stamped after the warrant's `not_after`; before, an op whose
+  warrant had expired was applied. (breaking: signed group ops move to schema
+  17 and namespace ops to 25, so SDKs must sign at 25, as mero-js does since
+  calimero-network/mero-js#261) (#4552)
+
+- **TLS no longer carries rustls 0.23.45's advisories.** `rustls` moves to
+  0.23.46 for RUSTSEC-2026-0346 to -0349. (#4567)
+
+- **An overridden dashboard or auth-frontend source must carry its sha256.**
+  A remote override (`CALIMERO_WEBUI_SRC` / `CALIMERO_AUTH_FRONTEND_SRC` as a
+  URL, or a non-default repo, version or asset) skipped the pinned hash and
+  embedded an unverified archive. The build now fails unless the matching
+  `*_SHA256` is set; a local directory override is still unverified. (#4515)
+
+- **A buffered snapshot entity is applied through storage, not written raw.**
+  An entity buffered for a schema the node could not yet read was written
+  over newer, deleted or written-once state, and left its ancestors' hashes
+  stale. It now drains through the storage apply a repair-pushed leaf takes,
+  parents first, and a declined public entity outside the tree is no longer
+  buffered. (#4548)
+
+- **A prefetched blob is released once its context is not served.** A fleet
+  node's prefetch took a blob reference nothing gave back, so the bytes
+  stayed on disk after the context was deleted or left. Each prefetch now
+  records its reference (new node-local `PrefetchedBlob` column), released
+  when the context is deleted or found unserved on two hourly sweeps in a
+  row. (#4531)
+
+- **A device its own account has unlinked gets no scope key.** A node now
+  refuses a join, a key pull, a rotation fan-out or a member-add delivery to a
+  device that this node's account namespace has revoked or withdrawn, even
+  before the unlink reaches the namespace being served. (#4551)
+
+- **Joining an Open subgroup you already inherit no longer hangs.**
+  `join_group` answers locally when this node's account is already a member
+  by inheritance, and a refused namespace join returns the refusal once no
+  other peer is left to ask, instead of retrying up to 32 times. (#4561)
+
+- **Credentials stay out of the logs a node ships.** URLs are logged without
+  userinfo, query or fragment (app downloads, install sources, the merod KMS
+  client); a client-chosen string JSON-RPC id and login names are no longer
+  logged at `info`; and standalone mero-auth's default filter is
+  `mero_auth=info,tower_http=warn`. (#4561)
+
+- **More secrets are redacted from `Debug` output.** Group key rows, the
+  `merod account` signing commands' secrets and mero-auth's token and login
+  messages print a placeholder instead of the key, token or password. (#4530)
+
 - **A large vector reads a position in constant rows.** A position is a
   child's rank in `(created_at, order, id)` order, and the child trie is keyed
   by the random ids pushes mint, so `Vector::get`, `AuthoredVector::get` and
@@ -1843,6 +1903,18 @@
   or `hyperfeed-two.vercel.app`) gets an `admin` key, as the admin dashboard
   does, so it can install apps and delete feeds; any other app keeps the app
   set. (#4568)
+
+- **A nested subgroup is created Open unless the caller asks otherwise.**
+  `POST /admin-api/groups` with a `parentGroupId` and no `visibility` now
+  creates an Open group, as a top-level subgroup already was; `"restricted"`
+  keeps it private, and any other value answers 400 (the namespace path
+  answered 500). (breaking: a caller that wants a private nested group must
+  now pass `visibility: "restricted"`) (#4543)
+
+- **search-chat and rich-collab label their read and delete methods.** Their
+  read-only methods are `#[app::view]` and their deletes
+  `#[app::destructive]`, so a client can tell from the manifest which calls
+  only read. Views take the context's shared read lock. (#4566)
 
 - **TEE admission is bound to the admitted credential and fresh.** A fleet TEE
   node is admitted only on a quote whose report data is a challenge the
