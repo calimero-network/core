@@ -198,6 +198,7 @@ impl RichCollabState {
 
     /// Sorted, so a scenario can assert the whole list: map iteration order is
     /// a hash order and no two replicas have to agree on it.
+    #[app::view]
     pub fn list_docs(&self) -> app::Result<Vec<String>> {
         let mut docs: Vec<String> = self.docs.entries()?.map(|(key, _)| key).collect();
         docs.sort();
@@ -223,6 +224,7 @@ impl RichCollabState {
         Ok(block)
     }
 
+    #[app::destructive]
     pub fn delete_block(&mut self, doc: String, block: String) -> app::Result<()> {
         let id = decode_token(&block)?;
         let _was = self.write(&doc)?.delete_block(id)?;
@@ -350,6 +352,7 @@ impl RichCollabState {
 
     // ---- reads ----
 
+    #[app::view]
     pub fn get_document(&self, doc: String) -> app::Result<Vec<Block>> {
         self.read(&doc)?
             .blocks()?
@@ -358,6 +361,7 @@ impl RichCollabState {
             .collect()
     }
 
+    #[app::view]
     pub fn get_text(&self, doc: String, block: String) -> app::Result<String> {
         Ok(self
             .read(&doc)?
@@ -368,6 +372,7 @@ impl RichCollabState {
     /// The ordered document as one canonical line, so three nodes are compared
     /// exactly by one value. Block ids are excluded because they carry the
     /// minting replica, which no two nodes agree on.
+    #[app::view]
     pub fn get_state_digest(&self, doc: String) -> app::Result<String> {
         let mut out = String::new();
         for view in &self.read(&doc)?.blocks()? {
@@ -378,6 +383,7 @@ impl RichCollabState {
 
     /// How many times `needle` appears contiguously in a block's text, which is
     /// an exact claim about interleaving that `contains` cannot make.
+    #[app::view]
     pub fn passage_count(&self, doc: String, block: String, needle: String) -> app::Result<usize> {
         let text = self
             .read(&doc)?
