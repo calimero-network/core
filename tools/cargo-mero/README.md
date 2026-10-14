@@ -147,6 +147,7 @@ The workspace table wins over the package table when both are present.
 | `min-runtime-version` | `minRuntimeVersion`    | `0.1.0`                          |
 | `slug`                | `handlers.slug`        | `package`                        |
 | `frontend`            | `links.frontend`       | omitted                          |
+| `frontend-aliases`    | `frontendAliases`      | empty (see below)                |
 | `github`              | `links.github`         | omitted                          |
 | `docs`                | `links.docs`           | omitted                          |
 | `services`            | `services[]`           | empty (see [Multi-service workspaces](#multi-service-workspaces)) |
@@ -156,6 +157,7 @@ The workspace table wins over the package table when both are present.
 A missing or unreadable file fails the bundle and names the path it tried.
 cargo-mero does not check the guide's content; the app registry defines its required sections when you publish.
 `slug` is the deep-link handler slug (`https://links.calimero.network/<slug>/...`, `calimero://<slug>/...`); it defaults to `package` when not set.
+`frontend-aliases` lists other URLs the same frontend is served at, e.g. the old domain of an app that moved. Clients never open them: `links.frontend` stays where the app loads. A node's sign-in page also trusts a login callback to any alias's origin, so a node or launcher still opening the old address keeps signing in. Drop an alias once nothing opens it. Each entry must be an absolute http(s) URL, and `cargo mero bundle` warns about a `localhost` frontend or alias unless signing with `--dev`.
 `author` is not just displayed: the registry checks it against your authenticated registry username (or `_ownerEmail` against your account email) on publish, and refuses a new version of the package when it doesn't match.
 
 The app version (`manifest.json` `appVersion`) is not a metadata key.

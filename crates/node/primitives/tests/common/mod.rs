@@ -252,6 +252,7 @@ pub fn create_test_bundle(
             size: content.len() as u64,
         }),
         links: None,
+        frontend_aliases: Vec::new(),
         services: None,
         signature: None,
     };
@@ -338,6 +339,7 @@ pub fn signed_bundle_bytes_by(
         wasm: services.is_empty().then(|| artifact(&wasm[0])),
         abi: None,
         links: None,
+        frontend_aliases: Vec::new(),
         services: (!services.is_empty()).then(|| {
             services
                 .iter()

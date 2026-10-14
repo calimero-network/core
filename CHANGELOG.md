@@ -4,6 +4,16 @@
 
 ### Added
 
+- **A bundle can name the other places its frontend is served.**
+  `frontend-aliases = ["https://old.example"]` in `[package.metadata.calimero]`
+  becomes the manifest's top-level `frontendAliases`, and a node stores it in
+  the installed application's metadata next to `links.frontend`. Clients still
+  open only `links.frontend`; a node's sign-in page also trusts a login
+  callback to an alias's origin, so an app that moves domain keeps signing in
+  from nodes and launchers that still open the old one. `cargo mero bundle`
+  refuses an alias that is not an http(s) URL and warns about a `localhost`
+  frontend or alias unless signing with `--dev`.
+
 - **A node behind an auth proxy can seal logins and logged-in calls.**
   `[server.sealed] forward_auth` names the auth service the proxy asks (a
   loopback `http` origin, e.g. `http://127.0.0.1:3001`; anything else fails

@@ -125,6 +125,7 @@ pub fn render(
             github: meta.github.clone(),
             docs: meta.docs.clone(),
         }),
+        frontend_aliases: meta.frontend_aliases.clone(),
         signature: None,
     };
     Ok(serde_json::to_value(manifest)?)
@@ -153,6 +154,7 @@ mod tests {
             docs: None,
             min_runtime_version: "0.1.0".into(),
             frontend: None,
+            frontend_aliases: vec![],
             app_version: "1.0.0".into(),
             services: vec![],
             manifest_dir: Utf8PathBuf::new(),
@@ -290,6 +292,7 @@ mod tests {
             docs: None,
             min_runtime_version: "0.0.0".into(),
             frontend: Some("https://example.com".into()),
+            frontend_aliases: Vec::new(),
             app_version: "0.5.0".into(),
             services: vec![],
             manifest_dir: Utf8PathBuf::new(),

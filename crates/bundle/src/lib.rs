@@ -74,7 +74,9 @@ pub struct BundleLinks {
     pub docs: Option<String>,
 }
 
-fn is_web_url(url: &str) -> bool {
+/// An absolute http(s) URL with a host and no control characters: what every
+/// `links.*` value and `frontendAliases` entry must be before a node stores it.
+pub fn is_web_url(url: &str) -> bool {
     let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
     let rest = if lower.starts_with("https://") {
         &url[8..]
@@ -221,6 +223,19 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<BundleLinks>,
 
+    /// Other URLs the same frontend is served at, besides `links.frontend`.
+    /// Never opened: `links.frontend` stays the one place clients load the
+    /// app. A node's sign-in page also trusts a login callback to any of their
+    /// origins, so an app that moves domain lists its old origin here until
+    /// every client has moved, then drops it.
+    ///
+    /// A sibling of `links`, not inside it: the registry refuses any `links`
+    /// value that is not a single URL string, and clients iterate `links` as
+    /// one URL each. An older node or registry ignores an unknown top-level
+    /// field, and a bundle's id is `(package, signer)`, so no app moves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frontend_aliases: Vec<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<BundleSignature>,
 }
@@ -292,6 +307,7 @@ impl BundleManifest {
             build_info: _,
             interfaces: _,
             links: _,
+            frontend_aliases: _,
             signature: _,
         } = self;
 
@@ -313,8 +329,8 @@ impl BundleManifest {
 
     /// Serialize the manifest's display metadata to JSON bytes for storage.
     ///
-    /// Extracts `package`, `version`, `metadata.*`, and `links.*` into a flat
-    /// JSON object. This replaces the ~70-line inline blocks that were
+    /// Extracts `package`, `version`, `metadata.*`, `links.*` and
+    /// `frontendAliases` into a flat JSON object. This replaces the ~70-line inline blocks that were
     /// copy-pasted across the three bundle install paths.
     pub fn to_metadata_json(&self) -> eyre::Result<Vec<u8>> {
         let mut obj = serde_json::Map::new();
@@ -374,6 +390,16 @@ impl BundleManifest {
             }
         }
 
+        let aliases: Vec<serde_json::Value> = self
+            .frontend_aliases
+            .iter()
+            .filter(|v| is_web_url(v))
+            .map(|v| serde_json::Value::String(v.clone()))
+            .collect();
+        if !aliases.is_empty() {
+            obj.insert("frontendAliases".into(), serde_json::Value::Array(aliases));
+        }
+
         Ok(serde_json::to_vec(&serde_json::Value::Object(obj))?)
     }
 }
@@ -430,6 +456,48 @@ mod tests {
         meta.get("links")
             .cloned()
             .unwrap_or(serde_json::Value::Null)
+    }
+
+    fn stored_meta(top_level_block: &str) -> serde_json::Value {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json(top_level_block))
+            .expect("manifest should deserialize");
+        serde_json::from_slice(&manifest.to_metadata_json().unwrap()).unwrap()
+    }
+
+    /// A node's sign-in page reads the aliases from what an install stores, so
+    /// they have to survive into it - and only as web URLs, like `links`.
+    #[test]
+    fn stores_web_frontend_aliases() {
+        let meta = stored_meta(
+            r#""frontendAliases": ["https://old.example/", "javascript:alert(1)", "http://localhost:5173"],"#,
+        );
+        assert_eq!(
+            meta["frontendAliases"],
+            serde_json::json!(["https://old.example/", "http://localhost:5173"])
+        );
+    }
+
+    /// An app without aliases stores the same bytes it always did.
+    #[test]
+    fn no_frontend_aliases_stores_nothing() {
+        let meta = stored_meta("");
+        assert!(meta.get("frontendAliases").is_none());
+        let only_unsafe = stored_meta(r#""frontendAliases": ["data:text/html,x"],"#);
+        assert!(only_unsafe.get("frontendAliases").is_none());
+    }
+
+    #[test]
+    fn frontend_aliases_round_trip_and_stay_off_the_wire_when_empty() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json(
+            r#""frontendAliases": ["https://old.example"],"#,
+        ))
+        .unwrap();
+        assert_eq!(manifest.frontend_aliases, vec!["https://old.example"]);
+
+        let without: BundleManifest = serde_json::from_str(&manifest_json("")).unwrap();
+        assert!(without.frontend_aliases.is_empty());
+        let wire = serde_json::to_value(&without).unwrap();
+        assert!(wire.get("frontendAliases").is_none());
     }
 
     #[test]
