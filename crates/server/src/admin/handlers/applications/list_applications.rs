@@ -8,12 +8,22 @@ use tracing::{error, info};
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
+pub async fn handler(
+    Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
+) -> impl IntoResponse {
     info!("Listing applications");
 
     let applications = state
         .node_client
         .list_applications()
+        .map(|applications| match &client_key {
+            Some(key) => applications
+                .into_iter()
+                .filter(|app| key.permits_application(state.ctx_client.datastore(), &app.id))
+                .collect(),
+            None => applications,
+        })
         .map_err(|err| parse_api_error(err).into_response());
     match applications {
         Ok(applications) => {

@@ -817,3 +817,61 @@ async fn a_bound_key_releases_only_its_own_reference_to_a_shared_blob() {
         "their copy survives"
     );
 }
+
+fn seed_application(node: &Node, app: ApplicationId, bytecode: BlobId) {
+    use calimero_store::types::{ApplicationMeta as ApplicationRow, PackageInfo};
+    node.store
+        .handle()
+        .put(
+            &ApplicationMeta::new(app),
+            &ApplicationRow::new(
+                calimero_store::key::BlobMeta::new(bytecode),
+                1,
+                "calimero://test".into(),
+                Box::default(),
+                calimero_store::key::BlobMeta::new([0; 32].into()),
+                PackageInfo {
+                    package: "".into(),
+                    version: "".into(),
+                    signer_id: "".into(),
+                    state_version: 0,
+                },
+            ),
+        )
+        .expect("application row");
+}
+
+#[actix::test]
+async fn a_bound_key_lists_only_its_own_application() {
+    let node = Node::new().await;
+    seed_application(&node, node.mine.app, node.mine.blob);
+    seed_application(&node, node.theirs.app, node.theirs.blob);
+    let token = node.bound_to_mine().await;
+
+    let (status, body) = node.call(&token, Method::GET, "/applications", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed = ids(&body, "apps", "id");
+    assert_eq!(listed, vec![node.mine.app.to_string()], "{body}");
+}
+
+#[actix::test]
+async fn a_refused_blob_delete_keeps_the_keys_access() {
+    let node = Node::new().await;
+    seed_application(&node, node.mine.app, node.mine.blob);
+    let token = node.bound_to_mine().await;
+    let (mine, ctx) = (node.mine.blob, node.mine.context);
+
+    let (status, _) = node
+        .call(&token, Method::DELETE, &format!("/blobs/{mine}"), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "an application artifact");
+    let (status, _) = node
+        .call(
+            &token,
+            Method::GET,
+            &format!("/blobs/{mine}?context_id={ctx}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "still mine to read");
+}

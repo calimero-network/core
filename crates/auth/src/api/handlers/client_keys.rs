@@ -216,7 +216,13 @@ pub async fn generate_client_key_handler(
     }
 
     // A bound key acts only inside its binding, which `admin` would void.
-    let bound = !context_id.is_empty() || !context_identity.is_empty() || application_id.is_some();
+    let requested_binding = request.permissions.as_deref().is_some_and(|permissions| {
+        !crate::auth::bindings::ClientKeyBindings::from_permissions(permissions).is_unbound()
+    });
+    let bound = !context_id.is_empty()
+        || !context_identity.is_empty()
+        || application_id.is_some()
+        || requested_binding;
 
     if let Some(additional_perms) = request.permissions {
         for perm in additional_perms {
@@ -716,6 +722,24 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn a_binding_named_among_the_permissions_cannot_be_admin() {
+        let (state, headers) = admin_state().await;
+
+        assert_eq!(
+            mint(
+                &state,
+                &headers,
+                None,
+                &["admin", "context[ctx-1,member-pk-1]"]
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
         let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
         assert!(clients.is_empty(), "no key may be stored: {clients:?}");
     }

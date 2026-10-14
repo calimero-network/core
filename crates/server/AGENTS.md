@@ -329,12 +329,12 @@ It executes as the node inside its binding, but it is never the node owner on th
 - A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group the binding reaches, or one this node does not hold whose invitation names the key's application (`refuse_join_outside_binding`).
   That application is an unsigned hint and it seeds the joiner's group target, so a forged hint can only join a group whose invitation the caller already holds.
 - Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
-  The `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
-  Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives up that association, and `GET /blobs` is refused.
+  `GET /applications`, the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
+  Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up once the reference is released (bound-key deletes are serialized), and `GET /blobs` is refused.
 - SSE: a bound key's session principal includes its binding, so it can neither adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
 
 Every check fails closed when the context or group cannot be resolved.
-A key with no binding is unaffected, and `/admin/client-key` never mints `admin` on a bound key.
+A key with no binding is unaffected, and `/admin/client-key` never mints `admin` on a bound key, whether the binding comes from its fields or its permission list.
 
 ## Sealed transport
 
