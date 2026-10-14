@@ -514,6 +514,20 @@ pub struct DevelopmentConfig {
     /// Authorization header value required for mock endpoint
     #[serde(default)]
     pub mock_auth_header_value: Option<String>,
+
+    /// App origins, besides the node's own and the app registry's declared
+    /// frontends, that the login page may hand a freshly minted token pair to
+    /// (`callback-url`). For a developer's node: a Vercel preview of an app
+    /// runs on its own origin, which the registry does not declare, so its
+    /// login is otherwise refused. The desktop app edits this list under
+    /// Settings → Developer.
+    ///
+    /// Exact `http(s)` origins (`https://app-git-branch-team.vercel.app`), no
+    /// paths and no wildcards: each one can receive this node's tokens.
+    /// [`trusted_callback_origins`](Self::trusted_callback_origins) drops
+    /// anything else. Published on `GET /auth/providers`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_callback_origins: Vec<String>,
 }
 
 impl Default for DevelopmentConfig {
@@ -522,8 +536,65 @@ impl Default for DevelopmentConfig {
             enable_mock_auth: false,        // Disabled by default for security
             mock_auth_require_header: true, // Require auth header by default
             mock_auth_header_value: None,
+            trusted_callback_origins: Vec::new(),
         }
     }
+}
+
+impl DevelopmentConfig {
+    /// The configured trusted callback origins that are well-formed: `http` or
+    /// `https`, no path, query or fragment, no wildcard, each origin once, in
+    /// the order given. Anything else is dropped rather than guessed at, since
+    /// guessing could only widen who receives tokens; startup logs each one
+    /// dropped ([`Self::warn_rejected_trusted_callback_origins`]).
+    #[must_use]
+    pub fn trusted_callback_origins(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for origin in self
+            .trusted_callback_origins
+            .iter()
+            .filter_map(|raw| normalize_origin(raw))
+        {
+            if !out.contains(&origin) {
+                out.push(origin);
+            }
+        }
+        out
+    }
+
+    /// Log each `trusted_callback_origins` entry that is not an exact origin,
+    /// once, when the service starts, so a typo is visible in the node log
+    /// instead of only as a refused login.
+    pub fn warn_rejected_trusted_callback_origins(&self) {
+        for raw in &self.trusted_callback_origins {
+            if normalize_origin(raw).is_none() {
+                tracing::warn!(
+                    entry = %crate::utils::sanitize_for_log(raw),
+                    "ignoring trusted_callback_origins entry: not an exact http(s) origin"
+                );
+            }
+        }
+    }
+}
+
+/// `raw` as an origin (`scheme://host[:port]`), or `None` when it is anything
+/// more or less than one.
+fn normalize_origin(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.contains('*') {
+        return None;
+    }
+    let url = url::Url::parse(trimmed).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
 }
 
 /// Load the configuration from a file

@@ -51,7 +51,7 @@ It has two deployment shapes, both compiled from the same code:
 | `lib.rs` | Crate root: `AuthResponse`, `AuthError` (the shared error enum every layer maps to an HTTP status) |
 | `embedded.rs` | `build_app`/`EmbeddedAuthApp`/`default_config` - the in-process mounting path used by `calimero-server` |
 | `server.rs` | `AppState` (shared handler state), `start_server` (standalone binary path), `shutdown_signal` |
-| `config.rs` | `AuthConfig` and all sub-configs (`JwtConfig`, `StorageConfig`, `CorsConfig`, `SecurityConfig`, `DevelopmentConfig`); `load_config` layers a TOML file under an `AUTH__`-prefixed env override |
+| `config.rs` | `AuthConfig` and all sub-configs (`JwtConfig`, `StorageConfig`, `CorsConfig`, `SecurityConfig`, `DevelopmentConfig`, whose `trusted_callback_origins` lists extra login-callback origins published on `/auth/providers`); `load_config` layers a TOML file under an `AUTH__`-prefixed env override |
 | `secrets.rs` | `SecretManager` / `VersionedSecret`: generates, persists, and (hourly) rotates the JWT-signing and CSRF secrets, with a backup-key fallback |
 | `auth/service.rs` | `AuthService` - routes a `TokenRequest` to the matching provider, authenticates, and re-exposes token-manager operations |
 | `auth/token/jwt.rs` | `TokenManager` - HS256 issue/verify/refresh, challenge tokens, node-URL host binding, client-key rotation on refresh |
