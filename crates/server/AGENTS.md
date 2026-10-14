@@ -330,7 +330,7 @@ It executes as the node inside its binding, but it is never the node owner on th
   That application is an unsigned hint and it seeds the joiner's group target, so a forged hint can only join a group whose invitation the caller already holds.
 - Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
   `GET /applications`, the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
-  Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up once the reference is released (bound-key deletes are serialized), and `GET /blobs` is refused.
+  Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up with the reference it releases (bound-key deletes are serialized), and `GET /blobs` is refused.
 - SSE: a bound key's session principal includes its binding, so it can neither adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
 
 Every check fails closed when the context or group cannot be resolved.

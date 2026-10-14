@@ -742,25 +742,6 @@ pub async fn delete_handler(
         }
     };
 
-    // A bound key releases only the reference its own context holds, and gives
-    // that association up with it; serialized, so two deletes cannot both pass
-    // the check and release another application's reference.
-    let _serialized = match client_key {
-        Some(_) => Some(BOUND_KEY_DELETES.lock().await),
-        None => None,
-    };
-    let own_context = match client_key {
-        Some(Extension(ref key)) => match held_for_one_of_keys_contexts(&state, key, &blob_id) {
-            Ok(Some(context_id)) => Some(context_id),
-            Ok(None) => return blob_not_found(),
-            Err(err) => {
-                error!(%blob_id, error=?err, "Failed to read the blob's context associations");
-                return parse_api_error(err).into_response();
-            }
-        },
-        None => None,
-    };
-
     tracing::info!("Attempting to delete blob {}", blob_id);
 
     // Blob deletion is a global, reference-counted operation with no per-caller
@@ -791,14 +772,41 @@ pub async fn delete_handler(
         }
     }
 
-    match state.node_client.delete_blob(blob_id).await {
-        Ok(true) => {
-            if let Some(context_id) = own_context {
-                if let Err(err) = state.node_client.forget_blob_context(&blob_id, &context_id) {
-                    error!(%blob_id, %context_id, error=?err, "Released the blob but kept its context association");
-                    return parse_api_error(err).into_response();
-                }
+    // A bound key releases only the reference its own context holds. Its
+    // association goes first and comes back only if nothing was released, so a
+    // failure here costs the key its access rather than a second release; the
+    // lock keeps two deletes from passing the check together.
+    let _serialized = match client_key {
+        Some(_) => Some(BOUND_KEY_DELETES.lock().await),
+        None => None,
+    };
+    let own_context = match client_key {
+        Some(Extension(ref key)) => match held_for_one_of_keys_contexts(&state, key, &blob_id) {
+            Ok(Some(context_id)) => Some(context_id),
+            Ok(None) => return blob_not_found(),
+            Err(err) => {
+                error!(%blob_id, error=?err, "Failed to read the blob's context associations");
+                return parse_api_error(err).into_response();
             }
+        },
+        None => None,
+    };
+    if let Some(context_id) = own_context {
+        if let Err(err) = state.node_client.forget_blob_context(&blob_id, &context_id) {
+            error!(%blob_id, %context_id, error=?err, "Failed to give up the blob's context association");
+            return parse_api_error(err).into_response();
+        }
+    }
+
+    let released = state.node_client.delete_blob(blob_id).await;
+    if let (Some(context_id), false) = (own_context, matches!(released, Ok(true))) {
+        if let Err(err) = state.node_client.record_blob_context(&blob_id, &context_id) {
+            error!(%blob_id, %context_id, error=?err, "Failed to restore the blob's context association");
+        }
+    }
+
+    match released {
+        Ok(true) => {
             tracing::info!("Successfully deleted blob {}", blob_id);
             ApiResponse {
                 payload: BlobDeleteResponse {

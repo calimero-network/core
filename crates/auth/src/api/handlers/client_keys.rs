@@ -206,11 +206,18 @@ pub async fn generate_client_key_handler(
         all_permissions.push(default_permission);
     }
 
-    let application_id = request
-        .application_id
-        .as_deref()
-        .map(sanitize_identifier)
-        .filter(|id| !id.is_empty());
+    // Refused rather than sanitized: an id that cleans up to nothing would mint an unbound key.
+    let application_id = match request.application_id.as_deref() {
+        None => None,
+        Some(id) if !id.is_empty() && sanitize_identifier(id) == id => Some(id.to_owned()),
+        Some(id) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid application_id: {}", escape_html(id)),
+                None,
+            );
+        }
+    };
     if let Some(application_id) = &application_id {
         all_permissions.push(crate::auth::bindings::application_binding(application_id));
     }
@@ -740,6 +747,35 @@ mod tests {
             .await,
             StatusCode::BAD_REQUEST
         );
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn an_application_id_that_is_not_an_identifier_is_refused() {
+        let (state, headers) = admin_state().await;
+
+        for application_id in ["", "!!", "app a", "app<a>"] {
+            let response = generate_client_key_handler(
+                Extension(Arc::clone(&state)),
+                headers.clone(),
+                ValidatedJson(GenerateClientKeyRequest {
+                    context_id: None,
+                    context_identity: None,
+                    permissions: Some(vec!["context:execute".to_owned()]),
+                    target_node_url: None,
+                    application_id: Some(application_id.to_owned()),
+                    ttl_secs: None,
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "{application_id:?}"
+            );
+        }
         let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
         assert!(clients.is_empty(), "no key may be stored: {clients:?}");
     }

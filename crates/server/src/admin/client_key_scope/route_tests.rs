@@ -875,3 +875,22 @@ async fn a_refused_blob_delete_keeps_the_keys_access() {
         .await;
     assert_eq!(status, StatusCode::OK, "still mine to read");
 }
+
+#[actix::test]
+async fn a_delete_that_releases_nothing_keeps_the_association() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let absent = BlobId::from([0x77; 32]);
+    node.node_client
+        .record_blob_context(&absent, &node.mine.context)
+        .expect("associate");
+
+    let (status, _) = node
+        .call(&token, Method::DELETE, &format!("/blobs/{absent}"), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(node
+        .node_client
+        .is_blob_in_context(&absent, &node.mine.context)
+        .unwrap());
+}
