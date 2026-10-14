@@ -20,7 +20,9 @@ use calimero_governance_store::MembershipRepository;
 use calimero_governance_store::AccountBindingRepository;
 use calimero_primitives::identity::DeviceId;
 
-use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner, ClientKeyScope,
+};
 
 /// Which rows a caller may see.
 #[derive(Clone, Debug)]
@@ -39,6 +41,12 @@ pub(crate) enum ListScope {
         account: AccountId,
         groups: BTreeSet<ContextGroupId>,
     },
+    /// A client key bound to an application or a context: the groups its
+    /// binding reaches, and of their contexts only those the binding permits.
+    ClientKey {
+        key: ClientKeyScope,
+        groups: BTreeSet<ContextGroupId>,
+    },
 }
 
 impl ListScope {
@@ -52,14 +60,16 @@ impl ListScope {
     pub(crate) fn admits(&self, group_id: Option<&ContextGroupId>) -> bool {
         match self {
             Self::NodeWide => true,
-            Self::Account { groups, .. } => group_id.is_some_and(|g| groups.contains(g)),
+            Self::Account { groups, .. } | Self::ClientKey { groups, .. } => {
+                group_id.is_some_and(|g| groups.contains(g))
+            }
         }
     }
 
     /// The account this scope is for, when it is an account scope.
     pub(crate) const fn account(&self) -> Option<&AccountId> {
         match self {
-            Self::NodeWide => None,
+            Self::NodeWide | Self::ClientKey { .. } => None,
             Self::Account { account, .. } => Some(account),
         }
     }
@@ -108,10 +118,17 @@ pub(crate) const fn narrow_to(
 /// keep listing a group after the caller was removed from it.
 pub(crate) fn list_scope(
     ctx_client: &ContextClient,
+    client_key: Option<&ClientKeyScope>,
     node_owner: Option<&AuthenticatedNodeOwner>,
     account: Option<&AuthenticatedAccount>,
     device: Option<DeviceId>,
 ) -> eyre::Result<ListScope> {
+    // Ahead of the node-owner check: a bound client key also carries that
+    // marker, because it executes as the node inside its binding.
+    if let Some(key) = client_key {
+        return client_key_scope(ctx_client.datastore(), key);
+    }
+
     let Some(account) = narrow_to(node_owner, account) else {
         return Ok(ListScope::NodeWide);
     };
@@ -140,15 +157,34 @@ pub(crate) fn list_scope(
     Ok(ListScope::Account { account, groups })
 }
 
+/// Every group on this node the key's binding reaches.
+fn client_key_scope(
+    store: &calimero_store::Store,
+    key: &ClientKeyScope,
+) -> eyre::Result<ListScope> {
+    let groups = calimero_governance_store::MetaRepository::new(store)
+        .enumerate_all(0, usize::MAX)?
+        .into_iter()
+        .map(|(id, _)| ContextGroupId::from(id))
+        .filter(|group| key.permits_group(store, group))
+        .collect();
+    Ok(ListScope::ClientKey {
+        key: key.clone(),
+        groups,
+    })
+}
+
 /// `list_scope` against the extensions an axum handler receives.
 pub(crate) fn list_scope_for(
     ctx_client: &ContextClient,
+    client_key: Option<axum::Extension<ClientKeyScope>>,
     node_owner: Option<axum::Extension<AuthenticatedNodeOwner>>,
     account: Option<axum::Extension<AuthenticatedAccount>>,
     device: Option<axum::Extension<AuthenticatedDevice>>,
 ) -> eyre::Result<ListScope> {
     list_scope(
         ctx_client,
+        client_key.as_ref().map(|e| &e.0),
         node_owner.as_ref().map(|e| &e.0),
         account.as_ref().map(|e| &e.0),
         device.map(|e| e.0 .0),
@@ -189,6 +225,7 @@ pub(crate) fn refuse_unless_group_in_scope(
 /// what a group read handler runs first.
 pub(crate) fn refuse_group_outside_caller_scope(
     ctx_client: &ContextClient,
+    client_key: Option<axum::Extension<ClientKeyScope>>,
     node_owner: Option<axum::Extension<AuthenticatedNodeOwner>>,
     account: Option<axum::Extension<AuthenticatedAccount>>,
     device: Option<axum::Extension<AuthenticatedDevice>>,
@@ -196,7 +233,7 @@ pub(crate) fn refuse_group_outside_caller_scope(
 ) -> Option<axum::response::Response> {
     use axum::response::IntoResponse;
 
-    match list_scope_for(ctx_client, node_owner, account, device) {
+    match list_scope_for(ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => refuse_unless_group_in_scope(&scope, group_id),
         Err(err) => {
             tracing::error!(error = ?err, "Failed to resolve the caller's list scope");
@@ -234,7 +271,11 @@ pub(crate) fn admits_context(
     }
 
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)?;
-    Ok(scope.admits(group_id.as_ref()))
+    let key_permits = match scope {
+        ListScope::ClientKey { key, .. } => key.permits_context_in(store, context_id),
+        ListScope::NodeWide | ListScope::Account { .. } => true,
+    };
+    Ok(key_permits && scope.admits(group_id.as_ref()))
 }
 
 #[cfg(test)]

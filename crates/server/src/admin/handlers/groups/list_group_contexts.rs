@@ -20,6 +20,7 @@ pub async fn handler(
     Path(group_id_str): Path<String>,
     Query(query): Query<ListGroupContextsQuery>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -31,7 +32,7 @@ pub async fn handler(
 
     // Before any read, so a refusal costs one membership lookup rather than the
     // group load below.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");

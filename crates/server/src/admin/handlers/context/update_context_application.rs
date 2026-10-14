@@ -17,9 +17,19 @@ use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     Path(context_id): Path<String>,
     ValidatedJson(req): ValidatedJson<UpdateContextApplicationRequest>,
 ) -> impl IntoResponse {
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
+        &state,
+        client_key.as_deref(),
+        None,
+        Some(&req.application_id),
+    ) {
+        return refusal;
+    }
+
     let context_id_result = match ContextId::from_str(&context_id) {
         Ok(id) => id,
         Err(err) => {

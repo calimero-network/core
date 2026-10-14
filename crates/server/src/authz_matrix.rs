@@ -268,6 +268,7 @@ async fn subgroup_in_scope(world: &World, actor: &Actor) -> Outcome {
     list_scope(
         &ctx_client,
         None,
+        None,
         Some(&AuthenticatedAccount(actor.account)),
         Some(actor.device),
     )

@@ -80,18 +80,50 @@ impl ClientKeyScope {
         ctx_client: &calimero_context_client::client::ContextClient,
         context_id: &calimero_primitives::context::ContextId,
     ) -> bool {
+        self.permits_context_in(ctx_client.datastore(), context_id)
+    }
+
+    pub(crate) fn permits_context_in(
+        &self,
+        store: &calimero_store::Store,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> bool {
         let bindings = &self.0;
 
         let application = if bindings.application_id.is_some() {
-            match ctx_client.get_context(context_id) {
-                Ok(Some(ctx)) => ctx.application_id.to_string(),
-                Ok(None) | Err(_) => String::new(),
-            }
+            context_application(store, context_id)
+                .map(|app| app.to_string())
+                .unwrap_or_default()
         } else {
             String::new()
         };
 
         bindings.permits(&context_id.to_string(), &application)
+    }
+
+    /// Whether a request naming `application_id` stays inside the binding: the
+    /// bound application, or the application of the bound context.
+    pub(crate) fn permits_application(
+        &self,
+        store: &calimero_store::Store,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> bool {
+        let bindings = &self.0;
+        let named = application_id.to_string();
+
+        let context_app_matches = bindings.context_id.as_deref().is_none_or(|context_id| {
+            context_id
+                .parse::<calimero_primitives::context::ContextId>()
+                .ok()
+                .and_then(|id| context_application(store, &id))
+                .is_some_and(|app| app == *application_id)
+        });
+
+        context_app_matches
+            && bindings
+                .application_id
+                .as_deref()
+                .is_none_or(|bound| bound.eq_ignore_ascii_case(&named))
     }
 
     pub(crate) fn permits_group(
@@ -167,6 +199,23 @@ impl ClientKeyScope {
         );
         serde_json::to_value(refusal).unwrap_or_default()
     }
+}
+
+/// The application a context runs. A context this node does not hold yet (one
+/// it is about to join) runs its owning group's target application.
+fn context_application(
+    store: &calimero_store::Store,
+    context_id: &calimero_primitives::context::ContextId,
+) -> Option<calimero_primitives::application::ApplicationId> {
+    let handle = store.handle();
+    if let Ok(Some(meta)) = handle.get(&calimero_store::key::ContextMeta::new(*context_id)) {
+        return Some(meta.application.application_id());
+    }
+    let group = calimero_governance_store::get_group_for_context(store, context_id).ok()??;
+    let meta = calimero_governance_store::MetaRepository::new(store)
+        .load(&group)
+        .ok()??;
+    Some(meta.target.application_id)
 }
 
 /// The authenticated requester's **account**, injected by [`AuthGuardService`]

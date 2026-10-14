@@ -15,6 +15,7 @@ use crate::AdminState;
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<crate::auth::AuthenticatedNodeOwner>>,
     account: Option<Extension<crate::auth::AuthenticatedAccount>>,
     device: Option<Extension<crate::auth::AuthenticatedDevice>>,
@@ -28,6 +29,7 @@ pub async fn handler(
     // `group:list-own`, so it must be confined to its own groups here.
     if let Some(refusal) = crate::admin::caller_scope::refuse_group_outside_caller_scope(
         &state.ctx_client,
+        client_key,
         node_owner,
         account.clone(),
         device,

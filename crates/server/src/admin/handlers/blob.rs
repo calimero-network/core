@@ -19,7 +19,9 @@ use tracing::{debug, error, info};
 
 use crate::admin::caller_scope::{admits_context, list_scope_for, ListScope};
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
-use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
+use crate::auth::{
+    AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner, ClientKeyScope,
+};
 use crate::AdminState;
 
 #[derive(Debug, Deserialize)]
@@ -170,7 +172,7 @@ fn account_context(
     let Some(context_id) = context_id else {
         return Err(ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: "an account-scoped blob request must name the context_id it is for".to_owned(),
+            message: "a scoped blob request must name the context_id it is for".to_owned(),
         });
     };
 
@@ -180,7 +182,7 @@ fn account_context(
             info!(%context_id, "Refusing blob request: caller is not a member of this context's group");
             Err(ApiError {
                 status_code: StatusCode::FORBIDDEN,
-                message: "account is not a member of the group owning this context".to_owned(),
+                message: "the caller may not act on this context".to_owned(),
             })
         }
         Err(err) => {
@@ -202,6 +204,32 @@ fn blob_not_found() -> Response {
         message: "Blob not found locally or in network".to_owned(),
     }
     .into_response()
+}
+
+/// Whether this node holds `blob_id` for a context the key's binding permits.
+fn held_for_one_of_keys_contexts(
+    state: &AdminState,
+    key: &ClientKeyScope,
+    blob_id: &BlobId,
+) -> eyre::Result<bool> {
+    let ListScope::ClientKey { groups, .. } =
+        crate::admin::caller_scope::list_scope(&state.ctx_client, Some(key), None, None, None)?
+    else {
+        return Ok(false);
+    };
+    let store = state.ctx_client.datastore();
+    for group in groups {
+        let contexts = calimero_governance_store::ContextTreeService::new(store, group)
+            .enumerate_contexts(0, usize::MAX)?;
+        for context_id in contexts {
+            if key.permits_context_in(store, &context_id)
+                && state.node_client.is_blob_in_context(blob_id, &context_id)?
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Whether an account-scoped caller confined to `context_id` may be served
@@ -245,6 +273,7 @@ fn local_association(
 pub async fn upload_handler(
     Query(query): Query<BlobUploadQuery>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -286,7 +315,7 @@ pub async fn upload_handler(
 
     // Decided before a byte of the body is read: a refused caller must not get
     // to fill the disk first.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
@@ -404,7 +433,19 @@ pub async fn upload_handler(
 /// - Standalone blobs that aren't referenced as chunks by other blobs
 ///
 /// This excludes individual chunk blobs to provide a cleaner user experience.
-pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
+pub async fn list_handler(
+    Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<ClientKeyScope>>,
+) -> impl IntoResponse {
+    // Blobs carry no owner, so a bound key has no listing it could be narrowed to.
+    if client_key.is_some() {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: "This key may not list every blob".to_owned(),
+        }
+        .into_response();
+    }
+
     info!("Listing blobs");
 
     match state.node_client.list_blobs() {
@@ -516,10 +557,15 @@ fn build_peer_presence_headers(blob_id: BlobId, size: Option<u64>) -> Builder {
 /// served only a blob this node associates with that context — one uploaded
 /// for it, or fetched from its peers (which this request may do, when the blob
 /// is not held here at all). Anything else is the same `404` as a missing blob.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "axum extractors: one per auth extension the guard may inject"
+)]
 pub async fn download_handler(
     Path(blob_id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -561,7 +607,7 @@ pub async fn download_handler(
         None
     };
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(%blob_id, error=?err, "Failed to resolve the caller's list scope");
@@ -680,6 +726,7 @@ pub async fn download_handler(
 pub async fn delete_handler(
     Path(blob_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<ClientKeyScope>>,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
@@ -691,6 +738,17 @@ pub async fn delete_handler(
             .into_response();
         }
     };
+
+    if let Some(Extension(key)) = client_key {
+        match held_for_one_of_keys_contexts(&state, &key, &blob_id) {
+            Ok(true) => {}
+            Ok(false) => return blob_not_found(),
+            Err(err) => {
+                error!(%blob_id, error=?err, "Failed to read the blob's context associations");
+                return parse_api_error(err).into_response();
+            }
+        }
+    }
 
     tracing::info!("Attempting to delete blob {}", blob_id);
 
@@ -793,10 +851,15 @@ pub async fn delete_handler(
 /// answered `peer`, which tells a member only that a peer of its own context
 /// holds it — what its own node would learn by probing. A `HEAD` never fetches,
 /// so it never creates an association.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "axum extractors: one per auth extension the guard may inject"
+)]
 pub async fn info_handler(
     Path(blob_id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -825,7 +888,7 @@ pub async fn info_handler(
         }
     };
 
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(%blob_id, error=?err, "Failed to resolve the caller's list scope");
@@ -1029,6 +1092,7 @@ mod upload_sharing_tests {
         upload_handler(
             Query(query),
             Extension(Arc::clone(state)),
+            None,
             Some(Extension(AuthenticatedNodeOwner)),
             None,
             None,
@@ -1326,6 +1390,7 @@ mod account_scope_tests {
                 context_id: context.map(|c| c.to_string()),
             }),
             Extension(Arc::clone(&node.state)),
+            None,
             caller.owner(),
             caller.account(),
             None,
@@ -1367,6 +1432,7 @@ mod account_scope_tests {
             Path(blob_id.to_owned()),
             Query(context_query(context)),
             Extension(Arc::clone(&node.state)),
+            None,
             caller.owner(),
             caller.account(),
             None,
@@ -1386,6 +1452,7 @@ mod account_scope_tests {
             Path(blob_id.to_owned()),
             Query(context_query(context)),
             Extension(Arc::clone(&node.state)),
+            None,
             caller.owner(),
             caller.account(),
             None,
@@ -1592,6 +1659,7 @@ mod account_scope_tests {
             Path(theirs.clone()),
             Query(context_query(None)),
             Extension(Arc::clone(&node.state)),
+            None,
             Some(Extension(AuthenticatedNodeOwner)),
             Some(Extension(AuthenticatedAccount(AccountId::from(ME)))),
             None,
@@ -1719,11 +1787,11 @@ mod passive_cross_site_tests {
         );
         let state = Extension(Arc::clone(&node.state));
         let response = if head {
-            info_handler(path, query, state, None, None, None, sent)
+            info_handler(path, query, state, None, None, None, None, sent)
                 .await
                 .into_response()
         } else {
-            download_handler(path, query, state, None, None, None, sent)
+            download_handler(path, query, state, None, None, None, None, sent)
                 .await
                 .into_response()
         };

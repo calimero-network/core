@@ -60,6 +60,7 @@ use crate::AdminState;
 pub async fn handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -89,7 +90,7 @@ pub async fn handler(
     // delegated read follows. A membership change is a governance op this node
     // has already applied, and asking at the moment of the call is the only way
     // it reaches the answer.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(context_id=%context_id, error=?err, "Failed to resolve caller scope");

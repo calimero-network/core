@@ -18,12 +18,21 @@ use super::{parse_group_id, restricted_from};
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<CreateGroupApiRequest>,
 ) -> impl IntoResponse {
     let request = match create_request(req) {
         Ok(request) => request,
         Err(err) => return err.into_response(),
     };
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
+        &state,
+        client_key.as_deref(),
+        request.parent_group_id.as_ref(),
+        request.application_id.as_ref(),
+    ) {
+        return refusal;
+    }
 
     info!(
         application_id=?request.application_id,
