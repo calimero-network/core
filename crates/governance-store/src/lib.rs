@@ -126,7 +126,7 @@ pub use self::void_ledger::{parked_op, Parked};
 
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
-pub use self::namespace_founding::NamespaceFoundingRepository;
+pub use self::namespace_founding::{GenesisKind, NamespaceFoundingRepository};
 
 pub use self::group_keys::{
     key_covering_group, EntitledRecipient, GroupKeyring, KeyRecipient, KeyRequester, StoredGroupKey,

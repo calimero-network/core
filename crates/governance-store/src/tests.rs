@@ -13011,7 +13011,7 @@ mod account_plane_apply {
         .unwrap();
 
         // Not a member yet → refused, and nothing recorded.
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13024,7 +13024,12 @@ mod account_plane_apply {
                 scope: link_scope(&key(9), &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link for an account that is not a member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         let _repo = AccountBindingRepository::new(&store);
         assert!(
             live_for(&store, &gid, account).is_empty(),
@@ -13142,7 +13147,7 @@ mod account_plane_apply {
         )
         .unwrap();
 
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13155,7 +13160,12 @@ mod account_plane_apply {
                 scope: link_scope(&key(20), &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link endorsed by a key bound to no member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         assert!(live_for(&store, &gid, account).is_empty());
     }
 
@@ -13316,7 +13326,7 @@ mod account_plane_apply {
         // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
         // simply has no standing here.
         let stranger = key(7);
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13329,7 +13339,12 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link endorsed by a non-member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "a valid endorsement from a non-member must not admit a link"
@@ -14936,7 +14951,7 @@ mod account_plane_apply {
 
         // A valid, root-signed narrowing - replayed by a member of this namespace
         // that speaks for some other account.
-        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+        let refused = crate::apply_group_op_mutations(
             &store,
             &gid,
             &admin_sk.public_key(),
@@ -14944,9 +14959,12 @@ mod account_plane_apply {
             &CUT,
             &FixedAuthorizer(true),
         )
-        .unwrap();
+        .expect_err("a replay by another account is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::SignerNotTheAccount)
+        );
 
-        assert_eq!(events, vec![]);
         assert!(
             is_live(&store, &gid, account, device),
             "a replay by a member of another account must not unbind the device"
@@ -15267,16 +15285,168 @@ mod account_plane_apply {
         );
     }
 
-    /// The apply pipeline re-runs a mutation before the op-log dedup gate, so a
-    /// second run has to find no binding and say nothing rather than fail.
+    /// A cut at which `signer` speaks for `account`, as a self-descope's own cut
+    /// does on a re-run after the descope unbound the signing device.
+    struct SignerAtCut {
+        signer: PublicKey,
+        account: AccountId,
+    }
+
+    impl crate::authorizer::AtCutAuthorizer for SignerAtCut {
+        fn is_admin_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &PublicKey,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_or_capability_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &PublicKey,
+            _: u32,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_or_capability_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: u32,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_last_admin_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn membership_path_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<crate::authorizer::AtCutMembershipPath> {
+            None
+        }
+
+        fn effective_role_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<GroupMemberRole>> {
+            None
+        }
+
+        fn context_rotation_group_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &calimero_primitives::context::ContextId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<ContextGroupId>> {
+            None
+        }
+
+        fn signer_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            signer: &PublicKey,
+            _: &[[u8; 32]],
+        ) -> Option<Option<AccountId>> {
+            Some((*signer == self.signer).then_some(self.account))
+        }
+    }
+
+    /// Founds a namespace with `founder_sk`, then applies an account-namespace genesis
+    /// replaying its public credential, signed by `replayer`; the founder mark after.
+    fn account_namespace_founder_after_replay(
+        founder_sk: &PrivateKey,
+        salt: [u8; 32],
+        replayer: &PrivateKey,
+    ) -> Option<AccountId> {
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+        let store = test_store();
+        let (genesis, founder, id) =
+            crate::test_fixtures::namespace_genesis_v2_for(founder_sk, salt);
+        let signed = SignedNamespaceOp::sign(founder_sk, id.into(), vec![], 1, genesis.clone())
+            .expect("sign the genesis");
+        let _founded = crate::apply_signed_namespace_op(&store, &signed).expect("it founds");
+        let NamespaceOp::Root(RootOp::NamespaceCreatedV2 { account, salt, .. }) = genesis else {
+            unreachable!("the fixture builds a NamespaceCreatedV2")
+        };
+
+        let replay = NamespaceOp::Root(RootOp::AccountNamespaceCreated {
+            founder,
+            account,
+            salt,
+        });
+        let signed = SignedNamespaceOp::sign(replayer, id.into(), vec![], 2, replay)
+            .expect("sign the replay");
+        let _replayed = crate::apply_signed_namespace_op(&store, &signed);
+
+        crate::NamespaceFoundingRepository::new(&store)
+            .account_namespace_founder(&ContextGroupId::from(id))
+            .expect("read the mark")
+    }
+
+    /// The founder's salt and credential are public in its genesis, so another key
+    /// replaying them as an account-namespace genesis must not mark the namespace.
     #[test]
-    fn re_applying_a_descope_is_a_silent_no_op() {
+    fn only_the_founder_marks_its_account_namespace() {
+        assert_eq!(
+            account_namespace_founder_after_replay(&key(0x61), [0x62; 32], &key(0x63)),
+            None,
+            "a replay by another key marked the founder's namespace as its account namespace"
+        );
+    }
+
+    /// A namespace founded as an ordinary one stays one: its own founder's device cannot
+    /// mark it as the account namespace with a later genesis.
+    #[test]
+    fn an_ordinary_namespace_is_never_marked_after_the_fact() {
+        let founder_sk = key(0x64);
+        assert_eq!(
+            account_namespace_founder_after_replay(&founder_sk, [0x65; 32], &founder_sk),
+            None,
+            "the founder marked an ordinary namespace as its account namespace"
+        );
+    }
+
+    /// A re-run before the op-log dedup names the signer at the op's cut, so a self-descope
+    /// is not refused for having unbound its own device, and narrows nothing again.
+    #[test]
+    fn re_applying_a_descope_narrows_nothing_again() {
         let store = test_store();
         let gid = test_group_id();
         let admin_sk = key(1);
         let _admin = group_with_admin(&store, &gid, &admin_sk);
-        let (owner_sk, _genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
         let op = descoped(&owner_sk, device, elsewhere(), 1);
+        let at_cut = SignerAtCut {
+            signer: owner_sk.public_key(),
+            account: genesis.account_id(),
+        };
 
         let mut last = None;
         for _ in 0..2 {
@@ -15286,12 +15456,19 @@ mod account_plane_apply {
                 &owner_sk.public_key(),
                 &op,
                 &CUT,
-                &FixedAuthorizer(true),
+                &at_cut,
             )
             .unwrap();
             last = Some(events);
         }
-        assert_eq!(last.unwrap(), vec![], "the second run owes no wake-up");
+        assert!(
+            !last
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, OpEvent::DeviceDescoped { .. })),
+            "the second run narrows nothing again"
+        );
+        assert!(!is_live(&store, &gid, genesis.account_id(), device));
     }
 
     /// An account seated here through one bound key, which is no admin, and a

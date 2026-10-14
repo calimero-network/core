@@ -24,6 +24,7 @@ use calimero_governance_store::{
     AtCutAuthorizer, AtCutMembershipPath, GroupRows, NamespaceDagService, StandingReads,
 };
 use calimero_op::{Op, ScopeId};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::Acting;
@@ -190,6 +191,27 @@ impl AtCutAuthorizer for VoidJudge<'_> {
     ) -> Option<Option<u32>> {
         self.0
             .device_withdrawn_at_cut(group, account, device, parents)
+    }
+
+    // Nor these.
+    fn signer_account_at_cut(
+        &self,
+        group: &ContextGroupId,
+        signer: &PublicKey,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        self.0.signer_account_at_cut(group, signer, parents)
+    }
+
+    fn scope_reaches_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        applications: &[ApplicationId],
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        self.0
+            .scope_reaches_at_cut(group, account, applications, parents)
     }
 
     fn forget(&self) {
@@ -360,6 +382,41 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         self.folded(group)?
             .0
             .device_withdrawn_at_cut(self.store, *group, account, device, parents)
+    }
+
+    fn signer_account_at_cut(
+        &self,
+        group: &ContextGroupId,
+        signer: &PublicKey,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .signer_account_at_cut(self.store, *group, signer, parents)
+    }
+
+    fn scope_reaches_at_cut(
+        &self,
+        group: &ContextGroupId,
+        account: &AccountId,
+        applications: &[ApplicationId],
+        parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?.0.scope_reaches_at_cut(
+            self.store,
+            *group,
+            account,
+            applications,
+            parents,
+        )
     }
 
     fn effective_role_at_cut(

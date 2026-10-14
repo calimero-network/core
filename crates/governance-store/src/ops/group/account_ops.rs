@@ -22,7 +22,7 @@ use calimero_account::{
     DeviceLabel, DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
 };
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
+use calimero_primitives::application::ApplicationId;
 use eyre::{bail, Result as EyreResult};
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
@@ -47,8 +47,8 @@ use eyre::{bail, Result as EyreResult};
 /// gains an attacker nothing, and refusing it would break legitimate re-gossip
 /// of the same op.
 ///
-/// A refusal decided by the op alone is an error: the projection folds every logged
-/// op. The endorser and coverage checks read live rows, so they still record nothing.
+/// A refusal decided by the op or at its cut is an error: the projection folds every
+/// logged op. Scope coverage is decided again by the projection at every cut.
 pub(crate) fn apply_device_linked(
     ctx: &mut GroupApplyCtx<'_>,
     genesis: &AccountGenesis,
@@ -92,31 +92,17 @@ pub(crate) fn apply_device_linked(
         bail!(BindingRejected::EndorsementInvalid);
     };
     if !key_is_member(ctx, &endorsement.member)? {
-        log_refusal(&group_id, "device link", &BindingRejected::AccountNotMember);
-        return Ok(());
+        bail!(BindingRejected::AccountNotMember);
     }
-    // The account namespace is exempt, recognised node-locally: pairing publishes a
-    // device's first link there BEFORE the certificate that would name it.
-    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? != Some(group_id) {
-        let application = crate::MetaRepository::new(ctx.store())
-            .load(&group_id)?
-            .map(|meta| meta.target.application_id);
-        if !calimero_account::scope_covers(&scope.statement.applications, application) {
-            // A replica's root meta names the zero placeholder until the sealed op
-            // setting its target folds, and a key-arrival replay can reach this link
-            // while that op, an ancestor of it, is still parked. Undecided rather
-            // than refused: a refusal spends the nonce, so the replay after the
-            // target folds would skip the link and leave the device unbound.
-            if application.is_none_or(|app| app == ZERO_APPLICATION_ID) {
-                eyre::bail!(crate::ApplyError::AuthorityUndecidable {
-                    group_id: group_id.to_string(),
-                    signer: endorsement.member.to_string(),
-                });
-            }
-            tracing::warn!(group_id = ?group_id, device = %cert.device, ?application,
-                           "device link: the carried scope does not reach this group");
-            return Ok(());
-        }
+    // Coverage at the cut: the target, or the founder's own account namespace. Not
+    // refused, since the projection filters an unreached device at every cut alike.
+    if !ctx
+        .permissions()
+        .scope_reaches(&cert.account, &scope.statement.applications)?
+    {
+        tracing::warn!(group_id = ?group_id, device = %cert.device,
+                       "device link: the carried scope does not reach this namespace");
+        return Ok(());
     }
     let store = ctx.store();
     let bindings = AccountBindingRepository::new(store);
@@ -557,8 +543,8 @@ fn announce_withdrawal(ctx: &mut GroupApplyCtx<'_>, account: &AccountId, device:
 /// `GroupOp::AccountDeviceDescoped` - drop a device's binding because the
 /// account replaced its scope with one that no longer reaches this group.
 ///
-/// A carried scope that still reaches the group is refused as an error, ahead of the
-/// checks that read live rows: the projection folds every logged descope as a floor.
+/// A scope that still reaches the group, or a signer not speaking for the account at
+/// the op's cut, is an error: the projection folds every logged descope as a floor.
 pub(crate) fn apply_device_descoped(
     ctx: &mut GroupApplyCtx<'_>,
     account: &AccountId,
@@ -581,6 +567,11 @@ pub(crate) fn apply_device_descoped(
         bail!(BindingRejected::NotANarrowing);
     }
 
+    // Only the account may narrow its own device: any member holds the statement. The
+    // signer is named at the op's cut, which a self-descope's own narrowing is not in.
+    if ctx.permissions().account_for_signer_at_cut(ctx.signer())? != Some(*account) {
+        bail!(BindingRejected::SignerNotTheAccount);
+    }
     // A device keeps its account namespace, recognised here by the REPLICATED
     // registry row: a node-local read would drop a binding this node's peers keep.
     if crate::AccountDeviceRegistry::new(ctx.store(), group_id)
@@ -589,17 +580,6 @@ pub(crate) fn apply_device_descoped(
     {
         tracing::warn!(group_id = ?group_id, %device,
                        "account device descoped: a device keeps its account namespace");
-        return Ok(());
-    }
-
-    // Only the account may narrow its own device: the statement rides in the clear
-    // on every link, so any member could otherwise replay a superseded one.
-    //
-    // Order-safe: the signer resolves through its own binding, which causally
-    // precedes any descope it publishes.
-    if !ctx.signer_is(account)? {
-        tracing::warn!(group_id = ?group_id, %account, %device, signer = %ctx.signer(),
-                       "account device descoped: the signer does not speak for this account");
         return Ok(());
     }
     // No membership gate: a descope only narrows the account's own device, so even
@@ -715,20 +695,11 @@ pub(super) fn key_is_member(
     endorser: &calimero_primitives::identity::PublicKey,
 ) -> EyreResult<bool> {
     // The endorsement names a member KEY, but membership is recorded against
-    // the account it speaks for, so resolve before asking either plane. An
-    // endorser whose key is bound to no account here vouches for nobody — the
+    // the account it speaks for, so resolve it at the op's cut first. An
+    // endorser whose key is bound to no account there vouches for nobody - the
     // same refusal an unknown key gets, reached one step earlier.
     let endorser_key = *endorser;
-    let Some(endorser) = crate::member_account_in_namespace(ctx.store(), ctx.group_id(), endorser)?
-    else {
-        // "Bound to no account" is a LIVE answer — binding rows are plane state
-        // that a replica folds like any other, so an endorser this node cannot
-        // resolve yet may be one whose link simply has not arrived. Returning a
-        // refusal here would decide from live rows exactly where the at-cut gate
-        // below refuses to, and two replicas at different fold depths would
-        // record different outcomes for the same op. So a live answer is only
-        // permitted where a live answer is sound at all; otherwise park.
-        ctx.ensure_live_fallback_is_sound(&endorser_key)?;
+    let Some(endorser) = ctx.permissions().account_for_signer_at_cut(&endorser_key)? else {
         return Ok(false);
     };
     account_is_member(ctx, &endorser, &endorser_key)

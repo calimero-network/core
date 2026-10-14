@@ -104,6 +104,7 @@ impl Device {
                 chain: Vec::new(),
                 cert: self.cert,
                 scope_epoch: 0,
+                applications: vec![],
             },
         )
     }

@@ -140,6 +140,7 @@ impl Account {
                 chain: self.chain.clone(),
                 cert: device.cert,
                 scope_epoch,
+                applications: vec![],
             },
         )
     }
@@ -550,6 +551,7 @@ fn a_stranger_cannot_suppress_another_accounts_root_key_rotation() {
             chain: vec![forged],
             cert: phone.cert, // not signable by Mallory; the link WILL be refused
             scope_epoch: 0,
+            applications: vec![],
         },
     );
     fx.push(poison);
@@ -588,6 +590,7 @@ fn an_overlong_handoff_chain_absorbs_nothing() {
             chain: padded,
             cert: phone.cert,
             scope_epoch: 0,
+            applications: vec![],
         },
     );
     fx.push(link);
@@ -650,6 +653,7 @@ fn a_forged_handoff_reusing_the_real_new_key_cannot_displace_it() {
             chain: vec![forged],
             cert: phone.cert,
             scope_epoch: 0,
+            applications: vec![],
         },
     ));
 
@@ -765,6 +769,7 @@ fn the_adversarial_account_workload_converges() {
                 chain: vec![forged_handoff],
                 cert: honest.cert,
                 scope_epoch: 0,
+                applications: vec![],
             },
         ),
     ];
@@ -1282,6 +1287,7 @@ fn a_link_must_be_signed_by_the_device_it_enrolls() {
             chain: alice.chain.clone(),
             cert: laptop.cert,
             scope_epoch: 0,
+            applications: vec![],
         },
     );
     assert_eq!(
@@ -1308,6 +1314,7 @@ fn a_certificate_cannot_be_replayed_onto_another_account() {
             chain: vec![],
             cert: phone.cert,
             scope_epoch: 0,
+            applications: vec![],
         },
     );
     assert!(
@@ -1552,6 +1559,7 @@ fn no_unauthorized_op_writes_another_accounts_plane_state() {
                     chain: vec![forged],
                     cert: phone.cert,
                     scope_epoch: 0,
+                    applications: vec![],
                 },
             )],
         ),
@@ -1565,6 +1573,7 @@ fn no_unauthorized_op_writes_another_accounts_plane_state() {
                     chain: vec![],
                     cert: mallory_device.cert,
                     scope_epoch: 0,
+                    applications: vec![],
                 },
             )],
         ),
