@@ -4,6 +4,17 @@
 
 ### Added
 
+- **A node's operator can trust more origins for login callbacks.**
+  `trusted_callback_origins` under `[server.embedded_auth.development]` lists
+  app origins the node's sign-in page may hand a new token pair to, besides its
+  own, the registry-declared frontend and a bundle's `frontendAliases`: a Vercel
+  preview of an app, which gets a new origin per branch, can then sign in to a
+  developer's node. `GET /auth/providers` publishes the list, and the sign-in
+  page (auth-frontend v1.3.9, now embedded) reads it from its own node only.
+  Exact `http(s)` origins only; an entry with a path, query, credentials or a
+  wildcard is dropped and logged at startup. The desktop app edits the list
+  under Settings → Advanced → Trusted App Origins. (#4575)
+
 - **A bundle can name the other places its frontend is served.**
   `frontend-aliases = ["https://old.example"]` in `[package.metadata.calimero]`
   becomes the manifest's top-level `frontendAliases`, and a node stores it in

@@ -22,9 +22,9 @@ const FETCH_RETRY_INITIAL_DELAY_SECS: u64 = 2;
 const CALIMERO_AUTH_FRONTEND_REPO: &str = "calimero-network/auth-frontend";
 /// Pinned so one core commit always embeds the same bundle; bump it with the sha256.
 /// `CALIMERO_AUTH_FRONTEND_VERSION=latest` opts back in per build, given its sha256.
-const CALIMERO_AUTH_FRONTEND_VERSION: &str = "v1.3.8";
+const CALIMERO_AUTH_FRONTEND_VERSION: &str = "v1.3.9";
 const CALIMERO_AUTH_FRONTEND_SHA256: &str =
-    "bc8aeae48fe25bb7e567b28eb0dc08eeeb70001147a30d4e804dd66bf2f8aaa0";
+    "98cb2116fddc3cea283e6fa3e28ffa8718d97d8bcdc902467f4f4fced63e0ae8";
 const CALIMERO_AUTH_FRONTEND_DEFAULT_REF: &str = "master";
 const CALIMERO_AUTH_FRONTEND_LATEST_RELEASE_URL: &str = "https://github.com/{repo}/releases/latest";
 
