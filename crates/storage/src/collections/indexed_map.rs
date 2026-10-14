@@ -110,7 +110,7 @@ use calimero_account::AccountId;
 use serde::Serialize;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, MergeStrategy, Mergeable, StorageStrategy};
-use super::{LwwRegister, StorageKey, StoreError, UnorderedMap, ValueRef};
+use super::{LwwRegister, StorageKey, StoreError, UnorderedMap, ValueRef, Written};
 use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::hash_meter::{Digest, Sha256};
@@ -547,12 +547,12 @@ where
     pub(crate) fn owned_entries(
         &self,
         owner: Option<&AccountId>,
-    ) -> Result<Vec<(AccountId, K, V)>, StoreError> {
+    ) -> Result<Vec<(AccountId, K, Written<V>)>, StoreError> {
         self.inner.owned_entries(owner)
     }
 
-    /// Every owner's value at `key`. See [`UnorderedMap::entries_at`].
-    pub(crate) fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError> {
+    /// Every owner's entry at `key`. See [`UnorderedMap::entries_at`].
+    pub(crate) fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, Written<V>)>, StoreError> {
         self.inner.entries_at(key)
     }
 
@@ -744,6 +744,14 @@ where
         K: AsRef<[u8]>,
     {
         self.inner.entries()
+    }
+
+    /// [`entries`](Self::entries), a sealed entry as `Written::Conflicted`.
+    pub(crate) fn writes(&self) -> Result<impl Iterator<Item = (K, Written<V>)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        self.inner.writes()
     }
 
     /// The value at `key`, if any.

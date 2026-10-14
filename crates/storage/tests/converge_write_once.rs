@@ -4,14 +4,13 @@
 //! hold two entries (`converge_owned.rs`). Two DEVICES of one account do not:
 //! they write the same entry, and a device that has not yet seen the other's
 //! write takes the key as fresh. Each node then holds its own device's value and
-//! meets the other's as a rewrite of an immutable entry. Keeping whichever
-//! arrived first leaves the nodes on different values for good, so every node
-//! must settle on the same one of the two, whatever order they arrive in.
+//! meets the other's as a rewrite of an immutable entry. Two different values
+//! seal the entry, so every node must end holding the same sealed entry,
+//! whatever order they arrive in.
 //!
 //! Every replica here is a device of one account (`one_account`), and each
-//! writes a value naming its device. The losing write is refused, which the
-//! harness counts as a dropped action, so each run allows drops and asserts
-//! convergence by root hash and by value.
+//! writes a value naming its device. Each run allows dropped actions and asserts
+//! convergence by root hash and that the key reads as conflicted.
 //!
 //! Run with: `cargo test -p calimero-storage --features testing --test converge_write_once`
 
@@ -22,9 +21,10 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::crdt_meta::MergeError;
 use calimero_storage::collections::{
     Frozen, IndexValue, Indexed, IndexedMap, MergeStrategy, Mergeable, ModeratedOnce, SortedMap,
-    UnorderedMap, WriteOnce,
+    UnorderedMap, WriteOnce, Written,
 };
 use calimero_storage::testing::converge;
+use calimero_storage::tests::common::conflicted;
 use calimero_storage::{env, rekey_field_if_supported};
 use serial_test::serial;
 
@@ -92,6 +92,29 @@ fn mine() -> u64 {
     u64::from(env::device_id()[0])
 }
 
+/// The key every device casts its ballot at.
+fn k() -> String {
+    "k".to_owned()
+}
+
+/// Every device of the account casts its ballot at `k` in `write`, and every
+/// replica must end holding the same entry, read as `sealed`.
+fn assert_sealed_everywhere(
+    write: impl Fn(&mut Ballots) + Copy + 'static,
+    sealed: impl Fn(&Ballots) -> bool + Copy + 'static,
+) {
+    for seed in SEEDS {
+        converge::<Ballots>()
+            .replicas(REPLICAS)
+            .one_account()
+            .seed(seed)
+            .allow_dropped_actions()
+            .ops(write)
+            .invariant("k is sealed", sealed)
+            .assert_all_replicas_equal();
+    }
+}
+
 /// Every device of the account casts its ballot at `k` in `write`, and every
 /// replica must end holding one of them, the same one.
 fn assert_one_ballot_everywhere(
@@ -113,57 +136,43 @@ fn assert_one_ballot_everywhere(
 #[test]
 #[serial]
 fn devices_of_one_account_settle_a_write_once_unordered_map_key() {
-    assert_one_ballot_everywhere(
-        |b| b.unordered.insert("k".to_owned(), mine()).unwrap(),
-        |b| b.unordered.entries().unwrap().map(|(_, v)| v).collect(),
+    assert_sealed_everywhere(
+        |b| b.unordered.insert(k(), mine()).unwrap(),
+        |b| {
+            conflicted(&b.unordered.get(&k()))
+                && b.unordered.entries().unwrap().collect::<Vec<_>>()
+                    == vec![(k(), Written::Conflicted)]
+        },
     );
 }
 
 #[test]
 #[serial]
 fn devices_of_one_account_settle_a_write_once_sorted_map_key() {
-    assert_one_ballot_everywhere(
-        |b| b.sorted.insert("k".to_owned(), mine()).unwrap(),
-        |b| b.sorted.entries().unwrap().map(|(_, v)| v).collect(),
+    assert_sealed_everywhere(
+        |b| b.sorted.insert(k(), mine()).unwrap(),
+        |b| conflicted(&b.sorted.get(&k())),
     );
 }
 
 #[test]
 #[serial]
 fn devices_of_one_account_settle_a_write_once_indexed_map_key() {
-    assert_one_ballot_everywhere(
+    assert_sealed_everywhere(
         |b| {
-            b.indexed
-                .insert("k".to_owned(), Vote { choice: mine() })
-                .unwrap();
+            b.indexed.insert(k(), Vote { choice: mine() }).unwrap();
         },
-        |b| {
-            let choices: Vec<u64> = b
-                .indexed
-                .entries()
-                .unwrap()
-                .map(|(_, v)| v.choice)
-                .collect();
-            // The index must hold exactly the stored value's row.
-            let indexed = choices
-                .iter()
-                .map(|c| b.indexed.query("choice").eq(c).count().unwrap())
-                .sum::<usize>();
-            if indexed == choices.len() {
-                choices
-            } else {
-                Vec::new()
-            }
-        },
+        // A sealed entry holds no index row at all.
+        |b| conflicted(&b.indexed.get(&k())) && b.indexed.query("choice").count().unwrap() == 0,
     );
 }
 
 #[test]
 #[serial]
 fn devices_of_one_account_settle_a_moderated_once_key() {
-    assert_one_ballot_everywhere(
-        |b| b.moderated.insert("k".to_owned(), mine()).unwrap(),
-        |b| b.moderated.entries().unwrap().map(|(_, v)| v).collect(),
+    assert_sealed_everywhere(
+        |b| b.moderated.insert(k(), mine()).unwrap(),
+        |b| conflicted(&b.moderated.get(&k())),
     );
 }
 

@@ -374,7 +374,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                     transport, context_id, identity, init_pop, requested, from, &mut stats,
                 )
                 .await?;
-                valid.resize(valid.len() + leaves.len(), true);
+                valid.extend(leaves.iter().map(TreeNode::is_valid));
                 nodes.extend(leaves);
             }
         }
@@ -970,10 +970,8 @@ async fn fetch_remaining_children<T: SyncTransport>(
         else {
             bail!("Unexpected payload type while paging a child list");
         };
-        // Every page within the cap, every id at or above where it was asked
-        // to start, each page ending past where it began, and every leaf a
-        // valid leaf among the page's own children: anything else is a peer
-        // not walking its list, and would loop, overflow or smuggle nodes in.
+        // A page within the cap, from `from`, ending past it and holding its own leaves, or a
+        // peer could loop, overflow or smuggle nodes; the caller skips an invalid leaf.
         let page: HashSet<&[u8; 32]> = children.iter().collect();
         if children.len() > MAX_CHILDREN_PER_NODE
             || leaves.len() > children.len()
@@ -981,7 +979,7 @@ async fn fetch_remaining_children<T: SyncTransport>(
             || next.is_some_and(|next| next <= from)
             || !leaves
                 .iter()
-                .all(|leaf| leaf.is_leaf() && leaf.is_valid() && page.contains(&leaf.id))
+                .all(|leaf| leaf.is_leaf() && page.contains(&leaf.id))
         {
             bail!("peer sent a malformed child-list page");
         }
@@ -1961,6 +1959,46 @@ mod tests {
             init_pop: None,
         };
         assert_eq!(config.remote_root_hash, [1u8; 32]);
+    }
+
+    /// A child-list page carrying a leaf too large to be valid hands the leaf back
+    /// for the caller to skip, as the first page does, rather than aborting the walk.
+    #[tokio::test]
+    async fn an_invalid_leaf_on_a_later_page_does_not_abort_the_walk() {
+        use crate::sync::level_sync::tests::Scripted;
+
+        let child = [0x20; 32];
+        let metadata = LeafMetadata::new(CrdtType::lww_register(), 1, [0; 32]);
+        let oversized = TreeLeafData::new(child, vec![0; MAX_LEAF_VALUE_SIZE + 1], metadata);
+        let mut transport = Scripted(
+            [StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::TreeNodeChildren {
+                    children: vec![child],
+                    next: None,
+                    leaves: vec![TreeNode::leaf(child, [0; 32], oversized)],
+                },
+                next_nonce: generate_nonce(),
+            }]
+            .into(),
+        );
+        let mut node = TreeNode::internal([0xAA; 32], [0; 32], vec![]);
+        let mut stats = HashComparisonStats::default();
+
+        let leaves = fetch_remaining_children(
+            &mut transport,
+            ContextId::from([0xCA; 32]),
+            PublicKey::from([0; 32]),
+            None,
+            &mut node,
+            [0x10; 32],
+            &mut stats,
+        )
+        .await
+        .expect("an invalid leaf is skipped, not fatal");
+        assert_eq!(node.children, vec![child]);
+        assert_eq!(leaves.len(), 1);
+        assert!(!leaves[0].is_valid(), "the caller skips it as invalid");
     }
 
     #[test]

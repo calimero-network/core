@@ -214,7 +214,12 @@ A player undoes a move or a resignation after seeing the reply; a signer's
 signature disappears; the audit log says whatever the last vandal wanted.
 
 **Right.** `WriteOnce<C>`: the author owns the entry, and **nobody**, the author
-included, can change or delete it, on any node.
+included, can change or delete it, on any node. An author who signs a second
+value seals the entry instead: every node then reads it as
+`StorageError::Conflicted`, and every listing of the collection (`entries`,
+`range`, `prefix`, `entries_with_owners`, `entries_at`, and the rest) returns
+it as `Written::Conflicted`, so a tally counts a sealed move rather than losing
+it.
 
 ```rust
 moves:      WriteOnce<SortedMap<String, MoveRecord>>,
@@ -264,7 +269,8 @@ A patched member rewrites the seed and every client regenerates a different
 world; two members "claim first" concurrently and last-write-wins picks one.
 
 **Right.** Write it once, in `init`, into `Frozen<T>`. No node accepts a change
-or a removal afterwards, even from whoever created it:
+or a removal afterwards, even from whoever created it; a second value it signs
+seals the cell on every node:
 
 ```rust
 world: Frozen<WorldMeta>,

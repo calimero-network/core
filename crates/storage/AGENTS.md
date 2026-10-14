@@ -85,15 +85,31 @@ switching a field between the two types needs no migration.
 - `EntryRules { immutable, moderators }` rides in the `User` stamp and is
   hashed into `payload_for_signing`, so rules are signed and fixed at creation.
   Apply refuses an update or delete naming different rules; an `immutable`
-  entry takes no delete but a moderator's, and of its owner's authentic writes
-  keeps the one with the lowest `(signed nonce, SHA-256 of bytes)`
-  (`written_once_order`), however they arrive. Two devices of one account write
-  the same entry, so keeping the first to arrive split nodes for good; the
-  lowest is the same everywhere. An earlier write replaces the stored one
-  through `replace_written_once` (bypassing `save_internal`'s LWW guard) before
-  the stale-nonce skip can drop it; a later one is refused unless its bytes are
-  identical. The nonce has no lower bound, so the owner can replace its own
-  entry with a backdated write; no one else can. `tests/write_once_devices.rs`
+  entry takes no delete but a moderator's. Of its owner's authentic writes it
+  keeps the lowest by `(signed nonce, SHA-256 of bytes, signature)` and the
+  lowest whose bytes differ from that one (`written_once::settle`), however they
+  arrive. One kept write is the value. Two seal the entry: its stored bytes
+  become a conflict record (`calimero.written-once.conflict.v1` then borsh of
+  both signed writes), stamped with the first write's signature, and a read
+  returns `StorageError::Conflicted`. Every listing of a written-once policy
+  (`OnceOnly`) returns `Written<V>` per entry, so a sealed entry stays listed as
+  `Written::Conflicted`: the owner listings through `Owning::Listed`, and the
+  map listings through `Guarded` methods that shadow the inner map's (a sorted
+  map's index keeps a row for a sealed entry). An `IndexedMap` query matches
+  values, which a sealed entry has none of. A written-once write over
+  `written_once::MAX_VALUE_BYTES` is refused on every path (apply, the local
+  write, both snapshot verifiers), so a record of two fits one sync leaf. A
+  stored write enters a record only if its signature covers its bytes. A
+  sealed entry its collection's domain does not admit reads as absent. The
+  kept pair is a semilattice, so nodes that saw different pairs store the same
+  bytes after any exchange. A record is never applied as one write
+  (`refuse_conflict_record_as_write`): a repair applies it as its two writes,
+  each signer resolved on its own (`calimero-node`'s `conflict_leaves`), and a
+  snapshot verifies and authors each (`conflict_parts`), so only the writer
+  can seal its entry. A changed kept set is stored through
+  `replace_written_once` (bypassing `save_internal`'s LWW guard) before the
+  stale-nonce skip can drop it. A write over an entry whose own write is not yet
+  signed is refused unless its bytes are identical. `tests/write_once_devices.rs`
   and `tests/converge_write_once.rs` pin it. A `moderators` delete is checked
   with `resolve_anchor_writers(anchor)` for `DELETE`: the host resolves the
   moderators at the delete's causal cut, so a moderator removed later does not
@@ -298,14 +314,19 @@ switching a field between the two types needs no migration.
 - A `WriterSetCell<FrozenValue<T>>` built by `new_write_once`: one writer, the
   creating account, with `OpMask::WRITE_ONCE` (`0b1000`) and nothing else. No
   `DELETE`, no `ADMIN`, so the value cannot be removed or its writer rotated.
-- `enforce_put_mask` accepts a `Put` from a `WRITE_ONCE` writer only while the
-  entry is absent or the bytes are identical, so genesis lands on a fresh node
-  and sync redelivery converges, while a rewrite signed by the writer is
-  refused. `tests/frozen_values.rs` plays each peer.
-- Two writes never race for one value, so first-arrived is safe here as it is
-  not for `WriteOnce`: a root field is written by genesis alone, and a nested
-  cell is minted at `cell_id(Id::random(), writers)`, so two devices creating
-  one at the same key create two cells. `tests/converge_write_once.rs` pins it.
+- `WRITE_ONCE` is granted only alone: `SharedRotation::refusal` refuses a set
+  granting it beside another bit (`mixes_write_once`), the fold counts such a
+  step with `WRITE_ONCE` dropped (`without_mixed_write_once`, so its removals
+  still apply), and `enforce_put_mask` refuses a write-once write in such a
+  set, so a write-once writer can never seal what a writer may change.
+- `enforce_put_mask` settles a `Put` from a `WRITE_ONCE` writer as any
+  written-once entry's write (`written_once::settle`): genesis lands on a fresh
+  node, a redelivery changes nothing, and a second value signed by the writer
+  seals the value on every node. `tests/frozen_values.rs` plays each peer.
+- An honest creator writes one value: a root field is written by genesis alone,
+  and a nested cell is minted at `cell_id(Id::random(), writers)`, so two
+  devices creating one at the same key create two cells.
+  `tests/converge_write_once.rs` pins it.
 - Trust is `SharedStorage`'s: the writer set comes from genesis.
 
 ### `Registry` constraints

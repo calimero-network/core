@@ -142,7 +142,7 @@ fn every_replica_reads_every_owners_entry_by_key() {
                 let all = a.shots.entries_with_owners().unwrap();
                 all.len() == REPLICAS
                     && all.into_iter().all(|(owner, key, value)| {
-                        a.shots.get_by(&owner, &key).unwrap() == Some(value)
+                        a.shots.get_by(&owner, &key).unwrap() == value.clone().value()
                             && a.shots.entries_at(&key).unwrap() == vec![(owner, value)]
                     })
             })

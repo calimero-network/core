@@ -98,8 +98,8 @@ mod authored_common;
 pub mod guarded;
 pub use guarded::{
     Authored, ContentAddressed, ContentHash, Editable, Edits, Guarded, GuardedEntries, GuardedKeys,
-    Moderated, ModeratedOnce, Moderation, Once, Owner, OwnerEdits, OwnerOnce, Owning, Policy,
-    WriteOnce,
+    Moderated, ModeratedOnce, Moderation, Once, OnceOnly, Owner, OwnerEdits, OwnerOnce, Owning,
+    Policy, WriteOnce, Written,
 };
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
@@ -216,6 +216,12 @@ use crate::index::Index;
 use crate::interface::{Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
+
+/// Owned entries with their owners, a sealed one as `Written::Conflicted`.
+type OwnedRows<V, K> = Vec<(AccountId, (Written<V>, K))>;
+
+/// A keyed entry with its id, a sealed one as `Written::Conflicted`.
+type KeyedRow<V, K> = (Id, (Written<V>, K));
 
 /// Version of a `SortedMap`/`SortedSet` index marker. Bump it when the rows an
 /// index may hold change, so an index built before is rebuilt.
@@ -1608,12 +1614,22 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// one filed under another parent (see [`Interface::find_child_by_id`]).
     fn find_admitted(&self, id: Id) -> StoreResult<Option<Entry<T>>> {
         let parent = self.id();
-        let entry = self.within(|| <Interface<S>>::find_child_by_id::<Entry<_>>(parent, id))?;
+        let entry = match self.within(|| <Interface<S>>::find_child_by_id::<Entry<_>>(parent, id)) {
+            // A sealed entry this domain does not admit reads as absent, as any other does.
+            Err(StorageError::Conflicted(_)) if !self.admits_stored(id)? => return Ok(None),
+            entry => entry?,
+        };
         Ok(entry.filter(|entry| {
             self.storage
                 .domain
                 .admits(&entry.storage.metadata.storage_type)
         }))
+    }
+
+    /// Whether this collection's domain admits the stamp stored at `id`.
+    fn admits_stored(&self, id: Id) -> StoreResult<bool> {
+        Ok(<Index<S>>::get_metadata(id)?
+            .is_some_and(|metadata| self.storage.domain.admits(&metadata.storage_type)))
     }
 
     /// Whether this write lands in a collection inside frozen data while a value
@@ -1980,6 +1996,22 @@ where
             .filter(|entry| self.key_fits(id, &entry.item)))
     }
 
+    /// The key of the entry at `id` that two values sealed, read from the first
+    /// write it keeps, if this collection admits it and its key fits.
+    fn sealed_key(&self, id: Id) -> StoreResult<Option<K>> {
+        let parent = self.id();
+        let entry =
+            self.within(|| <Interface<S>>::find_sealed_child_by_id::<Entry<(V, K)>>(parent, id))?;
+        Ok(entry
+            .filter(|entry| {
+                self.storage
+                    .domain
+                    .admits(&entry.storage.metadata.storage_type)
+                    && self.key_fits(id, &entry.item)
+            })
+            .map(|entry| entry.item.1))
+    }
+
     /// The `(value, key)` at `id`, if this collection admits it and its key fits.
     fn get_keyed(&self, id: Id) -> StoreResult<Option<(V, K)>> {
         Ok(self.find_keyed(id)?.map(|entry| entry.item))
@@ -2008,25 +2040,41 @@ where
         Ok(entry.filter(|(_, key)| self.filed_under(id, key.as_ref())))
     }
 
-    /// Every entry with its id, in child order. An entry whose key does not fit
-    /// its id is skipped; one the child list names but storage cannot load is an
-    /// error, as in [`entries`](Collection::entries).
-    fn keyed_entries(&self) -> StoreResult<impl Iterator<Item = StoreResult<(Id, (V, K))>> + '_> {
+    /// Every entry with its id in child order, a sealed one as `Written::Conflicted`; an
+    /// unfit key is skipped, an unloadable child is an error ([`entries`](Collection::entries)).
+    fn keyed_writes(&self) -> StoreResult<impl Iterator<Item = StoreResult<KeyedRow<V, K>>> + '_> {
         let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
         Ok(ids
             .into_iter()
             .filter_map(move |id| match self.find_admitted(id) {
-                Ok(Some(entry)) => self
-                    .key_fits(id, &entry.item)
-                    .then_some(Ok((id, entry.item))),
+                Ok(Some(entry)) => self.key_fits(id, &entry.item).then(|| {
+                    let (value, key) = entry.item;
+                    Ok((id, (Written::Value(value), key)))
+                }),
                 Ok(None) => Some(Err(StoreError::StorageError(StorageError::NotFound(id)))),
+                Err(StoreError::StorageError(StorageError::Conflicted(_))) => self
+                    .sealed_key(id)
+                    .transpose()
+                    .map(|key| key.map(|key| (id, (Written::Conflicted, key)))),
                 Err(error) => Some(Err(error)),
             }))
     }
 
+    /// The `(entry, key)` at `id`, a sealed one as `Written::Conflicted`, if this
+    /// collection admits it and its key fits.
+    fn get_keyed_written(&self, id: Id) -> StoreResult<Option<(Written<V>, K)>> {
+        match self.find_keyed(id) {
+            Ok(entry) => Ok(entry.map(|entry| (Written::Value(entry.item.0), entry.item.1))),
+            Err(StoreError::StorageError(StorageError::Conflicted(_))) => {
+                Ok(self.sealed_key(id)?.map(|key| (Written::Conflicted, key)))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Every owned entry with its owner, in child order: only `owner`'s when one
     /// is given. Reads the stored bytes of only the entries it returns.
-    fn owned_entries(&self, owner: Option<&AccountId>) -> StoreResult<Vec<(AccountId, (V, K))>> {
+    fn owned_entries(&self, owner: Option<&AccountId>) -> StoreResult<OwnedRows<V, K>> {
         let children = match <Interface<S>>::child_info_for(self.id()) {
             Ok(children) => children,
             Err(StorageError::IndexNotFound(_)) => Vec::new(),
@@ -2037,7 +2085,7 @@ where
 
     /// Every owner's entry at `slot`, ascending by id. One trie bucket holds
     /// them all, since an owned id keeps its slot's prefix.
-    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (V, K))>>
+    fn entries_at(&self, slot: Id) -> StoreResult<OwnedRows<V, K>>
     where
         K: AsRef<[u8]>,
     {
@@ -2052,7 +2100,7 @@ where
         children: Vec<ChildInfo>,
         owner: Option<&AccountId>,
         wanted: impl Fn(&K) -> bool,
-    ) -> StoreResult<Vec<(AccountId, (V, K))>> {
+    ) -> StoreResult<OwnedRows<V, K>> {
         let domain = &self.storage.domain;
         let mut out = Vec::new();
         for child in children {
@@ -2063,10 +2111,11 @@ where
             {
                 continue;
             }
-            if let Some(entry) = self.find_keyed(child.id())? {
-                if wanted(&entry.item.1) {
-                    out.push((stamped, entry.item));
-                }
+            if let Some(entry) = self
+                .get_keyed_written(child.id())?
+                .filter(|(_, key)| wanted(key))
+            {
+                out.push((stamped, entry));
             }
         }
         Ok(out)

@@ -31,6 +31,7 @@ pub mod row;
 pub mod shared_writers;
 pub mod snapshot;
 pub mod store;
+pub mod written_once;
 
 /// CRDT convergence property-test harness (issue #2552).
 ///

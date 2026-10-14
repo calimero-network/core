@@ -589,11 +589,11 @@ where
                         (self.ops[op_idx])(&mut app);
                         app.commit();
                         if let Some(artifact) = env::take_last_artifact() {
-                            // Sign before the delta leaves its author, exactly
-                            // where a node signs: storage stamps a placeholder
-                            // for a write it authorized locally and leaves the
-                            // key to the layer above it.
-                            replica_deltas.push(sign_delta_actions(&artifact, &device_key_for(r)));
+                            // Sign before the delta leaves its author and keep the
+                            // signatures on its own entries, exactly as a node does.
+                            let signed = sign_delta_actions(&artifact, &device_key_for(r));
+                            persist_signatures(&signed);
+                            replica_deltas.push(signed);
                         }
                     }
                 });

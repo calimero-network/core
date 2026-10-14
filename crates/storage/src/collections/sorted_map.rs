@@ -81,7 +81,9 @@ use calimero_account::AccountId;
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, StorageKey, ValueRef};
+use super::{
+    compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, StorageKey, ValueRef, Written,
+};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -633,17 +635,17 @@ where
     pub(crate) fn owned_entries(
         &self,
         owner: Option<&AccountId>,
-    ) -> Result<Vec<(AccountId, K, V)>, StoreError> {
+    ) -> Result<Vec<(AccountId, K, Written<V>)>, StoreError> {
         Ok(self
             .inner
             .owned_entries(owner)?
             .into_iter()
-            .map(|(owner, (value, key))| (owner, key, value))
+            .map(|(owner, (entry, key))| (owner, key, entry))
             .collect())
     }
 
-    /// Every owner's value at `key`, ascending by entry id.
-    pub(crate) fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError>
+    /// Every owner's entry at `key`, ascending by entry id.
+    pub(crate) fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, Written<V>)>, StoreError>
     where
         K: AsRef<[u8]>,
     {
@@ -651,7 +653,7 @@ where
             .inner
             .entries_at(self.slot_id(key))?
             .into_iter()
-            .map(|(owner, (value, _))| (owner, value))
+            .map(|(owner, (entry, _))| (owner, entry))
             .collect())
     }
 
@@ -833,8 +835,8 @@ where
         // Desired rows = the authoritative entry set (the O(n) read floor),
         // each with the id its entry is stored under.
         let desired: BTreeMap<Vec<u8>, Id> = self
-            .iter_keyed()?
-            .map(|(id, k, _v)| (self.index_row(k.as_ref(), id), id))
+            .iter_written()?
+            .map(|(id, k, _entry)| (self.index_row(k.as_ref(), id), id))
             .collect();
 
         // Current index rows.
@@ -920,18 +922,28 @@ where
 
     /// [`iter_unordered`](Self::iter_unordered) with the id each entry is
     /// stored under. An entry whose stored key does not derive its id is
-    /// skipped.
+    /// skipped, and so is a sealed one.
     fn iter_keyed(&self) -> Result<impl Iterator<Item = (Id, K, V)> + '_, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        Ok(self
+            .iter_written()?
+            .filter_map(|(id, key, entry)| Some((id, key, entry.value()?))))
+    }
+
+    /// [`iter_keyed`](Self::iter_keyed) with a sealed entry as `Written::Conflicted`.
+    fn iter_written(&self) -> Result<impl Iterator<Item = (Id, K, Written<V>)> + '_, StoreError>
     where
         K: AsRef<[u8]>,
     {
         let collection_id = self.inner.id();
         // Inner yields `(V, K)`; the public contract is `(K, V)`.
-        Ok(self.inner.keyed_entries()?.filter_map(move |result| match result {
-            Ok((id, (value, key))) => self
+        Ok(self.inner.keyed_writes()?.filter_map(move |result| match result {
+            Ok((id, (entry, key))) => self
                 .inner
                 .filed_under(id, key.as_ref())
-                .then_some((id, key, value)),
+                .then_some((id, key, entry)),
             Err(error) => {
                 tracing::error!(
                     target: "calimero_storage::iter_drop",
@@ -966,15 +978,20 @@ where
     where
         K: AsRef<[u8]>,
     {
-        self.sorted_where(|_| true)
+        Ok(values_only(self.sorted_written(|_| true)?))
     }
 
-    /// The entries whose key passes `keep`, in key order and then id order.
-    fn sorted_where(&self, keep: impl Fn(&K) -> bool) -> Result<Vec<(K, V)>, StoreError>
+    /// The entries whose key passes `keep`, in key order and then id order, a
+    /// sealed one as `Written::Conflicted`.
+    pub(crate) fn sorted_written(
+        &self,
+        keep: impl Fn(&K) -> bool,
+    ) -> Result<Vec<(K, Written<V>)>, StoreError>
     where
         K: AsRef<[u8]>,
     {
-        let mut entries: Vec<(Id, K, V)> = self.iter_keyed()?.filter(|(_, k, _)| keep(k)).collect();
+        let mut entries: Vec<(Id, K, Written<V>)> =
+            self.iter_written()?.filter(|(_, k, _)| keep(k)).collect();
         entries.sort_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)));
         Ok(entries.into_iter().map(|(_, k, v)| (k, v)).collect())
     }
@@ -1037,18 +1054,27 @@ where
         R: RangeBounds<K>,
         K: AsRef<[u8]>,
     {
+        Ok(values_only(self.written_range(range)?).into_iter())
+    }
+
+    /// [`range`](Self::range), a sealed entry as `Written::Conflicted`.
+    pub(crate) fn written_range<R>(&self, range: R) -> Result<Vec<(K, Written<V>)>, StoreError>
+    where
+        R: RangeBounds<K>,
+        K: AsRef<[u8]>,
+    {
         if self.ensure_index()? {
             // Index-backed: RocksDB seeks to `start` and walks to `end` —
             // O(log n + k), only the matching values are loaded.
             let collection = self.inner.id();
             let (start, end) = self.row_bounds(range.start_bound(), range.end_bound());
             let hits = S::index_range(collection, start, end, 0, None);
-            return Ok(self.resolve_hits(hits)?.into_iter());
+            return self.resolve_hits(hits);
         }
 
         // In-memory fallback (adaptor doesn't back the index): filter before
         // sorting so cost scales with matches `m`: O(n) scan + O(m log m).
-        Ok(self.sorted_where(|k| range.contains(k))?.into_iter())
+        self.sorted_written(|k| range.contains(k))
     }
 
     /// Iterate the entries whose key bytes start with `prefix`, in ascending
@@ -1066,16 +1092,22 @@ where
     where
         K: AsRef<[u8]>,
     {
+        Ok(values_only(self.written_prefix(prefix)?).into_iter())
+    }
+
+    /// [`prefix`](Self::prefix), a sealed entry as `Written::Conflicted`.
+    pub(crate) fn written_prefix(&self, prefix: &[u8]) -> Result<Vec<(K, Written<V>)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         if self.ensure_index()? {
             // Index-backed prefix seek — O(log n + k).
             let hits = S::index_prefix(self.inner.id(), &self.row_prefix(prefix), 0, None);
-            return Ok(self.resolve_hits(hits)?.into_iter());
+            return self.resolve_hits(hits);
         }
 
         // In-memory fallback: filter by prefix before sorting.
-        Ok(self
-            .sorted_where(|k| k.as_ref().starts_with(prefix))?
-            .into_iter())
+        self.sorted_written(|k| k.as_ref().starts_with(prefix))
     }
 
     /// Return a page of `limit` entries starting at `offset`, in ascending key
@@ -1087,6 +1119,18 @@ where
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     pub fn page(&self, offset: usize, limit: usize) -> Result<Vec<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        Ok(values_only(self.written_page(offset, limit)?))
+    }
+
+    /// [`page`](Self::page), a sealed entry as `Written::Conflicted`.
+    pub(crate) fn written_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(K, Written<V>)>, StoreError>
     where
         K: AsRef<[u8]>,
     {
@@ -1105,22 +1149,22 @@ where
 
         // In-memory fallback.
         Ok(self
-            .sorted_pairs()?
+            .sorted_written(|_| true)?
             .into_iter()
             .skip(offset)
             .take(limit)
             .collect())
     }
 
-    /// Load the `(K, V)` values for index hits, in the index's (ascending key)
-    /// order. A hit whose entry has since vanished is skipped (defensive; an
-    /// up-to-date index shouldn't contain stale ids).
-    fn resolve_hits(&self, hits: Vec<(Vec<u8>, Id)>) -> Result<Vec<(K, V)>, StoreError> {
+    /// Load the entries for index hits, in the index's (ascending key) order, a
+    /// sealed one as `Written::Conflicted`. A hit whose entry has since vanished
+    /// is skipped (defensive; an up-to-date index shouldn't contain stale ids).
+    fn resolve_hits(&self, hits: Vec<(Vec<u8>, Id)>) -> Result<Vec<(K, Written<V>)>, StoreError> {
         let mut out = Vec::with_capacity(hits.len());
         for (_order_key, id) in hits {
             // Stored value-first; the public contract is `(K, V)`.
-            if let Some((value, key)) = self.inner.get_keyed(id)? {
-                out.push((key, value));
+            if let Some((entry, key)) = self.inner.get_keyed_written(id)? {
+                out.push((key, entry));
             }
         }
         Ok(out)
@@ -1139,6 +1183,16 @@ where
     where
         K: AsRef<[u8]>,
     {
+        Ok(self
+            .written_first()?
+            .and_then(|(k, entry)| Some((k, entry.value()?))))
+    }
+
+    /// [`first`](Self::first), a sealed entry as `Written::Conflicted`.
+    pub(crate) fn written_first(&self) -> Result<Option<(K, Written<V>)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         if self.ensure_index()? {
             let hits = S::index_range(
                 self.inner.id(),
@@ -1150,7 +1204,7 @@ where
             return Ok(self.resolve_hits(hits)?.into_iter().next());
         }
         Ok(self
-            .iter_keyed()?
+            .iter_written()?
             .min_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)))
             .map(|(_, k, v)| (k, v)))
     }
@@ -1169,17 +1223,34 @@ where
     where
         K: AsRef<[u8]>,
     {
+        Ok(self
+            .written_last()?
+            .and_then(|(k, entry)| Some((k, entry.value()?))))
+    }
+
+    /// [`last`](Self::last), a sealed entry as `Written::Conflicted`.
+    pub(crate) fn written_last(&self) -> Result<Option<(K, Written<V>)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
         if self.ensure_index()? {
             return match S::index_last(self.inner.id()) {
-                Some((_row, id)) => Ok(self.inner.get_keyed(id)?.map(|(v, k)| (k, v))),
+                Some((_row, id)) => Ok(self.inner.get_keyed_written(id)?.map(|(v, k)| (k, v))),
                 None => Ok(None),
             };
         }
         Ok(self
-            .iter_keyed()?
+            .iter_written()?
             .max_by(|(a_id, a, _), (b_id, b, _)| a.cmp(b).then_with(|| a_id.cmp(b_id)))
             .map(|(_, k, v)| (k, v)))
     }
+}
+
+/// The entries of `rows` that hold a value, in order.
+fn values_only<K, V>(rows: Vec<(K, Written<V>)>) -> Vec<(K, V)> {
+    rows.into_iter()
+        .filter_map(|(k, entry)| Some((k, entry.value()?)))
+        .collect()
 }
 
 // Implement Data for SortedMap by delegating to its inner Collection.

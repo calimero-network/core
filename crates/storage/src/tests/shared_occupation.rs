@@ -441,7 +441,13 @@ fn a_snapshot_leaf_at_a_cell_id_must_be_the_cells_own() {
     );
     let (id, data, metadata) = leaf(&foreign_member);
     assert!(MainInterface::verify_snapshot_entity_signature(id, None, &data, &metadata).is_err());
-    assert!(MainInterface::verify_snapshot_member_signature(id, &data, &metadata).is_err());
+    assert!(MainInterface::verify_snapshot_member_signature(
+        id,
+        &data,
+        &metadata,
+        &Default::default()
+    )
+    .is_err());
     let public = Metadata::new(FORGED_AT, FORGED_AT);
     assert!(MainInterface::verify_snapshot_entity_signature(value, None, &data, &public).is_err());
 }
@@ -727,7 +733,8 @@ fn a_snapshot_leaf_whose_writers_its_cell_id_does_not_commit_to_is_refused() {
         "writers the id does not commit to are refused"
     );
     assert!(
-        MainInterface::verify_snapshot_member_signature(id, &data, &metadata).is_err(),
+        MainInterface::verify_snapshot_member_signature(id, &data, &metadata, &Default::default())
+            .is_err(),
         "a wrapper is not a member"
     );
 }

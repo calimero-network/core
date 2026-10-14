@@ -56,6 +56,7 @@ use crate::index::{EntityIndex, HeldRow, Index, MAX_PARENT_CHAIN};
 use crate::merge::{MergeCustomRequest, MergeRootStateRequest};
 use crate::shared_writers::CellWriters;
 use crate::store::{Key, MainStorage, StorageAdaptor};
+use crate::written_once::{self, Settled, SignedWrite};
 
 // Re-export types for convenience
 pub use crate::action::Action;
@@ -63,6 +64,9 @@ pub use crate::error::StorageError;
 
 /// Convenient type alias for the main storage system.
 pub type MainInterface = Interface<MainStorage>;
+
+/// An entity's stored bytes and its index row.
+type LiveRow = (Vec<u8>, Option<EntityIndex>);
 
 /// Whether a root entity's stored `crdt_type` marks it as *opaque* — a root
 /// with no application-defined `Mergeable` merge dispatch.
@@ -472,32 +476,96 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
-    /// Enforce the `WRITE` capability for an upsert of `id` with `data`, or
-    /// `WRITE_ONCE` where the writer holds only that: it creates `id` if
-    /// nothing is stored there, accepts a redelivery of the stored bytes, and
-    /// refuses anything else.
+    /// Enforce `WRITE` for an upsert of `id`, or settle it as a written-once write
+    /// where the writer holds `WRITE_ONCE` alone in a set granting nothing beside it.
     fn enforce_put_mask(
         signer_account: &AccountId,
         writers: &BTreeMap<AccountId, OpMask>,
         id: Id,
         data: &[u8],
-    ) -> Result<(), StorageError> {
+        signature_data: &SignatureData,
+    ) -> Result<Option<Settled>, StorageError> {
         let granted = writers.get(signer_account).copied().unwrap_or(OpMask::NONE);
         if granted.contains(OpMask::WRITE) {
-            return Ok(());
+            return Ok(None);
         }
-        if granted.contains(OpMask::WRITE_ONCE) {
-            return match S::storage_read(Key::Entry(id)) {
-                None => Ok(()),
-                Some(stored) if stored == data => Ok(()),
-                Some(_) => Err(StorageError::ActionNotAllowed(
-                    "a write-once value cannot be changed".to_owned(),
-                )),
-            };
+        if !granted.contains(OpMask::WRITE_ONCE) {
+            return Err(StorageError::ActionNotAllowed(
+                "Signer is a writer but lacks the required operation capability".to_owned(),
+            ));
         }
-        Err(StorageError::ActionNotAllowed(
-            "Signer is a writer but lacks the required operation capability".to_owned(),
-        ))
+        if crate::shared_writers::mixes_write_once(writers) {
+            return Err(StorageError::ActionNotAllowed(
+                "a write-once grant beside other grants writes nothing".to_owned(),
+            ));
+        }
+        refuse_oversized_written_once(data)?;
+        match <Index<S>>::get_metadata(id)? {
+            Some(stored_metadata) => {
+                Self::settle_written_once(id, &stored_metadata, data, signature_data)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Whether the stored `data` at `id` is a record, or the write its stamp signs.
+    fn stored_write_verifies(id: Id, data: &[u8], storage_type: &StorageType) -> bool {
+        if written_once::conflict_writes(storage_type, data).is_some() {
+            return true;
+        }
+        let Some(sig_data) = storage_type.signature_data() else {
+            return false;
+        };
+        let metadata = Metadata {
+            storage_type: storage_type.clone(),
+            ..Metadata::default()
+        };
+        let payload = Action::Add {
+            id,
+            data: data.to_vec(),
+            ancestors: vec![],
+            metadata,
+        }
+        .payload_for_signing();
+        Self::snapshot_signature_verifies(sig_data, &payload)
+    }
+
+    /// Whether a local write stamped `storage_type` is written once: an immutable
+    /// owned entry, or a cell member whose writers hold `WRITE_ONCE` alone.
+    fn is_written_once(storage_type: &StorageType) -> bool {
+        match storage_type {
+            StorageType::User { rules, .. } => rules.immutable,
+            StorageType::SharedMember { anchor, .. } => {
+                crate::shared_writers::writes_once_only(&Self::resolve_anchor_writers(*anchor))
+            }
+            _ => false,
+        }
+    }
+
+    /// Settle an authentic write of `data` to the written-once entry at `id`
+    /// against what it holds; `None` when nothing is stored there yet.
+    fn settle_written_once(
+        id: Id,
+        stored_metadata: &Metadata,
+        data: &[u8],
+        signature_data: &SignatureData,
+    ) -> Result<Option<Settled>, StorageError> {
+        let Some(stored) = S::storage_read(Key::Entry(id)) else {
+            return Ok(None);
+        };
+        let incoming = SignedWrite {
+            data: data.to_vec(),
+            signature_data: *signature_data,
+        };
+        // A stamp a merge left beside other bytes signs nothing here, so it proves no conflict.
+        let stored_signed = Self::stored_write_verifies(id, &stored, &stored_metadata.storage_type);
+        written_once::settle(
+            &stored_metadata.storage_type,
+            stored,
+            stored_signed,
+            incoming,
+        )
+        .map(Some)
     }
 
     /// Resolve which writer produced `sig_data`'s signature over `payload`,
@@ -803,7 +871,10 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: &crate::entities::Metadata,
     ) -> Result<(), StorageError> {
-        let verdict = Self::verify_snapshot_entity_signature_inner(id, parent, data, metadata);
+        // A sealed entry stands only if each write its record holds verifies.
+        let verdict = written_once::each_write(metadata, data, |data, metadata| {
+            Self::verify_snapshot_entity_signature_inner(id, parent, data, metadata)
+        });
         if verdict.is_err() {
             // Name the storage type and the entity, because the error variant
             // cannot. One `InvalidSignature` is returned by three different arms,
@@ -885,6 +956,14 @@ impl<S: StorageAdaptor> Interface<S> {
         // A rotation never rewrites a wrapper, so a leaf carries the writers its cell
         // id commits to and is held to them.
         refuse_foreign_entity_at_cell_id(id, metadata, true)?;
+        let written_once = match &metadata.storage_type {
+            StorageType::User { rules, .. } => rules.immutable,
+            StorageType::Shared { writers, .. } => crate::shared_writers::writes_once_only(writers),
+            _ => false,
+        };
+        if written_once {
+            refuse_oversized_written_once(data)?;
+        }
 
         // Public / Frozen don't require signature verification.
         match &metadata.storage_type {
@@ -1025,35 +1104,42 @@ impl<S: StorageAdaptor> Interface<S> {
         id: crate::address::Id,
         data: &[u8],
         metadata: &crate::entities::Metadata,
+        writers: &BTreeMap<AccountId, OpMask>,
     ) -> Result<(), StorageError> {
         use crate::action::Action;
         use crate::entities::StorageType;
 
-        let StorageType::SharedMember { signature_data, .. } = &metadata.storage_type else {
-            return Err(StorageError::InvalidData(
-                "verify_snapshot_member_signature: storage_type is not SharedMember".to_owned(),
-            ));
-        };
-        refuse_entity_at_reserved_id(id, metadata)?;
-        refuse_foreign_entity_at_cell_id(id, metadata, true)?;
-        let Some(sig_data) = signature_data.as_ref() else {
-            return Err(StorageError::InvalidSignature);
-        };
-        if sig_data.signature == [0u8; 64] {
-            return Err(StorageError::InvalidSignature);
-        }
-        let action = Action::Add {
-            id,
-            data: data.to_vec(),
-            ancestors: vec![],
-            metadata: metadata.clone(),
-        };
-        let payload = action.payload_for_signing();
-        if Self::snapshot_signature_verifies(sig_data, &payload) {
-            Ok(())
-        } else {
-            Err(StorageError::InvalidSignature)
-        }
+        written_once::each_write(metadata, data, |data, metadata| {
+            if crate::shared_writers::writes_once_only(writers) {
+                refuse_oversized_written_once(data)?;
+            }
+
+            let StorageType::SharedMember { signature_data, .. } = &metadata.storage_type else {
+                return Err(StorageError::InvalidData(
+                    "verify_snapshot_member_signature: storage_type is not SharedMember".to_owned(),
+                ));
+            };
+            refuse_entity_at_reserved_id(id, metadata)?;
+            refuse_foreign_entity_at_cell_id(id, metadata, true)?;
+            let Some(sig_data) = signature_data.as_ref() else {
+                return Err(StorageError::InvalidSignature);
+            };
+            if sig_data.signature == [0u8; 64] {
+                return Err(StorageError::InvalidSignature);
+            }
+            let action = Action::Add {
+                id,
+                data: data.to_vec(),
+                ancestors: vec![],
+                metadata: metadata.clone(),
+            };
+            let payload = action.payload_for_signing();
+            if Self::snapshot_signature_verifies(sig_data, &payload) {
+                Ok(())
+            } else {
+                Err(StorageError::InvalidSignature)
+            }
+        })
     }
 
     /// Persist the signed `signature_data` produced by the runtime's
@@ -1291,6 +1377,11 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let data = to_vec(child).map_err(StorageError::SerializationError)?;
         refuse_misfiled_owned_entry(child.id(), Some(parent_id), &data)?;
+        if data.len() > written_once::MAX_VALUE_BYTES
+            && Self::is_written_once(&child.element().metadata.storage_type)
+        {
+            refuse_oversized_written_once(&data)?;
+        }
 
         let own_hash = Sha256::digest(&data).into();
 
@@ -1822,6 +1913,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // to prevent LWW Time Drift attacks.
         verify_action_timestamp(&action)?;
         let action = Self::with_implied_root(action);
+        refuse_conflict_record_as_write(&action)?;
 
         match &action {
             Action::Add { id, metadata, .. }
@@ -1899,10 +1991,9 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        // Set when an authentic write to a written-once entry orders before
-        // the stored one, so the apply pass writes it over the stored bytes
-        // rather than letting `save_internal`'s LWW guard drop it as older.
-        let mut replaces_written_once = false;
+        // Set when an authentic write changes what a written-once entry keeps,
+        // so the apply pass stores it whatever `save_internal`'s LWW guard says.
+        let mut settled_once = None;
 
         // Set when a verified delete is of a written-once entry, which is
         // terminal: the apply pass tombstones it whatever write it holds, or,
@@ -2042,16 +2133,8 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Ok(());
                         }
 
-                        // A written-once entry keeps one write for good: of
-                        // every authentic write its owner made to it, the one
-                        // with the lowest `(nonce, content hash)`. Keeping the
-                        // first to ARRIVE split nodes whenever two devices of
-                        // the owner wrote the key before seeing each other: each
-                        // kept its own. The lowest is the same on every node in
-                        // any order, and a later rewrite always orders after the
-                        // write it would replace, so it is refused everywhere.
-                        // Decided before the stale-nonce skip below, which
-                        // would otherwise drop the earlier write as older.
+                        // A written-once entry keeps the same writes in any order
+                        // (`written_once::settle`), decided before the stale-nonce skip.
                         //
                         // `verify_action_update` has already held the rules to
                         // the stored ones, so `rules` here are the entry's own.
@@ -2066,24 +2149,16 @@ impl<S: StorageAdaptor> Interface<S> {
                         // delete arrived first.
                         if rules.immutable {
                             Self::refuse_deleted_written_once(stored_index.as_ref(), *id, rules)?;
-                            if let Some(stored) = S::storage_read(Key::Entry(*id)) {
-                                let stored_nonce = stored_metadata
-                                    .and_then(|m| m.storage_type.signature_data())
-                                    .map_or(last_nonce, |sig| sig.nonce);
-                                match written_once_order((new_nonce, data), (stored_nonce, &stored))
-                                {
-                                    core::cmp::Ordering::Less => replaces_written_once = true,
-                                    core::cmp::Ordering::Equal => return Ok(()),
-                                    // A redelivery of the value under a later
-                                    // write changes nothing.
-                                    core::cmp::Ordering::Greater if stored == *data => {
-                                        return Ok(())
-                                    }
-                                    core::cmp::Ordering::Greater => {
-                                        return Err(StorageError::ActionNotAllowed(
-                                            "an immutable entry cannot be changed".to_owned(),
-                                        ));
-                                    }
+                            refuse_oversized_written_once(data)?;
+                            if let Some(stored_metadata) = stored_metadata {
+                                match Self::settle_written_once(
+                                    *id,
+                                    stored_metadata,
+                                    data,
+                                    sig_data,
+                                )? {
+                                    Some(Settled::Unchanged) => return Ok(()),
+                                    settled => settled_once = settled,
                                 }
                             }
                         }
@@ -2136,7 +2211,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         // write goes on to `save_internal`, which merges it,
                         // or the replica that saw the newer write first never
                         // takes the older one in and keeps a different value.
-                        if !replaces_written_once
+                        if settled_once.is_none()
                             && !skip_nonce
                             && new_nonce < last_nonce
                             && !stale_write_still_merges(*id, stored_metadata, metadata)
@@ -2279,7 +2354,16 @@ impl<S: StorageAdaptor> Interface<S> {
                         };
                         // Operation-granularity gate: the signer is a current
                         // writer, but must also hold the capability for THIS op.
-                        Self::enforce_put_mask(&signer, &authoritative_writers, *id, data)?;
+                        match Self::enforce_put_mask(
+                            &signer,
+                            &authoritative_writers,
+                            *id,
+                            data,
+                            sig_data,
+                        )? {
+                            Some(Settled::Unchanged) => return Ok(()),
+                            settled => settled_once = settled,
+                        }
                         if Self::predates_collected_delete(
                             *id,
                             stored_metadata.is_some(),
@@ -2304,7 +2388,8 @@ impl<S: StorageAdaptor> Interface<S> {
                         // merges an older write (see the User arm); no `Shared`
                         // anchor carries such a type today, so this keeps the
                         // three arms one rule.
-                        if !skip_nonce
+                        if settled_once.is_none()
+                            && !skip_nonce
                             && new_nonce < last_nonce
                             && !stale_write_still_merges(*id, stored_metadata.as_ref(), metadata)
                         {
@@ -2405,7 +2490,16 @@ impl<S: StorageAdaptor> Interface<S> {
                             ));
                         };
                         // Operation-granularity gate (member resolves the anchor's masks).
-                        Self::enforce_put_mask(&signer, &authoritative_writers, *id, data)?;
+                        match Self::enforce_put_mask(
+                            &signer,
+                            &authoritative_writers,
+                            *id,
+                            data,
+                            sig_data,
+                        )? {
+                            Some(Settled::Unchanged) => return Ok(()),
+                            settled => settled_once = settled,
+                        }
                         if Self::predates_collected_delete(
                             *id,
                             stored_metadata.is_some(),
@@ -2419,7 +2513,8 @@ impl<S: StorageAdaptor> Interface<S> {
                         // merges an older write (see the User arm): a map of
                         // `#[app::mergeable]` values in a cell split the
                         // replicas by delivery order before this.
-                        if !skip_nonce
+                        if settled_once.is_none()
+                            && !skip_nonce
                             && new_nonce < last_nonce
                             && !stale_write_still_merges(*id, stored_metadata.as_ref(), metadata)
                         {
@@ -2970,8 +3065,14 @@ impl<S: StorageAdaptor> Interface<S> {
                 }
 
                 // Save data (might merge, producing different hash)
-                let saved = if replaces_written_once {
-                    Some((false, Self::replace_written_once(id, &data, &metadata)?))
+                let saved = if let Some(Settled::Store {
+                    data: kept,
+                    signature_data,
+                }) = &settled_once
+                {
+                    let full_hash =
+                        Self::replace_written_once(id, kept, *signature_data, &metadata)?;
+                    Some((false, full_hash))
                 } else {
                     Self::save_internal(
                         id,
@@ -3277,6 +3378,35 @@ impl<S: StorageAdaptor> Interface<S> {
     }
 
     fn find_under<D: Data>(id: Id, parent: Option<Id>) -> Result<Option<D>, StorageError> {
+        let Some((slice, index)) = Self::row_under(id, parent)? else {
+            return Ok(None);
+        };
+        if let Some(index) = &index {
+            if written_once::conflict_writes(&index.metadata.storage_type, &slice).is_some() {
+                return Err(StorageError::Conflicted(id));
+            }
+        }
+        Self::decode_row(id, &slice, index).map(Some)
+    }
+
+    /// The first write a sealed written-once child of `parent` keeps, decoded as
+    /// that entry; `None` when `id` is no sealed child of `parent`.
+    pub(crate) fn find_sealed_child_by_id<D: Data>(
+        parent: Id,
+        id: Id,
+    ) -> Result<Option<D>, StorageError> {
+        let Some((slice, Some(index))) = Self::row_under(id, Some(parent))? else {
+            return Ok(None);
+        };
+        let Some((first, _)) = written_once::conflict_writes(&index.metadata.storage_type, &slice)
+        else {
+            return Ok(None);
+        };
+        Self::decode_row(id, &first.data, Some(index)).map(Some)
+    }
+
+    /// The live row at `id`, bytes and index, if `parent` holds it when one is named.
+    fn row_under(id: Id, parent: Option<Id>) -> Result<Option<LiveRow>, StorageError> {
         // One row read serves the tombstone check, the merkle_hash and metadata
         // below AND the data: reading the index and the data apart read the
         // same row twice for every child of every collection scan.
@@ -3297,12 +3427,15 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         }
 
-        let value = row.data;
+        Ok(row.data.map(|slice| (slice, index)))
+    }
 
-        let Some(slice) = value else {
-            return Ok(None);
-        };
-
+    /// Decode `slice` as the entity at `id`, under the domain and stamp its index names.
+    fn decode_row<D: Data>(
+        id: Id,
+        slice: &[u8],
+        index: Option<EntityIndex>,
+    ) -> Result<D, StorageError> {
         // Collections inside the value come back in this entity's domain, so an
         // owned entry's nested maps stay owned (see `crate::domain`).
         let domain = index.as_ref().map_or(crate::domain::Domain::Open, |index| {
@@ -3313,7 +3446,7 @@ impl<S: StorageAdaptor> Interface<S> {
         let updated_at = index.as_ref().map(|index| *index.metadata.updated_at);
         let mut item = crate::domain::with_ambient(domain, || {
             crate::collections::lww_register::entry_stamp::with_stored(updated_at, || {
-                from_slice::<D>(&slice)
+                from_slice::<D>(slice)
             })
         })
         .map_err(StorageError::DeserializationError)?;
@@ -3322,7 +3455,7 @@ impl<S: StorageAdaptor> Interface<S> {
         item.element_mut().merkle_hash = index.full_hash();
         item.element_mut().metadata = index.metadata;
 
-        Ok(Some(item))
+        Ok(item)
     }
 
     /// Finds an entity by ID, returning raw bytes without deserialization.
@@ -3988,20 +4121,21 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(())
     }
 
-    /// Store `data` over a written-once entry whose write it orders before (see
-    /// `written_once_order`), and return the new full hash.
-    ///
-    /// Bypasses `save_internal`, whose LWW guard drops an incoming write with
-    /// an older `updated_at`: that is exactly the write that must win here. The
-    /// entry keeps its place in the tree, so only its bytes, its hashes and its
-    /// `updated_at` change; the apply pass then re-couples its signature.
+    /// Store a written-once entry's settled bytes, dated and signed by its first kept
+    /// write; bypasses `save_internal`'s LWW guard, since that write can be the older.
     fn replace_written_once(
         id: Id,
-        data: &[u8],
+        kept: &[u8],
+        signature_data: SignatureData,
         metadata: &Metadata,
     ) -> Result<[u8; 32], StorageError> {
-        <Index<S>>::write_value_for(id, data, metadata.updated_at, None, None, None)
-            .map(|index| index.full_hash())
+        let index =
+            <Index<S>>::write_value_for(id, kept, signature_data.nonce.into(), None, None, None)?;
+        let _ = Self::update_signature_in_place(
+            id,
+            written_once::with_signature(&metadata.storage_type, signature_data),
+        )?;
+        Ok(index.full_hash())
     }
 
     /// Write a root-state byte blob that has *already* been CRDT-merged
@@ -5310,14 +5444,28 @@ fn verify_frozen_action_upsert(action: &Action, data: &[u8]) -> Result<(), Stora
     Ok(())
 }
 
-/// How two authentic writes of one written-once entry order: by signed nonce,
-/// then by the SHA-256 of their bytes. The lower is the one every node keeps.
-fn written_once_order(write: (u64, &[u8]), other: (u64, &[u8])) -> core::cmp::Ordering {
-    let hash = |bytes: &[u8]| -> [u8; 32] { Sha256::digest(bytes).into() };
-    write
-        .0
-        .cmp(&other.0)
-        .then_with(|| hash(write.1).cmp(&hash(other.1)))
+/// Refuses a written-once write too large for a record of two to fit one sync leaf.
+fn refuse_oversized_written_once(data: &[u8]) -> Result<(), StorageError> {
+    if data.len() > written_once::MAX_VALUE_BYTES {
+        return Err(StorageError::ActionNotAllowed(format!(
+            "a written-once value holds at most {} bytes",
+            written_once::MAX_VALUE_BYTES
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses a conflict record arriving as a write: a node applies a sealed
+/// entry's record as the two writes it holds, each checked on its own.
+fn refuse_conflict_record_as_write(action: &Action) -> Result<(), StorageError> {
+    if let Action::Add { data, metadata, .. } | Action::Update { data, metadata, .. } = action {
+        if written_once::conflict_writes(&metadata.storage_type, data).is_some() {
+            return Err(StorageError::ActionNotAllowed(
+                "a conflict record is applied as the writes it holds".to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Stamps a local write after every version of its entity this node holds,

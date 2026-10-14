@@ -68,7 +68,7 @@
 
 use core::fmt;
 use core::marker::PhantomData;
-use core::ops::Deref;
+use core::ops::{Deref, RangeBounds};
 use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -123,19 +123,51 @@ pub trait Policy: sealed::Sealed + BorshSerialize + BorshDeserialize + 'static {
 /// A policy under which each entry is owned by the account that wrote it, and
 /// carries the [`EntryRules`] the policy decides.
 pub trait Owning: Policy {
+    /// What a listing holds for one entry: its value, or for a written-once
+    /// policy, a [`Written`].
+    type Listed<V>;
+
     /// The rules every entry is created with.
     fn rules(&self) -> EntryRules;
+
+    /// `entry` as a listing holds it; `None` for a sealed entry where none can be.
+    #[doc(hidden)]
+    fn listed<V>(entry: Written<V>) -> Option<Self::Listed<V>>;
+}
+
+/// An entry of a written-once collection as a listing returns it.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Written<V> {
+    /// The value its owner wrote.
+    Value(V),
+    /// Two different values were signed for it, which sealed it.
+    Conflicted,
+}
+
+impl<V> Written<V> {
+    /// The value, for an entry that has one.
+    pub fn value(self) -> Option<V> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Conflicted => None,
+        }
+    }
 }
 
 /// An owning policy whose entries their owner may still change.
 pub trait OwnerEdits: Owning {}
+
+/// An owning policy whose entries are written once, so two values seal one.
+/// Its collections list a sealed entry as [`Written::Conflicted`].
+pub trait OnceOnly: Owning {}
 
 /// Only the account that inserted an entry may update or remove it.
 #[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
 pub struct Owner;
 
 /// Each entry is owned by the account that inserted it and written once:
-/// every node refuses an update or delete of it, by anyone.
+/// every node refuses a delete of it, by anyone, and a second value its owner
+/// signs seals it rather than changing it.
 #[derive(Clone, Copy, Debug, BorshSerialize, BorshDeserialize)]
 pub struct OwnerOnce;
 
@@ -148,13 +180,21 @@ pub struct ContentHash;
 pub trait Edits: sealed::Sealed + 'static {
     /// True if an entry is written once.
     const IMMUTABLE: bool;
+
+    /// What a listing holds for one entry; see [`Owning::Listed`].
+    type Listed<V>;
+
+    /// `entry` as a listing holds it; see [`Owning::listed`].
+    #[doc(hidden)]
+    fn listed<V>(entry: Written<V>) -> Option<Self::Listed<V>>;
 }
 
 /// The owner may edit and remove their entry.
 #[derive(Clone, Copy, Debug)]
 pub struct Editable;
 
-/// Nobody may edit an entry; only a moderator may remove it.
+/// Nobody may edit an entry (a second value its owner signs seals it); only a
+/// moderator may remove it.
 #[derive(Clone, Copy, Debug)]
 pub struct Once;
 
@@ -162,9 +202,19 @@ impl sealed::Sealed for Editable {}
 impl sealed::Sealed for Once {}
 impl Edits for Editable {
     const IMMUTABLE: bool = false;
+    type Listed<V> = V;
+
+    fn listed<V>(entry: Written<V>) -> Option<V> {
+        entry.value()
+    }
 }
 impl Edits for Once {
     const IMMUTABLE: bool = true;
+    type Listed<V> = Written<V>;
+
+    fn listed<V>(entry: Written<V>) -> Option<Written<V>> {
+        Some(entry)
+    }
 }
 
 /// Each entry is owned by the account that inserted it, and a set of
@@ -206,8 +256,14 @@ impl Policy for Owner {
 }
 
 impl Owning for Owner {
+    type Listed<V> = V;
+
     fn rules(&self) -> EntryRules {
         EntryRules::OWNED
+    }
+
+    fn listed<V>(entry: Written<V>) -> Option<V> {
+        entry.value()
     }
 }
 impl OwnerEdits for Owner {}
@@ -227,13 +283,21 @@ impl Policy for OwnerOnce {
 }
 
 impl Owning for OwnerOnce {
+    type Listed<V> = Written<V>;
+
     fn rules(&self) -> EntryRules {
         EntryRules {
             immutable: true,
             moderators: None,
         }
     }
+
+    fn listed<V>(entry: Written<V>) -> Option<Written<V>> {
+        Some(entry)
+    }
 }
+
+impl OnceOnly for OwnerOnce {}
 
 impl Policy for ContentHash {
     const CRDT_TYPE: CrdtType = CrdtType::FrozenStorage;
@@ -273,14 +337,21 @@ impl<E: Edits> Policy for Moderation<E> {
 }
 
 impl<E: Edits> Owning for Moderation<E> {
+    type Listed<V> = E::Listed<V>;
+
     fn rules(&self) -> EntryRules {
         EntryRules {
             immutable: E::IMMUTABLE,
             moderators: Some(self.moderators.anchor()),
         }
     }
+
+    fn listed<V>(entry: Written<V>) -> Option<E::Listed<V>> {
+        E::listed(entry)
+    }
 }
 impl OwnerEdits for Moderation<Editable> {}
+impl OnceOnly for Moderation<Once> {}
 
 impl<E: Edits> Moderation<E> {
     fn with_moderators(moderators: BTreeSet<AccountId>) -> Self {
@@ -384,21 +455,35 @@ pub trait GuardedEntries: GuardedKeys + RekeyTarget {
     ) -> Result<Option<Self::Value>, StoreError>;
     /// Every entry with its owner: only `owner`'s when given.
     #[doc(hidden)]
-    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedEntries<Self>, StoreError>;
-    /// Every owner's value at `key`, ascending by entry id.
+    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedWrites<Self>, StoreError>;
+    /// Every owner's entry at `key`, ascending by entry id.
     #[doc(hidden)]
-    fn entries_at(&self, key: &Self::Key) -> Result<Vec<(AccountId, Self::Value)>, StoreError>;
+    fn entries_at(&self, key: &Self::Key) -> Result<HeldWrites<Self>, StoreError>;
 }
 
-/// Every entry of a guarded collection with its owner.
-pub type OwnedEntries<C> = Vec<(
+/// Every entry of a guarded collection with its owner, sealed ones included.
+#[doc(hidden)]
+pub type OwnedWrites<C> = Vec<(
     AccountId,
     <C as GuardedKeys>::Key,
-    <C as GuardedEntries>::Value,
+    Written<<C as GuardedEntries>::Value>,
 )>;
 
-/// Entries of a guarded collection, as `(key, value)`.
-pub type KeyedEntries<C> = Vec<(<C as GuardedKeys>::Key, <C as GuardedEntries>::Value)>;
+/// Every owner's entry at one key, sealed ones included.
+#[doc(hidden)]
+pub type HeldWrites<C> = Vec<(AccountId, Written<<C as GuardedEntries>::Value>)>;
+
+/// Every owner's entry at one key, as a listing holds it.
+pub type Holders<C, P> = Vec<(AccountId, Listed<C, P>)>;
+
+/// What a listing of a collection `C` under policy `P` holds for one entry.
+pub type Listed<C, P> = <P as Owning>::Listed<<C as GuardedEntries>::Value>;
+
+/// Every entry of a guarded collection with its owner.
+pub type OwnedEntries<C, P> = Vec<(AccountId, <C as GuardedKeys>::Key, Listed<C, P>)>;
+
+/// Entries of a guarded collection, as `(key, entry)`.
+pub type KeyedEntries<C, P> = Vec<(<C as GuardedKeys>::Key, Listed<C, P>)>;
 
 impl<K, V, S: StorageAdaptor> sealed::Sealed for UnorderedMap<K, V, S> {}
 impl<K, V, S: StorageAdaptor> sealed::Sealed for SortedMap<K, V, S> {}
@@ -477,10 +562,10 @@ where
     fn take_by(&mut self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
         self.remove_by_owner(owner, key)
     }
-    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedEntries<Self>, StoreError> {
+    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedWrites<Self>, StoreError> {
         Self::owned_entries(self, owner)
     }
-    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError> {
+    fn entries_at(&self, key: &K) -> Result<HeldWrites<Self>, StoreError> {
         Self::entries_at(self, key)
     }
 }
@@ -529,10 +614,10 @@ where
     fn take_by(&mut self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
         self.remove_by_owner(owner, key)
     }
-    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedEntries<Self>, StoreError> {
+    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedWrites<Self>, StoreError> {
         Self::owned_entries(self, owner)
     }
-    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError> {
+    fn entries_at(&self, key: &K) -> Result<HeldWrites<Self>, StoreError> {
         Self::entries_at(self, key)
     }
 }
@@ -582,10 +667,10 @@ where
     fn take_by(&mut self, owner: &AccountId, key: &K) -> Result<Option<V>, StoreError> {
         self.remove_by_owner(owner, key)
     }
-    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedEntries<Self>, StoreError> {
+    fn owned_entries(&self, owner: Option<&AccountId>) -> Result<OwnedWrites<Self>, StoreError> {
         Self::owned_entries(self, owner)
     }
-    fn entries_at(&self, key: &K) -> Result<Vec<(AccountId, V)>, StoreError> {
+    fn entries_at(&self, key: &K) -> Result<HeldWrites<Self>, StoreError> {
         Self::entries_at(self, key)
     }
 }
@@ -710,6 +795,118 @@ impl<C: GuardedKeys, P: Owning> Guarded<C, P> {
     }
 }
 
+/// A written-once map lists a sealed entry as [`Written::Conflicted`]; these shadow
+/// the map's own listings, which only hold values.
+impl<K, V, S, P> Guarded<UnorderedMap<K, V, S>, P>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+    P: OnceOnly,
+{
+    /// Every entry.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, Written<V>)> + '_, StoreError> {
+        self.inner.writes()
+    }
+}
+
+impl<K, V, S, P> Guarded<IndexedMap<K, V, S>, P>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+    P: OnceOnly,
+{
+    /// Every entry.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, Written<V>)> + '_, StoreError> {
+        self.inner.writes()
+    }
+}
+
+impl<K, V, S, P> Guarded<SortedMap<K, V, S>, P>
+where
+    K: BorshSerialize + BorshDeserialize + Ord + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+    P: OnceOnly,
+{
+    /// Every entry in ascending key order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, Written<V>)>, StoreError> {
+        Ok(self.inner.sorted_written(|_| true)?.into_iter())
+    }
+
+    /// Every key in ascending order, a sealed entry's included.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn keys(&self) -> Result<impl Iterator<Item = K>, StoreError> {
+        Ok(self.entries()?.map(|(k, _)| k))
+    }
+
+    /// Every entry's value or seal in ascending key order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn values(&self) -> Result<impl Iterator<Item = Written<V>>, StoreError> {
+        Ok(self.entries()?.map(|(_, v)| v))
+    }
+
+    /// The entries whose keys fall within `range`, in ascending order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn range<R: RangeBounds<K>>(
+        &self,
+        range: R,
+    ) -> Result<impl Iterator<Item = (K, Written<V>)>, StoreError> {
+        Ok(self.inner.written_range(range)?.into_iter())
+    }
+
+    /// The entries whose key bytes start with `prefix`, in ascending order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn prefix(
+        &self,
+        prefix: &[u8],
+    ) -> Result<impl Iterator<Item = (K, Written<V>)>, StoreError> {
+        Ok(self.inner.written_prefix(prefix)?.into_iter())
+    }
+
+    /// A page of `limit` entries from `offset`, in ascending key order.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn page(&self, offset: usize, limit: usize) -> Result<Vec<(K, Written<V>)>, StoreError> {
+        self.inner.written_page(offset, limit)
+    }
+
+    /// The entry with the smallest key, if any.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn first(&self) -> Result<Option<(K, Written<V>)>, StoreError> {
+        self.inner.written_first()
+    }
+
+    /// The entry with the largest key, if any.
+    ///
+    /// # Errors
+    /// Returns any storage error.
+    pub fn last(&self) -> Result<Option<(K, Written<V>)>, StoreError> {
+        self.inner.written_last()
+    }
+}
+
 #[cfg(test)]
 impl<C: GuardedKeys> Guarded<C, ContentHash> {
     /// The id the entry at `key` is stored under: content-addressed entries
@@ -763,24 +960,30 @@ impl<C: GuardedEntries, P: Owning> Guarded<C, P> {
         Ok(self.get_by(owner, key)?.is_some())
     }
 
-    /// Every entry with the account that owns it, in storage order.
+    /// Every entry with the account that owns it, in storage order. Under a
+    /// written-once policy each is a [`Written`], so a sealed entry stays listed.
     ///
     /// # Errors
     /// Returns any storage error.
-    pub fn entries_with_owners(&self) -> Result<OwnedEntries<C>, StoreError> {
-        self.inner.owned_entries(None)
+    pub fn entries_with_owners(&self) -> Result<OwnedEntries<C, P>, StoreError> {
+        Ok(self
+            .inner
+            .owned_entries(None)?
+            .into_iter()
+            .filter_map(|(owner, key, entry)| Some((owner, key, P::listed(entry)?)))
+            .collect())
     }
 
     /// `owner`'s entries, in storage order.
     ///
     /// # Errors
     /// Returns any storage error.
-    pub fn entries_by(&self, owner: &AccountId) -> Result<KeyedEntries<C>, StoreError> {
+    pub fn entries_by(&self, owner: &AccountId) -> Result<KeyedEntries<C, P>, StoreError> {
         Ok(self
             .inner
             .owned_entries(Some(owner))?
             .into_iter()
-            .map(|(_, key, value)| (key, value))
+            .filter_map(|(_, key, entry)| Some((key, P::listed(entry)?)))
             .collect())
     }
 
@@ -788,17 +991,22 @@ impl<C: GuardedEntries, P: Owning> Guarded<C, P> {
     ///
     /// # Errors
     /// Returns any storage error.
-    pub fn my_entries(&self) -> Result<KeyedEntries<C>, StoreError> {
+    pub fn my_entries(&self) -> Result<KeyedEntries<C, P>, StoreError> {
         self.entries_by(&authored_common::current_writer())
     }
 
-    /// Every account's value at `key`, ascending by entry id: one trie bucket
+    /// Every account's entry at `key`, ascending by entry id: one trie bucket
     /// read, however many entries the collection holds.
     ///
     /// # Errors
     /// Returns any storage error.
-    pub fn entries_at(&self, key: &C::Key) -> Result<Vec<(AccountId, C::Value)>, StoreError> {
-        self.inner.entries_at(key)
+    pub fn entries_at(&self, key: &C::Key) -> Result<Holders<C, P>, StoreError> {
+        Ok(self
+            .inner
+            .entries_at(key)?
+            .into_iter()
+            .filter_map(|(owner, entry)| Some((owner, P::listed(entry)?)))
+            .collect())
     }
 }
 

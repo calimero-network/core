@@ -1359,7 +1359,7 @@ fn get_nodes_at_level(
 // =============================================================================
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::sync::public_entries::PublicEntries;
 
@@ -1460,7 +1460,7 @@ mod tests {
     }
 
     /// Feeds a protocol run a fixed list of inbound messages, then closes.
-    struct Scripted(std::collections::VecDeque<StreamMessage<'static>>);
+    pub(crate) struct Scripted(pub(crate) std::collections::VecDeque<StreamMessage<'static>>);
 
     #[async_trait]
     impl SyncTransport for Scripted {

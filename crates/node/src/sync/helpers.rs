@@ -12,11 +12,12 @@ use calimero_primitives::crdt::{CrdtType, CustomTypeId};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::collections::ROOT_ENTRY_ID;
-use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
+use calimero_storage::entities::{ChildInfo, Metadata, OpMask, StorageType};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{Action, ApplyContext, Interface};
-use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
+use calimero_storage::shared_writers::{writes_once_only, CellWriters, WritersUnavailable};
 use calimero_storage::store::MainStorage;
+use calimero_storage::written_once::conflict_parts;
 use calimero_store::Store;
 use eyre::{bail, Result};
 use rand::RngExt;
@@ -370,7 +371,35 @@ fn user_leaf_author_is_its_owner(
 ///   rejection of legitimate pre-removal writes that propagate via HC)
 ///   is documented on
 ///   [`calimero_governance_store::is_currently_authorized_for_context`].
+///
+/// A sealed written-once entry's leaf is admitted only if each write in its record is.
 pub fn is_leaf_currently_authorized(
+    store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    context_id: &ContextId,
+    leaf: &TreeLeafData,
+    session_peer: Option<PublicKey>,
+) -> bool {
+    match conflict_leaves(leaf) {
+        Some(writes) => writes.iter().all(|write| {
+            write_currently_authorized(store, folded, context_id, write, session_peer)
+        }),
+        None => write_currently_authorized(store, folded, context_id, leaf, session_peer),
+    }
+}
+
+/// The plain writes a sealed written-once entry's leaf carries in its record,
+/// each as the leaf its author would have shipped; `None` for any other leaf.
+fn conflict_leaves(leaf: &TreeLeafData) -> Option<[TreeLeafData; 2]> {
+    let parts = conflict_parts(leaf.metadata.authorization.as_ref()?, &leaf.value)?;
+    Some(parts.map(|(value, storage_type)| {
+        let metadata = leaf.metadata.clone().with_authorization(storage_type);
+        TreeLeafData::new(leaf.key, value, metadata)
+    }))
+}
+
+/// [`is_leaf_currently_authorized`] for a leaf carrying one write.
+fn write_currently_authorized(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
@@ -604,7 +633,8 @@ pub(crate) fn signer_account_for(
 /// dropped like a bad signature.
 ///
 /// `writers` is the leaf's own set for a `Shared` anchor, and its anchor's set
-/// for a `SharedMember`.
+/// for a `SharedMember`. A sealed entry's leaf is admitted if each write in its
+/// record is.
 pub(crate) fn snapshot_leaf_admitted(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
@@ -614,10 +644,19 @@ pub(crate) fn snapshot_leaf_admitted(
         calimero_storage::entities::OpMask,
     >,
     storage_type: &StorageType,
+    data: &[u8],
 ) -> bool {
-    tee_only_leaf_admitted(writers, || {
-        signer_account_for(store, folded, context_id, Some(storage_type))
-    })
+    let admitted = |storage_type: &StorageType| {
+        tee_only_leaf_admitted(writers, || {
+            signer_account_for(store, folded, context_id, Some(storage_type))
+        })
+    };
+    match conflict_parts(storage_type, data) {
+        Some(writes) => writes
+            .iter()
+            .all(|(_, storage_type)| admitted(storage_type)),
+        None => admitted(storage_type),
+    }
 }
 
 /// [`snapshot_leaf_admitted`] with the signer resolution passed in, so the rule
@@ -680,7 +719,100 @@ pub(crate) enum SnapshotAuthorship {
 /// * Whether a `Shared` signer was a writer *when* it signed. A leaf has no
 ///   cut, so this admits a removed writer's own signed leaf served by an
 ///   admitted source, and the leaf of any account a void step's `new` set names.
+///
+/// A sealed entry's record (`data`) is authored, as its first write's author, only if each write is.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a leaf, its bytes, and the stores and fold that judge it"
+)]
 pub(crate) fn snapshot_leaf_authorship(
+    store: &Store,
+    folded: &dyn calimero_governance_store::FoldedTeeAuthority,
+    context_id: &ContextId,
+    leaf_id: Id,
+    metadata: &Metadata,
+    data: &[u8],
+    anchor_writers: Option<
+        &std::collections::BTreeMap<
+            calimero_account::AccountId,
+            calimero_storage::entities::OpMask,
+        >,
+    >,
+    ever_writers: &dyn Fn(Id) -> Result<CellWriters, WritersUnavailable>,
+) -> SnapshotAuthorship {
+    let Some(writes) = conflict_parts(&metadata.storage_type, data) else {
+        return write_authorship(
+            store,
+            folded,
+            context_id,
+            leaf_id,
+            metadata,
+            anchor_writers,
+            ever_writers,
+        );
+    };
+    // A cell's record is a seal only where its writers write once, or it is a
+    // mutable cell's history packed by whoever served it.
+    let cell = match &metadata.storage_type {
+        StorageType::Shared { writers, .. } => Some((leaf_id, Some(writers))),
+        StorageType::SharedMember { anchor, .. } => Some((*anchor, anchor_writers)),
+        _ => None,
+    };
+    if let Some(verdict) =
+        cell.and_then(|(cell, genesis)| cell_seal_verdict(genesis, ever_writers(cell)))
+    {
+        return verdict;
+    }
+    let verdicts = writes.map(|(_, storage_type)| {
+        let mut metadata = metadata.clone();
+        metadata.storage_type = storage_type;
+        write_authorship(
+            store,
+            folded,
+            context_id,
+            leaf_id,
+            &metadata,
+            anchor_writers,
+            ever_writers,
+        )
+    });
+    let [first, second] = verdicts;
+    match (first, second) {
+        (SnapshotAuthorship::Forged, _) | (_, SnapshotAuthorship::Forged) => {
+            SnapshotAuthorship::Forged
+        }
+        (SnapshotAuthorship::Unknown, _) | (_, SnapshotAuthorship::Unknown) => {
+            SnapshotAuthorship::Unknown
+        }
+        (authored, SnapshotAuthorship::Authored(_)) => authored,
+    }
+}
+
+/// `None` when a cell's record may stand, its writers writing once; else the verdict:
+/// `Unknown` while an admin could have rotated it to write-once where this node has not folded.
+fn cell_seal_verdict(
+    genesis: Option<&std::collections::BTreeMap<calimero_account::AccountId, OpMask>>,
+    ever: Result<CellWriters, WritersUnavailable>,
+) -> Option<SnapshotAuthorship> {
+    let Some(genesis) = genesis else {
+        return Some(SnapshotAuthorship::Unknown);
+    };
+    if writes_once_only(genesis) {
+        return None;
+    }
+    let grants = |writers: &std::collections::BTreeMap<_, OpMask>, bit: OpMask| {
+        writers.values().any(|mask| mask.contains(bit))
+    };
+    match ever {
+        Ok(CellWriters::Rotated(writers)) if grants(&writers, OpMask::WRITE_ONCE) => None,
+        Err(_) => Some(SnapshotAuthorship::Unknown),
+        Ok(_) if grants(genesis, OpMask::ADMIN) => Some(SnapshotAuthorship::Unknown),
+        Ok(_) => Some(SnapshotAuthorship::Forged),
+    }
+}
+
+/// [`snapshot_leaf_authorship`] for a leaf carrying one write.
+fn write_authorship(
     store: &Store,
     folded: &dyn calimero_governance_store::FoldedTeeAuthority,
     context_id: &ContextId,
@@ -1010,8 +1142,16 @@ pub fn apply_leaf_with_crdt_merge_gated(
         );
         return Ok(LeafOutcome::Buffered);
     }
-    let signer_account = repair_signer_account(store, folded, &context_id, leaf);
-    apply_leaf_with_crdt_merge_as(context_id, leaf, signer_account)?;
+    // Each write of a sealed entry's record is applied as itself, its signer
+    // resolved on its own, so the record seals here only if both writes are authentic.
+    let split = conflict_leaves(leaf);
+    let writes = split
+        .as_ref()
+        .map_or(core::slice::from_ref(leaf), |writes| &writes[..]);
+    for write in writes {
+        let signer_account = repair_signer_account(store, folded, &context_id, write);
+        apply_leaf_with_crdt_merge_as(context_id, write, signer_account)?;
+    }
     Ok(LeafOutcome::Applied)
 }
 
@@ -2177,6 +2317,7 @@ mod tests {
                 &context_id,
                 Id::new([0; 32]),
                 metadata,
+                &[],
                 None,
                 &|_| Ok(CellWriters::Genesis),
             )
@@ -2860,8 +3001,9 @@ mod on_behalf_resolution_tests {
     use calimero_primitives::crdt::CrdtType;
     use calimero_primitives::identity::PublicKey;
     use calimero_storage::address::Id;
-    use calimero_storage::entities::{EntryRules, Metadata, SignatureData, StorageType};
+    use calimero_storage::entities::{EntryRules, Metadata, OpMask, SignatureData, StorageType};
     use calimero_storage::shared_writers::CellWriters;
+    use calimero_storage::tests::common::conflict_record;
     use calimero_store::Store;
 
     use super::{
@@ -2959,6 +3101,7 @@ mod on_behalf_resolution_tests {
             &w.context,
             Id::new([0x01; 32]),
             &metadata,
+            &[],
             None,
             &|_| Ok(CellWriters::Genesis),
         )
@@ -3037,6 +3180,127 @@ mod on_behalf_resolution_tests {
         assert!(
             !repaired(&w, owned(ALICE, w.relay_pk, Some(ALICE))),
             "repair reads the relay's standing now"
+        );
+    }
+
+    /// A sealed written-once entry stands only if each write in its record is its
+    /// owner's: a member signing a second value cannot seal another's entry.
+    #[test]
+    fn a_sealed_leaf_stands_only_if_each_write_is_its_owners() {
+        let w = world();
+        let (phone, owner) = enrolled(&w.store, &w.group, 0x61);
+        MembershipRepository::new(&w.store)
+            .add_member(&w.group, &owner, GroupMemberRole::Member)
+            .expect("seat the owner");
+        let signed = |signer: PublicKey, nonce: u64| SignatureData {
+            signature: [0x77; 64],
+            nonce,
+            signer: Some(signer),
+            on_behalf: None,
+        };
+        let stamp = StorageType::User {
+            rules: EntryRules {
+                immutable: true,
+                moderators: None,
+            },
+            owner,
+            signature_data: Some(signed(phone, 1)),
+        };
+        let sealed_by = |second: PublicKey| {
+            conflict_record(
+                &stamp,
+                [(vec![1], signed(phone, 1)), (vec![2], signed(second, 2))],
+            )
+        };
+        let repaired = |(value, storage_type): (Vec<u8>, StorageType)| {
+            let metadata = LeafMetadata::new(CrdtType::lww_register(), 1, [0; 32])
+                .with_authorization(storage_type);
+            let leaf = TreeLeafData::new([0x01; 32], value, metadata);
+            is_leaf_currently_authorized(&w.store, &NotFolded, &w.context, &leaf, None)
+        };
+        let snapshot = |(value, storage_type): (Vec<u8>, StorageType)| {
+            let mut metadata = Metadata::new(1, 1);
+            metadata.storage_type = storage_type;
+            snapshot_leaf_authorship(
+                &w.store,
+                &NotFolded,
+                &w.context,
+                Id::new([0x01; 32]),
+                &metadata,
+                &value,
+                None,
+                &|_| Ok(CellWriters::Genesis),
+            )
+        };
+
+        assert!(
+            repaired(sealed_by(phone)),
+            "control: both writes are the owner's"
+        );
+        assert_eq!(
+            snapshot(sealed_by(phone)),
+            SnapshotAuthorship::Authored(Some(owner))
+        );
+        assert!(!repaired(sealed_by(w.mallory_pk)));
+        assert_eq!(
+            snapshot(sealed_by(w.mallory_pk)),
+            SnapshotAuthorship::Forged
+        );
+    }
+
+    /// A snapshot's record of two writes to a cell stands only where the cell's
+    /// writers hold `WRITE_ONCE` alone: a mutable cell's history is no seal.
+    #[test]
+    fn a_snapshot_seals_a_cell_only_if_its_writers_write_once() {
+        let w = world();
+        let (phone, owner) = enrolled(&w.store, &w.group, 0x62);
+        let signed = |nonce: u64| SignatureData {
+            signature: [0x77; 64],
+            nonce,
+            signer: Some(phone),
+            on_behalf: None,
+        };
+        let authorship = |mask: OpMask, ever: CellWriters| {
+            let stamp = StorageType::Shared {
+                writers: [(owner, mask)].into(),
+                signature_data: Some(signed(1)),
+            };
+            let (value, storage_type) =
+                conflict_record(&stamp, [(vec![1], signed(1)), (vec![2], signed(2))]);
+            let mut metadata = Metadata::new(1, 1);
+            metadata.storage_type = storage_type;
+            snapshot_leaf_authorship(
+                &w.store,
+                &NotFolded,
+                &w.context,
+                Id::new([0x01; 32]),
+                &metadata,
+                &value,
+                None,
+                &|_| Ok(ever.clone()),
+            )
+        };
+        let rotated = || CellWriters::Rotated([(owner, OpMask::WRITE_ONCE)].into());
+
+        assert_eq!(
+            authorship(OpMask::WRITE_ONCE, CellWriters::Genesis),
+            SnapshotAuthorship::Authored(Some(owner)),
+            "control: a write-once cell's writer sealed it"
+        );
+        assert_eq!(
+            authorship(OpMask::FULL, rotated()),
+            SnapshotAuthorship::Authored(Some(owner)),
+            "an admin rotated the cell to write-once"
+        );
+        assert_eq!(
+            authorship(OpMask::FULL, CellWriters::Genesis),
+            SnapshotAuthorship::Unknown,
+            "an admin may have rotated it to write-once where this node has not folded"
+        );
+        assert_eq!(
+            authorship(OpMask::WRITE, CellWriters::Genesis),
+            SnapshotAuthorship::Forged,
+            "no admin, so it never was write-once"
         );
     }
 

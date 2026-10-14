@@ -27,6 +27,7 @@ use calimero_storage::index::Index;
 use calimero_storage::interface::{ApplyContext, Interface};
 use calimero_storage::shared_writers::{CellWriters, WritersUnavailable};
 use calimero_storage::store::{Key as StorageKey, MainStorage};
+use calimero_storage::written_once::conflict_parts;
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::key::{Generic as GenericKey, SCOPE_SIZE};
 use calimero_store::slice::Slice;
@@ -848,10 +849,13 @@ impl SyncManager {
                                             named.metadata.storage_type,
                                             calimero_storage::entities::StorageType::SharedMember { .. }
                                         ) {
+                                            // Its anchor's writers are not at hand; the drain
+                                            // holds the member to them before applying it.
                                             Interface::<MainStorage>::verify_snapshot_member_signature(
                                                 Id::new(*id),
                                                 entry,
                                                 &named.metadata,
+                                                &std::collections::BTreeMap::new(),
                                             )
                                         } else {
                                             Interface::<MainStorage>::verify_snapshot_entity_signature(
@@ -952,6 +956,7 @@ impl SyncManager {
                                             &context_id,
                                             writers,
                                             &index_entity.metadata.storage_type,
+                                            entry,
                                         ) {
                                             return Err(refused_snapshot_entity(
                                                 context_id,
@@ -967,6 +972,7 @@ impl SyncManager {
                                         &context_id,
                                         id_obj,
                                         &index_entity.metadata,
+                                        entry,
                                         None,
                                         &ever_writers,
                                     ) {
@@ -1131,7 +1137,7 @@ impl SyncManager {
                                             };
                                             if let Err(e) =
                                                 Interface::<MainStorage>::verify_snapshot_member_signature(
-                                                    id_obj, &entry, metadata,
+                                                    id_obj, &entry, metadata, writers,
                                                 )
                                             {
                                                 return Err(refused_snapshot_entity(
@@ -1146,6 +1152,7 @@ impl SyncManager {
                                                 &context_id,
                                                 writers,
                                                 &metadata.storage_type,
+                                                &entry,
                                             ) {
                                                 return Err(refused_snapshot_entity(
                                                     context_id,
@@ -1159,6 +1166,7 @@ impl SyncManager {
                                                 &context_id,
                                                 id_obj,
                                                 metadata,
+                                                &entry,
                                                 Some(writers),
                                                 &ever_writers,
                                             ) {
@@ -1609,8 +1617,8 @@ pub(crate) fn persist_buffered_snapshot_entity(
         | StorageType::User { .. } => None,
     };
 
-    let signature = if anchor_writers.is_some() {
-        Interface::<MainStorage>::verify_snapshot_member_signature(id_obj, entry, metadata)
+    let signature = if let Some(writers) = &anchor_writers {
+        Interface::<MainStorage>::verify_snapshot_member_signature(id_obj, entry, metadata, writers)
     } else {
         Interface::<MainStorage>::verify_snapshot_entity_signature(
             id_obj,
@@ -1638,6 +1646,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
             &context_id,
             writers,
             &metadata.storage_type,
+            entry,
         ) {
             warn!(%context_id, id = ?id,
                 "absorb entity drain: claims the TEE-only writer set but its signer is \
@@ -1655,6 +1664,7 @@ pub(crate) fn persist_buffered_snapshot_entity(
         &context_id,
         id_obj,
         metadata,
+        entry,
         anchor_writers.as_ref(),
         ever_writers,
     ) {
@@ -1681,7 +1691,41 @@ pub(crate) fn persist_buffered_snapshot_entity(
     if cell.is_some_and(|cell| ever_writers(cell).is_err()) {
         return Ok(SnapshotEntityDrainOutcome::Pending);
     }
-    apply_drained_snapshot_entity(store, context_id, id_obj, entry, &dated, signer_account)
+    let Some(writes) = conflict_parts(&metadata.storage_type, entry) else {
+        return apply_drained_snapshot_entity(
+            store,
+            context_id,
+            id_obj,
+            entry,
+            &dated,
+            signer_account,
+        );
+    };
+    // A sealed entry's record is applied as the writes it holds, each under its own author,
+    // as a repair applies it.
+    for (data, storage_type) in writes {
+        let mut write = dated.clone();
+        write.metadata.storage_type = storage_type;
+        let author = match crate::sync::helpers::snapshot_leaf_authorship(
+            store,
+            folded,
+            &context_id,
+            id_obj,
+            &write.metadata,
+            &data,
+            anchor_writers.as_ref(),
+            ever_writers,
+        ) {
+            SnapshotAuthorship::Authored(account) => account,
+            SnapshotAuthorship::Unknown => return Ok(SnapshotEntityDrainOutcome::Pending),
+            SnapshotAuthorship::Forged => return Ok(SnapshotEntityDrainOutcome::Refused),
+        };
+        match apply_drained_snapshot_entity(store, context_id, id_obj, &data, &write, author)? {
+            SnapshotEntityDrainOutcome::Persisted => {}
+            outcome => return Ok(outcome),
+        }
+    }
+    Ok(SnapshotEntityDrainOutcome::Persisted)
 }
 
 /// Writes a verified buffered entity through the storage apply, as a repair-pushed leaf
@@ -4523,6 +4567,7 @@ mod snapshot_trust_tests {
                 &self.context,
                 Id::new([0; 32]),
                 &metadata,
+                &[],
                 None,
                 &|_| Ok(CellWriters::Genesis),
             )
