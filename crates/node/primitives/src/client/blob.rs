@@ -1087,6 +1087,17 @@ impl NodeClient {
         Ok(())
     }
 
+    /// Undo [`Self::record_blob_context`].
+    pub fn forget_blob_context(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.clone().handle();
+        handle.delete(&key::ContextBlob::new(*context_id, *blob_id))?;
+        Ok(())
+    }
+
     /// Whether [`Self::record_blob_context`] recorded `blob_id` for `context_id`.
     pub fn is_blob_in_context(
         &self,

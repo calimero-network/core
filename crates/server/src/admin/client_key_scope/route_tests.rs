@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use calimero_context_client::client::ContextClient;
-use calimero_context_client::group::NamespaceSummary;
+use calimero_context_client::group::{GroupContextEntry, NamespaceSummary};
 use calimero_context_client::messages::ContextMessage;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{ContextTreeService, MetaRepository};
@@ -81,6 +81,20 @@ impl Handler<ContextMessage> for StoreBackedContexts {
             ContextMessage::ListNamespacesForApplication { request, outcome } => {
                 let _ignored = outcome.send(Ok(namespaces(&self.0, Some(&request.application_id))));
             }
+            ContextMessage::ListGroupContexts { request, outcome } => {
+                let _ignored = outcome.send(
+                    ContextTreeService::new(&self.0, request.group_id)
+                        .enumerate_contexts(request.offset, request.limit)
+                        .map(|ids| {
+                            ids.into_iter()
+                                .map(|context_id| GroupContextEntry {
+                                    context_id,
+                                    name: None,
+                                })
+                                .collect()
+                        }),
+                );
+            }
             ContextMessage::GetGroupForContext { request, outcome } => {
                 let _ignored = outcome.send(calimero_governance_store::get_group_for_context(
                     &self.0,
@@ -113,6 +127,8 @@ fn namespaces(store: &Store, app: Option<&ApplicationId>) -> Vec<NamespaceSummar
 
 struct Node {
     router: Router,
+    store: Store,
+    node_client: calimero_node_primitives::client::NodeClient,
     keys: KeyManager,
     tokens: TokenManager,
     mine: Tenant,
@@ -150,9 +166,9 @@ impl Node {
         }
 
         let state = Arc::new(AdminState::new(
-            store,
+            store.clone(),
             ctx_client,
-            node_client,
+            node_client.clone(),
             Arc::new(NodeReadiness::new()),
             [0; 32],
             #[cfg(feature = "mock-attestation")]
@@ -200,6 +216,8 @@ impl Node {
 
         Self {
             router,
+            store,
+            node_client,
             keys,
             tokens,
             mine,
@@ -227,6 +245,13 @@ impl Node {
 
     async fn bound_to_mine(&self) -> String {
         let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+        permissions.push(application_binding(&self.mine.app.to_string()));
+        self.client_token(permissions).await
+    }
+
+    async fn bound_to_mine_with(&self, extra: &str) -> String {
+        let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+        permissions.push(extra.to_owned());
         permissions.push(application_binding(&self.mine.app.to_string()));
         self.client_token(permissions).await
     }
@@ -321,6 +346,7 @@ fn ids(body: &Value, list: &str, field: &str) -> Vec<String> {
     body["data"][list]
         .as_array()
         .or_else(|| body["data"].as_array())
+        .or_else(|| body[list].as_array())
         .unwrap_or_else(|| panic!("a list in {body}"))
         .iter()
         .map(|row| row[field].as_str().unwrap_or_default().to_owned())
@@ -563,5 +589,231 @@ async fn a_context_bound_key_lists_only_its_context() {
     assert_eq!(
         ids(&body, "contexts", "id"),
         vec![node.mine.context.to_string()]
+    );
+}
+
+#[actix::test]
+async fn a_context_bound_key_lists_only_its_context_in_its_group() {
+    let node = Node::new().await;
+    let sibling = ContextId::from([0xa0; 32]);
+    ContextTreeService::new(&node.store, node.mine.namespace)
+        .register_context(&sibling)
+        .expect("register");
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push(format!("context[{},identity]", node.mine.context));
+    let token = node.client_token(permissions).await;
+
+    let ns = hex::encode(node.mine.namespace.to_bytes());
+    let (status, body) = node
+        .call(
+            &token,
+            Method::GET,
+            &format!("/groups/{ns}/contexts?limit=1"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        ids(&body, "contexts", "contextId"),
+        vec![node.mine.context.to_string()]
+    );
+}
+
+#[actix::test]
+async fn a_bound_key_sees_and_changes_only_its_own_applications_aliases() {
+    let node = Node::new().await;
+    let owner = node.unbound().await;
+    for (alias, context) in [("mine", node.mine.context), ("theirs", node.theirs.context)] {
+        let (status, body) = node
+            .call(
+                &owner,
+                Method::POST,
+                "/alias/create/context",
+                Some(json!({ "alias": alias, "contextId": context })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let token = node.bound_to_mine().await;
+
+    let (_, body) = node
+        .call(&token, Method::GET, "/alias/list/context", None)
+        .await;
+    let listed: Vec<&String> = body["data"].as_object().expect("a map").keys().collect();
+    assert_eq!(listed, vec!["mine"], "{body}");
+
+    let (_, body) = node
+        .call(&token, Method::POST, "/alias/lookup/context/theirs", None)
+        .await;
+    assert_eq!(body["data"]["value"], Value::Null, "{body}");
+
+    let (status, _) = node
+        .call(&token, Method::POST, "/alias/delete/context/theirs", None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "deleting their alias");
+    let (status, _) = node
+        .call(
+            &token,
+            Method::POST,
+            "/alias/create/context",
+            Some(json!({ "alias": "x", "contextId": node.theirs.context })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "aliasing their context");
+    let (status, _) = node
+        .call(&token, Method::POST, "/alias/delete/context/mine", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "deleting my alias");
+}
+
+#[actix::test]
+async fn a_bound_key_cannot_retarget_its_namespace_or_install() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine_with("application:install").await;
+    let ns = hex::encode(node.mine.namespace.to_bytes());
+
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            &format!("/groups/{ns}/upgrade"),
+            Some(json!({ "targetApplicationId": node.theirs.app })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            "/install-application",
+            Some(json!({ "package": "p", "version": "1.0.0" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+#[actix::test]
+async fn a_bound_key_joins_only_into_its_own_application() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let invite = |group: ContextGroupId, app: &ApplicationId| {
+        let mut invitation = calimero_context::test_support::unverified_invitation(&group);
+        invitation.application_id = Some(*app.as_ref());
+        json!({ "invitation": invitation })
+    };
+    let unknown = ContextGroupId::from([0xc1; 32]);
+    let unknown_hex = hex::encode(unknown.to_bytes());
+
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            "/groups/join",
+            Some(invite(node.theirs.namespace, &node.theirs.app)),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "their held namespace: {body}"
+    );
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            "/groups/join",
+            Some(invite(node.theirs.namespace, &node.mine.app)),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a held namespace relabelled: {body}"
+    );
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            &format!("/namespaces/{unknown_hex}/join"),
+            Some(invite(unknown, &node.theirs.app)),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an unheld namespace of theirs: {body}"
+    );
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            &format!("/namespaces/{unknown_hex}/join"),
+            Some(invite(unknown, &node.mine.app)),
+        )
+        .await;
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an unheld namespace of mine: {body}"
+    );
+}
+
+#[actix::test]
+async fn a_context_bound_key_lists_only_its_context_for_its_application() {
+    let node = Node::new().await;
+    let sibling = ContextId::from([0xa0; 32]);
+    ContextTreeService::new(&node.store, node.mine.namespace)
+        .register_context(&sibling)
+        .expect("register");
+    node.store
+        .handle()
+        .put(
+            &ContextMetaKey::new(sibling),
+            &ContextMeta::new(ApplicationMeta::new(node.mine.app), [0; 32], vec![], None),
+        )
+        .expect("context meta");
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push(format!("context[{},identity]", node.mine.context));
+    let token = node.client_token(permissions).await;
+
+    let app = node.mine.app;
+    for path in [
+        format!("/contexts/for-application/{app}"),
+        format!("/contexts/with-executors/for-application/{app}"),
+    ] {
+        let (status, body) = node.call(&token, Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        let listed = ids(&body, "contexts", "id");
+        assert_eq!(
+            listed,
+            vec![node.mine.context.to_string()],
+            "{path}: {body}"
+        );
+    }
+}
+
+#[actix::test]
+async fn a_bound_key_releases_only_its_own_reference_to_a_shared_blob() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let shared = node.mine.context.as_ref().to_vec();
+    let (blob, _) = node
+        .node_client
+        .add_blob(futures_util::io::Cursor::new(shared), None, None)
+        .await
+        .expect("blob");
+    assert_eq!(blob, node.mine.blob, "the same bytes are the same blob");
+    node.node_client
+        .record_blob_context(&blob, &node.theirs.context)
+        .expect("associate");
+
+    let path = format!("/blobs/{blob}");
+    let (status, _) = node.call(&token, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::OK, "releasing mine");
+    let (status, _) = node.call(&token, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "releasing theirs");
+    assert!(
+        node.node_client.has_blob(&blob).unwrap(),
+        "their copy survives"
     );
 }

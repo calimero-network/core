@@ -208,7 +208,10 @@ fn context_application(
     context_id: &calimero_primitives::context::ContextId,
 ) -> Option<calimero_primitives::application::ApplicationId> {
     let handle = store.handle();
-    if let Ok(Some(meta)) = handle.get(&calimero_store::key::ContextMeta::new(*context_id)) {
+    if let Some(meta) = handle
+        .get(&calimero_store::key::ContextMeta::new(*context_id))
+        .ok()?
+    {
         return Some(meta.application.application_id());
     }
     let group = calimero_governance_store::get_group_for_context(store, context_id).ok()??;

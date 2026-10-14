@@ -206,16 +206,16 @@ fn blob_not_found() -> Response {
     .into_response()
 }
 
-/// Whether this node holds `blob_id` for a context the key's binding permits.
+/// A context the key's binding permits that this node holds `blob_id` for.
 fn held_for_one_of_keys_contexts(
     state: &AdminState,
     key: &ClientKeyScope,
     blob_id: &BlobId,
-) -> eyre::Result<bool> {
+) -> eyre::Result<Option<ContextId>> {
     let ListScope::ClientKey { groups, .. } =
         crate::admin::caller_scope::list_scope(&state.ctx_client, Some(key), None, None, None)?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let store = state.ctx_client.datastore();
     for group in groups {
@@ -225,11 +225,11 @@ fn held_for_one_of_keys_contexts(
             if key.permits_context_in(store, &context_id)
                 && state.node_client.is_blob_in_context(blob_id, &context_id)?
             {
-                return Ok(true);
+                return Ok(Some(context_id));
             }
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// Whether an account-scoped caller confined to `context_id` may be served
@@ -739,14 +739,20 @@ pub async fn delete_handler(
         }
     };
 
+    // A bound key releases only the reference its own context holds, and gives
+    // that context's association up with it, so it cannot release another's.
     if let Some(Extension(key)) = client_key {
-        match held_for_one_of_keys_contexts(&state, &key, &blob_id) {
-            Ok(true) => {}
-            Ok(false) => return blob_not_found(),
+        let context_id = match held_for_one_of_keys_contexts(&state, &key, &blob_id) {
+            Ok(Some(context_id)) => context_id,
+            Ok(None) => return blob_not_found(),
             Err(err) => {
                 error!(%blob_id, error=?err, "Failed to read the blob's context associations");
                 return parse_api_error(err).into_response();
             }
+        };
+        if let Err(err) = state.node_client.forget_blob_context(&blob_id, &context_id) {
+            error!(%blob_id, %context_id, error=?err, "Failed to release the blob's context association");
+            return parse_api_error(err).into_response();
         }
     }
 

@@ -17,12 +17,21 @@ use crate::AdminState;
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<UpgradeGroupApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
+        &state,
+        client_key.as_deref(),
+        Some(&group_id),
+        Some(&req.target_application_id),
+    ) {
+        return refusal;
+    }
 
     info!(group_id=%group_id_str, %req.target_application_id, "Initiating group upgrade");
 

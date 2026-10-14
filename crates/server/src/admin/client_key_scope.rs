@@ -6,7 +6,7 @@ use axum::extract::RawPathParams;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
 use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
@@ -21,6 +21,8 @@ const SYNC_ALL_REFUSAL: &str = "This key may not sync every context";
 const CONTEXT_REFUSAL: &str = "This key is not permitted to act on this context";
 const GROUP_REFUSAL: &str = "This key is not permitted to act on this group";
 const APPLICATION_REFUSAL: &str = "This key is not permitted to act on this application";
+const INSTALL_REFUSAL: &str = "This key may not install applications";
+const INSTALL_ROUTE: &str = "/install-application";
 
 pub(crate) async fn refuse_out_of_scope(
     params: Result<RawPathParams, RawPathParamsRejection>,
@@ -112,6 +114,36 @@ pub(crate) fn refuse_target_outside_binding(
     )
 }
 
+/// Refuse a bound key's join unless its binding reaches the group, or this node
+/// does not hold the group yet and the invitation's application is the key's.
+pub(crate) fn refuse_join_outside_binding(
+    state: &AdminState,
+    client_key: Option<&ClientKeyScope>,
+    invitation: &SignedGroupOpenInvitation,
+) -> Option<Response> {
+    let scope = client_key?;
+    let store = state.ctx_client.datastore();
+    let group_id = invitation.invitation.group_id;
+    let permitted = if is_held(store, &group_id) {
+        scope.permits_group(store, &group_id)
+    } else {
+        invitation
+            .application_id
+            .is_some_and(|app| scope.permits_application(store, &ApplicationId::from(app)))
+    };
+    if permitted {
+        return None;
+    }
+    warn!(bindings = ?scope.0, ?group_id, "client key refused: join outside its binding");
+    Some(
+        ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: GROUP_REFUSAL.to_owned(),
+        }
+        .into_response(),
+    )
+}
+
 fn refusal(
     path: &str,
     params: &[(&str, &str)],
@@ -119,6 +151,10 @@ fn refusal(
     may_act_on_group: impl Fn(&str) -> bool,
     may_name_application: impl Fn(&str) -> bool,
 ) -> Option<&'static str> {
+    if path.trim_end_matches('/').ends_with(INSTALL_ROUTE) {
+        return Some(INSTALL_REFUSAL);
+    }
+
     if let Some(target) = sync_target(path) {
         return match target {
             None => Some(SYNC_ALL_REFUSAL),
@@ -134,9 +170,8 @@ fn refusal(
     })
 }
 
-/// An invitation names no application, so joining a namespace this node does
-/// not hold cannot be checked against a binding; the admin's signature on the
-/// invitation is the authority, and the binding still decides what the key sees after.
+/// A namespace this node does not hold has no target to check yet; the join
+/// handler checks its invitation instead (`refuse_join_outside_binding`).
 fn joins_namespace(path: &str) -> bool {
     path.trim_end_matches('/').ends_with("/join") && path.contains("/namespaces/")
 }
@@ -158,7 +193,7 @@ fn sync_target(path: &str) -> Option<Option<&str>> {
 mod tests {
     use super::{
         joins_namespace, refusal, sync_target, APPLICATION_REFUSAL, CONTEXT_REFUSAL, GROUP_REFUSAL,
-        SYNC_ALL_REFUSAL,
+        INSTALL_REFUSAL, SYNC_ALL_REFUSAL,
     };
 
     const MINE: &str = "aa";
@@ -232,6 +267,15 @@ mod tests {
             Some(APPLICATION_REFUSAL)
         );
         assert_eq!(decide("/applications/x", &[("application_id", MINE)]), None);
+    }
+
+    #[test]
+    fn installing_is_refused() {
+        assert_eq!(decide("/install-application", &[]), Some(INSTALL_REFUSAL));
+        assert_eq!(
+            decide("/node1/admin-api/install-application/", &[]),
+            Some(INSTALL_REFUSAL)
+        );
     }
 
     #[test]

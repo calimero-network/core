@@ -324,10 +324,13 @@ It executes as the node inside its binding, but it is never the node owner on th
 - Group subscribe (WS and SSE) and admin routes with a `{group_id}` or `{namespace_id}`: a context binding reaches only the groups on the chain from its context's group up to the namespace; an application binding only groups targeting that application.
 - Admin routes with a `{context_id}`, `{application_id}`, and `/contexts/sync/{id}`, are refused with `403` outside the binding (`admin/client_key_scope.rs`).
   `POST /contexts/sync` with no id syncs every context and is refused outright.
-  `POST /namespaces/{id}/join` for a namespace this node does not hold is let through: an invitation names no application, so the inviter's signature is the authority.
-- `POST /contexts`, `/namespaces`, `/groups` and `/contexts/{id}/application` are refused when their body names a group or application outside the binding (`refuse_target_outside_binding`).
+  `POST /install-application` is refused outright.
+- `POST /contexts`, `/namespaces`, `/groups`, `/contexts/{id}/application` and `/groups/{id}/upgrade` are refused when their body names a group or application outside the binding (`refuse_target_outside_binding`).
+- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group the binding reaches, or one this node does not hold whose invitation names the key's application (`refuse_join_outside_binding`).
+  That application is an unsigned hint and it seeds the joiner's group target, so a forged hint can only join a group whose invitation the caller already holds.
 - Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
-  Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts, and `GET /blobs` is refused.
+  The `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
+  Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives up that association, and `GET /blobs` is refused.
 - SSE: a bound key's session principal includes its binding, so it can neither adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
 
 Every check fails closed when the context or group cannot be resolved.
