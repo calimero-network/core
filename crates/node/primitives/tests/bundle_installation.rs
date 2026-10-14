@@ -247,6 +247,7 @@ fn create_test_bundle_custom_wasm_path(
         }),
         abi: None,
         links: None,
+        frontend_aliases: Vec::new(),
         services: None,
         signature: None,
     };
@@ -402,6 +403,62 @@ async fn test_bundle_guide_reaches_stored_metadata() {
     let metadata: serde_json::Value =
         serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
     assert_eq!(metadata["guide"], guide);
+}
+
+/// A node's sign-in page trusts a login callback to the origins an installed
+/// bundle declares, reading them from the stored metadata. An app that moved
+/// domain lists its old origin in `frontendAliases`, so the aliases must reach
+/// `get_application` next to `links.frontend`.
+#[tokio::test]
+async fn test_bundle_frontend_aliases_reach_stored_metadata() {
+    let temp_dir = TempDir::new().unwrap();
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+
+    let wasm_content: &[u8] = b"aliases wasm bytecode";
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "com.example.moved",
+        "appVersion": "1.0.0",
+        "minRuntimeVersion": "0.1.0",
+        "metadata": { "name": "Moved App" },
+        "links": { "frontend": "https://new.example" },
+        "frontendAliases": ["https://old.example", "javascript:alert(1)"],
+        "wasm": {
+            "path": "app.wasm",
+            "hash": artifact_hash(wasm_content),
+            "size": wasm_content.len(),
+        },
+    });
+    sign_manifest(&mut manifest, &SigningKey::generate(&mut UnwrapErr(SysRng)));
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+
+    let name = "com.example.moved-1.0.0.mpk";
+    let _bundle = pack_entries(
+        &temp_dir,
+        name,
+        &[
+            ("manifest.json", manifest_bytes.as_slice()),
+            ("app.wasm", wasm_content),
+        ],
+    );
+    let bundle_path: Utf8PathBuf = temp_dir.path().join(name).try_into().unwrap();
+
+    let application_id = node_client
+        .install_application_from_path(bundle_path)
+        .await
+        .expect("Bundle installation should succeed");
+    let application = node_client
+        .get_application(&application_id)
+        .expect("Application should exist")
+        .expect("Application should be found");
+
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&application.metadata).expect("Metadata should be valid JSON");
+    assert_eq!(metadata["links"]["frontend"], "https://new.example");
+    assert_eq!(
+        metadata["frontendAliases"],
+        serde_json::json!(["https://old.example"])
+    );
 }
 
 #[tokio::test]
@@ -1219,6 +1276,7 @@ fn create_test_bundle_with_key(
         }),
         abi: None,
         links: None,
+        frontend_aliases: Vec::new(),
         services: None,
         signature: None,
     })
