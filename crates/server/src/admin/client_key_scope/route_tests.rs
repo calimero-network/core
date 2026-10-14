@@ -894,3 +894,20 @@ async fn a_delete_that_releases_nothing_keeps_the_association() {
         .is_blob_in_context(&absent, &node.mine.context)
         .unwrap());
 }
+
+#[actix::test]
+async fn another_applications_artifact_is_missing_to_a_bound_key() {
+    let node = Node::new().await;
+    seed_application(&node, node.theirs.app, node.theirs.blob);
+    let token = node.bound_to_mine().await;
+
+    let (status, _) = node
+        .call(
+            &token,
+            Method::DELETE,
+            &format!("/blobs/{}", node.theirs.blob),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
