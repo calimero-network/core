@@ -199,7 +199,10 @@ id_newtype! {
 /// v16: `GroupOp::TeeAuthorityEvidence` gained the credential its quote commits
 /// to, a layout change to an existing variant, so a v15 peer must reject at the
 /// gate rather than mis-decode.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 16;
+///
+/// v17: `GroupOp::OnBehalf` and `GroupOp::ContextRegisteredOnBehalf` gained the
+/// relay's signed `stamped_at`, judged against the warrant's `not_after` on apply.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 17;
 
 // v9: `GroupOp::AccountDeviceLinked` gained `endorsement`. The account root became
 // a dedicated offline key so it survives losing every device — and such a key is a
@@ -908,6 +911,9 @@ pub enum GroupOp {
         /// Boxed: the bundle is several hundred bytes, and every `GroupOp`
         /// would otherwise be as large as its largest variant.
         delegation: Box<calimero_account::ContextCreationDelegation>,
+        /// The relay's clock, in unix seconds, when it registered the context;
+        /// every peer refuses the op if this is past the warrant's `not_after`.
+        stamped_at: u64,
     },
     /// A delegable group op published by a relay on a member's behalf, under the
     /// member's signed [`calimero_account::GovernanceWarrant`].
@@ -924,6 +930,9 @@ pub enum GroupOp {
         #[borsh(deserialize_with = "unwrapped_group_op")]
         op: Box<GroupOp>,
         delegation: Box<calimero_account::GovernanceDelegation>,
+        /// The relay's clock, in unix seconds, when it published the op; every
+        /// peer refuses the op if this is past the warrant's `not_after`.
+        stamped_at: u64,
     },
     /// The relay that founded a namespace on a member's behalf admits itself as
     /// the namespace's first TEE, proving it with its own quote.
@@ -1823,6 +1832,8 @@ pub enum RootOp {
         #[borsh(deserialize_with = "unwrapped_root_op")]
         op: Box<RootOp>,
         delegation: Box<calimero_account::GovernanceDelegation>,
+        /// See [`GroupOp::OnBehalf::stamped_at`].
+        stamped_at: u64,
     },
     /// An owner-level root op carrying the account root's authorisation.
     ///
@@ -2373,7 +2384,10 @@ pub struct SignedNamespaceOp {
 /// node agrees. Closing keeps the admin / `CAN_MANAGE_VISIBILITY` rule. Nothing
 /// moves on the wire, but a v23 node accepts an opening flip by any of the
 /// subgroup's admins: a coordinated upgrade.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 24;
+///
+/// v25: `RootOp::OnBehalf` and the group-op wrappers gained the relay's signed
+/// `stamped_at`, judged against the warrant's `not_after` on apply.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 25;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,

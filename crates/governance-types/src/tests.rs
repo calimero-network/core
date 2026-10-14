@@ -364,8 +364,8 @@ fn group_op_discriminants_are_golden() {
     // rebase that drops the version bump while keeping the enum deletions fails
     // here instead of shipping a silent variant confusion on the wire.
     assert_eq!(
-        SIGNED_GROUP_OP_SCHEMA_VERSION, 16,
-        "the ordinals frozen below are the v16 layout; bump them together"
+        SIGNED_GROUP_OP_SCHEMA_VERSION, 17,
+        "the ordinals frozen below are the v17 layout; bump them together"
     );
 
     // Decode each frozen byte vector and verify the correct variant is returned.
@@ -3056,6 +3056,7 @@ fn context_registered_on_behalf_is_appended_and_round_trips() {
         version: "1.0.0".to_owned(),
         name: Some("general".to_owned()),
         delegation: Box::new(delegation.clone()),
+        stamped_at: 1_700_000_000,
     };
     let bytes = borsh::to_vec(&op).expect("encode");
     assert_eq!(
@@ -3069,6 +3070,7 @@ fn context_registered_on_behalf_is_appended_and_round_trips() {
     let GroupOp::ContextRegisteredOnBehalf {
         delegation: decoded_delegation,
         name,
+        stamped_at,
         ..
     } = decoded
     else {
@@ -3076,6 +3078,7 @@ fn context_registered_on_behalf_is_appended_and_round_trips() {
     };
     assert_eq!(*decoded_delegation, delegation);
     assert_eq!(name.as_deref(), Some("general"));
+    assert_eq!(stamped_at, 1_700_000_000);
     let _verified = decoded_delegation
         .verify()
         .expect("a decoded bundle still verifies");

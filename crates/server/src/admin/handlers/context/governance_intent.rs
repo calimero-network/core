@@ -7,17 +7,18 @@
 //! creating a channel's subgroup, renaming it — and this node publishes it. Every
 //! peer applies the op as the member, so the member's own authority decides.
 //!
-//! Checked here and nowhere else: `not_after`, and that the op sent is the one
-//! the warrant commits to and is one a relay may carry at all — refused as a
-//! `4xx` before anything is published, rather than published and dropped by
-//! every peer.
+//! Checked here first: `not_after` against this node's clock (every peer then
+//! holds the op to it against the op's signed `stamped_at`), and that the op
+//! sent is the one the warrant commits to and is one a relay may carry at all.
+//! Each is refused as a `4xx` before anything is published, rather than
+//! published and dropped by every peer.
 
 use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_account::{GovernanceOpKind, GovernanceWarrant};
+use calimero_account::{GovernanceOpKind, GovernanceWarrant, WarrantStatement};
 use calimero_context_client::group::DelegatedGovernanceOp;
 use calimero_context_client::local_governance::{GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
@@ -96,7 +97,7 @@ pub(crate) fn decode_covered_op(
             "this governance warrant does not cover the op presented with it".to_owned()
         ));
     }
-    if warrant.not_after < now {
+    if warrant.expired_at(now) {
         eyre::bail!(IntentRefusal::NotAuthorized(format!(
             "this governance warrant expired at {} and it is now {now}; mint a fresh one",
             warrant.not_after

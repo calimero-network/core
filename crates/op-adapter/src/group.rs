@@ -1,5 +1,6 @@
 //! Membership plane: a per-group governance op ([`GroupOp`]) → its `OpPayload`.
 
+use calimero_account::WarrantStatement;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_governance_types::GroupOp;
@@ -180,7 +181,11 @@ pub fn payload_from_group_op(group: ContextGroupId, op: &GroupOp) -> Option<OpPa
         // Only inside `RootGuarded`, like every owner-level op: see below.
         // A member's op published by a relay folds as the op it carries, as the
         // live apply does; one the apply refuses to carry folds as nothing.
-        GroupOp::OnBehalf { op, .. } if op.delegable_form().is_some() => {
+        GroupOp::OnBehalf {
+            op,
+            delegation,
+            stamped_at,
+        } if op.delegable_form().is_some() && !delegation.warrant.expired_at(*stamped_at) => {
             payload_from_group_op(group, op)
         }
         // The founding relay's self-admission is a direct TEE membership, like an

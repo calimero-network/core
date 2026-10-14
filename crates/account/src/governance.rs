@@ -68,7 +68,8 @@ pub struct GovernanceWarrant {
     pub governance_floor: Vec<[u8; 32]>,
     /// Monotonic per author device.
     pub nonce: u64,
-    /// Wall-clock bound, in seconds, checked only by the executor.
+    /// Deadline, in unix seconds: the relay checks it against its clock, every
+    /// replica against the op's own signed `stamped_at`.
     pub not_after: u64,
     /// The author device's signature over [`Self::signing_payload`].
     pub signature: [u8; 64],

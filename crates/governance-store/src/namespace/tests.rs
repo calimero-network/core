@@ -12930,6 +12930,7 @@ fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
                 executor_key: relay_sk.public_key(),
             }),
             op: Box::new(inner),
+            stamped_at: crate::test_fixtures::STAMPED_AT,
         }
     };
     let carrier = SignedNamespaceOp::sign(

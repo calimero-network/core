@@ -307,7 +307,7 @@ POST /admin-api/groups/<group>/context-intents
      → { contextId, groupId, memberPublicKey }
 ```
 
-It checks what only it can (the group, the `init` arguments against `init_hash`, and `not_after`), runs the same gate every peer will run, then runs `init` **as the author** — both halves of the principal from the warrant, exactly as a delegated write — and publishes **`GroupOp::ContextRegisteredOnBehalf`**, signed with its own key and carrying the bundle.
+It checks what only it can (the group, and the `init` arguments against `init_hash`), checks `not_after` against its clock (every peer checks it too, against the op's signed `stamped_at`), runs the same gate every peer will run, then runs `init` **as the author** (both halves of the principal from the warrant, exactly as a delegated write) and publishes **`GroupOp::ContextRegisteredOnBehalf`**, signed with its own key and carrying the bundle.
 
 Every peer applying that op (`crates/governance-store/src/creation_gate.rs`) re-verifies the bundle and then asks every question of the **author** that a self-signed registration asks of its signer:
 
@@ -316,9 +316,10 @@ Every peer applying that op (`crates/governance-store/src/creation_gate.rs`) re-
 - neither device is revoked in the group;
 - the author is a member (or the genesis admin), not read-only, and holds admin or `CAN_CREATE_CONTEXT` — **at the op's cut**, like every governance gate;
 - the relay may act for members here — a `RelayTee` by its role, anyone else by `CAN_AUTHOR_ON_BEHALF`, a `ReadOnlyTee` never;
-- the nonce is unspent in the **new context's** per-author-device ledger, which is then spent. Replaying the warrant — even after an admin has detached the context — is refused.
+- the nonce is unspent in the **new context's** per-author-device ledger, which is then spent. Replaying the warrant, even after an admin has detached the context, is refused;
+- the op's signed `stamped_at`, the relay's clock when it registered the context, is not past the warrant's `not_after`.
 
-The relay's own `CAN_CREATE_CONTEXT` is never consulted, and the plain `ContextRegistered` stays closed to it. Adding the op is a coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 14; 15 for the governance wrappers): an older node cannot decode it.
+The relay's own `CAN_CREATE_CONTEXT` is never consulted, and the plain `ContextRegistered` stays closed to it. Adding the op is a coordinated upgrade (`SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 14; 15 for the governance wrappers): an older node cannot decode it. Adding `stamped_at` to it and to both wrappers is another (`SIGNED_GROUP_OP_SCHEMA_VERSION` 17, `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` 25).
 
 ## Governing on a member's behalf
 
@@ -329,9 +330,11 @@ hashes, a cascade delete's subtree). `kind` (group or root op) and `scope` (the
 group it is published on) sit inside the signature, so consent to one op, in one
 group, on one plane, cannot be spent as another. The relay fills in what it must,
 wraps the op in `GroupOp::OnBehalf` / `RootOp::OnBehalf` (schema 15) and publishes
-it with its own key.
+it with its own key, stamped with its clock (`stamped_at`; group-op schema 17,
+namespace-op schema 25).
 
-Every peer verifies the bundle, checks the op is delegable and is the one the
+Every peer verifies the bundle, refuses an op stamped past the warrant's
+`not_after`, checks the op is delegable and is the one the
 warrant commits to, checks the relay's standing and the author's membership, and
 then applies the inner op through its **ordinary handler with the author as the
 acting principal**, at the same causal cut. Every gate that would have asked about
@@ -435,7 +438,7 @@ The ledger is a **sliding window** (64 wide), not a strictly-increasing counter,
 
 Both are divergence. The fix that would close them was studied and not landed. A node could ship its ledger with the snapshot, merged as a join (the higher mark, the union of spent nonces). But the snapshot channel deliberately refuses every record it can't authenticate per record, and a ledger row can't be authenticated that way. A malicious snapshot source could then mark nonces spent that never were, and the receiving node would refuse writes its peers accept. The sound fix records the spend **in the context's replicated state**. Each delegated delta would write its nonce into a reserved entry, so the ledger is covered by the state root a snapshot is verified against. That is a storage-layer change, and it is left as the next step.
 
-The same reasoning explains `not_after`. The **relay** checks it at admission against its own clock, and commits nothing it would stamp past it. Peers never read a clock at apply, which would make acceptance node-dependent: the same delta arriving either side of an expiry would be applied by one peer and refused by another. They compare `not_after` with the delta's own HLC stamp, which the relay signs and every receiver reads the same. The stamp is the relay's to choose, so this holds an honest relay to the deadline and does not stop a dishonest one backdating; the nonce ledger is what bounds a warrant on the network.
+The same reasoning explains `not_after`. The **relay** checks it at admission against its own clock, and commits nothing it would stamp past it. Peers never read a clock at apply, which would make acceptance node-dependent: the same delta arriving either side of an expiry would be applied by one peer and refused by another. They compare `not_after` with the delta's own HLC stamp, which the relay signs and every receiver reads the same; a delegated governance op or context registration is compared the same way with the `stamped_at` the relay signs into it. The stamp is the relay's to choose, so this holds an honest relay to the deadline and does not stop a dishonest one backdating; the nonce ledger is what bounds a warrant on the network.
 
 The release pin is the relay's alone for the same kind of reason. Peers apply the delta's actions and never run the method, so only the node that ran it knows which code produced them.
 

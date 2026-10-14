@@ -219,7 +219,9 @@ A wall clock must never gate an apply: peers apply at different times, so a warr
 that expired between two receivers would be accepted by one and refused by the other.
 So the relay checks `not_after` against its clock at the API boundary, and every
 replica checks it only against the delta's own signed HLC stamp, which every receiver
-reads the same. The relay commits nothing it would stamp past the deadline.
+reads the same. A governance op or context registration published on your behalf is
+held to it the same way, against the `stamped_at` the relay signs into the op. The
+relay commits nothing it would stamp past the deadline.
 </Aside>
 
 ### Submitting it
