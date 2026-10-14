@@ -354,6 +354,47 @@ rewrite_action_version_default() {
 # with the reason. Reported, never fatal.
 CHECKSUM_PINNED=""
 
+# The sha256 of one asset of the release being pinned, from the SHA256SUMS the
+# release workflow uploads next to the binaries (release-binaries runs before
+# fleet-bump, so it is there by the time this does). Prints nothing when the
+# release has no such asset or the file cannot be had; each caller decides
+# whether that is fatal.
+#
+# Pins next to a version used to be left to a hand update, and it was missed
+# every time: the desktop's merod pins and mero-docs' cargo-mero checksums went
+# out stale on rc.85 and again on rc.86, each a guaranteed red pull request.
+#
+# RELEASE_SUMS_FILE points at a local copy instead, for the fixture tests.
+release_sha256() {
+  local sums="${RELEASE_SUMS_FILE:-$TMPDIR_RUN/SHA256SUMS}"
+  if [ -z "${RELEASE_SUMS_FILE:-}" ] && [ ! -f "$sums" ] && [ ! -f "$sums.missing" ]; then
+    curl -fsSL --retry 3 -o "$sums" \
+      "https://github.com/calimero-network/core/releases/download/$VERSION/SHA256SUMS" \
+      || { rm -f "$sums"; : > "$sums.missing"; note "release $VERSION: no SHA256SUMS to read checksums from"; return 0; }
+  fi
+  [ -f "$sums" ] || return 0
+  ASSET="$1" perl -ne 'print "$1\n" if m{^([0-9a-f]{64})\s+\*?\Q$ENV{ASSET}\E$}' "$sums" | head -1
+}
+
+# Rewrite every `CHECKSUM_<target>=<sha>` line of an installer to the release's
+# `cargo-mero_<target>.tar.gz`, where <target> is the triple with dashes made
+# underscores. All or nothing: returns 1, editing nothing, unless every line
+# has its asset, since a half-refreshed installer is still a broken one.
+refresh_installer_checksums() {
+  local f="$1" key target sum pairs=""
+  for key in $(perl -ne 'print "$1\n" if m{^\s*(CHECKSUM_[A-Za-z0-9_]+)=}' "$f"); do
+    target=$(printf '%s' "${key#CHECKSUM_}" | tr '_' '-' | sed 's/^x86-64-/x86_64-/')
+    sum=$(release_sha256 "cargo-mero_$target.tar.gz")
+    [ -n "$sum" ] || return 1
+    pairs="$pairs $key=$sum"
+  done
+  [ -n "$pairs" ] || return 1
+  PAIRS="$pairs" perl -i -pe '
+    BEGIN { %s = map { split /=/, $_, 2 } split " ", $ENV{PAIRS} }
+    s{^(\s*(CHECKSUM_[A-Za-z0-9_]+)=)[0-9a-fA-F]+}{exists $s{$2} ? $1 . $s{$2} : $&}e;
+  ' "$f"
+}
+
 bump_workspace_toolchain() {
   local action=".github/actions/install-cargo-mero/action.yml"
   if [ -f "$DIR/$action" ]; then
@@ -383,14 +424,18 @@ bump_workspace_toolchain() {
     # A script that pins per-asset checksums NEXT TO the release cannot be
     # bumped by moving the version alone — the download then fails its own
     # integrity check, which is a harder break than being a release stale.
-    # mero-drive/scripts/setup-cargo-mero.sh is shaped that way on purpose, so
-    # it is named in the report with the command that refreshes it.
+    # mero-docs/scripts/setup-cargo-mero.sh is shaped that way on purpose. Its
+    # checksums move with the version, from the release's SHA256SUMS; when any
+    # one is missing there, nothing in the file moves and it is named in the
+    # report with the command that refreshes it.
+    sum=$(cksum < "$f")
     if [ "$installer" -eq 1 ] && grep -qE 'CHECKSUM|shasum -a 256|sha256sum' "$f"; then
-      CHECKSUM_PINNED="$CHECKSUM_PINNED $rel"
-      continue
+      if ! refresh_installer_checksums "$f"; then
+        CHECKSUM_PINNED="$CHECKSUM_PINNED $rel"
+        continue
+      fi
     fi
 
-    sum=$(cksum < "$f")
     NEW="$VERSION" INSTALLER="$installer" perl -i -pe '
       my $v = qr/[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?/;
 
@@ -494,7 +539,8 @@ REPORT
 
   local body=""
   [ -n "$CHECKSUM_PINNED" ] && body="$body
-NOT REWRITTEN — pins asset checksums next to the release, so moving the version
+NOT REWRITTEN — pins asset checksums next to the release, and the release's
+SHA256SUMS lacks one of them (or could not be fetched), so moving the version
 alone would fail the download's own integrity check. Refresh by hand:
 $(for r in $CHECKSUM_PINNED; do printf '  %s\n' "$r"; done)
   shasum -a 256 cargo-mero_<target>.tar.gz   # for each CHECKSUM_ line
@@ -845,8 +891,27 @@ bump_tauri() {
     exit 4
   fi
 
+  # The desktop verifies the merod it downloads against `sha256`, one entry per
+  # asset, and its CI fails ("Pins match the release") while any is stale. Every
+  # entry moves with the version or the bump stops: a pull request that cannot
+  # go green is worse than none.
+  local assets asset sum pairs=""
+  assets=$(perl -0ne 'print "$1\n" while m{"([^"]+\.tar\.gz)"\s*:\s*"[0-9a-fA-F]{64}"}g' "$cfg")
+  for asset in $assets; do
+    sum=$(release_sha256 "$asset")
+    [ -n "$sum" ] || die "release $VERSION has no sha256 for $asset in its SHA256SUMS — merod-config.json would pin a stale hash"
+    pairs="$pairs $asset=$sum"
+  done
+
   write_json_version "$cfg" "$VERSION"
   [ "$(read_json_version "$cfg")" = "$VERSION" ] || die "merod-config.json did not take the new version"
+  if [ -n "$pairs" ]; then
+    PAIRS="$pairs" perl -i -pe '
+      BEGIN { %s = map { split /=/, $_, 2 } split " ", $ENV{PAIRS} }
+      s{("([^"]+)"\s*:\s*")[0-9a-fA-F]{64}(")}{exists $s{$2} ? "$1$s{$2}$3" : $&}ge;
+    ' "$cfg"
+    note "merod-config.json: $(printf '%s' "$pairs" | wc -w | tr -d ' ') sha256 pin(s) from the release's SHA256SUMS"
+  fi
   record_change "merod-config.json"
   note "merod-config.json now bundles $VERSION"
 
