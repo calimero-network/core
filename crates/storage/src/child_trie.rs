@@ -53,6 +53,7 @@ use crate::admitted_count;
 use crate::entities::{ChildInfo, Metadata};
 use crate::hash_meter::{Digest, Sha256};
 use crate::index::EntityIndex;
+use crate::order_index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 /// Most children a subtree holds as one bucket row before it splits.
@@ -907,18 +908,22 @@ impl<S: StorageAdaptor> Link<S> {
     /// [`ChildTrie::insert`] of `child`, the child this link was prepared for.
     pub(crate) fn insert(mut self, child: ChildInfo) -> [u8; 32] {
         let parent = self.parent;
-        let tally = admitted_count::before_change_with::<S>(parent, || {
-            read_row(&self.rows, parent, &[]).map_or(EMPTY, |row| row.body.hash())
-        });
+        let old_root = || read_row(&self.rows, parent, &[]).map_or(EMPTY, |row| row.body.hash());
+        let tally = admitted_count::before_change_with::<S>(parent, old_root);
+        let order = order_index::before_change_with::<S>(parent, old_root);
         let slot = Slot::of(&child);
         let (root, added) = insert_at(&mut self.rows, parent, &mut Vec::new(), slot);
+        // A replaced child contributes what it did before: what a collection
+        // admits is decided by the stamp in the child's index row, and nothing
+        // rewrites a linked child's stamp, or its sort key, across that line
+        // (see `admitted_count` and `order_index`).
+        let linked =
+            (added && (tally.is_some() || order.is_some())).then(|| hydrate(read_index::<S>, slot));
         if let Some(tally) = tally {
-            // A replaced child contributes what it did before: what a
-            // collection admits is decided by the stamp in the child's index
-            // row, and nothing rewrites a linked child's stamp across that
-            // line (see `admitted_count`).
-            let linked = added.then(|| hydrate(read_index::<S>, slot));
             tally.finish::<S>(root, None, linked.as_ref());
+        }
+        if let Some(order) = order {
+            order.finish::<S>(root, None, linked.as_ref());
         }
         root
     }
@@ -989,6 +994,9 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             if let Some(tally) = admitted_count::before_change_at::<S>(self.parent, old_root) {
                 tally.finish::<S>(hash, None, None);
             }
+            if let Some(order) = order_index::before_change_at::<S>(self.parent, old_root) {
+                order.finish::<S>(hash, None, None);
+            }
         }
         Some(hash)
     }
@@ -996,15 +1004,21 @@ impl<S: StorageAdaptor> ChildTrie<S> {
     /// Remove `child_id`. Returns the new root hash.
     pub fn remove(&self, child_id: Id) -> [u8; 32] {
         let tally = admitted_count::before_change::<S>(self.parent);
+        let order = order_index::before_change::<S>(self.parent);
         // Read before it is unlinked: once it is gone there is no way to tell
         // what it contributed.
-        let unlinked = tally.as_ref().and_then(|_| self.get(child_id));
+        let unlinked = (tally.is_some() || order.is_some())
+            .then(|| self.get(child_id))
+            .flatten();
         let Some(root) = remove_at(&mut Self::rows(), self.parent, &mut Vec::new(), child_id)
         else {
             return self.root();
         };
         if let Some(tally) = tally {
             tally.finish::<S>(root, unlinked.as_ref(), None);
+        }
+        if let Some(order) = order {
+            order.finish::<S>(root, unlinked.as_ref(), None);
         }
         root
     }
@@ -1169,6 +1183,7 @@ impl<S: StorageAdaptor> ChildTrie<S> {
             true,
         );
         admitted_count::forget::<S>(self.parent);
+        order_index::forget::<S>(self.parent);
     }
 
     /// A parent's trie root, read through a caller-supplied reader.

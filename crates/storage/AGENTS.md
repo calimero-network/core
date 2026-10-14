@@ -305,6 +305,35 @@ switching a field between the two types needs no migration.
   cost-gate workloads pin the cost; `len_stays_exact_as_the_trie_changes_under_it`
   (in `authored_vector.rs`) pins the tally against links it admits, links it
   does not, removals, a bypassing link and a stamp rewritten in place.
+- **A large vector reads a position from a node-local order index, never by
+  loading its children** (`order_index.rs`). A position is a child's rank in
+  `ChildInfo` order, `(created_at, order, id)`, and the trie is keyed by the
+  random ids pushes mint, so `Collection::nth`/`position_of` loaded and sorted
+  every child: mero-chat's `get_messages` read ~1.3 rows per message in the
+  channel and ran out of gas between 16,000 and 20,000 messages, though it asks
+  for 20. The index is a counted B+ tree over the admitted children's sort keys
+  in the index plane (`SHA256("calimero:order-index:v1:header" ‖ collection
+  id)` for the header, `…:node` ‖ id ‖ node number for each node; leaves of up
+  to `LEAF_MAX` (128) keys, inner nodes of up to `INNER_MAX` (64) branches with
+  subtree counts), so a read descends one row per level. Like the admitted
+  count it names the trie root and domain it is exact at, is carried across
+  every link and unlink by `ChildTrie` (`order_index::before_change`, then
+  `Pending::finish`), is dropped with the trie and by
+  `Index::set_storage_type`, and goes stale on a bypassing change, after which
+  the next positional read loads the children once and rebuilds it. A replaced
+  child moves nothing, because a linked child's sort key never changes:
+  `created_at` and `order` are written at link, a re-link keeps them, and a
+  value write rewrites only `updated_at`. A path that changes a linked child's
+  `created_at` or `order` must drop the parent's tree, as `set_storage_type`
+  does. Only a collection with more than `LEAF_MAX` children builds one; every
+  link still pays one index read to look for its header (beside the admitted
+  count's), and a link under a tree rewrites one leaf and the header (~0.5M
+  gas per mero-chat send). Nothing in it is synced or hashed.
+  `order_index/tests.rs` checks it against a sorted model through leaf and
+  inner splits and through a vector's local, applied and bypassing changes;
+  `positions_count_only_admitted_entries_as_the_trie_changes` (in
+  `authored_vector.rs`) pins the domain filter; `vector_get_nth_indexed` is
+  the cost-gate workload.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
   index-keyed with tombstones, an older API (`get` returns `T`, not the stored
   wrapper), and one slot per account.
@@ -676,6 +705,7 @@ src/
 ├── index.rs                  # Entity indexing (Merkle tree)
 ├── child_trie.rs             # A parent's children as a hash trie (bounded-cost link/unlink)
 ├── admitted_count.rs         # Node-local count of the children a guarded collection admits
+├── order_index.rs            # Node-local counted B+ tree: a vector's positions without loading its children
 ├── domain.rs                 # Domain: what nested collections inherit from a guarded entry
 ├── env.rs                    # RuntimeEnv (storage backend injection), shared_writers / record_shared_rotation (host-resolved writer sets)
 ├── js.rs                     # JS bindings

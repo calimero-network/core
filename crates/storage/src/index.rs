@@ -1084,9 +1084,11 @@ impl<S: StorageAdaptor> Index<S> {
             Self::save_index(&index)?;
             // The stamp decides what the parent's collection admits, and this
             // changes it without touching the parent's trie, so the parent's
-            // admitted count can no longer carry it across: recount instead.
+            // admitted count and order index can no longer carry it across:
+            // recount and reindex instead.
             if let Some(parent_id) = index.parent_id {
                 crate::admitted_count::forget::<S>(parent_id);
+                crate::order_index::forget::<S>(parent_id);
             }
         }
         Ok(())

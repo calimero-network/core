@@ -983,6 +983,99 @@ mod tests {
         assert_eq!(fresh(&v), 5, "a stamp rewritten in place, outside the trie");
     }
 
+    /// Positions come from the node-local order index once the vector is large
+    /// enough to need one, and count only the entries this vector admits: a
+    /// peer's entry under other rules, or a `Public` one, takes no position,
+    /// and a stamp rewritten in place outside the trie is reindexed.
+    #[test]
+    #[serial]
+    fn positions_count_only_admitted_entries_as_the_trie_changes() {
+        use crate::address::Id;
+        use crate::child_trie::ChildTrie;
+        use crate::entities::{ChildInfo, EntryRules, Metadata, StorageType};
+        use crate::index::Index;
+        use crate::order_index::LEAF_MAX;
+        use crate::store::MainStorage;
+
+        env::reset_for_testing();
+        env::set_account_id(ALICE);
+
+        let mut v = AuthoredVector::<u64>::new();
+        let mut pushed = Vec::new();
+        for n in 0..=LEAF_MAX as u64 {
+            pushed.push(v.push(n).expect("push"));
+        }
+        let parent = v.inner.collection_id();
+        let owned_by = |owner: [u8; 32], rules: EntryRules| StorageType::User {
+            owner: acct(owner),
+            rules,
+            signature_data: None,
+        };
+        let link = |id: Id, created_at: u64, storage_type: StorageType| {
+            let metadata = Metadata {
+                created_at,
+                storage_type,
+                ..Metadata::default()
+            };
+            Index::<MainStorage>::add_child_to(parent, ChildInfo::new(id, [7; 32], metadata))
+                .expect("link");
+        };
+        let assert_positions = |v: &AuthoredVector<u64>, at: &str| {
+            let admitted: Vec<Id> = ChildTrie::<MainStorage>::new(parent)
+                .children()
+                .into_iter()
+                .filter(|child| {
+                    matches!(
+                        child.metadata.storage_type,
+                        StorageType::User { rules, .. } if rules == EntryRules::OWNED
+                    )
+                })
+                .map(|child| child.id())
+                .collect();
+            let fresh = || {
+                borsh::from_slice::<AuthoredVector<u64>>(&borsh::to_vec(v).expect("encode"))
+                    .expect("decode")
+            };
+            for (position, id) in admitted.iter().enumerate() {
+                assert_eq!(
+                    fresh().entry_id_at(position).expect("nth"),
+                    Some(*id),
+                    "{at}: nth({position})"
+                );
+            }
+            assert_eq!(
+                fresh().entry_id_at(admitted.len()).expect("nth"),
+                None,
+                "{at}: past the end"
+            );
+        };
+        assert_positions(&v, "the first read builds the index");
+
+        link(
+            crate::collections::owned_entry_id(Id::random(), &acct(BOB)),
+            1,
+            owned_by(BOB, EntryRules::OWNED),
+        );
+        assert_positions(&v, "another owner's entry, older than ours");
+
+        link(Id::random(), 2, StorageType::Public);
+        link(
+            crate::collections::owned_entry_id(Id::random(), &acct(BOB)),
+            3,
+            owned_by(
+                BOB,
+                EntryRules {
+                    immutable: true,
+                    moderators: None,
+                },
+            ),
+        );
+        assert_positions(&v, "entries this vector does not admit");
+
+        Index::<MainStorage>::set_storage_type(pushed[0], StorageType::Public).expect("restamp");
+        assert_positions(&v, "a stamp rewritten in place, outside the trie");
+    }
+
     #[test]
     #[serial]
     fn owner_of_out_of_bounds_is_none() {

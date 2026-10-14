@@ -269,8 +269,10 @@ where
     ///
     pub fn get(&self, index: usize) -> Result<Option<ValueRef<V>>, StoreError> {
         validate_index_bounds(index)?;
-        // O(1) positional lookup (id by index, then value by id), mirroring
-        // `update`. Avoid `entries().nth(index)`, which loads index+1 entries.
+        // Id by index, then value by id, mirroring `update`. The id comes from
+        // the node-local order index, a few rows at any length, once an earlier
+        // read of a large vector has built it (see `order_index`). Avoid
+        // `entries().nth(index)`, which loads index+1 entries.
         let Some(id) = self.inner.nth(index)? else {
             return Ok(None);
         };
