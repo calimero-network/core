@@ -1825,7 +1825,7 @@
   signing in from its own frontend (`https://hyperfeed.me`, `www.hyperfeed.me`
   or `hyperfeed-two.vercel.app`) gets an `admin` key, as the admin dashboard
   does, so it can install apps and delete feeds; any other app keeps the app
-  set. (#PR)
+  set. (#4568)
 
 - **TEE admission is bound to the admitted credential and fresh.** A fleet TEE
   node is admitted only on a quote whose report data is a challenge the
