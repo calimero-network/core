@@ -12,7 +12,7 @@
   callback to an alias's origin, so an app that moves domain keeps signing in
   from nodes and launchers that still open the old one. `cargo mero bundle`
   refuses an alias that is not an http(s) URL and warns about a `localhost`
-  frontend or alias unless signing with `--dev`.
+  frontend or alias unless signing with `--dev`. (#4574)
 
 - **A node behind an auth proxy can seal logins and logged-in calls.**
   `[server.sealed] forward_auth` names the auth service the proxy asks (a
@@ -1916,7 +1916,7 @@
   `frontendAliases` entry of either bundle (auth-frontend#70). A login from an
   app's old domain, from Calimero Desktop opening an older install, or from a
   dev bundle the registry never sees no longer fails with "Login callback
-  destination is not allowed".
+  destination is not allowed". (#4577)
 
 - **auth-frontend v1.3.7 is embedded.** Hyperfeed (`com.calimero.hyperfeed`)
   signing in from its own frontend (`https://hyperfeed.me`, `www.hyperfeed.me`
