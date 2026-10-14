@@ -55,7 +55,9 @@ jobs:
       targets: ${{ steps.pick.outputs.targets }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Three surfaces move on release: `cargo` pins the SDK by git tag; `tauri` and
       # `tee` ship a merod binary with no SDK link, reached only through this list.
@@ -97,9 +99,10 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.targets) }}
     steps:
       - name: Check out this repository (for the bump script)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: producer
+          persist-credentials: false
 
       # Scoped to the single repository this matrix leg touches, rather than to
       # the whole fleet at once.
@@ -113,7 +116,7 @@ jobs:
           repositories: ${{ matrix.repo }}
 
       - name: Check out ${{ matrix.repo }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository_owner }}/${{ matrix.repo }}
           token: ${{ steps.token.outputs.token }}

@@ -82,7 +82,7 @@ runs:
     - name: Restore merod (default)
       id: hit-default
       if: steps.key.outputs.default == 'true' && steps.key.outputs.share == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/default
         key: ${{ steps.key.outputs.prefix }}-default
@@ -90,7 +90,7 @@ runs:
     - name: Restore merod (mock-tee)
       id: hit-mock-tee
       if: steps.key.outputs.mock_tee == 'true' && steps.key.outputs.share == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/mock-tee
         key: ${{ steps.key.outputs.prefix }}-mock-tee
@@ -98,7 +98,7 @@ runs:
     - name: Restore mero-auth
       id: hit-mero-auth
       if: steps.key.outputs.mero_auth == 'true' && steps.key.outputs.share == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/mero-auth
         key: ${{ steps.key.outputs.prefix }}-mero-auth
@@ -191,7 +191,7 @@ runs:
     - name: Restore merod (default, after waiting)
       id: late-default
       if: steps.wait.outputs.found == 'true' && steps.missing.outputs.default == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/default
         key: ${{ steps.key.outputs.prefix }}-default
@@ -199,7 +199,7 @@ runs:
     - name: Restore merod (mock-tee, after waiting)
       id: late-mock-tee
       if: steps.wait.outputs.found == 'true' && steps.missing.outputs.mock_tee == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/mock-tee
         key: ${{ steps.key.outputs.prefix }}-mock-tee
@@ -207,7 +207,7 @@ runs:
     - name: Restore mero-auth (after waiting)
       id: late-mero-auth
       if: steps.wait.outputs.found == 'true' && steps.missing.outputs.mero_auth == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/mero-auth
         key: ${{ steps.key.outputs.prefix }}-mero-auth
@@ -254,7 +254,7 @@ runs:
 
     - name: Share merod (default)
       if: steps.build-default.outcome == 'success' && steps.key.outputs.share == 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/default
         key: ${{ steps.key.outputs.prefix }}-default
@@ -274,7 +274,7 @@ runs:
 
     - name: Share merod (mock-tee)
       if: steps.build-mock-tee.outcome == 'success' && steps.key.outputs.share == 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/mock-tee
         key: ${{ steps.key.outputs.prefix }}-mock-tee
@@ -295,7 +295,7 @@ runs:
 
     - name: Share mero-auth
       if: steps.build-mero-auth.outcome == 'success' && steps.key.outputs.share == 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: merod-bin/mero-auth
         key: ${{ steps.key.outputs.prefix }}-mero-auth
