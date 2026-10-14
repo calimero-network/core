@@ -238,16 +238,20 @@ impl Chat {
     }
 
     /// Delete a message.
+    #[app::destructive]
+    #[app::idempotent]
     pub fn delete(&mut self, id: String) -> app::Result<bool> {
         Ok(self.messages.remove(&id)?.is_some())
     }
 
     /// One message.
+    #[app::view]
     pub fn get(&self, id: String) -> app::Result<Option<MessageView>> {
         Ok(self.messages.get(&id)?.map(|m| view(id, &m)))
     }
 
     /// How many messages there are.
+    #[app::view]
     pub fn count(&self) -> app::Result<u64> {
         Ok(self.messages.len()? as u64)
     }
