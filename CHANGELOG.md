@@ -1908,6 +1908,16 @@
 
 ### Changed
 
+- **auth-frontend v1.3.9 is embedded.** A node's sign-in page now trusts more
+  login callbacks, each one an origin something on the node side declared:
+  the `trusted_callback_origins` in the node's own auth config
+  (auth-frontend#71); the frontend of the flow's package as installed on this
+  node, not only as the registry's latest bundle names it; and any
+  `frontendAliases` entry of either bundle (auth-frontend#70). A login from an
+  app's old domain, from Calimero Desktop opening an older install, or from a
+  dev bundle the registry never sees no longer fails with "Login callback
+  destination is not allowed".
+
 - **auth-frontend v1.3.7 is embedded.** Hyperfeed (`com.calimero.hyperfeed`)
   signing in from its own frontend (`https://hyperfeed.me`, `www.hyperfeed.me`
   or `hyperfeed-two.vercel.app`) gets an `admin` key, as the admin dashboard
