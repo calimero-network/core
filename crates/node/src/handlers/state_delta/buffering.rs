@@ -467,6 +467,9 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
     }
 
     let identity = choose_owned_identity(&input.node_clients.context, context_id).await?;
+    // Held across the applies: each rehashes ancestors an execution may be rehashing.
+    // Nothing under it re-enters the executor, and no await runs under it.
+    let guard = input.node_clients.context.acquire_lock(context_id).await;
     let account = calimero_governance_store::account_for_context(store, context_id)?;
     let runtime_env = crate::sync::helpers::with_repair_cell_writers(
         create_runtime_env(store, *context_id, identity, account),
@@ -474,16 +477,10 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
         *context_id,
     );
 
-    // Snapshot entities in the page apply's order, so an anchor is stored before the
-    // members whose verdict reads it. A record left pending is retried on later drain
-    // triggers, a bounded number of times (`drain_buffered_snapshot_entity`).
+    // A record left pending is retried on later drain triggers, a bounded number of
+    // times (`drain_buffered_snapshot_entity`).
     let mut pending = pending;
-    pending.sort_by_key(|(_, record)| {
-        record
-            .entity
-            .as_ref()
-            .map(|entity| crate::sync::snapshot::buffered_snapshot_entity_pass(&entity.index))
-    });
+    crate::sync::snapshot::order_buffered_snapshot_entities(&mut pending, loaded);
 
     // A shared cell's writers past genesis are read from the governance fold.
     let ever_writers = |cell| {
@@ -496,21 +493,20 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
 
     let mut drained = 0usize;
     for ((producing_bytecode_id, delta_id), record) in pending {
-        // Snapshot-entity-shaped records: re-verify + persist the raw `entry` +
-        // `index` blobs via `handle.put` (the snapshot apply path deliberately
-        // bypasses CRDT merge), once the loaded reader matches the schema.
-        if let Some(entity_absorb) = record.entity.as_ref() {
-            if entity_absorb.schema_bytecode_id != loaded {
-                continue;
-            }
-            match crate::sync::snapshot::drain_buffered_snapshot_entity(
-                store,
-                &input.node_state.folded_tee(),
-                *context_id,
-                producing_bytecode_id,
-                record,
-                &ever_writers,
-            ) {
+        // Snapshot-entity-shaped records: re-verify, then apply through storage, once
+        // the loaded reader matches the schema.
+        if record.entity.is_some() {
+            let outcome = calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
+                crate::sync::snapshot::drain_buffered_snapshot_entity(
+                    store,
+                    &input.node_state.folded_tee(),
+                    *context_id,
+                    producing_bytecode_id,
+                    record,
+                    &ever_writers,
+                )
+            });
+            match outcome {
                 Ok(crate::sync::snapshot::SnapshotEntityDrainOutcome::Persisted) => drained += 1,
                 Ok(_) => {}
                 Err(err) => warn!(
@@ -568,6 +564,14 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
             drained,
             "absorb drain: re-applied buffered sync-repair leaves/entities after binary advance"
         );
+        // The drain wrote storage outside the executor, which would have re-anchored the root.
+        drop(guard);
+        crate::sync::helpers::reanchor_after_entity_merge(
+            &input.node_clients.context,
+            *context_id,
+            "absorb drain",
+        )
+        .await;
     }
     Ok(())
 }

@@ -970,26 +970,26 @@ fn a_snapshot_leaf_dated_ahead_of_the_clock_is_not_installed_from_the_buffer() {
     assert!(nothing_stored(&target));
 }
 
-#[test]
-fn a_snapshot_leaf_that_is_what_its_hash_says_drains_into_the_store() {
-    let (source, _) = source();
-    let mut records = shipped(&source);
-    let leaf = Id::new([0x21; 32]);
-    let (entry, index, _) = entity(&mut records, leaf);
-    let target = Store::new(Arc::new(InMemoryDB::owned()));
+/// A buffered leaf drains under the parent this node holds, and the hashes above
+/// it are recomputed, so the tree this node serves still folds.
+#[tokio::test]
+async fn a_snapshot_leaf_drains_into_the_tree_and_the_hashes_above_it_fold() {
+    let (source, claimed) = source();
+    let leaf = Id::new([0x24; 32]);
+    let SnapshotRecord::Entity { entry, index, .. } =
+        entity_under(leaf, Id::new([2; 32]), StorageType::Public)
+    else {
+        unreachable!("entity_under builds an entity record");
+    };
 
-    let outcome = persist_buffered_snapshot_entity(
-        &target,
-        &NotFolded,
-        context(),
-        *leaf.as_bytes(),
-        entry,
-        index,
-        &|_| Ok(CellWriters::Genesis),
-    )
-    .unwrap();
+    let (joiner, outcome) = drained_over(shipped(&source), claimed, (leaf, entry, index)).await;
 
     assert_eq!(outcome, SnapshotEntityDrainOutcome::Persisted);
+    assert!(joiner.holds(leaf));
+    assert_eq!(
+        first_unfolding_entity(&joiner.store.handle(), context()).unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -1099,13 +1099,18 @@ async fn a_public_entity_outside_the_tree_is_dropped_and_a_frozen_one_is_kept() 
 
 /// An entity whose parent is not in the snapshot.
 fn orphan(id: Id, storage_type: StorageType) -> SnapshotRecord {
+    entity_under(id, Id::new([0x60; 32]), storage_type)
+}
+
+/// An entity under `parent`, holding bytes of its own.
+fn entity_under(id: Id, parent: Id, storage_type: StorageType) -> SnapshotRecord {
     let entry = vec![id.as_bytes()[0]; 8];
     let own_hash = sha(&entry);
     let mut metadata = Metadata::new(1, 1);
     metadata.storage_type = storage_type;
     let index = IndexRow {
         id: *id.as_bytes(),
-        parent_id: Some([0x60; 32]),
+        parent_id: Some(*parent.as_bytes()),
         full_hash: sha(&own_hash),
         own_hash,
         metadata,
@@ -1118,6 +1123,62 @@ fn orphan(id: Id, storage_type: StorageType) -> SnapshotRecord {
         index: index.encode(),
         schema_bytecode_id: None,
     }
+}
+
+/// What the drain of a buffered record finds in a joiner that has installed
+/// `records` and linked their tries, with `pushed` buffered for a schema it later loads.
+async fn drained_over(
+    records: Vec<SnapshotRecord>,
+    claimed: Hash,
+    pushed: (Id, Vec<u8>, Vec<u8>),
+) -> (Joiner, SnapshotEntityDrainOutcome) {
+    let joiner = joiner().await;
+    joiner.installs(claimed, records).await.unwrap();
+    let _linked =
+        rebuild_child_tries_after_snapshot(&mut joiner.store.handle(), context()).unwrap();
+    let (id, entry, index) = pushed;
+    let env = create_runtime_env(
+        &joiner.store,
+        context(),
+        PublicKey::from([2; 32]),
+        AccountId::from([0xAC; 32]),
+    );
+    let outcome = with_runtime_env(env, || {
+        persist_buffered_snapshot_entity(
+            &joiner.store,
+            &NotFolded,
+            context(),
+            *id.as_bytes(),
+            &entry,
+            &index,
+            &|_| Ok(CellWriters::Genesis),
+        )
+    })
+    .unwrap();
+    (joiner, outcome)
+}
+
+/// Nothing binds an entity the claimed root does not reach, so a declined one is
+/// not kept for a later drain either.
+#[tokio::test]
+async fn a_declined_public_entity_outside_the_tree_is_not_buffered() {
+    let (source, claimed) = source();
+    let detached = Id::new([0x61; 32]);
+    let mut records = shipped(&source);
+    records.push(orphan(detached, StorageType::Public));
+    *entity(&mut records, detached).2 = Some([2; 32]);
+    let joiner = joiner().await;
+    calimero_context::activation::record_activation(&joiner.store, &context(), [1; 32]);
+
+    joiner.installs(claimed, records).await.unwrap();
+
+    let buffered = AbsorbRepository::new(&joiner.store)
+        .enumerate_pending(&context())
+        .unwrap();
+    assert!(
+        buffered.is_empty(),
+        "buffered an entity the root does not reach"
+    );
 }
 
 #[tokio::test]
