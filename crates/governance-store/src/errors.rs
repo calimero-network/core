@@ -761,6 +761,14 @@ pub enum ApplyError {
     #[error("unsupported group op variant")]
     UnsupportedOp,
 
+    /// The signer's nonce was spent by another op in this op's causal past.
+    #[error("nonce {nonce} of signer {signer} was already spent by op {spent_by}")]
+    NonceRespent {
+        signer: String,
+        nonce: u64,
+        spent_by: String,
+    },
+
     /// The apply gate could not decide the signer's authority AT THE OP'S CUT: the
     /// op cites a real causal cut, but this node has not folded that cut's ancestry,
     /// so the projection has no authoritative verdict.

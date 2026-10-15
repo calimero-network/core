@@ -68,6 +68,7 @@ mod metadata;
 mod namespace;
 mod namespace_founding;
 mod node_device;
+mod nonce_spenders;
 pub mod nonce_window;
 mod on_behalf;
 mod op_budget;

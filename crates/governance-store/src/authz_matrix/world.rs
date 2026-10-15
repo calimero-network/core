@@ -322,11 +322,15 @@ impl World {
 
     /// A private copy of the store, for rows that write.
     pub fn fork(&self) -> Store {
+        Self::fork_store(&self.store)
+    }
+
+    /// A private copy of `store`.
+    pub fn fork_store(store: &Store) -> Store {
         let copy = Store::new(Arc::new(InMemoryDB::owned()));
         let top = vec![0xFF; 4096];
         for column in Column::iter() {
-            let rows = self
-                .store
+            let rows = store
                 .raw_scan(column, &[], &top, None)
                 .expect("scan a column");
             for (key, value) in rows {
