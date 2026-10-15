@@ -46,7 +46,7 @@ pub async fn handler(
 
     match collect(&state.store, &namespace_id) {
         Ok(payload) => {
-            debug!(namespace_id=%namespace_id_str, count=%payload.revoked_devices.len(), "Revoked devices retrieved");
+            debug!(namespace_id=%namespace_id_str, revoked=%payload.revoked_devices.len(), withdrawn=%payload.withdrawn_slots.len(), "Revoked devices retrieved");
             ApiResponse { payload }.into_response()
         }
         Err(err) => {
