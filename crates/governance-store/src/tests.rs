@@ -491,11 +491,16 @@ fn context_registered_heals_a_zeroed_bytecode_id() {
     assert_eq!(healed.target.bytecode_id, [0x53; 32]);
 }
 
-/// Registers a context against a group whose target holds `held`, with an op
-/// carrying `incoming`, and returns the coordinates the target ends up with.
-fn coords_after_registering(held: (&str, &str), incoming: (&str, &str)) -> (String, String) {
+/// Registers a context (blob `0x53`) against a group whose target holds blob
+/// `held_blob` and coordinates `held`, with an op carrying `incoming`, and
+/// returns the coordinates the target ends up with.
+fn coords_after_registering(
+    held_blob: [u8; 32],
+    held: (&str, &str),
+    incoming: (&str, &str),
+) -> (String, String) {
     let store = test_store();
-    let (gid, creator_pk) = group_with_zeroed_meta(&store, [0xBB; 32]);
+    let (gid, creator_pk) = group_with_zeroed_meta(&store, held_blob);
     let mut meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
     meta.target.package = held.0.into();
     meta.target.version = held.1.into();
@@ -525,20 +530,30 @@ fn coords_after_registering(held: (&str, &str), incoming: (&str, &str)) -> (Stri
 #[test]
 fn context_registered_heals_coordinates_only_into_a_hole() {
     let owned = |p: &str, v: &str| (p.to_owned(), v.to_owned());
+    let (zero, same, other) = ([0u8; 32], [0x53; 32], [0xBB; 32]);
+    let named = ("com.acme.app", "1.0.0");
     assert_eq!(
-        coords_after_registering(("", ""), ("com.acme.app", "1.0.0")),
-        owned("com.acme.app", "1.0.0")
+        coords_after_registering(zero, ("", ""), named),
+        owned(named.0, named.1)
     );
     assert_eq!(
-        coords_after_registering(("com.acme.app", "1.0.0"), ("com.acme.app", "2.0.0")),
-        owned("com.acme.app", "1.0.0")
+        coords_after_registering(same, ("", ""), named),
+        owned(named.0, named.1)
     );
     assert_eq!(
-        coords_after_registering(("", ""), ("com.acme.app", "")),
+        coords_after_registering(same, ("com.acme.app", "2.0.0"), named),
+        owned("com.acme.app", "2.0.0")
+    );
+    assert_eq!(
+        coords_after_registering(other, ("", ""), named),
         owned("", "")
     );
     assert_eq!(
-        coords_after_registering(("", ""), ("unknown", "0.0.0")),
+        coords_after_registering(zero, ("", ""), ("com.acme.app", "")),
+        owned("", "")
+    );
+    assert_eq!(
+        coords_after_registering(zero, ("", ""), ("unknown", "0.0.0")),
         owned("", "")
     );
 }

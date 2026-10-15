@@ -104,8 +104,10 @@ impl<'a> ContextRegistrationService<'a> {
             // healing it locally cannot diverge this replica.
             let heal_application = meta.target.application_id == ZERO_APPLICATION_ID;
             let heal_bytecode = meta.target.bytecode_id == [0u8; 32];
-            // The coordinates are what the lazy upgrade fetches the target by.
-            let heal_coords = stored_coords(&meta.target.package, &meta.target.version).is_none()
+            // The coordinates are what the lazy upgrade fetches the target by, so
+            // they only join a blob this op names.
+            let heal_coords = (heal_bytecode || meta.target.bytecode_id == **blob_id)
+                && stored_coords(&meta.target.package, &meta.target.version).is_none()
                 && stored_coords(coords.package, coords.version).is_some();
             if heal_application || heal_bytecode || heal_coords {
                 let mut updated = meta;
