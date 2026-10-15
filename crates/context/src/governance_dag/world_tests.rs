@@ -567,7 +567,7 @@ mod open_join {
     async fn open_join_by_an_unlinked_device_of_the_admin(
         store: &Store,
         world: &World,
-    ) -> PrivateKey {
+    ) -> (PrivateKey, Result<(), ApplyError>) {
         let owner = world.actor(ActorState::Owner);
         let admin = world.actor(ActorState::NamespaceAdmin);
         let namespace = world.namespace;
@@ -620,24 +620,20 @@ mod open_join {
                 },
             ),
         );
-        let joined = apply(store, &join).await;
-        assert!(
-            joined.is_ok(),
-            "setup: the device's open join applies: {joined:?}"
-        );
-        device_sk
+        (device_sk, apply(store, &join).await)
     }
 
     #[actix::test]
-    async fn an_open_self_join_does_not_link_its_device() {
+    async fn an_open_self_join_by_a_device_no_link_brought_in_is_refused() {
         let (world, store) = world_targeting().await;
-        let device_sk = open_join_by_an_unlinked_device_of_the_admin(&store, world).await;
+        let (device_sk, joined) = open_join_by_an_unlinked_device_of_the_admin(&store, world).await;
 
         let bound = AccountBindingRepository::new(&store)
             .binding_for_sign_pk(&world.namespace, &device_sk.public_key())
             .expect("read the binding");
         let role = role_after_promotion_by(&store, world, &device_sk).await;
 
+        assert!(joined.is_err(), "an unlinked device's open join applied");
         assert!(
             bound.is_none(),
             "an open self-join bound its device: {bound:?}"

@@ -1,8 +1,8 @@
 //! `RootOp::MemberJoinedOpen` apply check.
 //!
 //! The op is sealed under the namespace key, its signer must hold a credential
-//! certifying `member` (see [`join_op_proves_ownership`]), and `member` must
-//! have an Inherited membership path to `group_id`. It writes no row and links
+//! certifying `member` (see [`join_op_proves_ownership`]) and be bound to it
+//! at the op's cut, and `member` must have an Inherited membership path to `group_id`. It writes no row and links
 //! no device; the side effects (deny-list clear, identity restore) happen in
 //! the outer `apply_signed_op` match, and the key comes from the pull path.
 
@@ -92,7 +92,12 @@ pub(crate) fn apply(
     let namespace_id = ctx.namespace_id();
 
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
-    if !join_op_proves_ownership(&ctx.permissions_for(ns_gid), &op.signer, &member, account)? {
+    let permissions = ctx.permissions_for(ns_gid);
+    // The account is already here, so its signing device must be too: a device no
+    // link brought in has no scope this namespace has checked.
+    if !join_op_proves_ownership(&permissions, &op.signer, &member, account)?
+        || permissions.account_for_signer_at_cut(&op.signer)? != Some(member)
+    {
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(
             MemberJoinedOpenRejection::SignerMismatch {
                 signer: format!("{}", op.signer),

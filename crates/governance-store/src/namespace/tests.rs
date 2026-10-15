@@ -9542,7 +9542,7 @@ fn namespace_with_open_subgroup(
 }
 
 #[test]
-fn an_open_join_links_no_device() {
+fn an_open_join_by_a_device_its_account_never_linked_is_refused() {
     let store = test_store();
     let namespace_id = [0xC1u8; 32];
     let subgroup_id = [0xD1u8; 32];
@@ -9557,15 +9557,23 @@ fn an_open_join_links_no_device() {
     );
 
     let account = crate::test_fixtures::real_join_account(&joiner);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, account)
-        .expect("the join applies");
-
+    let err = apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, account)
+        .expect_err("a device no link brought in does not join for its account");
+    assert!(
+        err.chain().any(|c| matches!(
+            c.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::MemberJoinedOpenRejected(
+                crate::MemberJoinedOpenRejection::SignerMismatch { .. }
+            ))
+        )),
+        "{err:?}"
+    );
     let binding = crate::AccountBindingRepository::new(&store)
         .binding_for_sign_pk(&ns_gid, &joiner)
         .expect("read bindings");
     assert!(
         binding.is_none(),
-        "an open join bound its device: {binding:?}"
+        "a refused open join bound its device: {binding:?}"
     );
 }
 
@@ -9652,66 +9660,6 @@ fn a_member_removed_from_an_open_group_is_served_no_key_for_its_child() {
         "a removal from an ancestor ends the right to the child's key"
     );
     assert!(served(&f.honest.0), "an honest inheritor is still served");
-}
-
-#[test]
-fn a_refused_credential_leaves_the_membership_intact() {
-    let store = test_store();
-    let namespace_id = [0xC2u8; 32];
-    let subgroup_id = [0xD2u8; 32];
-    let ns_gid = ContextGroupId::from(namespace_id);
-    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
-    let joiner = joiner_sk.public_key();
-    let joiner_account = crate::test_fixtures::account_for(&joiner);
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner_account);
-
-    // A credential that is genuinely the joiner's — it certifies the joiner's
-    // key and names the joiner's account, so the op itself is well formed — but
-    // at a device epoch this group already spent on another key of the same
-    // device. `apply_link` refuses it as not advancing the epoch.
-    //
-    // A credential for somebody ELSE is rejected outright a step earlier (see
-    // `a_credential_certified_for_another_key_is_refused`), because naming an
-    // account means claiming to BE it.
-    let credential = crate::test_fixtures::real_join_account(&joiner);
-    let fork = calimero_account::DeviceCert::sign(
-        &PrivateKey::from(*joiner),
-        credential.statement.account,
-        credential.statement.device,
-        &PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key(),
-        &credential.statement.kem_pk,
-        0,
-        0,
-    )
-    .expect("sign the fork");
-    let _ = crate::AccountBindingRepository::new(&store)
-        .apply_link(&ns_gid, &credential.genesis, &[], &fork, 0)
-        .expect("seed the conflicting key at the same epoch");
-
-    apply_open_join_with(
-        &store,
-        namespace_id,
-        subgroup_id,
-        &joiner_sk,
-        crate::test_fixtures::real_join_account(&joiner),
-    )
-    .expect("a credential this group cannot admit must not orphan the membership op");
-
-    assert!(
-        crate::AccountBindingRepository::new(&store)
-            .binding_for_sign_pk(&ns_gid, &joiner)
-            .expect("read bindings")
-            .is_none(),
-        "a refused credential records no binding"
-    );
-    assert_ne!(
-        MembershipRepository::new(&store)
-            .check_path(&ns_gid, &joiner_account)
-            .expect("check path"),
-        crate::membership::MembershipPath::None,
-        "and costs the joiner nothing: a member without a binding is survivable, \
-         a member the DAG cannot apply is not"
-    );
 }
 
 #[test]
@@ -9814,6 +9762,14 @@ impl WithdrawnJoiner {
             device,
             0,
         );
+        // Linked as the op that brought it in would, which a withdrawn device refuses.
+        let _refused = crate::AccountBindingRepository::new(&self.store).apply_link(
+            &ContextGroupId::from(self.namespace_id),
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+            crate::JOIN_SCOPE_EPOCH,
+        )?;
         apply_open_join_with(
             &self.store,
             self.namespace_id,
