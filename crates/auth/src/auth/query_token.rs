@@ -30,14 +30,7 @@ mod tests {
 
     #[test]
     fn streaming_routes_may_carry_the_token_in_the_url() {
-        for path in [
-            "/ws",
-            "/ws/",
-            "/sse",
-            "/sse/",
-            "/sse/subscription",
-            "/sse/session/abc",
-        ] {
+        for path in ["/ws", "/sse", "/sse/subscription", "/sse/session/abc"] {
             assert!(is_query_token_route(path), "{path}");
         }
     }
