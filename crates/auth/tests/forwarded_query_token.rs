@@ -1,6 +1,5 @@
-//! A proxy's `GET /auth/validate` takes a token from the forwarded URI's
-//! query only on the streaming routes a browser cannot set a header on, the
-//! same rule the embedded guard applies to a direct request.
+//! A proxy's `GET /auth/validate` takes a token from the forwarded URI's query only on
+//! the streaming routes a browser cannot set a header on, as the embedded guard does.
 
 use std::sync::Arc;
 
@@ -124,4 +123,20 @@ async fn an_authorization_header_is_the_only_token_even_when_it_is_not_a_bearer(
         let (status, _) = probe_with("GET", "/ws?token={token}", Some(authorization)).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{authorization}");
     }
+}
+
+#[tokio::test]
+async fn a_bearer_header_wins_over_a_url_token() {
+    let (router, token) = router_and_token().await;
+    let request = Request::get("/auth/validate")
+        .header("X-Forwarded-Uri", "/ws?token=garbage")
+        .header("X-Forwarded-Method", "GET")
+        .header(header::HOST, "localhost")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router.oneshot(request).await.unwrap().status(),
+        StatusCode::OK
+    );
 }
