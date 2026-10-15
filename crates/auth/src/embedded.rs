@@ -115,6 +115,7 @@ pub fn default_config() -> AuthConfig {
 
     AuthConfig {
         listen_addr: "127.0.0.1:3001".parse().unwrap(),
+        trusted_admin_applications: Vec::new(),
         jwt: JwtConfig {
             issuer: "calimero-auth".to_string(),
             access_token_expiry: 3600,

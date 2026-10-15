@@ -11,6 +11,10 @@ pub struct AuthConfig {
     #[serde(default = "default_listen_addr")]
     pub listen_addr: SocketAddr,
 
+    /// Applications whose client key may hold `admin`, by exact application id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_admin_applications: Vec<String>,
+
     /// JWT configuration
     pub jwt: JwtConfig,
 

@@ -2,6 +2,8 @@
 
 # Server configuration
 listen_addr = "0.0.0.0:3001"
+# Applications whose client key may be minted with `admin` (exact ids; default none).
+# trusted_admin_applications = ["<application id>"]
 
 # JWT token settings
 [jwt]
