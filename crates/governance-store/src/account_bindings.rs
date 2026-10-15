@@ -462,6 +462,28 @@ impl<'a> AccountBindingRepository<'a> {
             .collect())
     }
 
+    /// The scope-floor slots (`sha256(account || device)`) an account's own root withdrew in `group`.
+    ///
+    /// # Errors
+    /// Propagates the store read failure.
+    pub fn withdrawn_slots(&self, group: &ContextGroupId) -> EyreResult<Vec<[u8; 32]>> {
+        let gid = group.to_bytes();
+        let floors = collect_keys_with_prefix(
+            self.store,
+            GroupDeviceScopeFloor::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_DEVICE_SCOPE_FLOOR_PREFIX,
+            |k| k.group_id() == gid,
+        )?;
+        let handle = self.store.handle();
+        let mut slots = Vec::new();
+        for key in floors {
+            if handle.get(&key)? == Some(WITHDRAWN_SCOPE_FLOOR) {
+                slots.push(key.slot());
+            }
+        }
+        Ok(slots)
+    }
+
     fn revoked_device_ids(&self, group: &ContextGroupId) -> EyreResult<BTreeSet<[u8; 32]>> {
         let gid = group.to_bytes();
         Ok(collect_keys_with_prefix(
@@ -1372,6 +1394,40 @@ mod tests {
         assert_eq!(repo.revoked_devices(&gid).expect("read"), want);
         assert!(!repo.revoked_devices(&gid).expect("read").contains(&live));
         assert_eq!(repo.revoked_devices(&other).expect("read"), vec![elsewhere]);
+    }
+
+    #[test]
+    fn withdrawn_slots_lists_only_this_namespaces_account_withdrawals() {
+        let store = test_store();
+        let gid = test_group_id();
+        let other = ContextGroupId::from([0x5A; 32]);
+        let repo = AccountBindingRepository::new(&store);
+        let account = genesis_for(1).account_id();
+        let (withdrawn, narrowed, elsewhere) = (
+            DeviceId::mint(account, [1; 16]),
+            DeviceId::mint(account, [2; 16]),
+            DeviceId::mint(account, [3; 16]),
+        );
+        repo.withdraw_for_account(&gid, account, withdrawn)
+            .expect("withdraw");
+        let _dropped = repo.narrow(&gid, account, narrowed, 7).expect("narrow");
+        repo.withdraw_for_account(&other, account, elsewhere)
+            .expect("withdraw");
+
+        let slot = |device: DeviceId| {
+            let mut hasher = Sha256::new();
+            hasher.update(account.as_bytes());
+            hasher.update(device.as_bytes());
+            <[u8; 32]>::from(hasher.finalize())
+        };
+        assert_eq!(
+            repo.withdrawn_slots(&gid).expect("read"),
+            vec![slot(withdrawn)]
+        );
+        assert_eq!(
+            repo.withdrawn_slots(&other).expect("read"),
+            vec![slot(elsewhere)]
+        );
     }
 
     #[test]

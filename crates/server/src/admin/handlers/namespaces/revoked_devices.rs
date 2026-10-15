@@ -8,23 +8,29 @@ use calimero_governance_store::{AccountBindingRepository, NamespaceRepository};
 use calimero_server_primitives::admin::NamespaceRevokedDevicesApiResponse;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use crate::admin::handlers::groups::list_member_devices::caller_account;
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-/// Tombstones are keyed by the namespace, so a subgroup id is resolved to its
-/// root first. Only an account bound in that namespace may read them.
+/// Tombstones and withdrawal floors are keyed by the namespace, so a subgroup id is
+/// resolved to its root first. Only an account bound in that namespace may read them.
 fn collect(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<NamespaceRevokedDevicesApiResponse> {
     let namespace = NamespaceRepository::new(store).resolve(group_id)?;
     caller_account(store, &namespace)?;
+    let bindings = AccountBindingRepository::new(store);
     Ok(NamespaceRevokedDevicesApiResponse {
-        revoked_devices: AccountBindingRepository::new(store).revoked_devices(&namespace)?,
+        revoked_devices: bindings.revoked_devices(&namespace)?,
+        withdrawn_slots: bindings
+            .withdrawn_slots(&namespace)?
+            .into_iter()
+            .map(hex::encode)
+            .collect(),
     })
 }
 
@@ -40,7 +46,7 @@ pub async fn handler(
 
     match collect(&state.store, &namespace_id) {
         Ok(payload) => {
-            info!(namespace_id=%namespace_id_str, count=%payload.revoked_devices.len(), "Revoked devices retrieved");
+            debug!(namespace_id=%namespace_id_str, count=%payload.revoked_devices.len(), "Revoked devices retrieved");
             ApiResponse { payload }.into_response()
         }
         Err(err) => {
@@ -64,6 +70,7 @@ mod tests {
     use calimero_primitives::identity::PrivateKey;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
+    use sha2::{Digest, Sha256};
 
     use super::collect;
 
@@ -73,13 +80,22 @@ mod tests {
 
     /// This node's identity is bound to an account that is a namespace member,
     /// and one device of that account is revoked.
-    fn seed_member() -> (Store, DeviceId) {
+    fn seed_member() -> (Store, DeviceId, String) {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let sk = PrivateKey::from([0x44; 32]);
         let account = AccountGenesis::new(sk.public_key()).account_id();
         let device = DeviceId::mint(account, [0xA1; 16]);
         let repo = AccountBindingRepository::new(&store);
         repo.apply_revocation(&namespace(), device).expect("revoke");
+        let thin_client = DeviceId::mint(account, [0xC3; 16]);
+        repo.withdraw_for_account(&namespace(), account, thin_client)
+            .expect("withdraw");
+        let slot = hex::encode(
+            Sha256::new()
+                .chain_update(account.as_bytes())
+                .chain_update(thin_client.as_bytes())
+                .finalize(),
+        );
         // Binds the node's signing key to the account so the caller resolves.
         let genesis = AccountGenesis::new(sk.public_key());
         let cert = DeviceCert::sign(
@@ -101,16 +117,17 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(&namespace(), &account, GroupMemberRole::Member)
             .expect("add member");
-        (store, device)
+        (store, device, slot)
     }
 
     #[test]
     fn a_member_reads_the_revoked_devices() {
-        let (store, device) = seed_member();
+        let (store, device, slot) = seed_member();
 
         let got = collect(&store, &namespace()).expect("collect");
 
         assert_eq!(got.revoked_devices, vec![device]);
+        assert_eq!(got.withdrawn_slots, vec![slot]);
     }
 
     #[test]

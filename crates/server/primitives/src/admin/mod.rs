@@ -1990,6 +1990,8 @@ pub struct ListMemberDevicesApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct NamespaceRevokedDevicesApiResponse {
     pub revoked_devices: Vec<DeviceId>,
+    /// Hex `sha256(account || device)` of each device its own account withdrew here without a tombstone.
+    pub withdrawn_slots: Vec<String>,
 }
 
 /// The largest plaintext this route will seal, in bytes before hex-encoding.
@@ -5149,11 +5151,16 @@ mod revoked_devices_wire_tests {
     fn revoked_devices_serialize_as_plain_hex() {
         let response = NamespaceRevokedDevicesApiResponse {
             revoked_devices: vec![DeviceId::from([0xAB; 32])],
+            withdrawn_slots: vec!["cd".repeat(32)],
         };
 
         assert_eq!(
             serde_json::to_string(&response).expect("serialize"),
-            format!(r#"{{"revokedDevices":["{}"]}}"#, "ab".repeat(32))
+            format!(
+                r#"{{"revokedDevices":["{}"],"withdrawnSlots":["{}"]}}"#,
+                "ab".repeat(32),
+                "cd".repeat(32)
+            )
         );
     }
 }
