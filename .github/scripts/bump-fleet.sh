@@ -1042,7 +1042,14 @@ bump_tee_build_inputs() {
     note "         the image build refuses merod $VERSION until it is"
     return 0
   fi
-  bash "$pin" --root "$DIR" \
+  # A merod bump moves no private component (mero-bot), and this job's token
+  # reads only the consumer: fetching mero-bot's private release here failed
+  # every tee bump with "release not found". --skip-private keeps its pin as it
+  # is, and still fails if versions.json names a version the lock does not pin.
+  # Scripts from before the flag existed take no such option.
+  local args=(--root "$DIR")
+  grep -q -- '--skip-private' "$pin" && args+=(--skip-private)
+  bash "$pin" "${args[@]}" \
     || die "pin-build-inputs.sh failed; the image build would refuse merod $VERSION"
   record_change "mero-tee/build-inputs.lock.json"
   note "build-inputs.lock.json re-pinned for merod $VERSION"

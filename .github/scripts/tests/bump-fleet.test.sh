@@ -560,6 +560,22 @@ expect_file "$D/pin-args" "--root $D" "  the consumer's own script ran, rooted a
 expect_file "$D/mero-tee/build-inputs.lock.json" '"version": "0.11.0-rc.39"' "  ...after versions.json moved, so it pins the new merod"
 expect_file "$D/changed" 'mero-tee/build-inputs.lock.json' "  ...and the lock is staged with the bump"
 
+if grep -q -- '--skip-private' "$D/pin-args"; then
+  bad "  a script with no --skip-private is not passed it" "it was"
+else
+  ok "  a script with no --skip-private is not passed it"
+fi
+
+# mero-bot is private and the bump's token reads only mero-tee, so fetching its
+# release failed every tee bump ("release not found"). A merod bump never moves
+# it: the pin script is told to keep it as pinned.
+D=$(mkfixture tee-pin-private); mkversions "$D" 2.3.56 0.11.0-rc.35; mkpinner "$D"
+echo '# --skip-private: keep private components as pinned' >> "$D/scripts/release/pin-build-inputs.sh"
+commit "$D"
+expect_exit 0 "a pin script that can skip private components is told to" \
+  bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
+expect_file "$D/pin-args" "--root $D --skip-private" "  ...so mero-bot's private release is not fetched"
+
 D=$(mkfixture tee-pin-fails); mkversions "$D" 2.3.56 0.11.0-rc.35; mkpinner "$D" 1; commit "$D"
 expect_exit 1 "a failed re-pin stops the bump, rather than opening a PR the image cannot build" \
   bash "$BUMP" --surface tee --version 0.11.0-rc.39 --dir "$D"
