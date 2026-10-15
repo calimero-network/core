@@ -207,6 +207,12 @@ struct SealedRootRetry {
     divergence: Option<super::super::DivergenceReport>,
 }
 
+/// What one [`NamespaceGovernance::retry_round`] achieved.
+struct RetryRound {
+    divergence: Option<super::super::DivergenceReport>,
+    group_applied: usize,
+}
+
 /// What [`NamespaceGovernance::root_op_side_effects`] observed while running an
 /// op's effects, for the caller to fold into its own report.
 ///
@@ -2327,6 +2333,44 @@ impl<'a> NamespaceGovernance<'a> {
             );
             return Ok(None);
         }
+        // Rounds repeat while one settles a parked op, so the parked count bounds them.
+        // A re-entrant call runs one: the round that triggered it picks up its progress.
+        let mut undecided = self.undecided_parked();
+        let rounds = if depth == 0 { undecided.max(1) } else { 1 };
+        let mut retry_divergence = None;
+        let mut group_applied = 0;
+        let mut failure = None;
+        for _ in 0..rounds {
+            match self.retry_round(group_id, depth) {
+                Ok(round) => {
+                    group_applied += round.group_applied;
+                    if round.divergence.is_some() {
+                        retry_divergence = round.divergence;
+                    }
+                }
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+            let left = self.undecided_parked();
+            if left == 0 || left >= undecided {
+                break;
+            }
+            undecided = left;
+        }
+
+        // A key that arrives late replays ops that may include a removal, or ops a
+        // removal voids; what they wrote is rebuilt once, after all of them.
+        if group_applied > 0 && depth == 0 {
+            self.reconcile_voided(None)?;
+        }
+
+        failure.map_or(Ok(retry_divergence), Err)
+    }
+
+    /// One root, group, root sweep; the caller repeats it while parked ops settle.
+    fn retry_round(&self, group_id: [u8; 32], depth: u8) -> EyreResult<RetryRound> {
         self.authorizer.forget();
         // Sealed root ops first, and here rather than at a caller. A key reaches a
         // node two ways — a `KeyDelivery` op, and the pull in `group_key_pull` —
@@ -2510,12 +2554,9 @@ impl<'a> NamespaceGovernance<'a> {
         // arrives. The subgroup then has a member every keyed peer sees and this
         // node does not, with nothing failing to say so.
         //
-        // Two passes, not a fixed point. The class of edges is small and known
-        // -- `GroupCreated` unblocks group ops, a folded group op unblocks the
-        // root ops gated on it -- so one pass in each direction closes it. A
-        // longer alternating chain (a group op gated on a membership only
-        // `MemberJoinedOpen` establishes) would still need the next key arrival
-        // or the startup sweep; that is the accepted bound, not an oversight.
+        // One pass in each direction closes the known edges -- `GroupCreated`
+        // unblocks group ops, a folded group op unblocks the root ops gated on it.
+        // A longer alternating chain is closed by the caller repeating this round.
         //
         // Only when the group phase folded something. The sealed-root walk has
         // no per-op applied marker -- it re-feeds every sealed root op in the log
@@ -2545,13 +2586,10 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        // A key that arrives late replays ops that may include a removal, or ops a
-        // removal voids; what they wrote is rebuilt once, after all of them.
-        if group_applied > 0 && depth == 0 {
-            self.reconcile_voided(None)?;
-        }
-
-        Ok(retry_divergence)
+        Ok(RetryRound {
+            divergence: retry_divergence,
+            group_applied,
+        })
     }
 
     /// Curative re-drive variant that returns the count of ops it ACTUALLY
