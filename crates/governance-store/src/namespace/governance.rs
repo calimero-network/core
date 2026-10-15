@@ -1903,7 +1903,7 @@ impl<'a> NamespaceGovernance<'a> {
         // rotation legitimately replaces the current key. Composed review of
         // this path showed the exemption was the most dangerous line here.
         // `expected_key_ids` comes from the cleartext `key_id` of buffered
-        // `NamespaceOp::Group` envelopes, which the signer chooses and which no
+        // `NamespaceOp::Group` and sealed root envelopes, which the signer chooses and which no
         // gate checks: the receive path verifies only the topic and the
         // signature, an unresolvable `key_id` decrypts nothing and raises
         // nothing, and the op is logged regardless. So the "attestation" is
@@ -3353,8 +3353,8 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// This is the content half of authorizing a delivery, and the reason it is
     /// worth anything is the provenance: these ids come from buffered
-    /// `NamespaceOp::Group` envelopes, signed by group members, which is a
-    /// THIRD party relative to whoever is delivering. A `key_id` carried on the
+    /// `NamespaceOp::Group` and sealed root envelopes, signed by someone other
+    /// than the deliverer, which is a THIRD party relative to whoever is delivering. A `key_id` carried on the
     /// delivery itself would be signed by the deliverer alongside the key it
     /// chose, so the hash would match by construction and check nothing — which
     /// is why this needs no new field on `RootOp::KeyDelivery` and no wire
@@ -3494,7 +3494,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // to it would be signed by the deliverer alongside the key it
                 // chose, matching by construction and checking nothing. What
                 // can speak to the content is a DIFFERENT signed op: a buffered
-                // `NamespaceOp::Group` envelope naming the group's `key_id`.
+                // `NamespaceOp::Group` or sealed root envelope naming the group's `key_id`.
                 // That is bound below where one exists; where none does the
                 // delivery is genuinely unverifiable, and the direct-pull path
                 // already ruled on those — `key_servers_allowed` accepts an
