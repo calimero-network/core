@@ -2387,7 +2387,14 @@ pub struct SignedNamespaceOp {
 ///
 /// v25: `RootOp::OnBehalf` and the group-op wrappers gained the relay's signed
 /// `stamped_at`, judged against the warrant's `not_after` on apply.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 25;
+///
+/// v26: a TEE may pay a rotation debt. A `GroupKeyRotated { departed }` signed by
+/// a TEE member of the group (its TEE role read at the namespace root, as for
+/// relaying) is accepted, op and key-rotation sidecar alike, when `departed` is
+/// not a member at the op's cut. Nothing moves on the wire, but a v25 node refuses
+/// the op and ignores its key while a v26 node clears the debt and adopts the key,
+/// so the two would hold different current keys: a coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,

@@ -5075,6 +5075,168 @@ async fn removing_a_member_rotates_an_open_child_it_inherited() {
     );
 }
 
+/// After an admin removes a member, a TEE pays the rotation the removal left owed
+/// in an Open child the member inherited, with no admin online.
+///
+/// One node holds the whole org: it builds the namespace as its admin, then its
+/// namespace identity becomes a TEE member's, so from then on the only listener
+/// that can act is a TEE's. The admin's removal arrives as a signed op (applied
+/// as a peer's would be), the way it reaches a fleet replica after the admin's
+/// own node has gone offline.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn a_tee_pays_the_rotation_a_removal_left_owed() {
+    use calimero_context_client::local_governance::NamespaceOp;
+    use calimero_context_config::MemberCapabilities;
+    use calimero_governance_store::test_fixtures::{device_secret_for, enrol_member};
+    use calimero_governance_store::{
+        key_covering_group, CapabilitiesRepository, GroupKeyring, MembershipRepository,
+        NamespaceRepository, PendingRotationRepository,
+    };
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let ns_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let (admin_pk, admin_sk) = provision_tee_owner_with_sk(&node, &ns_gid, &mut rng);
+    let wall = create_restricted_subgroup(&node, &ns_gid, &admin_pk).await;
+    let child = create_born_open_subgroup(&node, &wall).await;
+    assert_eq!(
+        key_covering_group(&node.store, &child).expect("covering key"),
+        child,
+        "precondition: an Open group behind a Restricted wall is covered by its own key"
+    );
+
+    let removed_sk = PrivateKey::random(&mut rng);
+    let inheritor_sk = PrivateKey::random(&mut rng);
+    let tee_sk = PrivateKey::random(&mut rng);
+    let members = MembershipRepository::new(&node.store);
+    let [removed, inheritor, tee] = [
+        (&removed_sk, GroupMemberRole::Member),
+        (&inheritor_sk, GroupMemberRole::Member),
+        (&tee_sk, GroupMemberRole::ReadOnlyTee),
+    ]
+    .map(|(sk, role)| {
+        let account = enrol_member(&node.store, &ns_gid, &sk.public_key());
+        for group in [&ns_gid, &wall] {
+            members
+                .add_member(group, &account, role.clone())
+                .expect("add member");
+        }
+        CapabilitiesRepository::new(&node.store)
+            .set_member_capability(
+                &wall,
+                &account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("grant inheritance");
+        account
+    });
+    for account in [&removed, &inheritor, &tee] {
+        assert!(
+            members.is_live_member(&child, account).unwrap(),
+            "precondition: every member of the wall reaches the Open child"
+        );
+    }
+    let key_before = GroupKeyring::new(&node.store, child)
+        .load_current_key()
+        .unwrap()
+        .expect("the child holds its birth key")
+        .1;
+
+    // From here the node is the TEE: the admin's node is gone.
+    NamespaceRepository::new(&node.store)
+        .replace_identity(&ns_gid, &tee_sk.public_key(), tee_sk.as_bytes())
+        .expect("the node signs as the TEE");
+
+    let removal = SignedGroupOp::sign(
+        &admin_sk,
+        wall.to_bytes().into(),
+        vec![],
+        get_local_gov_nonce(&node.store, &wall, &admin_pk)
+            .expect("read nonce")
+            .map_or(1, |n| n + 1),
+        GroupOp::MemberRemoved {
+            member: removed,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    )
+    .expect("sign MemberRemoved");
+    apply_local_signed_group_op(&node.store, &removal).expect("the admin's removal applies");
+
+    let store = node.store.clone();
+    let rotated = wait_until(|| {
+        let discharged = !PendingRotationRepository::new(&store)
+            .is_pending(&child, &removed)
+            .unwrap_or(true);
+        let rekeyed = GroupKeyring::new(&store, child)
+            .load_current_key()
+            .ok()
+            .flatten()
+            .is_some_and(|(_, key)| key != key_before);
+        discharged && rekeyed
+    })
+    .await;
+    assert!(
+        rotated,
+        "with no admin online the debt went unpaid: the removed member still holds the key \
+         everything written in the Open child is sealed under"
+    );
+
+    let (new_key_id, new_key) = GroupKeyring::new(&node.store, child)
+        .load_current_key()
+        .unwrap()
+        .expect("a current child key");
+    let payment = published_namespace_ops(&node)
+        .into_iter()
+        .rev()
+        .find(|op| {
+            matches!(
+                &op.op,
+                NamespaceOp::Group { group_id, key_rotation: Some(_), .. }
+                    if group_id.to_bytes() == child.to_bytes()
+            )
+        })
+        .expect("the child's rotation was published");
+    assert_eq!(payment.signer, tee_sk.public_key(), "the TEE paid");
+    let NamespaceOp::Group {
+        key_rotation: Some(rotation),
+        ..
+    } = payment.op
+    else {
+        unreachable!("matched above");
+    };
+    assert_eq!(rotation.new_key_id.to_bytes(), new_key_id);
+    let opens_for = |sk: &PrivateKey| {
+        let device = device_secret_for(&sk.public_key());
+        rotation.envelopes.iter().find_map(|envelope| {
+            GroupKeyring::unwrap_any(
+                sk,
+                Some(&device),
+                &child.to_bytes(),
+                Some(&tee_sk.public_key()),
+                envelope,
+            )
+            .ok()
+        })
+    };
+    assert_eq!(
+        opens_for(&inheritor_sk),
+        Some(new_key),
+        "a member who still inherits the child receives the new key in the TEE's rotation"
+    );
+    assert_eq!(
+        opens_for(&removed_sk),
+        None,
+        "the removed member cannot open the TEE's rotation"
+    );
+    assert_eq!(
+        pulled_key(&node.store, &ns_gid, &child, &removed_sk),
+        None,
+        "nor pull the new key"
+    );
+}
+
 /// A namespace op is applied only when it arrives on that namespace's own gossip
 /// topic, whatever namespace id the envelope carries.
 #[tokio::test]

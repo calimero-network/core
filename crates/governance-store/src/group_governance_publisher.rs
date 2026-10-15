@@ -6,7 +6,7 @@ use calimero_account::{AccountId, DeviceId};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 use rand::rand_core::UnwrapErr;
@@ -194,7 +194,7 @@ impl<'a> GroupGovernancePublisher<'a> {
     /// Runs BEFORE the local apply: bailing afterwards would leave the removal
     /// committed locally but never published.
     fn ensure_rotation_is_publishable(&self) -> EyreResult<()> {
-        ensure_rotation_is_publishable_for(self.store, self.group_id, self.acting_admin)
+        ensure_rotation_is_publishable_for(self.store, self.group_id, self.acting_admin, None)
     }
 
     /// See [`sign_apply_and_publish`](Self::sign_apply_and_publish) for
@@ -255,7 +255,13 @@ impl<'a> GroupGovernancePublisher<'a> {
         departed: &AccountId,
     ) -> EyreResult<Option<DeliveryReport>> {
         // Same fail-closed gate as a removal: never mint a key peers would reject.
-        self.ensure_rotation_is_publishable()?;
+        // Naming `departed` lets a TEE pay the debt as peers allow it to.
+        ensure_rotation_is_publishable_for(
+            self.store,
+            self.group_id,
+            self.acting_admin,
+            Some(departed),
+        )?;
 
         self.sign_apply_and_publish_inner(
             ack_router,
@@ -490,15 +496,20 @@ impl<'a> GroupGovernancePublisher<'a> {
                 // re-assert it here rather than trust a caller to have gone through the
                 // checked path.
                 let rotation_signer = PrivateKey::from(namespace_identity.private_key).public_key();
-                let checker = PermissionChecker::new(self.store, self.group_id);
-                let authorized = match self.acting_admin {
-                    Some(admin) => checker.is_admin_account(&admin)?,
-                    None => checker.is_admin(&rotation_signer)?,
+                let pays_debt_of = match &op {
+                    GroupOp::GroupKeyRotated { departed } => Some(departed),
+                    _ => None,
                 };
-                if !authorized {
+                if !rotator_is_authorized(
+                    self.store,
+                    self.group_id,
+                    &rotation_signer,
+                    self.acting_admin,
+                    pays_debt_of,
+                )? {
                     bail!(
                         "refusing to mint a group key for {:?}: rotation signer {rotation_signer} \
-                         is not an admin, so peers would reject the rotation while this node \
+                         may not rotate it, so peers would reject the rotation while this node \
                          adopted the key — splitting the keyring",
                         self.group_id
                     );
@@ -604,10 +615,15 @@ impl<'a> GroupGovernancePublisher<'a> {
 /// `acting_admin` is set for a rotation minted on behalf of an admin (a relay
 /// publishing that admin's removal): the admin's authority is what peers check,
 /// so it is what is checked here.
+///
+/// `departed` is set for a rotation paying a departure's debt
+/// (`GroupKeyRotated`): peers also accept that from a TEE member while the
+/// departed account is not a member (`crate::tee_rotation`), so this does too.
 pub(crate) fn ensure_rotation_is_publishable_for(
     store: &Store,
     group_id: ContextGroupId,
     acting_admin: Option<AccountId>,
+    departed: Option<&AccountId>,
 ) -> EyreResult<()> {
     let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
 
@@ -628,12 +644,16 @@ pub(crate) fn ensure_rotation_is_publishable_for(
     // identity — not the requester's per-group signing key. Check that same identity
     // here, or the mirror is not a mirror.
     let rotator = PrivateKey::from(identity.private_key).public_key();
-    let checker = PermissionChecker::new(store, group_id);
-    let authorized = match acting_admin {
-        Some(admin) => checker.is_admin_account(&admin)?,
-        None => checker.is_admin(&rotator)?,
-    };
-    if !authorized {
+    if !rotator_is_authorized(store, group_id, &rotator, acting_admin, departed)? {
+        if let Some(departed) = departed {
+            bail!(
+                "cannot rotate group {group_id:?} for the departure of {departed}: peers accept \
+                 that rotation only from an admin of the group, or from a TEE member while \
+                 {departed} is no longer a member. This node's namespace identity ({rotator}) is \
+                 neither, so every peer would reject the rotation while this node adopted the \
+                 new key locally — splitting the keyring."
+            );
+        }
         bail!(
             "cannot remove a member from group {group_id:?}: the removal must rotate the group \
              key, and peers accept a rotation only from an admin of the group. This node's \
@@ -644,6 +664,34 @@ pub(crate) fn ensure_rotation_is_publishable_for(
         );
     }
     Ok(())
+}
+
+/// Whether peers accept a rotation of `group_id` signed by `rotator`, on this
+/// node's live rows: an admin (`acting_admin`'s authority for a relay), or, when
+/// it pays the debt `departed` left, a TEE member while `departed` is not a
+/// member. A relay publishing on an admin's behalf rotates on that admin's
+/// authority only.
+fn rotator_is_authorized(
+    store: &Store,
+    group_id: ContextGroupId,
+    rotator: &PublicKey,
+    acting_admin: Option<AccountId>,
+    departed: Option<&AccountId>,
+) -> EyreResult<bool> {
+    let checker = PermissionChecker::new(store, group_id);
+    if let Some(admin) = acting_admin {
+        return checker.is_admin_account(&admin);
+    }
+    if checker.is_admin(rotator)? {
+        return Ok(true);
+    }
+    let Some(departed) = departed else {
+        return Ok(false);
+    };
+    Ok(
+        crate::tee_rotation::tee_rotation_standing(store, &checker, &group_id, rotator, departed)?
+            .is_ok(),
+    )
 }
 
 /// Whether `op` flips an Open subgroup to Restricted, which rotates its key. Refused unless the

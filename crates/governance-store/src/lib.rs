@@ -79,6 +79,7 @@ mod pending_self_purge;
 mod permission_checker;
 mod reentry;
 mod tee;
+mod tee_rotation;
 mod tee_vault;
 pub mod unified_op_decode;
 mod void_ledger;
@@ -190,6 +191,7 @@ pub use self::tee::{
     TeeReleaseTrust, UndecodableOpLogEntry, TEE_EVIDENCE_MAX_AGE_SECS,
     TEE_EVIDENCE_MAX_CLOCK_SKEW_SECS,
 };
+pub use self::tee_rotation::{tee_may_pay_rotation, TeeRotationRefusal};
 pub use self::tee_vault::{
     retired_tee_vault_keys, seal_tee_vault_key, tee_vault, tee_vault_deliveries, tee_vault_keys,
     TeeVault, TeeVaultDelivery,
@@ -1723,5 +1725,7 @@ mod governance_boundary_tests;
 mod owner_guard_tests;
 #[cfg(test)]
 mod sealing_domain_tests;
+#[cfg(test)]
+mod tee_rotation_tests;
 #[cfg(test)]
 mod tests;

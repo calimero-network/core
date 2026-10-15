@@ -11525,7 +11525,7 @@ mod rotation_gate_alignment {
             "precondition: this node's namespace identity must not be an admin of the subgroup"
         );
 
-        let err = ensure_rotation_is_publishable_for(&store, sub_gid, None).expect_err(
+        let err = ensure_rotation_is_publishable_for(&store, sub_gid, None, None).expect_err(
             "a removal that must rotate, from a node whose rotation peers would reject, \
              must be refused rather than split the keyring",
         );
@@ -11548,7 +11548,7 @@ mod rotation_gate_alignment {
             "precondition: the bootstrapped namespace identity is the subgroup admin"
         );
 
-        ensure_rotation_is_publishable_for(&store, sub_gid, None)
+        ensure_rotation_is_publishable_for(&store, sub_gid, None, None)
             .expect("an admin's removal rotates cleanly and must be allowed");
     }
 
@@ -11571,7 +11571,7 @@ mod rotation_gate_alignment {
             "precondition: the subgroup must sit on a fully-Open chain to the namespace"
         );
 
-        ensure_rotation_is_publishable_for(&store, sub_gid, None).expect(
+        ensure_rotation_is_publishable_for(&store, sub_gid, None, None).expect(
             "an Open-chain group never rotates on removal, so a non-admin removal must \
              still be permitted",
         );

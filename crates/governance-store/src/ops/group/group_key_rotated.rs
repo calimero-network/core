@@ -3,32 +3,42 @@
 //! This op mutates no governance state. It exists so the forward-secrecy key
 //! rotation has an op to ride on: the rotation itself travels as a plaintext sidecar
 //! on the enclosing namespace op (`NamespaceOp::Group { key_rotation, .. }`) and is
-//! applied by the namespace layer, which independently verifies that the signer is an
-//! admin of the group at the op's cut and that the envelope was wrapped by that same
-//! identity.
+//! applied by the namespace layer, which independently verifies that the signer may
+//! rotate at the op's cut (an admin, or a TEE naming a member who is gone; see
+//! `crate::tee_rotation`) and that the envelope was wrapped by that same identity.
 //!
-//! All this apply does is discharge the pending-rotation row the `MemberLeft` apply
+//! All this apply does is discharge the pending-rotation row the departure
 //! recorded, so the worklist drains.
 
 use super::context::GroupApplyCtx;
+use crate::tee_rotation::{tee_rotation_standing, TeeRotationRefusal};
 use crate::{PendingDeviceRotationRepository, PendingRotationRepository};
 use calimero_account::{AccountId, DeviceId};
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, departed: &AccountId) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
     let store = ctx.store();
 
-    // Only an admin may rotate. This mirrors the gate the namespace layer applies to
-    // the rotation sidecar itself — if the two disagreed, a non-admin could clear the
-    // pending row here while every peer rejected the key that was supposed to
-    // discharge it, and the group would believe it had rotated when it had not.
+    // An admin may rotate, and so may a TEE member naming an account that is no
+    // longer a member (`crate::tee_rotation`). This mirrors the gate the namespace
+    // layer applies to the rotation sidecar itself, through the same predicate: if the
+    // two disagreed, a signer could clear the pending row here while every peer
+    // rejected the key that was supposed to discharge it, and the group would believe
+    // it had rotated when it had not.
     //
     // `ctx.permissions()` resolves at the op's causal cut, like every other apply
     // gate, so each replica reaches this verdict independently of how much of the DAG
-    // it has folded.
-    ctx.permissions().require_admin(signer)?;
+    // it has folded; an unfolded cut parks the op.
+    let permissions = ctx.permissions();
+    if !permissions.is_admin(signer)? {
+        match tee_rotation_standing(store, permissions, group_id, signer, departed)? {
+            Ok(()) => {}
+            Err(TeeRotationRefusal::SignerNotTee) => permissions.require_admin(signer)?,
+            Err(refusal) => bail!(refusal),
+        }
+    }
 
     // Idempotent: clearing an absent row is a no-op. That is what makes a concurrent
     // double-rotation harmless — if two admins both rotated after the same leave, the
