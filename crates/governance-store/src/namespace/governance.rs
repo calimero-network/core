@@ -3002,10 +3002,8 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
-    /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
-    /// An undecidable cut, or no at-cut judge, falls back to this pass's gates and
-    /// records only an apply; an op already refused, or one whose cut is waiting on
-    /// a key of its own group, is not given that fallback and stays parked.
+    /// Apply a parked root op at its own cut and record the verdict; an undecidable cut
+    /// falls back to the live gates unless the op is refused or waits on its own group's key.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
@@ -3361,8 +3359,8 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// This is the content half of authorizing a delivery, and the reason it is
     /// worth anything is the provenance: these ids come from buffered
-    /// `NamespaceOp::Group` and sealed root envelopes, signed by someone other
-    /// than the deliverer, which is a THIRD party relative to whoever is delivering. A `key_id` carried on the
+    /// `NamespaceOp::Group` and sealed root envelopes, signed by namespace members,
+    /// which is a THIRD party relative to whoever is delivering. A `key_id` carried on the
     /// delivery itself would be signed by the deliverer alongside the key it
     /// chose, so the hash would match by construction and check nothing — which
     /// is why this needs no new field on `RootOp::KeyDelivery` and no wire
