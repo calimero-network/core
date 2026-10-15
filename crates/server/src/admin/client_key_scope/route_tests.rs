@@ -1038,6 +1038,16 @@ async fn a_context_bound_key_changes_only_its_own_group() {
             .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {body}");
     }
+    let app = node.mine.app;
+    for (path, body) in [
+        ("/namespaces", json!({ "applicationId": app })),
+        ("/groups", json!({ "applicationId": app })),
+    ] {
+        let (status, response) = node
+            .call(&token, Method::POST, path, Some(body.clone()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path} {body}: {response}");
+    }
     for (method, path) in [
         (Method::GET, format!("/groups/{ns}/metadata")),
         (Method::PUT, format!("/groups/{sub}/metadata")),
@@ -1047,4 +1057,13 @@ async fn a_context_bound_key_changes_only_its_own_group() {
             .await;
         assert_ne!(status, StatusCode::FORBIDDEN, "{method} {path}: {body}");
     }
+}
+
+#[actix::test]
+async fn a_bound_key_is_refused_a_path_it_cannot_decode() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+
+    let (status, body) = node.call(&token, Method::GET, "/contexts/%FF", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }

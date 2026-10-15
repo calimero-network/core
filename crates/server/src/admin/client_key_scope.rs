@@ -35,10 +35,12 @@ pub(crate) async fn refuse_out_of_scope(
             let Some(state) = request.extensions().get::<Arc<AdminState>>() else {
                 return Some(CONTEXT_REFUSAL);
             };
-            let params: Vec<(&str, &str)> = params
-                .as_ref()
-                .map(|p| p.iter().collect())
-                .unwrap_or_default();
+            // A route without parameters has none to check; an undecodable one is refused.
+            let params: Vec<(&str, &str)> = match params.as_ref() {
+                Ok(params) => params.iter().collect(),
+                Err(RawPathParamsRejection::MissingPathParams(_)) => Vec::new(),
+                Err(_) => return Some(CONTEXT_REFUSAL),
+            };
             let store = state.ctx_client.datastore();
             let changes = !matches!(*request.method(), Method::GET | Method::HEAD);
             refusal(
@@ -92,6 +94,8 @@ pub(crate) fn refuse_target_outside_binding(
     let scope = client_key?;
     let store = state.ctx_client.datastore();
     let (message, permitted) = match (group_id, application_id) {
+        // A context binding creates only inside its context's own group.
+        (None, _) if scope.0.context_id.is_some() => (GROUP_REFUSAL, false),
         (None, None) => (GROUP_REFUSAL, false),
         (group, application) => {
             if group.is_some_and(|g| !scope.permits_group_change(store, g)) {

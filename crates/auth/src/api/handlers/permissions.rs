@@ -8,6 +8,8 @@ use tracing::{error, info, warn};
 use validator::Validate;
 
 use crate::api::handlers::auth::{error_response, success_response};
+use crate::api::handlers::client_keys::is_grantable_to_client_key;
+use crate::auth::bindings::ClientKeyBindings;
 use crate::auth::middleware::CallerPermissions;
 use crate::auth::permissions::{Permission, PermissionValidator};
 use crate::auth::validation::{sanitize_string, ValidatedJson};
@@ -193,6 +195,18 @@ pub async fn update_key_permissions_handler(
                 }
             }
 
+            // The mint's rule holds for life: a client key keeps its binding, and a bound
+            // key never holds `admin`.
+            if key.is_client_key()
+                && !client_key_update_allowed(&key.permissions, &final_permissions)
+            {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "A client key's binding and its node-control permissions cannot change",
+                    None,
+                );
+            }
+
             // Validate that we'll have at least one permission after the update
             if final_permissions.is_empty() {
                 return error_response(
@@ -273,12 +287,47 @@ pub async fn update_key_permissions_handler(
     }
 }
 
+fn client_key_update_allowed(before: &[String], after: &[String]) -> bool {
+    let bindings = ClientKeyBindings::from_permissions(after);
+    bindings == ClientKeyBindings::from_permissions(before)
+        && after
+            .iter()
+            .all(|perm| is_grantable_to_client_key(perm, !bindings.is_unbound()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{validate_grantable_permissions, GrantDenial};
+    use super::{client_key_update_allowed, validate_grantable_permissions, GrantDenial};
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn a_client_key_update_keeps_its_binding_and_never_adds_admin_to_it() {
+        let bound = strings(&["context:execute", "application-binding[app-a]"]);
+        let mut with_admin = bound.clone();
+        with_admin.push("admin".to_owned());
+        assert!(!client_key_update_allowed(&bound, &with_admin));
+        assert!(!client_key_update_allowed(
+            &bound,
+            &strings(&["context:execute"])
+        ));
+        assert!(!client_key_update_allowed(
+            &bound,
+            &strings(&["context:execute", "application-binding[app-b]"])
+        ));
+        assert!(!client_key_update_allowed(
+            &strings(&["admin"]),
+            &strings(&["admin", "application-binding[app-a]"])
+        ));
+        let mut narrower = bound.clone();
+        narrower.push("context:list".to_owned());
+        assert!(client_key_update_allowed(&bound, &narrower));
+        assert!(client_key_update_allowed(
+            &strings(&["context:list"]),
+            &strings(&["admin"])
+        ));
     }
 
     #[test]
