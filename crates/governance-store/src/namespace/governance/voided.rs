@@ -156,6 +156,20 @@ impl NamespaceGovernance<'_> {
         })
     }
 
+    /// How many parked ops no replay has judged yet; none when the ledger cannot be read.
+    pub(super) fn undecided_parked(&self) -> usize {
+        VoidLedger::new(self.store, self.namespace_id)
+            .undecided_parked()
+            .unwrap_or_else(|err| {
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                    %err,
+                    "could not count the parked ops a replay has yet to judge"
+                );
+                0
+            })
+    }
+
     /// How `op` is stored: whole, or as the hole that keeps its place in the log when
     /// its bytes are over the unreadable budget, or over the void one for a void op.
     pub(super) fn storage_for(
