@@ -2464,7 +2464,9 @@ fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every
     );
     let removal = w.remove(&w.owner, &[&create], &w.alice, None);
     flip_first.apply(&flip).expect("alice's flip applies first");
-    let _ = flip_first.apply(&removal);
+    flip_first
+        .apply(&removal)
+        .expect("the removal applies and rolls the flip back");
     removal_first
         .apply(&removal)
         .expect("the owner removes alice");
