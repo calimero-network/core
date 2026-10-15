@@ -680,8 +680,7 @@ jobs:
     if: needs.prepare.outputs.binary_release == 'true'
     runs-on: big-machine
     needs: [prepare, release-binaries]
-    permissions:
-      id-token: write
+    permissions: {}
     steps:
       - name: Create GitHub App Token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -723,8 +722,8 @@ jobs:
           NEEDS_PREPARE_OUTPUTS_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           target_branch="chore/bump-formulas-version"
-          git fetch origin "${target_branch}" || true
-          git checkout "${target_branch}" || git checkout -b "${target_branch}"
+          # Always start from the tap's default branch: an existing bump branch is not trusted to run its script.
+          git checkout -B "${target_branch}"
 
           readarray -t binaries <<< "$HOMEBREW_BINARIES"
 
@@ -742,7 +741,7 @@ jobs:
 
           git add Formula/
           git commit -m "chore: bump formulas version"
-          git push origin "${target_branch}"
+          git push --force origin "${target_branch}"
 
           gh pr create -f || true
 
