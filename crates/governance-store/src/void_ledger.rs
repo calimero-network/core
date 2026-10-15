@@ -53,9 +53,51 @@ pub(crate) struct KeyIntro {
     pub(crate) key: [u8; 32],
 }
 
-/// The parked row a raw `Generic` key names, if it lies under `scope`.
-fn parked_row(scope: [u8; 16], key: &[u8]) -> Option<GenericKey> {
-    let fragment: [u8; 32] = key.strip_prefix(&scope[..])?.try_into().ok()?;
+/// Up to `limit` `Generic` rows whose key starts with `prefix` (a scope, or a scope and
+/// the head of a fragment). Read as raw keys: the typed iterator needs a key error type `Generic` lacks.
+pub(crate) fn rows_under(
+    store: &Store,
+    prefix: &[u8],
+    limit: usize,
+) -> EyreResult<Vec<GenericKey>> {
+    let handle = store.handle();
+    let mut iter = handle.iter::<GenericKey>()?;
+    let mut start = [0; 48];
+    start[..prefix.len()].copy_from_slice(prefix);
+    let mut rows = Vec::new();
+    let mut next = DBIter::seek(&mut iter, Slice::from(&start[..]))?
+        .and_then(|key| row_under(prefix, key.as_ref()));
+    while let Some(row) = next {
+        rows.push(row);
+        if rows.len() == limit {
+            break;
+        }
+        next = DBIter::next(&mut iter)?.and_then(|key| row_under(prefix, key.as_ref()));
+    }
+    Ok(rows)
+}
+
+/// Delete every `Generic` row under `scope`.
+pub(crate) fn delete_scope(store: &Store, scope: [u8; 16]) -> EyreResult<()> {
+    loop {
+        let rows = rows_under(store, &scope, DELETE_BATCH)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut handle = store.handle();
+        for row in rows {
+            handle.delete(&row)?;
+        }
+    }
+}
+
+/// The row a raw `Generic` key names, if it starts with `prefix`.
+fn row_under(prefix: &[u8], key: &[u8]) -> Option<GenericKey> {
+    if !key.starts_with(prefix) {
+        return None;
+    }
+    let scope: [u8; 16] = key.get(..16)?.try_into().ok()?;
+    let fragment: [u8; 32] = key.get(16..)?.try_into().ok()?;
     Some(GenericKey::new(scope, fragment))
 }
 
@@ -187,37 +229,7 @@ impl<'a> VoidLedger<'a> {
             handle.delete(&self.key(kind))?;
         }
         drop(handle);
-        let scope = self.parked_scope();
-        loop {
-            let rows = self.parked_rows(scope)?;
-            if rows.is_empty() {
-                return Ok(());
-            }
-            let mut handle = self.store.handle();
-            for row in rows {
-                handle.delete(&row)?;
-            }
-        }
-    }
-
-    /// Up to [`DELETE_BATCH`] parked rows under `scope`. Read as raw keys, since the
-    /// typed iterator needs a key error type `Generic` does not have.
-    fn parked_rows(&self, scope: [u8; 16]) -> EyreResult<Vec<GenericKey>> {
-        let handle = self.store.handle();
-        let mut iter = handle.iter::<GenericKey>()?;
-        let mut start = [0; 48];
-        start[..16].copy_from_slice(&scope);
-        let mut rows = Vec::new();
-        let mut next = DBIter::seek(&mut iter, Slice::from(&start[..]))?
-            .and_then(|key| parked_row(scope, key.as_ref()));
-        while let Some(row) = next {
-            rows.push(row);
-            if rows.len() == DELETE_BATCH {
-                break;
-            }
-            next = DBIter::next(&mut iter)?.and_then(|key| parked_row(scope, key.as_ref()));
-        }
-        Ok(rows)
+        delete_scope(self.store, self.parked_scope())
     }
 
     fn key(&self, kind: &[u8]) -> GenericKey {

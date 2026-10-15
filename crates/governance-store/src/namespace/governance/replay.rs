@@ -8,12 +8,14 @@ use eyre::Result as EyreResult;
 
 use super::super::op_log::NamespaceOpLogService;
 use super::super::retry::{order_causally, NamespaceRetryService, ReplayCandidate, RetryCandidate};
-use super::{ensure_subgroup_sealed_carries_a_join, open_relayed_join, NamespaceGovernance};
+use super::{
+    ensure_subgroup_sealed_carries_a_join, is_undecidable, open_relayed_join, NamespaceGovernance,
+};
 use crate::authorizer::AtCutAuthorizer;
 use crate::held_ops::HeldOps;
 use crate::metrics::record_namespace_retry_event;
 use crate::void_ledger::Parked;
-use crate::{load_nonce_window, DivergenceReport, GroupKeyring};
+use crate::{DivergenceReport, GroupKeyring};
 
 /// What a key-arrival replay achieved.
 #[derive(Default)]
@@ -153,6 +155,30 @@ impl NamespaceGovernance<'_> {
             self.settle_parked(parked, false);
             return Ok(Step::settled());
         }
+        let delta_id = parked.content_hash()?;
+        let relayed = matches!(parked.op, NamespaceOp::RootRelaySealed { .. });
+        if relayed {
+            match self.replays_relayed_join(delta_id, &parked.parent_op_hashes, &gate_op) {
+                Ok(false) => {}
+                // A copy folds as logged, as on a node that read it on arrival.
+                Ok(true) => {
+                    self.settle_parked(parked, true);
+                    return Ok(Step::settled());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                        error = %format!("{e:#}"),
+                        "skipping a relayed join on retry: its join was applied before it, or that is not decidable yet"
+                    );
+                    if is_undecidable(&e) {
+                        return Ok(Step::default());
+                    }
+                    self.settle_parked(parked, false);
+                    return Ok(Step::settled());
+                }
+            }
+        }
         // A create folded long ago is not replay-safe: its fold seats the creator as
         // admin again. A parked create was never applied here, so it is judged.
         if state.is_none() && self.group_created_already_folded(&root)? {
@@ -175,6 +201,9 @@ impl NamespaceGovernance<'_> {
             return Ok(Step::default());
         }
         record_namespace_retry_event("sealed_root_applied");
+        if relayed {
+            self.record_relayed_join(delta_id, &gate_op)?;
+        }
         // The rest of what an arriving op does, best-effort: the fold already happened.
         match self.root_op_side_effects(&gate_op, &root, depth + 1) {
             Ok(effects) => {
@@ -279,13 +308,12 @@ impl NamespaceGovernance<'_> {
         }
         let signer = &candidate.signed_op.signer;
         let nonce = candidate.signed_op.nonce;
-        // An already-windowed nonce replays as `Ok(None)` and writes nothing.
-        let windowed = || {
-            load_nonce_window(self.store, &group_id, signer)
-                .map(|window| window.contains(nonce))
+        // An op already applied here replays as `Ok(None)` and writes nothing.
+        let applied_here = || {
+            self.applied_here(&group_id, signer, nonce, delta_id)
                 .unwrap_or(false)
         };
-        let was_windowed = windowed();
+        let was_applied = applied_here();
         match self.replay_group_op(
             &candidate.signed_op,
             &group_id,
@@ -295,7 +323,7 @@ impl NamespaceGovernance<'_> {
         ) {
             Ok(divergence) => {
                 let rotated = self.replay_deferred_rotation(candidate, parked.is_some());
-                let applied = !was_windowed && windowed();
+                let applied = !was_applied && applied_here();
                 if applied {
                     record_namespace_retry_event("applied");
                     held_ops.release(delta_id)?;

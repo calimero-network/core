@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use calimero_context_client::local_governance::{
     NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
@@ -52,6 +52,46 @@ impl<'a> NamespaceOpLogService<'a> {
         handle
             .has(&key)
             .map_err(|e| eyre::eyre!("contains_op: {e}"))
+    }
+
+    /// Which of `targets` the causal past of the cut `parents` reaches first, walked
+    /// over the stored DAG so every node holding that past answers alike; `None` when part of it is missing.
+    pub(crate) fn past_reaches(
+        &self,
+        parents: &[[u8; 32]],
+        targets: &HashSet<[u8; 32]>,
+    ) -> EyreResult<Option<Option<[u8; 32]>>> {
+        let mut seen = HashSet::new();
+        let mut queue = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if targets.contains(&id) {
+                return Ok(Some(Some(id)));
+            }
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(parents) = self.parents_of(id)? else {
+                return Ok(None);
+            };
+            queue.extend(parents);
+        }
+        Ok(Some(None))
+    }
+
+    /// The parents of a logged op, read from its skeleton when its bytes were not kept.
+    fn parents_of(&self, delta_id: [u8; 32]) -> EyreResult<Option<Vec<[u8; 32]>>> {
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id.to_bytes(), delta_id);
+        let Some(value) = self.store.handle().get(&key)? else {
+            return Ok(None);
+        };
+        let bytes = &value.skeleton_bytes;
+        match decode_signed_namespace_op(bytes) {
+            Some(op) => Ok(Some(op.parent_op_hashes)),
+            None => match decode_opaque_skeleton(bytes) {
+                Some(skeleton) => Ok(Some(skeleton.parent_op_hashes)),
+                None => bail!("op {} is logged but does not decode", hex::encode(delta_id)),
+            },
+        }
     }
 
     /// Direct fetch of a `SignedNamespaceOp` by its content hash within this

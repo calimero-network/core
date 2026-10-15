@@ -12806,15 +12806,25 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
     .expect("the joiner signs");
     inner.admitter_endorsement = Some(admitter_endorsement);
 
-    let relay_once = |inner: &SignedNamespaceOp| {
+    // Any other keyholder re-seals, at the current heads, so the join is in its past.
+    let keyholder_sk = PrivateKey::from([0x53u8; 32]);
+    let relay_once = |signer: &PrivateKey, inner: &SignedNamespaceOp| {
         let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, inner);
-        let next_nonce = gov.read_head_record().expect("head").next_nonce;
-        SignedNamespaceOp::sign(&admitter_sk, ns_id, vec![], next_nonce, sealed)
+        let head = gov.read_head_record().expect("head");
+        SignedNamespaceOp::sign(signer, ns_id, head.parent_hashes, head.next_nonce, sealed)
             .expect("sign the envelope")
     };
 
-    let first = relay_once(&inner);
+    let applied = |inner: &SignedNamespaceOp| {
+        super::governance::relayed_join_applied(&store, ns_id, inner).expect("read")
+    };
+    assert!(!applied(&inner), "a join no copy applied reads as applied");
+    let first = relay_once(&admitter_sk, &inner);
     gov.apply_signed_op(&first).expect("the join applies");
+    assert!(
+        applied(&inner),
+        "a relayed join reads as not applied, so a retry relays it again"
+    );
     assert!(
         members
             .is_member(&ns_gid, &member)
@@ -12826,7 +12836,7 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
         .remove_member(&ns_gid, &member)
         .expect("an admin removes the member");
 
-    let replay = relay_once(&inner);
+    let replay = relay_once(&keyholder_sk, &inner);
     assert_ne!(
         replay.content_hash().expect("hash"),
         first.content_hash().expect("hash"),
@@ -12840,6 +12850,10 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
             .is_member(&ns_gid, &member)
             .expect("read membership"),
         "a re-sealed relayed join must not resurrect a removed member"
+    );
+    assert!(
+        crate::unified_op_decode::OpenedNamespaceOp::open(&store, &replay).refused,
+        "a re-sealed relayed join folds its join again"
     );
 
     // Case 2: the join arrived IN THE CLEAR, so the op log holds the inner op
@@ -12866,6 +12880,10 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
     gov.apply_signed_op(&cleartext)
         .expect("a cleartext invitation join still applies");
     assert!(
+        applied(&cleartext),
+        "a join applied in the clear reads as not applied"
+    );
+    assert!(
         members
             .is_member(&ns_gid, &direct_member)
             .expect("read membership"),
@@ -12876,7 +12894,7 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
         .remove_member(&ns_gid, &direct_member)
         .expect("an admin removes the member");
 
-    let laundered = relay_once(&cleartext);
+    let laundered = relay_once(&keyholder_sk, &cleartext);
     gov.apply_signed_op(&laundered)
         .expect("accepted, and must fold nothing");
     assert!(
@@ -12885,6 +12903,353 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
             .expect("read membership"),
         "wrapping an already-applied cleartext join in a relay must not resurrect it \
          either — the op log holds that one under its own hash"
+    );
+    assert!(
+        crate::unified_op_decode::OpenedNamespaceOp::open(&store, &laundered).refused,
+        "a relayed copy of a cleartext join folds its join again"
+    );
+}
+
+/// A reuse is judged by the logged op it copies being in its past, so a node that
+/// could not read that op reaches the verdict a keyed node does, on arrival and on replay.
+#[actix::test]
+async fn a_reused_nonce_is_refused_whatever_this_node_made_of_the_op_it_copies() {
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, _admin_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let member_sk = PrivateKey::from([0x61u8; 32]);
+    let member = crate::test_fixtures::enrol_member(&store, &ns_gid, &member_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &member, GroupMemberRole::Member)
+        .expect("seat the member");
+    let held = [0x5Au8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&held)
+        .expect("hold a namespace key");
+
+    let sealed = |key: &[u8; 32], name: &str, parents: Vec<[u8; 32]>, nonce: u64| {
+        let named = GroupOp::MemberMetadataSet {
+            member,
+            name: Some(name.to_owned()),
+            data: std::collections::BTreeMap::new(),
+        };
+        SignedNamespaceOp::sign(
+            &member_sk,
+            ns_id,
+            parents,
+            nonce,
+            NamespaceOp::Group {
+                group_id: ns_gid,
+                key_id: GroupKeyring::key_id_for(key).into(),
+                encrypted: GroupKeyring::encrypt_op(key, &named).expect("seal"),
+                key_rotation: None,
+                registers: None,
+            },
+        )
+        .expect("sign")
+    };
+    let refused = |op: &SignedNamespaceOp| {
+        crate::unified_op_decode::OpenedNamespaceOp::open(&store, op).refused
+    };
+
+    let head = gov.read_head_record().expect("head");
+    let unread = sealed(&[0x62; 32], "x", head.parent_hashes, head.next_nonce);
+    let _parked = gov.apply_signed_op(&unread).expect("the op parks unread");
+    let reuse = sealed(
+        &held,
+        "y",
+        vec![unread.content_hash().expect("hash")],
+        unread.nonce,
+    );
+    let _logged = gov.apply_signed_op(&reuse).expect("the reuse is logged");
+    assert!(
+        refused(&reuse),
+        "a reuse of an unread op's nonce was judged on its merits"
+    );
+
+    let later = [0x63u8; 32];
+    let parked_reuse = sealed(
+        &later,
+        "z",
+        vec![reuse.content_hash().expect("hash")],
+        unread.nonce,
+    );
+    let _parked = gov.apply_signed_op(&parked_reuse).expect("the reuse parks");
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&later)
+        .expect("the key arrives");
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+        .expect("the retry pass runs");
+    assert!(
+        refused(&parked_reuse),
+        "a parked reuse stayed a hole once its key arrived"
+    );
+}
+
+/// A rejoin is a new signed join, even at the nonce of the joiner's first one: a node
+/// that left signs from a reset head. Only a copy of the same join is a replay.
+#[actix::test]
+async fn a_relayed_rejoin_at_the_first_joins_nonce_applies() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let members = MembershipRepository::new(&store);
+
+    let joiner_sk = PrivateKey::from([0x64u8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let join = |joined_at: u64| {
+        let role = endorsed_invitation(&admitter_sk, ns_id, &member)
+            .0
+            .invitation
+            .invited_role;
+        let (signed_invitation, admitter_endorsement) = endorsed_invitation_from(
+            &admitter_sk,
+            &admitter_sk,
+            ns_id,
+            &member,
+            role,
+            [0x66 + u8::try_from(joined_at).expect("small"); 32],
+        );
+        let mut inner = SignedNamespaceOp::sign(
+            &joiner_sk,
+            ns_id,
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member,
+                signed_invitation,
+                joined_at,
+                account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+            }),
+        )
+        .expect("the joiner signs");
+        inner.admitter_endorsement = Some(admitter_endorsement);
+        inner
+    };
+    let relay = |inner: &SignedNamespaceOp| {
+        let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, inner);
+        let head = gov.read_head_record().expect("head");
+        SignedNamespaceOp::sign(
+            &PrivateKey::from([0x65; 32]),
+            ns_id,
+            head.parent_hashes,
+            head.next_nonce,
+            sealed,
+        )
+        .expect("sign the envelope")
+    };
+
+    let _joined = gov
+        .apply_signed_op(&relay(&join(0)))
+        .expect("the join applies");
+    members
+        .remove_member(&ns_gid, &member)
+        .expect("the member leaves");
+
+    let rejoin = join(1);
+    assert!(
+        !super::governance::relayed_join_applied(&store, ns_id, &rejoin).expect("read"),
+        "an admitter would answer a rejoin without relaying it"
+    );
+    let envelope = relay(&rejoin);
+    let _rejoined = gov
+        .apply_signed_op(&envelope)
+        .expect("the rejoin is logged");
+    assert!(
+        !crate::unified_op_decode::OpenedNamespaceOp::open(&store, &envelope).refused,
+        "a rejoin at the first join's nonce was refused as a replay"
+    );
+    assert!(
+        members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "a rejoin at the first join's nonce did not apply"
+    );
+}
+
+/// A re-seal backdated to the join's own parents is concurrent with it, so it folds as
+/// on every node, whatever arrived first, and never applies the join a second time.
+#[actix::test]
+async fn a_backdated_re_seal_never_applies_its_join_again() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let members = MembershipRepository::new(&store);
+
+    let joiner_sk = PrivateKey::from([0x57u8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+    let mut inner = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member,
+            signed_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    let parents = gov.read_head_record().expect("head").parent_hashes;
+    let relay = |signer: u8| {
+        let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &inner);
+        let nonce = gov.read_head_record().expect("head").next_nonce;
+        SignedNamespaceOp::sign(
+            &PrivateKey::from([signer; 32]),
+            ns_id,
+            parents.clone(),
+            nonce,
+            sealed,
+        )
+        .expect("sign the envelope")
+    };
+
+    gov.apply_signed_op(&relay(0x58)).expect("the join applies");
+    members
+        .remove_member(&ns_gid, &member)
+        .expect("an admin removes the member");
+
+    let backdated = relay(0x59);
+    gov.apply_signed_op(&backdated).expect("the copy is logged");
+    assert!(
+        !members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "a backdated re-seal applied its join again"
+    );
+    assert!(
+        !crate::unified_op_decode::OpenedNamespaceOp::open(&store, &backdated).refused,
+        "a concurrent copy was refused here, while a node that held it before the removal folds it"
+    );
+}
+
+/// A re-seal that arrives under a key this node lacks is judged when the key
+/// arrives, as it would have been on arrival: the join it copies is in its past.
+#[actix::test]
+async fn a_parked_re_seal_of_an_applied_join_is_refused_when_its_key_arrives() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let members = MembershipRepository::new(&store);
+
+    let joiner_sk = PrivateKey::from([0x54u8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &member);
+    let mut inner = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member,
+            signed_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs");
+    inner.admitter_endorsement = Some(admitter_endorsement);
+
+    // Each envelope is sealed under a key this node does not hold yet, by another node.
+    let relay_at = |key: &[u8; 32], signer: u8, parents: Vec<[u8; 32]>| {
+        SignedNamespaceOp::sign(
+            &PrivateKey::from([signer; 32]),
+            ns_id,
+            parents,
+            gov.read_head_record().expect("head").next_nonce,
+            NamespaceOp::RootRelaySealed {
+                key_id: GroupKeyring::key_id_for(key).into(),
+                encrypted: GroupKeyring::encrypt_relayed_op(key, &inner).expect("seal"),
+            },
+        )
+        .expect("sign the envelope")
+    };
+    let deliver = |key: &[u8; 32]| {
+        let _ = GroupKeyring::new(&store, ns_gid)
+            .store_key(key)
+            .expect("the key is delivered");
+        super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+            .expect("the retry pass runs");
+    };
+
+    let relay_under = |key: &[u8; 32], signer: u8| {
+        relay_at(
+            key,
+            signer,
+            gov.read_head_record().expect("head").parent_hashes,
+        )
+    };
+
+    let first_key = [0x5Cu8; 32];
+    let first_parents = gov.read_head_record().expect("head").parent_hashes;
+    let _parked = gov
+        .apply_signed_op(&relay_under(&first_key, 0x55))
+        .expect("the relay parks");
+    deliver(&first_key);
+    assert!(
+        members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "precondition: the first relay lands the join once its key arrives"
+    );
+    members
+        .remove_member(&ns_gid, &member)
+        .expect("an admin removes the member");
+
+    let second_key = [0x5Du8; 32];
+    let reseal = relay_under(&second_key, 0x56);
+    let _parked = gov.apply_signed_op(&reseal).expect("the re-seal parks");
+    deliver(&second_key);
+
+    assert!(
+        !members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "a parked re-seal resurrected a removed member when its key arrived"
+    );
+    assert!(
+        crate::unified_op_decode::OpenedNamespaceOp::open(&store, &reseal).refused,
+        "a parked re-seal folds its join again"
+    );
+
+    // A copy backdated beside the first relay is concurrent with it: once read, it
+    // folds as logged, as on a node that read it on arrival, and applies nothing.
+    let third_key = [0x5Eu8; 32];
+    let backdated = relay_at(&third_key, 0x57, first_parents);
+    let _parked = gov.apply_signed_op(&backdated).expect("the copy parks");
+    deliver(&third_key);
+    let opened = crate::unified_op_decode::OpenedNamespaceOp::open(&store, &backdated);
+    assert!(
+        opened.relayed_join.is_some() && !opened.refused,
+        "a concurrent copy stayed a hole once its key arrived"
+    );
+    assert!(
+        !members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "a parked concurrent copy applied its join again"
     );
 }
 
