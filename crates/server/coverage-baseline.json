@@ -1,6 +1,1 @@
-[
-  {
-    "route": "GET /admin-api/namespaces/{namespace_id}/revoked-devices",
-    "reason": "Read by the mero-tee fleet sidecar over loopback; no SDK client calls it."
-  }
-]
+[]
