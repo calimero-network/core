@@ -7873,6 +7873,86 @@ fn a_device_withdrawal_at_an_unfolded_cut_is_undecidable() {
 }
 
 #[test]
+fn a_repeat_invitation_join_reuses_the_device_binding() {
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let (ns_id, ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_sk.public_key());
+    let member_sk = PrivateKey::random(&mut rng);
+    let member = crate::test_fixtures::account_for(&member_sk.public_key());
+
+    for (nonce, invitation_nonce) in [(1, [0xB1; 32]), (2, [0xB2; 32])] {
+        let invitation = signed_invitation_for(&admin_sk, subgroup, invitation_nonce);
+        apply_member_joined(&store, ns_id, &member_sk, invitation, nonce, &admin_sk)
+            .expect("the join applies");
+    }
+
+    let bound: Vec<_> = crate::AccountBindingRepository::new(&store)
+        .live_bindings(&ns_gid)
+        .expect("read bindings")
+        .into_iter()
+        .filter(|binding| binding.account == member)
+        .collect();
+    assert_eq!(
+        bound.len(),
+        1,
+        "a repeat join minted a second device: {bound:?}"
+    );
+}
+
+#[test]
+fn a_refused_credential_leaves_the_membership_intact() {
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let (ns_id, ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_sk.public_key());
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member = crate::test_fixtures::account_for(&member_pk);
+
+    // The joiner's own credential, at a device epoch this namespace already spent
+    // on another key of the same device, so `apply_link` refuses it.
+    let credential = crate::test_fixtures::real_join_account(&member_pk);
+    let fork = calimero_account::DeviceCert::sign(
+        &PrivateKey::from(*member_pk),
+        credential.statement.account,
+        credential.statement.device,
+        &PrivateKey::random(&mut rng).public_key(),
+        &credential.statement.kem_pk,
+        0,
+        0,
+    )
+    .expect("sign the fork");
+    let _ = crate::AccountBindingRepository::new(&store)
+        .apply_link(&ns_gid, &credential.genesis, &[], &fork, 0)
+        .expect("seed the conflicting key at the same epoch");
+
+    let invitation = signed_invitation_for(&admin_sk, subgroup, [0xB3; 32]);
+    apply_member_joined(&store, ns_id, &member_sk, invitation, 1, &admin_sk)
+        .expect("a credential this group cannot admit must not orphan the membership op");
+
+    assert!(
+        crate::AccountBindingRepository::new(&store)
+            .binding_for_sign_pk(&ns_gid, &member_pk)
+            .expect("read bindings")
+            .is_none(),
+        "a refused credential records no binding"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .has_direct_member(&subgroup, &member)
+            .expect("read the row"),
+        "a member without a binding is survivable, a member the DAG cannot apply is not"
+    );
+}
+
+#[test]
 fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;

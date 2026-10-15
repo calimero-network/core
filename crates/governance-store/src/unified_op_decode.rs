@@ -185,9 +185,8 @@ fn carried_authorship(
     let cert = match op {
         NamespaceOp::Root(root) => root_credential(root)?,
         // Sealed, and the certificate is inside it. Three of the four joins are
-        // published sealed, and a join is the op that creates its signer's
-        // binding (an open self-join's signer is bound already) — so the
-        // credential it carries is the only thing that
+        // published sealed, and an invitation join is the op that CREATES the
+        // signer's binding — so the credential it carries is the only thing that
         // can name its author, and it is now behind the namespace key. Reading it
         // from the cleartext arm alone left every sealed join `unattributed`,
         // which is a principal no genesis can produce: the fold would then record
