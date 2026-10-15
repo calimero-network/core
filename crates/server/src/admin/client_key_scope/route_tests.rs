@@ -699,10 +699,19 @@ async fn a_bound_key_sees_and_changes_only_its_own_applications_aliases() {
         .await;
     assert_eq!(body["data"]["value"], Value::Null, "{body}");
 
+    // Their alias answers as an unset one does, and survives.
     let (status, _) = node
         .call(&token, Method::POST, "/alias/delete/context/theirs", None)
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "deleting their alias");
+    assert_eq!(status, StatusCode::OK, "deleting their alias");
+    let (_, body) = node
+        .call(&owner, Method::POST, "/alias/lookup/context/theirs", None)
+        .await;
+    assert_eq!(
+        body["data"]["value"],
+        json!(node.theirs.context.to_string()),
+        "{body}"
+    );
     let (status, _) = node
         .call(
             &token,

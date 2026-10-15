@@ -8,7 +8,7 @@ use calimero_server_primitives::admin::DeleteAliasResponse;
 use calimero_store::key::{Aliasable, StoreScopeCompat};
 use tracing::{error, info};
 
-use super::{outside_binding, BoundKeyTarget};
+use super::BoundKeyTarget;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::auth::ClientKeyScope;
 use crate::AdminState;
@@ -25,8 +25,12 @@ where
 
     if let Some(Extension(key)) = client_key {
         match state.node_client.lookup_alias(alias, None) {
+            // Unset to this key, as in lookup: answered as deleting an absent alias.
             Ok(Some(value)) if !value.permitted(&key, state.ctx_client.datastore()) => {
-                return outside_binding();
+                return ApiResponse {
+                    payload: DeleteAliasResponse::new(),
+                }
+                .into_response();
             }
             Ok(_) => {}
             Err(err) => {

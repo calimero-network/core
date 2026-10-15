@@ -28,8 +28,8 @@ where
     // `value` (the SDK contract), not 404 — callers use it to check existence.
     match state.node_client.lookup_alias(alias, None) {
         Ok(value) => {
-            // Outside a bound key's binding an alias reads as unset, so a lookup
-            // is no oracle for another application's names.
+            // Outside a bound key's binding an alias reads as unset. Names are node-wide,
+            // so creating a taken one still answers 409; its value is never shown.
             let value = value.filter(|v| {
                 client_key
                     .as_ref()
