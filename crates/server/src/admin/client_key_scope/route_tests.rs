@@ -128,6 +128,7 @@ fn namespaces(store: &Store, app: Option<&ApplicationId>) -> Vec<NamespaceSummar
 struct Node {
     router: Router,
     proxied: Router,
+    proxied_with_identity: Router,
     store: Store,
     node_client: calimero_node_primitives::client::NodeClient,
     keys: KeyManager,
@@ -214,6 +215,10 @@ impl Node {
             &path,
             with_optional_auth(protected.clone(), None, None, false),
         );
+        let proxied_with_identity = Router::new().nest(
+            &path,
+            with_optional_auth(protected.clone(), None, None, true),
+        );
         let router = Router::new().nest(
             &path,
             with_optional_auth(protected, Some(auth), None, false),
@@ -222,6 +227,7 @@ impl Node {
         Self {
             router,
             proxied,
+            proxied_with_identity,
             store,
             node_client,
             keys,
@@ -1066,4 +1072,46 @@ async fn a_bound_key_is_refused_a_path_it_cannot_decode() {
 
     let (status, body) = node.call(&token, Method::GET, "/contexts/%FF", None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// A permissions header that names a binding never widens what an account session lists.
+#[actix::test]
+async fn an_account_session_behind_forward_auth_cannot_list_by_a_binding() {
+    let node = Node::new().await;
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push(application_binding(&node.mine.app.to_string()));
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/admin-api/contexts")
+        .header("X-Auth-Permissions", permissions.join(","))
+        .header(
+            "X-Auth-Account",
+            calimero_account::AccountId::from([0x77; 32]).to_string(),
+        );
+
+    let (status, body) = Node::send(&node.proxied_with_identity, request, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(ids(&body, "contexts", "id").is_empty(), "{body}");
+}
+
+#[actix::test]
+async fn a_context_bound_key_updates_its_own_contexts_application() {
+    let node = Node::new().await;
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push("context:application:update".to_owned());
+    permissions.push(format!("context[{},identity]", node.mine.context));
+    let token = node.client_token(permissions).await;
+
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            &format!("/contexts/{}/application", node.mine.context),
+            Some(json!({
+                "applicationId": node.mine.app,
+                "executorPublicKey": calimero_primitives::identity::PublicKey::from([0x11; 32]),
+            })),
+        )
+        .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
 }

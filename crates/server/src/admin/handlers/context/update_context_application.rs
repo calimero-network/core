@@ -21,15 +21,6 @@ pub async fn handler(
     Path(context_id): Path<String>,
     ValidatedJson(req): ValidatedJson<UpdateContextApplicationRequest>,
 ) -> impl IntoResponse {
-    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
-        &state,
-        client_key.as_deref(),
-        None,
-        Some(&req.application_id),
-    ) {
-        return refusal;
-    }
-
     let context_id_result = match ContextId::from_str(&context_id) {
         Ok(id) => id,
         Err(err) => {
@@ -41,6 +32,18 @@ pub async fn handler(
             .into_response();
         }
     };
+
+    let group = calimero_governance_store::get_group_for_context(&state.store, &context_id_result)
+        .ok()
+        .flatten();
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
+        &state,
+        client_key.as_deref(),
+        group.as_ref(),
+        Some(&req.application_id),
+    ) {
+        return refusal;
+    }
 
     info!(
         context_id=%context_id_result,

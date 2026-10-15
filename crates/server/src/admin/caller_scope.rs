@@ -123,13 +123,14 @@ pub(crate) fn list_scope(
     account: Option<&AuthenticatedAccount>,
     device: Option<DeviceId>,
 ) -> eyre::Result<ListScope> {
-    // Ahead of the node-owner check: a bound client key also carries that
-    // marker, because it executes as the node inside its binding.
-    if let Some(key) = client_key {
+    let narrowed = narrow_to(node_owner, account);
+    // Ahead of the node-owner check: a bound client key also carries that marker,
+    // because it executes as the node. An account session is never widened by one.
+    if let (Some(key), None) = (client_key, narrowed) {
         return client_key_scope(ctx_client.datastore(), key);
     }
 
-    let Some(account) = narrow_to(node_owner, account) else {
+    let Some(account) = narrowed else {
         return Ok(ListScope::NodeWide);
     };
 
