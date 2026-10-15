@@ -25,6 +25,7 @@ use futures_util::FutureExt;
 use mero_auth::api::handlers::auth::extract_token_from_headers;
 use mero_auth::auth::bindings::ClientKeyBindings;
 use mero_auth::auth::permissions::PermissionValidator;
+use mero_auth::auth::query_token::{is_query_token_route, query_token};
 use mero_auth::auth::token::TokenManager;
 use mero_auth::embedded::{build_app, default_config, EmbeddedAuthApp};
 use mero_auth::storage::StorageError;
@@ -629,8 +630,7 @@ fn accepts_query_token_under(path: &str, prefix: &str) -> bool {
     } else {
         path.strip_prefix(prefix).unwrap_or(path)
     };
-    let path = path.trim_end_matches('/');
-    path == "/ws" || path == "/sse" || path.starts_with("/sse/")
+    is_query_token_route(path)
 }
 
 pub fn guard_layer(service: Arc<AuthService>, proof_policy: Option<ProofPolicy>) -> AuthGuardLayer {
@@ -727,12 +727,8 @@ where
                         let token = accepts_query_token(&full_path)
                             .then(|| uri.query())
                             .flatten()
-                            .and_then(|q| {
-                                q.split('&').find_map(|pair| {
-                                    let (key, value) = pair.split_once('=')?;
-                                    (key == "token").then(|| value.to_owned())
-                                })
-                            });
+                            .and_then(query_token)
+                            .map(str::to_owned);
                         match token {
                             Some(ref t) => {
                                 match service.verify_token_string(t, Some(&headers)).await {
@@ -1050,33 +1046,12 @@ mod query_token_route_tests {
     use super::accepts_query_token_under;
 
     #[test]
-    fn streaming_routes_may_carry_the_token_in_the_url() {
-        for path in [
-            "/ws",
-            "/ws/",
-            "/sse",
-            "/sse/",
-            "/sse/subscription",
-            "/sse/session/abc",
-        ] {
-            assert!(accepts_query_token_under(path, ""), "{path}");
-        }
+    fn the_node_prefix_is_stripped_before_the_route_is_judged() {
         assert!(accepts_query_token_under("/node1/ws", "/node1"));
-    }
-
-    #[test]
-    fn nothing_else_may() {
-        for path in [
-            "/admin-api/blobs/ab12",
-            "/admin-api/contexts",
-            "/jsonrpc",
-            "/admin-api/sse",
-            "/wss",
-            "/sse-evil",
-            "/admin-dashboard/",
-        ] {
-            assert!(!accepts_query_token_under(path, ""), "{path}");
-        }
+        assert!(accepts_query_token_under(
+            "/node1/sse/session/abc",
+            "/node1"
+        ));
         assert!(!accepts_query_token_under(
             "/node1/admin-api/blobs/ab12",
             "/node1"

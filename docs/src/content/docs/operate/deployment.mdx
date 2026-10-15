@@ -274,6 +274,9 @@ permissions that route needs; a URI with no usable method is refused with `403`.
 Without them it only answers whether the token is valid, so any valid token is
 let through to every route the proxy protects, and a proxy that omits them by
 mistake fails silently.
+A token in the URI's query (`?token=`) counts only on `/ws`, `/sse` and `/sse/...`,
+judged on the path as forwarded, and only when the request has no `Authorization`
+header; behind a path prefix, send the token in the header.
 
 Traefik sets both headers from the real request. With `trustForwardHeader` on it
 keeps a client-sent value instead, so leave it off (the default). nginx must be
