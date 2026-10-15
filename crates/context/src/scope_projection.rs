@@ -573,6 +573,10 @@ impl ScopeProjections {
                 .chain(base.root.as_ref().map(|(_, owner)| owner))
                 .copied()
                 .collect(),
+            restricted: view
+                .subgroups
+                .get(&ScopeId::from(group.to_bytes()))
+                .map(|edge| edge.restricted),
         })
     }
 

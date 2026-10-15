@@ -525,6 +525,48 @@ fn a_removal_from_a_subgroup_leaves_the_signers_ops_above_and_beside_it() {
 }
 
 #[test]
+fn only_a_namespace_removal_voids_its_creators_concurrent_opening_of_a_subgroup() {
+    let ad = admins();
+    let h = create_subgroup(&[&ad[2]], 0x41);
+    // In the namespace's own scope, as the bridge builds it: the scope is the root group.
+    let open = |author: u8| {
+        Op::new(
+            ScopeId::from(group().to_bytes()),
+            vec![h.id()],
+            authorship(author),
+            hlc(),
+            OpPayload::SubgroupVisibilitySet {
+                scope: ScopeId::from(subgroup(0x41).to_bytes()),
+                restricted: false,
+            },
+            [0u8; 32],
+            [0u8; 64],
+        )
+    };
+
+    let mut sealed = ad.clone();
+    let from_subgroup = gov(
+        ALICE,
+        &[&h],
+        OpPayload::MemberRemoved {
+            group: subgroup(0x41),
+            member: acct(SAM),
+        },
+    );
+    let opening = open(SAM);
+    sealed.extend([h.clone(), from_subgroup, opening.clone()]);
+    assert!(
+        !void(&sealed).contains(&opening.id()),
+        "a removal members outside the subgroup cannot read voided the opening"
+    );
+
+    let mut public = ad.clone();
+    let opening = open(SAM);
+    public.extend([h.clone(), remove(ALICE, &[&h], SAM), opening.clone()]);
+    assert!(void(&public).contains(&opening.id()));
+}
+
+#[test]
 fn a_removal_from_a_group_voids_the_signers_concurrent_ops_in_its_subgroups() {
     let ad = admins();
     let mut log = ad.clone();

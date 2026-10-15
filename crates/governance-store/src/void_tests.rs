@@ -407,6 +407,10 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
                 .chain(self.base().root.as_ref().map(|(_, owner)| owner))
                 .copied()
                 .collect(),
+            restricted: view
+                .subgroups
+                .get(&ScopeId::from(group.to_bytes()))
+                .map(|edge| edge.restricted),
         })
     }
 }
@@ -2394,4 +2398,81 @@ fn a_flip_whose_creation_is_still_sealed_is_judged_once_the_creation_reads() {
             "the flip lands differently with the key at {key_at}"
         );
     }
+}
+
+#[test]
+fn a_creator_removed_from_the_namespace_cannot_open_its_restricted_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let [_, _, b] = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &b);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    w.apply(&removal).expect("the owner removes alice");
+    assert_eq!(w.role(&w.alice), None, "control: alice left the namespace");
+    assert_eq!(visibility(&w, &subgroup), VisibilityMode::Restricted);
+
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&removal],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let applied = w.apply(&flip);
+
+    assert_eq!(
+        visibility(&w, &subgroup),
+        VisibilityMode::Restricted,
+        "a removed creator opened its subgroup (apply: {:?})",
+        applied.map_err(|err| format!("{err:#}")),
+    );
+}
+
+#[test]
+fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every_node() {
+    use calimero_context_config::VisibilityMode;
+
+    let flip_first = World::new();
+    let removal_first = flip_first.replica(true);
+    let w = &flip_first;
+    let founding = w.founded();
+    for op in &founding {
+        removal_first.apply(op).expect("the replica follows");
+    }
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(w, &founding[2]);
+    for node in [&flip_first, &removal_first] {
+        node.apply(&create)
+            .expect("alice creates a Restricted subgroup");
+    }
+
+    let flip = sign_in_group(
+        w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    flip_first.apply(&flip).expect("alice's flip applies first");
+    let _ = flip_first.apply(&removal);
+    removal_first
+        .apply(&removal)
+        .expect("the owner removes alice");
+    let _ = removal_first.apply(&flip);
+
+    assert_eq!(
+        (
+            visibility(&flip_first, &subgroup),
+            visibility(&removal_first, &subgroup)
+        ),
+        (VisibilityMode::Restricted, VisibilityMode::Restricted),
+        "a flip voided by its creator's concurrent removal opened the subgroup"
+    );
 }
