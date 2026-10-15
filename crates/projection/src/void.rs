@@ -157,8 +157,8 @@ pub(crate) fn payload_group(op: &Op) -> Option<ContextGroupId> {
         | OpPayload::SharedWritersRotated { group, .. }
         | OpPayload::TargetApplicationSet { group, .. }
         | OpPayload::CascadeUpgraded { group, .. } => Some(*group),
-        // Opening rests on namespace standing alone, so only a removal every member
-        // can read voids it: one from the subgroup is sealed from members outside it.
+        // Opening rests on namespace standing, so only a removal every member can read
+        // voids it: one from the subgroup is sealed from members outside it.
         OpPayload::SubgroupVisibilitySet {
             restricted: false, ..
         } => Some(root()),

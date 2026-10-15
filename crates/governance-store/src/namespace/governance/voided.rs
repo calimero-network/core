@@ -375,6 +375,11 @@ impl NamespaceGovernance<'_> {
             };
             if capabilities.subgroup_visibility(group)? != wanted {
                 capabilities.set_subgroup_visibility(group, wanted)?;
+                // Inherited auto-follow re-runs on a rollback as on the flip it undoes.
+                crate::op_events::notify(crate::op_events::OpEvent::SubgroupVisibilityChanged {
+                    group_id: group.to_bytes(),
+                    open: !restricted,
+                });
             }
         }
 
