@@ -44,6 +44,7 @@
   "GET /admin-api/namespaces/for-application/{application_id}",
   "GET /admin-api/namespaces/{namespace_id}",
   "GET /admin-api/namespaces/{namespace_id}/groups",
+  "GET /admin-api/namespaces/{namespace_id}/revoked-devices",
   "GET /admin-api/network/status",
   "GET /admin-api/packages",
   "GET /admin-api/packages/{package}/latest",

@@ -471,6 +471,10 @@ pub(crate) fn setup(
             post(namespaces::revoke_device::handler),
         )
         .route(
+            "/namespaces/{namespace_id}/revoked-devices",
+            get(namespaces::revoked_devices::handler),
+        )
+        .route(
             "/namespaces/{namespace_id}/admin",
             post(namespaces::change_admin::handler),
         )

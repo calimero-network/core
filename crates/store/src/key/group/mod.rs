@@ -2834,6 +2834,12 @@ impl GroupDeviceScopeFloor {
         id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
         id
     }
+    #[must_use]
+    pub fn slot(&self) -> [u8; 32] {
+        let mut slot = [0; 32];
+        slot.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        slot
+    }
 }
 
 impl AsKeyParts for GroupDeviceScopeFloor {

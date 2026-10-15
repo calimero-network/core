@@ -2000,6 +2000,14 @@ pub struct ListMemberDevicesApiResponse {
     pub members: Vec<MemberDevicesApiEntry>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceRevokedDevicesApiResponse {
+    pub revoked_devices: Vec<DeviceId>,
+    /// Hex `sha256(account || device)` of each device its own account withdrew here without a tombstone.
+    pub withdrawn_slots: Vec<String>,
+}
+
 /// The largest plaintext this route will seal, in bytes before hex-encoding.
 ///
 /// What the route exists for is a list of namespace ids — 32 bytes each, plus
@@ -5146,5 +5154,27 @@ mod naming_back_compat_tests {
         let req: CreateNamespaceApiRequest =
             serde_json::from_str(json).expect("legacy appKey must still deserialize");
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
+    }
+}
+
+#[cfg(test)]
+mod revoked_devices_wire_tests {
+    use super::*;
+
+    #[test]
+    fn revoked_devices_serialize_as_plain_hex() {
+        let response = NamespaceRevokedDevicesApiResponse {
+            revoked_devices: vec![DeviceId::from([0xAB; 32])],
+            withdrawn_slots: vec!["cd".repeat(32)],
+        };
+
+        assert_eq!(
+            serde_json::to_string(&response).expect("serialize"),
+            format!(
+                r#"{{"revokedDevices":["{}"],"withdrawnSlots":["{}"]}}"#,
+                "ab".repeat(32),
+                "cd".repeat(32)
+            )
+        );
     }
 }
