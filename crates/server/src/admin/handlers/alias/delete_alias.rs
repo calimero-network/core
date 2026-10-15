@@ -23,26 +23,15 @@ where
 {
     info!(alias=%alias, "Deleting alias");
 
-    if let Some(Extension(key)) = client_key {
-        match state.node_client.lookup_alias(alias, None) {
-            // Unset to this key, as in lookup: answered as deleting an absent alias.
-            Ok(Some(value)) if !value.permitted(&key, state.ctx_client.datastore()) => {
-                return ApiResponse {
-                    payload: DeleteAliasResponse::new(),
-                }
-                .into_response();
-            }
-            Ok(_) => {}
-            Err(err) => {
-                error!(alias=%alias, error=?err, "Failed to look up alias before delete");
-                return parse_api_error(err).into_response();
-            }
-        }
-    }
-
-    // Delete is idempotent: removing an absent alias succeeds (the store delete
-    // doesn't distinguish), matching the SDK's expectation.
-    if let Err(err) = state.node_client.delete_alias(alias, None) {
+    // Outside a bound key's binding the alias reads as unset, as in lookup, so its
+    // delete answers as deleting an absent one and leaves it in place.
+    let store = state.ctx_client.datastore();
+    let deleted = state.node_client.delete_alias_unless(alias, |value| {
+        client_key
+            .as_ref()
+            .is_some_and(|key| !value.permitted(key, store))
+    });
+    if let Err(err) = deleted {
         error!(alias=%alias, error=?err, "Failed to delete alias");
         return parse_api_error(err).into_response();
     }

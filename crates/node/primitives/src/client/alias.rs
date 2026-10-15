@@ -9,6 +9,9 @@ use super::NodeClient;
 /// A resolved alias entry: the alias, its target value, and optional scope.
 type AliasEntry<T, S> = (Alias<T>, T, Option<S>);
 
+/// Held across every alias write, so a check and the write it guards see the same alias.
+static ALIAS_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Returned by [`NodeClient::create_alias`] when the alias already exists.
 ///
 /// A distinct error type (rather than a string `bail!`) so the caller can map
@@ -35,13 +38,12 @@ impl NodeClient {
     where
         T: Aliasable<Scope: StoreScopeCompat> + AsRef<[u8; 32]>,
     {
+        let _writes = ALIAS_WRITES.lock().unwrap_or_else(|e| e.into_inner());
         let mut handle = self.datastore.handle();
 
         let key = key::Alias::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
 
-        // Existence check + write on the same handle (no separate caller-side
-        // pre-check that would race the write). Returns a typed `AliasExists` so
-        // the server can map it to 409 without inspecting the message.
+        // A typed `AliasExists` lets the server map it to 409 without inspecting the message.
         if handle.has(&key)? {
             return Err(AliasExists.into());
         }
@@ -54,6 +56,34 @@ impl NodeClient {
     }
 
     pub fn delete_alias<T>(&self, alias: Alias<T>, scope: Option<T::Scope>) -> eyre::Result<()>
+    where
+        T: Aliasable<Scope: StoreScopeCompat>,
+    {
+        let _writes = ALIAS_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        self.delete_alias_locked(alias, scope)
+    }
+
+    /// Delete an unscoped alias unless `keep` holds for its current value; returns whether it was kept.
+    pub fn delete_alias_unless<T>(
+        &self,
+        alias: Alias<T>,
+        keep: impl FnOnce(&T) -> bool,
+    ) -> eyre::Result<bool>
+    where
+        T: Aliasable<Scope: StoreScopeCompat> + From<[u8; 32]>,
+    {
+        let _writes = ALIAS_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        if self
+            .lookup_alias(alias, None)?
+            .is_some_and(|value| keep(&value))
+        {
+            return Ok(true);
+        }
+        self.delete_alias_locked(alias, None)?;
+        Ok(false)
+    }
+
+    fn delete_alias_locked<T>(&self, alias: Alias<T>, scope: Option<T::Scope>) -> eyre::Result<()>
     where
         T: Aliasable<Scope: StoreScopeCompat>,
     {
