@@ -657,7 +657,7 @@ mod held_ops {
 
     use calimero_governance_store::held_ops::HeldOps;
     use calimero_governance_store::test_fixtures::{
-        derived_group_id, group_created, seal_for_test,
+        derived_group_id, fork_store, group_created, seal_for_test,
     };
     use calimero_governance_store::unified_op_decode::OpenedNamespaceOp;
 
@@ -998,6 +998,133 @@ mod held_ops {
             applied.is_err(),
             "this node's own refused op was logged: {applied:?}"
         );
+    }
+
+    #[actix::test]
+    async fn an_op_reusing_a_spent_nonce_is_refused_and_folds_as_nothing() {
+        let (world, store) = world_targeting().await;
+        let member = world.actor(ActorState::DirectMember);
+        let ns = world.namespace;
+        let named = sign_next(
+            &store,
+            &ns,
+            &member.sign_sk,
+            under_namespace_key(
+                &store,
+                &ns,
+                &ns,
+                &GroupOp::MemberMetadataSet {
+                    member: member.account,
+                    name: Some("me".to_owned()),
+                    data: BTreeMap::new(),
+                },
+            ),
+        );
+        apply(&store, &named)
+            .await
+            .expect("the member names itself");
+        let head = NamespaceGovernance::new(&store, ns.to_bytes().into())
+            .read_head_record()
+            .expect("read the DAG head");
+        let reuse = SignedNamespaceOp::sign(
+            &member.sign_sk,
+            ns.to_bytes().into(),
+            head.parent_hashes,
+            named.nonce,
+            under_namespace_key(
+                &store,
+                &ns,
+                &ns,
+                &GroupOp::MemberRoleSet {
+                    member: member.account,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+        )
+        .expect("sign the reuse");
+        apply(&store, &reuse).await.expect("the reuse is logged");
+        assert!(OpenedNamespaceOp::open(&store, &reuse).refused);
+
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let demote = sign_next(
+            &store,
+            &ns,
+            &member.sign_sk,
+            under_namespace_key(
+                &store,
+                &ns,
+                &ns,
+                &GroupOp::MemberRoleSet {
+                    member: admin.account,
+                    role: GroupMemberRole::ReadOnly,
+                },
+            ),
+        );
+        let _refused = apply(&store, &demote).await;
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns, &admin.account)
+                .expect("read the role"),
+            Some(GroupMemberRole::Admin),
+            "a member acted as admin after reusing a spent nonce"
+        );
+    }
+
+    /// Two ops one signer minted at the same head share its nonce, as two sessions of
+    /// one signer do; neither is in the other's past, so both apply in either order.
+    #[actix::test]
+    async fn concurrent_ops_sharing_a_nonce_both_apply_in_either_order() {
+        let (world, first) = world_targeting().await;
+        let second = fork_store(&first);
+        let ns = world.namespace;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let member = world.actor(ActorState::DirectMember);
+        let head = NamespaceGovernance::new(&first, ns.to_bytes().into())
+            .read_head_record()
+            .expect("read the DAG head");
+        let at_head = |op: &GroupOp| {
+            SignedNamespaceOp::sign(
+                &admin.sign_sk,
+                ns.to_bytes().into(),
+                head.parent_hashes.clone(),
+                head.next_nonce,
+                under_namespace_key(&first, &ns, &ns, op),
+            )
+            .expect("sign at the head")
+        };
+        let demote = at_head(&GroupOp::MemberRoleSet {
+            member: member.account,
+            role: GroupMemberRole::ReadOnly,
+        });
+        let named = at_head(&GroupOp::MemberMetadataSet {
+            member: admin.account,
+            name: Some("admin".to_owned()),
+            data: BTreeMap::new(),
+        });
+
+        for (store, order) in [(&first, [&demote, &named]), (&second, [&named, &demote])] {
+            for op in order {
+                apply(store, op).await.expect("the op is logged");
+                assert!(
+                    !OpenedNamespaceOp::open(store, op).refused,
+                    "a concurrent op was refused"
+                );
+            }
+            assert_eq!(
+                MembershipRepository::new(store)
+                    .role_of(&ns, &member.account)
+                    .expect("read the role"),
+                Some(GroupMemberRole::ReadOnly),
+                "the demotion did not apply"
+            );
+            assert!(
+                calimero_governance_store::MetadataRepository::new(store)
+                    .member_metadata(&ns, &admin.account)
+                    .expect("read the metadata")
+                    .is_some(),
+                "the naming did not apply"
+            );
+        }
     }
 }
 
