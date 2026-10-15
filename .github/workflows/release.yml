@@ -680,8 +680,7 @@ jobs:
     if: needs.prepare.outputs.binary_release == 'true'
     runs-on: big-machine
     needs: [prepare, release-binaries]
-    permissions:
-      id-token: write
+    permissions: {}
     steps:
       - name: Create GitHub App Token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -692,6 +691,8 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: |
             homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -717,14 +718,13 @@ jobs:
           git config --global user.name "${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]"
           git config --global user.email "${STEPS_GET_USER_ID_OUTPUTS_USER_ID}+${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]@users.noreply.github.com"
 
+      # generate-formula.sh only downloads public release assets, so it runs without the app token.
       - name: Update Formula
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NEEDS_PREPARE_OUTPUTS_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          target_branch="chore/bump-formulas-version"
-          git fetch origin "${target_branch}" || true
-          git checkout "${target_branch}" || git checkout -b "${target_branch}"
+          # Always start from the tap's default branch: an existing bump branch is not trusted to run its script.
+          git checkout -B chore/bump-formulas-version
 
           readarray -t binaries <<< "$HOMEBREW_BINARIES"
 
@@ -742,8 +742,12 @@ jobs:
 
           git add Formula/
           git commit -m "chore: bump formulas version"
-          git push origin "${target_branch}"
 
+      - name: Open the bump PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git -c core.hooksPath=/dev/null push --force origin chore/bump-formulas-version
           gh pr create -f || true
 
   fleet-bump:
