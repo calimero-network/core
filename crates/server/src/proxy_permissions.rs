@@ -11,7 +11,7 @@
 //! `/auth/validate` already says what the token carries, in
 //! [`PERMISSIONS_HEADER`], and the proxy copies it onto the request it forwards.
 //! This layer turns it into the same [`GrantedPermissions`] extension the
-//! embedded guard injects.
+//! embedded guard injects, and a client key's binding into its [`ClientKeyScope`].
 //!
 //! # Why this needs no opt-in
 //!
@@ -31,9 +31,10 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use mero_auth::auth::bindings::ClientKeyBindings;
 use tracing::warn;
 
-use crate::auth::GrantedPermissions;
+use crate::auth::{ClientKeyScope, GrantedPermissions};
 
 /// The token's permissions, comma-joined, as mero-auth's `/auth/validate`
 /// writes them.
@@ -97,6 +98,10 @@ pub(crate) async fn inject(mut request: Request<Body>, next: Next) -> Response {
     match permissions {
         Ok(None) => {}
         Ok(Some(permissions)) => {
+            let bindings = ClientKeyBindings::from_permissions(&permissions);
+            if !bindings.is_unbound() {
+                let _previous = request.extensions_mut().insert(ClientKeyScope(bindings));
+            }
             let _previous = request
                 .extensions_mut()
                 .insert(GrantedPermissions(permissions.into()));

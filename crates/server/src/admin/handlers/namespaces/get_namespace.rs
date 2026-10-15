@@ -51,6 +51,7 @@ fn refuse_unless_in_scope(scope: &ListScope, namespace_id: &ContextGroupId) -> O
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -62,7 +63,7 @@ pub async fn handler(
 
     // Resolved before any read, so a refusal costs one membership lookup rather
     // than a namespace identity fetch and a metadata load.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(error=?err, "Failed to resolve the caller's list scope");
