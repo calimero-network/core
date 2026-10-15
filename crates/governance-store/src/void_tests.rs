@@ -79,11 +79,18 @@ impl<'s> LogAuthorizer<'s> {
         }
         // A group op stored before its key arrived folds as a hole; once the key
         // is held it reads as what it is, as the node's own load re-derives it.
+        // An op refused at its cut stays nothing.
         let op_log = crate::NamespaceOpLogService::new(self.store, NS.into());
         for op in &mut ops {
             if !matches!(
                 op.payload,
                 calimero_op::OpPayload::Opaque { .. } | calimero_op::OpPayload::Noop
+            ) {
+                continue;
+            }
+            if matches!(
+                crate::void_ledger::VoidLedger::new(self.store, NS.into()).parked(op.id()),
+                Ok(Some(crate::void_ledger::Parked::Refused))
             ) {
                 continue;
             }
@@ -515,6 +522,7 @@ impl World {
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
             .apply_signed_op(op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_| ())
     }
 
@@ -527,6 +535,7 @@ impl World {
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
             .apply_signed_op(op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_| ())
     }
 

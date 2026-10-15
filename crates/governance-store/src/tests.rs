@@ -8264,6 +8264,7 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
     )
     .unwrap();
     let err = apply_signed_namespace_op(&store, &signed)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .expect_err("a kicked member must not re-inherit back into the subgroup");
 
     assert!(
@@ -17058,6 +17059,7 @@ mod invite_capability {
             SignedNamespaceOp::sign(joiner_sk, f.ns_id.into(), TEST_CUT.to_vec(), 1, wire).unwrap();
         signed.admitter_endorsement = Some(Box::new(endorsement));
         crate::apply_signed_namespace_op_at_cut(&f.store, &signed, &TEST_CUT, authorizer)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_result| ())
     }
 

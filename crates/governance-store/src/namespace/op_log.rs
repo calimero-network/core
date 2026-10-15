@@ -15,6 +15,8 @@ pub(crate) enum Hole {
     Unreadable,
     /// An op that carries no authority: it keeps the payload the void rule reads.
     Void,
+    /// An op refused at its cut: it folds as nothing, so no reader abstains on it.
+    Refused,
 }
 
 /// Typed namespace group entry decoded from the namespace op-log.
@@ -177,9 +179,13 @@ impl<'a> NamespaceOpLogService<'a> {
             &self.namespace_id.to_bytes().into(),
             &op.signer,
         );
+        let payload = match hole {
+            Hole::Refused => calimero_op::OpPayload::Noop,
+            _ => calimero_op::OpPayload::Opaque { group },
+        };
         let hole_op = crate::unified_op_decode::hole_op_from_namespace_op(
             op,
-            calimero_op::OpPayload::Opaque { group },
+            payload,
             binding,
             delta_id,
             &op.parent_op_hashes,

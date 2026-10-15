@@ -558,6 +558,7 @@ mod tests {
             )?;
             NamespaceGovernance::new(&self.store, NS.into())
                 .apply_signed_op(&signed)
+                .and_then(crate::ApplyNamespaceOpResult::verdict)
                 .map(|_| ())
         }
 
@@ -1830,6 +1831,7 @@ mod founding_tests {
             )?;
             NamespaceGovernance::new(&self.store, self.ns.to_bytes().into())
                 .apply_signed_op(&signed)
+                .and_then(crate::ApplyNamespaceOpResult::verdict)
                 .map(|_| ())
         }
 
@@ -1851,6 +1853,7 @@ mod founding_tests {
             )?;
             NamespaceGovernance::new(&self.store, self.ns.to_bytes().into())
                 .apply_signed_op(&signed)
+                .and_then(crate::ApplyNamespaceOpResult::verdict)
                 .map(|_| ())
         }
 

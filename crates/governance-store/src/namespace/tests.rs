@@ -4508,7 +4508,9 @@ fn governance_rejects_non_admin_signer() {
     )
     .expect("sign op");
 
-    let result = gov.apply_signed_op(&op);
+    let result = gov
+        .apply_signed_op(&op)
+        .and_then(crate::ApplyNamespaceOpResult::verdict);
     assert!(result.is_err(), "non-admin signer should be rejected");
 }
 
@@ -5461,6 +5463,7 @@ impl ExistingGroupFixture {
         .expect("sign GroupCreated");
         super::NamespaceGovernance::new(&self.store, self.ns_id.into())
             .apply_signed_op(&op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_| ())
     }
 
@@ -5682,7 +5685,9 @@ fn concurrent_creates_of_one_group_converge_in_either_apply_order() {
             let genuine = sign(&store, &owner_sk, genuine_op.clone());
             let racer = sign(&store, &other_sk, racer_op.clone());
             let apply = |op: &SignedNamespaceOp| {
-                super::NamespaceGovernance::new(&store, RACE_NS.into()).apply_signed_op(op)
+                super::NamespaceGovernance::new(&store, RACE_NS.into())
+                    .apply_signed_op(op)
+                    .and_then(crate::ApplyNamespaceOpResult::verdict)
             };
             let (genuine_verdict, racer_verdict) = if genuine_first {
                 let g = apply(&genuine);
@@ -6853,6 +6858,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     );
     let err = gov
         .apply_signed_op(&create(&stranger_sk, 0xB1, ns_id, 1))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .unwrap_err();
     assert!(
         matches!(
@@ -6872,6 +6878,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     // Member without the cap cannot create a subgroup, even under the root.
     assert!(gov
         .apply_signed_op(&create(&member_sk, 0xB1, ns_id, 2))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .is_err());
     assert!(MetaRepository::new(&store)
         .load(&ContextGroupId::from(chan))
@@ -6912,6 +6919,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         .expect("admin creates an intermediate subgroup");
     assert!(
         gov.apply_signed_op(&create(&member_sk, 0xB3, nested_parent, 5))
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .is_err(),
         "CAN_CREATE_SUBGROUP is honored only directly under the namespace root"
     );
@@ -7026,7 +7034,10 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
             .unwrap(),
         "precondition: the stranger must not be enrolled in the namespace"
     );
-    let err = gov.apply_signed_op(&del(&stranger_sk, s1, 1)).unwrap_err();
+    let err = gov
+        .apply_signed_op(&del(&stranger_sk, s1, 1))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
+        .unwrap_err();
     assert!(
         matches!(
             err.downcast_ref::<ApplyError>(),
@@ -7043,6 +7054,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     // again by the authorization check.
     let err = gov
         .apply_signed_op(&del(&plain_member_sk, s1, 2))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .unwrap_err();
     assert!(
         matches!(
@@ -9432,6 +9444,7 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     let err = NamespaceGovernance::new(&store, namespace_id.into())
         .with_apply_auth(&TEST_CUT, &FixedAuthorizer(false))
         .apply_signed_op(&signed)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .expect_err("at-cut denial must reject GroupCreated even though live rows grant");
     let _ = err;
 
@@ -9465,7 +9478,9 @@ fn apply_open_join_with(
     account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 ) -> eyre::Result<crate::namespace::governance::ApplyNamespaceOpResult> {
     let join = sign_open_join(store, namespace_id, subgroup_id, joiner_sk, account);
-    super::NamespaceGovernance::new(store, namespace_id.into()).apply_signed_op(&join)
+    super::NamespaceGovernance::new(store, namespace_id.into())
+        .apply_signed_op(&join)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
 }
 
 /// An open self-join into `subgroup_id` carrying `account`, on the current head.
@@ -9616,6 +9631,7 @@ fn a_member_removed_from_an_open_group_cannot_join_its_child() {
         NamespaceGovernance::new(&store, ns.into())
             .with_apply_auth(&TEST_CUT, &InheritsAtCut)
             .apply_signed_op(&op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
     };
 
     let err = join(&f.kicked.0).expect_err("a removal from an ancestor ends inheritance");
@@ -10293,7 +10309,9 @@ impl TeeAdmissionFixture {
             ),
         )
         .expect("verifier signs the admission");
-        gov.apply_signed_op(&admit).map(|_| ())
+        gov.apply_signed_op(&admit)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .map(|_| ())
     }
 
     fn is_member(&self) -> bool {
