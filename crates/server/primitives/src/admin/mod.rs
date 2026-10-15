@@ -878,6 +878,13 @@ pub struct TeeAttestRequest {
     /// serving it cannot forge it. Absent for a mock quote.
     #[serde(default)]
     pub include_collateral: bool,
+    /// Also return this TD's event log (the ACPI CCEL table) as `eventLogB64`:
+    /// every measurement the firmware and boot chain extended into RTMR0-3, so
+    /// a verifier can see which event makes this node's registers differ from
+    /// the values it expected. It is public: it describes what the quote's
+    /// registers already commit to. Unavailable for a mock quote.
+    #[serde(default)]
+    pub event_log: bool,
 }
 
 impl TeeAttestRequest {
@@ -888,6 +895,7 @@ impl TeeAttestRequest {
             bind_node_key: false,
             bind_transport_key: false,
             include_collateral: false,
+            event_log: false,
         }
     }
 
@@ -1186,6 +1194,10 @@ pub struct TeeAttestResponseData {
     /// `includeCollateral` and the quote is not a mock.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collateral: Option<serde_json::Value>,
+    /// Base64 of this TD's CCEL event log, present only when the request set
+    /// `eventLog`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_log_b64: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1201,6 +1213,7 @@ impl TeeAttestResponse {
         bound_public_key: Option<PublicKey>,
         transport_public_key: Option<String>,
         collateral: Option<serde_json::Value>,
+        event_log_b64: Option<String>,
     ) -> Self {
         Self {
             data: TeeAttestResponseData {
@@ -1209,6 +1222,7 @@ impl TeeAttestResponse {
                 bound_public_key,
                 transport_public_key,
                 collateral,
+                event_log_b64,
             },
         }
     }
