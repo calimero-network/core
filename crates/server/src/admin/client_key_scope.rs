@@ -3,11 +3,10 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::rejection::RawPathParamsRejection;
 use axum::extract::RawPathParams;
-use axum::http::{Request, StatusCode};
+use axum::http::{Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
-use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use tracing::warn;
@@ -41,6 +40,7 @@ pub(crate) async fn refuse_out_of_scope(
                 .map(|p| p.iter().collect())
                 .unwrap_or_default();
             let store = state.ctx_client.datastore();
+            let changes = !matches!(*request.method(), Method::GET | Method::HEAD);
             refusal(
                 request.uri().path(),
                 &params,
@@ -50,8 +50,11 @@ pub(crate) async fn refuse_out_of_scope(
                 },
                 |raw| {
                     parse_group_id(raw).is_ok_and(|id| {
-                        scope.permits_group(store, &id)
-                            || (joins_namespace(request.uri().path()) && !is_held(store, &id))
+                        if changes {
+                            scope.permits_group_change(store, &id)
+                        } else {
+                            scope.permits_group(store, &id)
+                        }
                     })
                 },
                 |raw| {
@@ -91,7 +94,7 @@ pub(crate) fn refuse_target_outside_binding(
     let (message, permitted) = match (group_id, application_id) {
         (None, None) => (GROUP_REFUSAL, false),
         (group, application) => {
-            if group.is_some_and(|g| !scope.permits_group(store, g)) {
+            if group.is_some_and(|g| !scope.permits_group_change(store, g)) {
                 (GROUP_REFUSAL, false)
             } else {
                 (
@@ -114,24 +117,16 @@ pub(crate) fn refuse_target_outside_binding(
     )
 }
 
-/// Refuse a bound key's join unless its binding reaches the group, or this node
-/// does not hold the group yet and the invitation's application is the key's.
+/// Refuse a bound key's join unless this node holds the group and the binding may
+/// change it. An unheld group's application is only the invitation's unsigned hint.
 pub(crate) fn refuse_join_outside_binding(
     state: &AdminState,
     client_key: Option<&ClientKeyScope>,
     invitation: &SignedGroupOpenInvitation,
 ) -> Option<Response> {
     let scope = client_key?;
-    let store = state.ctx_client.datastore();
     let group_id = invitation.invitation.group_id;
-    let permitted = if is_held(store, &group_id) {
-        scope.permits_group(store, &group_id)
-    } else {
-        invitation
-            .application_id
-            .is_some_and(|app| scope.permits_application(store, &ApplicationId::from(app)))
-    };
-    if permitted {
+    if scope.permits_group_change(state.ctx_client.datastore(), &group_id) {
         return None;
     }
     warn!(bindings = ?scope.0, ?group_id, "client key refused: join outside its binding");
@@ -170,16 +165,6 @@ fn refusal(
     })
 }
 
-/// A namespace this node does not hold has no target to check yet; the join
-/// handler checks its invitation instead (`refuse_join_outside_binding`).
-fn joins_namespace(path: &str) -> bool {
-    path.trim_end_matches('/').ends_with("/join") && path.contains("/namespaces/")
-}
-
-fn is_held(store: &calimero_store::Store, group_id: &ContextGroupId) -> bool {
-    !matches!(MetaRepository::new(store).load(group_id), Ok(None))
-}
-
 fn sync_target(path: &str) -> Option<Option<&str>> {
     let path = path.trim_end_matches('/');
     if path.ends_with("/contexts/sync") {
@@ -192,8 +177,8 @@ fn sync_target(path: &str) -> Option<Option<&str>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        joins_namespace, refusal, sync_target, APPLICATION_REFUSAL, CONTEXT_REFUSAL, GROUP_REFUSAL,
-        INSTALL_REFUSAL, SYNC_ALL_REFUSAL,
+        refusal, sync_target, APPLICATION_REFUSAL, CONTEXT_REFUSAL, GROUP_REFUSAL, INSTALL_REFUSAL,
+        SYNC_ALL_REFUSAL,
     };
 
     const MINE: &str = "aa";
@@ -276,14 +261,6 @@ mod tests {
             decide("/node1/admin-api/install-application/", &[]),
             Some(INSTALL_REFUSAL)
         );
-    }
-
-    #[test]
-    fn only_a_namespace_join_is_a_join() {
-        assert!(joins_namespace("/admin-api/namespaces/ns/join"));
-        assert!(!joins_namespace("/admin-api/namespaces/ns/invite"));
-        assert!(!joins_namespace("/admin-api/groups/g/join-via-inheritance"));
-        assert!(!joins_namespace("/admin-api/groups/join"));
     }
 
     #[test]

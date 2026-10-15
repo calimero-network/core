@@ -127,6 +127,7 @@ fn namespaces(store: &Store, app: Option<&ApplicationId>) -> Vec<NamespaceSummar
 
 struct Node {
     router: Router,
+    proxied: Router,
     store: Store,
     node_client: calimero_node_primitives::client::NodeClient,
     keys: KeyManager,
@@ -209,6 +210,10 @@ impl Node {
         );
         keys.set_key("root", &root).await.unwrap();
         let auth = Arc::new(AuthService::new(Vec::new(), tokens.clone()));
+        let proxied = Router::new().nest(
+            &path,
+            with_optional_auth(protected.clone(), None, None, false),
+        );
         let router = Router::new().nest(
             &path,
             with_optional_auth(protected, Some(auth), None, false),
@@ -216,6 +221,7 @@ impl Node {
 
         Self {
             router,
+            proxied,
             store,
             node_client,
             keys,
@@ -268,10 +274,33 @@ impl Node {
         path: &str,
         body: Option<Value>,
     ) -> (StatusCode, Value) {
-        let mut request = Request::builder()
+        let request = Request::builder()
             .method(method)
             .uri(format!("/admin-api{path}"))
             .header("Authorization", format!("Bearer {token}"));
+        Self::send(&self.router, request, body).await
+    }
+
+    /// A request as forward-auth hands it on: the token's permissions in `X-Auth-Permissions`.
+    async fn call_proxied(
+        &self,
+        permissions: &[String],
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(format!("/admin-api{path}"))
+            .header("X-Auth-Permissions", permissions.join(","));
+        Self::send(&self.proxied, request, body).await
+    }
+
+    async fn send(
+        router: &Router,
+        mut request: axum::http::request::Builder,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let body = match body {
             Some(json) => {
                 request = request.header("Content-Type", "application/json");
@@ -279,8 +308,7 @@ impl Node {
             }
             None => Body::empty(),
         };
-        let response = self
-            .router
+        let response = router
             .clone()
             .oneshot(request.body(body).unwrap())
             .await
@@ -538,24 +566,42 @@ async fn a_bound_key_still_reaches_its_own_application() {
     }
 }
 
-/// An invitation names no application, so the join cannot be checked against
-/// the binding before it happens; it is the namespace admin's signature that
-/// authorizes it.
+/// A group this node does not hold has no signed target to check the binding
+/// against: the invitation's application is an unsigned hint.
 #[actix::test]
-async fn a_bound_key_may_join_a_namespace_this_node_does_not_hold() {
+async fn a_bound_key_cannot_join_a_group_this_node_does_not_hold() {
     let node = Node::new().await;
     let token = node.bound_to_mine().await;
-    let unknown = hex::encode([0xc1; 32]);
+    let unknown = ContextGroupId::from([0xc1; 32]);
+    let unknown_hex = hex::encode(unknown.to_bytes());
+    let mut invitation = calimero_context::test_support::unverified_invitation(&unknown);
+    invitation.application_id = Some(*node.mine.app.as_ref());
+    let invite = json!({ "invitation": invitation });
 
+    for path in [
+        format!("/namespaces/{unknown_hex}/join"),
+        "/groups/join".to_owned(),
+    ] {
+        let (status, body) = node
+            .call(&token, Method::POST, &path, Some(invite.clone()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
+    }
+    let mut held = calimero_context::test_support::unverified_invitation(&node.mine.namespace);
+    held.application_id = Some(*node.mine.app.as_ref());
     let (status, body) = node
         .call(
             &token,
             Method::POST,
-            &format!("/namespaces/{unknown}/join"),
-            Some(json!({})),
+            "/groups/join",
+            Some(json!({ "invitation": held })),
         )
         .await;
-    assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a held group of mine: {body}"
+    );
 }
 
 #[actix::test]
@@ -743,19 +789,6 @@ async fn a_bound_key_joins_only_into_its_own_application() {
         StatusCode::FORBIDDEN,
         "an unheld namespace of theirs: {body}"
     );
-    let (status, body) = node
-        .call(
-            &token,
-            Method::POST,
-            &format!("/namespaces/{unknown_hex}/join"),
-            Some(invite(unknown, &node.mine.app)),
-        )
-        .await;
-    assert_ne!(
-        status,
-        StatusCode::FORBIDDEN,
-        "an unheld namespace of mine: {body}"
-    );
 }
 
 #[actix::test]
@@ -910,4 +943,108 @@ async fn another_applications_artifact_is_missing_to_a_bound_key() {
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[actix::test]
+async fn a_bound_key_behind_forward_auth_is_held_to_its_binding() {
+    let node = Node::new().await;
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push(application_binding(&node.mine.app.to_string()));
+
+    let (status, body) = node
+        .call_proxied(&permissions, Method::GET, "/contexts", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        ids(&body, "contexts", "id"),
+        vec![node.mine.context.to_string()]
+    );
+    let theirs = node.theirs.context;
+    let (status, body) = node
+        .call_proxied(
+            &permissions,
+            Method::GET,
+            &format!("/contexts/{theirs}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// A subgroup of `mine`'s namespace targeting its application, holding one context.
+fn seed_subgroup(node: &Node) -> (ContextGroupId, ContextId) {
+    let sub = ContextGroupId::from([0xa2; 32]);
+    let context = ContextId::from([0xa3; 32]);
+    let meta = MetaRepository::new(&node.store)
+        .load(&node.mine.namespace)
+        .expect("load")
+        .expect("namespace meta");
+    MetaRepository::new(&node.store)
+        .save(&sub, &meta)
+        .expect("meta");
+    calimero_governance_store::NamespaceRepository::new(&node.store)
+        .nest(&node.mine.namespace, &sub)
+        .expect("nest");
+    ContextTreeService::new(&node.store, sub)
+        .register_context(&context)
+        .expect("register");
+    node.store
+        .handle()
+        .put(
+            &ContextMetaKey::new(context),
+            &ContextMeta::new(ApplicationMeta::new(node.mine.app), [0; 32], vec![], None),
+        )
+        .expect("context meta");
+    (sub, context)
+}
+
+#[actix::test]
+async fn a_bound_key_cannot_move_its_group_under_another_application() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let (sub, _) = seed_subgroup(&node);
+
+    let (status, body) = node
+        .call(
+            &token,
+            Method::POST,
+            &format!("/groups/{}/reparent", hex::encode(sub.to_bytes())),
+            Some(json!({ "newParentId": hex::encode(node.theirs.namespace.to_bytes()) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// A context binding reads up its group's chain but changes only its own group.
+#[actix::test]
+async fn a_context_bound_key_changes_only_its_own_group() {
+    let node = Node::new().await;
+    let (sub, context) = seed_subgroup(&node);
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push(format!("context[{context},identity]"));
+    let token = node.client_token(permissions).await;
+    let (ns, sub) = (
+        hex::encode(node.mine.namespace.to_bytes()),
+        hex::encode(sub.to_bytes()),
+    );
+
+    for (method, path) in [
+        (Method::POST, format!("/groups/{ns}/members")),
+        (Method::PUT, format!("/groups/{ns}/metadata")),
+        (Method::DELETE, format!("/groups/{ns}")),
+    ] {
+        let (status, body) = node
+            .call(&token, method.clone(), &path, Some(json!({})))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {body}");
+    }
+    for (method, path) in [
+        (Method::GET, format!("/groups/{ns}/metadata")),
+        (Method::PUT, format!("/groups/{sub}/metadata")),
+    ] {
+        let (status, body) = node
+            .call(&token, method.clone(), &path, Some(json!({})))
+            .await;
+        assert_ne!(status, StatusCode::FORBIDDEN, "{method} {path}: {body}");
+    }
 }

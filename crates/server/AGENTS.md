@@ -322,19 +322,22 @@ It executes as the node inside its binding, but it is never the node owner on th
 - `/jsonrpc`, WS `execute` and context subscribe (WS and SSE): the context must be the bound one, or run the bound application.
   A context this node does not hold yet runs its owning group's target application.
 - Group subscribe (WS and SSE) and admin routes with a `{group_id}` or `{namespace_id}`: a context binding reaches only the groups on the chain from its context's group up to the namespace; an application binding only groups targeting that application.
+  A context binding changes only its context's own group: a route other than `GET`/`HEAD`, a body naming a group and a join need that group exactly (`permits_group_change`).
 - Admin routes with a `{context_id}`, `{application_id}`, and `/contexts/sync/{id}`, are refused with `403` outside the binding (`admin/client_key_scope.rs`).
   `POST /contexts/sync` with no id syncs every context and is refused outright.
   `POST /install-application` is refused outright.
-- `POST /contexts`, `/namespaces`, `/groups`, `/contexts/{id}/application` and `/groups/{id}/upgrade` are refused when their body names a group or application outside the binding (`refuse_target_outside_binding`).
-- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group the binding reaches, or one this node does not hold whose invitation names the key's application (`refuse_join_outside_binding`).
-  That application is an unsigned hint and it seeds the joiner's group target, so a forged hint can only join a group whose invitation the caller already holds.
+- `POST /contexts`, `/namespaces`, `/groups`, `/contexts/{id}/application`, `/groups/{id}/upgrade` and `/groups/{id}/reparent` are refused when their body names a group or application outside the binding (`refuse_target_outside_binding`).
+- A join (`POST /groups/join`, `/namespaces/{id}/join`) needs a group this node holds and the binding reaches (`refuse_join_outside_binding`).
+  An invitation's application is an unsigned hint that would seed the group's target, so a group this node does not hold yet is joined by an unbound key.
 - Listings and named reads take the key's `ListScope::ClientKey` (`admin/caller_scope.rs`): the groups its binding reaches, and of their contexts only those it permits.
   `GET /applications`, the `for-application` listings, `/groups/{id}/contexts` and the alias routes filter by the same binding; an alias to a device is never visible to a bound key.
   Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up with the reference it releases (bound-key deletes are serialized), and `GET /blobs` is refused.
 - SSE: a bound key's session principal includes its binding, so it can neither adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
 
+In proxy mode the binding arrives in `X-Auth-Permissions` and `proxy_permissions` builds the same `ClientKeyScope`; like the permissions, it can only narrow.
 Every check fails closed when the context or group cannot be resolved.
 A key with no binding is unaffected, and `/admin/client-key` never mints `admin` on a bound key, whether the binding comes from its fields or its permission list.
+The one exception is mero-auth's `trusted_admin_applications`: an `application_id` listed there may be minted `admin`, and that key is unbound.
 
 ## Sealed transport
 

@@ -176,6 +176,26 @@ impl ClientKeyScope {
         true
     }
 
+    /// [`Self::permits_group`] for a change: a context binding changes only its context's own group.
+    pub(crate) fn permits_group_change(
+        &self,
+        store: &calimero_store::Store,
+        group_id: &calimero_context_config::types::ContextGroupId,
+    ) -> bool {
+        self.permits_group(store, group_id)
+            && self.0.context_id.as_deref().is_none_or(|context_id| {
+                context_id
+                    .parse::<calimero_primitives::context::ContextId>()
+                    .ok()
+                    .and_then(|id| {
+                        calimero_governance_store::get_group_for_context(store, &id)
+                            .ok()
+                            .flatten()
+                    })
+                    .is_some_and(|owning| owning == *group_id)
+            })
+    }
+
     pub(crate) fn principal(&self) -> String {
         let bindings = &self.0;
         format!(
