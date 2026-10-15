@@ -1110,7 +1110,8 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
             | MemberJoinedOpenRejection::AlreadyDirectMember(_),
         )
         | ApplyError::StateHashMismatch { .. }
-        | ApplyError::StaleNonce { .. } => StatusCode::CONFLICT,
+        | ApplyError::StaleNonce { .. }
+        | ApplyError::NonceRespent { .. } => StatusCode::CONFLICT,
         // Not a refusal: the node lacks the history to decide yet, and the same
         // call succeeds once it has caught up. Same answer as
         // `AuthorityNotYetResolvable` below.

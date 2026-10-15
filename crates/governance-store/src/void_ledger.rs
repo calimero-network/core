@@ -62,13 +62,13 @@ fn rows_under(store: &Store, scope: [u8; 16]) -> EyreResult<Vec<GenericKey>> {
     start[..16].copy_from_slice(&scope);
     let mut rows = Vec::new();
     let mut next = DBIter::seek(&mut iter, Slice::from(&start[..]))?
-        .and_then(|key| parked_row(scope, key.as_ref()));
+        .and_then(|key| row_under(scope, key.as_ref()));
     while let Some(row) = next {
         rows.push(row);
         if rows.len() == DELETE_BATCH {
             break;
         }
-        next = DBIter::next(&mut iter)?.and_then(|key| parked_row(scope, key.as_ref()));
+        next = DBIter::next(&mut iter)?.and_then(|key| row_under(scope, key.as_ref()));
     }
     Ok(rows)
 }
@@ -88,7 +88,7 @@ pub(crate) fn delete_scope(store: &Store, scope: [u8; 16]) -> EyreResult<()> {
 }
 
 /// The row a raw `Generic` key names, if it lies under `scope`.
-fn parked_row(scope: [u8; 16], key: &[u8]) -> Option<GenericKey> {
+fn row_under(scope: [u8; 16], key: &[u8]) -> Option<GenericKey> {
     let fragment: [u8; 32] = key.strip_prefix(&scope[..])?.try_into().ok()?;
     Some(GenericKey::new(scope, fragment))
 }

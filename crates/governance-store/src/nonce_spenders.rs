@@ -1,8 +1,5 @@
-//! Which ops spent each `(group, signer, nonce)` of a namespace.
-//!
-//! The nonce window says a nonce is spent but not by which op, so a replay of the
-//! op that spent it and a different op reusing it looked the same. This record
-//! tells them apart, and names the earlier spenders a reuse is judged against.
+//! Which ops spent each `(group, signer, nonce)` of a namespace: what tells a replay
+//! of the op that spent a nonce from a different op reusing it.
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
@@ -122,14 +119,15 @@ mod tests {
         let left = logged(&store, vec![root], 2);
         let right = logged(&store, vec![root], 3);
         let log = NamespaceOpLogService::new(&store, NAMESPACE.into());
+        let reaches = |parents: &[[u8; 32]], targets: &[[u8; 32]]| {
+            log.past_reaches(parents, &targets.iter().copied().collect())
+                .expect("walk")
+        };
 
-        assert_eq!(log.past_contains(&[left], root).expect("walk"), Some(true));
+        assert_eq!(reaches(&[left], &[right, root]), Some(Some(root)));
+        assert_eq!(reaches(&[left], &[right]), Some(None));
         assert_eq!(
-            log.past_contains(&[left], right).expect("walk"),
-            Some(false)
-        );
-        assert_eq!(
-            log.past_contains(&[[0xA3; 32]], root).expect("walk"),
+            reaches(&[[0xA3; 32]], &[root]),
             None,
             "a past this node does not hold was answered"
         );

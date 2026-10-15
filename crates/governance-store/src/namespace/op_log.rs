@@ -54,18 +54,18 @@ impl<'a> NamespaceOpLogService<'a> {
             .map_err(|e| eyre::eyre!("contains_op: {e}"))
     }
 
-    /// Whether `target` is in the causal past of the cut `parents`, walked over the
-    /// stored DAG, so every node holding that past answers alike; `None` when part of it is missing.
-    pub(crate) fn past_contains(
+    /// Which of `targets` the causal past of the cut `parents` reaches first, walked
+    /// over the stored DAG so every node holding that past answers alike; `None` when part of it is missing.
+    pub(crate) fn past_reaches(
         &self,
         parents: &[[u8; 32]],
-        target: [u8; 32],
-    ) -> EyreResult<Option<bool>> {
+        targets: &HashSet<[u8; 32]>,
+    ) -> EyreResult<Option<Option<[u8; 32]>>> {
         let mut seen = HashSet::new();
         let mut queue = parents.to_vec();
         while let Some(id) = queue.pop() {
-            if id == target {
-                return Ok(Some(true));
+            if targets.contains(&id) {
+                return Ok(Some(Some(id)));
             }
             if !seen.insert(id) {
                 continue;
@@ -75,7 +75,7 @@ impl<'a> NamespaceOpLogService<'a> {
             };
             queue.extend(parents);
         }
-        Ok(Some(false))
+        Ok(Some(None))
     }
 
     /// The parents of a logged op, read from its skeleton when its bytes were not kept.

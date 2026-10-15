@@ -12002,8 +12002,16 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
             .expect("sign the envelope")
     };
 
+    let applied = |inner: &SignedNamespaceOp| {
+        super::governance::relayed_join_applied(&store, ns_id, inner).expect("read")
+    };
+    assert!(!applied(&inner), "a join no copy applied reads as applied");
     let first = relay_once(&admitter_sk, &inner);
     gov.apply_signed_op(&first).expect("the join applies");
+    assert!(
+        applied(&inner),
+        "a relayed join reads as not applied, so a retry relays it again"
+    );
     assert!(
         members
             .is_member(&ns_gid, &member)
@@ -12059,6 +12067,10 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
     gov.apply_signed_op(&cleartext)
         .expect("a cleartext invitation join still applies");
     assert!(
+        applied(&cleartext),
+        "a join applied in the clear reads as not applied"
+    );
+    assert!(
         members
             .is_member(&ns_gid, &direct_member)
             .expect("read membership"),
@@ -12082,6 +12094,85 @@ async fn re_sealing_an_applied_join_does_not_resurrect_a_removed_member() {
     assert!(
         crate::unified_op_decode::OpenedNamespaceOp::open(&store, &laundered).refused,
         "a relayed copy of a cleartext join folds its join again"
+    );
+}
+
+/// A reuse is judged by the logged op it copies being in its past, so a node that
+/// could not read that op reaches the verdict a keyed node does, on arrival and on replay.
+#[actix::test]
+async fn a_reused_nonce_is_refused_whatever_this_node_made_of_the_op_it_copies() {
+    use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, _admin_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let member_sk = PrivateKey::from([0x61u8; 32]);
+    let member = crate::test_fixtures::enrol_member(&store, &ns_gid, &member_sk.public_key());
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &member, GroupMemberRole::Member)
+        .expect("seat the member");
+    let held = [0x5Au8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&held)
+        .expect("hold a namespace key");
+
+    let sealed = |key: &[u8; 32], name: &str, parents: Vec<[u8; 32]>, nonce: u64| {
+        let named = GroupOp::MemberMetadataSet {
+            member,
+            name: Some(name.to_owned()),
+            data: std::collections::BTreeMap::new(),
+        };
+        SignedNamespaceOp::sign(
+            &member_sk,
+            ns_id,
+            parents,
+            nonce,
+            NamespaceOp::Group {
+                group_id: ns_gid,
+                key_id: GroupKeyring::key_id_for(key).into(),
+                encrypted: GroupKeyring::encrypt_op(key, &named).expect("seal"),
+                key_rotation: None,
+            },
+        )
+        .expect("sign")
+    };
+    let refused = |op: &SignedNamespaceOp| {
+        crate::unified_op_decode::OpenedNamespaceOp::open(&store, op).refused
+    };
+
+    let head = gov.read_head_record().expect("head");
+    let unread = sealed(&[0x62; 32], "x", head.parent_hashes, head.next_nonce);
+    let _parked = gov.apply_signed_op(&unread).expect("the op parks unread");
+    let reuse = sealed(
+        &held,
+        "y",
+        vec![unread.content_hash().expect("hash")],
+        unread.nonce,
+    );
+    let _logged = gov.apply_signed_op(&reuse).expect("the reuse is logged");
+    assert!(
+        refused(&reuse),
+        "a reuse of an unread op's nonce was judged on its merits"
+    );
+
+    let later = [0x63u8; 32];
+    let parked_reuse = sealed(
+        &later,
+        "z",
+        vec![reuse.content_hash().expect("hash")],
+        unread.nonce,
+    );
+    let _parked = gov.apply_signed_op(&parked_reuse).expect("the reuse parks");
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&later)
+        .expect("the key arrives");
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+        .expect("the retry pass runs");
+    assert!(
+        refused(&parked_reuse),
+        "a parked reuse stayed a hole once its key arrived"
     );
 }
 
