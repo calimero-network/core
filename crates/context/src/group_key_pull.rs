@@ -1408,4 +1408,152 @@ pub(crate) mod tests {
             "the holder's create must fold once the chain behind it has"
         );
     }
+
+    /// `joiner_sk`'s join of `ns`, admitted by the owner and sealed under `key`.
+    fn sealed_admitted_join(
+        owner_sk: &PrivateKey,
+        ns: ContextGroupId,
+        joiner_sk: &PrivateKey,
+        key: &[u8; 32],
+    ) -> SignedNamespaceOp {
+        use sha2::{Digest, Sha256};
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let member = crate::test_support::account_for(&joiner_sk.public_key());
+        let nonce = [0x43; 32];
+        let invitation = calimero_context_config::types::GroupInvitationFromAdmin {
+            inviter_identity: calimero_context_config::types::SignerId::from(
+                *owner_sk.public_key().digest(),
+            ),
+            group_id: ns,
+            expiration_timestamp: 0,
+            invitation_nonce: nonce,
+            invited_role: 1,
+            admitters: vec![owner],
+        };
+        let signature = owner_sk
+            .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
+            .unwrap();
+        let join = RootOp::MemberJoined {
+            member,
+            signed_invitation: calimero_context_config::types::SignedGroupOpenInvitation {
+                inviter_account: None,
+                invitation,
+                inviter_signature: hex::encode(signature.to_bytes()),
+                application_id: None,
+                bytecode_id: None,
+                admitter_addrs: Vec::new(),
+            },
+            account: crate::test_support::credential(&joiner_sk.public_key()),
+        };
+        let mut signed = SignedNamespaceOp::sign(
+            joiner_sk,
+            ns.to_bytes().into(),
+            vec![],
+            1,
+            NamespaceOp::RootSealed {
+                key_id: GroupKeyring::key_id_for(key).into(),
+                encrypted: GroupKeyring::encrypt_root_op(key, &join).unwrap(),
+            },
+        )
+        .unwrap();
+        signed.admitter_endorsement = Some(Box::new(
+            calimero_governance_types::AdmitterEndorsement::sign(
+                owner_sk,
+                &ns.to_bytes(),
+                &member,
+                &nonce,
+            )
+            .unwrap(),
+        ));
+        signed
+    }
+
+    /// A device link sealed under one namespace key, endorsed by an account whose
+    /// join is sealed under another, binds the device whichever key arrives first.
+    #[test]
+    fn a_device_link_behind_a_sealed_join_binds_in_either_key_order() {
+        let link_key = [0x65u8; 32];
+        let join_key = [0x66u8; 32];
+        for (seed, keys) in [(0x55, [link_key, join_key]), (0x56, [join_key, link_key])] {
+            let ns = ContextGroupId::from([seed; 32]);
+            let namespace_id = ns.to_bytes();
+            let (store, owner_sk, _mallory_sk) = keyless_namespace(ns);
+            let member_sk = PrivateKey::from([0x76; 32]);
+            let member_pk = member_sk.public_key();
+            let account = crate::test_support::account_for(&member_pk);
+
+            let join = sealed_admitted_join(&owner_sk, ns, &member_sk, &join_key);
+            let join_id = arrive(&store, &join, &[]);
+
+            // `credential` derives the account root from the member's key.
+            let root_sk = PrivateKey::from(*member_pk);
+            let device_pk = PrivateKey::from([0x77; 32]).public_key();
+            let cert = calimero_account::DeviceCert::sign(
+                &root_sk,
+                account,
+                calimero_account::DeviceId::mint(account, [0x78; 16]),
+                &device_pk,
+                &calimero_account::KemPublicKey::from([0x79; 32]),
+                0,
+                0,
+            )
+            .unwrap();
+            let link = SignedNamespaceOp::sign(
+                &member_sk,
+                namespace_id.into(),
+                vec![join_id],
+                2,
+                NamespaceOp::Group {
+                    group_id: namespace_id.into(),
+                    key_id: GroupKeyring::key_id_for(&link_key).into(),
+                    encrypted: GroupKeyring::encrypt_op(
+                        &link_key,
+                        &GroupOp::AccountDeviceLinked {
+                            genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+                            chain: vec![],
+                            cert,
+                            endorsement: calimero_account::AccountMemberEndorsement::sign(
+                                &member_sk, account,
+                            )
+                            .unwrap(),
+                            scope: Box::new(crate::test_support::device_scope(
+                                &root_sk,
+                                &cert,
+                                &[],
+                                0,
+                            )),
+                        },
+                    )
+                    .unwrap(),
+                    key_rotation: None,
+                },
+            )
+            .unwrap();
+            let link_id = arrive(&store, &link, &[join_id]);
+            let bound = || {
+                calimero_governance_store::member_account_in_namespace(&store, &ns, &device_pk)
+                    .unwrap()
+            };
+            let parked =
+                || calimero_governance_store::parked_op(&store, namespace_id.into(), link_id);
+
+            let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &keys[0])
+                .expect("the pulled key stores");
+            assert_eq!(
+                parked().unwrap(),
+                Some(calimero_governance_store::Parked::Undecided),
+                "a link whose endorser's join is still sealed stays parked"
+            );
+            assert_eq!(bound(), None, "and binds nothing yet");
+
+            let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &keys[1])
+                .expect("the pulled key stores");
+            assert_eq!(
+                bound(),
+                Some(account),
+                "the link binds once both keys are held"
+            );
+            assert_eq!(parked().unwrap(), None, "and is no longer parked");
+        }
+    }
 }

@@ -3004,7 +3004,8 @@ impl<'a> NamespaceGovernance<'a> {
 
     /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
     /// An undecidable cut, or no at-cut judge, falls back to this pass's gates and
-    /// records only an apply; an op already refused is not given that fallback.
+    /// records only an apply; an op already refused, or one whose cut is waiting on
+    /// a key of its own group, is not given that fallback and stays parked.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
@@ -3018,6 +3019,10 @@ impl<'a> NamespaceGovernance<'a> {
                 .apply_root_op(gate_op, root);
             if state == Parked::Refused || !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(parked, at_cut.is_ok());
+                return at_cut;
+            }
+            let own_group = ContextGroupId::from(self.namespace_id.to_bytes());
+            if judge.history_sealed_in_group(&own_group, &parked.parent_op_hashes) {
                 return at_cut;
             }
         }
@@ -3045,6 +3050,9 @@ impl<'a> NamespaceGovernance<'a> {
                 .decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
             if parked == Some(Parked::Refused) || !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(ns_op, at_cut.is_ok());
+                return at_cut;
+            }
+            if judge.history_sealed_in_group(group_id, &ns_op.parent_op_hashes) {
                 return at_cut;
             }
         }
