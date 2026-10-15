@@ -234,6 +234,21 @@ impl<'a> PermissionChecker<'a> {
         self.account_for_signer(signer)
     }
 
+    /// `member`'s role in this group at the op's cut, `None` for a non-member; live
+    /// only where that is sound.
+    pub fn effective_role_at_cut(&self, member: &AccountId) -> EyreResult<Option<GroupMemberRole>> {
+        if let Some(role) =
+            self.authorizer
+                .effective_role_at_cut(&self.group_id, member, self.parents)
+        {
+            return Ok(role);
+        }
+        self.ensure_live_fallback_is_sound_for_account(member)?;
+        Ok(MembershipRepository::new(self.store)
+            .effective_role(&self.group_id, member)?
+            .map(|(role, _)| role))
+    }
+
     /// Does a device of `account` scoped to `applications` reach this namespace at
     /// the op's cut: its own account namespace, or a scope covering the target?
     pub fn scope_reaches(
@@ -533,8 +548,8 @@ impl<'a> PermissionChecker<'a> {
     ///
     /// A creator later removed from the subgroup can still open it: that removal
     /// is sealed under the subgroup's key, so honouring it would bring back the
-    /// split this rule removes. Removal from the namespace does stop it, because
-    /// it ends the binding the signer resolves through.
+    /// split this rule removes. Removal from the namespace does stop it: the signer
+    /// and the creator's namespace role are both read at the flip's cut.
     ///
     /// A group with no recorded creator - a namespace root, which no
     /// `GroupCreated` makes, and whose history every member reads anyway - keeps
@@ -546,13 +561,13 @@ impl<'a> PermissionChecker<'a> {
             return self.require_can_manage_visibility(identity);
         };
         let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        let at_namespace = PermissionChecker::new(self.store, namespace)
+            .with_apply_auth(self.parents, self.authorizer);
         let signer = match self.principal_account(identity) {
             Some(account) => Some(account),
-            None => PermissionChecker::new(self.store, namespace)
-                .with_apply_auth(self.parents, self.authorizer)
-                .account_for_signer(identity)?,
+            None => at_namespace.account_for_signer_at_cut(identity)?,
         };
-        if signer == Some(creator) {
+        if signer == Some(creator) && at_namespace.effective_role_at_cut(&creator)?.is_some() {
             return Ok(());
         }
         bail!(CapabilitiesError::Unauthorized {

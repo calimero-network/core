@@ -377,6 +377,8 @@ pub struct GroupRows {
     /// Accounts whose standing in the group needs no member row in the log: its
     /// genesis admin and the namespace owner. Their stored rows are never taken back.
     pub anchored: BTreeSet<AccountId>,
+    /// Whether the group is Restricted, if it is a subgroup the log holds.
+    pub restricted: Option<bool>,
 }
 
 /// What a re-entering joiner meets in a group, at a cut or in the live rows.
