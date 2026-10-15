@@ -57,6 +57,7 @@ It has two deployment shapes, both compiled from the same code:
 | `auth/token/jwt.rs` | `TokenManager` - HS256 issue/verify/refresh, challenge tokens, node-URL host binding, client-key rotation on refresh |
 | `auth/middleware.rs` | `auth_middleware` - the Axum middleware every `/admin/*` route runs through: verifies the bearer token, checks permissions, injects `CallerPermissions` |
 | `auth/permissions/` | `Permission` enum + `FromStr`/`Display` (the `"context:execute[ctx,user,method]"` string encoding) and `PermissionValidator` (request-path → required-`Permission` mapping, admin default-deny for unmapped `/admin-api/*`) |
+| `auth/query_token.rs` | The one rule for a token in the URL: only `/ws`, `/sse` and `/sse/...` take `?token=`; both `/auth/validate` and `calimero-server`'s embedded guard use it |
 | `auth/rate_limit.rs` | `LoginRateLimiter` - in-memory sliding-window brute-force throttle; the login handler keys one instance on caller address plus account identity, and a second on the account alone |
 | `auth/security.rs` | Builds `tower-http` security-header layers (HSTS, CSP, frame options) and the request-body-size limiter from `SecurityConfig` |
 | `auth/validation.rs` | `ValidatedJson` extractor (JSON + `validator::Validate` in one step), string/identifier/HTML sanitizers |

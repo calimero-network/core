@@ -49,22 +49,32 @@ async fn router_and_token() -> (axum::Router, String) {
     (create_router(state, &config), access)
 }
 
-/// The proxy's probe for `method uri`, carrying no `Authorization` header.
-async fn probe(method: &str, uri: &str) -> (StatusCode, Option<String>) {
+/// The proxy's probe for `method uri`, with the caller's `Authorization` header if any.
+async fn probe_with(
+    method: &str,
+    uri: &str,
+    authorization: Option<&str>,
+) -> (StatusCode, Option<String>) {
     let (router, token) = router_and_token().await;
     let uri = uri.replace("{token}", &token);
-    let request = Request::get("/auth/validate")
+    let mut request = Request::get("/auth/validate")
         .header("X-Forwarded-Uri", uri)
         .header("X-Forwarded-Method", method)
-        .header(header::HOST, "localhost")
-        .body(Body::empty())
-        .unwrap();
+        .header(header::HOST, "localhost");
+    if let Some(authorization) = authorization {
+        request = request.header(header::AUTHORIZATION, authorization);
+    }
+    let request = request.body(Body::empty()).unwrap();
     let response = router.oneshot(request).await.unwrap();
     let error = response
         .headers()
         .get("X-Auth-Error")
         .map(|value| value.to_str().unwrap().to_owned());
     (response.status(), error)
+}
+
+async fn probe(method: &str, uri: &str) -> (StatusCode, Option<String>) {
+    probe_with(method, uri, None).await
 }
 
 #[tokio::test]
@@ -95,7 +105,6 @@ async fn a_query_token_does_not_authenticate_a_forwarded_route_that_takes_a_head
 async fn a_query_token_still_authenticates_the_streaming_routes() {
     for (method, uri) in [
         ("GET", "/ws?token={token}"),
-        ("GET", "/ws/?token={token}"),
         ("GET", "/sse?token={token}"),
         ("GET", "/sse?a=1&token={token}"),
         ("GET", "/sse/session/abc?token={token}"),
@@ -106,5 +115,13 @@ async fn a_query_token_still_authenticates_the_streaming_routes() {
             (StatusCode::OK, None),
             "{method} {uri}"
         );
+    }
+}
+
+#[tokio::test]
+async fn an_authorization_header_is_the_only_token_even_when_it_is_not_a_bearer() {
+    for authorization in ["Basic dXNlcjpwdw==", "bearer x", "Token x"] {
+        let (status, _) = probe_with("GET", "/ws?token={token}", Some(authorization)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{authorization}");
     }
 }
