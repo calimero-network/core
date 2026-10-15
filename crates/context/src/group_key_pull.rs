@@ -1398,4 +1398,185 @@ pub(crate) mod tests {
         );
         assert!(!held(), "an applied op is no longer listed as held");
     }
+    /// A late key must fold a holder's subgroup create even when the chain behind
+    /// it alternates group and root ops: the join needs the flip and the member
+    /// add, the holder's own group op needs the binding the join records, and the
+    /// create is only judged at its cut once that group op has folded. The live
+    /// rows refuse the create, so a retry that stops after one round of root,
+    /// group, root passes leaves it unfolded.
+    #[test]
+    fn a_late_key_folds_a_create_behind_a_chain_of_alternating_ops() {
+        use calimero_context_config::MemberCapabilities as Caps;
+
+        let ns = ContextGroupId::from([0x5B; 32]);
+        let namespace_id = ns.to_bytes();
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let owner_sk = PrivateKey::from([0x71; 32]);
+        let holder_sk = PrivateKey::from([0x75; 32]);
+        let owner = crate::test_support::enrol(&store, &ns, &owner_sk.public_key());
+        // A member row with no binding: the holder's sealed join records it.
+        let holder = crate::test_support::account_for(&holder_sk.public_key());
+        MetaRepository::new(&store).save(&ns, &meta(owner)).unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_default_capabilities(&ns, Caps::CAN_JOIN_OPEN_SUBGROUPS.bits())
+            .unwrap();
+        let members = MembershipRepository::new(&store);
+        members
+            .add_member(&ns, &owner, GroupMemberRole::Admin)
+            .unwrap();
+        members
+            .add_member(&ns, &holder, GroupMemberRole::Member)
+            .unwrap();
+
+        let sub_salt = [0x76u8; 32];
+        let sub = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &owner,
+            &namespace_id,
+            true,
+            &sub_salt,
+        ));
+        NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
+        MetaRepository::new(&store)
+            .save(&sub, &meta(owner))
+            .unwrap();
+        // The cut names the owner as a member through this join.
+        let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
+        let sub_created = SignedNamespaceOp::sign(
+            &owner_sk,
+            namespace_id.into(),
+            vec![owner_joined],
+            2,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                admin: owner,
+                group_id: sub.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+                salt: sub_salt,
+            }),
+        )
+        .unwrap();
+        land(&store, namespace_id, &sub_created, &[owner_joined]);
+        let sub_created_id = sub_created.content_hash().unwrap();
+
+        let ns_key = [0x6Au8; 32];
+        let key_id = GroupKeyring::key_id_for(&ns_key);
+        let group_op = |sk: &PrivateKey, group: ContextGroupId, nonce, parent, op: GroupOp| {
+            SignedNamespaceOp::sign(
+                sk,
+                namespace_id.into(),
+                vec![parent],
+                nonce,
+                NamespaceOp::Group {
+                    group_id: group.to_bytes().into(),
+                    key_id: key_id.into(),
+                    encrypted: GroupKeyring::encrypt_op(&ns_key, &op).unwrap(),
+                    key_rotation: None,
+                },
+            )
+            .unwrap()
+        };
+        let root_op = |sk: &PrivateKey, nonce, parent, op: RootOp| {
+            SignedNamespaceOp::sign(
+                sk,
+                namespace_id.into(),
+                vec![parent],
+                nonce,
+                NamespaceOp::RootSealed {
+                    key_id: key_id.into(),
+                    encrypted: GroupKeyring::encrypt_root_op(&ns_key, &op).unwrap(),
+                },
+            )
+            .unwrap()
+        };
+
+        // The add copies the old default into the holder's live row; the cut reads the raised one.
+        let added = group_op(
+            &owner_sk,
+            ns,
+            3,
+            sub_created_id,
+            GroupOp::MemberAdded {
+                member: holder,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let defaults = group_op(
+            &owner_sk,
+            ns,
+            4,
+            added.content_hash().unwrap(),
+            GroupOp::DefaultCapabilitiesSet {
+                capabilities: Caps::CAN_JOIN_OPEN_SUBGROUPS | Caps::CAN_CREATE_SUBGROUP,
+            },
+        );
+        let flip = group_op(
+            &owner_sk,
+            sub,
+            5,
+            defaults.content_hash().unwrap(),
+            GroupOp::SubgroupVisibilitySet {
+                mode: VisibilityMode::Open,
+            },
+        );
+        let join = root_op(
+            &holder_sk,
+            1,
+            flip.content_hash().unwrap(),
+            RootOp::MemberJoinedOpen {
+                member: holder,
+                group_id: sub.to_bytes().into(),
+                account: crate::test_support::credential(&holder_sk.public_key()),
+            },
+        );
+        let follow = group_op(
+            &holder_sk,
+            ns,
+            2,
+            join.content_hash().unwrap(),
+            GroupOp::MemberSetAutoFollow {
+                target: holder,
+                auto_follow_contexts: true,
+                auto_follow_subgroups: false,
+            },
+        );
+        let dm_salt = [0x77u8; 32];
+        let dm = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &holder,
+            &namespace_id,
+            true,
+            &dm_salt,
+        ));
+        let create = root_op(
+            &holder_sk,
+            3,
+            follow.content_hash().unwrap(),
+            RootOp::GroupCreated {
+                admin: holder,
+                group_id: dm.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+                salt: dm_salt,
+            },
+        );
+
+        let mut parent = sub_created_id;
+        for op in [&added, &defaults, &flip, &join, &follow, &create] {
+            parent = arrive(&store, op, &[parent]);
+        }
+
+        let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &ns_key)
+            .expect("the pulled key stores");
+
+        assert_eq!(
+            CapabilitiesRepository::new(&store)
+                .subgroup_visibility(&sub)
+                .unwrap(),
+            VisibilityMode::Open,
+            "control: the flip folds"
+        );
+        assert!(
+            MetaRepository::new(&store).load(&dm).unwrap().is_some(),
+            "the holder's create must fold once the chain behind it has"
+        );
+    }
 }
