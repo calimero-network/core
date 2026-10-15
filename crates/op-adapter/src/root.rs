@@ -15,7 +15,7 @@ use crate::credential::{credential_binds_the_member, join_credential_binds};
 /// **Coverage (admin + membership + scope-tree planes):**
 /// `RootGuarded { AdminChanged }` → `RootGuarded { AdminChanged }` (a bare
 /// `AdminChanged` folds to nothing, see `crate::guard`); `PolicyUpdated` → `PolicyUpdated`; `MemberJoinedOpen` →
-/// `MemberAdded` (open-subgroup self-join grants `Member`); `GroupCreated` →
+/// `Noop` (membership is inherited, and the join links no device); `GroupCreated` →
 /// `SubgroupCreated`; `GroupReparented` → `SubgroupReparented`; `GroupDeleted`
 /// → `SubgroupDeleted` (see caveats).
 ///
@@ -134,22 +134,10 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         }
         // No membership half: an open-subgroup self-join is a PROOF of
         // inheritance, never a direct row (see `op_from_namespace_op`, which
-        // folds this op's membership as a graph-only node for that reason). The
-        // credential it carries is still a real device link and folds as one —
-        // or, if it is not the joiner's, as the graph-only node it used to be.
-        RootOp::MemberJoinedOpen { account, .. } => Some(if credential_binds_the_member(op) {
-            OpPayload::DeviceLinked {
-                genesis: account.genesis,
-                chain: account.chain.clone(),
-                cert: account.statement,
-                // A join op carries no scope statement; it binds at epoch 0,
-                // as the live apply does.
-                scope_epoch: 0,
-                applications: vec![],
-            }
-        } else {
-            OpPayload::Noop
-        }),
+        // folds this op's membership as a graph-only node for that reason). No
+        // device half either: the account is already in the namespace, and a link
+        // made here would carry no root-signed scope for the projection to check.
+        RootOp::MemberJoinedOpen { .. } => Some(OpPayload::Noop),
         // A TEE admission is a direct membership like an invitation join — the
         // replica gets a real row, not an inherited path — so it folds the same
         // way: membership and device as one indivisible fact, or membership

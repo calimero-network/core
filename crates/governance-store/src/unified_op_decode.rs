@@ -185,8 +185,9 @@ fn carried_authorship(
     let cert = match op {
         NamespaceOp::Root(root) => root_credential(root)?,
         // Sealed, and the certificate is inside it. Three of the four joins are
-        // published sealed, and a join is precisely the op that CREATES the
-        // signer's binding — so the credential it carries is the only thing that
+        // published sealed, and a join is the op that creates its signer's
+        // binding (an open self-join's signer is bound already) — so the
+        // credential it carries is the only thing that
         // can name its author, and it is now behind the namespace key. Reading it
         // from the cleartext arm alone left every sealed join `unattributed`,
         // which is a principal no genesis can produce: the fold would then record
@@ -270,12 +271,8 @@ pub fn op_from_namespace_op_with_binding(
         // it from the foldable anchor membership + visibility + cap (default cap
         // via base fact) instead, so it tracks the anchor both ways.
         //
-        // Its CREDENTIAL is a different matter and is folded. The encoder returns
-        // a bare `DeviceLinked` for exactly this op, so what used to be a
-        // graph-only node now carries the device and nothing else — membership
-        // still inherited, binding still recorded. Leaving it a `Noop` was what
-        // let the apply path write a binding the projection never saw, which
-        // re-keys the joiner's writer principal on one plane only.
+        // Its credential folds as nothing too, as the apply writes no binding for
+        // it: a link made here would carry no device scope to check.
         NamespaceOp::Root(root) => root_payload(root),
         // Two different nothings. A group op this node COULD read but the
         // projection models nothing about (app config, metadata) folds to `Noop`;

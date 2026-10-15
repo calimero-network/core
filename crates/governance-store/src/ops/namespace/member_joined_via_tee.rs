@@ -126,7 +126,7 @@ pub(crate) fn apply(
     // — the point of the cleartext form. `record_join_credential` checks the
     // credential belongs to `member` (the attested key), so a credential lifted
     // from another announcement binds nothing.
-    super::member_joined_open::record_join_credential(ctx, member_account, account)?;
+    super::member_joined::record_join_credential(ctx, member_account, account)?;
 
     ctx.queue_event(crate::op_events::OpEvent::TeeMemberAdmitted {
         group_id: group_id.to_bytes(),
