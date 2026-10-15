@@ -1094,6 +1094,36 @@ async fn an_account_session_behind_forward_auth_cannot_list_by_a_binding() {
     assert!(ids(&body, "contexts", "id").is_empty(), "{body}");
 }
 
+/// An account session whose permissions carry a binding lists the intersection of both.
+#[actix::test]
+async fn an_account_session_with_a_binding_lists_only_its_bound_groups() {
+    let node = Node::new().await;
+    let account = calimero_account::AccountId::from([0x77; 32]);
+    for namespace in [node.mine.namespace, node.theirs.namespace] {
+        calimero_governance_store::MembershipRepository::new(&node.store)
+            .add_member(
+                &namespace,
+                &account,
+                calimero_primitives::context::GroupMemberRole::Member,
+            )
+            .expect("member");
+    }
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push(application_binding(&node.mine.app.to_string()));
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/admin-api/contexts")
+        .header("X-Auth-Permissions", permissions.join(","))
+        .header("X-Auth-Account", account.to_string());
+
+    let (status, body) = Node::send(&node.proxied_with_identity, request, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        ids(&body, "contexts", "id"),
+        vec![node.mine.context.to_string()]
+    );
+}
+
 #[actix::test]
 async fn a_context_bound_key_updates_its_own_contexts_application() {
     let node = Node::new().await;

@@ -334,7 +334,7 @@ It executes as the node inside its binding, but it is never the node owner on th
   Blob reads and uploads are confined like an account session's; `DELETE /blobs/{id}` needs the blob held for one of its contexts and gives that association up with the reference it releases (bound-key deletes are serialized), and `GET /blobs` is refused.
 - SSE: a bound key's session principal includes its binding, so it can neither adopt a node-owner session by `Last-Event-ID` nor be adopted by one.
 
-In proxy mode the binding arrives in `X-Auth-Permissions` and `proxy_permissions` builds the same `ClientKeyScope`; like the permissions, it can only narrow, and an account session's listings stay its account's.
+In proxy mode the binding arrives in `X-Auth-Permissions` and `proxy_permissions` builds the same `ClientKeyScope`; like the permissions, it can only narrow: an account session lists the groups both its account and its binding reach.
 Every check fails closed when the context or group cannot be resolved.
 A key with no binding is unaffected, and `/admin/client-key` never mints `admin` on a bound key, whether the binding comes from its fields or its permission list.
 The one exception is mero-auth's `trusted_admin_applications`: an `application_id` listed there may be minted `admin`, and that key is unbound.

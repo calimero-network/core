@@ -125,7 +125,7 @@ pub(crate) fn list_scope(
 ) -> eyre::Result<ListScope> {
     let narrowed = narrow_to(node_owner, account);
     // Ahead of the node-owner check: a bound client key also carries that marker,
-    // because it executes as the node. An account session is never widened by one.
+    // because it executes as the node. An account session is only narrowed by one.
     if let (Some(key), None) = (client_key, narrowed) {
         return client_key_scope(ctx_client.datastore(), key);
     }
@@ -153,6 +153,10 @@ pub(crate) fn list_scope(
                 .device_is_withdrawn(group, account, device)
                 .unwrap_or(true)
         });
+    }
+
+    if let Some(key) = client_key {
+        groups.retain(|group| key.permits_group(store, group));
     }
 
     Ok(ListScope::Account { account, groups })
