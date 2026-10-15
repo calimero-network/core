@@ -26,6 +26,10 @@ FAIL=0
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
 
+# No network: a release's SHA256SUMS is never fetched. A case that needs one
+# writes it and points this at it; everywhere else the release has none.
+export RELEASE_SUMS_FILE="$ROOT/no-such-SHA256SUMS"
+
 ok()   { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
 bad()  { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n     %s\n' "$1" "$2"; }
 
@@ -225,7 +229,8 @@ printf '#!/usr/bin/env bash\nVERSION="2.4.1"   # our own tool\n' \
   > "$D/apps/one/scripts/package-icons.sh"
 
 # A checksum-pinned installer. Moving the version alone makes the download fail
-# its own integrity check — a harder break than being a release stale.
+# its own integrity check — a harder break than being a release stale. This
+# release has no SHA256SUMS, so the checksums cannot move and nothing may.
 cat > "$D/apps/two/scripts-setup-cargo-mero.sh" <<'EOF'
 #!/usr/bin/env bash
 # from https://github.com/calimero-network/core
@@ -567,6 +572,95 @@ if [ -f "$D/pin-args" ]; then
 else
   ok "  the pin script did not run"
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+echo "checksums move with the version, from the release's SHA256SUMS"
+# ─────────────────────────────────────────────────────────────────────────────
+# Both were hand updates, missed on rc.85 and again on rc.86: each bump opened a
+# pull request with the old release's hashes, red until someone re-pinned it.
+OLD=1111111111111111111111111111111111111111111111111111111111111111
+SUMS="$ROOT/SHA256SUMS"
+cat > "$SUMS" <<'EOF'
+f5d81939a5821361846539cc2021dbe477e14b91db06f454a57f48fe8affcdff  cargo-mero_aarch64-apple-darwin.tar.gz
+e7dc4e046834b3b27a1590d3978bd90a83202a1fc31a45e3b9eec280e8b48ffc  cargo-mero_x86_64-unknown-linux-gnu.tar.gz
+7f580cf9022a6c94ced4758ed649598153d2149a261ef23ae94d82e9fe41fcd5  merod_aarch64-apple-darwin.tar.gz
+94f11f2a83508190734b46fe37237ba03e0facd84dc1e8a340f327c865e42b4a  merod_x86_64-pc-windows-msvc.tar.gz
+EOF
+
+mkinstaller() {
+  local d="$1"; shift
+  mkdir -p "$d/apps/docs/scripts"
+  {
+    printf '#!/usr/bin/env bash\n# from https://github.com/calimero-network/core\n'
+    printf 'RELEASE=0.11.0-rc.1\n'
+    for t in "$@"; do printf 'CHECKSUM_%s=%s\n' "$t" "$OLD"; done
+    printf 'shasum -a 256 -c\n'
+  } > "$d/apps/docs/scripts/setup-cargo-mero.sh"
+  printf '[workspace.dependencies]\ncalimero-sdk = { git = "https://github.com/calimero-network/core", tag = "0.11.0-rc.1" }\n\n[workspace.metadata.mero-apps]\nmin-runtime-version = "0.11.0-rc.1"\nmerod-image = "ghcr.io/calimero-network/merod:0.11.0-rc.1"\n' \
+    > "$d/Cargo.toml"
+  mkdir -p "$d/apps/docs/logic"
+  printf '[package.metadata.calimero]\nmin-runtime-version = "0.11.0-rc.1"\n' > "$d/apps/docs/logic/Cargo.toml"
+}
+
+D=$(mkfixture sums-installer)
+mkinstaller "$D" aarch64_apple_darwin x86_64_unknown_linux_gnu; commit "$D"
+I="$D/apps/docs/scripts/setup-cargo-mero.sh"
+UNCLAIMED="$ROOT/unclaimed-sums.txt"
+expect_exit 0 "a checksum-pinned installer is bumped when the release has every asset" \
+  env RELEASE_SUMS_FILE="$SUMS" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$I" 'RELEASE=0.11.0-rc.2' "  the version moved"
+expect_file "$I" 'CHECKSUM_aarch64_apple_darwin=f5d81939a5821361846539cc2021dbe477e14b91db06f454a57f48fe8affcdff' \
+  "  the darwin checksum moved with it"
+expect_file "$I" 'CHECKSUM_x86_64_unknown_linux_gnu=e7dc4e046834b3b27a1590d3978bd90a83202a1fc31a45e3b9eec280e8b48ffc' \
+  "  x86_64 keeps its underscore in the asset name"
+expect_absent "$I" "$OLD" "  no old checksum left"
+expect_absent "$UNCLAIMED" 'setup-cargo-mero.sh' "  ...and it is not reported as left behind"
+
+D=$(mkfixture sums-installer-partial)
+mkinstaller "$D" aarch64_apple_darwin aarch64_unknown_linux_gnu; commit "$D"
+I="$D/apps/docs/scripts/setup-cargo-mero.sh"
+UNCLAIMED="$ROOT/unclaimed-partial.txt"
+expect_exit 0 "an asset missing from SHA256SUMS still lets the rest of the bump through" \
+  env RELEASE_SUMS_FILE="$SUMS" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$I" 'RELEASE=0.11.0-rc.1' "  ...but nothing in that installer moves"
+expect_absent "$I" 'f5d81939' "  ...not even the checksum it could have refreshed"
+expect_file "$UNCLAIMED" 'setup-cargo-mero.sh' "  ...and it is named in the report"
+
+mkdesktop() {
+  mkdir -p "$1/apps/desktop/src-tauri"
+  cat > "$1/merod-config.json" <<EOF
+{
+    "name": "merod binary",
+    "version": "0.11.0-rc.1",
+    "sha256": {
+        "merod_aarch64-apple-darwin.tar.gz": "$OLD",
+        "$2": "$OLD"
+    }
+}
+EOF
+  printf '{\n  "name": "desktop",\n  "version": "1.4.0"\n}\n' > "$1/apps/desktop/package.json"
+  printf '{\n  "version": "1.4.0"\n}\n' > "$1/apps/desktop/src-tauri/tauri.conf.json"
+}
+
+D=$(mkfixture tauri-sums); mkdesktop "$D" merod_x86_64-pc-windows-msvc.tar.gz; commit "$D"
+C="$D/merod-config.json"
+expect_exit 0 "tauri: the merod pins move with the bundled version" \
+  env RELEASE_SUMS_FILE="$SUMS" bash "$BUMP" --surface tauri --version 0.11.0-rc.2 --dir "$D"
+expect_file "$C" '"version": "0.11.0-rc.2"' "  bundles the new merod"
+expect_file "$C" '"merod_aarch64-apple-darwin.tar.gz": "7f580cf9022a6c94ced4758ed649598153d2149a261ef23ae94d82e9fe41fcd5"' \
+  "  the darwin pin moved"
+expect_file "$C" '"merod_x86_64-pc-windows-msvc.tar.gz": "94f11f2a83508190734b46fe37237ba03e0facd84dc1e8a340f327c865e42b4a"' \
+  "  the windows pin moved"
+expect_absent "$C" "$OLD" "  no old pin left"
+expect_file "$D/apps/desktop/package.json" '"version": "1.4.1"' "  the desktop gets a version of its own"
+
+D=$(mkfixture tauri-sums-missing); mkdesktop "$D" merod_x86_64-unknown-linux-gnu.tar.gz; commit "$D"
+C="$D/merod-config.json"
+expect_exit 1 "tauri: a pin the release cannot supply stops the bump, rather than opening a red PR" \
+  env RELEASE_SUMS_FILE="$SUMS" bash "$BUMP" --surface tauri --version 0.11.0-rc.2 --dir "$D"
+expect_file "$C" '"version": "0.11.0-rc.1"' "  ...and merod-config.json is left as it was"
 
 echo
 echo "$PASS passed, $FAIL failed"
