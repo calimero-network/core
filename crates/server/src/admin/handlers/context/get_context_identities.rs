@@ -242,6 +242,7 @@ mod tests {
     fn account_scope() -> ListScope {
         ListScope::Account {
             account: account(),
+            key: None,
             groups: BTreeSet::from([mine()]),
         }
     }

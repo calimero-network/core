@@ -12,7 +12,7 @@ use tracing::{error, info};
 use super::{parse_group_id, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT};
 use crate::admin::service::{parse_api_error, ApiResponse};
 
-use crate::admin::caller_scope::{list_scope_for, ListScope};
+use crate::admin::caller_scope::list_scope_for;
 use crate::auth::{AuthenticatedAccount, AuthenticatedDevice, AuthenticatedNodeOwner};
 use crate::AdminState;
 
@@ -55,10 +55,7 @@ pub async fn handler(
 
     // A bound key may see only some of the group's contexts, so it pages its own
     // list rather than filtering a page of the group's.
-    let bound_key = match &scope {
-        ListScope::ClientKey { key, .. } => Some(key),
-        ListScope::NodeWide | ListScope::Account { .. } => None,
-    };
+    let bound_key = scope.client_key();
     let request = match bound_key {
         Some(_) => ListGroupContextsRequest {
             group_id,

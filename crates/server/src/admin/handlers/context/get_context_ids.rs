@@ -172,7 +172,7 @@ fn scoped_context_ids(
     for group in groups {
         ids.extend(ContextTreeService::new(store, *group).enumerate_contexts(0, usize::MAX)?);
     }
-    if let ListScope::ClientKey { key, .. } = scope {
+    if let Some(key) = scope.client_key() {
         ids.retain(|id| key.permits_context_in(store, id));
     }
     Ok(Some(ids.into_iter().collect()))
@@ -213,6 +213,7 @@ mod tests {
 
         let scope = ListScope::Account {
             account: AccountId::from([0x01; 32]),
+            key: None,
             groups: BTreeSet::from([mine]),
         };
 
@@ -255,6 +256,7 @@ mod tests {
 
         let scope_for = |account: u8, group| ListScope::Account {
             account: AccountId::from([account; 32]),
+            key: None,
             groups: BTreeSet::from([group]),
         };
 

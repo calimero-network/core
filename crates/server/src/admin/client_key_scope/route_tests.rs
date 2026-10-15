@@ -1154,3 +1154,42 @@ async fn a_context_bound_key_updates_its_own_contexts_application() {
         .await;
     assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
 }
+
+/// A context binding on an account session lists only that context, in every listing.
+#[actix::test]
+async fn an_account_session_with_a_context_binding_lists_only_its_context() {
+    let node = Node::new().await;
+    let sibling = ContextId::from([0xa0; 32]);
+    ContextTreeService::new(&node.store, node.mine.namespace)
+        .register_context(&sibling)
+        .expect("register");
+    let account = calimero_account::AccountId::from([0x77; 32]);
+    calimero_governance_store::MembershipRepository::new(&node.store)
+        .add_member(
+            &node.mine.namespace,
+            &account,
+            calimero_primitives::context::GroupMemberRole::Member,
+        )
+        .expect("member");
+    let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+    permissions.push(format!("context[{},identity]", node.mine.context));
+    let ns = hex::encode(node.mine.namespace.to_bytes());
+
+    for (path, field) in [
+        ("/admin-api/contexts".to_owned(), "id"),
+        (format!("/admin-api/groups/{ns}/contexts"), "contextId"),
+    ] {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(&path)
+            .header("X-Auth-Permissions", permissions.join(","))
+            .header("X-Auth-Account", account.to_string());
+        let (status, body) = Node::send(&node.proxied_with_identity, request, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        assert_eq!(
+            ids(&body, "contexts", field),
+            vec![node.mine.context.to_string()],
+            "{path}"
+        );
+    }
+}

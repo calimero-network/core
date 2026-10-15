@@ -36,10 +36,11 @@ pub(crate) enum ListScope {
     /// win — the proxy is what decides who gets through — it would just empty
     /// the endpoint on every default-configured node.
     NodeWide,
-    /// Only what this account's groups reach.
+    /// Only what this account's groups reach, narrowed by a binding its session carries.
     Account {
         account: AccountId,
         groups: BTreeSet<ContextGroupId>,
+        key: Option<ClientKeyScope>,
     },
     /// A client key bound to an application or a context: the groups its
     /// binding reaches, and of their contexts only those the binding permits.
@@ -50,6 +51,14 @@ pub(crate) enum ListScope {
 }
 
 impl ListScope {
+    /// The binding that also filters this scope's contexts, if any.
+    pub(crate) fn client_key(&self) -> Option<&ClientKeyScope> {
+        match self {
+            Self::ClientKey { key, .. } | Self::Account { key: Some(key), .. } => Some(key),
+            Self::NodeWide | Self::Account { key: None, .. } => None,
+        }
+    }
+
     /// Whether `group_id` is inside the scope.
     ///
     /// A context whose group could not be resolved is **excluded** from an
@@ -159,7 +168,11 @@ pub(crate) fn list_scope(
         groups.retain(|group| key.permits_group(store, group));
     }
 
-    Ok(ListScope::Account { account, groups })
+    Ok(ListScope::Account {
+        account,
+        groups,
+        key: client_key.cloned(),
+    })
 }
 
 /// Every group on this node the key's binding reaches.
@@ -276,10 +289,9 @@ pub(crate) fn admits_context(
     }
 
     let group_id = calimero_governance_store::get_group_for_context(store, context_id)?;
-    let key_permits = match scope {
-        ListScope::ClientKey { key, .. } => key.permits_context_in(store, context_id),
-        ListScope::NodeWide | ListScope::Account { .. } => true,
-    };
+    let key_permits = scope
+        .client_key()
+        .is_none_or(|key| key.permits_context_in(store, context_id));
     Ok(key_permits && scope.admits(group_id.as_ref()))
 }
 
@@ -298,6 +310,7 @@ mod tests {
     fn account_scope(groups: &[[u8; 32]]) -> ListScope {
         ListScope::Account {
             account: account(),
+            key: None,
             groups: groups
                 .iter()
                 .map(|g| ContextGroupId::from(*g))
@@ -380,6 +393,7 @@ mod tests {
         let a = account_scope(&[[0xa1; 32], [0xa2; 32]]);
         let b = ListScope::Account {
             account: AccountId::from([0x02; 32]),
+            key: None,
             groups: [[0xb1; 32]]
                 .into_iter()
                 .map(ContextGroupId::from)
@@ -462,6 +476,7 @@ mod admits_context_tests {
     fn my_scope() -> ListScope {
         ListScope::Account {
             account: AccountId::from([0x01; 32]),
+            key: None,
             groups: BTreeSet::from([mine()]),
         }
     }
