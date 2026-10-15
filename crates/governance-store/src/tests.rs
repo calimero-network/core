@@ -304,6 +304,7 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
             &context,
             &app_id,
             &BlobId::from([0x37; 32]),
+            RegistryCoords::new("com.acme.app", "1.0.0"),
         )
         .is_err());
     service
@@ -313,6 +314,7 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
             &context,
             &app_id,
             &BlobId::from([0x37; 32]),
+            RegistryCoords::new("com.acme.app", "1.0.0"),
         )
         .unwrap();
     assert_eq!(get_group_for_context(&store, &context).unwrap(), Some(gid));
@@ -428,6 +430,7 @@ fn context_registration_service_keeps_existing_non_zero_context_meta_application
             &context,
             &incoming_app_id,
             &BlobId::from([0x45; 32]),
+            RegistryCoords::new("com.acme.app", "1.0.0"),
         )
         .unwrap();
 
@@ -479,12 +482,65 @@ fn context_registered_heals_a_zeroed_bytecode_id() {
             &ContextId::from([0x54; 32]),
             &app_id,
             &blob_id,
+            RegistryCoords::new("com.acme.app", "1.0.0"),
         )
         .unwrap();
 
     let healed = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
     assert_eq!(healed.target.application_id, app_id);
     assert_eq!(healed.target.bytecode_id, [0x53; 32]);
+}
+
+/// Registers a context against a group whose target holds `held`, with an op
+/// carrying `incoming`, and returns the coordinates the target ends up with.
+fn coords_after_registering(held: (&str, &str), incoming: (&str, &str)) -> (String, String) {
+    let store = test_store();
+    let (gid, creator_pk) = group_with_zeroed_meta(&store, [0xBB; 32]);
+    let mut meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
+    meta.target.package = held.0.into();
+    meta.target.version = held.1.into();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+
+    ContextRegistrationService::new(&store, gid)
+        .register(
+            &PermissionChecker::new(&store, gid),
+            &creator_pk,
+            &ContextId::from([0x54; 32]),
+            &ApplicationId::from([0x52; 32]),
+            &BlobId::from([0x53; 32]),
+            RegistryCoords::new(incoming.0, incoming.1),
+        )
+        .unwrap();
+
+    let target = MetaRepository::new(&store)
+        .load(&gid)
+        .unwrap()
+        .unwrap()
+        .target;
+    (target.package.into(), target.version.into())
+}
+
+/// The heal fills a hole in the coordinates; a group already pinned to a
+/// release keeps it, and an op that names no fetchable release writes nothing.
+#[test]
+fn context_registered_heals_coordinates_only_into_a_hole() {
+    let owned = |p: &str, v: &str| (p.to_owned(), v.to_owned());
+    assert_eq!(
+        coords_after_registering(("", ""), ("com.acme.app", "1.0.0")),
+        owned("com.acme.app", "1.0.0")
+    );
+    assert_eq!(
+        coords_after_registering(("com.acme.app", "1.0.0"), ("com.acme.app", "2.0.0")),
+        owned("com.acme.app", "1.0.0")
+    );
+    assert_eq!(
+        coords_after_registering(("", ""), ("com.acme.app", "")),
+        owned("", "")
+    );
+    assert_eq!(
+        coords_after_registering(("", ""), ("unknown", "0.0.0")),
+        owned("", "")
+    );
 }
 
 /// A group already pinned to a blob - by its own create, an invitation, or an
@@ -501,6 +557,7 @@ fn context_registered_leaves_a_set_bytecode_id_alone() {
             &ContextId::from([0x54; 32]),
             &ApplicationId::from([0x52; 32]),
             &BlobId::from([0x53; 32]),
+            RegistryCoords::new("com.acme.app", "1.0.0"),
         )
         .unwrap();
 
