@@ -449,6 +449,32 @@ impl<'a> AccountBindingRepository<'a> {
         Ok(self.store.handle().get(&key)?)
     }
 
+    /// Every device with a tombstone recorded under `group`, sorted by id.
+    /// `group` must be the namespace: tombstones are keyed by it.
+    ///
+    /// # Errors
+    /// Propagates the store scan failure.
+    pub fn revoked_devices(&self, group: &ContextGroupId) -> EyreResult<Vec<DeviceId>> {
+        Ok(self
+            .revoked_device_ids(group)?
+            .into_iter()
+            .map(DeviceId::from)
+            .collect())
+    }
+
+    fn revoked_device_ids(&self, group: &ContextGroupId) -> EyreResult<BTreeSet<[u8; 32]>> {
+        let gid = group.to_bytes();
+        Ok(collect_keys_with_prefix(
+            self.store,
+            GroupRevokedDevice::new(gid, [0u8; 32]),
+            calimero_store::key::GROUP_REVOKED_DEVICE_PREFIX,
+            |k| k.group_id() == gid,
+        )?
+        .into_iter()
+        .map(|k| k.device_id())
+        .collect())
+    }
+
     /// Every binding in `group` that is **in force** — stored, not revoked, and
     /// not signed by a root key the account has since rotated past.
     ///
@@ -465,15 +491,7 @@ impl<'a> AccountBindingRepository<'a> {
         // tested against the same rows, so a point read per binding re-walked the
         // column N times for a set that fits in memory — and this runs on the
         // per-op authorization path, not just at delivery time.
-        let revoked: BTreeSet<[u8; 32]> = collect_keys_with_prefix(
-            self.store,
-            GroupRevokedDevice::new(gid, [0u8; 32]),
-            calimero_store::key::GROUP_REVOKED_DEVICE_PREFIX,
-            |k| k.group_id() == gid,
-        )?
-        .into_iter()
-        .map(|k| k.device_id())
-        .collect();
+        let revoked = self.revoked_device_ids(group)?;
 
         // Keys first, then one `get` each — deliberately, and NOT the cursor's own
         // `entries()`, which would save those reads. `entries()` decodes the value
@@ -1323,6 +1341,37 @@ mod tests {
                 expected.is_some()
             );
         }
+    }
+
+    #[test]
+    fn revoked_devices_lists_only_this_namespaces_tombstones() {
+        let store = test_store();
+        let gid = test_group_id();
+        let other = ContextGroupId::from([0x5A; 32]);
+        let repo = AccountBindingRepository::new(&store);
+        let account = genesis_for(1).account_id();
+        let (live, gone_a, gone_b, elsewhere) = (
+            DeviceId::mint(account, [1; 16]),
+            DeviceId::mint(account, [2; 16]),
+            DeviceId::mint(account, [3; 16]),
+            DeviceId::mint(account, [4; 16]),
+        );
+        let signer = key(1);
+        let genesis = genesis_for(1);
+        let cert = cert_for(&genesis, &signer, 1, 0, 0);
+        repo.apply_link(&gid, &genesis, &[], &cert, 0)
+            .expect("link")
+            .expect("binds");
+        for device in [gone_b, gone_a] {
+            repo.apply_revocation(&gid, device).expect("revoke");
+        }
+        repo.apply_revocation(&other, elsewhere).expect("revoke");
+
+        let mut want = vec![gone_a, gone_b];
+        want.sort_by_key(|d| *d.as_bytes());
+        assert_eq!(repo.revoked_devices(&gid).expect("read"), want);
+        assert!(!repo.revoked_devices(&gid).expect("read").contains(&live));
+        assert_eq!(repo.revoked_devices(&other).expect("read"), vec![elsewhere]);
     }
 
     #[test]
