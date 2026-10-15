@@ -553,3 +553,99 @@ async fn a_cascade_that_moves_nothing_leaves_the_target() {
         "a cascade the apply did not apply moved the target out of the device's scope"
     );
 }
+
+mod open_join {
+    use calimero_governance_store::test_fixtures::{
+        derived_group_id, group_created, seal_for_test,
+    };
+    use calimero_governance_types::RootOp;
+
+    use super::*;
+
+    /// The owner creates an Open subgroup and a device of the admin's account that no
+    /// link carried into the namespace self-joins it as that account.
+    async fn open_join_by_an_unlinked_device_of_the_admin(
+        store: &Store,
+        world: &World,
+    ) -> PrivateKey {
+        let owner = world.actor(ActorState::Owner);
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let namespace = world.namespace;
+        let create = sign_next(
+            store,
+            &namespace,
+            &world.owner_sk,
+            seal_for_test(
+                store,
+                namespace,
+                group_created(owner.account, namespace.to_bytes(), false, 0x91),
+            ),
+        );
+        apply(store, &create)
+            .await
+            .expect("the owner makes an Open subgroup");
+        let open = ContextGroupId::from(derived_group_id(
+            &owner.account,
+            namespace.to_bytes(),
+            false,
+            0x91,
+        ));
+
+        let device_sk = PrivateKey::from([DEVICE_SEED; 32]);
+        let cert = DeviceCert::sign(
+            &admin.root,
+            admin.account,
+            DeviceId::mint(admin.account, [DEVICE_SEED; 16]),
+            &device_sk.public_key(),
+            &KemPublicKey::from([DEVICE_SEED ^ 0x01; 32]),
+            0,
+            0,
+        )
+        .expect("the admin's root certifies the device");
+        let join = sign_next(
+            store,
+            &namespace,
+            &device_sk,
+            seal_for_test(
+                store,
+                namespace,
+                RootOp::MemberJoinedOpen {
+                    member: admin.account,
+                    group_id: open,
+                    account: Box::new(calimero_account::AccountProof {
+                        genesis: AccountGenesis::new(admin.root.public_key()),
+                        chain: vec![],
+                        statement: cert,
+                    }),
+                },
+            ),
+        );
+        let joined = apply(store, &join).await;
+        assert!(
+            joined.is_ok(),
+            "setup: the device's open join applies: {joined:?}"
+        );
+        device_sk
+    }
+
+    #[actix::test]
+    async fn an_open_self_join_does_not_link_its_device() {
+        let (world, store) = world_targeting().await;
+        let device_sk = open_join_by_an_unlinked_device_of_the_admin(&store, world).await;
+
+        let bound = AccountBindingRepository::new(&store)
+            .binding_for_sign_pk(&world.namespace, &device_sk.public_key())
+            .expect("read the binding");
+        let role = role_after_promotion_by(&store, world, &device_sk).await;
+
+        assert!(
+            bound.is_none(),
+            "an open self-join bound its device: {bound:?}"
+        );
+        assert_eq!(
+            role,
+            Some(GroupMemberRole::Member),
+            "a device whose only link is an open self-join promoted a member"
+        );
+    }
+}

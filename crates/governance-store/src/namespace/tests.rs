@@ -9542,7 +9542,7 @@ fn namespace_with_open_subgroup(
 }
 
 #[test]
-fn a_join_records_the_joiners_binding_and_endorsement() {
+fn an_open_join_links_no_device() {
     let store = test_store();
     let namespace_id = [0xC1u8; 32];
     let subgroup_id = [0xD1u8; 32];
@@ -9557,24 +9557,34 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
     );
 
     let account = crate::test_fixtures::real_join_account(&joiner);
-    let account_id = account.statement.account;
     apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, account)
         .expect("the join applies");
 
-    let bindings = crate::AccountBindingRepository::new(&store);
-    let binding = bindings
+    let binding = crate::AccountBindingRepository::new(&store)
         .binding_for_sign_pk(&ns_gid, &joiner)
-        .expect("read bindings")
-        .expect("joining binds the device in the same apply as the membership");
-    assert_eq!(binding.account, account_id);
-
-    assert_eq!(
-        crate::member_account_in_namespace(&store, &ns_gid, &joiner)
-            .expect("resolve the joiner's account"),
-        Some(account_id),
-        "a bound joiner must resolve to its account, or it gets no scope keys \
-         and cannot be selected as an executing identity"
+        .expect("read bindings");
+    assert!(
+        binding.is_none(),
+        "an open join bound its device: {binding:?}"
     );
+}
+
+/// Bind `account`'s device in the namespace, as the link that carried it in would.
+fn link_device(
+    store: &Store,
+    namespace_id: [u8; 32],
+    account: &calimero_context_client::local_governance::JoinAccountCredential,
+) {
+    let _bound = crate::AccountBindingRepository::new(store)
+        .apply_link(
+            &ContextGroupId::from(namespace_id),
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+            crate::JOIN_SCOPE_EPOCH,
+        )
+        .expect("store the binding")
+        .expect("the binding is admissible");
 }
 
 #[test]
@@ -9755,54 +9765,6 @@ fn a_credential_certified_for_another_key_is_refused() {
     );
 }
 
-#[test]
-fn rejoining_reuses_the_device_rather_than_refusing_it() {
-    let store = test_store();
-    let namespace_id = [0xC4u8; 32];
-    let subgroup_id = [0xD4u8; 32];
-    let ns_gid = ContextGroupId::from(namespace_id);
-    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
-    let joiner = joiner_sk.public_key();
-    // The credential comes first: it decides which account the joiner speaks
-    // for, and the anchor membership has to be seeded for THAT account. This one
-    // pins its own device id rather than deriving it, which is the point of the
-    // test — the same device arriving twice must be reused, not refused.
-    let (root_sk, genesis) = crate::test_fixtures::test_account_root();
-    let device = [0x7C; 32];
-    let first = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
-    let account_id = first.statement.account;
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &account_id);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, first)
-        .expect("first join applies");
-
-    // The same machine presenting the same credential again — a rejoin, and also
-    // exactly what an ordinary re-apply looks like, since every handler re-runs
-    // its mutation before the op-log dedup fires.
-    let again = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, again)
-        .expect("rejoin applies");
-
-    // This joiner's rows only — the namespace admin is enrolled here too, and
-    // this assertion is about how many devices ONE account ended up with.
-    let live: Vec<_> = crate::AccountBindingRepository::new(&store)
-        .live_bindings(&ns_gid)
-        .expect("read bindings")
-        .into_iter()
-        .filter(|b| b.account == account_id)
-        .collect();
-    assert_eq!(
-        live.len(),
-        1,
-        "a rejoin must reuse its device, not mint a second replica id and strand \
-         the CRDT state held under the first"
-    );
-    assert_eq!(
-        live[0].device,
-        crate::test_fixtures::device_for(account_id, device)
-    );
-    assert_eq!(live[0].account, account_id);
-}
-
 /// An open-subgroup joiner's device withdrawn from the namespace before it signs a join.
 struct WithdrawnJoiner {
     store: Store,
@@ -9926,8 +9888,8 @@ fn another_device_of_the_account_still_joins_after_one_is_revoked() {
         .expect("the account's live device still joins");
 }
 
-/// An open-subgroup joiner whose device was re-keyed: it joined under `old_sk` at
-/// epoch 0, then again under `new_sk` at epoch 1, which retires `old_sk`.
+/// An open-subgroup joiner whose device was re-keyed: linked under `old_sk` at
+/// epoch 0, then under `new_sk` at epoch 1, which retires `old_sk`.
 struct RekeyedJoiner {
     store: Store,
     namespace_id: [u8; 32],
@@ -9948,12 +9910,10 @@ fn rekeyed_joiner(namespace_id: [u8; 32], subgroup_id: [u8; 32]) -> RekeyedJoine
     let first =
         crate::test_fixtures::join_account_for(&root_sk, genesis, &old_sk.public_key(), device, 0);
     namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &first.statement.account);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &old_sk, first)
-        .expect("the first join applies");
+    link_device(&store, namespace_id, &first);
     let rekeyed =
         crate::test_fixtures::join_account_for(&root_sk, genesis, &new_sk.public_key(), device, 1);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &new_sk, rekeyed)
-        .expect("a join under the device's next key applies");
+    link_device(&store, namespace_id, &rekeyed);
     RekeyedJoiner {
         store,
         namespace_id,

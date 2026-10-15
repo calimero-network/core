@@ -107,9 +107,6 @@ pub(crate) fn credential_binds_the_member(op: &RootOp) -> bool {
         }
         | RootOp::MemberJoinedAt {
             member, account, ..
-        }
-        | RootOp::MemberJoinedOpen {
-            member, account, ..
         } => join_credential_binds(member, account),
         // The TEE admission is the one join that names a KEY rather than an
         // account: the quote's `report_data` binds to the attested key, so the

@@ -161,7 +161,8 @@ Endorsers are stored as a **grow-only set**, never a single field. Two links for
 
 ## Enrolling at join — the default path
 
-A member and the device it joined with become known **together**, in one operation, because every join operation carries the joiner's credential as a required field — `MemberJoined` and `MemberJoinedAt` (invitation), `MemberJoinedOpen` (open-subgroup self-join), and `MemberJoinedViaTeeAttestation` (a hardware-attested [fleet replica](/protocol/tee-attestation/)):
+A member and the device it joined with become known **together**, in one operation, because every join operation that admits a member carries the joiner's credential as a required field: `MemberJoined` and `MemberJoinedAt` (invitation), and `MemberJoinedViaTeeAttestation` (a hardware-attested [fleet replica](/protocol/tee-attestation/)).
+An open-subgroup self-join (`MemberJoinedOpen`) carries one too, but its account is already a member, so it links no device:
 
 ```
   JoinAccountCredential { genesis, chain, cert }
@@ -235,7 +236,8 @@ This is the invariant most easily broken by accident, so it is worth stating on 
 
 A writer set the node seeds names whatever the first returns. Every peer matches incoming signatures against whatever the second returns. If a fact reaches one plane and not the other, the node writes as somebody its peers do not recognise, and its writes match no grant — with no permission error anywhere, because from each side's own point of view nothing is wrong. It presents as data that silently never converges.
 
-`AccountDeviceLinked` feeds both: the apply path writes the rows, and the operation folds into the projection as `DeviceLinked`. A join has to do the same, so it folds too — as `MemberJoinedWithDevice` for the invitation joins (membership and device as one indivisible fact) and as a bare `DeviceLinked` for an open self-join, whose membership stays inheritance-derived because a direct row would outlive the anchor that grants it.
+`AccountDeviceLinked` feeds both: the apply path writes the rows, and the operation folds into the projection as `DeviceLinked`. A join has to do the same, so it folds too — as `MemberJoinedWithDevice` for the invitation joins (membership and device as one indivisible fact).
+An open self-join folds as nothing and writes no binding: its membership stays inheritance-derived because a direct row would outlive the anchor that grants it, and its joiner's account is already in the namespace, so a device it carried in would bind with no root-signed scope to check it against.
 
 :::caution
 Anything that records a binding must move **both** planes. "Does this change what a principal *is*" is the question to ask before splitting work across operations — and if the answer is yes, ask which planes observe that principal.
@@ -801,7 +803,7 @@ without benefit. What is genuinely many-to-one is **devices per account**, via
 Enrolment is therefore an *ensure*, not a create — and there is no command for it.
 It derives the account from the root that already exists and mints a device only if
 this node holds none, so it is idempotent by construction. It happens inside the
-join: `MemberJoined`, `MemberJoinedAt`, `MemberJoinedOpen` and
+join: `MemberJoined`, `MemberJoinedAt` and
 `MemberJoinedViaTeeAttestation` are `RootOp`s that carry the
 `JoinAccountCredential`, so the binding lands in the same apply as the membership
 and needs no scope key. That is also why the old "join first, then enrol" ordering

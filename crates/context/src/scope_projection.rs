@@ -3493,7 +3493,7 @@ mod tests {
     }
 
     #[test]
-    fn open_subgroup_join_folds_its_device_but_no_membership() {
+    fn open_subgroup_join_folds_neither_membership_nor_device() {
         // `MemberJoinedOpen` is an open-subgroup inheritance-join PROOF — live
         // writes no persistent direct row and re-derives membership from the
         // anchor — so it must NOT fold a direct `MemberAdded`. The inheritance
@@ -3502,9 +3502,8 @@ mod tests {
         // anchor removal and restored on rejoin. Cross-validated against the live
         // resolver in tests/projection_membership_equivalence.rs.
         //
-        // The credential it carries is a different fact and does fold: the apply
-        // path writes that binding either way, and a binding the projection never
-        // sees is one the joiner's peers resolve differently than the joiner does.
+        // Nor does its credential fold: the joiner's device is linked by the op that
+        // carried it in, and a link here would carry no scope to check it against.
         let ns = [0x11; 32];
         let signer = PublicKey::from([1u8; 32]);
         let member = PublicKey::from([0x55; 32]);
@@ -3516,12 +3515,9 @@ mod tests {
                 ns,
                 signer,
                 RootOp::MemberJoinedOpen {
-                    // The account the credential certifies. The decode pairs the
-                    // two, and a member naming anything else folds as a Noop —
-                    // it cannot tell whose device it is looking at.
                     member: account.statement.account,
                     group_id: group.into(),
-                    account: account.clone(),
+                    account,
                 },
             ),
             None,
@@ -3533,20 +3529,10 @@ mod tests {
         assert_eq!(op.id(), [0x99; 32], "op still occupies its DAG node");
         assert_eq!(op.scope, ScopeId::from(ns));
         assert_eq!(op.parents, vec![[0x88; 32]], "with its real parents");
-        // The device half folds; the MEMBERSHIP half must not. A direct row here
-        // would outlive the anchor that grants it — the inheritance walk in
-        // `AclView::is_member_at_cut` is what derives it, so it is revoked on
-        // anchor removal and restored on rejoin.
         assert_eq!(
             op.payload,
-            OpPayload::DeviceLinked {
-                genesis: account.genesis,
-                chain: account.chain.clone(),
-                cert: account.statement,
-                scope_epoch: 0,
-                applications: vec![],
-            },
-            "open-subgroup inheritance join folds its credential and no membership"
+            OpPayload::Noop,
+            "open-subgroup inheritance join folds no device and no membership"
         );
     }
 
@@ -4841,15 +4827,13 @@ mod tests {
             hlc(10),
             &[],
         );
-        // Folds the member's device and no membership anywhere.
-        let device = op_from_namespace_op(
+        // The member's device link and no membership anywhere.
+        let mut device = op_from_namespace_op(
             &signed_root(
                 ns,
                 member,
-                RootOp::MemberJoinedOpen {
-                    member: m,
-                    group_id: s.to_bytes().into(),
-                    account: credential,
+                RootOp::PolicyUpdated {
+                    policy_bytes: vec![],
                 },
             ),
             None,
@@ -4857,6 +4841,13 @@ mod tests {
             hlc(20),
             &[[0xD1; 32]],
         );
+        device.payload = OpPayload::DeviceLinked {
+            genesis: credential.genesis,
+            chain: credential.chain.clone(),
+            cert: credential.statement,
+            scope_epoch: 0,
+            applications: vec![],
+        };
         let group_op = |op: GroupOp, id: [u8; 32], t: u64, parent: [u8; 32]| {
             op_from_namespace_op(
                 &signed_group(ns, founder, s),

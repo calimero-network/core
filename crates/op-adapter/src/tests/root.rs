@@ -42,24 +42,14 @@ fn invitation_for(group: [u8; 32]) -> SignedGroupOpenInvitation {
 /// in the folded view and absent from the materialized rows — the same split
 /// this encoder exists to close, running the other way.
 #[test]
-fn a_replayed_credential_folds_no_device_on_either_join_shape() {
+fn a_replayed_credential_folds_no_device_on_an_invitation_join() {
     // The op names the account being admitted, while the credential beside
     // it certifies somebody ELSE's — the replay this test is about.
     let m = AccountId::from([7u8; 32]);
     let stranger = PublicKey::from([8u8; 32]);
     let gid = [0x44; 32];
 
-    // Open self-join: back to the graph-only node, no device.
-    assert_eq!(
-        payload_from_root_op(&RootOp::MemberJoinedOpen {
-            member: m,
-            group_id: gid.into(),
-            account: test_join_account_for(stranger),
-        }),
-        Some(OpPayload::Noop)
-    );
-
-    // Invitation join: the membership still stands, the device does not.
+    // The membership still stands, the device does not.
     assert_eq!(
         payload_from_root_op(&RootOp::MemberJoined {
             member: m,
@@ -246,23 +236,16 @@ fn root_op_encoder_mapping() {
             policy_bytes: vec![1, 2, 3],
         })
     );
-    // An open-subgroup self-join folds its CREDENTIAL and nothing else: the
-    // membership is re-derived by the inheritance walk, so a direct row here
-    // would outlive the anchor that grants it.
+    // An open-subgroup self-join folds nothing: the membership is re-derived by
+    // the inheritance walk, and a link made here would carry no device scope.
     let joined_open = real_join_account_for(m_key, 0x61);
     assert_eq!(
         payload_from_root_op(&RootOp::MemberJoinedOpen {
             member: joined_open.statement.account,
             group_id: gid.into(),
-            account: joined_open.clone(),
+            account: joined_open,
         }),
-        Some(OpPayload::DeviceLinked {
-            genesis: joined_open.genesis,
-            chain: joined_open.chain.clone(),
-            cert: joined_open.statement,
-            scope_epoch: 0,
-            applications: vec![],
-        })
+        Some(OpPayload::Noop)
     );
     // Invitation-based join: group_id + role decoded off the admin-signed
     // invitation (invited_role 0 = Admin). The joiner can't escalate — the
