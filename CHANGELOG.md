@@ -4,6 +4,17 @@
 
 ### Added
 
+- **A TEE may pay a rotation debt.** A departure that leaves a key rotation
+  owed (a self-leave, or an Open group behind a Restricted one that a removed
+  member reached by inheritance) no longer waits for an admin node to come
+  online: a TEE member of the group that holds its key publishes the
+  `GroupKeyRotated`, wrapped for every member still entitled to the key. Peers
+  accept it, op and key alike, only when the account it names is not a member
+  of the group at the op's cut; a TEE still cannot add, remove or re-role
+  anyone, nor rotate out a member who is still there. Both TEE roles may pay.
+  This changes what peers accept, so `SIGNED_NAMESPACE_OP_SCHEMA_VERSION` is
+  now 26: upgrade a namespace's peers together.
+
 - **A node's operator can trust more origins for login callbacks.**
   `trusted_callback_origins` under `[server.embedded_auth.development]` lists
   app origins the node's sign-in page may hand a new token pair to, besides its

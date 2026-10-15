@@ -15,13 +15,16 @@
 //!
 //! So the two halves are split across nodes. `MemberLeft`'s apply records what is owed
 //! (a replicated `GroupPendingKeyRotation` row, written on every node because the
-//! apply is deterministic), and this listener — running on the REMAINING admins —
-//! discharges it by publishing `GroupKeyRotated` with a fresh key wrapped for the
-//! members who are still there.
+//! apply is deterministic), and this listener — running on every node, and acting on
+//! the REMAINING admins and on TEE members that hold the group's key — discharges it
+//! by publishing `GroupKeyRotated` with a fresh key wrapped for the members who are
+//! still there. A TEE pays only a departure's debt, never a device revocation's;
+//! peers accept its rotation while the departed account is not a member (see
+//! `calimero_governance_store::tee_may_pay_rotation`).
 //!
 //! # No election, no quorum
 //!
-//! Every remaining admin reacts. If several rotate concurrently they mint DIFFERENT
+//! Every remaining admin and TEE reacts. If several rotate concurrently they mint DIFFERENT
 //! keys, and that is fine: the keyring already converges on one — highest epoch, ties
 //! broken by the larger key id, a total order over a hash and therefore the same
 //! choice on every node. Safety survives the race because EVERY competing key excludes
@@ -294,9 +297,10 @@ fn debt_of(event: OpEvent) -> Option<(ContextGroupId, RotationDebt)> {
     }
 }
 
-/// Ask the actor to rotate. It re-checks eligibility (admin, not the leaver, still
-/// owed) and declines quietly if this node is not the right one to act — so several
-/// admins reacting to the same departure is expected, not a problem.
+/// Ask the actor to rotate. It re-checks eligibility (admin or TEE paying a
+/// departure, not the leaver, still owed) and declines quietly if this node is not
+/// the right one to act — so several nodes reacting to the same departure is
+/// expected, not a problem.
 async fn rotate(context_client: &ContextClient, group_id: ContextGroupId, debt: RotationDebt) {
     let request = calimero_context_client::group::RotateGroupKeyRequest { group_id, debt };
     if let Err(err) = context_client.rotate_group_key(request).await {

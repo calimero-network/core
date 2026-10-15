@@ -9,7 +9,10 @@
 //! Peers reject a rotation from a non-admin regardless.
 //!
 //! So `MemberLeft` records the debt as a replicated pending row, and a REMAINING
-//! ADMIN discharges it here. This handler is what the rotation listener calls; the
+//! ADMIN discharges it here, or a TEE member that holds the group's key: peers
+//! accept a TEE's `GroupKeyRotated` while the departed account is not a member
+//! (`calimero_governance_store::tee_may_pay_rotation`). A device revocation's debt
+//! stays an admin's. This handler is what the rotation listener calls; the
 //! eligibility checks live here (not only in the listener) so the invariant holds
 //! however the request arrives.
 
@@ -18,7 +21,8 @@ use std::sync::Arc;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{RotateGroupKeyRequest, RotationDebt};
 use calimero_governance_store::{
-    PendingDeviceRotationRepository, PendingRotationRepository, PermissionChecker,
+    tee_may_pay_rotation, PendingDeviceRotationRepository, PendingRotationRepository,
+    PermissionChecker,
 };
 use tracing::{debug, info};
 
@@ -84,16 +88,26 @@ impl Handler<RotateGroupKeyRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         }
 
-        // Only an admin's rotation is accepted by peers. Check before publishing so a
-        // non-admin node fails fast and locally rather than minting a key the network
-        // will throw away.
-        match PermissionChecker::new(&self.datastore, group_id).is_admin(&self_pk) {
+        // Peers accept a rotation from an admin, and a departure's from a TEE member
+        // that names an account no longer there. Check before publishing so a node
+        // that may not rotate fails fast and locally rather than minting a key the
+        // network will throw away.
+        let may_rotate = PermissionChecker::new(&self.datastore, group_id)
+            .is_admin(&self_pk)
+            .and_then(|admin| match debt {
+                _ if admin => Ok(true),
+                RotationDebt::MemberDeparted(departed) => {
+                    tee_may_pay_rotation(&self.datastore, &group_id, &self_pk, &departed)
+                }
+                RotationDebt::DeviceRevoked(_) => Ok(false),
+            });
+        match may_rotate {
             Ok(true) => {}
             Ok(false) => {
                 debug!(
                     ?group_id,
                     ?debt,
-                    "this node is not an admin of the group; leaving the rotation to one that is"
+                    "this node may not rotate the group; leaving the rotation to one that may"
                 );
                 return ActorResponse::reply(Ok(()));
             }

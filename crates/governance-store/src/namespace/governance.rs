@@ -2733,12 +2733,21 @@ impl<'a> NamespaceGovernance<'a> {
         // A delegated removal names the admin the rotation is on behalf of;
         // anything else rotates on the signer's own authority.
         let delegated_inner = inner_op.filter(|inner| matches!(inner, GroupOp::OnBehalf { .. }));
+        // A debt payment names the member it rotates out, which a TEE may do for a
+        // member who is gone.
+        let departed = match inner_op {
+            Some(GroupOp::GroupKeyRotated { departed }) => Some(departed),
+            _ => None,
+        };
         self.apply_key_rotation(
             group_id,
             op,
             rotation,
-            inner_op.is_some(),
-            delegated_inner,
+            RotationCarrier {
+                inner_decrypted: inner_op.is_some(),
+                delegated_inner,
+                departed,
+            },
             epoch,
             op_id,
             result,
@@ -2814,9 +2823,10 @@ impl<'a> NamespaceGovernance<'a> {
     ///    rotation for a group we don't belong to is ignored so it can't poison
     ///    an arbitrary group's keyring. One that arrives before that key is
     ///    deferred and applied by the key-arrival replay.
-    /// 2. `op.signer` is an admin of the group **at the op's causal cut** — only
-    ///    an admin may remove a member and rotate the key. This is the missing
-    ///    "authorized rotator" check.
+    /// 2. `op.signer` may rotate **at the op's causal cut**: an admin of the
+    ///    group, or, for a `GroupKeyRotated { departed }`, a TEE member while
+    ///    `departed` is not a member (`crate::tee_rotation`, the predicate the op
+    ///    handler asks too). This is the "authorized rotator" check.
     /// 3. the envelope is authenticated as coming from that same admin
     ///    (`expected_sender = op.signer`), so an admin can't be impersonated.
     /// 4. the unwrapped key hashes to the advertised `new_key_id` — that field
@@ -2834,12 +2844,16 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: &ContextGroupId,
         op: &SignedNamespaceOp,
         rotation: &KeyRotation,
-        inner_decrypted: bool,
-        delegated_inner: Option<&GroupOp>,
+        carrier: RotationCarrier<'_>,
         epoch: u64,
         op_id: [u8; 32],
         result: &mut ApplyNamespaceOpResult,
     ) -> EyreResult<()> {
+        let RotationCarrier {
+            inner_decrypted,
+            delegated_inner,
+            departed,
+        } = carrier;
         if !inner_decrypted {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
@@ -2865,11 +2879,25 @@ impl<'a> NamespaceGovernance<'a> {
         // cuts the removed member off is the admin's too.
         let signer_is_admin = permissions.is_admin(&op.signer)?
             || delegated_rotator_is_admin(&permissions, op, delegated_inner)?;
-        if !signer_is_admin {
+        // A TEE paying a debt rotates on its own standing, through the predicate the
+        // `GroupKeyRotated` handler asks, so the two gates cannot disagree.
+        let signer_may_rotate = signer_is_admin
+            || match departed {
+                Some(departed) => crate::tee_rotation::tee_rotation_standing(
+                    self.store,
+                    &permissions,
+                    group_id,
+                    &op.signer,
+                    departed,
+                )?
+                .is_ok(),
+                None => false,
+            };
+        if !signer_may_rotate {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 signer = %op.signer,
-                "ignoring key rotation: op signer is not an admin at the op's cut"
+                "ignoring key rotation: op signer may not rotate this group at the op's cut"
             );
             return Ok(());
         }
@@ -4559,6 +4587,17 @@ pub fn collect_skeleton_delta_ids_for_group(
     group_id: [u8; 32],
 ) -> EyreResult<Vec<[u8; 32]>> {
     NamespaceGovernance::new(store, namespace_id).collect_skeleton_delta_ids_for_group(group_id)
+}
+
+/// What the group op a rotation rides on tells its gate.
+#[derive(Clone, Copy)]
+struct RotationCarrier<'a> {
+    /// This node opened the inner op, so it holds the group's current key.
+    inner_decrypted: bool,
+    /// The inner op, when it is a delegated (`OnBehalf`) one.
+    delegated_inner: Option<&'a GroupOp>,
+    /// The member a `GroupKeyRotated` rotates out.
+    departed: Option<&'a calimero_account::AccountId>,
 }
 
 /// Whether a rotation riding a delegated removal, leave or flip to Restricted is an admin's:
