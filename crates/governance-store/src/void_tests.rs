@@ -343,6 +343,10 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
                 .chain(self.base().root.as_ref().map(|(_, owner)| owner))
                 .copied()
                 .collect(),
+            restricted: view
+                .subgroups
+                .get(&ScopeId::from(group.to_bytes()))
+                .map(|edge| edge.restricted),
         })
     }
 }
@@ -2169,5 +2173,154 @@ fn an_admin_whose_capability_is_revoked_needed_none_of_it() {
         w.role(&w.xavier),
         Some(GroupMemberRole::Member),
         "Sam added Xavier as an admin, not through the bit"
+    );
+}
+
+fn sign_root(
+    w: &World,
+    who: &Person,
+    parents: &[&SignedNamespaceOp],
+    op: calimero_context_client::local_governance::RootOp,
+) -> SignedNamespaceOp {
+    let sealed = crate::test_fixtures::seal_for_test(&w.store, LogAuthorizer::group(), op);
+    SignedNamespaceOp::sign(
+        &who.sk,
+        NS.into(),
+        parents
+            .iter()
+            .map(|p| p.content_hash().expect("hash"))
+            .collect(),
+        w.next_nonce(who),
+        sealed,
+    )
+    .expect("sign a root op")
+}
+
+fn sign_in_group(
+    w: &World,
+    who: &Person,
+    group: ContextGroupId,
+    parents: &[&SignedNamespaceOp],
+    op: &GroupOp,
+) -> SignedNamespaceOp {
+    SignedNamespaceOp::sign(
+        &who.sk,
+        NS.into(),
+        parents
+            .iter()
+            .map(|p| p.content_hash().expect("hash"))
+            .collect(),
+        w.next_nonce(who),
+        NamespaceOp::Group {
+            group_id: group.to_bytes().into(),
+            key_id: GroupKeyring::key_id_for(&w.k0).into(),
+            encrypted: GroupKeyring::encrypt_op(&w.k0, op).expect("encrypt"),
+            key_rotation: None,
+        },
+    )
+    .expect("sign a group op")
+}
+
+/// Alice, an admin, makes a Restricted subgroup of the namespace.
+fn alice_creates_a_restricted_subgroup(
+    w: &World,
+    parent: &SignedNamespaceOp,
+) -> (SignedNamespaceOp, ContextGroupId) {
+    let namespace = LogAuthorizer::group().to_bytes();
+    let create = sign_root(
+        w,
+        &w.alice,
+        &[parent],
+        crate::test_fixtures::group_created(w.alice.account, namespace, true, 0x71),
+    );
+    let subgroup = ContextGroupId::from(crate::test_fixtures::derived_group_id(
+        &w.alice.account,
+        namespace,
+        true,
+        0x71,
+    ));
+    (create, subgroup)
+}
+
+fn visibility(w: &World, subgroup: &ContextGroupId) -> calimero_context_config::VisibilityMode {
+    CapabilitiesRepository::new(&w.store)
+        .subgroup_visibility(subgroup)
+        .expect("visibility")
+}
+
+#[test]
+fn a_creator_removed_from_the_namespace_cannot_open_its_restricted_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let [_, _, b] = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &b);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    w.apply(&removal).expect("the owner removes alice");
+    assert_eq!(w.role(&w.alice), None, "control: alice left the namespace");
+    assert_eq!(visibility(&w, &subgroup), VisibilityMode::Restricted);
+
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&removal],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let applied = w.apply(&flip);
+
+    assert_eq!(
+        visibility(&w, &subgroup),
+        VisibilityMode::Restricted,
+        "a removed creator opened its subgroup (apply: {:?})",
+        applied.map_err(|err| format!("{err:#}")),
+    );
+}
+
+#[test]
+fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every_node() {
+    use calimero_context_config::VisibilityMode;
+
+    let flip_first = World::new();
+    let removal_first = flip_first.replica(true);
+    let w = &flip_first;
+    let founding = w.founded();
+    for op in &founding {
+        removal_first.apply(op).expect("the replica follows");
+    }
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(w, &founding[2]);
+    for node in [&flip_first, &removal_first] {
+        node.apply(&create)
+            .expect("alice creates a Restricted subgroup");
+    }
+
+    let flip = sign_in_group(
+        w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    flip_first.apply(&flip).expect("alice's flip applies first");
+    let _ = flip_first.apply(&removal);
+    removal_first
+        .apply(&removal)
+        .expect("the owner removes alice");
+    let _ = removal_first.apply(&flip);
+
+    assert_eq!(
+        (
+            visibility(&flip_first, &subgroup),
+            visibility(&removal_first, &subgroup)
+        ),
+        (VisibilityMode::Restricted, VisibilityMode::Restricted),
+        "a flip voided by its creator's concurrent removal opened the subgroup"
     );
 }
