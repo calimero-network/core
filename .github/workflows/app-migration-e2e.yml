@@ -217,10 +217,12 @@ jobs:
           - 37-stranded-resync
           - 38-namespace-invite-join-regression
           - 39-missing-abi-refused
-        # The only suite that advances a group's target, so the only place registry
-        # coordinates resolve; dht ignores them, so this needs an http lane to exercise it.
+        # Scenarios that depend on a group's registry coordinates; dht ignores them,
+        # so they need an http lane to exercise them.
         include:
           - workflow: 01-namespace-cascade-migration
+            mode: http
+          - workflow: 40-paired-device-holds-newer-release
             mode: http
     env:
       WORKFLOW: ${{ matrix.workflow }}
