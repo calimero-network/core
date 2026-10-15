@@ -62,7 +62,7 @@ pub struct ApplyNamespaceOpResult {
     /// ops that match the receiver's view, and for ops that don't go
     /// through the verify path at all.
     pub divergence: Option<super::super::DivergenceReport>,
-    /// Why a peer's subgroup op was refused at its cut, when it was logged as a
+    /// Why a peer's sealed op was refused at its cut, when it was logged as a
     /// refusal instead of failing the apply.
     pub refused: Option<eyre::Report>,
 }
@@ -405,7 +405,9 @@ impl<'a> NamespaceGovernance<'a> {
             keep_bytes,
             parked,
         } = match self.apply_payload(op, delta_id, op_sequence) {
-            Err(err) if self.logs_refusal(op, &err)? => self.refused_payload(op, delta_id, err)?,
+            Err(err) if matches!(self.logs_refusal(op, &err), Ok(true)) => {
+                self.refused_payload(op, delta_id, err)?
+            }
             outcome => outcome?,
         };
 
@@ -964,9 +966,14 @@ impl<'a> NamespaceGovernance<'a> {
         if !crate::unified_op_decode::can_be_parked(&op.op) || is_undecidable(err) {
             return Ok(false);
         }
+        Ok(!self.authored_here(op)?)
+    }
+
+    /// Whether this node signed `op`.
+    fn authored_here(&self, op: &SignedNamespaceOp) -> EyreResult<bool> {
         let namespace = ContextGroupId::from(self.namespace_id.to_bytes());
         let local = NamespaceRepository::new(self.store).identity(&namespace)?;
-        Ok(local.is_none_or(|(local_pk, ..)| local_pk != op.signer))
+        Ok(local.is_some_and(|(local_pk, ..)| local_pk == op.signer))
     }
 
     /// The payload of an op refused at its cut: nothing applied, folded as nothing.
@@ -2191,6 +2198,9 @@ impl<'a> NamespaceGovernance<'a> {
                 self.settle_parked(&entry.signed_op, true);
                 continue;
             }
+            if self.parked_state(&entry.signed_op) == Some(Parked::Refused) {
+                continue;
+            }
             let key_id = entry.key_id;
             // Which keyring can open this op. The two namespace-sealed shapes
             // resolve in the namespace's; a subgroup-sealed join resolves in the
@@ -2472,6 +2482,9 @@ impl<'a> NamespaceGovernance<'a> {
                 let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
                     continue;
                 };
+                if self.parked_state(&candidate.signed_op) == Some(Parked::Refused) {
+                    continue;
+                }
                 let parked = self.parked_state(&candidate.signed_op);
                 let outcome = self.replay_group_op(
                     &candidate.signed_op,
@@ -2702,6 +2715,9 @@ impl<'a> NamespaceGovernance<'a> {
                 let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
                     continue;
                 };
+                if self.parked_state(&candidate.signed_op) == Some(Parked::Refused) {
+                    continue;
+                }
                 let delta_id = candidate.signed_op.content_hash().ok();
                 if !group_key_held {
                     if let Some(id) = delta_id {
@@ -2782,13 +2798,11 @@ impl<'a> NamespaceGovernance<'a> {
         let NamespaceOp::Group { group_id, .. } = &candidate.signed_op.op else {
             return false;
         };
-        matches!(
-            error.downcast_ref::<crate::ApplyError>(),
-            Some(crate::ApplyError::AuthorityUndecidable { .. })
-        ) && self.authorizer.history_sealed_in_group(
-            &ContextGroupId::from(group_id.to_bytes()),
-            &candidate.signed_op.parent_op_hashes,
-        )
+        is_undecidable(error)
+            && self.authorizer.history_sealed_in_group(
+                &ContextGroupId::from(group_id.to_bytes()),
+                &candidate.signed_op.parent_op_hashes,
+            )
     }
 
     /// Apply the rotation riding the group op `op`, unless the op is void and the

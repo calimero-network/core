@@ -974,4 +974,29 @@ mod held_ops {
             Some(GroupMemberRole::Member)
         );
     }
+
+    #[actix::test]
+    async fn this_nodes_own_refused_op_still_fails() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        // The owner is this node's identity; the target is no member of the subgroup.
+        let own = sign_next(
+            &f.inside,
+            &f.world.namespace,
+            &f.world.owner_sk,
+            under_namespace_key(
+                &f.inside,
+                &f.world.namespace,
+                &f.subgroup,
+                &GroupOp::MemberRoleSet {
+                    member: f.world.actor(ActorState::DirectMember).account,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+        );
+        let applied = apply(&f.inside, &own).await;
+        assert!(
+            applied.is_err(),
+            "this node's own refused op was logged: {applied:?}"
+        );
+    }
 }

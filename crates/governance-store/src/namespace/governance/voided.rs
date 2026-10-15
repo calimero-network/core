@@ -129,8 +129,12 @@ impl NamespaceGovernance<'_> {
             .and_then(|id| {
                 let settled =
                     VoidLedger::new(self.store, self.namespace_id).settle_parked(id, applied)?;
-                // A verdict ends a hold, whichever way it went.
+                // A verdict ends a hold, whichever way it went; a refused op owes no rotation.
                 crate::held_ops::HeldOps::new(self.store, self.namespace_id).release(id)?;
+                if !applied {
+                    crate::deferred_rotation::DeferredRotations::new(self.store, self.namespace_id)
+                        .forget(id)?;
+                }
                 Ok(settled)
             });
         match settled {
