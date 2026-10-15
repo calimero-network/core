@@ -1,4 +1,9 @@
-//! Drains the pending forward-secrecy rotations that self-leaves leave behind.
+//! Drains the pending forward-secrecy rotations that departures leave behind.
+//!
+//! A self-leave owes a rotation of the group left. A removal or a leave also owes
+//! one of every descendant covered by its own key (an Open group behind a
+//! Restricted wall) that the member reached only by inheritance: the departure
+//! ends the inheritance but rotates none of those keys.
 //!
 //! # The hand-off
 //!
@@ -202,9 +207,10 @@ async fn run(
         };
 
         // `MemberRemoved` fires for BOTH an admin-initiated removal and a self-leave.
-        // We only owe a rotation for the latter — and the pending row is exactly what
-        // distinguishes them, because an admin's removal already carried its own
-        // rotation and never wrote one. So the row check below is the whole filter.
+        // A self-leave owes a rotation of the group left; either owes one of each
+        // descendant covered by its own key that the member reached only by
+        // inheritance. An admin's removal already rotated the group it names and
+        // wrote no row for it, so the pending rows below are the whole filter.
         // Two shapes of debt, and they are NOT interchangeable: a departure excludes
         // the account by name, a revocation excludes nobody (the device is already
         // out of the recipient list, and its account still holds other devices).
@@ -212,34 +218,58 @@ async fn run(
             continue;
         };
 
-        // The row is the whole filter. `MemberRemoved` fires for an admin-initiated
+        // The rows are the whole filter. `MemberRemoved` fires for an admin-initiated
         // removal too, and `DeviceRevoked` for an admin-published revocation — both
         // of which already carried their own rotation, whose apply cleared the row
         // before this ever runs.
-        let pending = match debt {
-            RotationDebt::MemberDeparted(member) => {
-                PendingRotationRepository::new(&store).is_pending(&group_id, &member)
-            }
-            RotationDebt::DeviceRevoked(device) => {
-                PendingDeviceRotationRepository::new(&store).is_pending(&group_id, &device)
-            }
-        };
-        match pending {
-            Ok(true) => {}
-            Ok(false) => continue,
+        let owed = match owed_rotations(&store, group_id, debt) {
+            Ok(owed) => owed,
             Err(err) => {
                 warn!(?group_id, %err, "rotation listener: pending-rotation lookup failed");
                 continue;
             }
-        }
+        };
 
-        // Own task per event, so a slow publish never blocks the receive loop and lets
-        // the bounded broadcast channel overflow. Rotation is idempotent, so a late or
-        // duplicated task is harmless.
-        let context_client = context_client.clone();
-        tokio::spawn(async move {
-            rotate(&context_client, group_id, debt).await;
-        });
+        // Own task per rotation, so a slow publish never blocks the receive loop and
+        // lets the bounded broadcast channel overflow. Rotation is idempotent, so a
+        // late or duplicated task is harmless.
+        for (group_id, debt) in owed {
+            let context_client = context_client.clone();
+            tokio::spawn(async move {
+                rotate(&context_client, group_id, debt).await;
+            });
+        }
+    }
+}
+
+/// The rotations still owed once the event's op applied.
+///
+/// A departure owes one for the group it names (a self-leave) and one for every
+/// descendant covered by its own key that the member reached only by inheritance
+/// (a removal or a leave of an ancestor), all recorded by the same apply. So a
+/// `MemberRemoved` wakes every pending row naming the member, not only the row of
+/// its own group. A revocation owes at most the one row for its group.
+fn owed_rotations(
+    store: &Store,
+    group_id: ContextGroupId,
+    debt: RotationDebt,
+) -> eyre::Result<Vec<(ContextGroupId, RotationDebt)>> {
+    match debt {
+        RotationDebt::MemberDeparted(member) => Ok(PendingRotationRepository::new(store)
+            .all_pending()?
+            .into_iter()
+            .filter(|(_, departed)| *departed == member)
+            .map(|(group, departed)| (group, RotationDebt::MemberDeparted(departed)))
+            .collect()),
+        RotationDebt::DeviceRevoked(device) => {
+            let pending =
+                PendingDeviceRotationRepository::new(store).is_pending(&group_id, &device)?;
+            Ok(if pending {
+                vec![(group_id, debt)]
+            } else {
+                Vec::new()
+            })
+        }
     }
 }
 
@@ -285,8 +315,11 @@ async fn rotate(context_client: &ContextClient, group_id: ContextGroupId, debt: 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use calimero_account::{AccountGenesis, DeviceId};
     use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::InMemoryDB;
 
     use super::*;
 
@@ -308,5 +341,36 @@ mod tests {
             owed,
             Some((g, RotationDebt::DeviceRevoked(d))) if g == ContextGroupId::from(group) && d == device
         ));
+    }
+
+    /// A removal rotates the group it names on the op, and leaves rows only for
+    /// the descendants it exposed. Waking on the named group's row alone left
+    /// those for the next restart's sweep.
+    #[test]
+    fn a_departure_wakes_every_rotation_owed_for_the_member() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let named = ContextGroupId::from([0x11; 32]);
+        let child = ContextGroupId::from([0x22; 32]);
+        let grandchild = ContextGroupId::from([0x33; 32]);
+        let departed = AccountGenesis::new(PrivateKey::from([7; 32]).public_key()).account_id();
+        let other = AccountGenesis::new(PrivateKey::from([8; 32]).public_key()).account_id();
+        let pending = PendingRotationRepository::new(&store);
+        pending.mark(&child, &departed).unwrap();
+        pending.mark(&grandchild, &departed).unwrap();
+        pending.mark(&child, &other).unwrap();
+
+        let mut owed: Vec<ContextGroupId> =
+            owed_rotations(&store, named, RotationDebt::MemberDeparted(departed))
+                .unwrap()
+                .into_iter()
+                .map(|(group, debt)| {
+                    assert!(matches!(debt, RotationDebt::MemberDeparted(d) if d == departed));
+                    group
+                })
+                .collect();
+        owed.sort();
+        let mut expected = vec![child, grandchild];
+        expected.sort();
+        assert_eq!(owed, expected);
     }
 }

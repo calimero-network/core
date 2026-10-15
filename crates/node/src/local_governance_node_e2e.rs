@@ -4930,6 +4930,151 @@ async fn flipping_an_open_subgroup_to_restricted_rotates_its_key() {
     assert!(key_rotation.is_none(), "opening a subgroup rotates nothing");
 }
 
+/// Removing a member from a Restricted group rotates the key of an Open child it
+/// reached only by inheritance, and the members who still inherit it receive the
+/// new key in the rotation itself.
+///
+/// The Open child sits behind a Restricted wall, so it is covered by its OWN key,
+/// which every inheritor may pull. Before, a removal rotated only the group it
+/// named: the removed node kept the child's current key and read everything
+/// written there afterwards.
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn removing_a_member_rotates_an_open_child_it_inherited() {
+    use calimero_context_client::group::RemoveGroupMembersRequest;
+    use calimero_context_client::local_governance::NamespaceOp;
+    use calimero_context_config::MemberCapabilities;
+    use calimero_governance_store::test_fixtures::{device_secret_for, enrol_member};
+    use calimero_governance_store::{
+        key_covering_group, CapabilitiesRepository, GroupKeyring, MembershipRepository,
+        PendingRotationRepository,
+    };
+
+    let node = boot_test_node().await;
+    let mut rng = UnwrapErr(SysRng);
+    let ns_gid = ContextGroupId::from(*PrivateKey::random(&mut rng).public_key());
+    let admin_pk = provision_tee_owner(&node, &ns_gid, &mut rng);
+    let wall = create_restricted_subgroup(&node, &ns_gid, &admin_pk).await;
+    let child = create_born_open_subgroup(&node, &wall).await;
+    assert_eq!(
+        key_covering_group(&node.store, &child).expect("covering key"),
+        child,
+        "precondition: an Open group behind a Restricted wall is covered by its own key"
+    );
+
+    let removed_sk = PrivateKey::random(&mut rng);
+    let inheritor_sk = PrivateKey::random(&mut rng);
+    let members = MembershipRepository::new(&node.store);
+    let [removed, inheritor] = [&removed_sk, &inheritor_sk].map(|sk| {
+        let account = enrol_member(&node.store, &ns_gid, &sk.public_key());
+        for group in [&ns_gid, &wall] {
+            members
+                .add_member(group, &account, GroupMemberRole::Member)
+                .expect("add member");
+        }
+        CapabilitiesRepository::new(&node.store)
+            .set_member_capability(
+                &wall,
+                &account,
+                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits(),
+            )
+            .expect("grant inheritance");
+        account
+    });
+    for account in [&removed, &inheritor] {
+        assert!(
+            members.is_live_member(&child, account).unwrap(),
+            "precondition: both members reach the Open child by inheritance"
+        );
+    }
+
+    // While it inherits, the member to be removed is served the child's key.
+    let key_before = GroupKeyring::new(&node.store, child)
+        .load_current_key()
+        .unwrap()
+        .expect("the child holds its birth key")
+        .1;
+    assert_eq!(
+        pulled_key(&node.store, &ns_gid, &child, &removed_sk),
+        Some(key_before),
+        "precondition: the member to be removed holds the child's current key"
+    );
+
+    node.context_client
+        .remove_group_members(RemoveGroupMembersRequest {
+            group_id: wall,
+            members: vec![removed],
+        })
+        .await
+        .expect("remove the member from the Restricted group");
+
+    let store = node.store.clone();
+    let rotated = wait_until(|| {
+        let discharged = !PendingRotationRepository::new(&store)
+            .is_pending(&child, &removed)
+            .unwrap_or(true);
+        let rekeyed = GroupKeyring::new(&store, child)
+            .load_current_key()
+            .ok()
+            .flatten()
+            .is_some_and(|(_, key)| key != key_before);
+        discharged && rekeyed
+    })
+    .await;
+    assert!(
+        rotated,
+        "the removal never rotated the Open child: the removed member still holds the key \
+         everything written there is sealed under"
+    );
+
+    let (new_key_id, new_key) = GroupKeyring::new(&node.store, child)
+        .load_current_key()
+        .unwrap()
+        .expect("a current child key");
+    let rotation = published_namespace_ops(&node)
+        .into_iter()
+        .rev()
+        .find_map(|op| match op.op {
+            NamespaceOp::Group {
+                group_id,
+                key_rotation: Some(rotation),
+                ..
+            } if group_id.to_bytes() == child.to_bytes() => Some(rotation),
+            _ => None,
+        })
+        .expect("the child's rotation was published");
+    assert_eq!(rotation.new_key_id.to_bytes(), new_key_id);
+    let opens_for = |sk: &PrivateKey| {
+        let device = device_secret_for(&sk.public_key());
+        rotation.envelopes.iter().find_map(|envelope| {
+            GroupKeyring::unwrap_any(
+                sk,
+                Some(&device),
+                &child.to_bytes(),
+                Some(&admin_pk),
+                envelope,
+            )
+            .ok()
+        })
+    };
+    assert_eq!(
+        opens_for(&inheritor_sk),
+        Some(new_key),
+        "a member who still inherits the child must receive its new key in the rotation, \
+         without a pull"
+    );
+    assert_eq!(
+        opens_for(&removed_sk),
+        None,
+        "the removed member must not be able to open the rotation"
+    );
+    assert_eq!(
+        pulled_key(&node.store, &ns_gid, &child, &removed_sk),
+        None,
+        "nor pull the new key"
+    );
+}
+
 /// A namespace op is applied only when it arrives on that namespace's own gossip
 /// topic, whatever namespace id the envelope carries.
 #[tokio::test]

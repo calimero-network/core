@@ -3,6 +3,7 @@
 
 use super::super::super::verify_post_apply_state_hashes;
 use super::context::GroupApplyCtx;
+use crate::pending_rotation::{inherited_own_keyed_descendants, mark_exposed_descendants};
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
     MembershipRepository, MetaRepository, NamespaceRepository, ReentryRepository,
@@ -68,6 +69,9 @@ pub(crate) fn apply(
              inherited membership); skipping TeeMemberRemoved follow-up"
         );
     }
+    // The own-keyed descendants the member reaches only by inheritance, read
+    // before anything below ends it. See `inherited_own_keyed_descendants`.
+    let inherited_descendants = inherited_own_keyed_descendants(store, group_id, member)?;
     // A namespace-root removal of a TEE member (`ReadOnlyTee` or `RelayTee`)
     // evicts it namespace-wide:
     // the TEE's presence in any subgroup came from namespace-level
@@ -246,6 +250,12 @@ pub(crate) fn apply(
         expected_group_state_hash,
         expected_context_state_hashes,
     );
+    // The publisher rotates `group_id` itself on this op. A descendant the member
+    // reached only by inheritance is covered by a key of its own, which the
+    // removal does not rotate: record that debt for a remaining admin to pay
+    // (`calimero_context::rotation_listener`, woken by the `MemberRemoved` event
+    // below). A separate, unhashed column, so it runs after the hash check.
+    mark_exposed_descendants(store, &inherited_descendants, member)?;
     ctx.queue_event(crate::op_events::OpEvent::MemberRemoved {
         group_id: group_id.to_bytes(),
         member: *member,

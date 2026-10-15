@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{
     AccountBindingRepository, CapabilitiesRepository, DeviceSecret, KeyringError,
     MembershipRepository, NamespaceRepository, NodeDeviceRepository,
@@ -980,10 +982,32 @@ impl<'a> GroupKeyring<'a> {
     /// [`member_account_in_namespace`](crate::member_account_in_namespace)
     /// exists for.
     ///
+    /// **A group covered by its own key also reaches the members who inherit
+    /// it.** Inheriting an Open group writes no row, so for an Open group behind
+    /// a Restricted wall (covered by its own key, see [`key_covering_group`]) a
+    /// list of direct rows left every inheritor out of each rotation, and they
+    /// read the group again only once they pulled. Live inheritors
+    /// ([`MembershipRepository::enumerate_inherited`], filtered by
+    /// [`MembershipRepository::is_live_member`]) are listed too. A Restricted
+    /// group has none, and a namespace-covered group is never rotated here.
+    /// Who receives a rotation is the publisher's choice; peers never check it.
+    ///
     /// # Errors
     /// Propagates the membership or account-row scan failure.
     pub fn current_key_recipients(&self) -> EyreResult<Vec<EntitledRecipient>> {
-        let members = MembershipRepository::new(self.store).list(&self.group_id, 0, usize::MAX)?;
+        let membership = MembershipRepository::new(self.store);
+        let mut members: BTreeSet<AccountId> = membership
+            .list(&self.group_id, 0, usize::MAX)?
+            .into_iter()
+            .map(|(member, _)| member)
+            .collect();
+        if key_covering_group(self.store, &self.group_id)? == self.group_id {
+            for (inheritor, _) in membership.enumerate_inherited(&self.group_id)? {
+                if membership.is_live_member(&self.group_id, &inheritor)? {
+                    let _ = members.insert(inheritor);
+                }
+            }
+        }
         let namespace = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         // One scan for the whole fan-out. Asking per account inside the member
         // loop rescanned the binding column once per member.
@@ -991,7 +1015,7 @@ impl<'a> GroupKeyring<'a> {
             AccountBindingRepository::new(self.store).live_devices_by_account(&namespace)?;
 
         let mut out = Vec::with_capacity(members.len());
-        for (member, _) in members {
+        for member in members {
             for binding in devices.get(&member).map(Vec::as_slice).unwrap_or(&[]) {
                 if NodeDeviceRepository::new(self.store)
                     .is_spent_in_own_account(member, binding.device)?

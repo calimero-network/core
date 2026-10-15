@@ -51,7 +51,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 use super::collect_keys_with_prefix;
-use crate::key_covering_group;
+use crate::{key_covering_group, MembershipRepository, NamespaceRepository};
 
 /// Does a departure from `group_id` require a key rotation?
 ///
@@ -74,6 +74,64 @@ pub fn group_rotates_on_departure(store: &Store, group_id: &ContextGroupId) -> E
     Ok(key_covering_group(store, group_id)? == *group_id)
 }
 
+/// The groups below `group_id` that `member` reaches only by inheritance and
+/// that are covered by their own key: read BEFORE a departure from `group_id`
+/// applies, and passed to [`mark_exposed_descendants`] once it has.
+///
+/// An Open group behind a Restricted wall is covered by its own key, and every
+/// member who inherits it may pull that key. A departure from an ancestor ends
+/// the inheritance without touching the descendant, so the rotation the
+/// departure owes for `group_id` itself does nothing for these: the departed
+/// member keeps reading them until each is rotated in turn.
+///
+/// Read before the apply because only the state before it says whether the
+/// member reached the group at all. A Restricted descendant it never belonged to
+/// holds no key it has, and is no debt. A direct row is left out: a departure
+/// from `group_id` does not end it (a namespace leave, which does, records those
+/// rows itself).
+pub(crate) fn inherited_own_keyed_descendants(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &AccountId,
+) -> EyreResult<Vec<ContextGroupId>> {
+    let membership = MembershipRepository::new(store);
+    let mut reached = Vec::new();
+    for descendant in NamespaceRepository::new(store).collect_descendants(group_id)? {
+        if descendant == *group_id
+            || !group_rotates_on_departure(store, &descendant)?
+            || membership.role_of(&descendant, member)?.is_some()
+        {
+            continue;
+        }
+        if membership.is_live_member(&descendant, member)? {
+            reached.push(descendant);
+        }
+    }
+    Ok(reached)
+}
+
+/// Record the rotation owed by each of `reached` that `member` no longer belongs
+/// to after the departure applied. `reached` comes from
+/// [`inherited_own_keyed_descendants`].
+///
+/// Deterministic like the rest of the apply: it reads only the tree and rows the
+/// apply just wrote. The rows are local bookkeeping, outside the group state hash
+/// and every peer verdict; a remaining admin pays each with a `GroupKeyRotated`.
+pub(crate) fn mark_exposed_descendants(
+    store: &Store,
+    reached: &[ContextGroupId],
+    member: &AccountId,
+) -> EyreResult<()> {
+    let membership = MembershipRepository::new(store);
+    let pending = PendingRotationRepository::new(store);
+    for group in reached {
+        if !membership.is_live_member(group, member)? {
+            pending.mark(group, member)?;
+        }
+    }
+    Ok(())
+}
+
 /// Typed repository over the pending-key-rotation worklist.
 ///
 /// A row means: `group_id` owes a rotation because `departed` left it, and none has
@@ -89,8 +147,10 @@ impl<'a> PendingRotationRepository<'a> {
 
     /// Record that `group_id` owes a rotation because `departed` left.
     ///
-    /// Idempotent. Called from the `MemberLeft` apply on every node, so the worklist
-    /// is replicated rather than gossiped.
+    /// Idempotent. Called from the `MemberLeft` apply, and from the `MemberRemoved`
+    /// and `MemberLeft` applies for the descendants a departure exposes
+    /// ([`mark_exposed_descendants`]), on every node, so the worklist is replicated
+    /// rather than gossiped.
     pub fn mark(&self, group_id: &ContextGroupId, departed: &AccountId) -> EyreResult<()> {
         let key = GroupPendingKeyRotation::new(group_id.to_bytes(), *departed);
         let mut handle = self.store.handle();
