@@ -2335,10 +2335,16 @@ impl SyncManager {
                         // the gov-DAG (the exact gap the flip closes). We have the
                         // freshly-decrypted fold in hand here; the op-store mirror is
                         // for the cold-start read path.
+                        //
+                        // The re-persist also replays the group's ops once more: one
+                        // that arrived while the replay above was still running was
+                        // held against the fold it saw, and no later key arrives to
+                        // replay it.
                         let store = self.context_client.datastore_handle().into_inner();
-                        calimero_context::scope_projection::ScopeProjections::repersist_namespace_ops(
+                        let late_divergence = calimero_context::refresh_after_group_key(
                             &store,
-                            namespace_id,
+                            namespace_id.into(),
+                            calimero_context_config::types::ContextGroupId::from(group_id),
                         );
                         let refreshed =
                             calimero_context::scope_projection::ScopeProjections::collect_namespace_ops(
@@ -2351,6 +2357,9 @@ impl SyncManager {
                                 .apply_backfill_with_base(&store, namespace_id, ops);
                         }
                         drop(store);
+                        if let Some(report) = late_divergence {
+                            self.reconcile_after_divergence(report).await;
+                        }
 
                         self.drain_governance_pending_after_sync().await;
                     }
