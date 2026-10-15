@@ -567,7 +567,8 @@ impl<'a> PermissionChecker<'a> {
     /// A creator later removed from the subgroup can still open it: that removal
     /// is sealed under the subgroup's key, so honouring it would bring back the
     /// split this rule removes. Removal from the namespace does stop it: the signer
-    /// and the creator's namespace role are both read at the flip's cut.
+    /// and the creator's namespace role are read at the flip's cut, and a concurrent
+    /// namespace removal voids the flip.
     ///
     /// A group with no recorded creator - a namespace root, which no
     /// `GroupCreated` makes, and whose history every member reads anyway - keeps
