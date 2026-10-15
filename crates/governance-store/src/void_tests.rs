@@ -2478,3 +2478,36 @@ fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every
         "a flip voided by its creator's concurrent removal opened the subgroup"
     );
 }
+
+#[test]
+fn a_flip_that_counts_again_after_its_removal_is_voided_does_not_open_the_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let founding = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+
+    // Bob, no creator, opens it while Sam removes Bob and Alice removes Sam.
+    let flip = sign_in_group(
+        &w,
+        &w.bob,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let removes_bob = w.remove(&w.sam, &[&create], &w.bob, None);
+    let removes_sam = w.remove(&w.alice, &[&create], &w.sam, None);
+    w.apply(&removes_bob).expect("sam removes bob");
+    let _void = w.apply(&flip);
+    let _voids_the_removal = w.apply(&removes_sam);
+
+    assert_eq!(
+        visibility(&w, &subgroup),
+        VisibilityMode::Restricted,
+        "a flip no gate judged opened the subgroup once its removal was voided"
+    );
+}
