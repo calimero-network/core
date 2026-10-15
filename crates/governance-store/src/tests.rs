@@ -16908,7 +16908,7 @@ mod invite_capability {
             SignedNamespaceOp::sign(joiner_sk, f.ns_id.into(), TEST_CUT.to_vec(), 1, wire).unwrap();
         signed.admitter_endorsement = Some(Box::new(endorsement));
         crate::apply_signed_namespace_op_at_cut(&f.store, &signed, &TEST_CUT, authorizer)
-            .map(|_result| ())
+            .and_then(|result| result.refused.map_or(Ok(()), Err))
     }
 
     #[test]

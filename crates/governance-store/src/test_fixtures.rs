@@ -1581,5 +1581,6 @@ pub fn apply_member_joined(
     // On the envelope, after signing — see above.
     let mut signed = signed;
     signed.admitter_endorsement = Some(admitter_endorsement);
-    crate::apply_signed_namespace_op(store, &signed).map(|_result| ())
+    crate::apply_signed_namespace_op(store, &signed)
+        .and_then(|result| result.refused.map_or(Ok(()), Err))
 }

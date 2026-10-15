@@ -410,8 +410,11 @@ mod tests {
                 self.next_nonce(),
                 op,
             )?;
-            let _applied = NamespaceGovernance::new(&self.store, self.ns.to_bytes().into())
+            let applied = NamespaceGovernance::new(&self.store, self.ns.to_bytes().into())
                 .apply_signed_op(&signed)?;
+            if let Some(refused) = applied.refused {
+                return Err(refused);
+            }
             Ok(signed.content_hash()?)
         }
 

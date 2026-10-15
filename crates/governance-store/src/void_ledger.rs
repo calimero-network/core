@@ -138,6 +138,11 @@ impl<'a> VoidLedger<'a> {
         self.put_parked(op, UNDECIDED)
     }
 
+    /// Remember that `op` was refused at its cut on arrival, so it folds as nothing.
+    pub(crate) fn note_refused(&self, op: [u8; 32]) -> EyreResult<()> {
+        self.put_parked(op, REFUSED)
+    }
+
     /// Record a replay's verdict on `op` at its cut; `false` when that changed nothing:
     /// it was not parked, since a replay may refuse what an arrival applied, or it was
     /// refused already.

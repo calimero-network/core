@@ -29,6 +29,7 @@ use crate::governance_broadcast::{
 };
 use crate::held_ops::HeldOps;
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
+use crate::op_budget::OpBudget;
 use crate::op_events::{notify as notify_op_event, OpEvent};
 use crate::void_ledger::{KeyIntro, Parked, VoidLedger, STORED_BEFORE};
 
@@ -62,6 +63,19 @@ pub struct ApplyNamespaceOpResult {
     /// ops that match the receiver's view, and for ops that don't go
     /// through the verify path at all.
     pub divergence: Option<super::super::DivergenceReport>,
+    /// Why a peer's subgroup op was refused at its cut, when it was logged as a
+    /// refusal instead of failing the apply.
+    pub refused: Option<eyre::Report>,
+}
+
+/// What applying an op's payload did, for the bookkeeping that logs it.
+#[derive(Default)]
+struct AppliedPayload {
+    result: ApplyNamespaceOpResult,
+    root_events: Vec<OpEvent>,
+    unified: Option<Op>, // the op as the unified log holds it, for the arms that take authority away
+    keep_bytes: bool,
+    parked: Option<Parked>, // the verdict a replay owes it, or the one it was refused with
 }
 
 /// The source string to persist on an application stub built from an inbound
@@ -375,6 +389,59 @@ impl<'a> NamespaceGovernance<'a> {
         // is "current", unlike the old wall-clock ordering.
         let op_sequence = self.read_head_record()?.next_nonce;
 
+        let AppliedPayload {
+            result,
+            root_events,
+            unified: applied,
+            keep_bytes,
+            parked,
+        } = match self.apply_payload(op, delta_id, op_sequence) {
+            Err(err) if self.logs_refusal(op, &err)? => self.refused_payload(op, delta_id, err)?,
+            outcome => outcome?,
+        };
+
+        // Ordering: advance the head first, then write the op to the log —
+        // `publish_post_gate` uses the same order. The store gives us no
+        // transaction across the two keys, so this ordering is the one that
+        // keeps the idempotency guard's invariant ("op in the log ⟹ its head
+        // advance already ran"): a crash between the two writes leaves the op
+        // *not* in the log, so a retry sees `contains_op == false` and
+        // re-applies — re-running the (replay-safe) side effects above and
+        // calling `advance_dag_head` again, where the dedup makes the second
+        // add a no-op. The reverse order would leave the op logged but the
+        // head un-advanced, and a later re-receive would hit the guard, skip
+        // the apply, and never advance the head for it. A truly atomic update
+        // would need a single-batch write spanning both keys.
+        self.mark_parked(op, delta_id, parked)?;
+        let head = self.read_head_record()?;
+        self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
+        // An op that takes authority away may void ops already applied. Done before
+        // the op is stored, so a failure leaves it to be applied again.
+        if let Some(applied) = applied.as_ref().filter(|op| may_void_others(op)) {
+            self.reconcile_voided(Some((applied, op, delta_id)))?;
+        }
+        match self.storage_for(op, delta_id, keep_bytes, parked)? {
+            None => self.store_operation(op)?,
+            Some(hole) => NamespaceOpLogService::new(self.store, self.namespace_id)
+                .store_skeleton_operation(op, hole)?,
+        }
+
+        // #2770: flush RootOp-path events only after the namespace op is appended.
+        for event in root_events {
+            crate::op_events::notify(event);
+        }
+
+        Ok(result)
+    }
+
+    /// Apply what `op` carries, short of its place in the log, which the caller
+    /// records whatever this returns.
+    fn apply_payload(
+        &self,
+        op: &SignedNamespaceOp,
+        delta_id: [u8; 32],
+        op_sequence: u64,
+    ) -> EyreResult<AppliedPayload> {
         let mut result = ApplyNamespaceOpResult::default();
         let mut root_events: Vec<crate::op_events::OpEvent> = Vec::new();
         // The op as the unified log holds it, for the arms that can take authority
@@ -382,7 +449,8 @@ impl<'a> NamespaceGovernance<'a> {
         let mut applied: Option<Op> = None;
         // Whether the op's bytes may be kept, or only its place in the log.
         let mut keep_bytes = true;
-        // Whether the op arrived sealed under a key this node does not hold.
+        // Whether the op is kept unjudged: sealed under a key this node does not
+        // hold, or held on its group's sealed history.
         let mut unread = false;
 
         // Open a sealed root op before the match, so the arm below sees a `RootOp`
@@ -843,6 +911,8 @@ impl<'a> NamespaceGovernance<'a> {
                             HeldOps::new(self.store, self.namespace_id)
                                 .hold(delta_id, group_id_typed.to_bytes())?;
                             held = true;
+                            unread = true;
+                            keep_bytes &= self.admit_unreadable(op)?;
                             applied = None;
                             if key_rotation.is_some() {
                                 DeferredRotations::new(self.store, self.namespace_id)
@@ -869,38 +939,55 @@ impl<'a> NamespaceGovernance<'a> {
             _ => {}
         }
 
-        // Ordering: advance the head first, then write the op to the log —
-        // `publish_post_gate` uses the same order. The store gives us no
-        // transaction across the two keys, so this ordering is the one that
-        // keeps the idempotency guard's invariant ("op in the log ⟹ its head
-        // advance already ran"): a crash between the two writes leaves the op
-        // *not* in the log, so a retry sees `contains_op == false` and
-        // re-applies — re-running the (replay-safe) side effects above and
-        // calling `advance_dag_head` again, where the dedup makes the second
-        // add a no-op. The reverse order would leave the op logged but the
-        // head un-advanced, and a later re-receive would hit the guard, skip
-        // the apply, and never advance the head for it. A truly atomic update
-        // would need a single-batch write spanning both keys.
-        self.mark_parked(op, delta_id, unread && keep_bytes)?;
-        let head = self.read_head_record()?;
-        self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
-        // An op that takes authority away may void ops already applied. Done before
-        // the op is stored, so a failure leaves it to be applied again.
-        if let Some(applied) = applied.as_ref().filter(|op| may_void_others(op)) {
-            self.reconcile_voided(Some((applied, op, delta_id)))?;
-        }
-        match self.storage_for(op, delta_id, keep_bytes)? {
-            None => self.store_operation(op)?,
-            Some(hole) => NamespaceOpLogService::new(self.store, self.namespace_id)
-                .store_skeleton_operation(op, hole)?,
-        }
+        Ok(AppliedPayload {
+            result,
+            root_events,
+            unified: applied,
+            keep_bytes,
+            parked: (unread && keep_bytes).then_some(Parked::Undecided),
+        })
+    }
 
-        // #2770: flush RootOp-path events only after the namespace op is appended.
-        for event in root_events {
-            crate::op_events::notify(event);
+    /// Whether a refusal of `op` is logged as a verdict instead of returned. A peer's
+    /// subgroup op is logged unread or held by members outside the subgroup, so the
+    /// nodes that can judge it must keep it in the DAG too, or they split from them.
+    fn logs_refusal(&self, op: &SignedNamespaceOp, err: &eyre::Report) -> EyreResult<bool> {
+        let group = match &op.op {
+            NamespaceOp::Group { group_id, .. }
+            | NamespaceOp::RootSealedForGroup { group_id, .. } => group_id.to_bytes(),
+            _ => return Ok(false),
+        };
+        if group == self.namespace_id.to_bytes() || is_undecidable(err) {
+            return Ok(false);
         }
+        let namespace = ContextGroupId::from(self.namespace_id.to_bytes());
+        let local = NamespaceRepository::new(self.store).identity(&namespace)?;
+        Ok(local.is_none_or(|(local_pk, ..)| local_pk != op.signer))
+    }
 
-        Ok(result)
+    /// The payload of an op refused at its cut: nothing applied, folded as nothing.
+    fn refused_payload(
+        &self,
+        op: &SignedNamespaceOp,
+        delta_id: [u8; 32],
+        err: eyre::Report,
+    ) -> EyreResult<AppliedPayload> {
+        tracing::warn!(
+            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+            delta_id = %hex::encode(delta_id),
+            signer = %op.signer,
+            error = %format!("{err:#}"),
+            "logging a refused op: it keeps its place in the DAG and applies nothing"
+        );
+        Ok(AppliedPayload {
+            keep_bytes: OpBudget::void(self.store).admit_op(op)?,
+            parked: Some(Parked::Refused),
+            result: ApplyNamespaceOpResult {
+                refused: Some(err),
+                ..ApplyNamespaceOpResult::default()
+            },
+            ..AppliedPayload::default()
+        })
     }
 
     /// Like [`Self::sign_apply_and_publish`] but also hands back the signed op,
@@ -2983,6 +3070,9 @@ impl<'a> NamespaceGovernance<'a> {
                 return at_cut;
             }
         }
+        if state == Parked::Refused {
+            eyre::bail!("a root op refused at its cut stays refused");
+        }
         let outcome = self.apply_root_op(gate_op, root);
         if outcome.is_ok() {
             self.settle_parked(parked, true);
@@ -3009,6 +3099,9 @@ impl<'a> NamespaceGovernance<'a> {
                 self.settle_parked(ns_op, at_cut.is_ok());
                 return at_cut;
             }
+        }
+        if parked == Some(Parked::Refused) {
+            eyre::bail!("a group op refused at its cut stays refused");
         }
         let outcome = self.decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
         if parked.is_some() && outcome.is_ok() {

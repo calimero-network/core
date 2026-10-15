@@ -645,3 +645,292 @@ mod open_join {
         );
     }
 }
+
+mod held_ops {
+    use std::collections::BTreeMap;
+
+    use calimero_governance_store::held_ops::HeldOps;
+    use calimero_governance_store::test_fixtures::{
+        derived_group_id, group_created, seal_for_test,
+    };
+    use calimero_governance_store::unified_op_decode::OpenedNamespaceOp;
+
+    use super::*;
+
+    const SUBGROUP_KEY: [u8; 32] = [0x78; 32]; // the key only the inside node holds at first
+
+    fn under_namespace_key(
+        store: &Store,
+        namespace: &ContextGroupId,
+        group: &ContextGroupId,
+        op: &GroupOp,
+    ) -> NamespaceOp {
+        let (key_id, key) = GroupKeyring::new(store, *namespace)
+            .load_current_key()
+            .expect("read the namespace keyring")
+            .expect("the world keys the namespace");
+        NamespaceOp::Group {
+            group_id: group.to_bytes().into(),
+            key_id: key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&key, op).expect("seal a group op"),
+            key_rotation: None,
+        }
+    }
+
+    /// A Restricted subgroup whose history is sealed under a key only `inside`
+    /// holds, and a member's unauthorized op of it sealed under the namespace key.
+    struct SealedSubgroup {
+        world: &'static World,
+        inside: Store,
+        outside: Store,
+        subgroup: ContextGroupId,
+        attack: SignedNamespaceOp,
+    }
+
+    impl SealedSubgroup {
+        fn heads(store: &Store, world: &World) -> Vec<[u8; 32]> {
+            NamespaceGovernance::new(store, world.namespace.to_bytes().into())
+                .read_head_record()
+                .expect("read the DAG head")
+                .parent_hashes
+        }
+
+        fn role_in_subgroup(&self, store: &Store) -> Option<GroupMemberRole> {
+            let member = self.world.actor(ActorState::DirectMember);
+            MembershipRepository::new(store)
+                .role_of(&self.subgroup, &member.account)
+                .expect("read the role")
+        }
+    }
+
+    async fn unauthorized_op_under_the_namespace_key() -> SealedSubgroup {
+        let world = World::shared();
+        let (inside, outside) = (world.fork(), world.fork());
+        let namespace = world.namespace;
+        let owner = world.actor(ActorState::Owner);
+        let member = world.actor(ActorState::DirectMember);
+        let subgroup = ContextGroupId::from(derived_group_id(
+            &owner.account,
+            namespace.to_bytes(),
+            true,
+            0x72,
+        ));
+        let create = sign_next(
+            &inside,
+            &namespace,
+            &world.owner_sk,
+            seal_for_test(
+                &inside,
+                namespace,
+                group_created(owner.account, namespace.to_bytes(), true, 0x72),
+            ),
+        );
+        for store in [&inside, &outside] {
+            apply(store, &create)
+                .await
+                .expect("the owner makes a Restricted subgroup");
+        }
+
+        // The sealed history is the admin's, not the local identity's own: a node
+        // never re-drives its own ops, which it held the key to write.
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let seat_admin = sign_next(
+            &inside,
+            &namespace,
+            &world.owner_sk,
+            under_namespace_key(
+                &inside,
+                &namespace,
+                &namespace,
+                &GroupOp::MemberRoleSet {
+                    member: admin.account,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+        );
+        for store in [&inside, &outside] {
+            apply(store, &seat_admin)
+                .await
+                .expect("the owner logs the admin's role");
+        }
+
+        let subgroup_key_id = GroupKeyring::new(&inside, subgroup)
+            .store_key(&SUBGROUP_KEY)
+            .expect("only the inside node holds the subgroup's key");
+        let sealed = sign_next(
+            &inside,
+            &namespace,
+            &admin.sign_sk,
+            NamespaceOp::Group {
+                group_id: subgroup.to_bytes().into(),
+                key_id: subgroup_key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(
+                    &SUBGROUP_KEY,
+                    &GroupOp::GroupMetadataSet {
+                        name: Some("sealed".to_owned()),
+                        data: BTreeMap::new(),
+                    },
+                )
+                .expect("seal under the subgroup's key"),
+                key_rotation: None,
+            },
+        );
+        for store in [&inside, &outside] {
+            apply(store, &sealed)
+                .await
+                .expect("the sealed op applies or is logged unreadable");
+        }
+
+        let attack = sign_next(
+            &inside,
+            &namespace,
+            &member.sign_sk,
+            under_namespace_key(
+                &inside,
+                &namespace,
+                &subgroup,
+                &GroupOp::MemberRoleSet {
+                    member: member.account,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+        );
+        SealedSubgroup {
+            world,
+            inside,
+            outside,
+            subgroup,
+            attack,
+        }
+    }
+
+    #[actix::test]
+    async fn an_unauthorized_subgroup_op_gets_the_same_verdict_inside_and_outside_the_subgroup() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+
+        let outside_verdict = apply(&f.outside, &f.attack).await;
+        let inside_verdict = apply(&f.inside, &f.attack).await;
+
+        assert!(
+            inside_verdict.is_ok() && outside_verdict.is_ok(),
+            "inside: {inside_verdict:?}, outside: {outside_verdict:?}"
+        );
+        assert_eq!(
+            SealedSubgroup::heads(&f.inside, f.world),
+            SealedSubgroup::heads(&f.outside, f.world),
+            "the two nodes moved past the op differently"
+        );
+        assert_eq!(f.role_in_subgroup(&f.inside), None, "inside applied it");
+        assert_eq!(f.role_in_subgroup(&f.outside), None, "outside applied it");
+    }
+
+    #[actix::test]
+    async fn an_op_published_after_a_refused_subgroup_op_applies_on_every_node() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        apply(&f.outside, &f.attack)
+            .await
+            .expect("outside logs the op it cannot judge");
+
+        let after = sign_next(
+            &f.outside,
+            &f.world.namespace,
+            &f.world.owner_sk,
+            under_namespace_key(
+                &f.outside,
+                &f.world.namespace,
+                &f.world.namespace,
+                &GroupOp::GroupMetadataSet {
+                    name: Some("after".to_owned()),
+                    data: BTreeMap::new(),
+                },
+            ),
+        );
+        apply(&f.outside, &after)
+            .await
+            .expect("outside applies its own follow-up");
+
+        apply(&f.inside, &f.attack)
+            .await
+            .expect("inside logs the op it refuses");
+        apply(&f.inside, &after)
+            .await
+            .expect("an op citing the refused one applies inside");
+        assert_eq!(
+            SealedSubgroup::heads(&f.inside, f.world),
+            SealedSubgroup::heads(&f.outside, f.world)
+        );
+    }
+
+    #[actix::test]
+    async fn a_held_subgroup_op_is_not_folded_into_the_projection() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+
+        let applied = apply(&f.outside, &f.attack).await;
+        let held = HeldOps::new(&f.outside, f.world.namespace.to_bytes().into())
+            .read()
+            .expect("read the held ops")
+            .ops
+            .iter()
+            .any(|held| Some(held.delta_id) == f.attack.content_hash().ok());
+        assert!(held, "setup: the outside node holds the op ({applied:?})");
+
+        assert!(
+            OpenedNamespaceOp::open(&f.outside, &f.attack)
+                .group_op
+                .is_none(),
+            "the projection folds the payload of an op the node holds unapplied"
+        );
+    }
+
+    #[actix::test]
+    async fn a_node_that_gets_the_key_later_reaches_the_inside_verdict() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        apply(&f.inside, &f.attack).await.expect("inside logs it");
+        apply(&f.outside, &f.attack)
+            .await
+            .expect("outside holds it");
+
+        let _key_id = crate::group_key_pull::adopt_pulled_group_key(
+            &f.outside,
+            f.world.namespace.to_bytes().into(),
+            f.subgroup,
+            &SUBGROUP_KEY,
+        )
+        .expect("the key reaches the outside node");
+
+        assert_eq!(
+            f.role_in_subgroup(&f.outside),
+            None,
+            "the replay applied it"
+        );
+        assert!(
+            OpenedNamespaceOp::open(&f.inside, &f.attack).refused,
+            "inside does not fold the op as refused"
+        );
+        assert!(
+            OpenedNamespaceOp::open(&f.outside, &f.attack).refused,
+            "the replay did not reach the inside node's verdict"
+        );
+    }
+
+    #[actix::test]
+    async fn a_refused_op_stays_refused_through_a_replay_without_a_judge() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        apply(&f.inside, &f.attack).await.expect("inside logs it");
+        let member = f.world.actor(ActorState::DirectMember);
+        MembershipRepository::new(&f.inside)
+            .add_member(&f.subgroup, &member.account, GroupMemberRole::Admin)
+            .expect("live rows that would now admit the op");
+
+        let _replayed = calimero_governance_store::retry_encrypted_ops_for_group(
+            &f.inside,
+            f.world.namespace.to_bytes().into(),
+            f.subgroup.to_bytes(),
+        );
+
+        assert!(
+            OpenedNamespaceOp::open(&f.inside, &f.attack).refused,
+            "a replay on live gates applied an op refused at its cut"
+        );
+    }
+}
