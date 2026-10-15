@@ -5,6 +5,14 @@ use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::Router;
 use futures_util::stream as futures_stream;
+use mero_auth::api::routes::create_router;
+use mero_auth::auth::rate_limit::LoginRateLimiter;
+use mero_auth::auth::token::TokenManager;
+use mero_auth::secrets::SecretManager;
+use mero_auth::server::AppState;
+use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
+use mero_auth::utils::AuthMetrics;
+use mero_auth::AuthService;
 use tower::{Layer, ServiceExt};
 
 use super::session::{builder, respond_with, MAX_SESSIONS, PROLOGUE};
@@ -67,6 +75,7 @@ fn app(
         .route("/node/echo", post(echo))
         .route("/admin-api/health", get(|| async { "alive" }))
         .route("/admin-api/contexts", get(echo).delete(echo))
+        .route("/sse", get(echo))
         .route("/admin-api/contexts/{context_id}/intents", post(echo))
         .route(
             "/admin-api/contexts/{context_id}/presence-intents",
@@ -1627,6 +1636,73 @@ async fn behind_an_auth_proxy_a_sealed_call_is_guarded_by_its_auth_service() {
         probe["x-forwarded-host"], "tee-node.example",
         "the host the caller reached, for node-bound tokens"
     );
+}
+
+/// mero-auth itself on loopback, and an admin token it issued.
+async fn real_auth() -> (String, String) {
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+    secrets.initialize().await.unwrap();
+    let config = mero_auth::embedded::default_config();
+    let tokens = TokenManager::new(config.jwt.clone(), Arc::clone(&storage), secrets);
+    let keys = KeyManager::new(Arc::clone(&storage));
+    let perms = vec!["admin".to_owned()];
+    let key = Key::new_root_key_with_permissions(
+        "owner".to_owned(),
+        "user_password".to_owned(),
+        perms.clone(),
+        None,
+    );
+    let _ = keys.set_key("k-1", &key).await.unwrap();
+    let (token, _) = tokens
+        .generate_token_pair("k-1".to_owned(), perms, None, None)
+        .await
+        .unwrap();
+    let state = Arc::new(AppState {
+        auth_service: AuthService::new(vec![], tokens.clone()),
+        storage,
+        key_manager: keys,
+        token_generator: tokens,
+        config: config.clone(),
+        metrics: AuthMetrics::new(),
+        login_rate_limiter: Arc::new(LoginRateLimiter::default()),
+        account_rate_limiter: Arc::new(LoginRateLimiter::account_ceiling()),
+    });
+    let router = create_router(state, &config);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    drop(tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    }));
+    (origin, token)
+}
+
+/// A sealed request is held to the proxy's rule: a token in the URL opens only
+/// the streaming routes, never one that takes an `Authorization` header.
+#[tokio::test]
+async fn behind_an_auth_proxy_a_url_token_opens_only_the_streaming_routes() {
+    let (origin, token) = real_auth().await;
+    let transport = guarded_transport(&origin);
+
+    for (method, path) in [
+        ("GET", format!("/admin-api/contexts?token={token}")),
+        ("DELETE", format!("/admin-api/contexts?all=1&token={token}")),
+    ] {
+        let (head, _) = sealed_call_with(&transport, method, &path, &[], b"").await;
+        assert_eq!(head.status, 401, "{method} {path}");
+        assert_eq!(
+            response_header(&head, "x-auth-error"),
+            Some("missing_token")
+        );
+    }
+
+    let (head, _) =
+        sealed_call_with(&transport, "GET", &format!("/sse?token={token}"), &[], b"").await;
+    assert_eq!(
+        head.status, 200,
+        "the event stream still takes its token from the URL"
+    );
+    assert_eq!(response_header(&head, "x-echo-permissions"), Some("admin"));
 }
 
 #[tokio::test]
