@@ -1,5 +1,5 @@
-//! Which ops spent each `(group, signer, nonce)` of a namespace: what tells a replay
-//! of the op that spent a nonce from a different op reusing it.
+//! Which ops spent each `(group, signer, nonce)` of a namespace, and which envelopes
+//! carried each relayed join: what tells a replay apart from a different op reusing it.
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
@@ -11,6 +11,8 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use sha2::{Digest, Sha256};
 
+const NO_LIMIT: usize = usize::MAX; // a read lists every spender of one key
+
 pub(crate) struct NonceSpenders<'a> {
     store: &'a Store,
     namespace: NamespaceId,
@@ -21,23 +23,17 @@ impl<'a> NonceSpenders<'a> {
         Self { store, namespace }
     }
 
-    /// The ops recorded as having spent `nonce`, oldest first.
+    /// The ops recorded as having spent `nonce`.
     pub(crate) fn spenders(
         &self,
         group: &ContextGroupId,
         signer: &PublicKey,
         nonce: u64,
     ) -> EyreResult<Vec<[u8; 32]>> {
-        let handle = self.store.handle();
-        let Some(data) = handle.get(&self.key(group, signer, nonce))? else {
-            return Ok(Vec::new());
-        };
-        let bytes: &[u8] = data.as_ref();
-        Ok(borsh::from_slice(bytes)?)
+        self.read(nonce_head(group, signer, nonce))
     }
 
-    /// Record that the op `delta_id` spent `nonce`. Unbounded: only the nonce's own
-    /// signer mints a second spender, and each one is an op this node already stores.
+    /// Record that the op `delta_id` spent `nonce`.
     pub(crate) fn record(
         &self,
         group: &ContextGroupId,
@@ -45,42 +41,77 @@ impl<'a> NonceSpenders<'a> {
         nonce: u64,
         delta_id: [u8; 32],
     ) -> EyreResult<()> {
-        let mut spenders = self.spenders(group, signer, nonce)?;
-        if spenders.contains(&delta_id) {
-            return Ok(());
-        }
-        spenders.push(delta_id);
-        let data = GenericData::from(Slice::from(borsh::to_vec(&spenders)?));
-        self.store
-            .handle()
-            .put(&self.key(group, signer, nonce), &data)?;
-        Ok(())
+        self.write(nonce_head(group, signer, nonce), delta_id)
     }
 
-    /// Forget every spender of the namespace, as when this node leaves it, so a
+    /// The relay envelopes recorded as carrying the join `inner_id`.
+    pub(crate) fn copies(&self, inner_id: [u8; 32]) -> EyreResult<Vec<[u8; 32]>> {
+        self.read(join_head(inner_id))
+    }
+
+    /// Record that the relay envelope `delta_id` carries the join `inner_id`.
+    pub(crate) fn record_copy(&self, inner_id: [u8; 32], delta_id: [u8; 32]) -> EyreResult<()> {
+        self.write(join_head(inner_id), delta_id)
+    }
+
+    /// Forget every record of the namespace, as when this node leaves it, so a
     /// rejoin that replays the log does not take each op for its own replay.
     pub(crate) fn clear(&self) -> EyreResult<()> {
         crate::void_ledger::delete_scope(self.store, self.scope())
     }
 
-    fn scope(&self) -> [u8; 16] {
-        let mut hasher = Sha256::new();
-        hasher.update(b"calimero-noncesp");
-        hasher.update(self.namespace.as_bytes());
-        let digest: [u8; 32] = hasher.finalize().into();
-        let mut scope = [0; 16];
-        scope.copy_from_slice(&digest[..16]);
-        scope
+    /// One row per op, so a key many ops share costs a write each, not a rewrite.
+    fn write(&self, head: [u8; 16], delta_id: [u8; 32]) -> EyreResult<()> {
+        let data = GenericData::from(Slice::from(delta_id.to_vec()));
+        self.store.handle().put(&self.key(head, delta_id), &data)?;
+        Ok(())
     }
 
-    fn key(&self, group: &ContextGroupId, signer: &PublicKey, nonce: u64) -> GenericKey {
-        let mut hasher = Sha256::new();
-        hasher.update(group.to_bytes());
-        let signer: &[u8; 32] = signer.as_ref();
-        hasher.update(signer);
-        hasher.update(nonce.to_le_bytes());
-        GenericKey::new(self.scope(), hasher.finalize().into())
+    fn read(&self, head: [u8; 16]) -> EyreResult<Vec<[u8; 32]>> {
+        let mut prefix = [0; 32];
+        prefix[..16].copy_from_slice(&self.scope());
+        prefix[16..].copy_from_slice(&head);
+        let handle = self.store.handle();
+        let mut spenders = Vec::new();
+        for key in crate::void_ledger::rows_under(self.store, &prefix, NO_LIMIT)? {
+            if let Some(data) = handle.get(&key)? {
+                let bytes: &[u8] = data.as_ref();
+                spenders.push(bytes.try_into()?);
+            }
+        }
+        Ok(spenders)
     }
+
+    fn key(&self, head: [u8; 16], delta_id: [u8; 32]) -> GenericKey {
+        let mut fragment = [0; 32];
+        fragment[..16].copy_from_slice(&head);
+        fragment[16..].copy_from_slice(&delta_id[..16]);
+        GenericKey::new(self.scope(), fragment)
+    }
+
+    fn scope(&self) -> [u8; 16] {
+        truncated(&[b"calimero-noncesp", self.namespace.as_bytes()])
+    }
+}
+
+fn nonce_head(group: &ContextGroupId, signer: &PublicKey, nonce: u64) -> [u8; 16] {
+    let signer: &[u8; 32] = signer.as_ref();
+    truncated(&[b"nonce", &group.to_bytes(), signer, &nonce.to_le_bytes()])
+}
+
+fn join_head(inner_id: [u8; 32]) -> [u8; 16] {
+    truncated(&[b"join", &inner_id])
+}
+
+fn truncated(parts: &[&[u8]]) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut head = [0; 16];
+    head.copy_from_slice(&digest[..16]);
+    head
 }
 
 #[cfg(test)]

@@ -12176,6 +12176,91 @@ async fn a_reused_nonce_is_refused_whatever_this_node_made_of_the_op_it_copies()
     );
 }
 
+/// A rejoin is a new signed join, even at the nonce of the joiner's first one: a node
+/// that left signs from a reset head. Only a copy of the same join is a replay.
+#[actix::test]
+async fn a_relayed_rejoin_at_the_first_joins_nonce_applies() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let members = MembershipRepository::new(&store);
+
+    let joiner_sk = PrivateKey::from([0x64u8; 32]);
+    let member = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let join = |joined_at: u64| {
+        let role = endorsed_invitation(&admitter_sk, ns_id, &member)
+            .0
+            .invitation
+            .invited_role;
+        let (signed_invitation, admitter_endorsement) = endorsed_invitation_from(
+            &admitter_sk,
+            &admitter_sk,
+            ns_id,
+            &member,
+            role,
+            [0x66 + u8::try_from(joined_at).expect("small"); 32],
+        );
+        let mut inner = SignedNamespaceOp::sign(
+            &joiner_sk,
+            ns_id,
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member,
+                signed_invitation,
+                joined_at,
+                account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+            }),
+        )
+        .expect("the joiner signs");
+        inner.admitter_endorsement = Some(admitter_endorsement);
+        inner
+    };
+    let relay = |inner: &SignedNamespaceOp| {
+        let sealed = crate::test_fixtures::relay_seal_for_test(&store, ns_gid, inner);
+        let head = gov.read_head_record().expect("head");
+        SignedNamespaceOp::sign(
+            &PrivateKey::from([0x65; 32]),
+            ns_id,
+            head.parent_hashes,
+            head.next_nonce,
+            sealed,
+        )
+        .expect("sign the envelope")
+    };
+
+    let _joined = gov
+        .apply_signed_op(&relay(&join(0)))
+        .expect("the join applies");
+    members
+        .remove_member(&ns_gid, &member)
+        .expect("the member leaves");
+
+    let rejoin = join(1);
+    assert!(
+        !super::governance::relayed_join_applied(&store, ns_id, &rejoin).expect("read"),
+        "an admitter would answer a rejoin without relaying it"
+    );
+    let envelope = relay(&rejoin);
+    let _rejoined = gov
+        .apply_signed_op(&envelope)
+        .expect("the rejoin is logged");
+    assert!(
+        !crate::unified_op_decode::OpenedNamespaceOp::open(&store, &envelope).refused,
+        "a rejoin at the first join's nonce was refused as a replay"
+    );
+    assert!(
+        members
+            .is_member(&ns_gid, &member)
+            .expect("read membership"),
+        "a rejoin at the first join's nonce did not apply"
+    );
+}
+
 /// A re-seal backdated to the join's own parents is concurrent with it, so it folds as
 /// on every node, whatever arrived first, and never applies the join a second time.
 #[actix::test]

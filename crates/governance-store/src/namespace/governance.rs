@@ -776,24 +776,12 @@ impl<'a> NamespaceGovernance<'a> {
                     // 1. The joiner published this join itself, and it is in the
                     //    op log under its OWN content hash. Ask the log.
                     // 2. The join only ever arrived relayed, so the log holds
-                    //    envelopes and never the inner op. The ops recorded as
-                    //    spending the joiner's nonce answer that one.
+                    //    envelopes and never the inner op. The envelopes recorded
+                    //    as carrying the same signed join answer that one.
                     //
                     // A copy in this envelope's causal past refuses it; a concurrent
                     // copy is logged and applies nothing, in either arrival order.
-                    let inner_id = inner
-                        .content_hash()
-                        .map_err(|e| eyre::eyre!("relayed op content_hash: {e}"))?;
-                    let already_in_the_clear =
-                        NamespaceOpLogService::new(self.store, self.namespace_id)
-                            .contains_op(inner_id)?;
-
-                    if !self.replays_relayed_join(
-                        delta_id,
-                        &op.parent_op_hashes,
-                        inner,
-                        already_in_the_clear.then_some(inner_id),
-                    )? {
+                    if !self.replays_relayed_join(delta_id, &op.parent_op_hashes, inner)? {
                         root_events = self.apply_root_op(inner, root)?;
 
                         let effects = self.root_op_side_effects(inner, root, 0)?;
@@ -807,14 +795,13 @@ impl<'a> NamespaceGovernance<'a> {
                         // Persisted only after the apply succeeded: burning the
                         // nonce for an apply that failed would make the failure
                         // permanent.
-                        self.spend_relayed_join_nonce(delta_id, inner)?;
+                        self.record_relayed_join(delta_id, inner)?;
                     } else {
                         tracing::debug!(
                             namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                             signer = %inner.signer,
                             nonce = inner.nonce,
-                            already_in_the_clear,
-                            "a relayed join that was already applied; folding nothing"
+                            "a relayed join already applied here; applying nothing"
                         );
                     }
                 }
@@ -2315,7 +2302,11 @@ impl<'a> NamespaceGovernance<'a> {
             let relayed = matches!(entry.signed_op.op, NamespaceOp::RootRelaySealed { .. });
             let delta_id = entry.signed_op.content_hash()?;
             if relayed {
-                match self.replays_logged_relayed_join(delta_id, &entry.signed_op, &gate_op) {
+                match self.replays_relayed_join(
+                    delta_id,
+                    &entry.signed_op.parent_op_hashes,
+                    &gate_op,
+                ) {
                     Ok(false) => {}
                     // A copy folds as logged, as on a node that read it on arrival.
                     Ok(true) => {
@@ -2360,7 +2351,7 @@ impl<'a> NamespaceGovernance<'a> {
                     applied += 1;
                     record_namespace_retry_event("sealed_root_applied");
                     if relayed {
-                        self.spend_relayed_join_nonce(delta_id, &gate_op)?;
+                        self.record_relayed_join(delta_id, &gate_op)?;
                     }
                     // `apply_root_op` is the fold and nothing else. The rest of
                     // what an arriving op does lives in `root_op_side_effects`,
@@ -2785,12 +2776,8 @@ impl<'a> NamespaceGovernance<'a> {
                         rotated |= self.replay_deferred_rotation(candidate, parked.is_some());
                         let now_present = applied_here(delta_id);
                         if !was_present && now_present {
-                            // Genuine apply: the (signer, nonce) was not in the
-                            // window before and is now. Only this path counts and
-                            // only this path increments the "applied" metric — a
-                            // nonce-deduped replay short-circuits to `Ok(None)`
-                            // WITHOUT writing, so counting it as "applied" would
-                            // inflate the metric (review fix B).
+                            // Genuine apply: not applied before this call, applied after. A
+                            // replay skips without writing, so it must not count.
                             record_namespace_retry_event("applied");
                             applied += 1;
                             if let Some(id) = delta_id {
@@ -3199,17 +3186,31 @@ impl<'a> NamespaceGovernance<'a> {
         nonce: u64,
         delta_id: [u8; 32],
         parents: &[[u8; 32]],
-        also_spent_by: Option<[u8; 32]>,
     ) -> EyreResult<bool> {
-        if self.applied_here(group, signer, nonce, delta_id)? {
+        let spenders =
+            NonceSpenders::new(self.store, self.namespace_id).spenders(group, signer, nonce)?;
+        self.replays_spender(group, signer, nonce, delta_id, parents, spenders)
+    }
+
+    /// [`Self::replays_spent_nonce`] over `spenders`: a replay when `delta_id` is one of
+    /// them applied here, refused when another is in its causal past.
+    fn replays_spender(
+        &self,
+        group: &ContextGroupId,
+        signer: &PublicKey,
+        nonce: u64,
+        delta_id: [u8; 32],
+        parents: &[[u8; 32]],
+        spenders: Vec<[u8; 32]>,
+    ) -> EyreResult<bool> {
+        let mut others: HashSet<[u8; 32]> = spenders.into_iter().collect();
+        if others.remove(&delta_id)
+            && VoidLedger::new(self.store, self.namespace_id)
+                .parked(delta_id)?
+                .is_none()
+        {
             return Ok(true);
         }
-        let mut others: HashSet<[u8; 32]> = NonceSpenders::new(self.store, self.namespace_id)
-            .spenders(group, signer, nonce)?
-            .into_iter()
-            .chain(also_spent_by)
-            .collect();
-        let _own = others.remove(&delta_id);
         if others.is_empty() {
             return Ok(false);
         }
@@ -3269,7 +3270,6 @@ impl<'a> NamespaceGovernance<'a> {
             nonce,
             delta_id,
             &signed_group_op.parent_op_hashes,
-            None,
         )? {
             tracing::debug!(
                 nonce,
@@ -3506,64 +3506,45 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(divergence)
     }
 
-    /// [`Self::replays_spent_nonce`] for the joiner's nonce inside the relay `delta_id`,
-    /// which `in_the_clear` also spent when the join itself is logged; `true` skips the apply.
+    /// Whether the relay `delta_id` carries a join already applied here; `true` skips the
+    /// apply. Judged against copies of the same signed join, the threat a re-seal is.
     fn replays_relayed_join(
         &self,
         delta_id: [u8; 32],
         parents: &[[u8; 32]],
         inner: &SignedNamespaceOp,
-        in_the_clear: Option<[u8; 32]>,
     ) -> EyreResult<bool> {
+        let inner_id = inner.content_hash()?;
+        let in_the_clear =
+            NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(inner_id)?;
+        let copies: Vec<[u8; 32]> = NonceSpenders::new(self.store, self.namespace_id)
+            .copies(inner_id)?
+            .into_iter()
+            .chain(in_the_clear.then_some(inner_id))
+            .collect();
+        let copied = copies.iter().any(|copy| *copy != delta_id);
         let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
-        if self.replays_spent_nonce(
+        if self.replays_spender(
             &ns_gid,
             &inner.signer,
             inner.nonce,
             delta_id,
             parents,
-            in_the_clear,
+            copies,
         )? {
             return Ok(true);
         }
-        // A concurrent copy of a join already applied: a relay's parents are not the
-        // joiner's to bind, so it never applies the join again, and spends the nonce as a copy.
-        let copied = in_the_clear.is_some()
-            || !NonceSpenders::new(self.store, self.namespace_id)
-                .spenders(&ns_gid, &inner.signer, inner.nonce)?
-                .is_empty();
+        // A concurrent copy: a relay's parents are not the joiner's to bind, so it never
+        // applies the join again, and is recorded so ops after it are judged alike.
         if copied {
-            self.spend_relayed_join_nonce(delta_id, inner)?;
+            self.record_relayed_join(delta_id, inner)?;
         }
         Ok(copied)
     }
 
-    /// [`Self::replays_relayed_join`] for an envelope read back from the log.
-    fn replays_logged_relayed_join(
-        &self,
-        delta_id: [u8; 32],
-        envelope: &SignedNamespaceOp,
-        inner: &SignedNamespaceOp,
-    ) -> EyreResult<bool> {
-        let inner_id = inner.content_hash()?;
-        let in_the_clear =
-            NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(inner_id)?;
-        self.replays_relayed_join(
-            delta_id,
-            &envelope.parent_op_hashes,
-            inner,
-            in_the_clear.then_some(inner_id),
-        )
-    }
-
-    fn spend_relayed_join_nonce(
-        &self,
-        delta_id: [u8; 32],
-        inner: &SignedNamespaceOp,
-    ) -> EyreResult<()> {
-        let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
-        let mut window = load_nonce_window(self.store, &ns_gid, &inner.signer)?;
-        self.spend_nonce(&ns_gid, &inner.signer, inner.nonce, delta_id, &mut window)
+    fn record_relayed_join(&self, delta_id: [u8; 32], inner: &SignedNamespaceOp) -> EyreResult<()> {
+        NonceSpenders::new(self.store, self.namespace_id)
+            .record_copy(inner.content_hash()?, delta_id)
     }
 
     /// Record that `delta_id` spent `nonce`, after its apply, so a failed apply leaves it
@@ -4179,11 +4160,10 @@ pub fn relayed_join_applied(
     inner: &SignedNamespaceOp,
 ) -> EyreResult<bool> {
     let inner_id = inner.content_hash()?;
-    let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
     Ok(
         NamespaceOpLogService::new(store, namespace_id).contains_op(inner_id)?
             || !NonceSpenders::new(store, namespace_id)
-                .spenders(&ns_gid, &inner.signer, inner.nonce)?
+                .copies(inner_id)?
                 .is_empty(),
     )
 }

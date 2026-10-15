@@ -53,22 +53,26 @@ pub(crate) struct KeyIntro {
     pub(crate) key: [u8; 32],
 }
 
-/// Up to [`DELETE_BATCH`] `Generic` rows under `scope`. Read as raw keys, since the
-/// typed iterator needs a key error type `Generic` does not have.
-fn rows_under(store: &Store, scope: [u8; 16]) -> EyreResult<Vec<GenericKey>> {
+/// Up to `limit` `Generic` rows whose key starts with `prefix` (a scope, or a scope and
+/// the head of a fragment). Read as raw keys: the typed iterator needs a key error type `Generic` lacks.
+pub(crate) fn rows_under(
+    store: &Store,
+    prefix: &[u8],
+    limit: usize,
+) -> EyreResult<Vec<GenericKey>> {
     let handle = store.handle();
     let mut iter = handle.iter::<GenericKey>()?;
     let mut start = [0; 48];
-    start[..16].copy_from_slice(&scope);
+    start[..prefix.len()].copy_from_slice(prefix);
     let mut rows = Vec::new();
     let mut next = DBIter::seek(&mut iter, Slice::from(&start[..]))?
-        .and_then(|key| row_under(scope, key.as_ref()));
+        .and_then(|key| row_under(prefix, key.as_ref()));
     while let Some(row) = next {
         rows.push(row);
-        if rows.len() == DELETE_BATCH {
+        if rows.len() == limit {
             break;
         }
-        next = DBIter::next(&mut iter)?.and_then(|key| row_under(scope, key.as_ref()));
+        next = DBIter::next(&mut iter)?.and_then(|key| row_under(prefix, key.as_ref()));
     }
     Ok(rows)
 }
@@ -76,7 +80,7 @@ fn rows_under(store: &Store, scope: [u8; 16]) -> EyreResult<Vec<GenericKey>> {
 /// Delete every `Generic` row under `scope`.
 pub(crate) fn delete_scope(store: &Store, scope: [u8; 16]) -> EyreResult<()> {
     loop {
-        let rows = rows_under(store, scope)?;
+        let rows = rows_under(store, &scope, DELETE_BATCH)?;
         if rows.is_empty() {
             return Ok(());
         }
@@ -87,9 +91,13 @@ pub(crate) fn delete_scope(store: &Store, scope: [u8; 16]) -> EyreResult<()> {
     }
 }
 
-/// The row a raw `Generic` key names, if it lies under `scope`.
-fn row_under(scope: [u8; 16], key: &[u8]) -> Option<GenericKey> {
-    let fragment: [u8; 32] = key.strip_prefix(&scope[..])?.try_into().ok()?;
+/// The row a raw `Generic` key names, if it starts with `prefix`.
+fn row_under(prefix: &[u8], key: &[u8]) -> Option<GenericKey> {
+    if !key.starts_with(prefix) {
+        return None;
+    }
+    let scope: [u8; 16] = key.get(..16)?.try_into().ok()?;
+    let fragment: [u8; 32] = key.get(16..)?.try_into().ok()?;
     Some(GenericKey::new(scope, fragment))
 }
 
