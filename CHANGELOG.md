@@ -512,6 +512,18 @@
 
 ### Fixed
 
+- **Removing or losing a member rotates the Open groups it reached through
+  the group it left.** An Open group behind a Restricted one is sealed under
+  its own key, which every member inheriting it may pull. A removal from (or a
+  leave of) the Restricted group ended the inheritance but rotated only the
+  group it named, so the departed node kept reading everything written below
+  it. The apply now records a pending rotation for each such descendant (any
+  depth) the member reached only by inheritance, on every node; a remaining
+  admin's rotation listener, woken by the departure, pays each with
+  `GroupKeyRotated`. Each rotation of a group sealed under its own key is
+  wrapped for its live inheritors too, so they read on without a pull. No new
+  op, and nothing peers accept changes.
+
 - **A written-once entry that receives two signed values is sealed.** A
   `WriteOnce`, `ModeratedOnce` or `Frozen` entry given two different authentic
   values by the party allowed to write it now keeps both signed writes as

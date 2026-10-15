@@ -1716,6 +1716,8 @@ pub mod authz_matrix;
 mod void_tests;
 
 #[cfg(test)]
+mod exposed_descendant_tests;
+#[cfg(test)]
 mod governance_boundary_tests;
 #[cfg(test)]
 mod owner_guard_tests;

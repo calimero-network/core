@@ -3,7 +3,9 @@
 
 use super::super::super::verify_post_apply_state_hashes;
 use super::context::GroupApplyCtx;
-use crate::pending_rotation::group_rotates_on_departure;
+use crate::pending_rotation::{
+    group_rotates_on_departure, inherited_own_keyed_descendants, mark_exposed_descendants,
+};
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError, MembershipPolicy,
     MembershipRepository, MetaRepository, NamespaceRepository, PendingRotationRepository,
@@ -72,6 +74,10 @@ pub(crate) fn apply(
     // Last-admin protection — same helper used by MemberRemoved.
     ctx.membership_policy()
         .ensure_not_last_admin_removal(member)?;
+
+    // The own-keyed descendants the leaver reaches only by inheritance, read
+    // before the leave ends it. See `inherited_own_keyed_descendants`.
+    let inherited_descendants = inherited_own_keyed_descendants(store, group_id, member)?;
 
     // Detect namespace-leave: if this group has no parent it IS the
     // namespace, and leaving must cascade through every descendant
@@ -213,6 +219,10 @@ pub(crate) fn apply(
     if group_rotates_on_departure(store, group_id)? {
         PendingRotationRepository::new(store).mark(group_id, member)?;
     }
+    // The same debt for every descendant covered by its own key that the leaver
+    // reached only by inheritance through what it just left: an Open group behind
+    // a Restricted wall, whose key the leaver could pull while it inherited.
+    mark_exposed_descendants(store, &inherited_descendants, member)?;
 
     // Until that rotation lands, ops are still encrypted under the key the leaver
     // holds. The deny-list above stops them WRITING, and they unsubscribe, but a

@@ -1,5 +1,6 @@
-//! `RotateGroupKeyRequest` handler — pay off a forward-secrecy rotation a self-leave
-//! left behind.
+//! `RotateGroupKeyRequest` handler — pay off a forward-secrecy rotation a departure
+//! left behind: a self-leave's, or that of a descendant covered by its own key which
+//! a removed or departed member reached only by inheritance.
 //!
 //! The rotation for a member's departure is minted by whoever publishes the op that
 //! triggers it. That works for an admin-initiated removal, where the publisher stays
