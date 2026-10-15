@@ -282,7 +282,8 @@ guard, and a request may use either:
 - **A request-carried proof** (`src/proof_auth.rs`). One header,
   `X-Calimero-Proof`, holding a hex borsh `CallerProof`: the account root's
   certificate over a device key, optionally the device's statement over a session
-  key, and a signature over *this* method, path and body. Nothing is issued to the
+  key, and a signature over *this* method, path and query (the raw request target
+  from `OriginalUri`), and body. Nothing is issued to the
   caller, so it works on a node the caller has no relationship with.
 
 The proof path is installed only when `AdminConfig::delegated_access` is set —

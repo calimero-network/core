@@ -25,7 +25,7 @@ use crate::account::borsh_bytes;
 use crate::request::RequestSig;
 
 const METHOD: &str = "GET";
-const PATH: &str = "/admin-api/namespaces";
+const PATH: &str = "/admin-api/namespaces?limit=5&q=a%2Fb";
 const BODY: &[u8] = br#"{"k":"v"}"#;
 const ISSUED_AT: u64 = 1_700_000_000;
 const EXPIRES_AT: u64 = 1_700_000_300;
@@ -60,7 +60,7 @@ fn the_signing_preimage_is_stable() {
             ISSUED_AT,
             EXPIRES_AT,
         )),
-        "7ea8e1179b3f364faefbd4b2a18491f90b3b43bf18af1efad740493f934df8f8",
+        "3ec6a79c08660f44bbe2bc1ed72d5cda5efd6c0586ae640668e1e067b3e57f77",
         "the signing preimage changed; every request signed elsewhere now \
          verifies nowhere",
     );
@@ -73,8 +73,8 @@ fn the_wire_encoding_is_stable() {
 
     assert_eq!(
         bytes.len(),
-        144,
-        "(4 + 3) method + (4 + 21) path + 32 body hash + 8 + 8 + 64 signature. \
+        160,
+        "(4 + 3) method + (4 + 37) path and query + 32 body hash + 8 + 8 + 64 signature. \
          A different length means a field changed shape, and a signer in \
          another language is now wrong",
     );
@@ -84,9 +84,9 @@ fn the_wire_encoding_is_stable() {
             // method: u32 LE length 3, then "GET"
             "03000000",
             "474554",
-            // path: u32 LE length 21, then the ASCII path
-            "15000000",
-            "2f61646d696e2d6170692f6e616d65737061636573",
+            // path and query: u32 LE length 37, then the ASCII bytes as sent
+            "25000000",
+            "2f61646d696e2d6170692f6e616d657370616365733f6c696d69743d3526713d6125324662",
             // body_hash
             "3b26137eb7b296bdf7d84b9193dd52d1947b2056731f38020f4a3b9b88d95121",
             // issued_at, u64 LE
@@ -94,7 +94,7 @@ fn the_wire_encoding_is_stable() {
             // expires_at, u64 LE
             "2cf2536500000000",
             // signature
-            "295cdac7a269f7f773735dcc35511d4174d042aa4c20454b6c14d5c5661a4f2e6401e8d1dc457040a388359982f2b915fdd8ca56a84d26f2b40867f092013706",
+            "fab437d01e5fe97a376e9165a55e0ec91e73325b08bb997c8755776df0939d2fc3001455d4c08e306244afd2f050c30a01237aa06187e185fc0a671941c8ac09",
         ),
     );
 }

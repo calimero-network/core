@@ -1480,6 +1480,7 @@ async fn concurrent_expired_requests_refresh_once() {
 mod request_proof {
     use calimero_account::{AccountGenesis, AccountProof, CallerProof, DeviceCert, KemPublicKey};
     use calimero_primitives::identity::{DeviceId, PrivateKey};
+    use url::Position;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -1546,17 +1547,21 @@ mod request_proof {
         let _ignored: serde_json::Value = conn.get("admin-api/contexts").await.unwrap();
     }
 
-    /// The signature commits to the method and the path the node received —
-    /// not to the variant name, and not to anything after a `?`.
+    /// The signature commits to the method and the path and query the node
+    /// received, not to the variant name; the space checks no re-encoding happens.
     #[tokio::test]
-    async fn the_proof_commits_to_the_method_and_the_path_the_node_sees() {
+    async fn the_proof_commits_to_the_method_and_the_path_and_query_the_node_sees() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/admin-api/contexts"))
             .respond_with(move |req: &Request| {
                 let proof = decode(req);
                 assert_eq!(proof.request.method, "GET");
-                assert_eq!(proof.request.path, "/admin-api/contexts");
+                assert_eq!(
+                    proof.request.path,
+                    &req.url[Position::BeforePath..Position::AfterQuery],
+                );
+                assert_eq!(proof.request.path, "/admin-api/contexts?limit=5&q=a%20b");
                 assert!(
                     proof.session.is_none(),
                     "with_device_key is the two-link chain"
@@ -1570,7 +1575,8 @@ mod request_proof {
         let url = server.uri().parse().unwrap();
         let conn =
             ConnectionInfo::new(url, None, NoopAuth, NoopStorage).with_request_proof(signer());
-        let _ignored: serde_json::Value = conn.get("admin-api/contexts?limit=5").await.unwrap();
+        let _ignored: serde_json::Value =
+            conn.get("admin-api/contexts?limit=5&q=a b").await.unwrap();
     }
 
     /// The bytes hashed are the bytes sent.
