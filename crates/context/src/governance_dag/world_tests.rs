@@ -567,7 +567,7 @@ mod open_join {
     async fn open_join_by_an_unlinked_device_of_the_admin(
         store: &Store,
         world: &World,
-    ) -> (PrivateKey, Result<(), ApplyError>) {
+    ) -> (PrivateKey, [u8; 32]) {
         let owner = world.actor(ActorState::Owner);
         let admin = world.actor(ActorState::NamespaceAdmin);
         let namespace = world.namespace;
@@ -620,20 +620,26 @@ mod open_join {
                 },
             ),
         );
-        (device_sk, apply(store, &join).await)
+        let _applied = apply(store, &join).await;
+        (device_sk, join.content_hash().expect("hash the join"))
     }
 
     #[actix::test]
     async fn an_open_self_join_by_a_device_no_link_brought_in_is_refused() {
         let (world, store) = world_targeting().await;
-        let (device_sk, joined) = open_join_by_an_unlinked_device_of_the_admin(&store, world).await;
+        let (device_sk, join) = open_join_by_an_unlinked_device_of_the_admin(&store, world).await;
 
         let bound = AccountBindingRepository::new(&store)
             .binding_for_sign_pk(&world.namespace, &device_sk.public_key())
             .expect("read the binding");
         let role = role_after_promotion_by(&store, world, &device_sk).await;
 
-        assert!(joined.is_err(), "an unlinked device's open join applied");
+        assert_eq!(
+            calimero_governance_store::parked_op(&store, world.namespace.to_bytes().into(), join)
+                .expect("read the verdict"),
+            Some(calimero_governance_store::Parked::Refused),
+            "an unlinked device's open join applied"
+        );
         assert!(
             bound.is_none(),
             "an open self-join bound its device: {bound:?}"
@@ -931,6 +937,41 @@ mod held_ops {
         assert!(
             OpenedNamespaceOp::open(&f.inside, &f.attack).refused,
             "a replay on live gates applied an op refused at its cut"
+        );
+    }
+
+    #[actix::test]
+    async fn a_refused_op_of_the_namespace_root_is_logged_for_members_without_its_key() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        let member = f.world.actor(ActorState::DirectMember);
+        let promote = sign_next(
+            &f.inside,
+            &f.world.namespace,
+            &member.sign_sk,
+            under_namespace_key(
+                &f.inside,
+                &f.world.namespace,
+                &f.world.namespace,
+                &GroupOp::MemberRoleSet {
+                    member: member.account,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+        );
+
+        let applied = apply(&f.inside, &promote).await;
+
+        assert!(applied.is_ok(), "the refusal dropped the op: {applied:?}");
+        assert!(
+            SealedSubgroup::heads(&f.inside, f.world).contains(&promote.content_hash().unwrap()),
+            "the head did not move past the refused op"
+        );
+        assert!(OpenedNamespaceOp::open(&f.inside, &promote).refused);
+        assert_eq!(
+            MembershipRepository::new(&f.inside)
+                .role_of(&f.world.namespace, &member.account)
+                .expect("read the role"),
+            Some(GroupMemberRole::Member)
         );
     }
 }

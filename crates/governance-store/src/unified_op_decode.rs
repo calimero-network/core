@@ -470,8 +470,7 @@ pub struct OpenedNamespaceOp {
     /// credential and signer come from here and not from the envelope. The DAG
     /// identity stays the envelope's.
     pub relayed_join: Option<SignedNamespaceOp>,
-    /// A parked op a replay refused at its cut: it folds as nothing, as on a node
-    /// that held the key and refused it on arrival.
+    /// An op refused at its cut, on arrival or by a replay: it folds as nothing.
     pub refused: bool,
 }
 

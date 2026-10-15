@@ -25,15 +25,15 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) const STORED_BEFORE: [u8; 32] = [0; 32];
 
 const UNDECIDED: u8 = 0; // a parked op's row before a replay judges it at its cut
-const REFUSED: u8 = 1; // a parked op's row once a replay refused it at its cut
+const REFUSED: u8 = 1; // an op refused at its cut, on arrival or by a replay
 const DELETE_BATCH: usize = 1000; // parked rows removed per store pass on leaving
 
-/// What became of an op kept unread on arrival, until a replay applies it.
+/// What became of an op kept unjudged or refused on arrival.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Parked {
     /// No replay has judged it yet: it folds as a hole.
     Undecided,
-    /// A replay refused it at its cut: it folds as nothing.
+    /// Refused at its cut, on arrival or by a replay: it folds as nothing, for good.
     Refused,
 }
 
@@ -145,12 +145,12 @@ impl<'a> VoidLedger<'a> {
 
     /// Record a replay's verdict on `op` at its cut; `false` when that changed nothing:
     /// it was not parked, since a replay may refuse what an arrival applied, or it was
-    /// refused already.
+    /// refused already, which is final.
     pub(crate) fn settle_parked(&self, op: [u8; 32], applied: bool) -> EyreResult<bool> {
         let _guard = WRITE_LOCK.lock().unwrap_or_else(|held| held.into_inner());
         match (self.parked(op)?, applied) {
-            (None, _) | (Some(Parked::Refused), false) => return Ok(false),
-            (Some(_), true) => self.forget_parked(op)?,
+            (None | Some(Parked::Refused), _) => return Ok(false),
+            (Some(Parked::Undecided), true) => self.forget_parked(op)?,
             (Some(Parked::Undecided), false) => self.put_parked(op, REFUSED)?,
         }
         Ok(true)
@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parked_op_is_refused_until_a_replay_applies_it() {
+    fn a_parked_op_is_judged_once_and_a_refusal_is_final() {
         let store = test_store();
         let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
         ledger.note_parked([7; 32]).unwrap();
@@ -317,15 +317,18 @@ mod tests {
 
         assert!(ledger.settle_parked([7; 32], false).unwrap());
         assert_eq!(ledger.parked([7; 32]).unwrap(), Some(Parked::Refused));
-        assert!(ledger.settle_parked([7; 32], true).unwrap());
+        assert!(!ledger.settle_parked([7; 32], true).unwrap());
         assert_eq!(
             ledger.parked([7; 32]).unwrap(),
-            None,
-            "a later apply takes it back"
+            Some(Parked::Refused),
+            "a later apply does not take a refusal back"
         );
-        assert!(!ledger.settle_parked([7; 32], false).unwrap());
+
+        ledger.note_parked([8; 32]).unwrap();
+        assert!(ledger.settle_parked([8; 32], true).unwrap());
+        assert!(!ledger.settle_parked([8; 32], false).unwrap());
         assert_eq!(
-            ledger.parked([7; 32]).unwrap(),
+            ledger.parked([8; 32]).unwrap(),
             None,
             "a replay of an applied op does not judge it again"
         );

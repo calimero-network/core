@@ -29,7 +29,6 @@ use crate::governance_broadcast::{
 };
 use crate::held_ops::HeldOps;
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
-use crate::op_budget::OpBudget;
 use crate::op_events::{notify as notify_op_event, OpEvent};
 use crate::void_ledger::{KeyIntro, Parked, VoidLedger, STORED_BEFORE};
 
@@ -66,6 +65,16 @@ pub struct ApplyNamespaceOpResult {
     /// Why a peer's subgroup op was refused at its cut, when it was logged as a
     /// refusal instead of failing the apply.
     pub refused: Option<eyre::Report>,
+}
+
+impl ApplyNamespaceOpResult {
+    /// The apply as a verdict: `Err` with the refusal when the op was logged refused.
+    pub fn verdict(self) -> EyreResult<Self> {
+        match self.refused {
+            Some(refusal) => Err(refusal),
+            None => Ok(self),
+        }
+    }
 }
 
 /// What applying an op's payload did, for the bookkeeping that logs it.
@@ -891,12 +900,10 @@ impl<'a> NamespaceGovernance<'a> {
                         // nothing applied. The key-arrival replay re-feeds every op
                         // of this group and applies it once the history reads.
                         Err(e)
-                            if matches!(
-                                e.downcast_ref::<crate::ApplyError>(),
-                                Some(crate::ApplyError::AuthorityUndecidable { .. })
-                            ) && self
-                                .authorizer
-                                .history_sealed_in_group(&group_id_typed, self.parents) =>
+                            if is_undecidable(&e)
+                                && self
+                                    .authorizer
+                                    .history_sealed_in_group(&group_id_typed, self.parents) =>
                         {
                             tracing::warn!(
                                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
@@ -908,13 +915,16 @@ impl<'a> NamespaceGovernance<'a> {
                                  a key this node does not hold; the namespace moves on and \
                                  the op applies if that key arrives"
                             );
-                            HeldOps::new(self.store, self.namespace_id)
-                                .hold(delta_id, group_id_typed.to_bytes())?;
                             held = true;
                             unread = true;
-                            keep_bytes &= self.admit_unreadable(op)?;
                             applied = None;
-                            if key_rotation.is_some() {
+                            keep_bytes &= self.admit_unreadable(op)?;
+                            // Over the budget it keeps only its place, which no replay can apply.
+                            if keep_bytes {
+                                HeldOps::new(self.store, self.namespace_id)
+                                    .hold(delta_id, group_id_typed.to_bytes())?;
+                            }
+                            if keep_bytes && key_rotation.is_some() {
                                 DeferredRotations::new(self.store, self.namespace_id)
                                     .defer(delta_id, op_sequence)?;
                             }
@@ -948,16 +958,10 @@ impl<'a> NamespaceGovernance<'a> {
         })
     }
 
-    /// Whether a refusal of `op` is logged as a verdict instead of returned. A peer's
-    /// subgroup op is logged unread or held by members outside the subgroup, so the
-    /// nodes that can judge it must keep it in the DAG too, or they split from them.
+    /// Whether a refusal of `op` is logged instead of returned: a member without its
+    /// key logs a sealed op unread, so a node that refuses it must keep it too.
     fn logs_refusal(&self, op: &SignedNamespaceOp, err: &eyre::Report) -> EyreResult<bool> {
-        let group = match &op.op {
-            NamespaceOp::Group { group_id, .. }
-            | NamespaceOp::RootSealedForGroup { group_id, .. } => group_id.to_bytes(),
-            _ => return Ok(false),
-        };
-        if group == self.namespace_id.to_bytes() || is_undecidable(err) {
+        if !crate::unified_op_decode::can_be_parked(&op.op) || is_undecidable(err) {
             return Ok(false);
         }
         let namespace = ContextGroupId::from(self.namespace_id.to_bytes());
@@ -980,7 +984,7 @@ impl<'a> NamespaceGovernance<'a> {
             "logging a refused op: it keeps its place in the DAG and applies nothing"
         );
         Ok(AppliedPayload {
-            keep_bytes: OpBudget::void(self.store).admit_op(op)?,
+            keep_bytes: self.admit_unreadable(op)?,
             parked: Some(Parked::Refused),
             result: ApplyNamespaceOpResult {
                 refused: Some(err),
@@ -3061,17 +3065,17 @@ impl<'a> NamespaceGovernance<'a> {
         root: &RootOp,
         state: Parked,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
+        if state == Parked::Refused {
+            eyre::bail!("a root op refused at its cut stays refused");
+        }
         if let Some(judge) = self.authorizer.at_cut() {
             let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
                 .with_apply_auth(&parked.parent_op_hashes, judge)
                 .apply_root_op(gate_op, root);
-            if state == Parked::Refused || !at_cut.as_ref().is_err_and(is_undecidable) {
+            if !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(parked, at_cut.is_ok());
                 return at_cut;
             }
-        }
-        if state == Parked::Refused {
-            eyre::bail!("a root op refused at its cut stays refused");
         }
         let outcome = self.apply_root_op(gate_op, root);
         if outcome.is_ok() {
@@ -3091,17 +3095,17 @@ impl<'a> NamespaceGovernance<'a> {
         encrypted: &EncryptedGroupOp,
         parked: Option<Parked>,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
+        if parked == Some(Parked::Refused) {
+            eyre::bail!("a group op refused at its cut stays refused");
+        }
         if let Some(judge) = self.authorizer.at_cut().filter(|_| parked.is_some()) {
             let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
                 .with_apply_auth(&ns_op.parent_op_hashes, judge)
                 .decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
-            if parked == Some(Parked::Refused) || !at_cut.as_ref().is_err_and(is_undecidable) {
+            if !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(ns_op, at_cut.is_ok());
                 return at_cut;
             }
-        }
-        if parked == Some(Parked::Refused) {
-            eyre::bail!("a group op refused at its cut stays refused");
         }
         let outcome = self.decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
         if parked.is_some() && outcome.is_ok() {

@@ -1582,5 +1582,6 @@ pub fn apply_member_joined(
     let mut signed = signed;
     signed.admitter_endorsement = Some(admitter_endorsement);
     crate::apply_signed_namespace_op(store, &signed)
-        .and_then(|result| result.refused.map_or(Ok(()), Err))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
+        .map(|_result| ())
 }
