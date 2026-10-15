@@ -106,7 +106,7 @@ pub(crate) mod tests {
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
-    use super::adopt_pulled_group_key;
+    use super::{adopt_pulled_group_key, refresh_after_group_key};
     use crate::scope_projection::ScopeProjections;
 
     fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
