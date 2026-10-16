@@ -26,15 +26,18 @@
 //! nonce unspent in a per-(group, author device) window derived from the group
 //! so it can never share a row with a context's own ledger.
 //!
-//! **`not_after`** is not checked here, for the reason given in
-//! [`crate::warrant_gate`]; the relay checks it at its API.
+//! **`not_after`** is judged against the op's own signed `stamped_at`, never a
+//! clock, so every replica reaches the same verdict. The stamp is the relay's,
+//! so this holds an honest relay to the deadline and not one that backdates.
 //!
 //! [`GroupOp::OnBehalf`]: calimero_context_client::local_governance::GroupOp::OnBehalf
 //! [`RootOp::OnBehalf`]: calimero_context_client::local_governance::RootOp::OnBehalf
 //! [`GroupOp::delegable_form`]: calimero_context_client::local_governance::GroupOp::delegable_form
 //! [`RootOp::delegable_form`]: calimero_context_client::local_governance::RootOp::delegable_form
 
-use calimero_account::{GovernanceDelegation, GovernanceOpKind, VerifiedGovernanceWarrant};
+use calimero_account::{
+    GovernanceDelegation, GovernanceOpKind, VerifiedGovernanceWarrant, WarrantStatement,
+};
 use calimero_context_client::local_governance::{GroupOp, RootOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
@@ -68,6 +71,9 @@ pub enum DelegationRefusal {
     /// The wrapper is signed by a key other than the executor key the bundle names.
     #[error("the op is not signed by the executor the governance warrant authorises")]
     SignerIsNotExecutor,
+    /// The relay stamped the op after the warrant's `not_after`.
+    #[error("the governance warrant expired before the op was stamped; mint a fresh one")]
+    WarrantExpired,
     /// The author's device has been revoked in this group.
     #[error("the author's device has been revoked in this group")]
     AuthorDeviceRevoked,
@@ -141,6 +147,7 @@ pub fn check_group_delegation(
     signer: &PublicKey,
     inner: &GroupOp,
     delegation: &GovernanceDelegation,
+    stamped_at: u64,
 ) -> EyreResult<(VerifiedGovernanceWarrant, ActingPrincipal)> {
     let form = inner
         .delegable_form()
@@ -155,6 +162,7 @@ pub fn check_group_delegation(
         GovernanceOpKind::Group,
         &bytes,
         delegation,
+        stamped_at,
     )
 }
 
@@ -170,13 +178,21 @@ pub fn check_root_delegation(
     signer: &PublicKey,
     inner: &RootOp,
     delegation: &GovernanceDelegation,
+    stamped_at: u64,
 ) -> EyreResult<(VerifiedGovernanceWarrant, ActingPrincipal)> {
     let form = inner
         .delegable_form()
         .ok_or(DelegationRefusal::NotDelegable(root_op_label(inner)))?;
     let bytes = borsh::to_vec(&form)?;
     if matches!(inner, RootOp::NamespaceCreatedV2 { .. }) {
-        return check_genesis(store, namespace_group, signer, &bytes, delegation);
+        return check_genesis(
+            store,
+            namespace_group,
+            signer,
+            &bytes,
+            delegation,
+            stamped_at,
+        );
     }
     check_common(
         store,
@@ -186,6 +202,7 @@ pub fn check_root_delegation(
         GovernanceOpKind::Root,
         &bytes,
         delegation,
+        stamped_at,
     )
 }
 
@@ -204,10 +221,9 @@ fn check_genesis(
     signer: &PublicKey,
     form_bytes: &[u8],
     delegation: &GovernanceDelegation,
+    stamped_at: u64,
 ) -> EyreResult<(VerifiedGovernanceWarrant, ActingPrincipal)> {
-    let warrant = delegation
-        .verify()
-        .map_err(|err| DelegationRefusal::InvalidDelegation(err.to_string()))?;
+    let warrant = verify_in_force(delegation, stamped_at)?;
     if warrant.scope != namespace_group.to_bytes() || warrant.kind != GovernanceOpKind::Root {
         return Err(DelegationRefusal::ScopeMismatch.into());
     }
@@ -238,6 +254,10 @@ fn check_genesis(
     Ok((warrant, principal))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per fact about the op being admitted"
+)]
 fn check_common(
     store: &Store,
     permissions: &PermissionChecker<'_>,
@@ -246,10 +266,9 @@ fn check_common(
     kind: GovernanceOpKind,
     form_bytes: &[u8],
     delegation: &GovernanceDelegation,
+    stamped_at: u64,
 ) -> EyreResult<(VerifiedGovernanceWarrant, ActingPrincipal)> {
-    let warrant = delegation
-        .verify()
-        .map_err(|err| DelegationRefusal::InvalidDelegation(err.to_string()))?;
+    let warrant = verify_in_force(delegation, stamped_at)?;
     if warrant.scope != group_id.to_bytes() || warrant.kind != kind {
         return Err(DelegationRefusal::ScopeMismatch.into());
     }
@@ -278,6 +297,20 @@ fn check_common(
         account: warrant.author_account,
     };
     Ok((warrant, principal))
+}
+
+/// The bundle verifies, and the warrant was in force when the op was stamped.
+fn verify_in_force(
+    delegation: &GovernanceDelegation,
+    stamped_at: u64,
+) -> Result<VerifiedGovernanceWarrant, DelegationRefusal> {
+    let warrant = delegation
+        .verify()
+        .map_err(|err| DelegationRefusal::InvalidDelegation(err.to_string()))?;
+    if warrant.expired_at(stamped_at) {
+        return Err(DelegationRefusal::WarrantExpired);
+    }
+    Ok(warrant)
 }
 
 /// Refuse a capability op that would change `CAN_AUTHOR_ON_BEHALF`.
@@ -371,7 +404,7 @@ mod tests {
     use crate::namespace::NamespaceGovernance;
     use crate::test_fixtures::{
         account_for, enrol_member, real_join_account, sample_meta_with_admin, seal_for_test,
-        test_store,
+        test_store, STAMPED_AT,
     };
     use crate::warrant_gate::WarrantRefusal;
     use crate::{
@@ -391,6 +424,7 @@ mod tests {
         relay: AccountId,
         other: AccountId,
         nonce: std::cell::Cell<u64>,
+        not_after: u64,
     }
 
     /// A namespace in which the author is a `Member` with `author_caps`, the
@@ -430,6 +464,7 @@ mod tests {
             relay,
             other,
             nonce: std::cell::Cell::new(0),
+            not_after: u64::MAX,
         }
     }
 
@@ -469,7 +504,7 @@ mod tests {
                             account_heads: vec![],
                             governance_floor: vec![],
                             nonce,
-                            not_after: u64::MAX,
+                            not_after: self.not_after,
                         },
                     )
                     .expect("sign"),
@@ -486,6 +521,7 @@ mod tests {
             GroupOp::OnBehalf {
                 delegation: Box::new(self.bundle(group, GovernanceOpKind::Group, &form)),
                 op: Box::new(inner),
+                stamped_at: STAMPED_AT,
             }
         }
 
@@ -529,6 +565,7 @@ mod tests {
             RootOp::OnBehalf {
                 delegation: Box::new(self.bundle(self.ns, GovernanceOpKind::Root, &form)),
                 op: Box::new(inner),
+                stamped_at: STAMPED_AT,
             }
         }
 
@@ -699,6 +736,7 @@ mod tests {
             GroupOp::OnBehalf {
                 delegation: Box::new(w.bundle(w.ns, GovernanceOpKind::Group, &form)),
                 op: Box::new(filled),
+                stamped_at: STAMPED_AT,
             },
         )
         .expect("the removal applies");
@@ -757,6 +795,7 @@ mod tests {
             let op = GroupOp::OnBehalf {
                 delegation: Box::new(w.bundle(w.ns, GovernanceOpKind::Group, &bytes)),
                 op: Box::new(inner),
+                stamped_at: STAMPED_AT,
             };
             assert!(matches!(
                 refusal(w.relay_publishes(w.ns, op)),
@@ -773,6 +812,7 @@ mod tests {
         let nested = GroupOp::OnBehalf {
             delegation: Box::new(w.bundle(w.ns, GovernanceOpKind::Group, &bytes)),
             op: Box::new(inner),
+            stamped_at: STAMPED_AT,
         };
         assert!(matches!(
             refusal(w.relay_publishes(w.ns, nested)),
@@ -789,6 +829,7 @@ mod tests {
         let op = GroupOp::OnBehalf {
             delegation: Box::new(w.bundle(w.ns, GovernanceOpKind::Group, &signed)),
             op: Box::new(add(swapped)),
+            stamped_at: STAMPED_AT,
         };
         assert_eq!(
             refusal(w.relay_publishes(w.ns, op)),
@@ -809,6 +850,7 @@ mod tests {
             let op = GroupOp::OnBehalf {
                 delegation: Box::new(w.bundle(scope, kind, &bytes)),
                 op: Box::new(inner.clone()),
+                stamped_at: STAMPED_AT,
             };
             assert_eq!(
                 refusal(w.relay_publishes(w.ns, op)),
@@ -833,6 +875,20 @@ mod tests {
         let mut op = w.on_behalf(w.ns, add(w.stranger()));
         if let GroupOp::OnBehalf { delegation, .. } = &mut op {
             delegation.warrant.not_after -= 1;
+        }
+        assert!(matches!(
+            refusal(w.relay_publishes(w.ns, op)),
+            DelegationRefusal::InvalidDelegation(_)
+        ));
+    }
+
+    /// Expiry is judged on the verified warrant, so a forgery is reported as one.
+    #[test]
+    fn a_tampered_expired_warrant_is_refused_as_invalid() {
+        let w = world(MemberCapabilities::MANAGE_MEMBERS);
+        let mut op = w.on_behalf(w.ns, add(w.stranger()));
+        if let GroupOp::OnBehalf { delegation, .. } = &mut op {
+            delegation.warrant.not_after = 1;
         }
         assert!(matches!(
             refusal(w.relay_publishes(w.ns, op)),
@@ -921,6 +977,18 @@ mod tests {
         assert!(!w.is_member(&w.ns, &newcomer));
     }
 
+    #[test]
+    fn a_group_op_stamped_a_second_past_not_after_is_refused() {
+        let mut w = world(MemberCapabilities::MANAGE_MEMBERS);
+        w.not_after = STAMPED_AT - 1;
+        let newcomer = w.stranger();
+        assert_eq!(
+            refusal(w.relay_publishes(w.ns, w.on_behalf(w.ns, add(newcomer)))),
+            DelegationRefusal::WarrantExpired
+        );
+        assert!(!w.is_member(&w.ns, &newcomer));
+    }
+
     // ── root ops: subgroups ───────────────────────────────────────────────
 
     /// `admin` creates a Restricted subgroup under the root, salted `[tag; 32]`.
@@ -957,6 +1025,21 @@ mod tests {
                 .expect("read"),
             "the relay gains nothing"
         );
+    }
+
+    #[test]
+    fn a_root_op_stamped_past_not_after_is_refused() {
+        let mut w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
+        w.not_after = STAMPED_AT - 1;
+        let channel = subgroup_id(0xB0, &w.author);
+        assert_eq!(
+            refusal(w.relay_publishes_root(w.root_on_behalf(create_subgroup(&w, 0xB0, w.author)))),
+            DelegationRefusal::WarrantExpired
+        );
+        assert!(MetaRepository::new(&w.store)
+            .load(&ContextGroupId::from(channel))
+            .expect("read")
+            .is_none());
     }
 
     #[test]
@@ -1017,6 +1100,7 @@ mod tests {
             let op = RootOp::OnBehalf {
                 delegation: Box::new(w.bundle(w.ns, GovernanceOpKind::Root, &bytes)),
                 op: Box::new(inner),
+                stamped_at: STAMPED_AT,
             };
             assert!(matches!(
                 refusal(w.relay_publishes_root(op)),
@@ -1087,6 +1171,7 @@ mod tests {
             GroupOp::OnBehalf {
                 delegation: Box::new(w.bundle(subgroup, GovernanceOpKind::Group, &bytes)),
                 op: Box::new(inner),
+                stamped_at: STAMPED_AT,
             }
         };
         let transfer = wrap_group(GroupOp::TransferOwnership {
@@ -1135,6 +1220,7 @@ mod tests {
             NamespaceOp::Root(RootOp::OnBehalf {
                 delegation: Box::new(w.bundle(w.ns, GovernanceOpKind::Root, &bytes)),
                 op: Box::new(admin_change),
+                stamped_at: STAMPED_AT,
             }),
         )
         .expect("sign");
@@ -1628,7 +1714,7 @@ mod founding_tests {
     use super::DelegationRefusal;
     use crate::namespace::NamespaceGovernance;
     use crate::tee::{read_tee_admission_policy, TeeAdmissionPolicyRead};
-    use crate::test_fixtures::{account_for, real_join_account, test_store};
+    use crate::test_fixtures::{account_for, real_join_account, test_store, STAMPED_AT};
     use crate::{
         apply_local_signed_group_op, CapabilitiesRepository, MembershipRepository, MetaRepository,
         NamespaceFoundingRepository,
@@ -1644,6 +1730,7 @@ mod founding_tests {
         relay_sk: PrivateKey,
         relay: AccountId,
         seq: std::cell::Cell<u64>,
+        not_after: u64,
     }
 
     fn founding() -> Founding {
@@ -1660,6 +1747,7 @@ mod founding_tests {
             relay_sk,
             relay,
             seq: std::cell::Cell::new(0),
+            not_after: u64::MAX,
         }
     }
 
@@ -1682,6 +1770,7 @@ mod founding_tests {
                     nonce,
                 )),
                 op: Box::new(inner),
+                stamped_at: STAMPED_AT,
             }
         }
 
@@ -1692,6 +1781,7 @@ mod founding_tests {
             GroupOp::OnBehalf {
                 delegation: Box::new(self.delegation(group, GovernanceOpKind::Group, &form, nonce)),
                 op: Box::new(inner),
+                stamped_at: STAMPED_AT,
             }
         }
 
@@ -1716,7 +1806,7 @@ mod founding_tests {
                             account_heads: vec![],
                             governance_floor: vec![],
                             nonce,
-                            not_after: u64::MAX,
+                            not_after: self.not_after,
                         },
                     )
                     .expect("sign"),
@@ -1844,6 +1934,17 @@ mod founding_tests {
                 .expect("read"),
             Some((f.relay, false))
         );
+    }
+
+    #[test]
+    fn a_founding_stamped_past_not_after_is_refused() {
+        let mut f = founding();
+        f.not_after = STAMPED_AT - 1;
+        assert_eq!(refusal(f.found()), Some(DelegationRefusal::WarrantExpired));
+        assert!(MetaRepository::new(&f.store)
+            .load(&f.ns)
+            .expect("read")
+            .is_none());
     }
 
     #[test]
@@ -2053,6 +2154,7 @@ mod founding_tests {
         let wrapped = GroupOp::OnBehalf {
             op: Box::new(bare),
             delegation,
+            stamped_at: STAMPED_AT,
         };
         assert_eq!(fold(&wrapped), calimero_op::OpPayload::Noop);
     }

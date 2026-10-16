@@ -288,7 +288,7 @@ mod tests {
     use crate::delegation_gate::DelegationRefusal;
     use crate::namespace::NamespaceGovernance;
     use crate::test_fixtures::{
-        account_for, derived_group_id, enrol_member, real_join_account, test_store,
+        account_for, derived_group_id, enrol_member, real_join_account, test_store, STAMPED_AT,
     };
     use crate::{CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository};
 
@@ -340,6 +340,7 @@ mod tests {
                 &borsh::to_vec(&genesis).expect("encode"),
             )),
             op: Box::new(genesis),
+            stamped_at: STAMPED_AT,
         };
         let genesis = rig
             .apply(&rig.relay_sk, vec![], NamespaceOp::Root(wrapped))
@@ -461,6 +462,7 @@ mod tests {
                     &form,
                 )),
                 op: Box::new(inner),
+                stamped_at: STAMPED_AT,
             }
         }
 
@@ -621,6 +623,7 @@ mod tests {
         let swapped = GroupOp::OnBehalf {
             delegation: Box::new(r.delegation(r.ns, &r.founder_sk, GovernanceOpKind::Group, &form)),
             op: Box::new(first("6.6.6")),
+            stamped_at: STAMPED_AT,
         };
         assert_eq!(
             refusal(r.group_op(&r.relay_sk, r.ns, vec![r.genesis], &swapped)),

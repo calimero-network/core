@@ -12930,6 +12930,7 @@ fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
                 executor_key: relay_sk.public_key(),
             }),
             op: Box::new(inner),
+            stamped_at: crate::test_fixtures::STAMPED_AT,
         }
     };
     let carrier = SignedNamespaceOp::sign(
@@ -15225,5 +15226,77 @@ fn a_replayed_group_created_does_not_undo_later_governance() {
             .is_member(&kept, &creator)
             .unwrap(),
         "a re-fed create must not re-seat a creator who was removed since"
+    );
+}
+
+/// A device spent in this node's account namespace is refused a pulled key
+/// before the carried unlink reaches the namespace it pulls from.
+#[test]
+fn a_device_spent_in_this_nodes_account_namespace_is_not_served_a_pulled_key() {
+    let namespace_id = [0xF6u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    let store = test_store();
+    let root = crate::NodeDeviceRepository::new(&store)
+        .account_root()
+        .unwrap()
+        .expect("an initialised node holds its account root");
+    let device_of_this_account = |sign_pk: &PublicKey, seed: u8| {
+        let credential = crate::test_fixtures::join_account_for(
+            root.signing_key(),
+            root.genesis(),
+            sign_pk,
+            [seed; 32],
+            0,
+        );
+        crate::test_fixtures::record_credential(&store, &ns_gid, &credential);
+        credential.statement.device
+    };
+
+    let responder_sk = PrivateKey::from([0x67; 32]);
+    let responder_pk = responder_sk.public_key();
+    let _ = device_of_this_account(&responder_pk, 0x67);
+    let joiner_pk = PrivateKey::from([0x66; 32]).public_key();
+    let joiner_device = device_of_this_account(&joiner_pk, 0x66);
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &responder_pk, responder_sk.as_bytes())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(root.account()))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &root.account(), GroupMemberRole::Member)
+        .unwrap();
+    GroupKeyring::new(&store, ns_gid)
+        .store_key(&[0x6D; 32])
+        .unwrap();
+    let pull = || {
+        crate::build_group_key_delivery(
+            &store,
+            namespace_id.into(),
+            namespace_id,
+            crate::KeyRequester {
+                identity: joiner_pk,
+                device: Some(joiner_device),
+            },
+            None,
+        )
+        .unwrap()
+        .0
+    };
+    assert!(
+        !pull().is_empty(),
+        "precondition: a live device of a member is served the key"
+    );
+
+    let account_namespace = crate::NodeDeviceRepository::new(&store)
+        .account_namespace()
+        .unwrap()
+        .expect("a root holder derives its account namespace");
+    crate::AccountBindingRepository::new(&store)
+        .apply_revocation(&account_namespace, joiner_device)
+        .unwrap();
+    assert!(
+        pull().is_empty(),
+        "a device spent in this node's account namespace must be served no key"
     );
 }

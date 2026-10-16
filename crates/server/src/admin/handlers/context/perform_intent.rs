@@ -37,7 +37,7 @@ use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_account::MAX_PRESENTED_HANDOFFS;
+use calimero_account::{WarrantStatement, MAX_PRESENTED_HANDOFFS};
 use calimero_context_client::client::ContextClient;
 use calimero_governance_store::warrant_gate::WarrantRefusal;
 use calimero_primitives::context::ContextId;
@@ -455,9 +455,7 @@ fn warrant_authorises_intent(
         ));
     }
 
-    // The one clock check in the system. `<` not `<=`: a warrant is live through
-    // the whole second it names, so `not_after == now` still authorises.
-    if warrant.not_after < now {
+    if warrant.expired_at(now) {
         eyre::bail!(IntentRefusal::NotAuthorized(format!(
             "this warrant expired at {} and it is now {now}; mint a fresh one",
             warrant.not_after

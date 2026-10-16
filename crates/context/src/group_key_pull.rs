@@ -40,8 +40,47 @@ pub(crate) fn adopt_pulled_group_key(
             "failed to re-drive buffered encrypted ops after a direct group-key pull"
         );
     }
-    ScopeProjections::repersist_namespace_ops(store, namespace_id.to_bytes());
+    let _ = refresh_after_group_key(store, namespace_id, group_id);
     Ok(key_id)
+}
+
+/// End a key recovery for `group_id`: re-decode the namespace's op-store with the
+/// keys now held, then replay the group's ops once more.
+///
+/// The replay that ran when the key was stored re-drives only the ops it
+/// collected then. An op of the group that arrives while that replay is still
+/// judging the group's parked ops is read against a fold that shows them as
+/// holes, so the gate holds it for a key this node already has (core#4511's
+/// hold). No later key arrives to replay it, so without this pass it stays held
+/// for good: the member row an `add_group_members` wrote never lands here and
+/// the group's state hash differs from its peers'. The pass is idempotent: an op
+/// already applied is skipped by its nonce.
+///
+/// Returns the divergence the replay reports, for the caller to reconcile.
+pub fn refresh_after_group_key(
+    store: &Store,
+    namespace_id: NamespaceId,
+    group_id: ContextGroupId,
+) -> Option<calimero_governance_store::DivergenceReport> {
+    ScopeProjections::repersist_namespace_ops(store, namespace_id.to_bytes());
+    let authorizer = crate::apply_authorizer::VoidJudge::new(store);
+    match calimero_governance_store::retry_encrypted_ops_for_group_with(
+        store,
+        namespace_id,
+        group_id.to_bytes(),
+        &authorizer,
+    ) {
+        Ok(divergence) => divergence,
+        Err(err) => {
+            warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                %err,
+                "failed to replay the group's ops after its key recovery; the next key \
+                 arrival or the startup sweep replays them"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -67,7 +106,7 @@ pub(crate) mod tests {
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
 
-    use super::adopt_pulled_group_key;
+    use super::{adopt_pulled_group_key, refresh_after_group_key};
     use crate::scope_projection::ScopeProjections;
 
     fn meta(admin: calimero_account::AccountId) -> GroupMetaValue {
@@ -1226,5 +1265,137 @@ pub(crate) mod tests {
             projection.account_member_at_cut(&store, ns, &joiner, &heads),
             Some(false)
         );
+    }
+
+    /// An op of a subgroup that arrives while the subgroup's key-arrival replay
+    /// is still running is held, and the refresh that ends the key recovery must
+    /// apply it.
+    ///
+    /// Until the replay judges the subgroup's parked op, the fold reads that op
+    /// as a hole, so the gate holds a readable op for a key this node already
+    /// stored. The replay only re-drives what it collected before the op
+    /// arrived, and no later key arrives to replay again: the member row never
+    /// lands and the group's state hash differs from its peers' for good.
+    #[test]
+    fn an_op_held_during_its_keys_replay_applies_once_the_key_recovery_ends() {
+        let ns = ContextGroupId::from([0x55; 32]);
+        let namespace_id = ns.to_bytes();
+        let (store, owner_sk, _mallory_sk) = keyless_namespace(ns);
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let bob_sk = PrivateKey::from([0x76; 32]);
+        let bob = crate::test_support::enrol(&store, &ns, &bob_sk.public_key());
+        MembershipRepository::new(&store)
+            .add_member(&ns, &bob, GroupMemberRole::Member)
+            .unwrap();
+
+        let sub_salt = [0x77u8; 32];
+        let sub = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &owner,
+            &namespace_id,
+            true,
+            &sub_salt,
+        ));
+        NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
+        MetaRepository::new(&store)
+            .save(&sub, &meta(owner))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&sub, &owner, GroupMemberRole::Admin)
+            .unwrap();
+        let created = SignedNamespaceOp::sign(
+            &owner_sk,
+            namespace_id.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                admin: owner,
+                group_id: sub.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+                salt: sub_salt,
+            }),
+        )
+        .unwrap();
+        land(&store, namespace_id, &created, &[]);
+        let created_id = created.content_hash().unwrap();
+
+        // Sealed under the subgroup's own key, which this node does not hold
+        // yet: it lands unreadable in the op-store.
+        let sub_key = [0x78u8; 32];
+        let sealed = |nonce: u64, parents: Vec<[u8; 32]>, op: GroupOp| {
+            SignedNamespaceOp::sign(
+                &owner_sk,
+                namespace_id.into(),
+                parents,
+                nonce,
+                NamespaceOp::Group {
+                    group_id: sub.to_bytes().into(),
+                    key_id: GroupKeyring::key_id_for(&sub_key).into(),
+                    encrypted: GroupKeyring::encrypt_op(&sub_key, &op).unwrap(),
+                    key_rotation: None,
+                },
+            )
+            .unwrap()
+        };
+        let named = sealed(
+            2,
+            vec![created_id],
+            GroupOp::GroupMetadataSet {
+                name: Some("K".to_owned()),
+                data: std::collections::BTreeMap::new(),
+            },
+        );
+        let named_id = arrive(&store, &named, &[created_id]);
+
+        // The key is stored, and its replay has collected what it will re-drive
+        // but not yet judged the parked op: until it does, the fold reads that op
+        // as a hole. The add arrives in this window, readable, and is held.
+        let _ = GroupKeyring::new(&store, sub).store_key(&sub_key).unwrap();
+        let add = sealed(
+            3,
+            vec![named_id],
+            GroupOp::MemberAdded {
+                member: bob,
+                role: GroupMemberRole::ReadOnly,
+            },
+        );
+        let _ = calimero_governance_store::apply_signed_namespace_op_at_cut(
+            &store,
+            &add,
+            &[named_id],
+            &crate::apply_authorizer::EphemeralProjectionAuthorizer::new(&store),
+        )
+        .expect("an op whose own group's history reads as sealed is held, not refused");
+        let add_id = add.content_hash().unwrap();
+        let held = || {
+            calimero_governance_store::held_ops::HeldOps::new(&store, namespace_id.into())
+                .read_live()
+                .unwrap()
+                .ops
+                .iter()
+                .any(|op| op.delta_id == add_id)
+        };
+        assert!(
+            held(),
+            "precondition: the add is held while its key's replay is in flight"
+        );
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&sub, &bob)
+                .unwrap(),
+            None,
+            "precondition: the held add wrote no member row"
+        );
+
+        let _ = refresh_after_group_key(&store, namespace_id.into(), sub);
+
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&sub, &bob)
+                .unwrap(),
+            Some(GroupMemberRole::ReadOnly),
+            "the add must apply once the key recovery ends"
+        );
+        assert!(!held(), "an applied op is no longer listed as held");
     }
 }

@@ -21,6 +21,7 @@ use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
 pub const FOUNDER_DEVICE_SEED: [u8; 32] = [0x3E; 32]; // the device a founder credential certifies
+pub const STAMPED_AT: u64 = 1_700_000_000; // when a test relay stamps a delegated op
 
 /// A fresh account root: its signing key and the genesis that names it.
 ///

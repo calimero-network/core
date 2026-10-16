@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use calimero_server_primitives::admin::{TeeAttestRequest, TeeAttestResponse};
 #[cfg(feature = "mock-attestation")]
 use calimero_tee_attestation::generate_mock_attestation;
@@ -15,6 +17,10 @@ use tracing::{error, info};
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
+
+/// Where the kernel exposes the TD's event log (the ACPI CCEL table). mero-kms
+/// reads the same file for its own `/attest`.
+const EVENT_LOG_PATH: &str = "/sys/firmware/acpi/tables/data/CCEL";
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
@@ -145,6 +151,31 @@ pub async fn handler(
         None
     };
 
+    // With `eventLog`, the CCEL table this TD's registers were extended from.
+    // It is public, but a mock quote has no TD behind it and so no log.
+    let event_log_b64 = if req.event_log {
+        if result.is_mock {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "This node runs a mock TEE, which has no event log".to_owned(),
+            }
+            .into_response();
+        }
+        match tokio::fs::read(EVENT_LOG_PATH).await {
+            Ok(log) => Some(BASE64.encode(log)),
+            Err(err) => {
+                error!(error=%err, path=EVENT_LOG_PATH, "Failed to read the TD's event log");
+                return ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: format!("Failed to read the TD's event log: {err}"),
+                }
+                .into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     info!("TEE attestation generated successfully");
     ApiResponse {
         payload: TeeAttestResponse::new(
@@ -153,6 +184,7 @@ pub async fn handler(
             bound_public_key,
             transport_public_key.map(hex::encode),
             collateral,
+            event_log_b64,
         ),
     }
     .into_response()

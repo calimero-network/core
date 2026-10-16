@@ -6,11 +6,9 @@
 //! other's write takes the key as fresh. So a node meets the second write as a
 //! rewrite of an immutable entry.
 //!
-//! When apply kept whichever write reached it first, a node holding the phone's
-//! value refused the laptop's and a node holding the laptop's skipped the
-//! phone's as stale, and the two never agreed on a root hash again. Every node
-//! must keep the same one of the two, whatever order they arrive in: the one
-//! with the lower `(nonce, content hash)`.
+//! Two different values seal the entry: every node keeps the same two writes,
+//! whatever order they arrive in, and reads the entry as conflicted. The same
+//! value written twice settles on its earlier write.
 //!
 //! These tests replay each order on fresh stores, and a repair pushing each
 //! node's leaf to the other, then play an account that does not own the entry
@@ -19,19 +17,23 @@
 use borsh::BorshSerialize;
 use calimero_account::AccountId;
 use serial_test::serial;
-use sha2::{Digest, Sha256};
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::collections::{Root, UnorderedMap, WriteOnce};
+use crate::collections::{
+    Guarded, GuardedEntries, IndexedMap, Moderation, Once, OwnerOnce, Owning, Root, SortedMap,
+    UnorderedMap, WriteOnce, Written,
+};
 use crate::entities::{ChildInfo, Data, EntryRules, Metadata, StorageType};
 use crate::env;
 use crate::index::Index;
-use crate::interface::StorageError;
+use crate::interface::{MainInterface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::map_entry_bytes;
-use crate::tests::common::{account_of_key, test_account};
+use crate::tests::common::{account_of_key, conflict_record, conflicted, test_account};
 use crate::tests::owned_rules::{act_as, apply, key, later, signed};
+use crate::tests::policy_matrix::{note, Note};
+use crate::written_once::conflict_parts;
 
 /// Plain values, so two nodes holding the same entry hold the same bytes.
 type Ballots = WriteOnce<UnorderedMap<String, String>>;
@@ -121,11 +123,31 @@ fn full_hash_of(id: Id) -> Option<[u8; 32]> {
         .map(|(full, _own)| full)
 }
 
-/// What a node holds: the entries, the signed nonce of the write it kept, and
-/// the hashes a peer compares against its own.
+/// What a read of the voter's ballot returns.
+#[derive(Debug, PartialEq)]
+enum Read {
+    Value(String),
+    Absent,
+    Conflicted,
+}
+
+fn read(ballots: &Root<Ballots>) -> Read {
+    env::set_account_id(*voter().as_bytes());
+    let read = ballots.get(&ballot_key());
+    if conflicted(&read) {
+        return Read::Conflicted;
+    }
+    match read.expect("a read of the ballot") {
+        Some(value) => Read::Value(value),
+        None => Read::Absent,
+    }
+}
+
+/// What a node holds: the voter's ballot as a read returns it, the signed nonce
+/// of the first write it kept, and the hashes a peer compares against its own.
 #[derive(Debug, PartialEq)]
 struct Held {
-    entries: Vec<(AccountId, String, String)>,
+    read: Read,
     nonce: Option<u64>,
     collection_hash: Option<[u8; 32]>,
     root_hash: Option<[u8; 32]>,
@@ -142,7 +164,7 @@ fn held(ballots: &Root<Ballots>) -> Held {
             _ => None,
         });
     Held {
-        entries: ballots.entries_with_owners().expect("entries"),
+        read: read(ballots),
         nonce,
         collection_hash: full_hash_of(ballots_id(ballots)),
         root_hash: full_hash_of(Id::root()),
@@ -171,11 +193,45 @@ fn leaf(id: Id) -> Action {
     }
 }
 
-fn value_of(held: &Held) -> Option<&str> {
-    match held.entries.as_slice() {
-        [(_, _, value)] => Some(value.as_str()),
-        _ => None,
+/// Apply a peer's leaf as a repair does: a sealed entry's record as the writes
+/// it holds, each on its own.
+fn repair(leaf: &Action) {
+    let Action::Update {
+        id, data, metadata, ..
+    } = leaf
+    else {
+        panic!("a leaf is an update");
+    };
+    let Some(writes) = conflict_parts(&metadata.storage_type, data) else {
+        let _ = apply(leaf.clone(), voter());
+        return;
+    };
+    for (data, storage_type) in writes {
+        let write = Action::Update {
+            id: *id,
+            data,
+            ancestors: vec![],
+            metadata: Metadata {
+                storage_type,
+                ..metadata.clone()
+            },
+        };
+        let _ = apply(write, voter());
     }
+}
+
+/// A node once the voter's phone and laptop cast different ballots.
+fn sealed_node() -> Root<Ballots> {
+    let ballots = fresh_node();
+    for (device, value, at) in [(PHONE, "yes", AT), (LAPTOP, "no", AT + 1)] {
+        apply(cast(&ballots, device, value, at), voter()).expect("each write lands");
+    }
+    ballots
+}
+
+/// A node's leaf once the voter's phone and laptop cast different ballots.
+fn sealed_leaf() -> Action {
+    leaf(entry_id(&sealed_node()))
 }
 
 // ---------------------------------------------------------------------------
@@ -192,43 +248,22 @@ fn two_devices_casting_one_key_converge_whatever_the_order() {
         let laptop_first = node_applying(&[laptop, phone]);
         assert_eq!(
             phone_first, laptop_first,
-            "every node must keep the same ballot once it has seen both \
+            "every node must hold the same entry once it has seen both \
              (phone at {phone_at}, laptop at {laptop_at})"
         );
-        assert_eq!(phone_first.entries.len(), 1, "one ballot per account");
+        assert_eq!(phone_first.read, Read::Conflicted, "two values seal it");
     }
 }
 
 #[test]
 #[serial]
-fn the_earliest_write_is_the_one_kept() {
+fn two_values_from_two_devices_seal_it_from_the_earliest_write() {
     let phone = (PHONE, "yes", AT);
     let laptop = (LAPTOP, "no", AT + 1);
     for writes in [[phone, laptop], [laptop, phone]] {
         let held = node_applying(&writes);
-        assert_eq!(value_of(&held), Some("yes"));
+        assert_eq!(held.read, Read::Conflicted);
         assert_eq!(held.nonce, Some(AT));
-    }
-}
-
-#[test]
-#[serial]
-fn at_one_instant_the_lower_content_hash_is_kept() {
-    let ballots = fresh_node();
-    let id = entry_id(&ballots);
-    let hash = |value: &str| -> [u8; 32] {
-        Sha256::digest(map_entry_bytes(id, &ballot_key(), &value.to_owned())).into()
-    };
-    let expected = if hash("yes") < hash("no") {
-        "yes"
-    } else {
-        "no"
-    };
-
-    let phone = (PHONE, "yes", AT);
-    let laptop = (LAPTOP, "no", AT);
-    for writes in [[phone, laptop], [laptop, phone]] {
-        assert_eq!(value_of(&node_applying(&writes)), Some(expected));
     }
 }
 
@@ -236,15 +271,55 @@ fn at_one_instant_the_lower_content_hash_is_kept() {
 #[serial]
 fn one_value_from_two_devices_settles_on_one_write() {
     // Byte-identical values at two instants hash alike, but a node keeping
-    // the later one would judge a third write against a different nonce.
+    // the later one would seal on a different pair once a third write lands.
     let phone = (PHONE, "yes", AT);
     let laptop = (LAPTOP, "yes", AT + 2);
+    for writes in [[phone, laptop], [laptop, phone]] {
+        let held = node_applying(&writes);
+        assert_eq!(held.read, Read::Value("yes".to_owned()));
+        assert_eq!(held.nonce, Some(AT));
+    }
+
     let between = (PHONE, "no", AT + 1);
     let phone_first = node_applying(&[phone, laptop, between]);
     let laptop_first = node_applying(&[laptop, phone, between]);
     assert_eq!(phone_first, laptop_first);
+    assert_eq!(phone_first.read, Read::Conflicted);
     assert_eq!(phone_first.nonce, Some(AT));
-    assert_eq!(value_of(&phone_first), Some("yes"));
+}
+
+#[test]
+#[serial]
+fn nodes_sealed_by_different_pairs_converge_after_an_exchange() {
+    let first = (PHONE, "a", AT);
+    let second = (LAPTOP, "b", AT + 1);
+    let third = (PHONE, "c", AT + 2);
+    let node = |writes: &[(u8, &str, u64)]| {
+        let ballots = fresh_node();
+        for &(device, value, at) in writes {
+            let _ = apply(cast(&ballots, device, value, at), voter());
+        }
+        ballots
+    };
+    let early_leaf = leaf(entry_id(&node(&[first, second])));
+    let late_leaf = leaf(entry_id(&node(&[second, third])));
+
+    // Each node takes the other's leaf, as HashComparison hands it over.
+    let exchanged = |own: &[(u8, &str, u64)], pushed: &Action| {
+        let ballots = node(own);
+        repair(pushed);
+        let id = entry_id(&ballots);
+        (held(&ballots), MainStorage::storage_read(Key::Entry(id)))
+    };
+    let (early, early_bytes) = exchanged(&[first, second], &late_leaf);
+    let (late, late_bytes) = exchanged(&[second, third], &early_leaf);
+    assert_eq!(
+        early_bytes, late_bytes,
+        "both nodes must store the same bytes"
+    );
+    assert_eq!(early, late);
+    assert_eq!(early.read, Read::Conflicted);
+    assert_eq!(early.nonce, Some(AT));
 }
 
 #[test]
@@ -268,20 +343,20 @@ fn a_repair_pushing_either_node_s_leaf_settles_both() {
         let ballots = fresh_node();
         let (device, value, at) = own;
         apply(cast(&ballots, device, value, at), voter()).expect("a fresh key lands");
-        let _ = apply(pushed.clone(), voter());
+        repair(pushed);
         (held(&ballots), leaf(entry_id(&ballots)))
     };
     let (phone_node, phone_node_leaf) = repaired(phone, &laptop_leaf);
     let (laptop_node, _) = repaired(laptop, &phone_leaf);
     assert_eq!(phone_node, laptop_node);
-    assert_eq!(value_of(&phone_node), Some("no"));
+    assert_eq!(phone_node.read, Read::Conflicted);
 
-    // The node that replaced its value ships a leaf whose signature is the
-    // kept write's, so a third node verifies it.
+    // The sealed node's leaf carries both writes, so a third node holding one
+    // of them verifies it and seals the same way.
     let ballots = fresh_node();
     let (device, value, at) = phone;
     apply(cast(&ballots, device, value, at), voter()).expect("a fresh key lands");
-    apply(phone_node_leaf, voter()).expect("the repaired leaf verifies");
+    repair(&phone_node_leaf);
     assert_eq!(held(&ballots), laptop_node);
 }
 
@@ -292,13 +367,245 @@ fn a_redelivery_of_either_write_changes_nothing_once_settled() {
     let phone = cast(&ballots, PHONE, "yes", AT);
     let laptop = cast(&ballots, LAPTOP, "no", AT + 1);
     apply(phone.clone(), voter()).expect("the first write lands");
+    apply(laptop.clone(), voter()).expect("the second value seals it");
     let settled = held(&ballots);
+    apply(phone, voter()).expect("a redelivery of either write is accepted");
+    apply(laptop, voter()).expect("a redelivery of either write is accepted");
+    assert_eq!(held(&ballots), settled);
+}
+
+#[test]
+#[serial]
+fn a_sealed_entry_stays_in_every_owner_listing() {
+    let ballots = sealed_node();
+    let sealed = Written::<String>::Conflicted;
+    assert_eq!(
+        ballots.entries_with_owners().expect("entries"),
+        vec![(voter(), ballot_key(), sealed.clone())]
+    );
+    assert_eq!(
+        ballots.entries_by(&voter()).expect("by"),
+        vec![(ballot_key(), sealed.clone())]
+    );
+    assert_eq!(
+        ballots.entries_at(&ballot_key()).expect("at"),
+        vec![(voter(), sealed)]
+    );
+}
+
+/// A collection of `C` under policy `P` holding the voter's entry at `k`,
+/// sealed by the phone's and the laptop's `values`.
+fn sealed_collection<C, P>(values: [C::Value; 2]) -> Root<Guarded<C, P>>
+where
+    C: GuardedEntries<Key = String>,
+    P: Owning,
+{
+    env::reset_for_testing();
+    let _ = act_as(&key(0x01));
+    let sealed = Root::new(|| {
+        let mut collection = Guarded::<C, P>::new_with_field_name("sealed");
+        collection.reassign_deterministic_id("sealed");
+        collection
+    });
+    let parent = (**sealed).id();
+    let id = sealed.entry_id_of(&voter(), &ballot_key());
+    let rules = sealed.entry_rules();
+    for ((device, at), value) in [(PHONE, AT), (LAPTOP, AT + 1)].into_iter().zip(values) {
+        let data = map_entry_bytes(id, &ballot_key(), &value);
+        let write = signed(
+            move |metadata| Action::Add {
+                id,
+                data,
+                ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
+                metadata,
+            },
+            voter(),
+            rules,
+            &key(device),
+            at,
+        );
+        apply(write, voter()).expect("each write lands");
+    }
+    sealed
+}
+
+#[test]
+#[serial]
+fn a_sealed_entry_stays_in_every_listing_of_the_collection() {
+    let values = || ["yes".to_owned(), "no".to_owned()];
+    let sealed = || vec![(ballot_key(), Written::<String>::Conflicted)];
+
+    let map = sealed_collection::<UnorderedMap<String, String>, OwnerOnce>(values());
+    let listed: Vec<_> = map.entries().expect("entries").collect();
+    assert_eq!(listed, sealed(), "UnorderedMap::entries");
+
+    let moderated = sealed_collection::<UnorderedMap<String, String>, Moderation<Once>>(values());
+    let listed: Vec<_> = moderated.entries().expect("entries").collect();
+    assert_eq!(listed, sealed(), "ModeratedOnce::entries");
+
+    let sorted = sealed_collection::<SortedMap<String, String>, OwnerOnce>(values());
+    let listed: Vec<_> = sorted.entries().expect("entries").collect();
+    assert_eq!(listed, sealed(), "SortedMap::entries");
+    let keys: Vec<_> = sorted.keys().expect("keys").collect();
+    assert_eq!(keys, vec![ballot_key()], "SortedMap::keys");
+    let values_listed: Vec<_> = sorted.values().expect("values").collect();
+    assert_eq!(
+        values_listed,
+        vec![Written::Conflicted],
+        "SortedMap::values"
+    );
+    let listed: Vec<_> = sorted.range(..).expect("range").collect();
+    assert_eq!(listed, sealed(), "SortedMap::range");
+    let listed: Vec<_> = sorted.prefix(b"k").expect("prefix").collect();
+    assert_eq!(listed, sealed(), "SortedMap::prefix");
+    assert_eq!(
+        sorted.page(0, 10).expect("page"),
+        sealed(),
+        "SortedMap::page"
+    );
+    assert_eq!(
+        sorted.first().expect("first"),
+        sealed().pop(),
+        "SortedMap::first"
+    );
+    assert_eq!(
+        sorted.last().expect("last"),
+        sealed().pop(),
+        "SortedMap::last"
+    );
+
+    let indexed = sealed_collection::<IndexedMap<String, Note>, OwnerOnce>([
+        note("t", "yes"),
+        note("t", "no"),
+    ]);
+    let listed: Vec<_> = indexed.entries().expect("entries").collect();
+    assert_eq!(
+        listed,
+        vec![(ballot_key(), Written::<Note>::Conflicted)],
+        "IndexedMap::entries"
+    );
+}
+
+#[test]
+#[serial]
+fn a_written_once_value_too_large_for_a_record_of_two_is_refused() {
+    let ballots = fresh_node();
+    let large = "x".repeat(600 * 1024);
     assert!(matches!(
-        apply(laptop, voter()),
+        apply(cast(&ballots, PHONE, &large, AT), voter()),
         Err(StorageError::ActionNotAllowed(_))
     ));
-    apply(phone, voter()).expect("a redelivery of the kept write is accepted");
-    assert_eq!(held(&ballots), settled);
+}
+
+#[test]
+#[serial]
+fn a_snapshot_refuses_a_written_once_value_too_large_for_a_record_of_two() {
+    let ballots = fresh_node();
+    let large = "x".repeat(600 * 1024);
+    let Action::Add {
+        id, data, metadata, ..
+    } = cast(&ballots, PHONE, &large, AT)
+    else {
+        panic!("a cast is an add");
+    };
+    let parent = ballots_id(&ballots);
+    assert!(
+        MainInterface::verify_snapshot_entity_signature(id, Some(parent), &data, &metadata)
+            .is_err()
+    );
+}
+
+/// A sealed entry under rules the collection does not admit is a planted one,
+/// and reads as absent, as any entry the collection does not admit does.
+#[test]
+#[serial]
+fn a_sealed_entry_the_collection_does_not_admit_reads_as_absent() {
+    let ballots = fresh_node();
+    let (parent, id) = (ballots_id(&ballots), entry_id(&ballots));
+    let planted = EntryRules {
+        immutable: true,
+        moderators: Some(Id::new([0x99; 32])),
+    };
+    for (device, value, at) in [(PHONE, "yes", AT), (LAPTOP, "no", AT + 1)] {
+        let data = map_entry_bytes(id, &ballot_key(), &value.to_owned());
+        let write = signed(
+            move |metadata| Action::Add {
+                id,
+                data,
+                ancestors: vec![ChildInfo::new(parent, [0; 32], Metadata::default())],
+                metadata,
+            },
+            voter(),
+            planted,
+            &key(device),
+            at,
+        );
+        apply(write, voter()).expect("each write lands");
+    }
+    assert_eq!(read(&ballots), Read::Absent);
+}
+
+/// A stored write whose signature does not cover its bytes cannot be half of a
+/// record no node could verify, so a second value is refused instead.
+#[test]
+#[serial]
+fn a_stored_write_its_signature_does_not_cover_never_enters_a_record() {
+    let ballots = fresh_node();
+    let id = entry_id(&ballots);
+    apply(cast(&ballots, PHONE, "yes", AT), voter()).expect("the first write lands");
+    let merged = map_entry_bytes(id, &ballot_key(), &"merged".to_owned());
+    let _ = MainStorage::storage_write(Key::Entry(id), &merged);
+
+    assert!(matches!(
+        apply(cast(&ballots, LAPTOP, "no", AT + 1), voter()),
+        Err(StorageError::ActionNotAllowed(_))
+    ));
+    assert_ne!(read(&ballots), Read::Conflicted);
+}
+
+#[test]
+#[serial]
+fn a_sealed_entry_s_record_is_never_applied_as_one_write() {
+    let record = sealed_leaf();
+    let _node = fresh_node();
+    assert!(matches!(
+        apply(record, voter()),
+        Err(StorageError::ActionNotAllowed(_))
+    ));
+}
+
+#[test]
+#[serial]
+fn a_snapshot_holds_a_record_only_if_each_of_its_writes_verifies() {
+    let Action::Update {
+        id, data, metadata, ..
+    } = sealed_leaf()
+    else {
+        panic!("a leaf is an update");
+    };
+    let parent = ballots_id(&fresh_node());
+    MainInterface::verify_snapshot_entity_signature(id, Some(parent), &data, &metadata)
+        .expect("a record of two genuine writes verifies");
+
+    let [(first, first_type), (_, second_type)] =
+        conflict_parts(&metadata.storage_type, &data).expect("a record");
+    let signature = |stamp: &StorageType| *stamp.signature_data().expect("signed");
+    let other = map_entry_bytes(id, &ballot_key(), &"maybe".to_owned());
+    let (forged, stamp) = conflict_record(
+        &metadata.storage_type,
+        [
+            (first, signature(&first_type)),
+            (other, signature(&second_type)),
+        ],
+    );
+    let metadata = Metadata {
+        storage_type: stamp,
+        ..metadata
+    };
+    assert!(matches!(
+        MainInterface::verify_snapshot_entity_signature(id, Some(parent), &forged, &metadata),
+        Err(StorageError::InvalidSignature)
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -307,15 +614,13 @@ fn a_redelivery_of_either_write_changes_nothing_once_settled() {
 
 #[test]
 #[serial]
-fn a_later_write_from_another_device_is_refused() {
+fn a_later_write_from_another_device_seals_it() {
     let ballots = fresh_node();
     apply(cast(&ballots, PHONE, "yes", AT), voter()).expect("the first write lands");
-    let settled = held(&ballots);
-    assert!(matches!(
-        apply(cast(&ballots, LAPTOP, "no", later()), voter()),
-        Err(StorageError::ActionNotAllowed(_))
-    ));
-    assert_eq!(held(&ballots), settled);
+    apply(cast(&ballots, LAPTOP, "no", later()), voter()).expect("a second value seals it");
+    let held = held(&ballots);
+    assert_eq!(held.read, Read::Conflicted);
+    assert_eq!(held.nonce, Some(AT));
 }
 
 #[test]

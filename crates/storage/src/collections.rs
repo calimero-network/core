@@ -98,8 +98,8 @@ mod authored_common;
 pub mod guarded;
 pub use guarded::{
     Authored, ContentAddressed, ContentHash, Editable, Edits, Guarded, GuardedEntries, GuardedKeys,
-    Moderated, ModeratedOnce, Moderation, Once, Owner, OwnerEdits, OwnerOnce, Owning, Policy,
-    WriteOnce,
+    Moderated, ModeratedOnce, Moderation, Once, OnceOnly, Owner, OwnerEdits, OwnerOnce, Owning,
+    Policy, WriteOnce, Written,
 };
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
@@ -214,8 +214,15 @@ use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::{Interface, StorageError};
+use crate::order_index::{self, SortKey};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
+
+/// Owned entries with their owners, a sealed one as `Written::Conflicted`.
+type OwnedRows<V, K> = Vec<(AccountId, (Written<V>, K))>;
+
+/// A keyed entry with its id, a sealed one as `Written::Conflicted`.
+type KeyedRow<V, K> = (Id, (Written<V>, K));
 
 /// Version of a `SortedMap`/`SortedSet` index marker. Bump it when the rows an
 /// index may hold change, so an index built before is rebuilt.
@@ -1608,12 +1615,22 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// one filed under another parent (see [`Interface::find_child_by_id`]).
     fn find_admitted(&self, id: Id) -> StoreResult<Option<Entry<T>>> {
         let parent = self.id();
-        let entry = self.within(|| <Interface<S>>::find_child_by_id::<Entry<_>>(parent, id))?;
+        let entry = match self.within(|| <Interface<S>>::find_child_by_id::<Entry<_>>(parent, id)) {
+            // A sealed entry this domain does not admit reads as absent, as any other does.
+            Err(StorageError::Conflicted(_)) if !self.admits_stored(id)? => return Ok(None),
+            entry => entry?,
+        };
         Ok(entry.filter(|entry| {
             self.storage
                 .domain
                 .admits(&entry.storage.metadata.storage_type)
         }))
+    }
+
+    /// Whether this collection's domain admits the stamp stored at `id`.
+    fn admits_stored(&self, id: Id) -> StoreResult<bool> {
+        Ok(<Index<S>>::get_metadata(id)?
+            .is_some_and(|metadata| self.storage.domain.admits(&metadata.storage_type)))
     }
 
     /// Whether this write lands in a collection inside frozen data while a value
@@ -1816,11 +1833,59 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
     /// The position of child `id` in the order [`nth`](Self::nth) reads.
     fn position_of(&self, id: Id) -> StoreResult<Option<usize>> {
+        if let Some(tree) = self.order_tree()? {
+            let Some(child) = <Index<S>>::child_of(self.id(), id) else {
+                return Ok(None);
+            };
+            if !self.storage.domain.admits(&child.metadata.storage_type) {
+                return Ok(None);
+            }
+            if let Ok(position) = tree.position_of::<S>(SortKey::of(&child)) {
+                return Ok(position);
+            }
+        }
         Ok(self.children_cache()?.get_index_of(&id))
     }
 
     fn nth(&self, index: usize) -> StoreResult<Option<Id>> {
+        if let Some(tree) = self.order_tree()? {
+            if let Ok(id) = tree.nth::<S>(index) {
+                return Ok(id);
+            }
+        }
         Ok(self.children_cache()?.get_index(index).copied())
+    }
+
+    /// The node-local order index (see [`order_index`]), for a positional read
+    /// that does not load every child, when the child cache is not loaded.
+    ///
+    /// `None` sends the caller to the cache: when it is loaded already, when
+    /// the collection is small enough that loading it costs no more than the
+    /// index would, and when the index was stale, in which case this loads the
+    /// children into the cache and builds the index from them, so the next
+    /// call's read is the cheap one.
+    ///
+    /// [`order_index`]: crate::order_index
+    fn order_tree(&self) -> StoreResult<Option<order_index::Tree>> {
+        if !S::index_supported() || self.children_ids.borrow().is_some() {
+            return Ok(None);
+        }
+        let parent = self.id();
+        if <Index<S>>::child_count(parent) <= order_index::LEAF_MAX as u64 {
+            return Ok(None);
+        }
+        let domain = &self.storage.domain;
+        let root = match order_index::current::<S>(parent, domain) {
+            Ok(tree) => return Ok(Some(tree)),
+            Err(root) => root,
+        };
+        let Some(children) = self.load_children_info()? else {
+            *self.children_ids.borrow_mut() = Some(IndexSet::new());
+            return Ok(None);
+        };
+        order_index::record::<S>(parent, domain, root, &children);
+        *self.children_ids.borrow_mut() = Some(children.iter().map(ChildInfo::id).collect());
+        Ok(None)
     }
 
     /// A page of admitted child ids at or above `from`, and the id to resume
@@ -1881,6 +1946,13 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Every child this collection admits, in the trie's order, or `None` when
     /// the parent has no index record yet.
     fn load_children(&self) -> StoreResult<Option<IndexSet<Id>>> {
+        Ok(self
+            .load_children_info()?
+            .map(|children| children.iter().map(ChildInfo::id).collect()))
+    }
+
+    /// [`load_children`](Self::load_children), each with its metadata.
+    fn load_children_info(&self) -> StoreResult<Option<Vec<ChildInfo>>> {
         // `IndexNotFound` here means the parent has NO index record yet — a
         // just-created or freshly-synced collection with no children, which
         // is legitimately empty. Genuine read corruption surfaces as
@@ -1894,7 +1966,6 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             Ok(info) => Ok(Some(
                 info.into_iter()
                     .filter(|c| domain.admits(&c.metadata.storage_type))
-                    .map(|c| c.id())
                     .collect(),
             )),
             Err(StorageError::IndexNotFound(_)) => Ok(None),
@@ -1980,6 +2051,22 @@ where
             .filter(|entry| self.key_fits(id, &entry.item)))
     }
 
+    /// The key of the entry at `id` that two values sealed, read from the first
+    /// write it keeps, if this collection admits it and its key fits.
+    fn sealed_key(&self, id: Id) -> StoreResult<Option<K>> {
+        let parent = self.id();
+        let entry =
+            self.within(|| <Interface<S>>::find_sealed_child_by_id::<Entry<(V, K)>>(parent, id))?;
+        Ok(entry
+            .filter(|entry| {
+                self.storage
+                    .domain
+                    .admits(&entry.storage.metadata.storage_type)
+                    && self.key_fits(id, &entry.item)
+            })
+            .map(|entry| entry.item.1))
+    }
+
     /// The `(value, key)` at `id`, if this collection admits it and its key fits.
     fn get_keyed(&self, id: Id) -> StoreResult<Option<(V, K)>> {
         Ok(self.find_keyed(id)?.map(|entry| entry.item))
@@ -2008,25 +2095,41 @@ where
         Ok(entry.filter(|(_, key)| self.filed_under(id, key.as_ref())))
     }
 
-    /// Every entry with its id, in child order. An entry whose key does not fit
-    /// its id is skipped; one the child list names but storage cannot load is an
-    /// error, as in [`entries`](Collection::entries).
-    fn keyed_entries(&self) -> StoreResult<impl Iterator<Item = StoreResult<(Id, (V, K))>> + '_> {
+    /// Every entry with its id in child order, a sealed one as `Written::Conflicted`; an
+    /// unfit key is skipped, an unloadable child is an error ([`entries`](Collection::entries)).
+    fn keyed_writes(&self) -> StoreResult<impl Iterator<Item = StoreResult<KeyedRow<V, K>>> + '_> {
         let ids: Vec<Id> = self.children_cache()?.iter().copied().collect();
         Ok(ids
             .into_iter()
             .filter_map(move |id| match self.find_admitted(id) {
-                Ok(Some(entry)) => self
-                    .key_fits(id, &entry.item)
-                    .then_some(Ok((id, entry.item))),
+                Ok(Some(entry)) => self.key_fits(id, &entry.item).then(|| {
+                    let (value, key) = entry.item;
+                    Ok((id, (Written::Value(value), key)))
+                }),
                 Ok(None) => Some(Err(StoreError::StorageError(StorageError::NotFound(id)))),
+                Err(StoreError::StorageError(StorageError::Conflicted(_))) => self
+                    .sealed_key(id)
+                    .transpose()
+                    .map(|key| key.map(|key| (id, (Written::Conflicted, key)))),
                 Err(error) => Some(Err(error)),
             }))
     }
 
+    /// The `(entry, key)` at `id`, a sealed one as `Written::Conflicted`, if this
+    /// collection admits it and its key fits.
+    fn get_keyed_written(&self, id: Id) -> StoreResult<Option<(Written<V>, K)>> {
+        match self.find_keyed(id) {
+            Ok(entry) => Ok(entry.map(|entry| (Written::Value(entry.item.0), entry.item.1))),
+            Err(StoreError::StorageError(StorageError::Conflicted(_))) => {
+                Ok(self.sealed_key(id)?.map(|key| (Written::Conflicted, key)))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Every owned entry with its owner, in child order: only `owner`'s when one
     /// is given. Reads the stored bytes of only the entries it returns.
-    fn owned_entries(&self, owner: Option<&AccountId>) -> StoreResult<Vec<(AccountId, (V, K))>> {
+    fn owned_entries(&self, owner: Option<&AccountId>) -> StoreResult<OwnedRows<V, K>> {
         let children = match <Interface<S>>::child_info_for(self.id()) {
             Ok(children) => children,
             Err(StorageError::IndexNotFound(_)) => Vec::new(),
@@ -2037,7 +2140,7 @@ where
 
     /// Every owner's entry at `slot`, ascending by id. One trie bucket holds
     /// them all, since an owned id keeps its slot's prefix.
-    fn entries_at(&self, slot: Id) -> StoreResult<Vec<(AccountId, (V, K))>>
+    fn entries_at(&self, slot: Id) -> StoreResult<OwnedRows<V, K>>
     where
         K: AsRef<[u8]>,
     {
@@ -2052,7 +2155,7 @@ where
         children: Vec<ChildInfo>,
         owner: Option<&AccountId>,
         wanted: impl Fn(&K) -> bool,
-    ) -> StoreResult<Vec<(AccountId, (V, K))>> {
+    ) -> StoreResult<OwnedRows<V, K>> {
         let domain = &self.storage.domain;
         let mut out = Vec::new();
         for child in children {
@@ -2063,10 +2166,11 @@ where
             {
                 continue;
             }
-            if let Some(entry) = self.find_keyed(child.id())? {
-                if wanted(&entry.item.1) {
-                    out.push((stamped, entry.item));
-                }
+            if let Some(entry) = self
+                .get_keyed_written(child.id())?
+                .filter(|(_, key)| wanted(key))
+            {
+                out.push((stamped, entry));
             }
         }
         Ok(out)

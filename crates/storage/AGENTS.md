@@ -85,15 +85,31 @@ switching a field between the two types needs no migration.
 - `EntryRules { immutable, moderators }` rides in the `User` stamp and is
   hashed into `payload_for_signing`, so rules are signed and fixed at creation.
   Apply refuses an update or delete naming different rules; an `immutable`
-  entry takes no delete but a moderator's, and of its owner's authentic writes
-  keeps the one with the lowest `(signed nonce, SHA-256 of bytes)`
-  (`written_once_order`), however they arrive. Two devices of one account write
-  the same entry, so keeping the first to arrive split nodes for good; the
-  lowest is the same everywhere. An earlier write replaces the stored one
-  through `replace_written_once` (bypassing `save_internal`'s LWW guard) before
-  the stale-nonce skip can drop it; a later one is refused unless its bytes are
-  identical. The nonce has no lower bound, so the owner can replace its own
-  entry with a backdated write; no one else can. `tests/write_once_devices.rs`
+  entry takes no delete but a moderator's. Of its owner's authentic writes it
+  keeps the lowest by `(signed nonce, SHA-256 of bytes, signature)` and the
+  lowest whose bytes differ from that one (`written_once::settle`), however they
+  arrive. One kept write is the value. Two seal the entry: its stored bytes
+  become a conflict record (`calimero.written-once.conflict.v1` then borsh of
+  both signed writes), stamped with the first write's signature, and a read
+  returns `StorageError::Conflicted`. Every listing of a written-once policy
+  (`OnceOnly`) returns `Written<V>` per entry, so a sealed entry stays listed as
+  `Written::Conflicted`: the owner listings through `Owning::Listed`, and the
+  map listings through `Guarded` methods that shadow the inner map's (a sorted
+  map's index keeps a row for a sealed entry). An `IndexedMap` query matches
+  values, which a sealed entry has none of. A written-once write over
+  `written_once::MAX_VALUE_BYTES` is refused on every path (apply, the local
+  write, both snapshot verifiers), so a record of two fits one sync leaf. A
+  stored write enters a record only if its signature covers its bytes. A
+  sealed entry its collection's domain does not admit reads as absent. The
+  kept pair is a semilattice, so nodes that saw different pairs store the same
+  bytes after any exchange. A record is never applied as one write
+  (`refuse_conflict_record_as_write`): a repair applies it as its two writes,
+  each signer resolved on its own (`calimero-node`'s `conflict_leaves`), and a
+  snapshot verifies and authors each (`conflict_parts`), so only the writer
+  can seal its entry. A changed kept set is stored through
+  `replace_written_once` (bypassing `save_internal`'s LWW guard) before the
+  stale-nonce skip can drop it. A write over an entry whose own write is not yet
+  signed is refused unless its bytes are identical. `tests/write_once_devices.rs`
   and `tests/converge_write_once.rs` pin it. A `moderators` delete is checked
   with `resolve_anchor_writers(anchor)` for `DELETE`: the host resolves the
   moderators at the delete's causal cut, so a moderator removed later does not
@@ -289,6 +305,35 @@ switching a field between the two types needs no migration.
   cost-gate workloads pin the cost; `len_stays_exact_as_the_trie_changes_under_it`
   (in `authored_vector.rs`) pins the tally against links it admits, links it
   does not, removals, a bypassing link and a stamp rewritten in place.
+- **A large vector reads a position from a node-local order index, never by
+  loading its children** (`order_index.rs`). A position is a child's rank in
+  `ChildInfo` order, `(created_at, order, id)`, and the trie is keyed by the
+  random ids pushes mint, so `Collection::nth`/`position_of` loaded and sorted
+  every child: mero-chat's `get_messages` read ~1.3 rows per message in the
+  channel and ran out of gas between 16,000 and 20,000 messages, though it asks
+  for 20. The index is a counted B+ tree over the admitted children's sort keys
+  in the index plane (`SHA256("calimero:order-index:v1:header" ‖ collection
+  id)` for the header, `…:node` ‖ id ‖ node number for each node; leaves of up
+  to `LEAF_MAX` (128) keys, inner nodes of up to `INNER_MAX` (64) branches with
+  subtree counts), so a read descends one row per level. Like the admitted
+  count it names the trie root and domain it is exact at, is carried across
+  every link and unlink by `ChildTrie` (`order_index::before_change`, then
+  `Pending::finish`), is dropped with the trie and by
+  `Index::set_storage_type`, and goes stale on a bypassing change, after which
+  the next positional read loads the children once and rebuilds it. A replaced
+  child moves nothing, because a linked child's sort key never changes:
+  `created_at` and `order` are written at link, a re-link keeps them, and a
+  value write rewrites only `updated_at`. A path that changes a linked child's
+  `created_at` or `order` must drop the parent's tree, as `set_storage_type`
+  does. Only a collection with more than `LEAF_MAX` children builds one; every
+  link still pays one index read to look for its header (beside the admitted
+  count's), and a link under a tree rewrites one leaf and the header (~0.5M
+  gas per mero-chat send). Nothing in it is synced or hashed.
+  `order_index/tests.rs` checks it against a sorted model through leaf and
+  inner splits and through a vector's local, applied and bypassing changes;
+  `positions_count_only_admitted_entries_as_the_trie_changes` (in
+  `authored_vector.rs`) pins the domain filter; `vector_get_nth_indexed` is
+  the cost-gate workload.
 - `AuthoredVector`, `FrozenStorage` and `UserStorage` keep their own types:
   index-keyed with tombstones, an older API (`get` returns `T`, not the stored
   wrapper), and one slot per account.
@@ -298,14 +343,19 @@ switching a field between the two types needs no migration.
 - A `WriterSetCell<FrozenValue<T>>` built by `new_write_once`: one writer, the
   creating account, with `OpMask::WRITE_ONCE` (`0b1000`) and nothing else. No
   `DELETE`, no `ADMIN`, so the value cannot be removed or its writer rotated.
-- `enforce_put_mask` accepts a `Put` from a `WRITE_ONCE` writer only while the
-  entry is absent or the bytes are identical, so genesis lands on a fresh node
-  and sync redelivery converges, while a rewrite signed by the writer is
-  refused. `tests/frozen_values.rs` plays each peer.
-- Two writes never race for one value, so first-arrived is safe here as it is
-  not for `WriteOnce`: a root field is written by genesis alone, and a nested
-  cell is minted at `cell_id(Id::random(), writers)`, so two devices creating
-  one at the same key create two cells. `tests/converge_write_once.rs` pins it.
+- `WRITE_ONCE` is granted only alone: `SharedRotation::refusal` refuses a set
+  granting it beside another bit (`mixes_write_once`), the fold counts such a
+  step with `WRITE_ONCE` dropped (`without_mixed_write_once`, so its removals
+  still apply), and `enforce_put_mask` refuses a write-once write in such a
+  set, so a write-once writer can never seal what a writer may change.
+- `enforce_put_mask` settles a `Put` from a `WRITE_ONCE` writer as any
+  written-once entry's write (`written_once::settle`): genesis lands on a fresh
+  node, a redelivery changes nothing, and a second value signed by the writer
+  seals the value on every node. `tests/frozen_values.rs` plays each peer.
+- An honest creator writes one value: a root field is written by genesis alone,
+  and a nested cell is minted at `cell_id(Id::random(), writers)`, so two
+  devices creating one at the same key create two cells.
+  `tests/converge_write_once.rs` pins it.
 - Trust is `SharedStorage`'s: the writer set comes from genesis.
 
 ### `Registry` constraints
@@ -655,6 +705,7 @@ src/
 ├── index.rs                  # Entity indexing (Merkle tree)
 ├── child_trie.rs             # A parent's children as a hash trie (bounded-cost link/unlink)
 ├── admitted_count.rs         # Node-local count of the children a guarded collection admits
+├── order_index.rs            # Node-local counted B+ tree: a vector's positions without loading its children
 ├── domain.rs                 # Domain: what nested collections inherit from a guarded entry
 ├── env.rs                    # RuntimeEnv (storage backend injection), shared_writers / record_shared_rotation (host-resolved writer sets)
 ├── js.rs                     # JS bindings

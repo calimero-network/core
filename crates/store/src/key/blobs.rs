@@ -122,3 +122,61 @@ impl Debug for BlobOwner {
             .finish()
     }
 }
+
+/// Records that a prefetch for a context took one reference to a blob. Presence
+/// is the signal.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct PrefetchedBlob(Key<(ContextId, BlobId)>);
+
+impl PrefetchedBlob {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId, blob_id: PrimitiveBlobId) -> Self {
+        Self(Key(
+            GenericArray::from(*context_id).concat(GenericArray::from(*blob_id))
+        ))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut context_id = [0; 32];
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.into()
+    }
+
+    #[must_use]
+    pub fn blob_id(&self) -> PrimitiveBlobId {
+        let mut blob_id = [0; 32];
+        blob_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        blob_id.into()
+    }
+}
+
+impl AsKeyParts for PrefetchedBlob {
+    type Components = (ContextId, BlobId);
+
+    fn column() -> Column {
+        Column::PrefetchedBlob
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for PrefetchedBlob {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for PrefetchedBlob {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PrefetchedBlob")
+            .field("context_id", &self.context_id())
+            .field("blob_id", &self.blob_id())
+            .finish()
+    }
+}

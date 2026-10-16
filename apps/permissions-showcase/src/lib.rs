@@ -43,7 +43,7 @@ use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, AccountId};
 use calimero_storage::collections::{
     Authored, ContentAddressed, Frozen, IndexedMap, LwwRegister, ModeratedOnce, SortedMap,
-    UnorderedMap, WriteOnce,
+    UnorderedMap, WriteOnce, Written,
 };
 use thiserror::Error;
 
@@ -175,6 +175,13 @@ fn message_key(channel: &str, id: &str) -> String {
     format!("{channel}/{id}")
 }
 
+/// The written-once entries that hold a value: a sealed one has none to show.
+fn with_values<K>(rows: impl IntoIterator<Item = (K, Written<Message>)>) -> Vec<(K, Message)> {
+    rows.into_iter()
+        .filter_map(|(key, entry)| Some((key, entry.value()?)))
+        .collect()
+}
+
 /// Views of `rows`, read across every owner, each with its author.
 ///
 /// A row doesn't say whose it is, and one key has a row per owner holding it,
@@ -271,9 +278,10 @@ impl TeamSpace {
     /// Two authors' messages at one id both appear, each with its author.
     pub fn channel(&self, channel: String) -> app::Result<Vec<MessageView>> {
         let prefix = format!("{channel}/");
-        message_views(self.messages.prefix(prefix.as_bytes())?, |key| {
-            Ok(self.messages.entries_at(key)?)
-        })
+        message_views(
+            with_values(self.messages.prefix(prefix.as_bytes())?),
+            |key| Ok(with_values(self.messages.entries_at(key)?)),
+        )
     }
 
     // ── moderated, immutable announcements ─────────────────────────────────
@@ -301,8 +309,8 @@ impl TeamSpace {
 
     /// Every announcement, by id: one row per author holding the id.
     pub fn announcements(&self) -> app::Result<Vec<MessageView>> {
-        let mut views = message_views(self.announcements.entries()?, |key| {
-            Ok(self.announcements.entries_at(key)?)
+        let mut views = message_views(with_values(self.announcements.entries()?), |key| {
+            Ok(with_values(self.announcements.entries_at(key)?))
         })?;
         views.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(views)

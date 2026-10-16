@@ -40,7 +40,7 @@ pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// Prevents memory exhaustion from malicious peers sending oversized leaf values.
 /// This should be sufficient for most entity data while protecting against DoS.
-pub const MAX_LEAF_VALUE_SIZE: usize = 1_048_576;
+pub const MAX_LEAF_VALUE_SIZE: usize = calimero_storage::constants::MAX_LEAF_VALUE_SIZE;
 
 /// Maximum allowed tree depth for traversal requests.
 ///

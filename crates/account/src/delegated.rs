@@ -98,7 +98,8 @@ pub trait WarrantStatement {
     fn executor_key(&self) -> PublicKey;
     /// Monotonic per author device; what the executor device's replay ledger spends.
     fn nonce(&self) -> u64;
-    /// Wall-clock bound in seconds — checked by the executor, never at apply.
+    /// Deadline in unix seconds: the executor checks it against its clock, every
+    /// replica against the signed stamp of what it applies, never a clock.
     fn not_after(&self) -> u64;
     /// The governance heads the author's view descended from.
     fn governance_floor(&self) -> &[[u8; 32]];
@@ -108,6 +109,13 @@ pub trait WarrantStatement {
     /// # Errors
     /// The statement kind's own signature or bound error.
     fn verify_signature(&self) -> Result<(), AccountError>;
+
+    /// Whether something stamped at `stamped_at` (unix seconds) is past
+    /// [`Self::not_after`]; the stamp is the executor's, so a backdated one passes.
+    #[must_use]
+    fn expired_at(&self, stamped_at: u64) -> bool {
+        stamped_at > self.not_after()
+    }
 }
 
 /// A warrant plus the two certificates that tie its keys to the accounts it
@@ -175,9 +183,9 @@ impl<W: WarrantStatement + Clone> Delegated<W> {
     /// names, and both named keys belong to the accounts the warrant names.
     ///
     /// **Authenticity, not authority.** Revocation, membership, capability,
-    /// nonce reuse and expiry all need a cut or a clock and belong to the
+    /// nonce reuse and expiry all need a cut or a stamp and belong to the
     /// caller — the governance store's `warrant_admission` for the standing and
-    /// the nonce, the relay's API boundary for the clock.
+    /// the nonce, the apply gates for the stamp, the relay's API for the clock.
     ///
     /// # Errors
     /// The statement's own signature error if the warrant is not signed by the

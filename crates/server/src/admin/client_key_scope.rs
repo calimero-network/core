@@ -3,9 +3,11 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::rejection::RawPathParamsRejection;
 use axum::extract::RawPathParams;
-use axum::http::{Request, StatusCode};
+use axum::http::{Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use tracing::warn;
 
@@ -17,6 +19,9 @@ use crate::AdminState;
 const SYNC_ALL_REFUSAL: &str = "This key may not sync every context";
 const CONTEXT_REFUSAL: &str = "This key is not permitted to act on this context";
 const GROUP_REFUSAL: &str = "This key is not permitted to act on this group";
+const APPLICATION_REFUSAL: &str = "This key is not permitted to act on this application";
+const INSTALL_REFUSAL: &str = "This key may not install applications";
+const INSTALL_ROUTE: &str = "/install-application";
 
 pub(crate) async fn refuse_out_of_scope(
     params: Result<RawPathParams, RawPathParamsRejection>,
@@ -30,10 +35,14 @@ pub(crate) async fn refuse_out_of_scope(
             let Some(state) = request.extensions().get::<Arc<AdminState>>() else {
                 return Some(CONTEXT_REFUSAL);
             };
-            let params: Vec<(&str, &str)> = params
-                .as_ref()
-                .map(|p| p.iter().collect())
-                .unwrap_or_default();
+            // A route without parameters has none to check; an undecodable one is refused.
+            let params: Vec<(&str, &str)> = match params.as_ref() {
+                Ok(params) => params.iter().collect(),
+                Err(RawPathParamsRejection::MissingPathParams(_)) => Vec::new(),
+                Err(_) => return Some(CONTEXT_REFUSAL),
+            };
+            let store = state.ctx_client.datastore();
+            let changes = !matches!(*request.method(), Method::GET | Method::HEAD);
             refusal(
                 request.uri().path(),
                 &params,
@@ -42,8 +51,17 @@ pub(crate) async fn refuse_out_of_scope(
                         .is_ok_and(|id| scope.permits_context(&state.ctx_client, &id))
                 },
                 |raw| {
-                    parse_group_id(raw)
-                        .is_ok_and(|id| scope.permits_group(state.ctx_client.datastore(), &id))
+                    parse_group_id(raw).is_ok_and(|id| {
+                        if changes {
+                            scope.permits_group_change(store, &id)
+                        } else {
+                            scope.permits_group(store, &id)
+                        }
+                    })
+                },
+                |raw| {
+                    raw.parse::<ApplicationId>()
+                        .is_ok_and(|id| scope.permits_application(store, &id))
                 },
             )
             .inspect(|reason| {
@@ -65,12 +83,77 @@ pub(crate) async fn refuse_out_of_scope(
     }
 }
 
+/// Refuse a request whose body names a group or application outside a bound
+/// key's binding. A bound key naming neither is refused: it would create outside any.
+pub(crate) fn refuse_target_outside_binding(
+    state: &AdminState,
+    client_key: Option<&ClientKeyScope>,
+    group_id: Option<&ContextGroupId>,
+    application_id: Option<&ApplicationId>,
+) -> Option<Response> {
+    let scope = client_key?;
+    let store = state.ctx_client.datastore();
+    let (message, permitted) = match (group_id, application_id) {
+        // A context binding creates only inside its context's own group.
+        (None, _) if scope.0.context_id.is_some() => (GROUP_REFUSAL, false),
+        (None, None) => (GROUP_REFUSAL, false),
+        (group, application) => {
+            if group.is_some_and(|g| !scope.permits_group_change(store, g)) {
+                (GROUP_REFUSAL, false)
+            } else {
+                (
+                    APPLICATION_REFUSAL,
+                    application.is_none_or(|a| scope.permits_application(store, a)),
+                )
+            }
+        }
+    };
+    if permitted {
+        return None;
+    }
+    warn!(bindings = ?scope.0, ?group_id, ?application_id, "client key refused: {message}");
+    Some(
+        ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: message.to_owned(),
+        }
+        .into_response(),
+    )
+}
+
+/// Refuse a bound key's join unless this node holds the group and the binding may
+/// change it. An unheld group's application is only the invitation's unsigned hint.
+pub(crate) fn refuse_join_outside_binding(
+    state: &AdminState,
+    client_key: Option<&ClientKeyScope>,
+    invitation: &SignedGroupOpenInvitation,
+) -> Option<Response> {
+    let scope = client_key?;
+    let group_id = invitation.invitation.group_id;
+    if scope.permits_group_change(state.ctx_client.datastore(), &group_id) {
+        return None;
+    }
+    warn!(bindings = ?scope.0, ?group_id, "client key refused: join outside its binding");
+    Some(
+        ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: GROUP_REFUSAL.to_owned(),
+        }
+        .into_response(),
+    )
+}
+
 fn refusal(
     path: &str,
     params: &[(&str, &str)],
     may_act_on_context: impl Fn(&str) -> bool,
     may_act_on_group: impl Fn(&str) -> bool,
+    may_name_application: impl Fn(&str) -> bool,
 ) -> Option<&'static str> {
+    if path.trim_end_matches('/').ends_with(INSTALL_ROUTE) {
+        return Some(INSTALL_REFUSAL);
+    }
+
     if let Some(target) = sync_target(path) {
         return match target {
             None => Some(SYNC_ALL_REFUSAL),
@@ -81,6 +164,7 @@ fn refusal(
     params.iter().find_map(|&(name, value)| match name {
         "context_id" => (!may_act_on_context(value)).then_some(CONTEXT_REFUSAL),
         "group_id" | "namespace_id" => (!may_act_on_group(value)).then_some(GROUP_REFUSAL),
+        "application_id" => (!may_name_application(value)).then_some(APPLICATION_REFUSAL),
         _ => None,
     })
 }
@@ -96,13 +180,16 @@ fn sync_target(path: &str) -> Option<Option<&str>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{refusal, sync_target, CONTEXT_REFUSAL, GROUP_REFUSAL, SYNC_ALL_REFUSAL};
+    use super::{
+        refusal, sync_target, APPLICATION_REFUSAL, CONTEXT_REFUSAL, GROUP_REFUSAL, INSTALL_REFUSAL,
+        SYNC_ALL_REFUSAL,
+    };
 
     const MINE: &str = "aa";
     const OTHER: &str = "bb";
 
     fn decide(path: &str, params: &[(&str, &str)]) -> Option<&'static str> {
-        refusal(path, params, |c| c == MINE, |g| g == MINE)
+        refusal(path, params, |c| c == MINE, |g| g == MINE, |a| a == MINE)
     }
 
     #[test]
@@ -159,11 +246,25 @@ mod tests {
     #[test]
     fn routes_naming_nothing_pass() {
         assert_eq!(decide("/contexts", &[]), None);
+        assert_eq!(decide("/peers", &[]), None);
+    }
+
+    #[test]
+    fn a_route_naming_another_application_is_refused() {
         assert_eq!(
             decide("/applications/x", &[("application_id", OTHER)]),
-            None
+            Some(APPLICATION_REFUSAL)
         );
-        assert_eq!(decide("/peers", &[]), None);
+        assert_eq!(decide("/applications/x", &[("application_id", MINE)]), None);
+    }
+
+    #[test]
+    fn installing_is_refused() {
+        assert_eq!(decide("/install-application", &[]), Some(INSTALL_REFUSAL));
+        assert_eq!(
+            decide("/node1/admin-api/install-application/", &[]),
+            Some(INSTALL_REFUSAL)
+        );
     }
 
     #[test]
@@ -175,3 +276,6 @@ mod tests {
         assert_eq!(sync_target("/groups/abc/sync"), None);
     }
 }
+
+#[cfg(test)]
+mod route_tests;

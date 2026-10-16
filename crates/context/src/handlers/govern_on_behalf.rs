@@ -168,6 +168,7 @@ impl Handler<GovernOnBehalfRequest> for ContextManager {
                             RootOp::OnBehalf {
                                 op: Box::new(op),
                                 delegation: Box::new(delegation),
+                                stamped_at: calimero_governance_store::now_secs(),
                             },
                         )?;
                         let published = calimero_governance_store::sign_apply_and_publish_namespace_op(

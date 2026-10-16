@@ -878,6 +878,13 @@ pub struct TeeAttestRequest {
     /// serving it cannot forge it. Absent for a mock quote.
     #[serde(default)]
     pub include_collateral: bool,
+    /// Also return this TD's event log (the ACPI CCEL table) as `eventLogB64`:
+    /// every measurement the firmware and boot chain extended into RTMR0-3, so
+    /// a verifier can see which event makes this node's registers differ from
+    /// the values it expected. It is public: it describes what the quote's
+    /// registers already commit to. Unavailable for a mock quote.
+    #[serde(default)]
+    pub event_log: bool,
 }
 
 impl TeeAttestRequest {
@@ -888,6 +895,7 @@ impl TeeAttestRequest {
             bind_node_key: false,
             bind_transport_key: false,
             include_collateral: false,
+            event_log: false,
         }
     }
 
@@ -1186,6 +1194,10 @@ pub struct TeeAttestResponseData {
     /// `includeCollateral` and the quote is not a mock.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collateral: Option<serde_json::Value>,
+    /// Base64 of this TD's CCEL event log, present only when the request set
+    /// `eventLog`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_log_b64: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1201,6 +1213,7 @@ impl TeeAttestResponse {
         bound_public_key: Option<PublicKey>,
         transport_public_key: Option<String>,
         collateral: Option<serde_json::Value>,
+        event_log_b64: Option<String>,
     ) -> Self {
         Self {
             data: TeeAttestResponseData {
@@ -1209,6 +1222,7 @@ impl TeeAttestResponse {
                 bound_public_key,
                 transport_public_key,
                 collateral,
+                event_log_b64,
             },
         }
     }
@@ -1330,6 +1344,8 @@ pub struct CreateGroupApiRequest {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
 }
 
 impl Validate for CreateGroupApiRequest {
@@ -1982,6 +1998,14 @@ pub struct MemberDevicesApiEntry {
 #[serde(rename_all = "camelCase")]
 pub struct ListMemberDevicesApiResponse {
     pub members: Vec<MemberDevicesApiEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceRevokedDevicesApiResponse {
+    pub revoked_devices: Vec<DeviceId>,
+    /// Hex `sha256(account || device)` of each device its own account withdrew here without a tombstone.
+    pub withdrawn_slots: Vec<String>,
 }
 
 /// The largest plaintext this route will seal, in bytes before hex-encoding.
@@ -5097,6 +5121,7 @@ mod naming_back_compat_tests {
             application_id: ApplicationId::from([0_u8; 32]),
             name: None,
             parent_group_id: None,
+            visibility: None,
         };
         let json = serde_json::to_string(&req).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");
@@ -5129,5 +5154,27 @@ mod naming_back_compat_tests {
         let req: CreateNamespaceApiRequest =
             serde_json::from_str(json).expect("legacy appKey must still deserialize");
         assert_eq!(req.bytecode_id.as_deref(), Some("aabb"));
+    }
+}
+
+#[cfg(test)]
+mod revoked_devices_wire_tests {
+    use super::*;
+
+    #[test]
+    fn revoked_devices_serialize_as_plain_hex() {
+        let response = NamespaceRevokedDevicesApiResponse {
+            revoked_devices: vec![DeviceId::from([0xAB; 32])],
+            withdrawn_slots: vec!["cd".repeat(32)],
+        };
+
+        assert_eq!(
+            serde_json::to_string(&response).expect("serialize"),
+            format!(
+                r#"{{"revokedDevices":["{}"],"withdrawnSlots":["{}"]}}"#,
+                "ab".repeat(32),
+                "cd".repeat(32)
+            )
+        );
     }
 }

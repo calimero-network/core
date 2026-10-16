@@ -543,13 +543,19 @@ fn the_snapshot_verifiers_cover_on_behalf_leaves() {
     let (value_id, founder, redelivery) = charter_redelivery();
     let member = relayed(redelivery, &relay, Some(founder));
     let (_, data) = leaf(&member);
-    MainInterface::verify_snapshot_member_signature(value_id, &data, metadata_of(&member))
-        .expect("an on-behalf member leaf verifies under the relay key");
+    MainInterface::verify_snapshot_member_signature(
+        value_id,
+        &data,
+        metadata_of(&member),
+        &Default::default(),
+    )
+    .expect("an on-behalf member leaf verifies under the relay key");
     let tampered = retargeted(member, None);
     assert!(MainInterface::verify_snapshot_member_signature(
         value_id,
         &data,
-        metadata_of(&tampered)
+        metadata_of(&tampered),
+        &Default::default()
     )
     .is_err());
 }

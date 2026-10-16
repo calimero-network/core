@@ -16,9 +16,10 @@ jobs:
       issues: write # for hramos/needs-attention to label issues
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Apply Needs Attention Label
         id: needs-attention
@@ -28,4 +29,6 @@ jobs:
           response-required-label: "waiting-for-author-feedback"
           needs-attention-label: "needs-team-review"
       - name: Result
-        run: echo '${{ steps.needs-attention.outputs.result }}'
+        run: echo "${STEPS_NEEDS_ATTENTION_OUTPUTS_RESULT}"
+        env:
+          STEPS_NEEDS_ATTENTION_OUTPUTS_RESULT: ${{ steps.needs-attention.outputs.result }}

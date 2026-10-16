@@ -4,6 +4,39 @@
 
 ### Added
 
+- **A node's operator can trust more origins for login callbacks.**
+  `trusted_callback_origins` under `[server.embedded_auth.development]` lists
+  app origins the node's sign-in page may hand a new token pair to, besides its
+  own, the registry-declared frontend and a bundle's `frontendAliases`: a Vercel
+  preview of an app, which gets a new origin per branch, can then sign in to a
+  developer's node. `GET /auth/providers` publishes the list, and the sign-in
+  page (auth-frontend v1.3.9, now embedded) reads it from its own node only.
+  Exact `http(s)` origins only; an entry with a path, query, credentials or a
+  wildcard is dropped and logged at startup. The desktop app edits the list
+  under Settings → Advanced → Trusted App Origins. (#4575)
+
+- **A bundle can name the other places its frontend is served.**
+  `frontend-aliases = ["https://old.example"]` in `[package.metadata.calimero]`
+  becomes the manifest's top-level `frontendAliases`, and a node stores it in
+  the installed application's metadata next to `links.frontend`. Clients still
+  open only `links.frontend`; a node's sign-in page also trusts a login
+  callback to an alias's origin, so an app that moves domain keeps signing in
+  from nodes and launchers that still open the old one. `cargo mero bundle`
+  refuses an alias that is not an http(s) URL and warns about a `localhost`
+  frontend or alias unless signing with `--dev`. (#4574)
+
+- **A node behind an auth proxy can seal logins and logged-in calls.**
+  `[server.sealed] forward_auth` names the auth service the proxy asks (a
+  loopback `http` origin, e.g. `http://127.0.0.1:3001`; anything else fails
+  startup). In `auth_mode = "proxy"`, merod then forwards an opened `/auth/` or
+  `/admin/` request to it, and asks its `/auth/validate` about any other
+  guarded route, as the proxy's forward-auth would. A refusal comes back
+  sealed and the route is never reached; an admission sets the `X-Auth-*`
+  identity from the auth service's answer only, and those headers are now
+  stripped from every envelope. Without it, an opened request still reaches
+  only routes served without a credential (`sealed_route_unguarded`). Off
+  unless configured; ignored under embedded auth. (#4545)
+
 - **A warrant names the one device that may spend it.** A warrant named only
   the executor account, and each relay spends nonces in its own ledger, so two
   devices of one operator account could each spend the same warrant and
@@ -478,6 +511,152 @@
   [#3528])
 
 ### Fixed
+
+- **A member added to a subgroup while its key recovery is replaying is no
+  longer left out.** Once a group's key recovery ends, the node replays that
+  group's held ops again, so an add or capability change that arrived by
+  gossip during the first replay is applied and the subgroup's state hash
+  converges. Before, a member outside a Restricted subgroup that was later
+  opened could miss their own member row in it for good. (#4596)
+
+- **A request proof signs the query as well as the path.** The signed target
+  is the request line's path and query, byte for byte, under the domain
+  `calimero.auth.request.v2`; a proof for one query no longer admits another.
+  A reverse proxy in front of a node must forward the path and query
+  unchanged. (breaking: SDKs must sign v2 targets, as mero-js does since
+  calimero-network/mero-js#262, released in 25.3.1; older SDKs stop
+  authenticating with request proofs against this node) (#4549)
+
+- **A client key bound to an application acts only for that application.**
+  On the admin API such a key was answered as the node owner, so an app's
+  token could list, read and delete other apps' contexts, namespaces and
+  blobs. A bound key now reaches only the groups and contexts its binding
+  permits, cannot install applications or gain admin, and lists only what
+  its binding covers; `trusted_admin_applications` names apps whose keys are
+  minted unbound. (breaking for apps that relied on a bound key's node-wide
+  admin access) (#4564)
+
+- **A written-once entry that receives two signed values is sealed.** A
+  `WriteOnce`, `ModeratedOnce` or `Frozen` entry given two different authentic
+  values by the party allowed to write it now keeps both signed writes as
+  proof, and a read answers `StorageError::Conflicted`. Every listing of a
+  written-once collection yields `Written<V>` (`Value` or `Conflicted`) per
+  entry, so one sealed entry never fails a whole listing. `WRITE_ONCE` may
+  only be granted alone. (breaking for app authors: a second value no longer
+  loses quietly, and written-once listings change type) (#4550)
+
+- **A delegated op past its warrant's expiry is refused on every replica.**
+  `GroupOp::OnBehalf`, `GroupOp::ContextRegisteredOnBehalf` and
+  `RootOp::OnBehalf` carry the relay's signed `stamped_at`, and every replica
+  refuses one stamped after the warrant's `not_after`; before, an op whose
+  warrant had expired was applied. (breaking: signed group ops move to schema
+  17 and namespace ops to 25, so SDKs must sign at 25, as mero-js does since
+  calimero-network/mero-js#261) (#4552)
+
+- **TLS no longer carries rustls 0.23.45's advisories.** `rustls` moves to
+  0.23.46 for RUSTSEC-2026-0346 to -0349. (#4567)
+
+- **An overridden dashboard or auth-frontend source must carry its sha256.**
+  A remote override (`CALIMERO_WEBUI_SRC` / `CALIMERO_AUTH_FRONTEND_SRC` as a
+  URL, or a non-default repo, version or asset) skipped the pinned hash and
+  embedded an unverified archive. The build now fails unless the matching
+  `*_SHA256` is set; a local directory override is still unverified. (#4515)
+
+- **A buffered snapshot entity is applied through storage, not written raw.**
+  An entity buffered for a schema the node could not yet read was written
+  over newer, deleted or written-once state, and left its ancestors' hashes
+  stale. It now drains through the storage apply a repair-pushed leaf takes,
+  parents first, and a declined public entity outside the tree is no longer
+  buffered. (#4548)
+
+- **A prefetched blob is released once its context is not served.** A fleet
+  node's prefetch took a blob reference nothing gave back, so the bytes
+  stayed on disk after the context was deleted or left. Each prefetch now
+  records its reference (new node-local `PrefetchedBlob` column), released
+  when the context is deleted or found unserved on two hourly sweeps in a
+  row. (#4531)
+
+- **A device its own account has unlinked gets no scope key.** A node now
+  refuses a join, a key pull, a rotation fan-out or a member-add delivery to a
+  device that this node's account namespace has revoked or withdrawn, even
+  before the unlink reaches the namespace being served. (#4551)
+
+- **Joining an Open subgroup you already inherit no longer hangs.**
+  `join_group` answers locally when this node's account is already a member
+  by inheritance, and a refused namespace join returns the refusal once no
+  other peer is left to ask, instead of retrying up to 32 times. (#4561)
+
+- **Credentials stay out of the logs a node ships.** URLs are logged without
+  userinfo, query or fragment (app downloads, install sources, the merod KMS
+  client); a client-chosen string JSON-RPC id and login names are no longer
+  logged at `info`; and standalone mero-auth's default filter is
+  `mero_auth=info,tower_http=warn`. (#4561)
+
+- **More secrets are redacted from `Debug` output.** Group key rows, the
+  `merod account` signing commands' secrets and mero-auth's token and login
+  messages print a placeholder instead of the key, token or password. (#4530)
+
+- **A large vector reads a position in constant rows.** A position is a
+  child's rank in `(created_at, order, id)` order, and the child trie is keyed
+  by the random ids pushes mint, so `Vector::get`, `AuthoredVector::get` and
+  `owner_of`, and every positional read loaded and sorted every child, once
+  per call. mero-chat's `get_messages`, which asks for the newest 20, read
+  ~1.3 rows per message in the channel and ran out of gas between 16,000 and
+  20,000 messages. A node-local counted B+ tree over the sort keys
+  (`order_index.rs`, beside the admitted count of #4232: never synced or
+  hashed) now answers them, one row per level. Measured on the real mero-chat
+  contract (`chat_wall`, rc.83 with this change): `get_messages` at 16,000
+  messages goes from 962M gas (20,467 reads) to 18.2M (264 reads), and stays
+  there at 40,000; `send_message`, which now carries the tree, goes from ~4.3M
+  to ~4.9M. The first positional read of a vector with more than 128 children
+  builds the tree, which a snapshot install or an older binary leaves stale
+  for the next read to rebuild; every link pays one more node-local read to
+  look for it. No format change.
+
+- **A node no longer ships application data in its logs.** merod's default
+  filter (`merod`, `calimero_*` and `mero_auth` at `info`) sends `info` and above
+  to whoever runs the node's log pipeline, which on a TEE node is a party the
+  application's data must not reach. Five places logged that data there; each
+  now follows the rule the runtime already used for guest output: size at
+  `info`/`warn`/`error`, text at `debug`/`trace`.
+  - Every guest `env::log` line, written at `info` after each JSON-RPC/WS
+    execute. Now: the count and size at `info`; the lines at `trace` under
+    `runtime::guest::log`.
+  - The JSON-RPC and WebSocket "Request failed" line, which logged the whole
+    `ExecutionError`, including a method's error payload or panic text. Now a
+    `FunctionCallError` is logged by kind and size; the node's own errors stay
+    whole.
+  - The runtime's "WASM method execution failed", whose `error_debug` and
+    `error_message` carried a guest panic's text. Now
+    `FunctionCallError::redacted` is logged.
+  - `panic_utf8`'s "Guest panic captured", which carried the panic text at
+    `error`.
+  - The context crate's cross-context call warning, which carried the target
+    method's error. Now `redacted`.
+
+  Covered by tests that capture what each path logs at `info` with a planted
+  secret.
+
+- **QUIC no longer lets a peer crash a node or grow its memory without
+  bound.** `quinn-proto`, which the libp2p QUIC transport uses, moves from
+  0.11.15 to 0.11.19 for RUSTSEC-2026-0338 (zero-length STREAM frames panic
+  it), -0339 (pending connection-ID retirements grow without bound), -0340 (a
+  peer's minimum ACK delay can panic it), -0341 (the stream reassembly guard
+  can be bypassed) and -0342 (zero-length DATAGRAM frames bypass the receive
+  buffer limit). Every node listens on QUIC by default. (#4553)
+
+- **A governance op parked for want of its key is judged at its own cut.**
+  Such an op now folds as a hole until a replay judges it against the
+  membership at its own parents, and as a `Noop` once that replay refuses it,
+  so a member's op this node could not read on arrival no longer grants what
+  a keyed node refused. The op keeps its place in the DAG, and the startup
+  sweep replays sealed root ops too. The only new state is a node-local row
+  per parked op; an op parked by an earlier build folds as before. (#4520)
+
+- **The application list reports each application's services.**
+  `GET /admin-api/applications` now fills `services` as the single read does,
+  and blob delete therefore refuses the blobs of an installed app's named
+  services, as it already did for its bytecode. (#4542)
 
 - **A served signed write is dated by its signature.** A signed `User`,
   `Shared` or `SharedMember` write committed to its nonce but not to
@@ -1763,6 +1942,34 @@
   written in the same batch as the entities it covers ([#3595])
 
 ### Changed
+
+- **auth-frontend v1.3.9 is embedded.** A node's sign-in page now trusts more
+  login callbacks, each one an origin something on the node side declared:
+  the `trusted_callback_origins` in the node's own auth config
+  (auth-frontend#71); the frontend of the flow's package as installed on this
+  node, not only as the registry's latest bundle names it; and any
+  `frontendAliases` entry of either bundle (auth-frontend#70). A login from an
+  app's old domain, from Calimero Desktop opening an older install, or from a
+  dev bundle the registry never sees no longer fails with "Login callback
+  destination is not allowed". (#4577)
+
+- **auth-frontend v1.3.7 is embedded.** Hyperfeed (`com.calimero.hyperfeed`)
+  signing in from its own frontend (`https://hyperfeed.me`, `www.hyperfeed.me`
+  or `hyperfeed-two.vercel.app`) gets an `admin` key, as the admin dashboard
+  does, so it can install apps and delete feeds; any other app keeps the app
+  set. (#4568)
+
+- **A nested subgroup is created Open unless the caller asks otherwise.**
+  `POST /admin-api/groups` with a `parentGroupId` and no `visibility` now
+  creates an Open group, as a top-level subgroup already was; `"restricted"`
+  keeps it private, and any other value answers 400 (the namespace path
+  answered 500). (breaking: a caller that wants a private nested group must
+  now pass `visibility: "restricted"`) (#4543)
+
+- **search-chat and rich-collab label their read and delete methods.** Their
+  read-only methods are `#[app::view]` and their deletes
+  `#[app::destructive]`, so a client can tell from the manifest which calls
+  only read. Views take the context's shared read lock. (#4566)
 
 - **TEE admission is bound to the admitted credential and fresh.** A fleet TEE
   node is admitted only on a quote whose report data is a challenge the

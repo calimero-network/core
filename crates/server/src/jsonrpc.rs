@@ -6,8 +6,8 @@ use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
-    Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
-    ResponseBodyError, ResponseBodyResult, ServerResponseError,
+    Request as PrimitiveRequest, RequestId, RequestPayload, Response as PrimitiveResponse,
+    ResponseBody, ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
 use calimero_server_primitives::validation::Validate;
 use serde::{Deserialize, Serialize};
@@ -110,12 +110,23 @@ async fn handle_request(
         "rpc_request",
         %request_id,
         // The client's own JSON-RPC `id` (echoed back in the response) so a
-        // caller can line their id up with the server trace. Unlike
-        // `request_id` it is client-controlled and may be Null.
-        client_id = ?request.id,
+        // caller can line their id up with the server trace. Client-controlled,
+        // and on every line this request logs, `info` included, which a node
+        // ships off the machine: so only a numeric id is recorded here. A
+        // string id is the caller's own text and is logged at `debug` below.
+        client_id = field::Empty,
         context_id = field::Empty,
         method = field::Empty,
     );
+    match &request.id {
+        RequestId::Number(id) => {
+            let _ = span.record("client_id", id);
+        }
+        RequestId::String(id) => {
+            span.in_scope(|| debug!(client_id = %id, "JSON-RPC request id"));
+        }
+        _ => {}
+    }
 
     handle_request_inner(
         state,
@@ -210,19 +221,23 @@ async fn handle_request_inner(
 
                 let result = exec_request
                     .handle(state, auth_key, auth_node_owner, auth_account, granted)
-                    .await
-                    .to_res_body();
+                    .await;
 
+                // Logged before it becomes a response body: a method's error
+                // is app data and is kept out of `error` (see
+                // `log_execution_failure`). An internal error is logged by
+                // `to_res_body`.
                 match &result {
-                    ResponseBody::Error(err) => {
-                        error!(?err, "Request failed");
+                    Err(RpcError::MethodCallError(err)) => {
+                        crate::execute::log_execution_failure(err);
                     }
-                    ResponseBody::Result(_) => {
+                    Err(RpcError::InternalError(_)) => {}
+                    Ok(_) => {
                         info!("Request completed successfully");
                     }
                 }
 
-                result
+                result.to_res_body()
             }
             RequestPayload::SyncStatus(status_request) => {
                 let span = tracing::Span::current();

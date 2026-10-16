@@ -1178,7 +1178,7 @@ impl ContextClient {
         tracing::info!(
             ?application_id,
             ?blob_id,
-            ?source,
+            source = ?source.as_deref().map(calimero_primitives::utils::loggable_url_str),
             ?group_id,
             "invite_member: populated invitation metadata"
         );

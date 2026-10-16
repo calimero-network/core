@@ -293,6 +293,40 @@ header value if you must expose it. This is the auth-service analogue of the
 node's [`--mock-tee`](/operate/security/#the---mock-tee-switch) dev switch.
 :::
 
+## Trusted callback origins
+
+After a login the node's login page hands the new token pair to the app's
+`callback-url`. It does so only for an origin it trusts: the node's own, a
+loopback app on a loopback node, origins built into the login page, and the
+frontend the app registry declares for the app. A preview deployment of an app
+(a Vercel preview, say) runs on an origin the registry does not declare, so its
+login is refused with **"Login callback destination is not allowed."**
+
+A node's operator can trust more origins in `[development]`:
+
+```toml
+[development]
+trusted_callback_origins = [
+  "https://mero-crm-git-my-branch-calimero-network.vercel.app",
+]
+```
+
+In a node's `config.toml` this is `[server.embedded_auth.development]`; the
+desktop app edits it under **Settings → Advanced → Trusted App Origins**
+(Developer Mode on). The list is published on `GET /auth/providers` as
+`trusted_callback_origins`, and the login page reads it from its own node only,
+never from a URL parameter, so a link cannot add to it.
+
+Each entry must be an exact `http` or `https` origin (`scheme://host[:port]`):
+an entry with a path, query, credentials or a wildcard is dropped with a
+warning. Changes take effect when the node restarts.
+
+:::caution[Each trusted origin can receive this node's tokens]
+Whoever serves pages from a trusted origin can complete a login to this node
+and receive its tokens. List only origins you control, and remove a preview's
+origin when you are done with it.
+:::
+
 ## Getting an embedded-auth node ready
 
 In embedded mode the auth service mints a JWT for an authenticated client, and

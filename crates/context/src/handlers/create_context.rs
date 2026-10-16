@@ -63,6 +63,9 @@ impl Handler<CreateContextRequest> for ContextManager {
             let (_, sk) = self.node_signing_key(&group_id)?;
             Some(PrivateKey::from(sk))
         });
+        // Read once: the gate run before `init` and the registration's stamp
+        // agree, so a creation admitted here is never refused after `init`.
+        let stamped_at = calimero_governance_store::now_secs();
 
         let prepared = match Prepared::new(
             &self.node_client,
@@ -76,6 +79,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             &service_name,
             name,
             delegation.as_deref(),
+            stamped_at,
             &self.datastore,
         ) {
             Ok(res) => res,
@@ -172,6 +176,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         group_id_for_response,
                         name,
                         delegation,
+                        stamped_at,
                     )
                     .into_actor(act)
                 })
@@ -233,6 +238,7 @@ impl Prepared<'_> {
         service_name: &Option<String>,
         name: Option<String>,
         delegation: Option<&calimero_account::ContextCreationDelegation>,
+        stamped_at: u64,
         datastore: &Store,
     ) -> eyre::Result<Self> {
         let external_config = ContextConfigParams {
@@ -324,6 +330,7 @@ impl Prepared<'_> {
                         application_id: &warrant.application_id,
                         service_name,
                         name: &name,
+                        stamped_at,
                     },
                     delegation,
                 )?;
@@ -449,6 +456,7 @@ async fn create_context(
     group_id: ContextGroupId,
     name: Option<String>,
     delegation: Option<Box<calimero_account::ContextCreationDelegation>>,
+    stamped_at: u64,
 ) -> eyre::Result<Hash> {
     // The account this node runs `init` as. Resolved from the GROUP, not the
     // context: the context→group row is written after this runs, so
@@ -778,6 +786,7 @@ async fn create_context(
                     version: coords.version,
                     name: name.clone(),
                     delegation,
+                    stamped_at,
                 },
                 "ContextRegisteredOnBehalf",
             ),

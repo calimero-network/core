@@ -18,8 +18,17 @@ use crate::AdminState;
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<JoinGroupApiRequest>,
 ) -> impl IntoResponse {
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_join_outside_binding(
+        &state,
+        client_key.as_deref(),
+        &req.invitation,
+    ) {
+        return refusal;
+    }
+
     let namespace_id = match parse_group_id(&namespace_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),

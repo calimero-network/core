@@ -1,11 +1,12 @@
 //! [`RequestSig`] — signing one request rather than exchanging a proof for a
 //! session.
 
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{domain_hash, PublicKey};
 
 use super::support::key;
 use crate::error::AccountError;
 use crate::request::RequestSig;
+use crate::signed::sign_payload;
 
 const METHOD: &str = "GET";
 const PATH: &str = "/admin-api/namespaces";
@@ -33,6 +34,29 @@ fn a_signature_verifies_for_the_key_that_made_it_and_covers_its_request() {
 fn a_signature_does_not_verify_for_another_key() {
     assert!(matches!(
         signed().verify_signature(&key(4).public_key()),
+        Err(AccountError::RequestSignatureInvalid),
+    ));
+}
+
+/// A proof minted under the old path-only domain verifies nowhere, even for a
+/// request with no query, so an older signer fails loudly instead of half-working.
+#[test]
+fn a_signature_under_the_path_only_domain_does_not_verify() {
+    let mut sig = signed();
+    let path_only = domain_hash(
+        b"calimero.auth.request.v1",
+        &[
+            METHOD.as_bytes(),
+            PATH.as_bytes(),
+            &sig.body_hash,
+            &sig.issued_at.to_le_bytes(),
+            &sig.expires_at.to_le_bytes(),
+        ],
+    );
+    sig.signature = sign_payload(&key(3), &path_only).expect("sign");
+
+    assert!(matches!(
+        sig.verify_signature(&signer()),
         Err(AccountError::RequestSignatureInvalid),
     ));
 }

@@ -44,6 +44,8 @@ pub struct BundleMeta {
     pub docs: Option<String>,
     pub min_runtime_version: String,
     pub frontend: Option<String>,
+    /// Other URLs the same frontend is served at; see `BundleManifest::frontend_aliases`.
+    pub frontend_aliases: Vec<String>,
     pub app_version: String,
     pub services: Vec<ServiceMeta>,
     /// Directory of the table that supplied this metadata, so a relative
@@ -80,6 +82,8 @@ struct RawCalimeroMeta {
     docs: Option<String>,
     min_runtime_version: Option<String>,
     frontend: Option<String>,
+    #[serde(default)]
+    frontend_aliases: Vec<String>,
     #[serde(default)]
     services: Vec<RawServiceMeta>,
 }
@@ -237,6 +241,35 @@ pub fn read_guide(meta: &BundleMeta) -> Result<Option<String>> {
         .map_err(|e| eyre!("failed to read guide {path}: {e}"))
 }
 
+/// The `frontend` and `frontend-aliases` URLs that point at this machine.
+///
+/// Fine in a dev bundle (a local Vite server against a node), but a published
+/// one would have every node's sign-in page trust a callback to the user's own
+/// localhost, so `bundle` warns about them unless signing with the dev key.
+pub fn loopback_frontends(meta: &BundleMeta) -> Vec<&str> {
+    meta.frontend
+        .iter()
+        .chain(&meta.frontend_aliases)
+        .map(String::as_str)
+        .filter(|url| is_loopback_url(url))
+        .collect()
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if let Some(v6) = host_port.strip_prefix('[') {
+        v6.split(']').next().unwrap_or_default()
+    } else {
+        host_port.split(':').next().unwrap_or_default()
+    }
+    .to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost") || host == "::1" || host.starts_with("127.")
+}
+
 /// Read `[workspace.package].version` from the virtual-workspace root manifest.
 /// cargo_metadata 0.20 doesn't surface this key, so parse it directly; `None`
 /// when the file is unreadable or the key is absent.
@@ -309,6 +342,16 @@ fn load_from_values(
         }
     }
 
+    // A node stores only web URLs, so an alias that is not one would vanish
+    // on install and its old origin would stop signing in with no warning.
+    for alias in &raw.frontend_aliases {
+        if !calimero_bundle::is_web_url(alias) {
+            return Err(eyre!(
+                "invalid frontend-aliases entry `{alias}`: must be an absolute http(s) URL"
+            ));
+        }
+    }
+
     // A category typo should fail at `cargo mero build`, not after a signed
     // publish round-trip. The registry enforces the same closed set; these two
     // lists must not drift.
@@ -343,6 +386,7 @@ fn load_from_values(
             .min_runtime_version
             .unwrap_or_else(|| "0.1.0".to_string()),
         frontend: raw.frontend,
+        frontend_aliases: raw.frontend_aliases,
         app_version: crate_version.to_string(),
         services,
         // Set by `load`, which knows which table (workspace vs. package) won.
@@ -590,6 +634,75 @@ mod tests {
             .ok_or_else(|| eyre!("fixture must declare [package.metadata.calimero]"))?;
         let package_value = serde_json::to_value(calimero)?;
         load_from_values(None, Some(&package_value), "test-app", "0.1.0")
+    }
+
+    #[test]
+    fn parses_frontend_aliases() {
+        let meta = parse_for_test(
+            r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            frontend = "https://chat.example"
+            frontend-aliases = ["https://old-chat.example", "https://older-chat.example/"]
+        "#,
+        )
+        .expect("parses");
+        assert_eq!(
+            meta.frontend_aliases,
+            vec!["https://old-chat.example", "https://older-chat.example/"]
+        );
+
+        let none = parse_for_test(
+            r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+        "#,
+        )
+        .expect("parses");
+        assert!(none.frontend_aliases.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_frontend_alias_that_is_not_a_web_url() {
+        for bad in [
+            "javascript:alert(1)",
+            "old-chat.example",
+            "//old-chat.example",
+        ] {
+            let err = parse_for_test(&format!(
+                r#"
+                [package.metadata.calimero]
+                package = "com.example.demo"
+                frontend-aliases = ["{bad}"]
+            "#
+            ))
+            .expect_err(bad);
+            assert!(err.to_string().contains("frontend-aliases"), "{err}");
+        }
+    }
+
+    #[test]
+    fn finds_loopback_frontends() {
+        let meta = parse_for_test(
+            r#"
+            [package.metadata.calimero]
+            package = "com.example.demo"
+            frontend = "http://localhost:5173"
+            frontend-aliases = ["https://app.example", "http://127.0.0.1:3000/x", "http://[::1]:8080", "http://dev.localhost"]
+        "#,
+        )
+        .expect("parses");
+        assert_eq!(
+            loopback_frontends(&meta),
+            vec![
+                "http://localhost:5173",
+                "http://127.0.0.1:3000/x",
+                "http://[::1]:8080",
+                "http://dev.localhost"
+            ]
+        );
+        assert!(!is_loopback_url("https://localhost.evil.example"));
+        assert!(!is_loopback_url("https://user@app.example"));
     }
 
     #[test]

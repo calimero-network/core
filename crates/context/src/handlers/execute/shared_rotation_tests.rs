@@ -706,7 +706,8 @@ mod rights_kept {
     async fn a_creator_left_with_only_write_once_is_not_refused() {
         let fx = fixture(LocalRole::Role(GroupMemberRole::Member)).await;
         seed_governance(&fx).await;
-        let rotation = leaving(&fx, OpMask::WRITE_ONCE);
+        let mut rotation = rotation_for(fx.account, 0xA1);
+        rotation.new = Writers::from([(fx.account, OpMask::WRITE_ONCE)]);
 
         publish(&fx, &rotation, vec![put_member(rotation.cell, 0x31, true)])
             .await

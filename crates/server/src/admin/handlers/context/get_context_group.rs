@@ -17,6 +17,7 @@ use crate::AdminState;
 pub async fn handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     node_owner: Option<Extension<AuthenticatedNodeOwner>>,
     account: Option<Extension<AuthenticatedAccount>>,
     device: Option<Extension<AuthenticatedDevice>>,
@@ -31,7 +32,7 @@ pub async fn handler(
     // Same predicate as `GET /admin-api/contexts/:id`, resolved per request. A
     // node owner, and a node running with no auth guard, get `NodeWide` and are
     // unaffected.
-    let scope = match list_scope_for(&state.ctx_client, node_owner, account, device) {
+    let scope = match list_scope_for(&state.ctx_client, client_key, node_owner, account, device) {
         Ok(scope) => scope,
         Err(err) => {
             error!(%context_id, error=?err, "Failed to resolve the caller's list scope");

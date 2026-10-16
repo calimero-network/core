@@ -16,8 +16,18 @@ use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<CreateNamespaceApiRequest>,
 ) -> impl IntoResponse {
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
+        &state,
+        client_key.as_deref(),
+        None,
+        Some(&req.application_id),
+    ) {
+        return refusal;
+    }
+
     // Optional version pin: hex blob id of an installed version. Existence
     // and package-match are verified by the create-group handler.
     let bytecode_id = match &req.bytecode_id {

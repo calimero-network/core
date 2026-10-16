@@ -2638,13 +2638,16 @@ mod tests {
                 match list_scope(
                     &f.state.ctx_client,
                     None,
+                    None,
                     Some(&AuthenticatedAccount(f.account)),
                     device,
                 )
                 .unwrap()
                 {
                     ListScope::Account { groups, .. } => groups.into_iter().collect(),
-                    ListScope::NodeWide => panic!("an account session is never node-wide"),
+                    ListScope::NodeWide | ListScope::ClientKey { .. } => {
+                        panic!("an account session is never node-wide")
+                    }
                 }
             };
             assert_eq!(
@@ -2812,6 +2815,7 @@ mod tests {
             let in_scope = || {
                 list_scope(
                     &f.state.ctx_client,
+                    None,
                     None,
                     Some(&AuthenticatedAccount(f.account)),
                     Some(f.device),

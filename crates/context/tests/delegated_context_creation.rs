@@ -180,6 +180,7 @@ impl Network {
             version: "1.0.0".to_owned(),
             name: name.map(str::to_owned),
             delegation: Box::new(delegation),
+            stamped_at: calimero_governance_store::now_secs(),
         }
     }
 

@@ -156,6 +156,26 @@ pub enum RotationRefusal {
     /// A set names more writers than a governance op carries.
     #[error("a rotation names more than {MAX_WRITERS_PER_ROTATION} writers")]
     TooManyWriters,
+    /// The new set grants `WRITE_ONCE` beside another bit.
+    #[error("a rotation cannot grant WRITE_ONCE beside any other capability")]
+    MixedWriteOnce,
+}
+
+/// Whether every writer in a non-empty `writers` holds `WRITE_ONCE` alone, as a
+/// written-once cell's do.
+#[must_use]
+pub fn writes_once_only(writers: &Writers) -> bool {
+    !writers.is_empty() && writers.values().all(|mask| *mask == OpMask::WRITE_ONCE)
+}
+
+/// Whether `writers` grants `WRITE_ONCE` beside any other bit: such a set lets a
+/// write-once writer seal what a writer may change, so no rotation reaches one.
+#[must_use]
+pub fn mixes_write_once(writers: &Writers) -> bool {
+    writers
+        .values()
+        .any(|mask| mask.contains(OpMask::WRITE_ONCE))
+        && writers.values().any(|mask| *mask != OpMask::WRITE_ONCE)
 }
 
 impl SharedRotation {
@@ -171,6 +191,8 @@ impl SharedRotation {
             || self.new.len() > MAX_WRITERS_PER_ROTATION
         {
             Some(RotationRefusal::TooManyWriters)
+        } else if mixes_write_once(&self.new) {
+            Some(RotationRefusal::MixedWriteOnce)
         } else {
             None
         }
@@ -213,6 +235,26 @@ impl RotationStep {
     fn concurrent_with(&self, other: &Self) -> bool {
         !self.seen.contains(&other.id) && !other.seen.contains(&self.id)
     }
+
+    /// This step with `WRITE_ONCE` dropped from a set that grants it beside another bit,
+    /// as a rotation made before that was refused could, so its removals still apply.
+    fn without_mixed_write_once(&self) -> Self {
+        let mut step = self.clone();
+        strip_mixed_write_once(&mut step.prior);
+        strip_mixed_write_once(&mut step.new);
+        step
+    }
+}
+
+/// Drop `WRITE_ONCE` from every holder of `writers` if it is granted beside another bit.
+fn strip_mixed_write_once(writers: &mut Writers) {
+    if !mixes_write_once(writers) {
+        return;
+    }
+    for mask in writers.values_mut() {
+        *mask = mask.intersection(OpMask::FULL);
+    }
+    writers.retain(|_, mask| *mask != OpMask::NONE);
 }
 
 /// Where a step or a cut stands in a cell's history.
@@ -246,8 +288,8 @@ pub fn shared_anchors(actions: &[Action]) -> BTreeSet<Id> {
 }
 
 /// The steps of one cell, ordered by causality, and which of them count.
-struct Counted<'a> {
-    steps: Vec<&'a RotationStep>,
+struct Counted {
+    steps: Vec<RotationStep>,
     /// `parents[i]` is the node step `i` is built on, `None` if it does not count.
     parents: Vec<Option<Node>>,
     /// `reps[i]` is step `i`'s first twin, so a step built on either of two identical
@@ -257,12 +299,16 @@ struct Counted<'a> {
     genesis: Writers,
 }
 
-/// Order `steps` and decide which count, or `None` when no step binds the genesis.
+/// Order `steps`, each without a mixed `WRITE_ONCE`, and decide which count, or `None`
+/// when no step binds the genesis.
 fn count_steps<'a>(
     cell: Id,
     steps: impl IntoIterator<Item = &'a RotationStep>,
-) -> Result<Option<Counted<'a>>, OverBudget> {
-    let mut steps: Vec<&RotationStep> = steps.into_iter().collect();
+) -> Result<Option<Counted>, OverBudget> {
+    let mut steps: Vec<RotationStep> = steps
+        .into_iter()
+        .map(RotationStep::without_mixed_write_once)
+        .collect();
     // An ancestor's past is a strict subset of its descendant's, so this is a
     // causal order: every step comes after the steps it has seen.
     steps.sort_by_key(|step| (step.seen.len(), step.id));
@@ -352,7 +398,7 @@ pub fn ever_writers<'a>(
 /// The node in effect over the steps `cut` (causally ordered and closed under
 /// `seen`), and its writer set.
 fn head_of(
-    steps: &[&RotationStep],
+    steps: &[RotationStep],
     parents: &[Option<Node>],
     reps: &[usize],
     cut: &[usize],
@@ -384,7 +430,7 @@ fn head_of(
     // A step and every step its signer's `ADMIN` was granted by, transitively.
     let chain = |i: usize| core::iter::successors(Some(i), |at| grants.get(at).copied().flatten());
     let removes = |r: usize, x: usize| {
-        let (remover, step) = (steps[r], steps[x]);
+        let (remover, step) = (&steps[r], &steps[x]);
         remover.signer_account != step.signer_account
             && remover.concurrent_with(step)
             && remover.removes(&step.signer_account)
@@ -397,7 +443,7 @@ fn head_of(
         .flat_map(|&r| counted.iter().map(move |&s| (r, s)))
         .filter(|&(r, s)| {
             r < s
-                && steps[r].concurrent_with(steps[s])
+                && steps[r].concurrent_with(&steps[s])
                 && hits(r, s).next().is_some()
                 && hits(s, r).next().is_some()
         })
@@ -539,7 +585,7 @@ fn settle(
 
 /// The step on `i`'s chain that granted its signer `ADMIN`, or `None` when the
 /// signer has held it since genesis.
-fn grant_of(steps: &[&RotationStep], parents: &[Option<Node>], i: usize) -> Option<usize> {
+fn grant_of(steps: &[RotationStep], parents: &[Option<Node>], i: usize) -> Option<usize> {
     let account = &steps[i].signer_account;
     let mut node = parents[i].as_ref()?;
     loop {
@@ -755,6 +801,54 @@ mod tests {
             rotation(cell(), over, at_bound).refusal(),
             Some(RotationRefusal::TooManyWriters),
             "the set it steps from is bounded too"
+        );
+    }
+
+    #[test]
+    fn write_once_is_granted_only_alone() {
+        let mut mixed = set(&[0xAA]);
+        let _ = mixed.insert(acct(0xBB), OpMask::WRITE_ONCE);
+        assert_eq!(
+            rotation(cell(), set(&[0xAA]), mixed.clone()).refusal(),
+            Some(RotationRefusal::MixedWriteOnce)
+        );
+        let alone: Writers = [(acct(0xBB), OpMask::WRITE_ONCE)].into();
+        assert_eq!(rotation(cell(), set(&[0xAA]), alone).refusal(), None);
+
+        let mut stepped = step(1, 0xAA, &[0xAA], &[0xAA], 1, &[]);
+        stepped.new = mixed;
+        assert_eq!(
+            fold_in(cell(), [&stepped]),
+            Some(set(&[0xAA])),
+            "a mixed step counts with its WRITE_ONCE grants dropped"
+        );
+    }
+
+    /// A mixed rotation made before the rule removed someone: it still removes them,
+    /// and the steps built on it still count.
+    #[test]
+    fn a_mixed_rotation_still_revokes_what_it_removed() {
+        let (alice, mallory, bob, carol) = (acct(0xAA), acct(0xEE), acct(0xBB), acct(0xCC));
+        let genesis: Writers = [(alice, OpMask::FULL), (mallory, OpMask::WRITE)].into();
+        let cell = cell_id(Id::new([2; 32]), &genesis);
+        let mixed: Writers = [(alice, OpMask::FULL), (bob, OpMask::WRITE_ONCE)].into();
+        let mut removal = step(1, 0xAA, &[], &[], 1, &[]);
+        removal.prior = genesis;
+        removal.new = mixed.clone();
+        let mut next = step(2, 0xAA, &[], &[], 2, &[1]);
+        next.prior = mixed;
+        next.new = [(alice, OpMask::FULL), (carol, OpMask::FULL)].into();
+
+        let held = fold_in(cell, [&removal]).expect("the removal takes effect");
+        assert!(!held.contains_key(&mallory), "Mallory stays removed");
+        assert_eq!(held, Writers::from([(alice, OpMask::FULL)]));
+        assert_eq!(
+            fold_in(cell, [&removal, &next]),
+            Some(Writers::from([
+                (alice, OpMask::FULL),
+                (carol, OpMask::FULL)
+            ])),
+            "a step built on the mixed set still counts"
         );
     }
 

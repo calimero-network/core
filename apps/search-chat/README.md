@@ -36,7 +36,8 @@ let results = self.messages.search("messages", &Query::words(query).eq("sender",
 
 | method | kind | what it does |
 |---|---|---|
-| `post`, `post_many`, `edit`, `delete` | write | change messages; the node indexes them on its own, off the write path |
+| `post`, `post_many`, `edit` | write | change messages; the node indexes them on its own, off the write path |
+| `delete` | write, destructive | remove a message; repeating it changes nothing |
 | `get`, `count` | view | read state |
 | `search(query, mode?, sender?, since?, cursor?, limit?)` | view | `words` (default), `prefix`, `substring` or `fuzzy`; an empty query lists what the filters admit |
 | `scan_search(term, limit?)` | view | the baseline the index replaces: a lowercase substring test over every message, in WASM |

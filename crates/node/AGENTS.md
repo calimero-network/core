@@ -265,6 +265,7 @@ cargo test -p calimero-node --test network_simulation
   mutex helpers (`entries_lock` / `waiters_lock`); never call `.lock()`
   directly on those fields
 - **Only two things make a peer acceptable to serve a group key** (`key_server_accepted`): it is a trusted anchor of that group, or it proved with a certificate chaining to this node's own account root that it is a device of this node's own account. Decided **per response**, never by pruning the candidate list first — the second ground cannot be known until the answer is in hand. An awaited `key_id` is NOT a ground and the predicate deliberately takes no such argument: that id is read from a cleartext field no gate checks, so whoever mints it can then satisfy its own hash check (#3888). Anchor-first ordering decides who is *asked* first, never who is *believed*. A responder is an anchor when the envelope it served is signed by an anchor's key (`envelope_signed_by`, checked before the gate), and by nothing else. `peer_identities` is not a ground: it is filled by gossip ops a peer relayed, which any peer can re-publish, so it only orders who is asked first. The signature also serves a joiner that bootstrapped by pull and saw none of the anchor's gossip, which was refused the owner forever when a TEE was admitted by another TEE and the owner, answering `AlreadyMember`, published nothing (`tee-cards-late-tee`). A responder that only *claims* an anchor's identity is refused like any non-anchor, so the round goes on to the next candidate. And do not reduce this to anchors alone: `trusted_anchors` reads group meta, so a node holding no governance state identifies NO anchor, and that is exactly the freshly paired device the pull exists for — the `account-device-*` scenarios fail on it, surfacing two steps away as "context does not belong to any group" because without the key the GroupOps mapping a context to its group never fold (#3892). A namespace founded through a relay has no anchor node in its cleartext genesis except that relay, which `trusted_anchors` therefore counts (see governance-store's AGENTS.md).
+- **A device spent in this node's account namespace is served no key** (`NodeDeviceRepository::is_spent_in_own_account`): the namespace join, open-subgroup join and key-pull responders refuse it, and the rotation fan-out (`current_key_recipients`) and `add_group_members`' delivery leave it out, before the carried unlink reaches the namespace. What still gets through: a device that already holds the namespace key keeps it and can author there until the carried unlink lands, and a node of another account, a node that has not applied the revocation, or one that follows no account namespace still serves it (see projection's AGENTS.md for the void rule).
 - `ReadinessCache::insert` does NOT verify signatures or membership -
   the receiver-side gate `verify_readiness_beacon` is the choke point;
   callers from outside the receiver path must verify first
@@ -321,6 +322,14 @@ cargo test -p calimero-node --test network_simulation
   initiator. Record only after the bytes are verified, and never on a local hit
   or on an announcement's say-so: either would let one context's member claim
   another context's blob by id
+- **A prefetch's reference is recorded once, and released with its context.**
+  `NodeClient::record_prefetched_blob` is called only on the prefetch path in
+  `handlers/blob_announce.rs`; one `key::PrefetchedBlob` row is one reference.
+  `release_prefetched_blobs` drops them on `delete_context`, and
+  `spawn_prefetch_sweep` does the same for a context once two hourly sweeps in
+  a row find this node no longer serves it. `BlobManager::record_prefetch` and
+  `release_prefetch` write and delete the row under the blob's stripe lock, and
+  only the caller that deletes a row releases its reference
 - `NodeClient::get_blob`'s discovery leg does NOT trust the DHT alone: a
   provider record is opportunistic (nothing announces application
   bytecode at install, and a restart drops what was announced), so an

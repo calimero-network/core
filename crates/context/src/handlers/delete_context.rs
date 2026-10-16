@@ -9,6 +9,7 @@ use calimero_primitives::context::ContextId;
 use calimero_store::db::Column;
 use calimero_store::{key, Store};
 use either::Either;
+use tracing::warn;
 
 use calimero_primitives::identity::PrivateKey;
 
@@ -135,6 +136,12 @@ async fn delete_context(
     node_client.unsubscribe(&context_id).await?;
 
     purge_context_rows(&datastore, &context_id)?;
+
+    // After the purge, so a failed purge leaves a served context its blobs;
+    // rows a failed release leaves are released by the sweep.
+    if let Err(err) = node_client.release_prefetched_blobs(&context_id).await {
+        warn!(%context_id, %err, "failed to release the blobs prefetched for the context");
+    }
 
     if let Some(group_id) =
         calimero_governance_store::get_group_for_context(&datastore, &context_id)?

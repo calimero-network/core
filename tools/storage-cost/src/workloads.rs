@@ -88,9 +88,12 @@ fn unordered_map_get(n: usize) {
     let _ignored = map.get("key0").expect("get should succeed");
 }
 
-/// Cost of ONE `Vector::get(i)` against `n` entries: linear, because ordering
-/// is a comparator applied after a full child-trie enumeration. The middle
-/// index is read so a fast path for index 0 could not make this lie.
+/// Cost of ONE `Vector::get(i)` against `n` entries, as the FIRST positional
+/// read: linear, because ordering is a comparator applied after a full
+/// child-trie enumeration, which past `ORDER_INDEX_FLOOR` entries also builds
+/// the node-local order index that later reads descend
+/// (`vector_get_nth_indexed`). The middle index is read so a fast path for
+/// index 0 could not make this lie.
 ///
 /// The enumeration's node count follows the trie's shape, which follows the
 /// entries' random ids, so they are drawn from a fixed seed: with random ids
@@ -105,6 +108,39 @@ fn vector_get_nth(n: usize) {
 
 /// Any fixed value does; changing it moves `vector_get_nth`'s snapshot.
 const VECTOR_GET_NTH_SEED: u64 = 0x5eed;
+
+/// The fewest entries a vector holds for a positional read to use the
+/// node-local order index (`calimero-storage`'s `order_index::LEAF_MAX` + 1).
+/// At or below `LEAF_MAX` a read loads the children instead, which costs no
+/// more than one full leaf of the index would.
+const ORDER_INDEX_FLOOR: usize = 129;
+
+/// Cost of ONE `Vector::get(n / 2)` in a fresh call, once an earlier call's
+/// positional read has built the order index: what every read after the
+/// first costs, so a contract paging the newest entries of a long list pays
+/// the same at any length. `vector_get_nth` is that first read.
+///
+/// Sized `ORDER_INDEX_FLOOR + n`, so every size reads through the index.
+fn vector_get_nth_indexed(n: usize) {
+    with_seeded_random_bytes(VECTOR_GET_NTH_SEED, || {
+        let vector = counted_then_fetched(
+            || {
+                let mut vector = Vector::<String, MainStorage>::new();
+                for i in 0..ORDER_INDEX_FLOOR + n {
+                    vector
+                        .push(format!("value{i}"))
+                        .expect("push should succeed");
+                }
+                vector
+            },
+            |v| {
+                let _ignored = v.get(0).expect("get should succeed");
+            },
+        );
+        reset_counters();
+        let _ignored = vector.get(n / 2).expect("get should succeed");
+    });
+}
 
 /// `build`'s collection as the NEXT contract call sees it: committed, counted
 /// once by an earlier call (which records the node-local count a guarded
@@ -860,7 +896,7 @@ pub fn all() -> Vec<Workload> {
     /// A size-independent registry row, crossed with [`SIZES`] below.
     type Entry = (&'static str, CostShape, u32, fn(usize));
 
-    const REGISTRY: [Entry; 31] = [
+    const REGISTRY: [Entry; 32] = [
         (
             "unordered_map_insert",
             FlatPerEntry,
@@ -889,9 +925,18 @@ pub fn all() -> Vec<Workload> {
             0,
             authored_map_insert,
         ),
-        // Walks the whole trie, whose shape follows the entries' ids, so the
-        // workload draws them from a fixed seed and the count is exact.
+        // The first positional read of a large vector loads every child to
+        // build the order index. That walks the whole trie, whose shape follows
+        // the entries' ids, so the workload draws them from a fixed seed and
+        // the count is exact.
         ("vector_get_nth", KnownLinearInN, 0, vector_get_nth),
+        // Every read after the first descends the order index instead.
+        (
+            "vector_get_nth_indexed",
+            ConstantPerCall,
+            0,
+            vector_get_nth_indexed,
+        ),
         ("rga_insert", FlatPerEntry, 0, rga_insert),
         // `get_text` sorts in memory rather than descending the trie, so its
         // count does not depend on the ids and needs no seed.

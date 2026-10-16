@@ -136,6 +136,7 @@ mod tests {
             docs: None,
             min_runtime_version: "0.1.0".to_owned(),
             frontend: None,
+            frontend_aliases: Vec::new(),
             app_version: "0.1.0".to_owned(),
             services: Vec::new(),
             manifest_dir: manifest_dir.to_owned(),

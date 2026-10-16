@@ -1071,7 +1071,7 @@ async fn fetch_from_kms(
     };
 
     // 1) Request one-time challenge nonce.
-    info!(%challenge_endpoint, "Requesting key release challenge from KMS");
+    info!(challenge_endpoint = %calimero_primitives::utils::loggable_url(&challenge_endpoint), "Requesting key release challenge from KMS");
     let challenge = request_kms_challenge(&client, &challenge_endpoint, peer_id).await?;
     let challenge_nonce = decode_kms_challenge_nonce(&challenge)?;
 
@@ -1127,7 +1127,7 @@ async fn fetch_from_kms(
         seal_to_b64: base64::engine::general_purpose::STANDARD.encode(seal.public()),
     };
 
-    info!(%key_endpoint, "Sending signed key request to KMS");
+    info!(key_endpoint = %calimero_primitives::utils::loggable_url(&key_endpoint), "Sending signed key request to KMS");
     let response = request_kms_key_release(&client, &key_endpoint, &request).await?;
     let key_bytes = open_released_key(&response, &seal, &kms_public, &challenge_nonce, peer_id)?;
 
@@ -1240,7 +1240,7 @@ async fn verify_kms_attestation(
         transport_key: true,
     };
 
-    info!(%attest_endpoint, "Verifying KMS self-attestation before key request");
+    info!(attest_endpoint = %calimero_primitives::utils::loggable_url(&attest_endpoint), "Verifying KMS self-attestation before key request");
     let attest_response = request_kms_attestation(client, &attest_endpoint, &request).await?;
     let kms_public = decode_kms_transport_key(&attest_response)?;
     let binding = sealed::attest_binding(&policy.binding, &kms_public);
@@ -1858,11 +1858,11 @@ fn validate_kms_transport_security(kms_url: &Url, strict_mode: bool) -> Result<(
             if strict_mode {
                 bail!(
                     "In production attestation mode, tee.kms.url must use HTTPS or loopback HTTP to prevent KMS spoofing: {}",
-                    kms_url
+                    calimero_primitives::utils::loggable_url(kms_url)
                 );
             }
             warn!(
-                kms_url = %kms_url,
+                kms_url = %calimero_primitives::utils::loggable_url(kms_url),
                 "Using non-loopback HTTP KMS endpoint; this is susceptible to spoofing/MITM and should only be used in trusted development setups"
             );
             Ok(())

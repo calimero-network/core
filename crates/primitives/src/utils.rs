@@ -35,6 +35,45 @@ pub fn prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
     vec![0xFF; prefix.len() + 1]
 }
 
+/// A URL as it may be logged: no userinfo, query or fragment.
+///
+/// A node's `info` and above are shipped to whoever runs its log pipeline. A
+/// URL is the usual place a credential rides along unnoticed: `user:pass@` in
+/// the authority, a signed or tokened query string (`?token=`, `?X-Amz-...`).
+/// The scheme, host, port and path stay, which is what diagnosis needs; a
+/// dropped query is marked so the line still says there was one.
+///
+/// ## Examples
+///
+/// ```
+/// use calimero_primitives::utils::loggable_url;
+///
+/// let url = url::Url::parse("https://me:secret@apps.test/a.wasm?token=abc#x").unwrap();
+/// assert_eq!(loggable_url(&url), "https://apps.test/a.wasm?[redacted]");
+/// ```
+#[must_use]
+pub fn loggable_url(url: &url::Url) -> String {
+    let mut shown = url.clone();
+    // Both fail only for URLs that cannot carry userinfo, which have none.
+    let _ = shown.set_username("");
+    let _ = shown.set_password(None);
+    let had_query = shown.query().is_some();
+    shown.set_query(None);
+    shown.set_fragment(None);
+    let mut out = shown.to_string();
+    if had_query {
+        out.push_str("?[redacted]");
+    }
+    out
+}
+
+/// [`loggable_url`] for a URL held as text. Text that does not parse as a URL
+/// is not logged at all: it cannot be told apart from a credential.
+#[must_use]
+pub fn loggable_url_str(raw: &str) -> String {
+    url::Url::parse(raw).map_or_else(|_| "[unparsed url]".to_owned(), |url| loggable_url(&url))
+}
+
 /// Creates an iterator that finds and compacts segments of a Rust type name.
 ///
 /// This function scans a path, discarding segments that do not contain generic
@@ -97,7 +136,37 @@ pub fn compact_path(path: &str) -> impl Iterator<Item = &str> {
 mod tests {
     use core::any::{type_name, type_name_of_val};
 
-    use super::{compact_path, prefix_upper_bound};
+    use super::{compact_path, loggable_url, loggable_url_str, prefix_upper_bound};
+
+    #[test]
+    fn a_logged_url_carries_no_credentials() {
+        let url = url::Url::parse("https://me:secret@apps.test:8443/a/b.wasm?token=abc&x=1#frag")
+            .expect("valid url");
+        let shown = loggable_url(&url);
+        assert_eq!(shown, "https://apps.test:8443/a/b.wasm?[redacted]");
+        for secret in ["me", "secret", "token", "abc", "frag"] {
+            assert!(!shown.contains(secret), "{secret} survived in {shown}");
+        }
+    }
+
+    #[test]
+    fn a_plain_url_is_logged_as_is() {
+        let url =
+            url::Url::parse("http://127.0.0.1:2428/admin-api/kms/challenge").expect("valid url");
+        assert_eq!(
+            loggable_url(&url),
+            "http://127.0.0.1:2428/admin-api/kms/challenge"
+        );
+    }
+
+    #[test]
+    fn unparsed_text_is_not_logged() {
+        assert_eq!(loggable_url_str("not a url me:secret"), "[unparsed url]");
+        assert_eq!(
+            loggable_url_str("https://u:p@registry.test/x?sig=1"),
+            "https://registry.test/x?[redacted]"
+        );
+    }
 
     #[test]
     fn prefix_upper_bound_normal() {

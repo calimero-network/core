@@ -1,6 +1,7 @@
 //! Admin/namespace plane: a namespace root governance op ([`RootOp`]) → its
 //! `OpPayload`.
 
+use calimero_account::WarrantStatement;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_governance_types::RootOp;
@@ -45,7 +46,11 @@ pub fn payload_from_root_op(op: &RootOp) -> Option<OpPayload> {
         // A member's root op published by a relay folds as the op it carries,
         // like `GroupOp::OnBehalf` — plus the seat the apply gives the relay
         // for a creation, which the fold has to see as well as the rows.
-        RootOp::OnBehalf { op, delegation } if op.delegable_form().is_some() => {
+        RootOp::OnBehalf {
+            op,
+            delegation,
+            stamped_at,
+        } if op.delegable_form().is_some() && !delegation.warrant.expired_at(*stamped_at) => {
             relay_seat(op, delegation, payload_from_root_op(op)?)
         }
         // Owner-level: folds only with its root proof, whose group is the

@@ -30,12 +30,14 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_storage::action::Action;
 use calimero_storage::child_trie::ChildTrie;
 use calimero_storage::collections::{Root, UnorderedMap, Vector};
-use calimero_storage::entities::{ChildInfo, EntryRules, Metadata, SignatureData, StorageType};
+use calimero_storage::entities::{
+    ChildInfo, EntryRules, Metadata, OpMask, SignatureData, StorageType,
+};
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
 use calimero_storage::interface::ApplyContext;
 use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use calimero_storage::tests::common::owned_entry_id;
+use calimero_storage::tests::common::{conflict_record, member_at, owned_entry_id};
 use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::key::STATE_KEY_LEN;
 use calimero_utils_actix::LazyRecipient;
@@ -970,26 +972,26 @@ fn a_snapshot_leaf_dated_ahead_of_the_clock_is_not_installed_from_the_buffer() {
     assert!(nothing_stored(&target));
 }
 
-#[test]
-fn a_snapshot_leaf_that_is_what_its_hash_says_drains_into_the_store() {
-    let (source, _) = source();
-    let mut records = shipped(&source);
-    let leaf = Id::new([0x21; 32]);
-    let (entry, index, _) = entity(&mut records, leaf);
-    let target = Store::new(Arc::new(InMemoryDB::owned()));
+/// A buffered leaf drains under the parent this node holds, and the hashes above
+/// it are recomputed, so the tree this node serves still folds.
+#[tokio::test]
+async fn a_snapshot_leaf_drains_into_the_tree_and_the_hashes_above_it_fold() {
+    let (source, claimed) = source();
+    let leaf = Id::new([0x24; 32]);
+    let SnapshotRecord::Entity { entry, index, .. } =
+        entity_under(leaf, Id::new([2; 32]), StorageType::Public)
+    else {
+        unreachable!("entity_under builds an entity record");
+    };
 
-    let outcome = persist_buffered_snapshot_entity(
-        &target,
-        &NotFolded,
-        context(),
-        *leaf.as_bytes(),
-        entry,
-        index,
-        &|_| Ok(CellWriters::Genesis),
-    )
-    .unwrap();
+    let (joiner, outcome) = drained_over(shipped(&source), claimed, (leaf, entry, index)).await;
 
     assert_eq!(outcome, SnapshotEntityDrainOutcome::Persisted);
+    assert!(joiner.holds(leaf));
+    assert_eq!(
+        first_unfolding_entity(&joiner.store.handle(), context()).unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -1099,13 +1101,18 @@ async fn a_public_entity_outside_the_tree_is_dropped_and_a_frozen_one_is_kept() 
 
 /// An entity whose parent is not in the snapshot.
 fn orphan(id: Id, storage_type: StorageType) -> SnapshotRecord {
+    entity_under(id, Id::new([0x60; 32]), storage_type)
+}
+
+/// An entity under `parent`, holding bytes of its own.
+fn entity_under(id: Id, parent: Id, storage_type: StorageType) -> SnapshotRecord {
     let entry = vec![id.as_bytes()[0]; 8];
     let own_hash = sha(&entry);
     let mut metadata = Metadata::new(1, 1);
     metadata.storage_type = storage_type;
     let index = IndexRow {
         id: *id.as_bytes(),
-        parent_id: Some([0x60; 32]),
+        parent_id: Some(*parent.as_bytes()),
         full_hash: sha(&own_hash),
         own_hash,
         metadata,
@@ -1118,6 +1125,249 @@ fn orphan(id: Id, storage_type: StorageType) -> SnapshotRecord {
         index: index.encode(),
         schema_bytecode_id: None,
     }
+}
+
+/// What the drain of a buffered record finds in a joiner that has installed
+/// `records` and linked their tries, with `pushed` buffered for a schema it later loads.
+async fn drained_over(
+    records: Vec<SnapshotRecord>,
+    claimed: Hash,
+    pushed: (Id, Vec<u8>, Vec<u8>),
+) -> (Joiner, SnapshotEntityDrainOutcome) {
+    let joiner = joiner().await;
+    joiner.installs(claimed, records).await.unwrap();
+    let _linked =
+        rebuild_child_tries_after_snapshot(&mut joiner.store.handle(), context()).unwrap();
+    let (id, entry, index) = pushed;
+    let env = create_runtime_env(
+        &joiner.store,
+        context(),
+        PublicKey::from([2; 32]),
+        AccountId::from([0xAC; 32]),
+    );
+    let outcome = with_runtime_env(env, || {
+        persist_buffered_snapshot_entity(
+            &joiner.store,
+            &NotFolded,
+            context(),
+            *id.as_bytes(),
+            &entry,
+            &index,
+            &|_| Ok(CellWriters::Genesis),
+        )
+    })
+    .unwrap();
+    (joiner, outcome)
+}
+
+/// `writer`'s signature over `data` at `nonce` for `owner`'s written-once entry `id`.
+fn written_once(
+    writer: &PrivateKey,
+    owner: AccountId,
+    id: Id,
+    data: &[u8],
+    nonce: u64,
+) -> SignatureData {
+    let signed = |signature| SignatureData {
+        signature,
+        nonce,
+        signer: Some(writer.public_key()),
+        on_behalf: None,
+    };
+    let mut metadata = Metadata::new(1, 1);
+    metadata.storage_type = StorageType::User {
+        rules: EntryRules {
+            immutable: true,
+            moderators: None,
+        },
+        owner,
+        signature_data: Some(signed([0; 64])),
+    };
+    let payload = Action::Add {
+        id,
+        data: data.to_vec(),
+        ancestors: vec![],
+        metadata,
+    }
+    .payload_for_signing();
+    signed(writer.sign(&payload).unwrap().to_bytes())
+}
+
+/// `writer`'s signature over `data` at `nonce` for `id`, carried in `stamp`.
+fn signed_stamp(
+    writer: &PrivateKey,
+    id: Id,
+    data: &[u8],
+    stamp: impl Fn(SignatureData) -> StorageType,
+    nonce: u64,
+) -> StorageType {
+    let signed = |signature| SignatureData {
+        signature,
+        nonce,
+        signer: Some(writer.public_key()),
+        on_behalf: None,
+    };
+    let mut metadata = Metadata::new(1, 1);
+    metadata.storage_type = stamp(signed([0; 64]));
+    let payload = Action::Add {
+        id,
+        data: data.to_vec(),
+        ancestors: vec![],
+        metadata,
+    }
+    .payload_for_signing();
+    stamp(signed(writer.sign(&payload).unwrap().to_bytes()))
+}
+
+/// A write-once cell's value sealed by two writes each under the size cap, whose
+/// record is over it, installs from a page and drains from the buffer alike.
+#[tokio::test]
+async fn a_sealed_cell_value_of_two_writes_under_the_cap_installs_and_drains() {
+    let writer = PrivateKey::from([0x69; 32]);
+    for drained in [false, true] {
+        let joiner = joiner().await;
+        let owner = joiner.knows_the_account_of(&writer.public_key());
+        let writers: BTreeMap<AccountId, OpMask> = [(owner, OpMask::WRITE_ONCE)].into();
+        let anchor = calimero_storage::collections::cell_id(Id::new([0x88; 32]), &writers);
+        let value = member_at(anchor, 0x01);
+        let shared = |sig| StorageType::Shared {
+            writers: writers.clone(),
+            signature_data: Some(sig),
+        };
+        let member = |sig| StorageType::SharedMember {
+            anchor,
+            signature_data: Some(sig),
+        };
+        let write = |byte: u8, nonce| {
+            let data = vec![byte; 300 * 1024];
+            let stamp = signed_stamp(&writer, value, &data, member, nonce);
+            (data, *stamp.signature_data().expect("signed"))
+        };
+        let unsigned = StorageType::SharedMember {
+            anchor,
+            signature_data: None,
+        };
+        let (record, stamp) = conflict_record(&unsigned, [write(1, 2), write(2, 3)]);
+        let anchor_row = child(
+            anchor,
+            b"anchor",
+            b"anchor",
+            signed_stamp(&writer, anchor, b"anchor", shared, 1),
+        );
+        let (_, entry, row) = child(value, &record, &record, stamp);
+        let env = create_runtime_env(
+            &joiner.store,
+            context(),
+            PublicKey::from([2; 32]),
+            AccountId::from([0xAC; 32]),
+        );
+
+        if drained {
+            let (records, claimed) = tree_over(&[anchor_row]);
+            joiner.installs(claimed, records).await.unwrap();
+            let _linked =
+                rebuild_child_tries_after_snapshot(&mut joiner.store.handle(), context()).unwrap();
+            let outcome = with_runtime_env(env.clone(), || {
+                persist_buffered_snapshot_entity(
+                    &joiner.store,
+                    &NotFolded,
+                    context(),
+                    *value.as_bytes(),
+                    &entry,
+                    &row.encode(),
+                    &|_| Ok(CellWriters::Genesis),
+                )
+            })
+            .unwrap();
+            assert_eq!(outcome, SnapshotEntityDrainOutcome::Persisted);
+        } else {
+            let (records, claimed) = tree_over(&[anchor_row, (value, entry, row)]);
+            joiner
+                .installs(claimed, records)
+                .await
+                .expect("an honest sealed value installs");
+        }
+        let held = with_runtime_env(env, || Interface::<MainStorage>::find_by_id_raw(value));
+        assert_eq!(held, Some(record), "drained: {drained}");
+    }
+}
+
+/// A sealed entry's record drains as the two writes it holds, each under its own
+/// author, so the joiner stores the record a repair would.
+#[tokio::test]
+async fn a_buffered_sealed_record_drains_to_the_record_repair_stores() {
+    let writer = PrivateKey::from([0x67; 32]);
+    let joiner = joiner().await;
+    let owner = joiner.knows_the_account_of(&writer.public_key());
+    let id = owned_entry_id(Id::new([0x87; 32]), &owner);
+    let unsigned = StorageType::User {
+        rules: EntryRules {
+            immutable: true,
+            moderators: None,
+        },
+        owner,
+        signature_data: None,
+    };
+    let writes = [
+        (b"yes".to_vec(), written_once(&writer, owner, id, b"yes", 1)),
+        (b"no".to_vec(), written_once(&writer, owner, id, b"no", 2)),
+    ];
+    let (record, stamp) = conflict_record(&unsigned, writes);
+    let (_, entry, row) = child(id, &record, &record, stamp);
+    let (records, claimed) = tree_over(&[]);
+    joiner.installs(claimed, records).await.unwrap();
+    let _linked =
+        rebuild_child_tries_after_snapshot(&mut joiner.store.handle(), context()).unwrap();
+    let env = create_runtime_env(
+        &joiner.store,
+        context(),
+        PublicKey::from([2; 32]),
+        AccountId::from([0xAC; 32]),
+    );
+
+    let outcome = with_runtime_env(env.clone(), || {
+        persist_buffered_snapshot_entity(
+            &joiner.store,
+            &NotFolded,
+            context(),
+            *id.as_bytes(),
+            &entry,
+            &row.encode(),
+            &|_| Ok(CellWriters::Genesis),
+        )
+    })
+    .unwrap();
+
+    assert_eq!(outcome, SnapshotEntityDrainOutcome::Persisted);
+    let held = with_runtime_env(env, || Interface::<MainStorage>::find_by_id_raw(id));
+    assert_eq!(
+        held,
+        Some(record),
+        "the drain stores the record repair stores"
+    );
+}
+
+/// Nothing binds an entity the claimed root does not reach, so a declined one is
+/// not kept for a later drain either.
+#[tokio::test]
+async fn a_declined_public_entity_outside_the_tree_is_not_buffered() {
+    let (source, claimed) = source();
+    let detached = Id::new([0x61; 32]);
+    let mut records = shipped(&source);
+    records.push(orphan(detached, StorageType::Public));
+    *entity(&mut records, detached).2 = Some([2; 32]);
+    let joiner = joiner().await;
+    calimero_context::activation::record_activation(&joiner.store, &context(), [1; 32]);
+
+    joiner.installs(claimed, records).await.unwrap();
+
+    let buffered = AbsorbRepository::new(&joiner.store)
+        .enumerate_pending(&context())
+        .unwrap();
+    assert!(
+        buffered.is_empty(),
+        "buffered an entity the root does not reach"
+    );
 }
 
 #[tokio::test]

@@ -115,6 +115,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         let op = GroupOp::OnBehalf {
             op: Box::new(inner),
             delegation: Box::new(delegation),
+            stamped_at: crate::now_secs(),
         };
         let rotation = match &removed {
             Some(member) => RotationPlan::ExcludingMember(member),

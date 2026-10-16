@@ -21,9 +21,9 @@
 //! writer is the account that created it, holding [`OpMask::WRITE_ONCE`] and
 //! nothing else:
 //!
-//! * the value is written at creation. A later write with different bytes is
-//!   refused on apply, even one that account signs; a redelivery of the same
-//!   bytes is accepted, so sync converges;
+//! * the value is written at creation. A second value that account signs seals
+//!   the cell on every node, and `get` then returns `StorageError::Conflicted`;
+//!   a redelivery of the same bytes is accepted, so sync converges;
 //! * no `DELETE` bit, so no node accepts removing it;
 //! * no `ADMIN` bit and a frozen cell, so the writer set cannot be rotated to
 //!   someone who could;

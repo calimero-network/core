@@ -1,6 +1,6 @@
 use crate::{
     AccountBindingRepository, CapabilitiesRepository, DeviceSecret, KeyringError,
-    MembershipRepository, NamespaceRepository,
+    MembershipRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_account::{AccountId, DeviceId, KemPublicKey};
 use calimero_context_client::local_governance::{
@@ -993,6 +993,11 @@ impl<'a> GroupKeyring<'a> {
         let mut out = Vec::with_capacity(members.len());
         for (member, _) in members {
             for binding in devices.get(&member).map(Vec::as_slice).unwrap_or(&[]) {
+                if NodeDeviceRepository::new(self.store)
+                    .is_spent_in_own_account(member, binding.device)?
+                {
+                    continue;
+                }
                 out.push(EntitledRecipient {
                     member,
                     recipient: KeyRecipient::Device {
@@ -1030,7 +1035,8 @@ impl<'a> GroupKeyring<'a> {
     ///   needs an encrypted `GroupOp`, which needs the key, so a member in this
     ///   state needs an admin to re-deliver it (`RootOp::KeyDelivery`) or to
     ///   publish the link on their behalf. If they could re-key themselves,
-    ///   revocation would mean nothing.
+    ///   revocation would mean nothing;
+    /// - the named device is spent in this node's own account namespace.
     ///
     /// A requester whose key names no account here is served nothing. Since
     /// every member is bound by the op that admits it — a join for a joiner, the
@@ -1069,6 +1075,9 @@ impl<'a> GroupKeyring<'a> {
             // invitation, or TEE admission — never through this pull.
             return Ok(None);
         };
+        if NodeDeviceRepository::new(self.store).is_spent_in_own_account(account, claimed)? {
+            return Ok(None);
+        }
         let bindings = AccountBindingRepository::new(self.store);
         for binding in bindings.live_bindings(&namespace)? {
             if binding.account == account && binding.device == claimed {
@@ -1239,6 +1248,41 @@ mod recipient_tests {
             .expect("admitted")
             .device;
         (device, account)
+    }
+
+    /// The rotation fan-out leaves out a device this node's account namespace spent
+    /// and still addresses its live sibling.
+    #[test]
+    fn a_device_spent_in_this_nodes_account_namespace_is_left_out_of_the_fan_out() {
+        let store = test_store();
+        let gid = test_group_id();
+        let devices = crate::NodeDeviceRepository::new(&store);
+        let root = devices.account_root().expect("read").expect("root");
+        let (sibling, account) = link_device(&store, gid, root.signing_key(), 7);
+        let (lost, _) = link_device(&store, gid, root.signing_key(), 8);
+        MembershipRepository::new(&store)
+            .add_member(&gid, &account, GroupMemberRole::Member)
+            .expect("add");
+        let account_namespace = devices
+            .account_namespace()
+            .expect("read")
+            .expect("a root holder derives its account namespace");
+        AccountBindingRepository::new(&store)
+            .apply_revocation(&account_namespace, lost)
+            .expect("revoke");
+
+        let recipients = GroupKeyring::new(&store, gid)
+            .current_key_recipients()
+            .expect("list");
+        let addressed: Vec<DeviceId> = recipients
+            .iter()
+            .filter_map(|e| e.recipient.device())
+            .collect();
+        assert_eq!(
+            addressed,
+            vec![sibling],
+            "only the live sibling must be addressed; got {recipients:?}"
+        );
     }
 
     #[test]

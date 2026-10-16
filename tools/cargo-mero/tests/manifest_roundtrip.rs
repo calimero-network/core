@@ -24,6 +24,7 @@ fn full_meta() -> BundleMeta {
         docs: Some("https://docs.acme.com".into()),
         min_runtime_version: "0.1.0".into(),
         frontend: Some("https://example.com".into()),
+        frontend_aliases: vec!["https://old.example.com".into()],
         app_version: "1.0.0".into(),
         services: vec![],
         manifest_dir: Utf8PathBuf::new(),
@@ -62,6 +63,7 @@ fn sparse_meta() -> BundleMeta {
         docs: None,
         min_runtime_version: "0.1.0".into(),
         frontend: None,
+        frontend_aliases: Vec::new(),
         app_version: "1.0.0".into(),
         services: vec![],
         manifest_dir: Utf8PathBuf::new(),
@@ -127,6 +129,10 @@ fn every_field_survives_a_round_trip_through_the_node_type() {
         Some("https://github.com/acme/demo")
     );
     assert_eq!(links.docs.as_deref(), Some("https://docs.acme.com"));
+    assert_eq!(
+        m.frontend_aliases,
+        vec!["https://old.example.com".to_owned()]
+    );
 }
 
 /// Guards backward compatibility: a bundle published before `skip_serializing_if`

@@ -18,6 +18,7 @@ pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
     inner: &GroupOp,
     delegation: &GovernanceDelegation,
+    stamped_at: u64,
 ) -> EyreResult<()> {
     let store = ctx.store();
     let group_id = ctx.group_id();
@@ -28,6 +29,7 @@ pub(crate) fn apply(
         ctx.signer(),
         inner,
         delegation,
+        stamped_at,
     )?;
     // A relay carries a group's first application choice, never an upgrade,
     // and whether it is the first is read at this op's cut.

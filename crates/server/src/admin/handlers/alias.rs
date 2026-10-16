@@ -3,6 +3,8 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::DeviceId;
 
+use crate::auth::ClientKeyScope;
+
 mod create_alias;
 mod delete_alias;
 mod list_aliases;
@@ -40,6 +42,41 @@ pub fn service() -> Router {
         .nest("/lookup", lookup_routes)
         .nest("/delete", delete_routes)
         .nest("/list", list_routes)
+}
+
+/// Whether a bound client key may see or name an alias resolving to this value.
+pub(crate) trait BoundKeyTarget {
+    fn permitted(&self, key: &ClientKeyScope, store: &calimero_store::Store) -> bool;
+}
+
+impl BoundKeyTarget for ContextId {
+    fn permitted(&self, key: &ClientKeyScope, store: &calimero_store::Store) -> bool {
+        key.permits_context_in(store, self)
+    }
+}
+
+impl BoundKeyTarget for ApplicationId {
+    fn permitted(&self, key: &ClientKeyScope, store: &calimero_store::Store) -> bool {
+        key.permits_application(store, self)
+    }
+}
+
+/// A device belongs to an account, never to an application.
+impl BoundKeyTarget for DeviceId {
+    fn permitted(&self, _key: &ClientKeyScope, _store: &calimero_store::Store) -> bool {
+        false
+    }
+}
+
+/// The `403` for a bound key naming an alias target outside its binding.
+fn outside_binding() -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    crate::admin::service::ApiError {
+        status_code: axum::http::StatusCode::FORBIDDEN,
+        message: "This key is not permitted to act on this alias".to_owned(),
+    }
+    .into_response()
 }
 
 #[cfg(test)]

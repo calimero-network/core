@@ -61,3 +61,17 @@ fn a_request_can_ask_for_the_collateral() {
             .include_collateral
     );
 }
+
+#[test]
+fn a_request_can_ask_for_the_event_log() {
+    let absent: TeeAttestRequest =
+        serde_json::from_str(&format!(r#"{{"nonce":"{NONCE}","applicationId":null}}"#)).unwrap();
+    assert!(!absent.event_log, "off unless asked for");
+    assert!(!TeeAttestRequest::new(NONCE.to_owned(), None).event_log);
+
+    let req: TeeAttestRequest = serde_json::from_str(&format!(
+        r#"{{"nonce":"{NONCE}","applicationId":null,"eventLog":true}}"#
+    ))
+    .unwrap();
+    assert!(req.event_log);
+}

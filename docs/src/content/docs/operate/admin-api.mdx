@@ -328,7 +328,7 @@ the path parameter — these are reproduced exactly as routed below.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/admin-api/groups` | Create a group. |
+| POST | `/admin-api/groups` | Create a group. A nested group is created Open unless the body sets `visibility: "restricted"`. |
 | GET | `/admin-api/groups/:group_id` | Get group info. |
 | PATCH | `/admin-api/groups/:group_id` | Update group settings. |
 | DELETE | `/admin-api/groups/:group_id` | Delete a group. |
@@ -380,6 +380,7 @@ the path parameter — these are reproduced exactly as routed below.
 | POST | `/admin-api/namespaces/:namespace_id/join` | Join a namespace. |
 | POST | `/admin-api/namespaces/:namespace_id/admit` | Publish a join signed by a keyholder that has no node of its own. See [Direct Admission](/protocol/direct-admission/). |
 | POST | `/admin-api/namespaces/:namespace_id/leave` | Leave a namespace. |
+| GET | `/admin-api/namespaces/:namespace_id/revoked-devices` | Device ids revoked in the namespace (`revokedDevices`) and `sha256(account \|\| device)` of devices an account withdrew there (`withdrawnSlots`). Admin only, on a member node. |
 | GET | `/admin-api/namespaces/for-application/:application_id` | List namespaces for an application. |
 
 #### Invitation body: admitters and addresses

@@ -39,7 +39,9 @@ async fn main() -> Result<()> {
     // Initialize logging
     let filter = match cli.verbose {
         0 => tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "calimero_auth=info,tower_http=debug".into()),
+            // `mero_auth`, the crate's own target: `calimero_auth` matched
+            // nothing, so the service's own logs, errors included, were off.
+            .unwrap_or_else(|_| "mero_auth=info,tower_http=warn".into()),
         1 => tracing_subscriber::EnvFilter::new("debug"),
         _ => tracing_subscriber::EnvFilter::new("trace"),
     };
@@ -113,6 +115,8 @@ async fn main() -> Result<()> {
     }
 
     let auth_service = AuthService::new(providers, token_manager);
+
+    config.development.warn_rejected_trusted_callback_origins();
 
     // Start the server
     info!("Starting auth server on {}", config.listen_addr);

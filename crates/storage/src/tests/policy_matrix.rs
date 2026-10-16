@@ -49,7 +49,7 @@ impl Indexed for Note {
     }
 }
 
-fn note(tag: &str, text: &str) -> Note {
+pub(crate) fn note(tag: &str, text: &str) -> Note {
     Note {
         tag: tag.to_owned(),
         text: text.to_owned(),
@@ -345,7 +345,7 @@ macro_rules! immutable_tests {
     () => {
         #[test]
         #[serial]
-        fn no_node_accepts_the_owner_s_signed_rewrite() {
+        fn an_unsigned_stored_write_refuses_the_owner_s_signed_rewrite() {
             let (map, id) = setup();
             let action = signed(
                 update(id, (*map).id(), b"rewritten".to_vec()),

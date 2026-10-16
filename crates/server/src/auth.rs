@@ -5,6 +5,7 @@ use std::task::{Context, Poll};
 use crate::proof_auth::{ProofPolicy, Refusal, MAX_PROVEN_BODY, PROOF_HEADER};
 use axum::body::Body;
 use axum::extract::OriginalUri;
+use axum::http::uri::PathAndQuery;
 use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -80,18 +81,50 @@ impl ClientKeyScope {
         ctx_client: &calimero_context_client::client::ContextClient,
         context_id: &calimero_primitives::context::ContextId,
     ) -> bool {
+        self.permits_context_in(ctx_client.datastore(), context_id)
+    }
+
+    pub(crate) fn permits_context_in(
+        &self,
+        store: &calimero_store::Store,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> bool {
         let bindings = &self.0;
 
         let application = if bindings.application_id.is_some() {
-            match ctx_client.get_context(context_id) {
-                Ok(Some(ctx)) => ctx.application_id.to_string(),
-                Ok(None) | Err(_) => String::new(),
-            }
+            context_application(store, context_id)
+                .map(|app| app.to_string())
+                .unwrap_or_default()
         } else {
             String::new()
         };
 
         bindings.permits(&context_id.to_string(), &application)
+    }
+
+    /// Whether a request naming `application_id` stays inside the binding: the
+    /// bound application, or the application of the bound context.
+    pub(crate) fn permits_application(
+        &self,
+        store: &calimero_store::Store,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> bool {
+        let bindings = &self.0;
+        let named = application_id.to_string();
+
+        let context_app_matches = bindings.context_id.as_deref().is_none_or(|context_id| {
+            context_id
+                .parse::<calimero_primitives::context::ContextId>()
+                .ok()
+                .and_then(|id| context_application(store, &id))
+                .is_some_and(|app| app == *application_id)
+        });
+
+        context_app_matches
+            && bindings
+                .application_id
+                .as_deref()
+                .is_none_or(|bound| bound.eq_ignore_ascii_case(&named))
     }
 
     pub(crate) fn permits_group(
@@ -144,6 +177,26 @@ impl ClientKeyScope {
         true
     }
 
+    /// [`Self::permits_group`] for a change: a context binding changes only its context's own group.
+    pub(crate) fn permits_group_change(
+        &self,
+        store: &calimero_store::Store,
+        group_id: &calimero_context_config::types::ContextGroupId,
+    ) -> bool {
+        self.permits_group(store, group_id)
+            && self.0.context_id.as_deref().is_none_or(|context_id| {
+                context_id
+                    .parse::<calimero_primitives::context::ContextId>()
+                    .ok()
+                    .and_then(|id| {
+                        calimero_governance_store::get_group_for_context(store, &id)
+                            .ok()
+                            .flatten()
+                    })
+                    .is_some_and(|owning| owning == *group_id)
+            })
+    }
+
     pub(crate) fn principal(&self) -> String {
         let bindings = &self.0;
         format!(
@@ -167,6 +220,26 @@ impl ClientKeyScope {
         );
         serde_json::to_value(refusal).unwrap_or_default()
     }
+}
+
+/// The application a context runs. A context this node does not hold yet (one
+/// it is about to join) runs its owning group's target application.
+fn context_application(
+    store: &calimero_store::Store,
+    context_id: &calimero_primitives::context::ContextId,
+) -> Option<calimero_primitives::application::ApplicationId> {
+    let handle = store.handle();
+    if let Some(meta) = handle
+        .get(&calimero_store::key::ContextMeta::new(*context_id))
+        .ok()?
+    {
+        return Some(meta.application.application_id());
+    }
+    let group = calimero_governance_store::get_group_for_context(store, context_id).ok()??;
+    let meta = calimero_governance_store::MetaRepository::new(store)
+        .load(&group)
+        .ok()??;
+    Some(meta.target.application_id)
 }
 
 /// The authenticated requester's **account**, injected by [`AuthGuardService`]
@@ -533,10 +606,15 @@ where
                                     .get::<OriginalUri>()
                                     .map_or_else(|| uri.clone(), |original| original.0.clone());
 
+                                // The request target as it reached this listener, query
+                                // included, since a query can name the object acted on.
+                                let target = full_uri
+                                    .path_and_query()
+                                    .map_or(full_uri.path(), PathAndQuery::as_str);
                                 let (account, device) = match policy.admit(
                                     header.as_bytes(),
                                     method.as_str(),
-                                    full_uri.path(),
+                                    target,
                                     &bytes,
                                     now_secs(),
                                 ) {
@@ -604,10 +682,8 @@ where
                 // `PermissionValidator` matches full request paths (e.g.
                 // `/admin-api/contexts`, `/jsonrpc`). This guard runs inside a
                 // nested router, so `parts.uri` has had the mount prefix stripped
-                // (`/contexts`, `/`); recover the full path from `OriginalUri`,
-                // which axum's `nest` inserts. Non-nested mounts (e.g. the `/ws`
-                // route) have no `OriginalUri`, so fall back to the request URI,
-                // which is already the full path there.
+                // (`/contexts`, `/`); recover the full path from `OriginalUri`, which
+                // the outermost router sets on every request, `/ws` included.
                 let full_uri = parts
                     .extensions
                     .get::<OriginalUri>()
@@ -952,6 +1028,10 @@ mod tests {
     use axum::response::Response;
     use axum::routing::get;
     use axum::Router;
+    use calimero_account::{
+        AccountGenesis, AccountProof, CallerProof, DeviceCert, KemPublicKey, RequestSig,
+    };
+    use calimero_primitives::identity::{DeviceId, PrivateKey};
     use mero_auth::auth::permissions::PermissionValidator;
     use mero_auth::auth::token::TokenManager;
     use mero_auth::config::JwtConfig;
@@ -959,6 +1039,8 @@ mod tests {
     use mero_auth::storage::{Key, KeyManager, MemoryStorage, Storage};
     use mero_auth::AuthService;
     use tower::ServiceExt as _;
+
+    use crate::proof_auth::ProofPolicy;
 
     /// Build the request the guard hands to the validator: only the method and
     /// the full path are read by `determine_required_permissions`.
@@ -1020,13 +1102,11 @@ mod tests {
         Deleted,
     }
 
-    /// Drive one request through the real guard over an in-memory auth service,
-    /// so the assertions land on the response a client actually receives.
-    async fn guarded_request(fate: KeyFate) -> Response {
-        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-        let secrets = Arc::new(SecretManager::new(Arc::clone(&storage)));
+    /// An in-memory token manager, the half of the auth service every guard test needs.
+    async fn token_manager(storage: &Arc<dyn Storage>) -> TokenManager {
+        let secrets = Arc::new(SecretManager::new(Arc::clone(storage)));
         secrets.initialize().await.unwrap();
-        let token_manager = TokenManager::new(
+        TokenManager::new(
             JwtConfig {
                 issuer: "test".to_owned(),
                 access_token_expiry: 3600,
@@ -1036,9 +1116,16 @@ mod tests {
                 ),
                 node_host: None,
             },
-            Arc::clone(&storage),
+            Arc::clone(storage),
             secrets,
-        );
+        )
+    }
+
+    /// Drive one request through the real guard over an in-memory auth service,
+    /// so the assertions land on the response a client actually receives.
+    async fn guarded_request(fate: KeyFate) -> Response {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let token_manager = token_manager(&storage).await;
 
         let key_manager = KeyManager::new(Arc::clone(&storage));
         let mut key = Key::new_root_key_with_permissions(
@@ -1107,6 +1194,133 @@ mod tests {
             resp.headers().get("X-Auth-Error").is_none(),
             "an absent key must not be reported as revoked",
         );
+    }
+
+    /// `GET sent` through the real guard, nested as in production, with a proof
+    /// signed over `signed`; a guard reading the stripped `Uri` fails it.
+    async fn proven_request(signed: &str, sent: &str) -> StatusCode {
+        let root = PrivateKey::from([1; 32]);
+        let genesis = AccountGenesis::new(root.public_key());
+        let account = genesis.account_id();
+        let device_sk = PrivateKey::from([51; 32]);
+        let cert = DeviceCert::sign(
+            &root,
+            account,
+            DeviceId::mint(account, [0x22; 16]),
+            &device_sk.public_key(),
+            &KemPublicKey::from([9; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let now = super::now_secs();
+        let proof = CallerProof {
+            account_proof: AccountProof {
+                genesis,
+                chain: vec![],
+                statement: cert,
+            },
+            session: None,
+            request: RequestSig::sign(&device_sk, "GET", signed, b"", now, now + 60).unwrap(),
+        };
+        let policy = ProofPolicy {
+            node_key: PrivateKey::from([4; 32]).public_key(),
+            node_account: account,
+            delegated_access: false,
+        };
+
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let guarded = Router::new()
+            .route("/contexts", get(|| async { "ok" }))
+            .layer(super::guard_layer(
+                Arc::new(AuthService::new(Vec::new(), token_manager(&storage).await)),
+                Some(policy),
+            ));
+        Router::new()
+            .nest("/admin-api", guarded)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(sent)
+                    .header(
+                        "x-calimero-proof",
+                        hex::encode(borsh::to_vec(&proof).unwrap()),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The query picks the object on several routes, so the proof covers it
+    /// byte for byte as the request line carries it.
+    #[tokio::test]
+    async fn a_proof_admits_the_exact_path_and_query_it_signed() {
+        for target in [
+            "/admin-api/contexts",
+            "/admin-api/contexts?",
+            "/admin-api/contexts?limit=5&q=a%2Fb",
+        ] {
+            assert_eq!(
+                proven_request(target, target).await,
+                StatusCode::OK,
+                "{target}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_proof_refuses_any_other_path_or_query() {
+        for (case, signed, sent) in [
+            (
+                "added query",
+                "/admin-api/contexts",
+                "/admin-api/contexts?limit=5",
+            ),
+            (
+                "added parameter",
+                "/admin-api/contexts?a=1",
+                "/admin-api/contexts?a=1&b=2",
+            ),
+            (
+                "reordered query",
+                "/admin-api/contexts?a=1&b=2",
+                "/admin-api/contexts?b=2&a=1",
+            ),
+            (
+                "decoded escape",
+                "/admin-api/contexts?q=a%2Fb",
+                "/admin-api/contexts?q=a/b",
+            ),
+            (
+                "recased escape",
+                "/admin-api/contexts?q=a%2Fb",
+                "/admin-api/contexts?q=a%2fb",
+            ),
+            (
+                "empty query dropped",
+                "/admin-api/contexts?",
+                "/admin-api/contexts",
+            ),
+            (
+                "empty query added",
+                "/admin-api/contexts",
+                "/admin-api/contexts?",
+            ),
+            (
+                "different path",
+                "/admin-api/namespaces?a=1",
+                "/admin-api/contexts?a=1",
+            ),
+        ] {
+            assert_eq!(
+                proven_request(signed, sent).await,
+                StatusCode::UNAUTHORIZED,
+                "{case}: signed {signed}, sent {sent}",
+            );
+        }
     }
 
     /// A revoked token must map to `403 Forbidden` with `X-Auth-Error:

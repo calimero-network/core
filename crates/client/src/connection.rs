@@ -14,7 +14,7 @@ use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::sync::Mutex;
-use url::Url;
+use url::{Position, Url};
 
 // Local crate
 use crate::errors::ClientError;
@@ -161,15 +161,14 @@ where
 
 /// What a request signature commits to.
 ///
-/// `path` is the URL path the node will see, with no query string: the
-/// signature covers the path alone, and a mismatch surfaces as a bad signature
-/// rather than as a bad path. `body` is the exact bytes that will be sent —
-/// serializing again between here and the wire would sign something that never
-/// travelled.
+/// The signature covers the path and query of `url`, as `reqwest` serializes them;
+/// a mismatch surfaces as a bad signature.
+/// `body` is the exact bytes that will be sent: serializing again between here
+/// and the wire would sign something that never travelled.
 #[derive(Clone, Copy, Debug)]
 struct RequestFacts<'a> {
     method: &'a str,
-    path: &'a str,
+    url: &'a Url,
     body: &'a [u8],
 }
 
@@ -431,7 +430,7 @@ where
             true,
             RequestFacts {
                 method: "PUT",
-                path: url.path(),
+                url: &url,
                 body: &data,
             },
             |auth_header, proof_header| {
@@ -459,7 +458,7 @@ where
                 true,
                 RequestFacts {
                     method: "GET",
-                    path: url.path(),
+                    url: &url,
                     body: &[],
                 },
                 |auth_header, proof_header| {
@@ -489,7 +488,7 @@ where
                 true,
                 RequestFacts {
                     method: "HEAD",
-                    path: url.path(),
+                    url: &url,
                     body: &[],
                 },
                 |auth_header, proof_header| {
@@ -540,7 +539,7 @@ where
                 req_type.is_idempotent(),
                 RequestFacts {
                     method: req_type.as_str(),
-                    path: url.path(),
+                    url: &url,
                     body: &body_bytes,
                 },
                 |auth_header, proof_header| {
@@ -735,7 +734,11 @@ where
             // Signed per attempt, for the same reason the token is reloaded:
             // the proof carries an expiry, and a retry may land outside the
             // window the first attempt was signed for.
-            let proof_header = self.proof_header(facts.method, facts.path, facts.body)?;
+            let proof_header = self.proof_header(
+                facts.method,
+                &facts.url[Position::BeforePath..Position::AfterQuery],
+                facts.body,
+            )?;
 
             let response = request_builder(auth_header, proof_header).await?;
 

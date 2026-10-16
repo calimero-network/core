@@ -6,7 +6,10 @@
 //! rewrite or delete it, a stranger trying to write it, a fresh node taking it
 //! at genesis, and sync redelivering it.
 
+use std::collections::BTreeMap;
+
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_account::AccountId;
 use ed25519_dalek::SigningKey;
 use serial_test::serial;
 
@@ -15,13 +18,16 @@ use crate::collections::{Frozen, FrozenValue, Root};
 use crate::entities::{ChildInfo, Data, Metadata, OpMask, StorageType};
 use crate::env;
 use crate::index::Index;
-use crate::interface::{Interface, StorageError};
+use crate::interface::{ApplyContext, Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::tests::common::{
     account_of_key, apply_ctx_for, build_signed_member_action, build_signed_member_delete,
+    conflicted,
 };
 
 type MainInterface = Interface<MainStorage>;
+
+const FOUNDER: u8 = 0xF0;
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -30,7 +36,7 @@ fn key(seed: u8) -> SigningKey {
 /// The founder's charter, as `init` would create it.
 fn charter() -> (Root<Frozen<String>>, SigningKey) {
     env::reset_for_testing();
-    let founder = key(0xF0);
+    let founder = key(FOUNDER);
     env::set_account_id(*account_of_key(&founder).as_bytes());
     let charter = Root::new(|| Frozen::new("be kind".to_owned()));
     (charter, founder)
@@ -56,6 +62,73 @@ fn write(add: bool, ids: (Id, Id), value: &str, signer: &SigningKey) -> Result<(
         vec![ChildInfo::new(anchor, [0; 32], Metadata::default())],
     );
     MainInterface::apply_action(action, &apply_ctx_for(account_of_key(signer)))
+}
+
+#[test]
+#[serial]
+fn a_frozen_value_too_large_for_a_record_of_two_is_refused_locally() {
+    env::reset_for_testing();
+    env::set_account_id(*account_of_key(&key(FOUNDER)).as_bytes());
+    let large = "x".repeat(600 * 1024);
+    let created = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Root::new(|| Frozen::new(large))
+    }));
+    let refusal = created
+        .err()
+        .and_then(|panic| panic.downcast_ref::<String>().cloned())
+        .expect("the oversized genesis value is refused");
+    assert!(
+        refusal.contains("ActionNotAllowed")
+            && refusal.contains(&crate::written_once::MAX_VALUE_BYTES.to_string()),
+        "refused by the written-once cap, not something else: {refusal}"
+    );
+}
+
+/// Two values each under the cap make a record over it, which a snapshot still takes.
+#[test]
+#[serial]
+fn a_snapshot_takes_a_sealed_value_of_two_writes_under_the_cap() {
+    let (first, second) = ("y".repeat(300 * 1024), "n".repeat(300 * 1024));
+    let (record, sealed) = node_after(
+        later(),
+        None,
+        &[(FOUNDER, &first, 0), (FOUNDER, &second, 1)],
+    );
+    let record = record.expect("a record is held");
+    assert!(sealed, "control: the two values sealed it");
+    let (_, value_id) = Root::<Frozen<String>>::fetch().expect("root").ids();
+    let metadata = <Index<MainStorage>>::get_metadata(value_id)
+        .expect("metadata")
+        .expect("held");
+    let writers: BTreeMap<AccountId, OpMask> =
+        [(account_of_key(&key(FOUNDER)), OpMask::WRITE_ONCE)].into();
+    MainInterface::verify_snapshot_member_signature(value_id, &record, &metadata, &writers)
+        .expect("each write is under the cap");
+}
+
+#[test]
+#[serial]
+fn a_snapshot_refuses_a_frozen_value_too_large_for_a_record_of_two() {
+    let (charter, founder) = charter();
+    let (anchor, value_id) = charter.ids();
+    let action = build_signed_member_action(
+        false,
+        value_id,
+        anchor,
+        value_bytes(value_id, &"x".repeat(600 * 1024)),
+        later(),
+        &founder,
+        vec![],
+    );
+    let crate::action::Action::Update { data, metadata, .. } = action else {
+        panic!("an update");
+    };
+    let writers: BTreeMap<AccountId, OpMask> =
+        [(account_of_key(&founder), OpMask::WRITE_ONCE)].into();
+    assert!(
+        MainInterface::verify_snapshot_member_signature(value_id, &data, &metadata, &writers)
+            .is_err()
+    );
 }
 
 #[test]
@@ -96,7 +169,7 @@ fn its_writer_holds_write_once_and_nothing_else() {
 
 #[test]
 #[serial]
-fn its_writer_cannot_rewrite_it_on_any_node() {
+fn an_unsigned_genesis_value_refuses_its_writer_s_rewrite() {
     let (charter, founder) = charter();
     assert!(matches!(
         write(false, charter.ids(), "be anything", &founder),
@@ -149,18 +222,103 @@ fn nobody_else_can_write_it() {
     assert_eq!(charter.get().expect("get"), "be kind");
 }
 
+/// Whether the charter, read afresh from the store, reads as sealed.
+fn reads_sealed() -> bool {
+    let charter = Root::<Frozen<String>>::fetch().expect("root");
+    conflicted(&charter.get().cloned())
+}
+
+/// The stored bytes, and whether they read as sealed, once the signed `writes`
+/// `(signer, value, offset from base)` reach a fresh node in order, under `writers` if given.
+fn node_after(
+    base: u64,
+    writers: Option<&BTreeMap<AccountId, OpMask>>,
+    writes: &[(u8, &str, u64)],
+) -> (Option<Vec<u8>>, bool) {
+    let (mut charter, _founder) = charter();
+    charter.reassign_deterministic_id("charter");
+    let (anchor, value_id) = charter.ids();
+    charter.commit();
+    let _ = MainStorage::storage_remove(Key::Entry(value_id));
+    for &(signer, value, offset) in writes {
+        let signer = key(signer);
+        let action = build_signed_member_action(
+            MainStorage::storage_read(Key::Entry(value_id)).is_none(),
+            value_id,
+            anchor,
+            value_bytes(value_id, value),
+            base + offset,
+            &signer,
+            vec![ChildInfo::new(anchor, [0; 32], Metadata::default())],
+        );
+        let ctx = ApplyContext {
+            effective_writers: writers.cloned(),
+            signer_account: Some(account_of_key(&signer)),
+        };
+        let _ = MainInterface::apply_action(action, &ctx);
+    }
+    (
+        MainStorage::storage_read(Key::Entry(value_id)),
+        reads_sealed(),
+    )
+}
+
+/// [`node_after`] for the creator's own `values`, of which one is always held.
+fn held_after(base: u64, values: &[(&str, u64)]) -> (Vec<u8>, bool) {
+    let writes: Vec<_> = values
+        .iter()
+        .map(|&(value, offset)| (FOUNDER, value, offset))
+        .collect();
+    let (bytes, sealed) = node_after(base, None, &writes);
+    (bytes.expect("a value is held"), sealed)
+}
+
+/// A cell granting `WRITE_ONCE` beside a full writer cannot be sealed by the
+/// write-once writer, and a race between the two settles the same everywhere.
 #[test]
 #[serial]
-fn a_fresh_node_takes_the_genesis_value_and_then_holds_it() {
+fn a_write_once_grant_beside_a_full_writer_neither_seals_nor_splits_the_value() {
+    let full = (FOUNDER, "be kind");
+    let once = (0xF1, "be mean");
+    let writers: BTreeMap<AccountId, OpMask> = [
+        (account_of_key(&key(full.0)), OpMask::FULL),
+        (account_of_key(&key(once.0)), OpMask::WRITE_ONCE),
+    ]
+    .into();
+    let base = later();
+    for (full_at, once_at) in [(0, 1), (1, 0)] {
+        let full_write = (full.0, full.1, full_at);
+        let once_write = (once.0, once.1, once_at);
+        let one = node_after(base, Some(&writers), &[full_write, once_write]);
+        let other = node_after(base, Some(&writers), &[once_write, full_write]);
+        assert!(
+            !one.1,
+            "a write-once writer beside a full one cannot seal it"
+        );
+        assert_eq!(one, other, "the arrival order must not pick what is held");
+    }
+}
+
+#[test]
+#[serial]
+fn two_values_signed_by_its_creator_settle_the_same_on_every_node() {
+    let base = later();
+    let one = held_after(base, &[("be kind", 0), ("be mean", 1)]);
+    let other = held_after(base, &[("be mean", 1), ("be kind", 0)]);
+    assert!(one.1, "two values signed by its creator must seal it");
+    assert_eq!(one, other, "the arrival order must not pick what is held");
+}
+
+#[test]
+#[serial]
+fn a_fresh_node_takes_the_genesis_value_and_a_second_value_seals_it() {
     // A node that has the anchor but not yet the value, as a joiner mid-sync.
     let (charter, founder) = charter();
     let ids = charter.ids();
     let _ = MainStorage::storage_remove(Key::Entry(ids.1));
     write(true, ids, "be kind", &founder).expect("the genesis write lands");
-    assert!(matches!(
-        write(false, ids, "be anything", &founder),
-        Err(StorageError::ActionNotAllowed(_))
-    ));
+    write(false, ids, "be anything", &founder).expect("a second value seals it");
+    assert!(reads_sealed());
 }
 
 #[test]

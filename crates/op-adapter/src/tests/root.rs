@@ -1,7 +1,7 @@
 //! Admin/namespace plane: [`payload_from_root_op`] across every join shape,
 //! the scope-tree ops, and genesis.
 
-use calimero_account::AccountId;
+use calimero_account::{AccountId, GovernanceOpKind};
 use calimero_context_config::types::{
     ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
 };
@@ -11,7 +11,9 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::ScopeState;
 
-use crate::tests::support::{authorship_of, hlc, real_join_account_for, test_join_account_for};
+use crate::tests::support::{
+    authorship_of, governance_delegation, hlc, real_join_account_for, test_join_account_for,
+};
 use crate::{payload_from_group_op, payload_from_root_op};
 
 /// An admin-signed invitation for `group`, granting Admin (`invited_role: 0`).
@@ -391,5 +393,27 @@ fn namespace_created_with_a_foreign_credential_folds_no_device() {
             salt: [0x25u8; 32],
         }),
         Some(OpPayload::Noop)
+    );
+}
+
+/// The fold refuses a delegated root op stamped past its warrant, as the apply does.
+#[test]
+fn a_delegated_root_op_folds_only_while_its_warrant_is_in_force() {
+    let not_after = 1_700_000_000;
+    let stamped = |stamped_at| RootOp::OnBehalf {
+        op: Box::new(RootOp::GroupReparented {
+            child_group_id: ContextGroupId::from([0x63; 32]),
+            new_parent_id: ContextGroupId::from([0x64; 32]),
+        }),
+        delegation: Box::new(governance_delegation(GovernanceOpKind::Root, not_after)),
+        stamped_at,
+    };
+    assert!(
+        payload_from_root_op(&stamped(not_after)).is_some(),
+        "stamped on the last live second"
+    );
+    assert!(
+        payload_from_root_op(&stamped(not_after + 1)).is_none(),
+        "stamped past not_after"
     );
 }
