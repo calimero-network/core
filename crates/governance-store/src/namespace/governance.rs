@@ -2640,6 +2640,13 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         if void {
+            // A flip that counts again is rebuilt from the fold, so a void one is still
+            // gated at its cut: refused, it folds as nothing.
+            if let GroupOp::SubgroupVisibilitySet { mode } = op {
+                crate::GroupSettingsService::new(self.store, *group_id)
+                    .with_apply_auth(&signed_group_op.parent_op_hashes, self.authorizer)
+                    .require_may_set_subgroup_visibility(signer, *mode)?;
+            }
             // The nonce is spent, as for any applied op: the op is not to be
             // judged again each time a buffered op is replayed.
             tracing::info!(
