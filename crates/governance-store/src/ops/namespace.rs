@@ -305,11 +305,17 @@ fn seat_creating_relay(
     namespace_group: &calimero_context_config::types::ContextGroupId,
     subgroup: &calimero_context_config::types::ContextGroupId,
     warrant: &calimero_account::VerifiedGovernanceWarrant,
+    root_role: Option<calimero_primitives::context::GroupMemberRole>,
 ) -> EyreResult<()> {
     let membership = crate::MembershipRepository::new(store);
-    let root_role = membership.role_of(namespace_group, &warrant.executor)?;
     if let Some(tee_role) = root_role.filter(|role| role.is_tee()) {
-        if membership.role_of(subgroup, &warrant.executor)?.is_none() {
+        // A concurrent removal at the root leaves nothing to copy; its cascade takes
+        // the copy in the other order.
+        if membership
+            .role_of(namespace_group, &warrant.executor)?
+            .is_some()
+            && membership.role_of(subgroup, &warrant.executor)?.is_none()
+        {
             membership.add_member(subgroup, &warrant.executor, tee_role)?;
         }
         return Ok(());
@@ -372,11 +378,14 @@ fn on_behalf(
         .with_principal(Some(principal));
     dispatch_root_op(&mut inner_ctx, &as_author, inner)?;
     if let RootOp::GroupCreated { group_id, .. } = inner {
+        // The relay's root row at the op's cut decides how it is seated.
+        let root_role = ctx.direct_role_at_cut(&namespace_group, &warrant.executor)?;
         seat_creating_relay(
             store,
             &namespace_group,
             &group_id.to_bytes().into(),
             &warrant,
+            root_role,
         )?;
     }
     if matches!(inner, RootOp::NamespaceCreatedV2 { .. }) {

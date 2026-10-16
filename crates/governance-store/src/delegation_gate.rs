@@ -1243,8 +1243,9 @@ mod tests {
     /// An at-cut authorizer shaped like the real projection for a thin client:
     /// it cannot resolve the author's device key (bound in no group), so every
     /// KEY-typed question answers "no", while ACCOUNT-typed ones answer from the
-    /// rows. A delegated op must therefore be decided by account.
-    struct KeyBlindAuthorizer<'a>(&'a Store);
+    /// rows. A delegated op must therefore be decided by account. The second field, if
+    /// set, is one account's direct role at the cut.
+    struct KeyBlindAuthorizer<'a>(&'a Store, Option<(AccountId, GroupMemberRole)>);
 
     impl crate::authorizer::AtCutAuthorizer for KeyBlindAuthorizer<'_> {
         fn is_admin_at_cut(
@@ -1317,6 +1318,17 @@ mod tests {
         ) -> Option<Option<ContextGroupId>> {
             None
         }
+        fn direct_role_at_cut(
+            &self,
+            _: &ContextGroupId,
+            member: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<GroupMemberRole>> {
+            self.1
+                .as_ref()
+                .filter(|(account, _)| account == member)
+                .map(|(_, role)| Some(role.clone()))
+        }
     }
 
     /// At a real cut, the author's authority is read by ACCOUNT. A gate that
@@ -1327,7 +1339,7 @@ mod tests {
         let w = world(MemberCapabilities::MANAGE_MEMBERS);
         let newcomer = w.stranger();
         let op = w.on_behalf(w.ns, add(newcomer));
-        let authorizer = KeyBlindAuthorizer(&w.store);
+        let authorizer = KeyBlindAuthorizer(&w.store, None);
         let cut: &[[u8; 32]] = &[[0x01; 32]];
         let relay_pk = w.relay_sk.public_key();
         let mut ctx = crate::ops::group::GroupApplyCtx::new_with_apply_auth(
@@ -1460,6 +1472,40 @@ mod tests {
                 .expect("read")
                 .is_none(),
             "so it may serve the subgroup at once"
+        );
+    }
+
+    /// A relay the subgroup creation's cut holds as a plain member at the root, admitted
+    /// as a TEE there by a concurrent op this node took first, is seated as a member, as
+    /// in the other order.
+    #[test]
+    fn a_relay_admitted_as_a_tee_concurrently_is_seated_as_its_cut_holds_it() {
+        let w = world(MemberCapabilities::CAN_CREATE_SUBGROUP);
+        MembershipRepository::new(&w.store)
+            .set_role(&w.ns, &w.relay, GroupMemberRole::RelayTee)
+            .expect("the concurrent admission");
+        let authorizer = KeyBlindAuthorizer(&w.store, Some((w.relay, GroupMemberRole::Member)));
+        let cut: &[[u8; 32]] = &[[0x01; 32]];
+        let create = w.root_on_behalf(create_subgroup(&w, 0xC3, w.author));
+        let signed = SignedNamespaceOp::sign(
+            &w.relay_sk,
+            NS.into(),
+            cut.to_vec(),
+            w.next_nonce(),
+            calimero_context_client::local_governance::NamespaceOp::Root(create.clone()),
+        )
+        .expect("sign");
+        let mut ctx =
+            crate::ops::namespace::NamespaceApplyCtx::new(&w.store, NS.into(), cut, &authorizer);
+        crate::ops::namespace::dispatch_root_op(&mut ctx, &signed, &create).expect("create");
+
+        let gid = ContextGroupId::from(subgroup_id(0xC3, &w.author));
+        assert_eq!(
+            MembershipRepository::new(&w.store)
+                .role_of(&gid, &w.relay)
+                .expect("read"),
+            Some(GroupMemberRole::Member),
+            "the relay was seated with a TEE role its cut does not hold"
         );
     }
 
