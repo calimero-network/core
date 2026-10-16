@@ -24,26 +24,26 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AbortMigrationRequest, AbortMigrationResponse, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest, CascadeStatusEntry,
-    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
-    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
-    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetCascadeStatusRequest,
-    GetContextMetadataRequest, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupMetadataRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
-    GetMemberCapabilitiesResponse, GetMemberMetadataRequest, GetMigrationStatusRequest,
-    GetNamespaceIdentityRequest, GovernOnBehalfRequest, GovernOnBehalfResponse, GroupContextEntry,
-    GroupInfoResponse, GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
-    IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
-    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
-    JoinSubgroupInheritanceResponse, LabelDeviceRequest, LeaveContextRequest, LeaveContextResponse,
-    LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse,
-    LinkAccountDeviceRequest, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, MigrationStatus, NamespaceParticipation, NamespaceSummary,
-    PairDeviceCompleteRequest, PairDeviceInitRequest, RelinkDeviceRequest,
-    RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest, ResyncContextResponse,
-    RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
+    AbortMigrationRequest, AbortMigrationResponse, ActivateUpgradeRequest, AddGroupMembersRequest,
+    AdmitTeeNodeRequest, AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest,
+    CascadeStatusEntry, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
+    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
+    DeleteNamespaceRequest, DeleteNamespaceResponse, DetachContextFromGroupRequest,
+    GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GetMemberMetadataRequest,
+    GetMigrationStatusRequest, GetNamespaceIdentityRequest, GovernOnBehalfRequest,
+    GovernOnBehalfResponse, GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo,
+    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
+    JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
+    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LabelDeviceRequest,
+    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
+    LeaveNamespaceRequest, LeaveNamespaceResponse, LinkAccountDeviceRequest, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, MigrationStatus,
+    NamespaceParticipation, NamespaceSummary, PairDeviceCompleteRequest, PairDeviceInitRequest,
+    RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest,
+    ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
     SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
     SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
@@ -1571,6 +1571,8 @@ impl ContextClient {
         request: ExecuteRequest,
         what: &'static str,
     ) -> Result<ExecuteResponse, ExecuteError> {
+        self.switch_before_call(&request).await;
+
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
@@ -1592,6 +1594,33 @@ impl ContextClient {
                 kind: InternalErrorKind::Ipc,
             }
         })?
+    }
+
+    /// Before a direct call, switch its context to the group's target release and
+    /// replay what this node held back for it, so the call sees writes made there.
+    /// Nested runs skip it: they may run inside the delta apply the replay needs.
+    /// Best-effort: on failure the call's own lazy upgrade still runs.
+    async fn switch_before_call(&self, request: &ExecuteRequest) {
+        if !request.is_direct_call() {
+            return;
+        }
+        let activated = self
+            .activate_upgrade(ActivateUpgradeRequest {
+                context_id: request.context,
+                executor: request.executor,
+            })
+            .await;
+        match activated {
+            Ok(true) => {
+                if let Err(err) = self.node_client.drain_absorbed(request.context).await {
+                    tracing::warn!(context_id = %request.context, %err, "replaying held deltas after an upgrade failed");
+                }
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::debug!(context_id = %request.context, %err, "switching before the call failed");
+            }
+        }
     }
 
     /// Acquire the per-context execution lock and return its owned guard.
@@ -2326,6 +2355,12 @@ impl ContextClient {
         ResyncContext,
         ResyncContextRequest,
         eyre::Result<ResyncContextResponse>
+    );
+    forward_to_actor!(
+        activate_upgrade,
+        ActivateUpgrade,
+        ActivateUpgradeRequest,
+        eyre::Result<bool>
     );
 
     // --- Methods with custom parameter handling (not suitable for forward_to_actor!) ---

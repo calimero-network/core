@@ -1715,6 +1715,20 @@ impl Message for ResyncContextRequest {
     type Result = eyre::Result<ResyncContextResponse>;
 }
 
+/// Switch a context to its group's target release now, as its next call would.
+///
+/// `executor` is who the switch runs as, as for that call. Answers whether this
+/// request moved the context; `false` when it was current or the switch was blocked.
+#[derive(Clone, Copy, Debug)]
+pub struct ActivateUpgradeRequest {
+    pub context_id: ContextId,
+    pub executor: PublicKey,
+}
+
+impl Message for ActivateUpgradeRequest {
+    type Result = eyre::Result<bool>;
+}
+
 /// Outcome of a [`ResyncContextRequest`].
 #[derive(Clone, Copy, Debug)]
 pub struct ResyncContextResponse {
