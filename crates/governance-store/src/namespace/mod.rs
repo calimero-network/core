@@ -45,4 +45,5 @@ pub use self::governance::{
 };
 pub use self::membership::NamespaceMembershipService;
 pub use self::op_log::NamespaceOpLogService;
+pub(crate) use self::retry::order_causally;
 pub use self::retry::NamespaceRetryService;

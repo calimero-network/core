@@ -11,7 +11,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 /// A candidate's rank inside one causal layer of the retry replay.
-type TieBreak = ([u8; 32], u64);
+pub(crate) type TieBreak = ([u8; 32], u64);
 
 /// A namespace group operation that can be retried locally because the
 /// corresponding group key is now available.
@@ -40,7 +40,7 @@ impl ReplayCandidate {
 
 /// Something a replay orders: a buffered op, plus whatever is needed alongside it
 /// to open the op.
-pub(super) trait Replayable {
+pub(crate) trait Replayable {
     fn signed_op(&self) -> &SignedNamespaceOp;
 
     /// Order inside one causal layer: a signer's own ops in publish order, and
@@ -55,6 +55,12 @@ pub(super) trait Replayable {
 impl Replayable for RetryCandidate {
     fn signed_op(&self) -> &SignedNamespaceOp {
         &self.signed_op
+    }
+}
+
+impl Replayable for SignedNamespaceOp {
+    fn signed_op(&self) -> &SignedNamespaceOp {
+        self
     }
 }
 
@@ -480,7 +486,7 @@ impl<'a> NamespaceRetryService<'a> {
 /// Ancestry comes from the stored DAG rather than from a candidate's own
 /// `parent_op_hashes`, because the path between two buffered ops usually runs
 /// through ops that are not candidates (cleartext root ops, ops applied live).
-pub(super) fn order_causally<T: Replayable>(
+pub(crate) fn order_causally<T: Replayable>(
     op_log: &NamespaceOpLogService<'_>,
     candidates: Vec<T>,
 ) -> EyreResult<Vec<T>> {

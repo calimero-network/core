@@ -192,6 +192,16 @@ impl<'a> NamespaceApplyCtx<'a> {
             .with_principal(self.principal)
     }
 
+    /// A [`MembershipPolicy`](crate::membership::MembershipPolicy) for `group` at this
+    /// op's causal cut, so the policy it enforces is the one the op's parents saw.
+    pub(crate) fn membership_policy_for(
+        &self,
+        group: ContextGroupId,
+    ) -> crate::membership::MembershipPolicy<'a> {
+        crate::membership::MembershipPolicy::new(self.store, group)
+            .with_apply_auth(self.parents, self.authorizer)
+    }
+
     /// The PROJECTION's at-cut membership PATH for `member` in `group`, for the
     /// `MemberJoinedOpen` gate (F5 #29b flip): `membership_path_at_cut` at the op's
     /// causal cut, validated divergence-free on the `membership-path` plane. `None`

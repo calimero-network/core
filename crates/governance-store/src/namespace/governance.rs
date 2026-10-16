@@ -3319,7 +3319,7 @@ impl<'a> NamespaceGovernance<'a> {
 }
 
 /// Whether `err` is a gate declining to decide an unresolvable cut, not a verdict.
-fn is_undecidable(err: &eyre::Report) -> bool {
+pub(super) fn is_undecidable(err: &eyre::Report) -> bool {
     err.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<crate::ApplyError>(),

@@ -973,7 +973,7 @@ impl crate::authorizer::AtCutAuthorizer for SealedSubgroupAuthorizer {
 
 /// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) that judges a parked
 /// op at its cut, every gate deferring to the rows this node holds. Like the
-/// projection, it cannot resolve a cut that holds an op still parked unjudged.
+/// projection, it cannot resolve a cut missing an op or holding one still parked.
 pub struct LiveCutJudge<'a> {
     pub store: &'a Store,
     pub namespace: calimero_governance_types::NamespaceId,
@@ -993,9 +993,10 @@ impl crate::authorizer::AtCutAuthorizer for LiveCutJudge<'_> {
             if parked == Some(crate::void_ledger::Parked::Undecided) {
                 return false;
             }
-            if let Some(op) = log.get_signed_op(id).expect("read the op log") {
-                queue.extend(op.parent_op_hashes);
-            }
+            let Some(op) = log.get_signed_op(id).expect("read the op log") else {
+                return false;
+            };
+            queue.extend(op.parent_op_hashes);
         }
         true
     }

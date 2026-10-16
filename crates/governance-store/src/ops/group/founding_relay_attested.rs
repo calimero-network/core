@@ -15,7 +15,7 @@ use calimero_primitives::context::GroupMemberRole;
 use eyre::{bail, Result as EyreResult};
 
 use super::context::GroupApplyCtx;
-use crate::tee::{read_tee_admission_policy, TeeAdmissionPolicyRead};
+use crate::tee::TeeAdmissionPolicyRead;
 use crate::{MembershipRepository, NamespaceFoundingRepository, NamespaceRepository};
 
 /// The TCB status a founding relay's quote must carry, and the policy admits.
@@ -78,7 +78,7 @@ pub(crate) fn apply(
     }
     // This op IS the first policy: it may not override one somebody set.
     if !matches!(
-        read_tee_admission_policy(store, &group_id)?,
+        ctx.membership_policy().read_tee_admission_policy()?,
         TeeAdmissionPolicyRead::NotSet
     ) {
         bail!("this namespace already has a TEE admission policy");

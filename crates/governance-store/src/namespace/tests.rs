@@ -10305,9 +10305,10 @@ impl TeeAdmissionFixture {
     }
 
     /// The TEE fleet's chain, applied here: the policy (a group op), the replica's
-    /// admission under it (a root op), and the namespace TEE key the admitted replica
-    /// delivers (a group op only a TEE may sign). With `rekey`, the namespace moves to
-    /// that key after the policy, so the rest is sealed under it.
+    /// admission under it (a root op), the namespace TEE key the admitted replica
+    /// delivers (a group op only a TEE may sign), and a second TEE the replica admits
+    /// (a root op only an admitted TEE or an admin may vouch for). With `rekey`, the
+    /// namespace moves to that key after the policy, so the rest is sealed under it.
     fn fleet_chain(&self, rekey: Option<&[u8; 32]>) -> Vec<SignedNamespaceOp> {
         let policy = self.set_policy();
         if let Some(key) = rekey {
@@ -10330,7 +10331,19 @@ impl TeeAdmissionFixture {
             },
         );
         self.apply(&delivery);
-        vec![policy, admission, delivery]
+        let second = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+        let second_account = crate::test_fixtures::real_join_account(&second);
+        let quote = crate::tee::tests::admission_quote_with(&self.ns_gid, &second, &second_account);
+        let quote_hash = crate::tee::sha256(&quote);
+        let vouched = self.admission_of(
+            &self.replica_sk,
+            &second,
+            &second_account,
+            quote,
+            quote_hash,
+        );
+        self.apply(&vouched);
+        vec![policy, admission, delivery, vouched]
     }
 
     /// The honest joiner's quote for this replica's own credential.
@@ -10364,6 +10377,18 @@ impl TeeAdmissionFixture {
         quote: Vec<u8>,
         quote_hash: [u8; 32],
     ) -> SignedNamespaceOp {
+        self.admission_of(signer, &self.replica, &self.account, quote, quote_hash)
+    }
+
+    /// The sealed admission of `member`, signed by `signer` at the current heads.
+    fn admission_of(
+        &self,
+        signer: &PrivateKey,
+        member: &PublicKey,
+        account: &calimero_context_client::local_governance::JoinAccountCredential,
+        quote: Vec<u8>,
+        quote_hash: [u8; 32],
+    ) -> SignedNamespaceOp {
         use calimero_context_client::local_governance::RootOp;
 
         let gov = NamespaceGovernance::new(&self.store, self.namespace_id.into());
@@ -10378,7 +10403,7 @@ impl TeeAdmissionFixture {
                 self.ns_gid,
                 RootOp::MemberJoinedViaTeeAttestation {
                     group_id: self.ns_gid,
-                    member: self.replica,
+                    member: *member,
                     quote_hash,
                     mrtd: "m1".to_owned(),
                     rtmr0: String::new(),
@@ -10387,12 +10412,59 @@ impl TeeAdmissionFixture {
                     rtmr3: "r3".to_owned(),
                     tcb_status: "ok".to_owned(),
                     role: GroupMemberRole::ReadOnlyTee,
-                    account: self.account.clone(),
+                    account: Box::new(account.clone()),
                     quote,
                 },
             ),
         )
         .expect("verifier signs the admission")
+    }
+
+    /// `member_sk`'s join with `invitation`, signed at `parents` and endorsed by the
+    /// verifier.
+    fn join_signed_at(
+        &self,
+        member_sk: &PrivateKey,
+        invitation: calimero_context_config::types::SignedGroupOpenInvitation,
+        parents: &[[u8; 32]],
+        nonce: u64,
+    ) -> SignedNamespaceOp {
+        use calimero_context_client::local_governance::RootOp;
+
+        let member = crate::test_fixtures::account_for(&member_sk.public_key());
+        let endorsement = calimero_governance_types::AdmitterEndorsement::sign(
+            &self.verifier_sk,
+            &self.namespace_id,
+            &member,
+            &invitation.invitation.invitation_nonce,
+        )
+        .expect("sign the admitter endorsement");
+        let mut join = SignedNamespaceOp::sign(
+            member_sk,
+            self.namespace_id.into(),
+            parents.to_vec(),
+            nonce,
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member,
+                signed_invitation: invitation,
+                joined_at: 1,
+                account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
+            }),
+        )
+        .expect("sign the join");
+        join.admitter_endorsement = Some(Box::new(endorsement));
+        join
+    }
+
+    /// A member who joined with `invitation`, applied here.
+    fn joined_member(
+        &self,
+        invitation: calimero_context_config::types::SignedGroupOpenInvitation,
+    ) -> PrivateKey {
+        let member_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+        let join = self.join_signed_at(&member_sk, invitation, &self.heads(), 1);
+        self.apply(&join);
+        member_sk
     }
 
     fn is_member(&self) -> bool {
@@ -10442,8 +10514,8 @@ enum Arrival<'a> {
 }
 
 /// Play `arrivals` on `replica` as the node takes them: an op is applied at its own
-/// cut, and a key is stored and replays whatever it opens. An op the apply turns
-/// away stays pending, as in the DAG, and is offered again after every arrival.
+/// cut, and a key is stored and replays whatever it opens. As in the DAG, an op waits
+/// until its parents are logged, and one the apply turns away is offered again.
 fn play(f: &TeeAdmissionFixture, replica: &Store, arrivals: &[Arrival<'_>]) {
     let judge = crate::test_fixtures::LiveCutJudge {
         store: replica,
@@ -10466,8 +10538,13 @@ fn play(f: &TeeAdmissionFixture, replica: &Store, arrivals: &[Arrival<'_>]) {
                 .expect("the key arrival replays the namespace");
             }
         }
+        let log = NamespaceOpLogService::new(replica, f.namespace_id.into());
         while let Some(at) = pending.iter().position(|op| {
-            apply_signed_namespace_op_at_cut(replica, op, &op.parent_op_hashes, &judge).is_ok()
+            op.parent_op_hashes
+                .iter()
+                .all(|parent| log.contains_op(*parent).expect("read the op log"))
+                && apply_signed_namespace_op_at_cut(replica, op, &op.parent_op_hashes, &judge)
+                    .is_ok()
         }) {
             let _taken = pending.remove(at);
         }
@@ -10572,7 +10649,7 @@ fn a_tee_fleet_chain_replayed_after_a_late_key_lands_as_it_did_live() {
 /// which arrive readable; it must not decide what lands.
 #[test]
 fn a_tee_fleet_chain_lands_the_same_wherever_the_key_arrives_in_it() {
-    for key_at in 0..=3 {
+    for key_at in 0..=4 {
         let f = TeeAdmissionFixture::without_policy(0xDC);
         let (replica, key) = keyless_replica(&f);
         let chain = f.fleet_chain(None);
@@ -10609,6 +10686,7 @@ fn an_admission_read_while_its_policy_is_still_sealed_lands_once_the_policy_does
             Arrival::Op(&chain[0]),
             Arrival::Op(&chain[1]),
             Arrival::Op(&chain[2]),
+            Arrival::Op(&chain[3]),
             Arrival::Key(old_key),
         ],
     );
@@ -10620,8 +10698,8 @@ fn an_admission_read_while_its_policy_is_still_sealed_lands_once_the_policy_does
 /// decides what lands.
 #[test]
 fn a_tee_fleet_chain_across_a_rekey_lands_the_same_in_every_arrival_order() {
-    for first in 0..5 {
-        for second in first + 1..5 {
+    for first in 0..6 {
+        for second in first + 1..6 {
             for newer_first in [false, true] {
                 let f = TeeAdmissionFixture::without_policy(0xDE);
                 let (replica, old_key) = keyless_replica(&f);
@@ -10633,11 +10711,11 @@ fn a_tee_fleet_chain_across_a_rekey_lands_the_same_in_every_arrival_order() {
                     (old_key, new_key)
                 };
                 let mut ops = chain.iter();
-                let arrivals: Vec<Arrival<'_>> = (0..5)
+                let arrivals: Vec<Arrival<'_>> = (0..6)
                     .map(|slot| match slot {
                         s if s == first => Arrival::Key(a),
                         s if s == second => Arrival::Key(b),
-                        _ => Arrival::Op(ops.next().expect("three ops fill three slots")),
+                        _ => Arrival::Op(ops.next().expect("four ops fill four slots")),
                     })
                     .collect();
 
@@ -10652,6 +10730,290 @@ fn a_tee_fleet_chain_across_a_rekey_lands_the_same_in_every_arrival_order() {
             }
         }
     }
+}
+
+/// A copy of the fixture's node as another node holding every key.
+fn keyed_replica(f: &TeeAdmissionFixture) -> Store {
+    let replica = crate::test_fixtures::fork_store(&f.store);
+    // Another node's identity: a node never re-drives the ops it signed.
+    let local: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
+    NamespaceRepository::new(&replica)
+        .replace_identity(&f.ns_gid, &PrivateKey::from(local).public_key(), &local)
+        .expect("the replica's own identity");
+    replica
+}
+
+/// An admission is judged by the policy its cut holds. A stricter policy concurrent
+/// with it does not refuse it on a node that applied that policy first.
+#[test]
+fn an_admission_is_judged_by_the_policy_at_its_cut_not_a_concurrent_one() {
+    let f = TeeAdmissionFixture::new(0xDF);
+    let replica = keyed_replica(&f);
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+    let stricter = f.policy_signed_at("m2", &admission.parent_op_hashes, admission.nonce + 1);
+
+    play(
+        &f,
+        &f.store,
+        &[Arrival::Op(&admission), Arrival::Op(&stricter)],
+    );
+    play(
+        &f,
+        &replica,
+        &[Arrival::Op(&stricter), Arrival::Op(&admission)],
+    );
+
+    for store in [&f.store, &replica] {
+        assert!(
+            MembershipRepository::new(store)
+                .is_member(&f.ns_gid, &f.account.statement.account)
+                .expect("membership"),
+            "the admission lands whichever concurrent policy a node applied first"
+        );
+    }
+}
+
+/// A policy op refused at its cut set no policy, so it is not the one an admission
+/// after it is judged by.
+#[test]
+fn a_refused_policy_in_an_admissions_cut_is_not_its_policy() {
+    let f = TeeAdmissionFixture::new(0xE0);
+    let by_a_member = f.group_op_signed_at(
+        &f.replica_sk,
+        &f.heads(),
+        f.next_nonce(),
+        &GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m2".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec![],
+            accept_mock: true,
+        },
+    );
+    let refused = NamespaceGovernance::new(&f.store, f.namespace_id.into())
+        .apply_signed_op(&by_a_member)
+        .expect("the refusal is logged");
+    assert!(
+        refused.refused.is_some(),
+        "precondition: only an admin sets a policy"
+    );
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+
+    play(&f, &f.store, &[Arrival::Op(&admission)]);
+
+    assert!(f.is_member(), "the refused policy refused the admission");
+}
+
+/// A policy op judged void set no policy either.
+#[test]
+fn a_void_policy_in_an_admissions_cut_is_not_its_policy() {
+    let f = TeeAdmissionFixture::new(0xE1);
+    let stricter = f.policy_signed_at("m2", &f.heads(), f.next_nonce());
+    f.apply(&stricter);
+    crate::void_ledger::VoidLedger::new(&f.store, f.namespace_id.into())
+        .note_voided(stricter.content_hash().expect("content hash"))
+        .expect("judge the stricter policy void");
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+
+    play(&f, &f.store, &[Arrival::Op(&admission)]);
+
+    assert!(f.is_member(), "the void policy refused the admission");
+}
+
+/// A cut whose policy op is still parked has no policy to read: undecidable where the
+/// authorizer cannot read the cut, the live rows where it says they are sound.
+#[test]
+fn a_policy_still_parked_in_the_cut_is_undecidable_unless_live_is_sound() {
+    let f = TeeAdmissionFixture::without_policy(0xE2);
+    let (replica, _key) = keyless_replica(&f);
+    let policy = f.set_policy();
+    play(&f, &replica, &[Arrival::Op(&policy)]);
+    let parents = [policy.content_hash().expect("content hash")];
+    let judge = crate::test_fixtures::LiveCutJudge {
+        store: &replica,
+        namespace: f.namespace_id.into(),
+    };
+
+    let at_cut =
+        crate::tee::read_tee_admission_policy_at_cut(&replica, &f.ns_gid, &parents, &judge);
+    assert!(
+        at_cut
+            .as_ref()
+            .is_err_and(super::governance::is_undecidable),
+        "a parked policy is no verdict: {at_cut:?}"
+    );
+    assert!(matches!(
+        crate::tee::read_tee_admission_policy_at_cut(
+            &replica,
+            &f.ns_gid,
+            &parents,
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        ),
+        Ok(crate::TeeAdmissionPolicyRead::NotSet)
+    ));
+}
+
+/// Two concurrent ops, each applied first on one of two nodes holding every key,
+/// must land the same on both.
+fn assert_concurrent_ops_land_the_same(
+    f: &TeeAdmissionFixture,
+    first: &SignedNamespaceOp,
+    second: &SignedNamespaceOp,
+) {
+    let replica = keyed_replica(f);
+    play(f, &f.store, &[Arrival::Op(first), Arrival::Op(second)]);
+    play(f, &replica, &[Arrival::Op(second), Arrival::Op(first)]);
+    assert_lands_as_on_the_keyed_node(
+        f,
+        &replica,
+        &[first.clone(), second.clone()],
+        "the concurrent ops in the other order",
+    );
+}
+
+/// A role change is judged by its target's role at its cut, not after a concurrent
+/// removal of the target.
+#[test]
+#[ignore = "MemberRoleSet reads its target's direct row live; the projection offers no direct role at a cut"]
+fn a_role_change_concurrent_with_its_targets_removal_lands_the_same_in_either_order() {
+    let f = TeeAdmissionFixture::new(0xE4);
+    let member =
+        crate::test_fixtures::account_for(&PrivateKey::random(&mut UnwrapErr(SysRng)).public_key());
+    let add = f.group_op_signed_at(
+        &f.verifier_sk,
+        &f.heads(),
+        f.next_nonce(),
+        &GroupOp::MemberAdded {
+            member,
+            role: GroupMemberRole::Member,
+        },
+    );
+    f.apply(&add);
+    let (heads, nonce) = (f.heads(), f.next_nonce());
+    let demote = f.group_op_signed_at(
+        &f.verifier_sk,
+        &heads,
+        nonce,
+        &GroupOp::MemberRoleSet {
+            member,
+            role: GroupMemberRole::ReadOnly,
+        },
+    );
+    let remove = f.group_op_signed_at(
+        &f.verifier_sk,
+        &heads,
+        nonce + 1,
+        &crate::test_fixtures::dummy_member_removed_op(member),
+    );
+
+    assert_concurrent_ops_land_the_same(&f, &demote, &remove);
+}
+
+/// A context capability grant is judged by where the context was registered at its
+/// cut, not after a concurrent detach.
+#[test]
+#[ignore = "ContextCapabilityGranted reads the context's registration live; the projection folds no registration"]
+fn a_context_grant_concurrent_with_its_contexts_detach_lands_the_same_in_either_order() {
+    let f = TeeAdmissionFixture::new(0xE5);
+    let context = ContextId::from([0xE5; 32]);
+    register_context_in_group(&f.store, &f.ns_gid, &context).expect("register the context");
+    let member =
+        crate::test_fixtures::account_for(&PrivateKey::random(&mut UnwrapErr(SysRng)).public_key());
+    let add = f.group_op_signed_at(
+        &f.verifier_sk,
+        &f.heads(),
+        f.next_nonce(),
+        &GroupOp::MemberAdded {
+            member,
+            role: GroupMemberRole::Member,
+        },
+    );
+    f.apply(&add);
+    let (heads, nonce) = (f.heads(), f.next_nonce());
+    let grant = f.group_op_signed_at(
+        &f.verifier_sk,
+        &heads,
+        nonce,
+        &GroupOp::ContextCapabilityGranted {
+            context_id: context,
+            member,
+            capability: calimero_governance_types::ContextCapabilityBits::new(1)
+                .expect("a non-zero capability"),
+        },
+    );
+    let detach = f.group_op_signed_at(
+        &f.verifier_sk,
+        &heads,
+        nonce + 1,
+        &GroupOp::ContextDetached {
+            context_id: context,
+        },
+    );
+
+    assert_concurrent_ops_land_the_same(&f, &grant, &detach);
+}
+
+/// A join is judged by its joiner's re-entry block at its cut, not after a concurrent
+/// removal of the joiner.
+#[test]
+#[ignore = "a join reads its joiner's re-entry block live; the projection folds no re-entry block"]
+fn a_rejoin_concurrent_with_the_joiners_removal_lands_the_same_in_either_order() {
+    let f = TeeAdmissionFixture::new(0xE6);
+    let member_sk = f.joined_member(crate::test_fixtures::signed_invitation_for(
+        &f.verifier_sk,
+        f.ns_gid,
+        [0xE6; 32],
+    ));
+    let member = crate::test_fixtures::account_for(&member_sk.public_key());
+    let heads = f.heads();
+    let rejoin = f.join_signed_at(
+        &member_sk,
+        crate::test_fixtures::signed_invitation_for(&f.verifier_sk, f.ns_gid, [0xE7; 32]),
+        &heads,
+        2,
+    );
+    let remove = f.group_op_signed_at(
+        &f.verifier_sk,
+        &heads,
+        f.next_nonce(),
+        &crate::test_fixtures::dummy_member_removed_op(member),
+    );
+
+    assert_concurrent_ops_land_the_same(&f, &rejoin, &remove);
+}
+
+/// A join is judged by whether its invitation was spent at its cut, not after a
+/// concurrent leave of the joiner.
+#[test]
+#[ignore = "a join reads its consumed invitations live; the projection folds no consumed invitation"]
+fn a_rejoin_with_a_spent_invitation_concurrent_with_a_leave_lands_the_same_in_either_order() {
+    let f = TeeAdmissionFixture::new(0xE8);
+    let invitation =
+        crate::test_fixtures::signed_invitation_for(&f.verifier_sk, f.ns_gid, [0xE8; 32]);
+    let member_sk = f.joined_member(invitation.clone());
+    let member = crate::test_fixtures::account_for(&member_sk.public_key());
+    let heads = f.heads();
+    let rejoin = f.join_signed_at(&member_sk, invitation, &heads, 2);
+    let leave = f.group_op_signed_at(
+        &member_sk,
+        &heads,
+        3,
+        &GroupOp::MemberLeft {
+            member,
+            expected_group_state_hash: [0; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+    );
+
+    assert_concurrent_ops_land_the_same(&f, &rejoin, &leave);
 }
 
 /// The honest admission still applies: a quote that commits to the credential
