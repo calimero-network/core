@@ -1989,6 +1989,102 @@ mod concurrent {
         }
     }
 
+    /// A context registered in one group, registered in another concurrently with its detach
+    /// from the first, lands the same in either order.
+    #[actix::test]
+    #[ignore = "a registration reads live whether its context is in another group: the cut's \
+                answer needs every group's registrations of it, and a node outside a Restricted \
+                group cannot open them; folding registration into OpPayload is a format change"]
+    async fn a_registration_concurrent_with_a_detach_from_another_group_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let context = calimero_primitives::context::ContextId::from([0xC7; 32]);
+        calimero_governance_store::register_context_in_group(&store, &world.open_chain, &context)
+            .expect("register the context outside the log");
+        let parents = heads(&store, world);
+        let register = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::ContextRegistered {
+                context_id: context,
+                application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
+                blob_id: calimero_primitives::blobs::BlobId::from([0; 32]),
+                source: String::new(),
+                service_name: None,
+                package: String::new(),
+                version: String::new(),
+            },
+        );
+        let detach = signed_in(
+            &store,
+            world,
+            &world.open_chain,
+            &admin.sign_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::ContextDetached {
+                context_id: context,
+            },
+        );
+
+        let nodes = in_both_orders(&store, &register, &detach).await;
+
+        let ops = [&register, &detach];
+        assert_eq!(
+            verdicts(&nodes[0], world, &ops),
+            verdicts(&nodes[1], world, &ops)
+        );
+        assert_same_rows(&nodes, |node| {
+            calimero_governance_store::get_group_for_context(node, &context).expect("read")
+        });
+    }
+
+    /// The projection's view drops a TEE's subgroup rows with its root removal, as the
+    /// apply does, so every view-backed gate sees the eviction.
+    #[actix::test]
+    #[ignore = "the fold is stamp-ordered and a MemberRemoved payload does not say the removed \
+                row was a TEE, so AclView cannot cascade it; the at-cut membership reads do, \
+                and the view needs the cascade in OpPayload, a format change"]
+    async fn the_view_drops_a_root_removed_tees_subgroup_rows() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let tee = admitted_tee(&store, world, 0xC8).await;
+        let seat = signed_in(
+            &store,
+            world,
+            &world.restricted,
+            &world.owner_sk,
+            &heads(&store, world),
+            unused_nonce(),
+            &group_admission(tee, [0xC9; 32]),
+        );
+        apply(&store, &seat)
+            .await
+            .expect("the owner seats the TEE in the subgroup");
+        publish(
+            &store,
+            &world.namespace,
+            &admin.sign_sk,
+            &dummy_member_removed_op(tee),
+        )
+        .await
+        .expect("the admin removes the TEE at the root");
+        let (projection, _namespace, heads) =
+            ScopeProjections::ephemeral_projection(&store, &world.namespace)
+                .expect("fold the namespace");
+
+        assert_eq!(
+            projection.effective_role_at_cut(&store, world.restricted, &tee, &heads),
+            Some(None),
+            "the view kept a subgroup row the root removal took"
+        );
+    }
+
     /// A nonce no signer of the world has used: a reused one is dropped as a duplicate.
     fn unused_nonce() -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 32);
