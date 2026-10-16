@@ -895,7 +895,12 @@ async fn run_initiator_impl<T: SyncTransport>(
         "HashComparison sync complete"
     );
 
-    if !stats.root_hash_verified {
+    if !stats.root_hash_verified && super::helpers::holds_absorbed(store, &context_id) {
+        debug!(
+            %context_id,
+            "HashComparison sync left the roots apart: this node holds deltas for a release it has not switched to"
+        );
+    } else if !stats.root_hash_verified {
         warn!(
             %context_id,
             local_hash = %hex::encode(&local_root_hash[..8]),

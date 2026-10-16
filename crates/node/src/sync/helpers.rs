@@ -147,6 +147,19 @@ pub(crate) fn with_repair_cell_writers(
     }
 }
 
+/// Whether this node holds deltas or repair leaves for a release it has not switched to.
+/// It is behind on purpose then, and its roots cannot match a peer's until it does.
+/// A delta parked on a missing application is not this: that one syncing is what fetches it.
+pub(crate) fn holds_absorbed(store: &Store, context_id: &ContextId) -> bool {
+    calimero_governance_store::AbsorbRepository::new(store)
+        .enumerate_pending(context_id)
+        .is_ok_and(|pending| {
+            pending
+                .iter()
+                .any(|(_, record)| record.pending_application.is_none())
+        })
+}
+
 /// Validates that peer's application ID matches ours.
 ///
 /// # Errors
@@ -1939,6 +1952,25 @@ mod tests {
             unreadable_schema(&leaf_under(Some([8; 32])), [7; 32]),
             Some([8; 32])
         );
+    }
+
+    #[test]
+    fn a_node_holds_absorbed_only_for_a_release_it_has_not_switched_to() {
+        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let context_id = ContextId::from([0xCC; 32]);
+        let repo = calimero_governance_store::AbsorbRepository::new(&store);
+        assert!(!holds_absorbed(&store, &context_id));
+
+        let mut parked =
+            calimero_governance_store::AbsorbRecord::from_leaf([1; 32], vec![1], [9; 32]);
+        parked.pending_application = Some([5; 32]);
+        repo.save(&context_id, [9; 32], &parked).unwrap();
+        assert!(!holds_absorbed(&store, &context_id));
+
+        let behind = calimero_governance_store::AbsorbRecord::from_leaf([2; 32], vec![2], [9; 32]);
+        repo.save(&context_id, [9; 32], &behind).unwrap();
+        assert!(holds_absorbed(&store, &context_id));
+        assert!(!holds_absorbed(&store, &ContextId::from([0xCD; 32])));
     }
 
     fn leaf(len: usize) -> TreeLeafData {
