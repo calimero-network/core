@@ -2,7 +2,8 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::{get_group_for_context, CapabilitiesRepository, ContextRegistrationError};
+use crate::context_registration::registered_at_cut;
+use crate::{CapabilitiesRepository, ContextRegistrationError};
 use calimero_account::AccountId;
 use calimero_governance_types::ContextCapabilityBits;
 use calimero_primitives::context::ContextId;
@@ -20,9 +21,9 @@ pub(crate) fn apply(
 
     ctx.permissions()
         .require_manage_members(signer, "revoke context capability")?;
-    // Mirror the context↔group guard on the grant path: only touch a
-    // per-context capability row for a context registered in this group.
-    if get_group_for_context(store, context_id)? != Some(*group_id) {
+    // Mirror the context↔group guard on the grant path: only touch a per-context
+    // capability row for a context registered in this group at the op's cut.
+    if !registered_at_cut(store, group_id, context_id, ctx.cut(), ctx.authorizer())? {
         bail!(ContextRegistrationError::NotInGroup {
             group_id: hex::encode(group_id.to_bytes()),
             context_id: context_id.to_string(),

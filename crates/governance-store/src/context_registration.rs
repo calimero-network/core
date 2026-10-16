@@ -1,6 +1,13 @@
-use crate::{MetaRepository, MetadataRepository};
+use std::collections::{HashMap, HashSet};
+
+use crate::authorizer::AtCutAuthorizer;
+use crate::namespace::{order_causally, NamespaceOpLogService};
+use crate::void_ledger::VoidLedger;
+use crate::{MetaRepository, MetadataRepository, NamespaceRepository, OpenedNamespaceOp};
 use calimero_app_downloader::registry::{stored_coords, RegistryCoords};
+use calimero_context_client::local_governance::{GroupOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::blobs::BlobId;
@@ -151,4 +158,114 @@ impl<'a> ContextRegistrationService<'a> {
 
         Ok(())
     }
+}
+
+/// Whether `context` is registered in `group` at the cut `parents`, or live where that is
+/// sound. A detach concurrent with the op must not refuse it on the node that took it first.
+pub(crate) fn registered_at_cut(
+    store: &Store,
+    group: &ContextGroupId,
+    context: &ContextId,
+    parents: &[[u8; 32]],
+    authorizer: &dyn AtCutAuthorizer,
+) -> EyreResult<bool> {
+    if !parents.is_empty() {
+        if let Some(registered) = registration_in_log(store, group, context, parents)? {
+            return Ok(registered);
+        }
+        if !authorizer.can_resolve_cut(group, parents) {
+            bail!(crate::ApplyError::AuthorityUndecidable {
+                group_id: group.to_string(),
+                signer: "the context's registration at the op's cut".to_owned(),
+            });
+        }
+    }
+    Ok(get_group_for_context(store, context)? == Some(*group))
+}
+
+/// [`registered_at_cut`] from `group`'s applied registrations and detaches of `context`: the
+/// causally latest in the cut, else the first outside it tells what the rows began as.
+/// `None` when the log moves nothing, or an op of `group` or the cut does not read here.
+fn registration_in_log(
+    store: &Store,
+    group: &ContextGroupId,
+    context: &ContextId,
+    parents: &[[u8; 32]],
+) -> EyreResult<Option<bool>> {
+    let namespace = NamespaceId::from(NamespaceRepository::new(store).resolve(group)?.to_bytes());
+    let op_log = NamespaceOpLogService::new(store, namespace);
+    let voided = VoidLedger::new(store, namespace).voided()?;
+    let mut registers = HashMap::new();
+    let mut changes = Vec::new();
+    for entry in op_log.collect_signed_group_ops_for_group(group.to_bytes())? {
+        let id = entry
+            .signed_op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        let opened = OpenedNamespaceOp::open(store, &entry.signed_op);
+        if opened.refused || voided.contains(&id) {
+            continue;
+        }
+        let Some(op) = opened.group_op else {
+            return Ok(None);
+        };
+        let op = match op.into_unguarded() {
+            GroupOp::OnBehalf { op, .. } => *op,
+            op => op,
+        };
+        let moved = match op {
+            GroupOp::ContextRegistered { context_id, .. }
+            | GroupOp::ContextRegisteredOnBehalf { context_id, .. } => {
+                (context_id == *context, true)
+            }
+            GroupOp::ContextDetached { context_id } => (context_id == *context, false),
+            _ => continue,
+        };
+        if moved.0 {
+            let _ = registers.insert(id, moved.1);
+            changes.push(entry.signed_op);
+        }
+    }
+    if changes.is_empty() {
+        return Ok(None);
+    }
+    let Some(ancestry) = ancestry_of(&op_log, parents)? else {
+        return Ok(None);
+    };
+    let (inside, outside): (Vec<_>, Vec<_>) = changes
+        .into_iter()
+        .partition(|op| op.content_hash().is_ok_and(|id| ancestry.contains(&id)));
+    let registered_by = |op: &SignedNamespaceOp| -> EyreResult<bool> {
+        let id = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        Ok(registers[&id])
+    };
+    if let Some(latest) = order_causally(&op_log, inside)?.pop() {
+        return registered_by(&latest).map(Some);
+    }
+    // A detach is the first move only of a context the rows began with.
+    match order_causally(&op_log, outside)?.first() {
+        Some(first) => registered_by(first).map(|registers| Some(!registers)),
+        None => Ok(None),
+    }
+}
+
+/// Every op in the ancestry of `parents`; `None` when one is missing here.
+fn ancestry_of(
+    op_log: &NamespaceOpLogService<'_>,
+    parents: &[[u8; 32]],
+) -> EyreResult<Option<HashSet<[u8; 32]>>> {
+    let mut seen = HashSet::new();
+    let mut queue = parents.to_vec();
+    while let Some(id) = queue.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(op) = op_log.get_signed_op(id)? else {
+            return Ok(None);
+        };
+        queue.extend(op.parent_op_hashes);
+    }
+    Ok(Some(seen))
 }

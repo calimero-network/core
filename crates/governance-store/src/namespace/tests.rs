@@ -10824,14 +10824,30 @@ fn assert_concurrent_ops_land_the_same(
     );
 }
 
-/// A context capability grant is judged by where the context was registered at its
-/// cut, not after a concurrent detach.
-#[test]
-#[ignore = "a context grant reads the context's registration live; none is read at a cut"]
-fn a_context_grant_concurrent_with_its_contexts_detach_lands_the_same_in_either_order() {
-    let f = TeeAdmissionFixture::new(0xE5);
-    let context = ContextId::from([0xE5; 32]);
-    register_context_in_group(&f.store, &f.ns_gid, &context).expect("register the context");
+/// A context capability grant concurrent with its context's detach, in both orders, with
+/// the context registered by `registration`, an op the fixture signs, or outside the log.
+fn assert_a_grant_and_a_detach_land_the_same(seed: u8, logged: bool) {
+    let f = TeeAdmissionFixture::new(seed);
+    let context = ContextId::from([seed; 32]);
+    if logged {
+        let register = f.group_op_signed_at(
+            &f.verifier_sk,
+            &f.heads(),
+            f.next_nonce(),
+            &GroupOp::ContextRegistered {
+                context_id: context,
+                application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
+                blob_id: calimero_primitives::blobs::BlobId::from([0; 32]),
+                source: String::new(),
+                service_name: None,
+                package: String::new(),
+                version: String::new(),
+            },
+        );
+        f.apply(&register);
+    } else {
+        register_context_in_group(&f.store, &f.ns_gid, &context).expect("register the context");
+    }
     let member =
         crate::test_fixtures::account_for(&PrivateKey::random(&mut UnwrapErr(SysRng)).public_key());
     let add = f.group_op_signed_at(
@@ -10866,6 +10882,30 @@ fn a_context_grant_concurrent_with_its_contexts_detach_lands_the_same_in_either_
     );
 
     assert_concurrent_ops_land_the_same(&f, &grant, &detach);
+    assert_eq!(
+        crate::void_ledger::parked_op(
+            &f.store,
+            f.namespace_id.into(),
+            grant.content_hash().unwrap()
+        )
+        .expect("read the verdict"),
+        None,
+        "the grant was refused at a cut that holds its context"
+    );
+}
+
+/// A context capability grant is judged by where the context was registered at its
+/// cut, not after a concurrent detach.
+#[test]
+fn a_context_grant_concurrent_with_its_contexts_detach_lands_the_same_in_either_order() {
+    assert_a_grant_and_a_detach_land_the_same(0xE5, true);
+}
+
+/// The same, for a context whose registration predates the log: the concurrent detach
+/// tells a node that took it first what the rows began as.
+#[test]
+fn a_grant_on_a_context_registered_outside_the_log_lands_the_same_in_either_order() {
+    assert_a_grant_and_a_detach_land_the_same(0xE6, false);
 }
 
 /// The honest admission still applies: a quote that commits to the credential
