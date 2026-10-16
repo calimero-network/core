@@ -377,13 +377,27 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = (usize, usize)>,
 {
-    let deadline = tokio::time::Instant::now() + wait;
+    let started = tokio::time::Instant::now();
+    let deadline = started + wait;
+    let mut waited = false;
     loop {
         let (mesh, known_subscribers) = sample().await;
         match assert_transport_ready(mesh, known_subscribers, mesh_n_low) {
-            Ok(()) => return Ok(mesh),
+            Ok(()) => {
+                if waited {
+                    tracing::debug!(
+                        mesh,
+                        waited_ms = started.elapsed().as_millis(),
+                        "transport ready after waiting for the mesh"
+                    );
+                }
+                return Ok(mesh);
+            }
             Err(err) if tokio::time::Instant::now() >= deadline => return Err(err),
-            Err(_) => tokio::time::sleep(poll).await,
+            Err(_) => {
+                waited = true;
+                tokio::time::sleep(poll).await;
+            }
         }
     }
 }
