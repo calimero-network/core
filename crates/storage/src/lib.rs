@@ -26,6 +26,7 @@ pub mod interface;
 pub mod js;
 pub mod logical_clock;
 pub mod merge;
+mod order_index;
 pub mod reclaim;
 pub mod row;
 pub mod shared_writers;

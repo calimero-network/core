@@ -14,8 +14,17 @@ use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<JoinGroupApiRequest>,
 ) -> impl IntoResponse {
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_join_outside_binding(
+        &state,
+        client_key.as_deref(),
+        &req.invitation,
+    ) {
+        return refusal;
+    }
+
     info!("Joining group via invitation");
 
     let result = state

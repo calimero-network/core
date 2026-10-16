@@ -346,10 +346,23 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // A `DefaultCapabilitiesSet` op inside the catch-up
                 // batch still wins: it is applied after this write and
                 // overwrites the bundle value (authoritative-op-wins).
-                // The `is_none()` guard keeps this a no-op when a prior
-                // op already set the value.
-                if CapabilitiesRepository::new(&datastore).default_capabilities(&group_id)?.is_none() {
-                    CapabilitiesRepository::new(&datastore).set_default_capabilities(&group_id, join_result.default_capabilities, )?;
+                //
+                // Only a bundle a peer served is written. The fallback
+                // bundle of a join that reached nobody carries `0`, and this
+                // write was once guarded only on no value being stored: that
+                // `0` then outlived the retry that reached a peer, and the
+                // joiner's node never gave itself `CAN_JOIN_OPEN_SUBGROUPS`
+                // (every Open subgroup refused it, while its peers listed it
+                // as a member). So a served value also replaces a stored `0`.
+                // It replaces nothing else: a direct member re-syncing
+                // through here may hold a newer default than a lagging
+                // responder serves.
+                if reached_a_peer {
+                    let capabilities = CapabilitiesRepository::new(&datastore);
+                    if matches!(capabilities.default_capabilities(&group_id)?, None | Some(0)) {
+                        capabilities
+                            .set_default_capabilities(&group_id, join_result.default_capabilities)?;
+                    }
                 }
 
                 // Apply governance ops so the local DAG is up to date.
@@ -496,6 +509,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         %joiner_identity,
                         "group member already recorded locally, skipping add_group_member"
                     );
+                    // A row an earlier attempt wrote before the defaults were
+                    // known has no capability row, and `add_member` will not
+                    // run again to seed one.
+                    let membership = MembershipRepository::new(&datastore);
+                    if membership.role_of(&group_id, &joiner_account)?
+                        != Some(GroupMemberRole::Admin)
+                    {
+                        membership.seed_default_capability(&group_id, &joiner_account)?;
+                    }
                 }
 
                 // The response's ops and the pull above are what make the sender
@@ -1539,6 +1561,87 @@ mod tests {
             .await
             .expect("the manager answers");
         (store, outcome)
+    }
+
+    /// A join that reached no peer, retried once one answers, still leaves the
+    /// joiner with the namespace's default capabilities.
+    ///
+    /// The failed attempt used to store the empty bundle's `0` as the
+    /// namespace default and write the joiner's direct row. The retry then
+    /// kept that `0` (the write was guarded on no value being stored) and took
+    /// the "already recorded locally" branch, so the joiner's node never got a
+    /// capability row. Without `CAN_JOIN_OPEN_SUBGROUPS` there, `check_path`
+    /// refuses every Open subgroup: the member everyone else lists could open
+    /// no channel ("identity .. is not a member of group ..").
+    #[actix::test]
+    async fn a_retried_join_still_gets_the_default_capabilities() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        // The scope key a join normally takes from its bundle, as in the tests
+        // above: held, so the joiner seals its own join rather than relaying it.
+        let _key_id = GroupKeyring::new(&store, group)
+            .store_key(&[0x42; 32])
+            .expect("hold the scope key");
+        let joiner_sk = [0xE1; 32];
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("hold an account root, as an initialised node does");
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .store_identity(
+                &group,
+                &PrivateKey::from(joiner_sk).public_key(),
+                &joiner_sk,
+            )
+            .expect("hold the joiner's namespace identity");
+
+        // No peer answers: the join is refused as unendorsed.
+        let unreached = actor::over(store.clone()).await;
+        let first = unreached
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers");
+        assert!(
+            matches!(
+                first
+                    .as_ref()
+                    .map_err(|e| e.downcast_ref::<crate::error::ContextError>()),
+                Err(Some(crate::error::ContextError::JoinNotEndorsed {
+                    reached_a_peer: false
+                }))
+            ),
+            "got: {first:?}"
+        );
+
+        // A peer answers the retry, with the namespace's real defaults.
+        let defaults = calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS.bits();
+        let mut bundle = an_endorsing_bundle();
+        bundle.default_capabilities = defaults;
+        let answered = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+        let _joined = answered
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the retried join runs");
+
+        let joiner = calimero_governance_store::NodeDeviceRepository::new(&store)
+            .require_account_root()
+            .expect("the account root")
+            .account();
+        assert_eq!(
+            CapabilitiesRepository::new(&store)
+                .member_capability(&group, &joiner)
+                .expect("read the capability"),
+            Some(defaults),
+            "the joiner's own node must hold the defaults the answering peer served"
+        );
     }
 
     /// A key is installed from the invitation's inviter.

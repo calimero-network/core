@@ -37,6 +37,14 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     if args.no_abi {
         eprintln!("warning: bundling without an ABI; this app cannot be migrated");
     }
+    if !args.dev {
+        for url in meta::loopback_frontends(&bundle_meta) {
+            eprintln!(
+                "warning: frontend `{url}` is on localhost; every node that installs this \
+                 bundle will trust a login callback to it. Fine for a dev bundle, not for one you publish."
+            );
+        }
+    }
 
     // Always build every declared service: `stage` writes one entry per service
     // in the manifest, so a filtered build would silently drop one.

@@ -251,9 +251,10 @@ pub fn validate_tee_attestation_allowlists(
     }
 
     // RTMR1 and RTMR2 are mandatory for RTMR3's sake. `calimero-init` extends
-    // RTMR3 with `calimero-rtmr3-v2:<role>:<profile>:<root_hash>` -- public
-    // inputs -- so RTMR3 only proves which image ran if the code that ran
-    // before `calimero-init` is pinned as well. The firmware measures the
+    // RTMR3 with `calimero-rtmr3-v3:<role>:<profile>:<roothash>` (mero-tee#504;
+    // v2 before), whose root hash is the dm-verity one on the kernel command
+    // line. Those are public inputs, so RTMR3 only proves which image ran if
+    // the code that ran before `calimero-init` is pinned as well. The firmware measures the
     // kernel into RTMR1 and the command line + initrd into RTMR2. With either
     // unpinned, a custom kernel or initrd can extend RTMR3 with a locked
     // profile's string and pass as that image. RTMR0 (the VM's hardware
@@ -311,9 +312,10 @@ mod rtmr3_is_mandatory {
     //! serial console and the rescue shell are present and root is not locked.
     //!
     //! `calimero-init` extends RTMR3 with
-    //! `calimero-rtmr3-v2:<role>:<profile>:<root_hash>`, so it names exactly one
-    //! (profile, release) pair -- and therefore changes every release, which is
-    //! the cost of pinning it.
+    //! `calimero-rtmr3-v3:<role>:<profile>:<roothash>` (the dm-verity root
+    //! hash; `calimero-rtmr3-v2:...:<calimero.root_hash>` up to mero-tee
+    //! 2.3.118), so it names exactly one (profile, release) pair -- and
+    //! therefore changes every release, which is the cost of pinning it.
     //!
     //! This is the OP-APPLY path: it runs on every peer replicating the op, so
     //! it is what makes the allowlist bind anyone other than the node that

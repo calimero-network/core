@@ -106,6 +106,14 @@ see [behind an auth proxy](/operate/security/#behind-an-auth-proxy).
 Present only when `auth_mode = "embedded"`. Carries the bundled auth service
 configuration (storage backend, etc.).
 
+`trusted_admin_applications` (array of application ids, default `[]`) names the
+applications whose client key may be minted with `admin`. Such a key acts
+node-wide, as the admin dashboard does. A key for any other application is
+refused `admin`. The list does not authenticate the application: only an admin
+session can mint, and the login page decides which origin receives the key.
+Removing an entry does not revoke keys already minted for it; they are named
+`Trusted Application - <id>` in the client key list.
+
 <Aside type="caution">
 The embedded-auth schema lives in the auth crate (`mero-auth`) rather than the
 node config crate and is broader than this page covers. If you run

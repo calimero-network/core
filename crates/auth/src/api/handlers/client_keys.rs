@@ -67,12 +67,18 @@ fn is_node_control_permission(permission: &str) -> bool {
     category.eq_ignore_ascii_case("admin") || category.eq_ignore_ascii_case("keys")
 }
 
-fn is_grantable_to_client_key(permission: &str, context_bound: bool) -> bool {
+/// An absent or empty id as empty; anything that is not already a clean identifier as `None`.
+fn clean_identifier(id: Option<&str>) -> Option<String> {
+    let id = id.unwrap_or_default();
+    (sanitize_identifier(id) == id).then(|| id.to_owned())
+}
+
+pub(crate) fn is_grantable_to_client_key(permission: &str, bound: bool) -> bool {
     if !is_node_control_permission(permission) {
         return true;
     }
 
-    permission == ADMIN_PERMISSION && !context_bound
+    permission == ADMIN_PERMISSION && !bound
 }
 
 /// Client list handler
@@ -166,14 +172,16 @@ pub async fn generate_client_key_handler(
     // Extract node URL from request for node-specific token generation
     let node_url = request.target_node_url.clone();
 
-    // Sanitize identifiers to prevent injection attacks
-    let context_id = match request.context_id {
-        Some(id) => sanitize_identifier(&id),
-        None => "".to_string(),
-    };
-    let context_identity = match request.context_identity {
-        Some(id) => sanitize_identifier(&id),
-        None => "".to_string(),
+    // Refused rather than sanitized: an id that cleans up to nothing would mint an unbound key.
+    let (Some(context_id), Some(context_identity)) = (
+        clean_identifier(request.context_id.as_deref()),
+        clean_identifier(request.context_identity.as_deref()),
+    ) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Invalid context_id or context_identity",
+            None,
+        );
     };
 
     // Get and validate root key
@@ -206,21 +214,40 @@ pub async fn generate_client_key_handler(
         all_permissions.push(default_permission);
     }
 
-    if let Some(application_id) = request
-        .application_id
-        .as_deref()
-        .map(sanitize_identifier)
-        .filter(|id| !id.is_empty())
-    {
-        all_permissions.push(crate::auth::bindings::application_binding(&application_id));
+    // Refused rather than sanitized: an id that cleans up to nothing would mint an unbound key.
+    let application_id = match request.application_id.as_deref() {
+        None => None,
+        Some(id) if !id.is_empty() && sanitize_identifier(id) == id => Some(id.to_owned()),
+        Some(id) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid application_id: {}", escape_html(id)),
+                None,
+            );
+        }
+    };
+    // A bound key acts only inside its binding, which `admin` would void.
+    let requested_binding = request.permissions.as_deref().is_some_and(|permissions| {
+        !crate::auth::bindings::ClientKeyBindings::from_permissions(permissions).is_unbound()
+    });
+    let context_bound = !context_id.is_empty() || !context_identity.is_empty() || requested_binding;
+    // Only the node's own list may grant `admin` to an application; that key is minted
+    // unbound, since its binding would refuse what `admin` is granted for.
+    let trusted_admin = application_id
+        .as_ref()
+        .is_some_and(|id| state.0.config.trusted_admin_applications.contains(id))
+        && request
+            .permissions
+            .as_deref()
+            .is_some_and(|permissions| permissions.iter().any(|p| p == ADMIN_PERMISSION));
+    if let Some(application_id) = application_id.as_ref().filter(|_| !trusted_admin) {
+        all_permissions.push(crate::auth::bindings::application_binding(application_id));
     }
-
-    // Add and validate additional permissions
-    let context_bound = !context_id.is_empty() || !context_identity.is_empty();
+    let bound = context_bound || (application_id.is_some() && !trusted_admin);
 
     if let Some(additional_perms) = request.permissions {
         for perm in additional_perms {
-            if !is_grantable_to_client_key(&perm, context_bound) {
+            if !is_grantable_to_client_key(&perm, bound) {
                 return error_response(
                     StatusCode::BAD_REQUEST,
                     format!(
@@ -244,7 +271,11 @@ pub async fn generate_client_key_handler(
         }
     }
 
-    let name = format!("Context Client - {context_id} ({context_identity})");
+    // A trusted key carries no binding, so its name is what still says whose it is.
+    let name = match application_id.as_deref().filter(|_| trusted_admin) {
+        Some(application_id) => format!("Trusted Application - {application_id}"),
+        None => format!("Context Client - {context_id} ({context_identity})"),
+    };
 
     let ttl_secs = request.ttl_secs.unwrap_or(DEFAULT_CLIENT_KEY_TTL_SECS);
     let client_key =
@@ -364,11 +395,21 @@ mod tests {
     use crate::AuthService;
 
     async fn admin_state() -> (Arc<AppState>, HeaderMap) {
+        admin_state_with(default_config()).await
+    }
+
+    async fn trusting(applications: &[&str]) -> (Arc<AppState>, HeaderMap) {
+        let mut config = default_config();
+        config.trusted_admin_applications =
+            applications.iter().map(|app| (*app).to_owned()).collect();
+        admin_state_with(config).await
+    }
+
+    async fn admin_state_with(config: crate::config::AuthConfig) -> (Arc<AppState>, HeaderMap) {
         let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
         let secret_manager = Arc::new(SecretManager::new(Arc::clone(&storage)));
         secret_manager.initialize().await.unwrap();
 
-        let config = default_config();
         let token_manager =
             TokenManager::new(config.jwt.clone(), Arc::clone(&storage), secret_manager);
         let key_manager = KeyManager::new(Arc::clone(&storage));
@@ -582,6 +623,16 @@ mod tests {
         context: Option<(&str, &str)>,
         permissions: &[&str],
     ) -> StatusCode {
+        mint_for(state, headers, None, context, permissions).await
+    }
+
+    async fn mint_for(
+        state: &Arc<AppState>,
+        headers: &HeaderMap,
+        application_id: Option<&str>,
+        context: Option<(&str, &str)>,
+        permissions: &[&str],
+    ) -> StatusCode {
         generate_client_key_handler(
             Extension(Arc::clone(state)),
             headers.clone(),
@@ -590,7 +641,7 @@ mod tests {
                 context_identity: context.map(|(_, identity)| identity.to_owned()),
                 permissions: Some(permissions.iter().map(|p| (*p).to_owned()).collect()),
                 target_node_url: None,
-                application_id: None,
+                application_id: application_id.map(str::to_owned),
                 ttl_secs: None,
             }),
         )
@@ -692,6 +743,198 @@ mod tests {
             );
         }
 
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn an_application_bound_client_key_cannot_be_admin() {
+        let (state, headers) = admin_state().await;
+
+        let response = generate_client_key_handler(
+            Extension(Arc::clone(&state)),
+            headers,
+            ValidatedJson(GenerateClientKeyRequest {
+                context_id: None,
+                context_identity: None,
+                permissions: Some(vec!["admin".to_owned()]),
+                target_node_url: None,
+                application_id: Some("app-a".to_owned()),
+                ttl_secs: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn a_binding_named_among_the_permissions_cannot_be_admin() {
+        let (state, headers) = admin_state().await;
+
+        assert_eq!(
+            mint(
+                &state,
+                &headers,
+                None,
+                &["admin", "context[ctx-1,member-pk-1]"]
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn a_listed_application_is_minted_admin_without_a_binding() {
+        let (state, headers) = trusting(&["app-a"]).await;
+
+        assert_eq!(
+            mint_for(&state, &headers, Some("app-a"), None, &["admin"]).await,
+            StatusCode::OK
+        );
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        let (_, key) = clients.first().expect("one client key");
+        assert_eq!(key.permissions, vec!["admin".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn admin_is_refused_to_a_binding_the_node_does_not_list() {
+        let (state, headers) = trusting(&["app-a"]).await;
+
+        for application_id in ["app-b", "APP-A", "app-a-b", "app"] {
+            assert_eq!(
+                mint_for(&state, &headers, Some(application_id), None, &["admin"]).await,
+                StatusCode::BAD_REQUEST,
+                "{application_id}"
+            );
+        }
+        assert_eq!(
+            mint_for(
+                &state,
+                &headers,
+                Some("app-a"),
+                Some(("ctx-1", "member-pk-1")),
+                &["admin"]
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            mint_for(
+                &state,
+                &headers,
+                Some("app-a"),
+                None,
+                &["admin", "context[ctx-1,member-pk-1]"]
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn a_listed_applications_admin_key_is_named_for_it() {
+        let (state, headers) = trusting(&["app-a"]).await;
+
+        assert_eq!(
+            mint_for(&state, &headers, Some("app-a"), None, &["admin"]).await,
+            StatusCode::OK
+        );
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        let (_, key) = clients.first().expect("one client key");
+        assert_eq!(key.name.as_deref(), Some("Trusted Application - app-a"));
+    }
+
+    #[tokio::test]
+    async fn a_listed_application_with_another_binding_is_refused_admin() {
+        let (state, headers) = trusting(&["app-a"]).await;
+
+        for permissions in [
+            &["admin", "application-binding[app-b]"][..],
+            &["admin", "context[ctx-1,member-pk-1]"][..],
+        ] {
+            assert_eq!(
+                mint_for(&state, &headers, Some("app-a"), None, permissions).await,
+                StatusCode::BAD_REQUEST,
+                "{permissions:?}"
+            );
+        }
+        assert_eq!(
+            mint_for(
+                &state,
+                &headers,
+                Some("app-a"),
+                Some(("", "member-pk-1")),
+                &["admin"]
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn a_context_id_that_is_not_an_identifier_is_refused() {
+        let (state, headers) = admin_state().await;
+
+        for context in [("!!", ""), ("", "!!")] {
+            assert_eq!(
+                mint(&state, &headers, Some(context), &["admin"]).await,
+                StatusCode::BAD_REQUEST,
+                "{context:?}"
+            );
+        }
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        assert!(clients.is_empty(), "no key may be stored: {clients:?}");
+    }
+
+    #[tokio::test]
+    async fn a_listed_application_without_admin_stays_bound() {
+        let (state, headers) = trusting(&["app-a"]).await;
+
+        assert_eq!(
+            mint_for(&state, &headers, Some("app-a"), None, &["context:execute"]).await,
+            StatusCode::OK
+        );
+        let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
+        let (_, key) = clients.first().expect("one client key");
+        let bindings = crate::auth::bindings::ClientKeyBindings::from_permissions(&key.permissions);
+        assert_eq!(bindings.application_id.as_deref(), Some("app-a"));
+    }
+
+    #[tokio::test]
+    async fn an_application_id_that_is_not_an_identifier_is_refused() {
+        let (state, headers) = admin_state().await;
+
+        for application_id in ["", "!!", "app a", "app<a>"] {
+            let response = generate_client_key_handler(
+                Extension(Arc::clone(&state)),
+                headers.clone(),
+                ValidatedJson(GenerateClientKeyRequest {
+                    context_id: None,
+                    context_identity: None,
+                    permissions: Some(vec!["context:execute".to_owned()]),
+                    target_node_url: None,
+                    application_id: Some(application_id.to_owned()),
+                    ttl_secs: None,
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "{application_id:?}"
+            );
+        }
         let clients = state.key_manager.list_keys(KeyType::Client).await.unwrap();
         assert!(clients.is_empty(), "no key may be stored: {clients:?}");
     }

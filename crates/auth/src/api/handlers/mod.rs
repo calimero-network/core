@@ -134,6 +134,10 @@ pub async fn providers_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
     let response = json!({
         "providers": providers,
         "count": providers.len(),
+        // Extra origins the login page may return tokens to; the login page
+        // reads this from its own node only. See
+        // `DevelopmentConfig::trusted_callback_origins`.
+        "trusted_callback_origins": state.0.config.development.trusted_callback_origins(),
     });
 
     success_response(response, None)

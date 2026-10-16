@@ -26,11 +26,13 @@
 //!
 //! # What it binds, and why each part
 //!
-//! Method, path and a hash of the body. A signature for `GET /a` is therefore
-//! not a signature for `POST /a`, for `GET /b`, or for the same call with
-//! different arguments. Without the body, a proof captured from a harmless
-//! write could be replayed with a different one; without the method, a read
-//! proof would authorize the delete on the same path.
+//! Method, path and query, and a hash of the body. A signature for `GET /a?x=1`
+//! is therefore not a signature for `POST /a?x=1`, for `GET /a?x=2`, for
+//! `GET /b?x=1`, or for the same call with a different body. Without the query,
+//! a proof could be replayed against another object on the same route; without
+//! the body, a proof captured from a harmless write could be replayed with a
+//! different one; without the method, a read proof would authorize the delete on
+//! the same path.
 //!
 //! **Replay inside the window is bounded rather than prevented.** A captured
 //! signature can be presented again until it expires, and doing so performs the
@@ -58,13 +60,10 @@ pub struct RequestSig {
     /// signature layer that folded them would let a proof minted for one be
     /// presented as the other.
     pub method: String,
-    /// The path, without the query string.
+    /// The path and query, exactly as on the request line, like HTTP/2's `:path`.
     ///
-    /// Queries are excluded because they carry values a proxy may legitimately
-    /// rewrite — a token parameter most of all — and a signature over bytes
-    /// something else is entitled to change is a signature that fails for
-    /// reasons the caller cannot see. Anything that must be bound belongs in
-    /// the body.
+    /// Compared byte for byte: a reordered, re-encoded, added or dropped query
+    /// (an empty `?` included) is a different request.
     pub path: String,
     /// [`RequestSig::body_hash`] of the request body; the hash of an empty body
     /// when there is none.

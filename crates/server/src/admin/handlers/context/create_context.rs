@@ -16,6 +16,7 @@ use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<CreateContextRequest>,
 ) -> impl IntoResponse {
     info!(application_id=%req.application_id, "Creating context");
@@ -24,6 +25,14 @@ pub async fn handler(
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
+        &state,
+        client_key.as_deref(),
+        Some(&group_id),
+        Some(&req.application_id),
+    ) {
+        return refusal;
+    }
 
     let identity_secret = match req
         .identity_secret

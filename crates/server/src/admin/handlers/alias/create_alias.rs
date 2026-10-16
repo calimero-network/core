@@ -9,18 +9,25 @@ use calimero_server_primitives::admin::{AliasKind, CreateAliasRequest, CreateAli
 use calimero_store::key::{Aliasable, StoreScopeCompat};
 use tracing::{error, info};
 
+use super::{outside_binding, BoundKeyTarget};
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::auth::ClientKeyScope;
 use crate::AdminState;
 
 pub async fn handler<T>(
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<ClientKeyScope>>,
     scope: Option<Path<T::Scope>>,
     Json(CreateAliasRequest { alias, value }): Json<CreateAliasRequest<T>>,
 ) -> impl IntoResponse
 where
-    T: Aliasable<Scope: StoreScopeCompat> + AliasKind + AsRef<[u8; 32]>,
+    T: Aliasable<Scope: StoreScopeCompat> + AliasKind + AsRef<[u8; 32]> + BoundKeyTarget,
 {
     let scope = scope.map(|Path(scope)| scope);
+    let value = T::from_value(value);
+    if client_key.is_some_and(|key| !value.permitted(&key, state.ctx_client.datastore())) {
+        return outside_binding();
+    }
 
     info!(alias=%alias, "Creating alias");
 
@@ -28,10 +35,7 @@ where
     // returns a typed `AliasExists` on conflict, which we map to 409 — no racy
     // caller-side pre-check. (Alias length/charset are already enforced by
     // `Alias`'s deserializer, so a malformed alias 400s before reaching here.)
-    if let Err(err) = state
-        .node_client
-        .create_alias(alias, scope, T::from_value(value))
-    {
+    if let Err(err) = state.node_client.create_alias(alias, scope, value) {
         if err.downcast_ref::<AliasExists>().is_some() {
             return ApiError {
                 status_code: StatusCode::CONFLICT,

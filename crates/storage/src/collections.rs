@@ -214,6 +214,7 @@ use crate::address::Id;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::{Interface, StorageError};
+use crate::order_index::{self, SortKey};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
 
@@ -1832,11 +1833,59 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
     /// The position of child `id` in the order [`nth`](Self::nth) reads.
     fn position_of(&self, id: Id) -> StoreResult<Option<usize>> {
+        if let Some(tree) = self.order_tree()? {
+            let Some(child) = <Index<S>>::child_of(self.id(), id) else {
+                return Ok(None);
+            };
+            if !self.storage.domain.admits(&child.metadata.storage_type) {
+                return Ok(None);
+            }
+            if let Ok(position) = tree.position_of::<S>(SortKey::of(&child)) {
+                return Ok(position);
+            }
+        }
         Ok(self.children_cache()?.get_index_of(&id))
     }
 
     fn nth(&self, index: usize) -> StoreResult<Option<Id>> {
+        if let Some(tree) = self.order_tree()? {
+            if let Ok(id) = tree.nth::<S>(index) {
+                return Ok(id);
+            }
+        }
         Ok(self.children_cache()?.get_index(index).copied())
+    }
+
+    /// The node-local order index (see [`order_index`]), for a positional read
+    /// that does not load every child, when the child cache is not loaded.
+    ///
+    /// `None` sends the caller to the cache: when it is loaded already, when
+    /// the collection is small enough that loading it costs no more than the
+    /// index would, and when the index was stale, in which case this loads the
+    /// children into the cache and builds the index from them, so the next
+    /// call's read is the cheap one.
+    ///
+    /// [`order_index`]: crate::order_index
+    fn order_tree(&self) -> StoreResult<Option<order_index::Tree>> {
+        if !S::index_supported() || self.children_ids.borrow().is_some() {
+            return Ok(None);
+        }
+        let parent = self.id();
+        if <Index<S>>::child_count(parent) <= order_index::LEAF_MAX as u64 {
+            return Ok(None);
+        }
+        let domain = &self.storage.domain;
+        let root = match order_index::current::<S>(parent, domain) {
+            Ok(tree) => return Ok(Some(tree)),
+            Err(root) => root,
+        };
+        let Some(children) = self.load_children_info()? else {
+            *self.children_ids.borrow_mut() = Some(IndexSet::new());
+            return Ok(None);
+        };
+        order_index::record::<S>(parent, domain, root, &children);
+        *self.children_ids.borrow_mut() = Some(children.iter().map(ChildInfo::id).collect());
+        Ok(None)
     }
 
     /// A page of admitted child ids at or above `from`, and the id to resume
@@ -1897,6 +1946,13 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Every child this collection admits, in the trie's order, or `None` when
     /// the parent has no index record yet.
     fn load_children(&self) -> StoreResult<Option<IndexSet<Id>>> {
+        Ok(self
+            .load_children_info()?
+            .map(|children| children.iter().map(ChildInfo::id).collect()))
+    }
+
+    /// [`load_children`](Self::load_children), each with its metadata.
+    fn load_children_info(&self) -> StoreResult<Option<Vec<ChildInfo>>> {
         // `IndexNotFound` here means the parent has NO index record yet — a
         // just-created or freshly-synced collection with no children, which
         // is legitimately empty. Genuine read corruption surfaces as
@@ -1910,7 +1966,6 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             Ok(info) => Ok(Some(
                 info.into_iter()
                     .filter(|c| domain.admits(&c.metadata.storage_type))
-                    .map(|c| c.id())
                     .collect(),
             )),
             Err(StorageError::IndexNotFound(_)) => Ok(None),

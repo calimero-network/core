@@ -12,6 +12,7 @@ pub mod list;
 pub mod list_for_application;
 pub mod list_namespace_groups;
 pub mod revoke_device;
+pub mod revoked_devices;
 
 /// Per-namespace `appVersion`: the bundle-manifest version of the
 /// namespace's `bytecode_id` blob. `None` when unresolvable (zero/legacy key,

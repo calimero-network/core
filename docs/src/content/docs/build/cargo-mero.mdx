@@ -199,6 +199,7 @@ Keys are kebab-case.
 | `min-runtime-version` | `minRuntimeVersion` | `0.1.0` |
 | `slug` | `handlers.slug` | `package` |
 | `frontend` | `links.frontend` | omitted |
+| `frontend-aliases` | `frontendAliases` | empty |
 | `github` | `links.github` | omitted |
 | `docs` | `links.docs` | omitted |
 | `services` | `services[]` | empty (see [Multi-service workspaces](#multi-service-workspaces)) |
@@ -208,6 +209,7 @@ Keys are kebab-case.
 A missing or unreadable file fails the bundle and names the path it tried.
 cargo-mero does not check the guide's content; the app registry defines its required sections when you publish.
 `slug` names the deep-link handler (`https://links.calimero.network/<slug>/...`) and defaults to `package` when unset.
+`frontend-aliases` lists other URLs the same frontend is served at, e.g. the old domain of an app that moved. Clients never open them: `links.frontend` stays where the app loads. A node's sign-in page also trusts a login callback to any alias's origin, so a node or launcher still opening the old address keeps signing in. Drop an alias once nothing opens it. Each entry must be an absolute http(s) URL, and `cargo mero bundle` warns about a `localhost` frontend or alias unless signing with `--dev`.
 `author` is not just displayed: the registry checks it against your authenticated registry username (or `_ownerEmail` against your account email) on publish, and refuses a new version of the package when it doesn't match.
 
 The app version (`manifest.json` `appVersion`) is not a metadata key.

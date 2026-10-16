@@ -115,7 +115,9 @@ pub(crate) const AUTH_LOGIN_SIGN_DOMAIN: &[u8] = b"calimero.auth.login.v1";
 /// the short chain lets a device sign a request directly rather than delegating
 /// to a session key first. That makes a collision between any two of them a way
 /// to present a login as a write, or a read as either.
-pub(crate) const REQUEST_SIGN_DOMAIN: &[u8] = b"calimero.auth.request.v1";
+///
+/// `v2` signs the path and query; the bump keeps a path-only `v1` proof from verifying.
+pub(crate) const REQUEST_SIGN_DOMAIN: &[u8] = b"calimero.auth.request.v2";
 
 /// Domain for the hash a request signature commits to instead of the body.
 ///

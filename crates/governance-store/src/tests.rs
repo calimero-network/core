@@ -15479,6 +15479,84 @@ mod account_plane_apply {
         );
     }
 
+    /// A replica's namespace meta names the zero placeholder until the sealed op
+    /// setting its target folds, and a key-arrival replay can reach the link
+    /// first, while that op is still parked. The link is undecided then, not
+    /// refused: a refusal spends its nonce, the replay that follows the target is
+    /// a duplicate, and the device stays unbound in a namespace its scope reaches.
+    #[test]
+    fn a_link_read_before_its_namespaces_target_binds_once_the_target_folds() {
+        let store = test_store();
+        let gid = test_group_id();
+        let admin_sk = key(1);
+        let _admin = group_with_admin(&store, &gid, &admin_sk);
+        let mut placeholder = test_meta();
+        placeholder.target.application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
+        MetaRepository::new(&store)
+            .save(&gid, &placeholder)
+            .unwrap();
+
+        let owner_sk = key(0x5C);
+        let genesis = AccountGenesis::new(owner_sk.public_key());
+        let account = genesis.account_id();
+        let device = DeviceId::mint(account, [0x5C; 16]);
+        let cert = DeviceCert::sign(
+            &owner_sk,
+            account,
+            device,
+            &owner_sk.public_key(),
+            &KemPublicKey::from([0x5C; 32]),
+            0,
+            0,
+        )
+        .unwrap();
+        let nonce = load_nonce_window(&store, &gid, &admin_sk.public_key())
+            .unwrap()
+            .max_applied()
+            + 1;
+        let parents = get_op_head(&store, &gid)
+            .unwrap()
+            .map(|head| head.dag_heads)
+            .unwrap_or_default();
+        let link = calimero_context_client::local_governance::SignedGroupOp::sign(
+            &admin_sk,
+            gid,
+            parents,
+            nonce,
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: AccountMemberEndorsement::sign(&admin_sk, account).unwrap(),
+                scope: link_scope_over(
+                    &owner_sk,
+                    &cert,
+                    vec![test_meta().target.application_id],
+                    0,
+                ),
+            },
+        )
+        .unwrap();
+
+        let _undecided = apply_local_signed_group_op(&store, &link);
+        assert!(
+            live_for(&store, &gid, account).is_empty(),
+            "precondition: no binding before the namespace's target is known"
+        );
+
+        MetaRepository::new(&store)
+            .save(&gid, &test_meta())
+            .unwrap();
+        apply_local_signed_group_op(&store, &link)
+            .expect("the replay after the target folds applies the link");
+
+        assert_eq!(
+            live_for(&store, &gid, account).len(),
+            1,
+            "the link must bind once its namespace's target is known"
+        );
+    }
+
     /// A scope is about one device of one account, and the link is where that is
     /// checked - so neither another device's statement nor another root's admits it.
     #[test]

@@ -24,6 +24,7 @@ use crate::AdminState;
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     ValidatedJson(req): ValidatedJson<ReparentGroupApiRequest>,
 ) -> impl IntoResponse {
     let child_group_id = match parse_group_id(&group_id_str) {
@@ -34,6 +35,14 @@ pub async fn handler(
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
+    if let Some(refusal) = crate::admin::client_key_scope::refuse_target_outside_binding(
+        &state,
+        client_key.as_deref(),
+        Some(&new_parent_id),
+        None,
+    ) {
+        return refusal;
+    }
 
     // Resolve the namespace this group belongs to. Reparent is only valid on
     // a child that has a parent — i.e. NOT the namespace root — so the walk

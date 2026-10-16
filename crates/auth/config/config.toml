@@ -2,6 +2,8 @@
 
 # Server configuration
 listen_addr = "0.0.0.0:3001"
+# Applications whose client key may be minted with `admin` (exact ids; default none).
+# trusted_admin_applications = ["<application id>"]
 
 # JWT token settings
 [jwt]
@@ -115,6 +117,10 @@ session_permissions = [
 # in a shipped image. Left false; enable it only in a local dev config and set
 # your own `mock_auth_header_value`.
 enable_mock_auth = false
+# Extra app origins the login page may hand tokens to, e.g. a Vercel preview of
+# an app (exact http(s) origins: no path, no wildcard). Each one can receive this
+# node's tokens; leave empty unless you control the origin.
+# trusted_callback_origins = ["https://my-app-git-branch-team.vercel.app"]
 # Require authorization header for mock endpoint
 mock_auth_require_header = true
 # Authorization header value required for the mock endpoint. Empty by default so

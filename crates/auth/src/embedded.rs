@@ -51,6 +51,7 @@ impl EmbeddedAuthApp {
 /// This mirrors the standalone initialisation performed in [`crate::main`], but packages the result
 /// so the router can be mounted inside another Axum application.
 pub async fn build_app(config: AuthConfig) -> Result<EmbeddedAuthApp> {
+    config.development.warn_rejected_trusted_callback_origins();
     let storage = create_storage(&config.storage).await?;
 
     let secret_manager = Arc::new(SecretManager::with_storage_config(
@@ -114,6 +115,7 @@ pub fn default_config() -> AuthConfig {
 
     AuthConfig {
         listen_addr: "127.0.0.1:3001".parse().unwrap(),
+        trusted_admin_applications: Vec::new(),
         jwt: JwtConfig {
             issuer: "calimero-auth".to_string(),
             access_token_expiry: 3600,

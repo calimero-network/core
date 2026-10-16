@@ -35,6 +35,7 @@ impl GetContextsWithExecutorsResponse {
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
+    client_key: Option<Extension<crate::auth::ClientKeyScope>>,
     Path(application_id): Path<ApplicationId>,
 ) -> impl IntoResponse {
     info!(application_id=%application_id, "Getting contexts with executors for application");
@@ -55,7 +56,11 @@ pub async fn handler(
         match state.ctx_client.get_context(&context_id) {
             Ok(Some(context)) => {
                 // Filter contexts by application_id
-                if context.application_id == application_id {
+                if context.application_id == application_id
+                    && client_key.as_ref().is_none_or(|key| {
+                        key.permits_context_in(state.ctx_client.datastore(), &context_id)
+                    })
+                {
                     // Get executors (identities) for this context
                     let stream = state.ctx_client.get_context_members(&context.id, None);
                     let executors: Result<Vec<PublicKey>, _> =
