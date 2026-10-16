@@ -5,7 +5,9 @@ description: >
   Restricted subgroup holding itself and node 2 (the shape of a DM) and writes
   into a context there. Node 3 is then paired into node 1's account while node 1
   stays online. Node 3 speaks for a member of the subgroup, so it must converge
-  on the subgroup, join its context and read the write.
+  on the subgroup, join its context and read the write. Node 3 then opens a
+  Restricted subgroup of its own with node 2, and node 1 and node 2 must both
+  join it and read node 3's write, as the account's other device and the peer.
 
 force_pull_image: false
 
@@ -212,5 +214,106 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{dm_read_node3}}, {"output": "from_node1"})'
+
+  - name: Install the application on node-3, which is about to create a context
+    type: install_application
+    node: paired-restricted-3
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  - name: Node-3 creates a Restricted subgroup of its own
+    type: create_group_in_namespace
+    node: paired-restricted-3
+    namespace_id: '{{namespace_id}}'
+    group_name: dm-from-paired
+    outputs:
+      dm3_group: groupId
+
+  - name: Node-3 marks its subgroup Restricted
+    type: set_subgroup_visibility
+    node: paired-restricted-3
+    group_id: '{{dm3_group}}'
+    visibility: restricted
+
+  - name: Node-3 adds node-2 to its subgroup
+    type: add_group_members
+    node: paired-restricted-3
+    group_id: '{{dm3_group}}'
+    members:
+      - identity: '{{account_node2}}'
+        role: Member
+
+  - name: Node-3 creates a context in its subgroup
+    type: create_context
+    node: paired-restricted-3
+    application_id: '{{app}}'
+    group_id: '{{dm3_group}}'
+    outputs:
+      dm3_ctx: contextId
+
+  - name: Node-3 writes into its subgroup's context
+    type: call
+    node: paired-restricted-3
+    context_id: '{{dm3_ctx}}'
+    method: set
+    args:
+      key: dm3_key
+      value: from_node3
+
+  - name: Node-1 and node-2 converge on node-3's subgroup
+    type: wait_for_sync
+    group_id: '{{dm3_group}}'
+    nodes:
+      - paired-restricted-1
+      - paired-restricted-2
+      - paired-restricted-3
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node-1 joins node-3's context
+    type: join_context
+    node: paired-restricted-1
+    context_id: '{{dm3_ctx}}'
+
+  - name: Node-2 joins node-3's context
+    type: join_context
+    node: paired-restricted-2
+    context_id: '{{dm3_ctx}}'
+
+  - name: Settle node-3's context across all three members
+    type: wait_for_sync
+    context_id: '{{dm3_ctx}}'
+    nodes:
+      - paired-restricted-1
+      - paired-restricted-2
+      - paired-restricted-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads node-3's write
+    type: call
+    node: paired-restricted-1
+    context_id: '{{dm3_ctx}}'
+    method: get
+    args:
+      key: dm3_key
+    outputs:
+      dm3_read_node1: result
+
+  - name: Node-2 reads node-3's write
+    type: call
+    node: paired-restricted-2
+    context_id: '{{dm3_ctx}}'
+    method: get
+    args:
+      key: dm3_key
+    outputs:
+      dm3_read_node2: result
+
+  - name: Node-1 and node-2 see node-3's write
+    type: json_assert
+    statements:
+      - 'json_equal({{dm3_read_node1}}, {"output": "from_node3"})'
+      - 'json_equal({{dm3_read_node2}}, {"output": "from_node3"})'
 
 stop_all_nodes: true
