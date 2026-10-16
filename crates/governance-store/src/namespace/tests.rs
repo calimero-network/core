@@ -10871,44 +10871,6 @@ fn assert_concurrent_ops_land_the_same(
     );
 }
 
-/// A role change is judged by its target's role at its cut, not after a concurrent
-/// removal of the target.
-#[test]
-#[ignore = "MemberRoleSet reads its target's direct row live; no direct role is read at a cut"]
-fn a_role_change_concurrent_with_its_targets_removal_lands_the_same_in_either_order() {
-    let f = TeeAdmissionFixture::new(0xE4);
-    let member =
-        crate::test_fixtures::account_for(&PrivateKey::random(&mut UnwrapErr(SysRng)).public_key());
-    let add = f.group_op_signed_at(
-        &f.verifier_sk,
-        &f.heads(),
-        f.next_nonce(),
-        &GroupOp::MemberAdded {
-            member,
-            role: GroupMemberRole::Member,
-        },
-    );
-    f.apply(&add);
-    let (heads, nonce) = (f.heads(), f.next_nonce());
-    let demote = f.group_op_signed_at(
-        &f.verifier_sk,
-        &heads,
-        nonce,
-        &GroupOp::MemberRoleSet {
-            member,
-            role: GroupMemberRole::ReadOnly,
-        },
-    );
-    let remove = f.group_op_signed_at(
-        &f.verifier_sk,
-        &heads,
-        nonce + 1,
-        &crate::test_fixtures::dummy_member_removed_op(member),
-    );
-
-    assert_concurrent_ops_land_the_same(&f, &demote, &remove);
-}
-
 /// A context capability grant is judged by where the context was registered at its
 /// cut, not after a concurrent detach.
 #[test]

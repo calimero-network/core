@@ -2830,6 +2830,25 @@ impl ScopeProjections {
         effective_role_in(&view, group, member, root, default_cap_base)
     }
 
+    /// `member`'s direct role in `group` at the cut, inheritance aside: `Some(None)` is no
+    /// direct row, `None` a cut not fully folded.
+    #[must_use]
+    pub fn direct_role_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        Some(
+            match view.member_path_at_cut(group, member, root, default_cap_base) {
+                calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+                _ => None,
+            },
+        )
+    }
+
     /// The group `context`'s cells were rotated in, if `group`, at the cut; `None` when the
     /// cut is unreadable. Counts a step from a cell's genesis set by a standing admin of it.
     #[must_use]

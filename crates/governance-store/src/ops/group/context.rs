@@ -17,13 +17,14 @@
 
 use crate::{
     ContextRegistrationService, DivergenceReport, GroupSettingsService, MembershipPolicy,
-    PermissionChecker,
+    MembershipRepository, PermissionChecker,
 };
 use calimero_account::AccountId;
 use calimero_app_downloader::registry::{RegistryCoords, PENDING_BLOB_SHARE_SOURCE};
 use calimero_context_config::types::ContextGroupId;
 use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
@@ -244,6 +245,18 @@ impl<'a> GroupApplyCtx<'a> {
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         self.authorizer
             .membership_path_at_cut(self.group_id, member, self.parents)
+    }
+
+    /// `member`'s direct role in this group at the op's cut, or live where that is sound.
+    pub(crate) fn direct_role(&self, member: &AccountId) -> EyreResult<Option<GroupMemberRole>> {
+        if let Some(role) = self
+            .authorizer
+            .direct_role_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(role);
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        MembershipRepository::new(self.store).role_of(self.group_id, member)
     }
 
     /// Guard a fall-back to the live resolver, mirroring

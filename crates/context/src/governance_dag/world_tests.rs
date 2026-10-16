@@ -1000,3 +1000,125 @@ mod held_ops {
         );
     }
 }
+
+/// Concurrent ops judged at their own cuts: each node applies them in its own order and
+/// still holds the same verdicts and rows.
+mod concurrent {
+    use calimero_account::AccountId;
+    use calimero_governance_store::test_fixtures::{
+        account_for, dummy_member_removed_op, fork_store,
+    };
+    use calimero_governance_store::{parked_op, Parked};
+
+    use super::*;
+
+    /// `first` and `second` applied in each order on its own copy of `store`.
+    async fn in_both_orders(
+        store: &Store,
+        first: &SignedNamespaceOp,
+        second: &SignedNamespaceOp,
+    ) -> [Store; 2] {
+        let nodes = [fork_store(store), fork_store(store)];
+        for (node, order) in nodes.iter().zip([[first, second], [second, first]]) {
+            for op in order {
+                let _applied = apply(node, op).await;
+            }
+        }
+        nodes
+    }
+
+    /// The verdict `node` holds on each of `ops`: `None` applied, `Some` refused or held.
+    fn verdicts(node: &Store, world: &World, ops: &[&SignedNamespaceOp]) -> Vec<Option<Parked>> {
+        ops.iter()
+            .map(|op| {
+                let id = op.content_hash().expect("hash the op");
+                parked_op(node, world.namespace.to_bytes().into(), id).expect("read the verdict")
+            })
+            .collect()
+    }
+
+    /// `op` sealed under the namespace key and signed by `signer` at `parents`.
+    fn signed_at(
+        store: &Store,
+        world: &World,
+        signer: &PrivateKey,
+        parents: &[[u8; 32]],
+        nonce: u64,
+        op: &GroupOp,
+    ) -> SignedNamespaceOp {
+        SignedNamespaceOp::sign(
+            signer,
+            world.namespace.to_bytes().into(),
+            parents.to_vec(),
+            nonce,
+            sealed_group_op(store, &world.namespace, op),
+        )
+        .expect("sign a namespace op")
+    }
+
+    /// A member the owner added through the log.
+    async fn logged_member(store: &Store, world: &World, seed: u8) -> AccountId {
+        let member = account_for(&PrivateKey::from([seed; 32]).public_key());
+        publish(
+            store,
+            &world.namespace,
+            &world.owner_sk,
+            &GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .await
+        .expect("the owner adds a member");
+        member
+    }
+
+    #[actix::test]
+    async fn a_role_change_concurrent_with_its_targets_removal_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let member = logged_member(&store, world, 0xE4).await;
+        let head = NamespaceGovernance::new(&store, world.namespace.to_bytes().into())
+            .read_head_record()
+            .expect("read the DAG head");
+        let demote = signed_at(
+            &store,
+            world,
+            &admin.sign_sk,
+            &head.parent_hashes,
+            head.next_nonce,
+            &GroupOp::MemberRoleSet {
+                member,
+                role: GroupMemberRole::ReadOnly,
+            },
+        );
+        let remove = signed_at(
+            &store,
+            world,
+            &admin.sign_sk,
+            &head.parent_hashes,
+            head.next_nonce + 1,
+            &dummy_member_removed_op(member),
+        );
+
+        let [a, b] = in_both_orders(&store, &demote, &remove).await;
+
+        let ops = [&demote, &remove];
+        for node in [&a, &b] {
+            assert_eq!(
+                verdicts(node, world, &ops),
+                vec![None, None],
+                "the role change was judged after the removal its cut does not hold"
+            );
+        }
+        for node in [&a, &b] {
+            assert_eq!(
+                MembershipRepository::new(node)
+                    .role_of(&world.namespace, &member)
+                    .expect("read the role"),
+                None,
+                "the removed member kept a row"
+            );
+        }
+    }
+}

@@ -434,6 +434,21 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
             .effective_role_at_cut(self.store, *group, member, parents)
     }
 
+    fn direct_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .direct_role_at_cut(self.store, *group, member, parents)
+    }
+
     fn context_rotation_group_at_cut(
         &self,
         group: &ContextGroupId,

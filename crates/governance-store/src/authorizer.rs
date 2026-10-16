@@ -142,6 +142,17 @@ pub trait AtCutAuthorizer: Send + Sync {
         parents: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>>;
 
+    /// `member`'s direct role in `group` at the cut, inheritance aside: `Some(None)` is no
+    /// direct row, `None` defers. Default `None`: an authorizer with no projection has no cut.
+    fn direct_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
     /// The group `context`'s cells were rotated in if it is `group`, at the cut. `Some(None)` =
     /// not there; `None` = defer to live. Judged in `group` only: a registration elsewhere rests on live.
     fn context_rotation_group_at_cut(
