@@ -10200,29 +10200,46 @@ struct TeeAdmissionFixture {
 
 impl TeeAdmissionFixture {
     fn new(ns_byte: u8) -> Self {
-        use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+        let fixture = Self::without_policy(ns_byte);
+        let _policy = fixture.set_policy();
+        fixture
+    }
 
-        use super::NamespaceGovernance;
-
+    /// The namespace, its key and the replica, with no admission policy applied yet.
+    fn without_policy(ns_byte: u8) -> Self {
         let store = test_store();
         let namespace_id = [ns_byte; 32];
         let ns_gid = ContextGroupId::from(namespace_id);
         let (verifier_sk, _) = bootstrap_namespace_with_admin(&store, namespace_id);
-        let group_key = [0x9Au8; 32];
-        let key_id = GroupKeyring::new(&store, ns_gid)
-            .store_key(&group_key)
+        let _key_id = GroupKeyring::new(&store, ns_gid)
+            .store_key(&[0x9Au8; 32])
             .expect("store the group key");
         let replica =
             PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
         let account = crate::test_fixtures::real_join_account(&replica);
+        Self {
+            store,
+            namespace_id,
+            ns_gid,
+            verifier_sk,
+            replica,
+            account,
+        }
+    }
 
-        let gov = NamespaceGovernance::new(&store, namespace_id.into());
+    /// Apply the admission policy that accepts mock measurements; the signed op.
+    fn set_policy(&self) -> SignedNamespaceOp {
+        let (key_id, group_key) = GroupKeyring::new(&self.store, self.ns_gid)
+            .load_current_key()
+            .expect("read the group key")
+            .expect("the fixture keys the namespace");
+        let gov = NamespaceGovernance::new(&self.store, self.namespace_id.into());
         let policy_op = GroupKeyring::encrypt_op(
             &group_key,
             &crate::test_fixtures::guarded_group_op(
-                &store,
-                &ns_gid,
-                &verifier_sk.public_key(),
+                &self.store,
+                &self.ns_gid,
+                &self.verifier_sk.public_key(),
                 GroupOp::TeeAdmissionPolicySet {
                     allowed_mrtd: vec!["m1".to_owned()],
                     allowed_rtmr0: vec![],
@@ -10237,28 +10254,22 @@ impl TeeAdmissionFixture {
         .expect("encrypt the policy op");
         let head = gov.read_head_record().expect("read head");
         let policy_ns_op = SignedNamespaceOp::sign(
-            &verifier_sk,
-            namespace_id.into(),
+            &self.verifier_sk,
+            self.namespace_id.into(),
             head.parent_hashes.clone(),
             head.next_nonce,
             NamespaceOp::Group {
-                group_id: namespace_id.into(),
+                group_id: self.namespace_id.into(),
                 key_id: key_id.into(),
                 encrypted: policy_op,
                 key_rotation: None,
             },
         )
         .expect("verifier signs the policy op");
-        gov.apply_signed_op(&policy_ns_op)
+        let _applied = gov
+            .apply_signed_op(&policy_ns_op)
             .expect("the policy op applies");
-        Self {
-            store,
-            namespace_id,
-            ns_gid,
-            verifier_sk,
-            replica,
-            account,
-        }
+        policy_ns_op
     }
 
     /// The honest joiner's quote for this replica's own credential.
@@ -10278,13 +10289,25 @@ impl TeeAdmissionFixture {
         quote: Vec<u8>,
         quote_hash: [u8; 32],
     ) -> eyre::Result<()> {
-        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+        let admit = self.admission_signed_by(signer, quote, quote_hash);
+        NamespaceGovernance::new(&self.store, self.namespace_id.into())
+            .apply_signed_op(&admit)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .map(|_| ())
+    }
 
-        use super::NamespaceGovernance;
+    /// The sealed admission of the replica, signed at the current heads.
+    fn admission_signed_by(
+        &self,
+        signer: &PrivateKey,
+        quote: Vec<u8>,
+        quote_hash: [u8; 32],
+    ) -> SignedNamespaceOp {
+        use calimero_context_client::local_governance::RootOp;
 
         let gov = NamespaceGovernance::new(&self.store, self.namespace_id.into());
         let head = gov.read_head_record().expect("read head");
-        let admit = SignedNamespaceOp::sign(
+        SignedNamespaceOp::sign(
             signer,
             self.namespace_id.into(),
             head.parent_hashes.clone(),
@@ -10308,10 +10331,7 @@ impl TeeAdmissionFixture {
                 },
             ),
         )
-        .expect("verifier signs the admission");
-        gov.apply_signed_op(&admit)
-            .and_then(crate::ApplyNamespaceOpResult::verdict)
-            .map(|_| ())
+        .expect("verifier signs the admission")
     }
 
     fn is_member(&self) -> bool {
@@ -10319,6 +10339,96 @@ impl TeeAdmissionFixture {
             .is_member(&self.ns_gid, &self.account.statement.account)
             .expect("membership")
     }
+}
+
+/// A copy of the fixture's node as another node that holds no namespace key yet, and
+/// the key it will receive.
+fn keyless_replica(f: &TeeAdmissionFixture) -> (Store, [u8; 32]) {
+    let replica = crate::test_fixtures::fork_store(&f.store);
+    let keyring = GroupKeyring::new(&replica, f.ns_gid);
+    let (key_id, key) = keyring
+        .load_current_key()
+        .expect("read the key")
+        .expect("the fixture keys the namespace");
+    keyring
+        .delete_key_by_id(&key_id)
+        .expect("the replica holds no key yet");
+    // Another node's identity: a node never re-drives the ops it signed.
+    let local: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
+    NamespaceRepository::new(&replica)
+        .replace_identity(&f.ns_gid, &PrivateKey::from(local).public_key(), &local)
+        .expect("the replica's own identity");
+    (replica, key)
+}
+
+/// Hand `ops` to `replica` unread, then deliver `key` and replay at each op's cut.
+fn replay_after_late_key(
+    f: &TeeAdmissionFixture,
+    replica: &Store,
+    key: &[u8; 32],
+    ops: &[&SignedNamespaceOp],
+) {
+    for op in ops {
+        let _kept = NamespaceGovernance::new(replica, f.namespace_id.into())
+            .apply_signed_op(op)
+            .expect("the replica keeps an op it cannot read");
+    }
+    let _key_id = GroupKeyring::new(replica, f.ns_gid)
+        .store_key(key)
+        .expect("the key arrives");
+    let _divergence = retry_encrypted_ops_for_group_with(
+        replica,
+        f.namespace_id.into(),
+        f.namespace_id,
+        &crate::test_fixtures::LiveCutJudge,
+    )
+    .expect("the key arrival replays the namespace");
+}
+
+/// A replica that took the namespace key late replays the admission before the
+/// policy it cites folds. That refusal is no verdict at the admission's cut, so the
+/// admission applies once the policy does, in the same key arrival.
+#[test]
+fn a_tee_admission_replayed_before_its_policy_folds_applies_once_the_policy_does() {
+    let f = TeeAdmissionFixture::without_policy(0xD9);
+    let (replica, key) = keyless_replica(&f);
+    let policy = f.set_policy();
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+
+    replay_after_late_key(&f, &replica, &key, &[&policy, &admission]);
+
+    assert!(
+        MembershipRepository::new(&replica)
+            .is_member(&f.ns_gid, &f.account.statement.account)
+            .expect("membership"),
+        "the admission stayed refused after its policy folded"
+    );
+}
+
+/// A refusal the first pass defers is still recorded in the same key arrival, even
+/// when no group op replays between the passes.
+#[test]
+fn a_tee_admission_without_a_policy_is_refused_by_the_key_arrival() {
+    let f = TeeAdmissionFixture::without_policy(0xDA);
+    let (replica, key) = keyless_replica(&f);
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+
+    replay_after_late_key(&f, &replica, &key, &[&admission]);
+
+    assert_eq!(
+        crate::void_ledger::parked_op(
+            &replica,
+            f.namespace_id.into(),
+            admission.content_hash().expect("content hash"),
+        )
+        .expect("read the parked mark"),
+        Some(crate::void_ledger::Parked::Refused),
+        "the deferred refusal was never recorded"
+    );
 }
 
 /// The honest admission still applies: a quote that commits to the credential

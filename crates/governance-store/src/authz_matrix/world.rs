@@ -1,7 +1,7 @@
 //! The shared world: one namespace with a Restricted subgroup and an Open
 //! subgroup under it, and one actor per state, all reached through signed ops.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
@@ -14,15 +14,13 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::Store;
-use strum::IntoEnumIterator;
 
 use super::ActorState;
 use crate::test_fixtures::{
-    apply_member_joined, device_for, device_kem_secret, dummy_member_removed_op, group_created,
-    namespace_genesis_v2_for, real_join_account, root_for, seal_for_test, signed_invitation_for,
-    test_store, FOUNDER_DEVICE_SEED, GENESIS_SALT,
+    apply_member_joined, device_for, device_kem_secret, dummy_member_removed_op, fork_store,
+    group_created, namespace_genesis_v2_for, real_join_account, root_for, seal_for_test,
+    signed_invitation_for, test_store, FOUNDER_DEVICE_SEED, GENESIS_SALT,
 };
 use crate::{
     apply_signed_namespace_op, sign_apply_local_group_op_borsh, AccountBindingRepository,
@@ -322,18 +320,7 @@ impl World {
 
     /// A private copy of the store, for rows that write.
     pub fn fork(&self) -> Store {
-        let copy = Store::new(Arc::new(InMemoryDB::owned()));
-        let top = vec![0xFF; 4096];
-        for column in Column::iter() {
-            let rows = self
-                .store
-                .raw_scan(column, &[], &top, None)
-                .expect("scan a column");
-            for (key, value) in rows {
-                copy.raw_put(column, &key, &value).expect("copy a row");
-            }
-        }
-        copy
+        fork_store(&self.store)
     }
 
     fn build() -> World {

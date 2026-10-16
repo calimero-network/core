@@ -229,6 +229,7 @@ const MAX_RETRY_REENTRY: u8 = 1;
 struct SealedRootRetry {
     applied: usize,
     divergence: Option<super::super::DivergenceReport>,
+    deferred: usize, // refusals a provisional pass left for the next one to judge
 }
 
 /// What [`NamespaceGovernance::root_op_side_effects`] observed while running an
@@ -2174,7 +2175,10 @@ impl<'a> NamespaceGovernance<'a> {
     /// `GroupCreated` triggers, where a buffered group op does get hash-checked
     /// — and this is the only pass that will ever check it, since a later fresh
     /// arrival of the same op is nonce-deduped and skips the comparison.
-    fn retry_sealed_root_ops(&self, depth: u8) -> EyreResult<SealedRootRetry> {
+    ///
+    /// A `provisional` pass records no refusal: it runs before the group ops it may
+    /// cite are replayed, so a refusal there can rest on rows not yet written.
+    fn retry_sealed_root_ops(&self, depth: u8, provisional: bool) -> EyreResult<SealedRootRetry> {
         // What was folded before the key arrived shows these ops unreadable.
         self.authorizer.forget();
         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
@@ -2203,6 +2207,7 @@ impl<'a> NamespaceGovernance<'a> {
             .map_err(|e| eyre::eyre!("order sealed root ops causally: {e}"))?;
 
         let mut applied = 0usize;
+        let mut deferred = 0usize;
         let mut divergence: Option<super::super::DivergenceReport> = None;
         for entry in entries {
             if own_identity == Some(entry.signed_op.signer) {
@@ -2330,7 +2335,7 @@ impl<'a> NamespaceGovernance<'a> {
                 continue;
             }
             let outcome = if let Some(state) = parked {
-                self.replay_parked_root_op(&entry.signed_op, &gate_op, &root, state)
+                self.replay_parked_root_op(&entry.signed_op, &gate_op, &root, state, !provisional)
             } else {
                 self.apply_root_op(&gate_op, &root)
             };
@@ -2372,6 +2377,9 @@ impl<'a> NamespaceGovernance<'a> {
                     }
                 }
                 Err(e) => {
+                    if provisional && parked.is_some() {
+                        deferred += 1;
+                    }
                     tracing::warn!(
                         namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                         error = %format!("{e:#}"),
@@ -2383,6 +2391,7 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(SealedRootRetry {
             applied,
             divergence,
+            deferred,
         })
     }
 
@@ -2452,11 +2461,13 @@ impl<'a> NamespaceGovernance<'a> {
         // runs the other way, which is why this pass repeats at the end of the
         // group phase below -- see the comment there.
         let mut retry_divergence: Option<super::super::DivergenceReport> = None;
-        match self.retry_sealed_root_ops(depth) {
+        let mut root_deferred = 0usize;
+        match self.retry_sealed_root_ops(depth, true) {
             Ok(pass) => {
                 if pass.divergence.is_some() {
                     retry_divergence = pass.divergence;
                 }
+                root_deferred = pass.deferred;
             }
             Err(e) => tracing::warn!(
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
@@ -2637,8 +2648,9 @@ impl<'a> NamespaceGovernance<'a> {
         // and leans on the apply handlers being replay-safe -- so running it
         // unconditionally would double that walk on every key arrival for no
         // possible gain: nothing changed between the two passes.
-        if group_applied > 0 {
-            match self.retry_sealed_root_ops(depth) {
+        // Also when the first pass deferred a refusal, which only this pass records.
+        if group_applied > 0 || root_deferred > 0 {
+            match self.retry_sealed_root_ops(depth, false) {
                 Ok(pass) => {
                     if pass.divergence.is_some() {
                         retry_divergence = pass.divergence;
@@ -3080,15 +3092,16 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
-    /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
-    /// An undecidable cut, or no at-cut judge, falls back to this pass's gates and
-    /// records only an apply; an op already refused is not given that fallback.
+    /// Apply a parked root op at its own cut, as on arrival, and record the verdict,
+    /// a refusal only when `refusal_is_final`. An undecidable cut, or no at-cut judge,
+    /// falls back to this pass's gates and records only an apply.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
         gate_op: &SignedNamespaceOp,
         root: &RootOp,
         state: Parked,
+        refusal_is_final: bool,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         if state == Parked::Refused {
             eyre::bail!("a root op refused at its cut stays refused");
@@ -3098,7 +3111,9 @@ impl<'a> NamespaceGovernance<'a> {
                 .with_apply_auth(&parked.parent_op_hashes, judge)
                 .apply_root_op(gate_op, root);
             if !at_cut.as_ref().is_err_and(is_undecidable) {
-                self.settle_parked(parked, at_cut.is_ok());
+                if at_cut.is_ok() || refusal_is_final {
+                    self.settle_parked(parked, at_cut.is_ok());
+                }
                 return at_cut;
             }
         }
@@ -3885,7 +3900,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // the next trigger or the pull -- bounded, and not the path a
                 // real arrival takes.
                 if depth == 0 {
-                    match self.retry_sealed_root_ops(depth) {
+                    match self.retry_sealed_root_ops(depth, false) {
                         Ok(pass) => {
                             if pass.divergence.is_some() {
                                 effects.divergence = pass.divergence;
@@ -4579,7 +4594,7 @@ pub fn redrive_sealed_root_ops_with(
 ) -> EyreResult<usize> {
     NamespaceGovernance::new(store, namespace_id)
         .with_apply_auth(&[], authorizer)
-        .retry_sealed_root_ops(0)
+        .retry_sealed_root_ops(0, false)
         .map(|pass| pass.applied)
 }
 

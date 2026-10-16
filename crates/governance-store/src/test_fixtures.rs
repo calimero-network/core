@@ -14,11 +14,12 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::db::InMemoryDB;
+use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::key::{GroupMetaValue, GroupParentRef, GroupTarget};
 use calimero_store::Store;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
+use strum::IntoEnumIterator;
 
 pub const FOUNDER_DEVICE_SEED: [u8; 32] = [0x3E; 32]; // the device a founder credential certifies
 pub const STAMPED_AT: u64 = 1_700_000_000; // when a test relay stamps a delegated op
@@ -214,6 +215,21 @@ pub fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
         migration: None,
         auto_join: true,
     }
+}
+
+/// A private copy of `store`, row for row.
+pub fn fork_store(store: &Store) -> Store {
+    let copy = Store::new(Arc::new(InMemoryDB::owned()));
+    let top = vec![0xFF; 4096];
+    for column in Column::iter() {
+        let rows = store
+            .raw_scan(column, &[], &top, None)
+            .expect("scan a column");
+        for (key, value) in rows {
+            copy.raw_put(column, &key, &value).expect("copy a row");
+        }
+    }
+    copy
 }
 
 /// Bootstrap a namespace root with a freshly-generated admin: writes the
@@ -952,6 +968,90 @@ impl crate::authorizer::AtCutAuthorizer for SealedSubgroupAuthorizer {
 
     fn can_resolve_cut(&self, group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
         *group != self.0
+    }
+}
+
+/// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) that judges a parked
+/// op at its cut, every gate deferring to the rows this node holds.
+pub struct LiveCutJudge;
+
+impl crate::authorizer::AtCutAuthorizer for LiveCutJudge {
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
+    fn at_cut(&self) -> Option<&dyn crate::authorizer::AtCutAuthorizer> {
+        Some(self)
     }
 }
 
