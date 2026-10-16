@@ -72,7 +72,6 @@
 //! evicted TEE node held locally — including the now-useless old key
 //! material the rotation already orphaned.
 
-use std::collections::HashSet;
 use std::sync::Mutex;
 
 use calimero_account::AccountId;
@@ -529,70 +528,18 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
 /// future/live admissions; this one-shot startup sweep closes it for nodes
 /// already stranded before the fix shipped.
 ///
-/// # What it does
-///
 /// For every namespace this node holds an identity for
-/// ([`known_namespace_identities`]), and for every group under it that has at
-/// least one buffered op whose key the node ALREADY holds
-/// ([`namespace_groups_with_held_key_buffered_ops`] — the inverse of
-/// `groups_awaiting_key`), it calls
-/// [`redrive_buffered_ops_for_group`](calimero_governance_store::redrive_buffered_ops_for_group),
-/// which replays the buffered ops and emits the
-/// `namespace_retry_events{status="redriven"}` metric per re-drive.
-///
-/// The held-key filter is ALSO the deleted-group exit: a purged group has no
-/// key in either keyring, so it is never enumerated. A held-key group with
-/// nothing buffered is likewise never enumerated (the enumerator is driven off
-/// buffered ops). Both are no-ops by construction.
-///
-/// # Cross-signer convergence loop
-///
-/// A single re-drive pass per group applies all ops it can in publish order
-/// per signer, but a later op may only become applicable after an earlier op
-/// from a DIFFERENT signer applied (the apply path tracks the nonce window
-/// per-(group, signer); one pass already orders within a signer, but
-/// cross-signer dependencies need another pass). So we loop the WHOLE sweep
-/// until a full pass applies NOTHING new — measured by the per-group
-/// applied-op count `redrive_buffered_ops_for_group` returns (idempotent
-/// nonce-replays count as zero). Bounded: each pass that makes progress
-/// strictly drains at least one not-yet-applied op, and there are finitely
-/// many, so the loop terminates. A defensive pass cap guards against any
-/// pathological non-convergence.
-///
-/// Note the held-key enumerator stays non-empty even after a group's ops are
-/// applied (the namespace op-log is append-only, so the logged op persists),
-/// so enumeration shrinking is NOT the termination signal — the applied-count
-/// is. Re-driving an already-drained group is a cheap idempotent no-op.
-///
-/// # Pass narrowing (W5)
-///
-/// The first pass enumerates every namespace and every held-key group with
-/// buffered ops. Re-enumerating that full set on EVERY subsequent pass is
-/// wasteful: the append-only op-log keeps returning groups that already
-/// drained, so a naive loop is O(namespaces × groups × ops) × MAX_PASSES even
-/// when only one group ever unblocks another. Instead, each pass records the
-/// `(namespace, group)` pairs that applied ≥1 op, and the NEXT pass visits
-/// only those. This is sound because the cross-signer dependency that needs
-/// extra passes is WITHIN a single group: the nonce window is tracked
-/// per-`(group, signer)`, so applying an op advances only that group's window
-/// and can only unblock a later op IN THE SAME GROUP. A group that applied
-/// nothing this pass therefore cannot become applicable next pass purely
-/// because some OTHER group drained, so dropping it is safe. The convergence
-/// condition is unchanged (an empty progressed set marks the fixpoint), so
-/// termination and the `MAX_PASSES` cap are preserved; we only shrink the work
-/// each pass scans.
-///
-/// # Best-effort
+/// ([`known_namespace_identities`]) it runs the replay a key arrival runs
+/// ([`redrive_namespace_with`](calimero_governance_store::redrive_namespace_with)):
+/// every op whose key is held, root and group, in one causal order, until a
+/// round neither finds a new op nor lands one. A purged group holds no key, so
+/// its ops are never collected.
 ///
 /// Structurally SEPARATE from the purge reconcile (it does NOT touch the
-/// `PendingSelfPurge` CF). Per-namespace and per-group errors are logged and
-/// swallowed — a re-drive failure must never block node startup, and the next
-/// restart re-runs the sweep.
+/// `PendingSelfPurge` CF). Per-namespace errors are logged and swallowed — a
+/// re-drive failure must never block node startup, and the next restart re-runs
+/// the sweep.
 fn redrive_stranded_ops_sweep(store: &Store) {
-    // Defensive upper bound on convergence passes. Real convergence needs at
-    // most one pass per cross-signer dependency depth; this cap only fires on
-    // a logic bug and turns a hang into a bounded, logged early-exit.
-    const MAX_PASSES: usize = 64;
     let namespaces = match calimero_governance_store::known_namespace_identities(store) {
         Ok(v) => v,
         Err(e) => {
@@ -606,146 +553,35 @@ fn redrive_stranded_ops_sweep(store: &Store) {
     };
 
     let scanned_namespaces = namespaces.len();
-    let mut total_redriven = redrive_sealed_root_ops(store, &namespaces);
-
-    // Convergence loop: re-run the sweep until a pass applies nothing new. Each
-    // pass drains the buffered set, so this is monotone and bounded.
-    //
-    // Pass narrowing (W5): the first pass enumerates the full held-key set from
-    // the store; every later pass visits ONLY the `(namespace, group)` pairs
-    // that progressed in the previous pass (a group that applied nothing cannot
-    // newly unblock a cross-signer dependency, so revisiting it is pure waste).
-    let mut pass = 0usize;
-    // `None` => first pass, enumerate everything from the store. `Some(set)` =>
-    // visit only these pairs (those that progressed last pass).
-    let mut work: Option<HashSet<([u8; 32], [u8; 32])>> = None;
-    loop {
-        pass += 1;
-        // Pairs that applied ≥1 op this pass; becomes next pass's work set.
-        let mut progressed: HashSet<([u8; 32], [u8; 32])> = HashSet::new();
-
-        // Materialize this pass's (namespace, group) work list.
-        let pass_pairs: Vec<([u8; 32], [u8; 32])> = match &work {
-            Some(narrowed) => narrowed.iter().copied().collect(),
-            None => {
-                let mut pairs = Vec::new();
-                for ns_id in &namespaces {
-                    match calimero_governance_store::namespace_groups_with_held_key_buffered_ops(
-                        store,
-                        (*ns_id).into(),
-                    ) {
-                        Ok(groups) => {
-                            for group_id in groups {
-                                pairs.push((*ns_id, group_id));
-                            }
-                        }
-                        Err(e) => {
-                            warn!(
-                                namespace = %hex::encode(ns_id),
-                                error = ?e,
-                                "curative re-drive sweep (#2848): failed to enumerate held-key \
-                                 groups with buffered ops — skipping this namespace for this pass"
-                            );
-                        }
-                    }
-                }
-                pairs
-            }
-        };
-
-        for (ns_id, group_id) in pass_pairs {
-            let ns_hex = hex::encode(ns_id);
-            let group_hex = hex::encode(group_id);
-            match calimero_governance_store::redrive_buffered_ops_for_group_with(
-                store,
-                ns_id.into(),
-                group_id,
-                &crate::VoidJudge::new(store),
-            ) {
-                Ok(0) => {
-                    // Nothing applied this pass for this group (already
-                    // drained, or its remaining ops still await a
-                    // cross-signer dependency a later pass may unblock).
-                }
-                Ok(applied) => {
-                    let _ = progressed.insert((ns_id, group_id));
-                    total_redriven += applied;
-                    debug!(
-                        namespace = %ns_hex,
-                        group_id = %group_hex,
-                        applied,
-                        "curative re-drive sweep (#2848): re-drove stranded buffered ops"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        namespace = %ns_hex,
-                        group_id = %group_hex,
-                        error = ?e,
-                        "curative re-drive sweep (#2848): re-drive failed for one group \
-                         — continuing (best-effort; next restart retries)"
-                    );
-                }
-            }
+    let mut total_redriven = 0usize;
+    for ns_id in &namespaces {
+        match calimero_governance_store::redrive_namespace_with(
+            store,
+            (*ns_id).into(),
+            &crate::VoidJudge::new(store),
+        ) {
+            Ok(applied) => total_redriven += applied,
+            Err(e) => warn!(
+                namespace = %hex::encode(ns_id),
+                error = ?e,
+                "curative re-drive sweep (#2848): replay failed for one namespace \
+                 — continuing (best-effort; next restart retries)"
+            ),
         }
-
-        if progressed.is_empty() {
-            break;
-        }
-        // Narrow the next pass to only the groups that just progressed.
-        work = Some(progressed);
-        if pass >= MAX_PASSES {
-            warn!(
-                scanned_namespaces,
-                passes = pass,
-                total_redriven,
-                "curative re-drive sweep (#2848): hit the convergence pass cap with a pass \
-                 still making progress — stopping (next restart re-runs the sweep)"
-            );
-            break;
-        }
-    }
-
-    // A folded group op can be what a sealed root op's apply waits on.
-    if total_redriven > 0 {
-        total_redriven += redrive_sealed_root_ops(store, &namespaces);
     }
 
     if total_redriven > 0 {
         info!(
             scanned_namespaces,
-            passes = pass,
             total_redriven,
             "curative re-drive sweep (#2848) complete — recovered stranded buffered ops"
         );
     } else {
         debug!(
             scanned_namespaces,
-            passes = pass,
             "curative re-drive sweep (#2848) complete — nothing to re-drive"
         );
     }
-}
-
-/// Replay each namespace's sealed root ops whose keys are held, so a parked one is
-/// judged even when no key arrives after a restart. Returns how many applied.
-fn redrive_sealed_root_ops(store: &Store, namespaces: &[[u8; 32]]) -> usize {
-    let mut applied = 0;
-    for ns_id in namespaces {
-        match calimero_governance_store::redrive_sealed_root_ops_with(
-            store,
-            (*ns_id).into(),
-            &crate::VoidJudge::new(store),
-        ) {
-            Ok(count) => applied += count,
-            Err(e) => warn!(
-                namespace = %hex::encode(ns_id),
-                error = ?e,
-                "startup sweep: sealed root op replay failed for one namespace"
-            ),
-        }
-    }
-    applied
 }
 
 /// What the reconcile should do for one marked namespace. Split out from

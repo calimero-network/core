@@ -972,10 +972,34 @@ impl crate::authorizer::AtCutAuthorizer for SealedSubgroupAuthorizer {
 }
 
 /// An [`AtCutAuthorizer`](crate::authorizer::AtCutAuthorizer) that judges a parked
-/// op at its cut, every gate deferring to the rows this node holds.
-pub struct LiveCutJudge;
+/// op at its cut, every gate deferring to the rows this node holds. Like the
+/// projection, it cannot resolve a cut that holds an op still parked unjudged.
+pub struct LiveCutJudge<'a> {
+    pub store: &'a Store,
+    pub namespace: calimero_governance_types::NamespaceId,
+}
 
-impl crate::authorizer::AtCutAuthorizer for LiveCutJudge {
+impl crate::authorizer::AtCutAuthorizer for LiveCutJudge<'_> {
+    fn can_resolve_cut(&self, _group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        let log = crate::NamespaceOpLogService::new(self.store, self.namespace);
+        let mut seen = std::collections::HashSet::new();
+        let mut queue: Vec<[u8; 32]> = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let parked = crate::void_ledger::parked_op(self.store, self.namespace, id)
+                .expect("read the parked mark");
+            if parked == Some(crate::void_ledger::Parked::Undecided) {
+                return false;
+            }
+            if let Some(op) = log.get_signed_op(id).expect("read the op log") {
+                queue.extend(op.parent_op_hashes);
+            }
+        }
+        true
+    }
+
     fn is_admin_at_cut(
         &self,
         _group: &ContextGroupId,

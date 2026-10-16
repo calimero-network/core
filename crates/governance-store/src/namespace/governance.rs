@@ -29,7 +29,7 @@ use crate::governance_broadcast::{
     TRANSPORT_READY_POLL, TRANSPORT_READY_WAIT,
 };
 use crate::held_ops::HeldOps;
-use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
+use crate::metrics::record_governance_publish_mesh_peers;
 use crate::op_events::{notify as notify_op_event, OpEvent};
 use crate::void_ledger::{KeyIntro, Parked, VoidLedger, STORED_BEFORE};
 
@@ -41,6 +41,7 @@ use super::dag::{NamespaceDagService, NamespaceHead};
 use super::op_log::NamespaceOpLogService;
 use super::retry::{NamespaceRetryService, RetryCandidate};
 
+mod replay;
 mod voided;
 
 use self::voided::may_void_others;
@@ -203,34 +204,10 @@ fn classify_report_readiness(
     classify_publish_readiness(authoritative_ack, report.acked_by.len(), ackable_members)
 }
 
-/// Domain API for namespace DAG and governance operation lifecycle.
-/// How many times a retry pass may re-enter itself.
-///
-/// Two of the effects in [`NamespaceGovernance::root_op_side_effects`] call back
-/// into the retry that invoked them: a replayed `KeyDelivery` unwraps a key and
-/// then re-drives that group's buffered ops, and a replayed `GroupCreated`
-/// re-drives the ops it just unblocked. Each of those re-drives replays sealed
-/// root ops again, which can reach another `KeyDelivery`. Without a bound that
-/// is unbounded mutual recursion on a log the node controls the contents of.
-///
-/// One re-entry is what the real dependency edges need, and the passes are
-/// idempotent, so a level that finds nothing costs a walk and no more. Deeper
-/// chains are left to the next key arrival or the #2848 startup sweep, which is
-/// where an unbounded amount of catch-up belongs.
-const MAX_RETRY_REENTRY: u8 = 1;
-
-/// What one [`NamespaceGovernance::retry_sealed_root_ops`] pass achieved.
-///
-/// `applied` is the progress signal the caller needs to decide whether a second
-/// pass could find anything; `divergence` rides along because a replayed op's
-/// effects can re-drive a group op whose post-apply hash disagrees, and the
-/// retry path is the only place that verdict surfaces (a later fresh arrival of
-/// the same op is nonce-deduped and skips the check).
-struct SealedRootRetry {
-    applied: usize,
-    divergence: Option<super::super::DivergenceReport>,
-    deferred: usize, // refusals a provisional pass left for the next one to judge
-}
+/// How deep a key-arrival replay may nest: not at all. What an op it replays opens
+/// (a delivered or rotated key, a created group) joins that replay's own worklist, so
+/// an effect that would start another replay inside it returns instead.
+const MAX_RETRY_REENTRY: u8 = 0;
 
 /// What [`NamespaceGovernance::root_op_side_effects`] observed while running an
 /// op's effects, for the caller to fold into its own report.
@@ -246,6 +223,7 @@ struct RootSideEffects {
     key_unwrap_failures: Vec<KeyUnwrapFailure>,
 }
 
+/// Domain API for namespace DAG and governance operation lifecycle.
 pub struct NamespaceGovernance<'a> {
     store: &'a Store,
     namespace_id: NamespaceId,
@@ -2145,256 +2123,6 @@ impl<'a> NamespaceGovernance<'a> {
             .map_err(|e| eyre::eyre!("retry_encrypted_ops_for_group: {e}"))
     }
 
-    /// Re-feed sealed root ops that arrived before this node held the key.
-    ///
-    /// The group retry cannot do this: its op-log walk selects by group id and
-    /// both it and the loop above it match `NamespaceOp::Group`, so a sealed root
-    /// op was skipped at two layers. Nothing re-fed it, which for a joining node
-    /// means never applying a root op that landed before its key — the namespace
-    /// structure it needs, permanently missing, with no error anywhere.
-    ///
-    /// Ops this node signed are skipped, for the reason the group collector
-    /// documents at length: the replay dedups on the namespace-level nonce, which
-    /// the local authoring path never wrote, so a node's own op is not recognised
-    /// as applied and its mutation re-runs — and re-running a removal out of
-    /// causal order deletes state a causally-later op restored. A node's own
-    /// sealed op was never buffered anyway; it held the key to seal it.
-    ///
-    /// # Errors
-    ///
-    /// When the op log cannot be walked. A single op that fails to open is
-    /// logged and skipped rather than failing the pass: one undecryptable op must
-    /// not stop the others from landing.
-    ///
-    /// `applied` is how many ops actually landed, which is what lets the caller
-    /// run this pass twice and know whether the second one was worth it.
-    ///
-    /// A divergence report can come back too, though not from the fold itself:
-    /// `apply_root_op` yields events rather than a post-apply hash comparison.
-    /// It comes from the nested re-drive a replayed `KeyDelivery` or
-    /// `GroupCreated` triggers, where a buffered group op does get hash-checked
-    /// — and this is the only pass that will ever check it, since a later fresh
-    /// arrival of the same op is nonce-deduped and skips the comparison.
-    ///
-    /// A `provisional` pass records no refusal: it runs before the group ops it may
-    /// cite are replayed, so a refusal there can rest on rows not yet written.
-    fn retry_sealed_root_ops(&self, depth: u8, provisional: bool) -> EyreResult<SealedRootRetry> {
-        // What was folded before the key arrived shows these ops unreadable.
-        self.authorizer.forget();
-        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
-        let own_identity = super::NamespaceRepository::new(self.store)
-            .identity(&ns_typed)
-            .map_err(|e| eyre::eyre!("resolve own namespace identity: {e}"))?
-            .map(|(pk, _sk)| pk);
-
-        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
-        let entries = op_log
-            .collect_sealed_root_ops()
-            .map_err(|e| eyre::eyre!("collect_sealed_root_ops: {e}"))?;
-        // Causal order, not the op log's key order. The log is keyed by delta id,
-        // a content hash, so walking it replays a namespace's joins in an order
-        // unrelated to the order they happened in — and a join's apply gate reads
-        // state an EARLIER join wrote: `require_inviter_permission` resolves the
-        // inviter's key through the binding the inviter's own join recorded, and
-        // `verify_admitter_endorsement` does the same for the endorser (a TEE
-        // replica's admission, say). Replayed ahead of those, the join is refused
-        // with "inviter lacks permission", the refusal is logged and skipped, and
-        // nothing re-drives it — so a replica that took the namespace key late
-        // holds no binding for a member every keyed peer has, and refuses every
-        // invitation that member mints. The group-op pass has ordered this way
-        // since it was found there; the root pass is the same replay.
-        let entries = super::retry::order_causally(&op_log, entries)
-            .map_err(|e| eyre::eyre!("order sealed root ops causally: {e}"))?;
-
-        let mut applied = 0usize;
-        let mut deferred = 0usize;
-        let mut divergence: Option<super::super::DivergenceReport> = None;
-        for entry in entries {
-            if own_identity == Some(entry.signed_op.signer) {
-                self.settle_parked(&entry.signed_op, true);
-                continue;
-            }
-            if self.parked_state(&entry.signed_op) == Some(Parked::Refused) {
-                continue;
-            }
-            let key_id = entry.key_id;
-            // Which keyring can open this op. The two namespace-sealed shapes
-            // resolve in the namespace's; a subgroup-sealed join resolves in the
-            // group it names, which is the reason that field is cleartext.
-            // Looking every shape up in the namespace keyring would leave a
-            // subgroup join parked forever even on a peer holding its key.
-            let keyring_group = match &entry.signed_op.op {
-                NamespaceOp::RootSealedForGroup { group_id, .. } => *group_id,
-                _ => ns_typed,
-            };
-            // Still not held: the key that arrived was for something else. Not an
-            // error, and not a reason to stop — a later delivery may bring it.
-            let Some(key) = GroupKeyring::new(self.store, keyring_group)
-                .load_key_by_id(key_id.as_bytes())
-                .map_err(|e| eyre::eyre!("load key for sealed root op: {e}"))?
-            else {
-                continue;
-            };
-            // Both parked shapes open here, and each yields the op its gates
-            // must see: a sealed root op is gated on its own envelope, a relayed
-            // join on the JOINER'S inner op. Handing the envelope to a relay's
-            // gates would check the admitter's signer against the joiner's
-            // credential and refuse every replayed relay.
-            let opened: Option<(SignedNamespaceOp, RootOp)> = match &entry.signed_op.op {
-                NamespaceOp::RootSealed { encrypted, .. } => {
-                    match GroupKeyring::decrypt_root_op(&key, encrypted) {
-                        Ok(root) => Some((entry.signed_op.clone(), root)),
-                        Err(e) => {
-                            tracing::warn!(
-                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                                error = %format!("{e:#}"),
-                                "skipping a sealed root op that would not open on retry"
-                            );
-                            None
-                        }
-                    }
-                }
-                // Split from the arm above rather than sharing it: a namespace-
-                // sealed op legitimately carries any sealable root op, while
-                // this one carries a join only. Sharing the arm is what let an
-                // arbitrary root op in here, and the retry pass is a second
-                // door to the same apply — a node that lacked the sealing key on
-                // arrival opens it here instead.
-                NamespaceOp::RootSealedForGroup {
-                    group_id,
-                    encrypted,
-                    ..
-                } => {
-                    match GroupKeyring::decrypt_root_op(&key, encrypted).and_then(|root| {
-                        ensure_subgroup_sealed_carries_a_join(*group_id, self.namespace_id, &root)
-                            .map(|()| root)
-                    }) {
-                        Ok(root) => Some((entry.signed_op.clone(), root)),
-                        Err(e) => {
-                            tracing::warn!(
-                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                                error = %format!("{e:#}"),
-                                "skipping a group-sealed root op that would not open, or that \
-                                 carried something other than a join, on retry"
-                            );
-                            None
-                        }
-                    }
-                }
-                NamespaceOp::RootRelaySealed { encrypted, .. } => {
-                    match open_relayed_join(self.namespace_id, &key, encrypted) {
-                        Ok(inner) => match &inner.op {
-                            NamespaceOp::Root(root) => {
-                                let root = root.clone();
-                                Some((inner, root))
-                            }
-                            // `open_relayed_join` only yields a root op.
-                            _ => None,
-                        },
-                        Err(e) => {
-                            tracing::warn!(
-                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                                error = %format!("{e:#}"),
-                                "skipping a relayed join that would not open on retry"
-                            );
-                            None
-                        }
-                    }
-                }
-                _ => None,
-            };
-            let Some((gate_op, root)) = opened else {
-                self.settle_parked(&entry.signed_op, false);
-                continue;
-            };
-            // The same relocated check the receive path runs. Skipping it here
-            // would mean a replayed op is validated less than one applied on
-            // arrival, and the difference would only show as divergence.
-            if let Err(e) = root.validate_after_unsealing() {
-                tracing::warn!(
-                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                    error = %format!("{e:#}"),
-                    "skipping a sealed root op that fails validation after unsealing"
-                );
-                self.settle_parked(&entry.signed_op, false);
-                continue;
-            }
-            // This walk has no applied marker, so it re-feeds creates this node
-            // folded long ago, and a create is not replay-safe: its fold seats the
-            // creator as admin again, and a moved group refuses it on every pass.
-            // Its side effect also re-drives the group, which re-enters this walk.
-            // A parked create was never applied here, so it is judged instead.
-            let parked = self.parked_state(&entry.signed_op);
-            if parked.is_none() && self.group_created_already_folded(&root)? {
-                continue;
-            }
-            // A replayed root op is judged as one applied on arrival is. A void one
-            // folds as any logged op does, so it is no longer parked.
-            if self.root_op_is_void(&gate_op, &root, gate_op.content_hash()?)? {
-                self.settle_parked(&entry.signed_op, true);
-                continue;
-            }
-            let outcome = if let Some(state) = parked {
-                self.replay_parked_root_op(&entry.signed_op, &gate_op, &root, state, !provisional)
-            } else {
-                self.apply_root_op(&gate_op, &root)
-            };
-            match outcome {
-                Ok(_events) => {
-                    applied += 1;
-                    record_namespace_retry_event("sealed_root_applied");
-                    // `apply_root_op` is the fold and nothing else. The rest of
-                    // what an arriving op does lives in `root_op_side_effects`,
-                    // and a replay that skipped it left the op half-applied:
-                    // a `KeyDelivery` whose key was never unwrapped, a
-                    // `GroupCreated` whose unblocked ops were never re-driven, a
-                    // rejoiner still deny-stamped on every peer. `depth + 1`
-                    // because acting on those effects re-enters this pass.
-                    //
-                    // Best-effort, like every other step in this walk: the fold
-                    // has already happened and is correct, so an effect that
-                    // fails is logged rather than allowed to abort the ops behind
-                    // it in the log.
-                    match self.root_op_side_effects(&gate_op, &root, depth + 1) {
-                        Ok(effects) => {
-                            if effects.divergence.is_some() {
-                                divergence = effects.divergence;
-                            }
-                            for miss in effects.key_unwrap_failures {
-                                tracing::debug!(
-                                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                                    group_id = %hex::encode(miss.group_id),
-                                    reason = %miss.reason,
-                                    "a replayed root op's effect still lacks a key"
-                                );
-                            }
-                        }
-                        Err(e) => tracing::warn!(
-                            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                            error = %format!("{e:#}"),
-                            "a replayed root op folded but one of its effects did not"
-                        ),
-                    }
-                }
-                Err(e) => {
-                    if provisional && parked.is_some() {
-                        deferred += 1;
-                    }
-                    tracing::warn!(
-                        namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                        error = %format!("{e:#}"),
-                        "sealed root op failed to apply on retry"
-                    );
-                }
-            }
-        }
-        Ok(SealedRootRetry {
-            applied,
-            divergence,
-            deferred,
-        })
-    }
-
     /// Whether `root` is a `GroupCreated` (bare or delegated) for a group this
     /// node has already folded.
     ///
@@ -2424,395 +2152,14 @@ impl<'a> NamespaceGovernance<'a> {
         self.retry_encrypted_ops_for_group_at_depth(group_id, 0)
     }
 
-    /// [`Self::retry_encrypted_ops_for_group`], told how many times the chain
-    /// that reached it has already re-entered itself, and refusing to go deeper
-    /// than [`MAX_RETRY_REENTRY`].
-    ///
-    /// The bound is not a safety valve for a case that "should not happen": the
-    /// cycle is real and reachable. A replayed `KeyDelivery` re-drives its
-    /// group, that re-drive replays sealed root ops, and those can include
-    /// another `KeyDelivery`. Refusing at the bound costs nothing a later key
-    /// arrival or the startup sweep will not redo, and the passes are idempotent
-    /// so nothing is lost by stopping early.
+    /// [`Self::retry_encrypted_ops_for_group`], from inside the replay chain `depth`
+    /// levels deep, which [`MAX_RETRY_REENTRY`] bounds.
     fn retry_encrypted_ops_for_group_at_depth(
         &self,
         group_id: [u8; 32],
         depth: u8,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        if depth > MAX_RETRY_REENTRY {
-            tracing::debug!(
-                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                group_id = %hex::encode(group_id),
-                depth,
-                "retry chain hit its re-entry bound; leaving the rest to the next key arrival"
-            );
-            return Ok(None);
-        }
-        self.authorizer.forget();
-        // Sealed root ops first, and here rather than at a caller. A key reaches a
-        // node two ways — a `KeyDelivery` op, and the pull in `group_key_pull` —
-        // and both come through this function. Draining at one of them left the
-        // other silently unable to fold buffered root ops, which is what the
-        // convergence test caught.
-        //
-        // Root before group, because a root op can be what makes a group op
-        // applicable: `GroupCreated` is sealed, and a group op for a group this
-        // node has not folded has nothing to apply against. The dependency also
-        // runs the other way, which is why this pass repeats at the end of the
-        // group phase below -- see the comment there.
-        let mut retry_divergence: Option<super::super::DivergenceReport> = None;
-        let mut root_deferred = 0usize;
-        match self.retry_sealed_root_ops(depth, true) {
-            Ok(pass) => {
-                if pass.divergence.is_some() {
-                    retry_divergence = pass.divergence;
-                }
-                root_deferred = pass.deferred;
-            }
-            Err(e) => tracing::warn!(
-                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                error = %format!("{e:#}"),
-                "sealed-root retry pass failed; group retry continues"
-            ),
-        }
-
-        let gid_typed = ContextGroupId::from(group_id);
-        let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
-        let mut attempted = 0usize;
-        // Whether the group phase folded anything, which is the only condition
-        // under which the second sealed-root pass below can find new work.
-        let mut group_applied = 0usize;
-        // A replayed rotation stores a key that may open more buffered ops, so pass again.
-        loop {
-            let retry_candidates = retry_service
-                .collect_retry_candidates_for_group(group_id)
-                .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
-            attempted += retry_candidates.len();
-            if !retry_candidates.is_empty() {
-                record_namespace_retry_event("collected");
-            }
-            let mut rotated = false;
-
-            // Last-writer-wins across retry candidates that surface
-            // divergence. The outbox carrying this report to the node
-            // handler is a single slot (see `governance_dag.rs`), so
-            // collapsing here matches the fresh-arrival path's LWW
-            // semantics. In practice each retry batch unblocks a small
-            // number of ops and at most one is a `MemberRemoved` /
-            // `MemberLeft` that could report divergence.
-            for candidate in &retry_candidates {
-                let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
-                    continue;
-                };
-                if self.parked_state(&candidate.signed_op) == Some(Parked::Refused) {
-                    continue;
-                }
-                let parked = self.parked_state(&candidate.signed_op);
-                let outcome = self.replay_group_op(
-                    &candidate.signed_op,
-                    &gid_typed,
-                    &candidate.group_key,
-                    encrypted,
-                    parked,
-                );
-                match outcome {
-                    // Surface divergence from retry-path applies. Once a
-                    // retry replay applies an op, the DAG marks any later
-                    // fresh arrival of the same op as `Duplicate` and the
-                    // apply work — including the post-apply hash check —
-                    // is skipped. That makes the retry path the *only*
-                    // opportunity to detect divergence on retried ops:
-                    // dropping it here means the reconcile trigger never
-                    // fires for `MemberRemoved` / `MemberLeft` ops that
-                    // were buffered pending `KeyDelivery`.
-                    Ok(divergence) => {
-                        group_applied += 1;
-                        if let Ok(id) = candidate.signed_op.content_hash() {
-                            HeldOps::new(self.store, self.namespace_id).release(id)?;
-                        }
-                        record_namespace_retry_event("applied");
-                        tracing::info!(
-                            group_id = %hex::encode(group_id),
-                            "retried encrypted op after KeyDelivery"
-                        );
-                        rotated |= self.replay_deferred_rotation(candidate, parked.is_some());
-                        if divergence.is_some() {
-                            retry_divergence = divergence;
-                        }
-                    }
-                    Err(e) if self.still_held(candidate, &e) => {
-                        record_namespace_retry_event("still_held");
-                        tracing::debug!(
-                            group_id = %hex::encode(group_id),
-                            "a held op is still held: its group's history is still sealed here"
-                        );
-                    }
-                    Err(e) => {
-                        record_namespace_retry_event("failed");
-                        tracing::warn!(
-                            group_id = %hex::encode(group_id),
-                            error = %format!("{e:#}"),
-                            "failed to retry encrypted op after KeyDelivery"
-                        );
-                    }
-                }
-            }
-            if !rotated {
-                break;
-            }
-        }
-
-        if attempted == 0 {
-            record_namespace_retry_event("none");
-        }
-
-        // #2256/#3198: an `Open` subgroup encrypts its governance ops with the
-        // *namespace* key (see `GroupGovernancePublisher`), not its own. A
-        // root-admitted member (e.g. a TEE) that receives an
-        // Open-subgroup op BEFORE the namespace key was delivered parks it
-        // undecryptable. The per-group retry above only re-drives the group
-        // whose key just arrived — here the namespace root — so nothing
-        // re-drives the *subgroup's* own buffered ops. A `SubgroupVisibilitySet
-        // -> Open` that arrived early then stays applied-at-DAG-but-effect-
-        // skipped forever: the subgroup keeps reading `Restricted`, and
-        // inherited auto-follow refuses to join contexts registered under it.
-        //
-        // When the delivered/rotated key IS the namespace key, also re-drive
-        // every OTHER group in this namespace that now holds a decryptable
-        // buffered op — exactly the held-key buffered-op set the #2848 Part C
-        // startup sweep re-drives, applied here at delivery time so recovery
-        // does not have to wait for a node restart. Each re-drive runs through
-        // the normal signature/nonce/authorizer apply path (no security bypass),
-        // is idempotent (nonce-window deduped), and the set is self-limiting to
-        // groups with pending decryptable ops.
-        //
-        // This runs on EVERY namespace-key delivery/rotation, but once a
-        // subgroup's buffered ops have applied their nonces are windowed, so
-        // subsequent passes are cheap no-ops (`redrive_..._counted` returns 0) —
-        // bounded and idempotent, so no extra "already re-driven" filtering is
-        // needed here.
-        if group_id == self.namespace_id.to_bytes() {
-            match retry_service.groups_with_held_key_buffered_ops() {
-                Ok(groups) => {
-                    for sub in groups {
-                        if sub == group_id {
-                            continue;
-                        }
-                        // Intentional: unlike the namespace-root `retry` above
-                        // (which threads `retry_divergence` back to the caller),
-                        // this fan-out uses the counted re-drive and DROPS the
-                        // divergence signal. A re-driven Open-subgroup
-                        // MemberRemoved/MemberLeft divergence is instead surfaced
-                        // by that subgroup's own key-delivery path or the #2848
-                        // startup sweep — not reported from here.
-                        match self.redrive_encrypted_ops_for_group_counted(sub) {
-                            Ok(applied) => group_applied += applied,
-                            Err(e) => tracing::warn!(
-                                group_id = %hex::encode(sub),
-                                error = %format!("{e:#}"),
-                                "failed to re-drive Open-subgroup buffered ops after \
-                                 namespace key delivery"
-                            ),
-                        }
-                    }
-                }
-                Err(e) => tracing::warn!(
-                    namespace_id = %hex::encode(self.namespace_id.to_bytes()),
-                    error = %format!("{e:#}"),
-                    "failed to enumerate held-key buffered-op groups after namespace \
-                     key delivery"
-                ),
-            }
-        }
-
-        // And root AFTER group, because the dependency is not one-directional.
-        //
-        // `MemberJoinedOpen` is a sealed root op whose apply gate asks whether
-        // the subgroup is `Open` -- and that answer comes from
-        // `SubgroupVisibilitySet`, a GROUP op sealed under this same namespace
-        // key. A node that held neither buffers both, and the pass above runs
-        // while the flip is still frozen: the gate reads `Restricted`, refuses
-        // the join, and the warn-and-skip loses it until some unrelated key
-        // arrives. The subgroup then has a member every keyed peer sees and this
-        // node does not, with nothing failing to say so.
-        //
-        // Two passes, not a fixed point. The class of edges is small and known
-        // -- `GroupCreated` unblocks group ops, a folded group op unblocks the
-        // root ops gated on it -- so one pass in each direction closes it. A
-        // longer alternating chain (a group op gated on a membership only
-        // `MemberJoinedOpen` establishes) would still need the next key arrival
-        // or the startup sweep; that is the accepted bound, not an oversight.
-        //
-        // Only when the group phase folded something. The sealed-root walk has
-        // no per-op applied marker -- it re-feeds every sealed root op in the log
-        // and leans on the apply handlers being replay-safe -- so running it
-        // unconditionally would double that walk on every key arrival for no
-        // possible gain: nothing changed between the two passes.
-        // Also when the first pass deferred a refusal, which only this pass records.
-        if group_applied > 0 || root_deferred > 0 {
-            match self.retry_sealed_root_ops(depth, false) {
-                Ok(pass) => {
-                    if pass.divergence.is_some() {
-                        retry_divergence = pass.divergence;
-                    }
-                    if pass.applied > 0 {
-                        tracing::info!(
-                            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                            applied = pass.applied,
-                            "sealed root ops applied only once the group retry folded their \
-                             ancestry"
-                        );
-                    }
-                }
-                Err(e) => tracing::warn!(
-                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                    error = %format!("{e:#}"),
-                    "second sealed-root retry pass failed"
-                ),
-            }
-        }
-
-        // A key that arrives late replays ops that may include a removal, or ops a
-        // removal voids; what they wrote is rebuilt once, after all of them.
-        if group_applied > 0 && depth == 0 {
-            self.reconcile_voided(None)?;
-        }
-
-        Ok(retry_divergence)
-    }
-
-    /// Curative re-drive variant that returns the count of ops it ACTUALLY
-    /// applied (#2848 Part C). The `Option<DivergenceReport>` returned by
-    /// [`retry_encrypted_ops_for_group`](Self::retry_encrypted_ops_for_group)
-    /// is not a usable progress signal — a re-driven `ContextRegistered`
-    /// applies yet reports `None` (divergence is surfaced only for
-    /// `MemberRemoved`/`MemberLeft`), and an already-applied op is
-    /// nonce-deduped to `Ok(None)` too. The startup sweep needs to know
-    /// whether a pass made progress; this counts it directly.
-    ///
-    /// "Applied" is detected by the nonce window: a candidate whose
-    /// (signer, nonce) was NOT in the window before the apply but IS after it
-    /// was genuinely applied this call; an op already in the window is an
-    /// idempotent nonce-skip and does not count. This avoids threading an
-    /// `applied` flag through the whole apply stack while still distinguishing
-    /// a real apply from a no-op replay.
-    ///
-    /// TOCTOU caveat (accepted, bounded, benign): the pre/post nonce-window
-    /// read is not atomic with the apply, so a concurrent gossip apply of the
-    /// same op can make us miscount. The inflating race is a concurrent apply
-    /// landing BEFORE our apply: we pre-read `was_present == false`, the gossip
-    /// path then windows the nonce, and our `decrypt_and_apply` short-circuits
-    /// to `Ok(None)` WITHOUT writing — yet the post-read sees `now_present ==
-    /// true`, so `!was_present && now_present` holds and we count a false
-    /// "applied" for an op we did not actually apply. (This does NOT produce a
-    /// spurious `nonce_skip`: that branch is taken only when the post-read is
-    /// still `false`, which a concurrent apply cannot cause.) The only
-    /// consequence is the convergence count being over-counted, which at worst
-    /// triggers one extra sweep pass; that is bounded by `MAX_PASSES`. The
-    /// count is a best-effort convergence SIGNAL, not a correctness gate — no
-    /// state can diverge from a miscount. The proper long-term fix is to have
-    /// `decrypt_and_apply_group_op` return an explicit `Applied | Skipped |
-    /// Failed` outcome instead of inferring it from the window; that refactor
-    /// is deliberately deferred.
-    fn redrive_encrypted_ops_for_group_counted(&self, group_id: [u8; 32]) -> EyreResult<usize> {
-        let gid_typed = ContextGroupId::from(group_id);
-        let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
-        let mut applied = 0usize;
-        // A replayed rotation stores a key that may open more buffered ops, so pass again.
-        loop {
-            let retry_candidates = retry_service
-                .collect_retry_candidates_for_group(group_id)
-                .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
-            if !retry_candidates.is_empty() {
-                record_namespace_retry_event("collected");
-            }
-            let mut rotated = false;
-            // A held op waits on its group's own key. Until this node holds one,
-            // no re-drive can apply it - re-feeding it on every namespace-key
-            // delivery only failed it and warned (core#4511).
-            let group_key_held = GroupKeyring::new(self.store, gid_typed)
-                .load_current_key()?
-                .is_some();
-            let held_ops = HeldOps::new(self.store, self.namespace_id);
-            for candidate in &retry_candidates {
-                let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
-                    continue;
-                };
-                if self.parked_state(&candidate.signed_op) == Some(Parked::Refused) {
-                    continue;
-                }
-                let delta_id = candidate.signed_op.content_hash().ok();
-                if !group_key_held {
-                    if let Some(id) = delta_id {
-                        if held_ops.contains(id)? {
-                            record_namespace_retry_event("still_held");
-                            continue;
-                        }
-                    }
-                }
-                let signer = &candidate.signed_op.signer;
-                let nonce = candidate.signed_op.nonce;
-                // Pre-apply nonce-window membership tells a real apply apart from an
-                // idempotent replay: `apply_group_op_inner` short-circuits an
-                // already-windowed nonce to `Ok(None)` WITHOUT mutating, and
-                // advances the window only on a genuine apply.
-                let was_present = load_nonce_window(self.store, &gid_typed, signer)
-                    .map(|w| w.contains(nonce))
-                    .unwrap_or(false);
-                let parked = self.parked_state(&candidate.signed_op);
-                let outcome = self.replay_group_op(
-                    &candidate.signed_op,
-                    &gid_typed,
-                    &candidate.group_key,
-                    encrypted,
-                    parked,
-                );
-                match outcome {
-                    Ok(_divergence) => {
-                        rotated |= self.replay_deferred_rotation(candidate, parked.is_some());
-                        let now_present = load_nonce_window(self.store, &gid_typed, signer)
-                            .map(|w| w.contains(nonce))
-                            .unwrap_or(false);
-                        if !was_present && now_present {
-                            // Genuine apply: the (signer, nonce) was not in the
-                            // window before and is now. Only this path counts and
-                            // only this path increments the "applied" metric — a
-                            // nonce-deduped replay short-circuits to `Ok(None)`
-                            // WITHOUT writing, so counting it as "applied" would
-                            // inflate the metric (review fix B).
-                            record_namespace_retry_event("applied");
-                            applied += 1;
-                            if let Some(id) = delta_id {
-                                held_ops.release(id)?;
-                            }
-                            tracing::info!(
-                                group_id = %hex::encode(group_id),
-                                "curative re-drive applied a stranded encrypted op (#2848)"
-                            );
-                        } else {
-                            // Idempotent nonce-deduped replay: nothing was written.
-                            record_namespace_retry_event("nonce_skip");
-                        }
-                    }
-                    Err(e) if self.still_held(candidate, &e) => {
-                        record_namespace_retry_event("still_held");
-                    }
-                    Err(e) => {
-                        record_namespace_retry_event("failed");
-                        tracing::warn!(
-                            group_id = %hex::encode(group_id),
-                            error = %format!("{e:#}"),
-                            "curative re-drive: failed to apply a buffered encrypted op (#2848)"
-                        );
-                    }
-                }
-            }
-            if !rotated {
-                break;
-            }
-        }
-
-        Ok(applied)
+        Ok(self.replay(group_id, depth)?.divergence)
     }
 
     /// Did replaying a held op fail only because it is still held: undecidable,
@@ -3092,16 +2439,15 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
-    /// Apply a parked root op at its own cut, as on arrival, and record the verdict,
-    /// a refusal only when `refusal_is_final`. An undecidable cut, or no at-cut judge,
-    /// falls back to this pass's gates and records only an apply.
+    /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
+    /// An undecidable cut, or no at-cut judge, falls back to this pass's gates and
+    /// records only an apply.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
         gate_op: &SignedNamespaceOp,
         root: &RootOp,
         state: Parked,
-        refusal_is_final: bool,
     ) -> EyreResult<Vec<crate::op_events::OpEvent>> {
         if state == Parked::Refused {
             eyre::bail!("a root op refused at its cut stays refused");
@@ -3111,9 +2457,7 @@ impl<'a> NamespaceGovernance<'a> {
                 .with_apply_auth(&parked.parent_op_hashes, judge)
                 .apply_root_op(gate_op, root);
             if !at_cut.as_ref().is_err_and(is_undecidable) {
-                if at_cut.is_ok() || refusal_is_final {
-                    self.settle_parked(parked, at_cut.is_ok());
-                }
+                self.settle_parked(parked, at_cut.is_ok());
                 return at_cut;
             }
         }
@@ -3828,116 +3172,21 @@ impl<'a> NamespaceGovernance<'a> {
                 self.member_joined_open_side_effects(&group_id_typed, member)?;
             }
             RootOp::GroupCreated { group_id, .. } => {
-                // #2848: GroupCreated just wrote this subgroup's meta +
-                // admin row (via `apply_root_op` above), so an
-                // encrypted ContextRegistered that was buffered before
-                // it landed — and previously bailed at the staleness
-                // check because the meta did not exist — can now apply.
-                // Re-drive, but only when the node plausibly holds a key
-                // that could decrypt this group's buffered ops. This is
-                // a CHEAP keyring presence check — a single
-                // first-key-exists lookup per keyring
-                // (`holds_any_key`) — NOT an op-log scan: gating with a
-                // full op-log scan would defeat the gate's purpose,
-                // since the retry it guards
-                // (`collect_retry_candidates_for_group`) already does a
-                // full scan, so a scanning gate saves nothing on the
-                // GroupCreated hot path. The check mirrors the
-                // dual-keyring resolution the apply/retry path uses
-                // (#2256): the subgroup's own keyring (Restricted) OR
-                // the namespace keyring (Open subgroups encrypt under
-                // it). Gating on the subgroup keyring alone was wrong —
-                // a node holding only the namespace key still has
-                // decryptable Open buffered ops and must be re-driven.
-                //
-                // W3/S1 fix: gate on whether the keyring holds ANY key,
-                // not just the *current* one. The retry resolves each
-                // buffered op by its `key_id` (`load_key_by_id`), so
-                // after a key ROTATION a node may hold only the OLD key
-                // that a buffered op was encrypted under while
-                // `load_current_key` returns the newer key (or, if the
-                // node never received the new delivery, the old key IS
-                // still the entry but distinct from the op's key_id).
-                // The old current-key gate produced a false-negative in
-                // exactly that case — the op was decryptable yet the
-                // re-drive was skipped. "Holds any key" has no such
-                // false-negative (if the matching key_id is held, the
-                // keyring is non-empty); the residual false-positive
-                // (non-empty keyring without the specific key_id) just
-                // costs one bounded, self-gating retry scan that finds
-                // no candidates — harmless. When neither keyring holds
-                // any key (the common case and the deleted-group exit
-                // since purge clears keys) the retry is skipped without
-                // touching the op-log. Best-effort: log, never
-                // propagate.
-                // #3891: a `KeyDelivery` for this group that arrived BEFORE this
-                // op was deferred, not refused -- its anchors could not be
-                // resolved because this very op had not folded. Now they can, so
-                // re-feed the sealed root ops and let the same delivery be
-                // judged on the group's real anchors. This runs before the
-                // group-op retry below because the delivery is what stores the
-                // key that retry needs, and before its `holds_any_key` gate,
-                // which is false precisely while the key is still undelivered.
-                //
-                // Only on a FRESH arrival (`depth == 0`), and that is not a
-                // depth bound dressed up -- it is the condition that makes sense.
-                // `retry_sealed_root_ops` re-feeds every sealed root op in the
-                // log, `GroupCreated` included, and it does not check
-                // `MAX_RETRY_REENTRY` itself: it hands `depth + 1` to
-                // `root_op_side_effects`, and the existing call sites are the
-                // ones sitting under a guard. Re-entering from here with `depth`
-                // unchanged recurses until the stack goes, which is what
-                // `governance_group_created_honors_can_create_subgroup_at_root_only`
-                // caught. A replayed `GroupCreated` needs no pass of its own
-                // anyway: it is already inside one, which will walk the rest of
-                // the log without help.
-                //
-                // The fold ran before this (`apply_root_op` above), so meta and
-                // the admin row exist by now and a deferred delivery for this
-                // group is judged on the group's own anchors. Ops are walked in
-                // store-key order, so a delivery re-fed BEFORE its
-                // `GroupCreated` inside one pass defers once more and waits for
-                // the next trigger or the pull -- bounded, and not the path a
-                // real arrival takes.
-                if depth == 0 {
-                    match self.retry_sealed_root_ops(depth, false) {
-                        Ok(pass) => {
-                            if pass.divergence.is_some() {
-                                effects.divergence = pass.divergence;
-                            }
+                // The create wrote the group's meta and admin row, so ops buffered for the
+                // group, and a `KeyDelivery` deferred on its unresolved anchors, can land now.
+                // A replayed create starts no replay: the one replaying it collects the group.
+                match self.retry_encrypted_ops_for_group_at_depth(group_id.to_bytes(), depth) {
+                    Ok(divergence) => {
+                        if divergence.is_some() {
+                            effects.divergence = divergence;
                         }
-                        Err(e) => tracing::warn!(
-                            ?e,
-                            group_id = %hex::encode(group_id.to_bytes()),
-                            "sealed-root re-drive after GroupCreated failed, so a deferred \
-                             KeyDelivery for this group stays deferred until the next pass \
-                             or the key pull (#3891)"
-                        ),
                     }
-                }
-
-                let gid = *group_id;
-                let gid_typed = gid;
-                let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
-                let holds_key = GroupKeyring::new(self.store, gid_typed)
-                    .holds_any_key()
-                    .unwrap_or(false)
-                    || GroupKeyring::new(self.store, ns_typed)
-                        .holds_any_key()
-                        .unwrap_or(false);
-                if holds_key {
-                    match self.retry_encrypted_ops_for_group_at_depth(group_id.to_bytes(), depth) {
-                        Ok(retry_divergence) => {
-                            if retry_divergence.is_some() {
-                                effects.divergence = retry_divergence;
-                            }
-                        }
-                        Err(e) => tracing::warn!(
-                            ?e,
-                            group_id = %hex::encode(group_id.to_bytes()),
-                            "retry after GroupCreated failed (#2848)"
-                        ),
-                    }
+                    Err(e) => tracing::warn!(
+                        ?e,
+                        group_id = %hex::encode(group_id.to_bytes()),
+                        "replay after GroupCreated failed; the next key arrival or the \
+                         startup sweep retries it"
+                    ),
                 }
             }
             _ => {}
@@ -4552,24 +3801,16 @@ pub fn known_namespace_identities(store: &Store) -> EyreResult<Vec<[u8; 32]>> {
         .collect())
 }
 
-/// Curative re-drive of a single group's buffered encrypted ops for the
-/// #2848 Part C startup sweep. Returns the count of ops it ACTUALLY applied
-/// this call (idempotent nonce-replays are not counted) — the sweep uses this
-/// as its monotone convergence signal.
-///
-/// Metric emission is delegated to the inner
-/// `redrive_encrypted_ops_for_group_counted`, which records
-/// `namespace_retry_events{status="applied"}` only on genuine applies and
-/// `status="nonce_skip"` on dedup. We intentionally do NOT emit a per-call
-/// `status="redriven"` counter here: that inflated the metric on every sweep
-/// pass over an already-drained group, so the count reflected invocations
-/// rather than ops actually recovered.
+/// Curative re-drive of `group_id`'s buffered ops, through the same replay a key
+/// arrival runs. Returns how many ops landed; an op already applied is not counted.
 pub fn redrive_buffered_ops_for_group(
     store: &Store,
     namespace_id: NamespaceId,
     group_id: [u8; 32],
 ) -> EyreResult<usize> {
-    NamespaceGovernance::new(store, namespace_id).redrive_encrypted_ops_for_group_counted(group_id)
+    Ok(NamespaceGovernance::new(store, namespace_id)
+        .replay(group_id, 0)?
+        .applied)
 }
 
 /// [`redrive_buffered_ops_for_group`] judging the ops it replays against `authorizer`'s
@@ -4580,22 +3821,23 @@ pub fn redrive_buffered_ops_for_group_with(
     group_id: [u8; 32],
     authorizer: &dyn crate::authorizer::AtCutAuthorizer,
 ) -> EyreResult<usize> {
-    NamespaceGovernance::new(store, namespace_id)
+    Ok(NamespaceGovernance::new(store, namespace_id)
         .with_apply_auth(&[], authorizer)
-        .redrive_encrypted_ops_for_group_counted(group_id)
+        .replay(group_id, 0)?
+        .applied)
 }
 
-/// Replay the sealed root ops of `namespace_id` whose keys this node holds, judging
-/// them against `authorizer`, as a key arrival does. Returns how many applied.
-pub fn redrive_sealed_root_ops_with(
+/// Replay every op of `namespace_id` this node can open, root and group, judging them
+/// against `authorizer`, as a key arrival does. Returns how many landed.
+pub fn redrive_namespace_with(
     store: &Store,
     namespace_id: NamespaceId,
     authorizer: &dyn crate::authorizer::AtCutAuthorizer,
 ) -> EyreResult<usize> {
-    NamespaceGovernance::new(store, namespace_id)
+    Ok(NamespaceGovernance::new(store, namespace_id)
         .with_apply_auth(&[], authorizer)
-        .retry_sealed_root_ops(0, false)
-        .map(|pass| pass.applied)
+        .replay(namespace_id.to_bytes(), 0)?
+        .applied)
 }
 
 pub async fn sign_apply_and_publish_namespace_op(

@@ -184,8 +184,8 @@ pub(crate) mod tests {
     /// membership path" from a fold that is missing the flip would be a decision
     /// about a history this node cannot see, and a keyed peer would contradict
     /// it. The recovery has to fold the flip and THEN the join, in that order,
-    /// which is the ordering `retry_encrypted_ops_for_group` closes by running
-    /// its sealed-root pass on both sides of the group phase.
+    /// which `retry_encrypted_ops_for_group` does by replaying root and group ops
+    /// in one causal order.
     #[test]
     fn a_pulled_key_unwedges_another_members_open_subgroup_join() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -392,9 +392,9 @@ pub(crate) mod tests {
             "the re-drive must apply the buffered flip to the live store"
         );
         // The whole point. The sealed join is only admissible once the flip it
-        // parents onto has been folded, so a single sealed-root pass that ran
-        // before the group phase would have refused it and logged the refusal —
-        // leaving this node the only one that does not see the joiner.
+        // parents onto has been folded, so replaying it ahead of the flip would
+        // have refused it and logged the refusal — leaving this node the only one
+        // that does not see the joiner.
         //
         // Read through the deny list rather than `is_member`, which would pass
         // whether or not the join applied: an inherited membership is DERIVED
