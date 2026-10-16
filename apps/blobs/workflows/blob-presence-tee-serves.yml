@@ -55,6 +55,8 @@ force_pull_image: false
 # stuck in: `prefetching announced blob` at 0 hits and a silent log.
 log_level: "info,calimero_node::handlers::blob_announce=debug"
 
+auth_mode: proxy
+
 # Individually defined so exactly one node boots as `merod run --mock-tee`.
 # Explicit ports are required in this form — the dict path does not stride
 # `base_port` per node, so omitting them collides every node on one port.
