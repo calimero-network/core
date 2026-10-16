@@ -1,6 +1,5 @@
-//! The key-arrival replay: every op a key opens, root and group, judged in one
-//! causal order, so a verdict never rests on an ancestor of the other kind that
-//! has not been replayed yet.
+//! The key-arrival replay: every op a key opens, root and group, judged in one causal
+//! order, so no verdict rests on an ancestor of the other kind not yet replayed.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -46,12 +45,8 @@ impl Step {
 }
 
 impl NamespaceGovernance<'_> {
-    /// Replay every op this node can open, root and group, in one causal order.
-    ///
-    /// The group ops replayed are `target`'s, those of every group with a held op, and,
-    /// when `target` is the namespace root, those of every group with a readable op. An
-    /// op that lands may open more (a delivered or rotated key, a created group) or let
-    /// an unsettled one land, so rounds repeat while one finds a new op or lands one.
+    /// Replay every op this node can open, root and group, in one causal order, in rounds
+    /// while one finds an op not seen before (a key or group a landed op opens) or lands one.
     pub(super) fn replay(&self, target: [u8; 32], depth: u8) -> EyreResult<Replay> {
         if depth > MAX_RETRY_REENTRY {
             tracing::debug!(
@@ -216,9 +211,8 @@ impl NamespaceGovernance<'_> {
         })
     }
 
-    /// Open a sealed root op, yielding the op its gates must see: the envelope for a
-    /// sealed root op, the JOINER'S inner op for a relayed join. `None` when it does not
-    /// open, or a group-sealed envelope carries anything but a join.
+    /// Open a sealed root op as its gates must see it: the envelope, or a relayed join's
+    /// inner op. `None` when it does not open, or a group-sealed one carries no join.
     fn open_sealed_root(
         &self,
         parked: &SignedNamespaceOp,

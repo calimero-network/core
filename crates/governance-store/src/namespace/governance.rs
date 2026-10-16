@@ -204,9 +204,8 @@ fn classify_report_readiness(
     classify_publish_readiness(authoritative_ack, report.acked_by.len(), ackable_members)
 }
 
-/// How deep a key-arrival replay may nest: not at all. What an op it replays opens
-/// (a delivered or rotated key, a created group) joins that replay's own worklist, so
-/// an effect that would start another replay inside it returns instead.
+/// How deep a key-arrival replay may nest: not at all, since what an op it replays opens
+/// joins its own next round.
 const MAX_RETRY_REENTRY: u8 = 0;
 
 /// What [`NamespaceGovernance::root_op_side_effects`] observed while running an
@@ -2512,9 +2511,8 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
-    /// Apply a parked root op at its own cut, as on arrival, and record the verdict. A
-    /// cut that does not read whole judges nothing; an undecidable gate, or no at-cut
-    /// judge, falls back to this pass's gates and records only an apply.
+    /// Apply a parked root op at its own cut and record the verdict, once that cut reads whole.
+    /// An undecidable gate, or no at-cut judge, falls back to live and records only an apply.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
@@ -2544,9 +2542,8 @@ impl<'a> NamespaceGovernance<'a> {
         outcome
     }
 
-    /// [`Self::decrypt_and_apply_group_op`] for a replay. A parked op is judged at its
-    /// own cut, or left unjudged, as [`Self::replay_parked_root_op`] judges one; any
-    /// other keeps this pass's gates.
+    /// [`Self::decrypt_and_apply_group_op`] for a replay: a parked op is judged as
+    /// [`Self::replay_parked_root_op`] judges one, any other by this pass's gates.
     fn replay_group_op(
         &self,
         ns_op: &SignedNamespaceOp,
@@ -3251,9 +3248,8 @@ impl<'a> NamespaceGovernance<'a> {
                 self.member_joined_open_side_effects(&group_id_typed, member)?;
             }
             RootOp::GroupCreated { group_id, .. } => {
-                // The create wrote the group's meta and admin row, so ops buffered for the
-                // group, and a `KeyDelivery` deferred on its unresolved anchors, can land now.
-                // A replayed create starts no replay: the one replaying it collects the group.
+                // The create wrote the group's meta and admin row, so its buffered ops and a
+                // deferred `KeyDelivery` can land; a replayed create joins the running replay.
                 match self.retry_encrypted_ops_for_group_at_depth(group_id.to_bytes(), depth) {
                     Ok(divergence) => {
                         if divergence.is_some() {

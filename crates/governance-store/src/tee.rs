@@ -181,10 +181,8 @@ pub fn read_tee_admission_policy(
     }
 }
 
-/// [`read_tee_admission_policy`] at the cut `parents`: the causally latest policy among
-/// the ops in its ancestry that applied, so peers that applied a concurrent policy first
-/// still agree. An ancestry this node cannot read is read live only where `authorizer`
-/// says live is sound, and is otherwise `ApplyError::AuthorityUndecidable`.
+/// [`read_tee_admission_policy`] at the cut `parents`: the causally latest applied policy in
+/// its ancestry. An unreadable ancestry reads live only where `authorizer` says that is sound.
 pub(crate) fn read_tee_admission_policy_at_cut(
     store: &Store,
     group_id: &ContextGroupId,

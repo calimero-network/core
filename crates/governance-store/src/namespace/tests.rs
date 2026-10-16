@@ -10304,11 +10304,8 @@ impl TeeAdmissionFixture {
             .expect("the op applies on a node holding every key");
     }
 
-    /// The TEE fleet's chain, applied here: the policy (a group op), the replica's
-    /// admission under it (a root op), the namespace TEE key the admitted replica
-    /// delivers (a group op only a TEE may sign), and a second TEE the replica admits
-    /// (a root op only an admitted TEE or an admin may vouch for). With `rekey`, the
-    /// namespace moves to that key after the policy, so the rest is sealed under it.
+    /// The TEE fleet's chain, applied here: policy (group), admission (root), the vault key the
+    /// TEE delivers (group), a second TEE it vouches for (root); after the policy, under `rekey`.
     fn fleet_chain(&self, rekey: Option<&[u8; 32]>) -> Vec<SignedNamespaceOp> {
         let policy = self.set_policy();
         if let Some(key) = rekey {
@@ -10513,9 +10510,8 @@ enum Arrival<'a> {
     Key([u8; 32]),
 }
 
-/// Play `arrivals` on `replica` as the node takes them: an op is applied at its own
-/// cut, and a key is stored and replays whatever it opens. As in the DAG, an op waits
-/// until its parents are logged, and one the apply turns away is offered again.
+/// Play `arrivals` on `replica`: an op applies at its cut once its parents are logged, one
+/// turned away is offered again, as in the DAG, and a key is stored and replays what it opens.
 fn play(f: &TeeAdmissionFixture, replica: &Store, arrivals: &[Arrival<'_>]) {
     let judge = crate::test_fixtures::LiveCutJudge {
         store: replica,
@@ -10630,10 +10626,8 @@ fn a_tee_admission_without_a_policy_is_refused_by_the_key_arrival() {
     );
 }
 
-/// The TEE fleet's chain alternates op kinds twice: the policy (group), the
-/// admission that needs it (root), the key delivery only the admitted TEE may sign
-/// (group). A node that takes the namespace key after all three lands them as the
-/// node that read them live.
+/// The fleet chain alternates kinds: policy (group), admission (root), the delivery the TEE
+/// signs (group). A node taking the key after all of them lands them as a live reader did.
 #[test]
 fn a_tee_fleet_chain_replayed_after_a_late_key_lands_as_it_did_live() {
     let f = TeeAdmissionFixture::without_policy(0xDB);
@@ -10667,10 +10661,8 @@ fn a_tee_fleet_chain_lands_the_same_wherever_the_key_arrives_in_it() {
     }
 }
 
-/// A node holding the key the admission is sealed under, but not the older one its
-/// policy is sealed under, reads the admission while the policy is still a hole in
-/// its cut. That is no verdict: the admission lands once the policy does, as on a
-/// node holding both keys.
+/// A node holding the admission's key but not its policy's reads the admission while the
+/// policy is a hole in its cut; that is no verdict, and it lands once the policy does.
 #[test]
 fn an_admission_read_while_its_policy_is_still_sealed_lands_once_the_policy_does() {
     let f = TeeAdmissionFixture::without_policy(0xDD);
@@ -10882,7 +10874,7 @@ fn assert_concurrent_ops_land_the_same(
 /// A role change is judged by its target's role at its cut, not after a concurrent
 /// removal of the target.
 #[test]
-#[ignore = "MemberRoleSet reads its target's direct row live; the projection offers no direct role at a cut"]
+#[ignore = "MemberRoleSet reads its target's direct row live; no direct role is read at a cut"]
 fn a_role_change_concurrent_with_its_targets_removal_lands_the_same_in_either_order() {
     let f = TeeAdmissionFixture::new(0xE4);
     let member =
@@ -10920,7 +10912,7 @@ fn a_role_change_concurrent_with_its_targets_removal_lands_the_same_in_either_or
 /// A context capability grant is judged by where the context was registered at its
 /// cut, not after a concurrent detach.
 #[test]
-#[ignore = "ContextCapabilityGranted reads the context's registration live; the projection folds no registration"]
+#[ignore = "a context grant reads the context's registration live; none is read at a cut"]
 fn a_context_grant_concurrent_with_its_contexts_detach_lands_the_same_in_either_order() {
     let f = TeeAdmissionFixture::new(0xE5);
     let context = ContextId::from([0xE5; 32]);
@@ -10964,7 +10956,7 @@ fn a_context_grant_concurrent_with_its_contexts_detach_lands_the_same_in_either_
 /// A join is judged by its joiner's re-entry block at its cut, not after a concurrent
 /// removal of the joiner.
 #[test]
-#[ignore = "a join reads its joiner's re-entry block live; the projection folds no re-entry block"]
+#[ignore = "a join reads its joiner's re-entry block live; none is read at a cut"]
 fn a_rejoin_concurrent_with_the_joiners_removal_lands_the_same_in_either_order() {
     let f = TeeAdmissionFixture::new(0xE6);
     let member_sk = f.joined_member(crate::test_fixtures::signed_invitation_for(
@@ -10993,7 +10985,7 @@ fn a_rejoin_concurrent_with_the_joiners_removal_lands_the_same_in_either_order()
 /// A join is judged by whether its invitation was spent at its cut, not after a
 /// concurrent leave of the joiner.
 #[test]
-#[ignore = "a join reads its consumed invitations live; the projection folds no consumed invitation"]
+#[ignore = "a join reads its spent invitations live; none is read at a cut"]
 fn a_rejoin_with_a_spent_invitation_concurrent_with_a_leave_lands_the_same_in_either_order() {
     let f = TeeAdmissionFixture::new(0xE8);
     let invitation =

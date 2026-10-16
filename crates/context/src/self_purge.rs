@@ -518,27 +518,8 @@ async fn reconcile_sweep(store: &Store, node_client: &NodeClient) {
     );
 }
 
-/// Curative startup re-drive sweep (#2848 Part C).
-///
-/// Recovers a node that was stranded between `GroupCreated` and its
-/// `KeyDelivery`: the group op (e.g. `ContextRegistered`) arrived and was
-/// buffered awaiting the key, `GroupCreated` applied, the live one-shot
-/// `KeyDelivery` retry then ran and FAILED (the key had not landed yet), and
-/// no future event re-drives the buffered op. Parts A/B close this race for
-/// future/live admissions; this one-shot startup sweep closes it for nodes
-/// already stranded before the fix shipped.
-///
-/// For every namespace this node holds an identity for
-/// ([`known_namespace_identities`]) it runs the replay a key arrival runs
-/// ([`redrive_namespace_with`](calimero_governance_store::redrive_namespace_with)):
-/// every op whose key is held, root and group, in one causal order, until a
-/// round neither finds a new op nor lands one. A purged group holds no key, so
-/// its ops are never collected.
-///
-/// Structurally SEPARATE from the purge reconcile (it does NOT touch the
-/// `PendingSelfPurge` CF). Per-namespace errors are logged and swallowed — a
-/// re-drive failure must never block node startup, and the next restart re-runs
-/// the sweep.
+/// Curative startup re-drive: the replay a key arrival runs, over every namespace this node
+/// knows, so ops stranded with their key already held land. Best-effort; a restart retries.
 fn redrive_stranded_ops_sweep(store: &Store) {
     let namespaces = match calimero_governance_store::known_namespace_identities(store) {
         Ok(v) => v,
