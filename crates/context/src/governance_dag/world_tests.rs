@@ -1007,9 +1007,11 @@ mod concurrent {
     use calimero_account::AccountId;
     use calimero_governance_store::test_fixtures::{
         account_for, admission_quote_with, dummy_member_removed_op, fork_store, guarded_group_op,
-        real_join_account, seal_for_test, signed_invitation_for,
+        guarded_root_op, real_join_account, seal_for_test, signed_invitation_for,
     };
-    use calimero_governance_store::{parked_op, NamespaceOpLogService, Parked};
+    use calimero_governance_store::{
+        parked_op, CapabilitiesRepository, MetadataRepository, NamespaceOpLogService, Parked,
+    };
     use calimero_governance_types::RootOp;
     use sha2::Digest;
 
@@ -1645,6 +1647,247 @@ mod concurrent {
             vec![Some(Parked::Refused), None],
             "an add moved a TEE row the cut holds out of the TEE roles"
         );
+    }
+
+    /// `row` reads the same on both nodes.
+    fn assert_same_rows<T: PartialEq + std::fmt::Debug>(
+        nodes: &[Store; 2],
+        row: impl Fn(&Store) -> T,
+    ) {
+        assert_eq!(
+            row(&nodes[0]),
+            row(&nodes[1]),
+            "the two orders left different rows"
+        );
+    }
+
+    /// `op` on a member the owner logged, signed by `signer`, concurrent with its removal by
+    /// the owner: both land, the same on both nodes.
+    async fn concurrent_with_the_targets_removal(
+        seed: u8,
+        signer: impl Fn(&World, &PrivateKey) -> PrivateKey,
+        op: impl Fn(AccountId) -> GroupOp,
+    ) -> ([Store; 2], &'static World, AccountId) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let member_sk = joined_member(&store, world, seed, [seed; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let parents = heads(&store, world);
+        let changed = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &signer(world, &member_sk),
+            &parents,
+            unused_nonce(),
+            &op(member),
+        );
+        let remove = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &world.owner_sk,
+            &parents,
+            unused_nonce(),
+            &dummy_member_removed_op(member),
+        );
+
+        let nodes = in_both_orders(&store, &changed, &remove).await;
+
+        assert_landed_the_same(&nodes, world, &[&changed, &remove], &member);
+        assert_eq!(
+            verdicts(&nodes[0], world, &[&changed, &remove]),
+            vec![None, None],
+            "the op was judged after the removal its cut does not hold"
+        );
+        (nodes, world, member)
+    }
+
+    fn by_the_admin(world: &World, _: &PrivateKey) -> PrivateKey {
+        PrivateKey::from(*world.actor(ActorState::NamespaceAdmin).sign_sk.as_bytes())
+    }
+
+    #[actix::test]
+    async fn a_capability_set_concurrent_with_its_targets_removal_lands_the_same_in_either_order() {
+        let (nodes, world, member) =
+            concurrent_with_the_targets_removal(0xF5, by_the_admin, |member| {
+                GroupOp::MemberCapabilitySet {
+                    member,
+                    capabilities: calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+                }
+            })
+            .await;
+        assert_same_rows(&nodes, |node| {
+            CapabilitiesRepository::new(node)
+                .member_capability(&world.namespace, &member)
+                .expect("read the capability")
+        });
+    }
+
+    #[actix::test]
+    async fn an_auto_follow_set_concurrent_with_its_targets_removal_lands_the_same_in_either_order()
+    {
+        let _ = concurrent_with_the_targets_removal(0xF6, by_the_admin, |target| {
+            GroupOp::MemberSetAutoFollow {
+                target,
+                auto_follow_contexts: true,
+                auto_follow_subgroups: true,
+            }
+        })
+        .await;
+    }
+
+    #[actix::test]
+    async fn own_metadata_set_concurrent_with_the_members_rejoin_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let member_sk = joined_member(&store, world, 0xF7, [0xF7; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let leave = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &member_sk,
+            &heads(&store, world),
+            2,
+            &GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+        apply(&store, &leave).await.expect("the member leaves");
+        let parents = heads(&store, world);
+        let rejoin = join_at(world, &member_sk, [0xF8; 32], &parents, 3);
+        let metadata = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &member_sk,
+            &parents,
+            4,
+            &GroupOp::MemberMetadataSet {
+                member,
+                name: Some("me".to_owned()),
+                data: std::collections::BTreeMap::new(),
+            },
+        );
+
+        let nodes = in_both_orders(&store, &rejoin, &metadata).await;
+
+        assert_eq!(
+            verdicts(&nodes[0], world, &[&metadata]),
+            verdicts(&nodes[1], world, &[&metadata]),
+            "a non-member's own metadata was judged after a rejoin its cut does not hold"
+        );
+        assert_same_rows(&nodes, |node| {
+            MetadataRepository::new(node)
+                .member_metadata(&world.namespace, &member)
+                .expect("read the metadata")
+                .map(|record| record.name)
+        });
+    }
+
+    #[actix::test]
+    async fn an_admin_change_concurrent_with_its_targets_removal_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let member_sk = joined_member(&store, world, 0xF9, [0xF9; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let parents = heads(&store, world);
+        let change = SignedNamespaceOp::sign(
+            &world.owner_sk,
+            world.namespace.to_bytes().into(),
+            parents.clone(),
+            unused_nonce(),
+            seal_for_test(
+                &store,
+                world.namespace,
+                guarded_root_op(
+                    &store,
+                    &world.namespace,
+                    &world.owner_sk.public_key(),
+                    RootOp::AdminChanged { new_admin: member },
+                ),
+            ),
+        )
+        .expect("sign the admin change");
+        let remove = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            unused_nonce(),
+            &dummy_member_removed_op(member),
+        );
+
+        let nodes = in_both_orders(&store, &change, &remove).await;
+
+        assert_landed_the_same(&nodes, world, &[&change, &remove], &member);
+        assert_same_rows(&nodes, |node| {
+            calimero_governance_store::MetaRepository::new(node)
+                .load(&world.namespace)
+                .expect("read the meta")
+                .map(|meta| meta.admin_identity)
+        });
+    }
+
+    #[actix::test]
+    async fn an_ownership_transfer_concurrent_with_its_targets_demotion_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        // Another admin demotes: the owner's own standing moves with the transfer.
+        let other_sk = joined_member(&store, world, 0xFA, [0xFA; 32]).await;
+        publish(
+            &store,
+            &world.namespace,
+            &world.owner_sk,
+            &GroupOp::MemberRoleSet {
+                member: account_for(&other_sk.public_key()),
+                role: GroupMemberRole::Admin,
+            },
+        )
+        .await
+        .expect("the owner promotes another admin");
+        let parents = heads(&store, world);
+        let transfer = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &world.owner_sk,
+            &parents,
+            unused_nonce(),
+            &guarded_group_op(
+                &store,
+                &world.namespace,
+                &world.owner_sk.public_key(),
+                GroupOp::TransferOwnership {
+                    new_owner: admin.account,
+                },
+            ),
+        );
+        let demote = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &other_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::MemberRoleSet {
+                member: admin.account,
+                role: GroupMemberRole::Member,
+            },
+        );
+
+        let nodes = in_both_orders(&store, &transfer, &demote).await;
+
+        assert_landed_the_same(&nodes, world, &[&transfer, &demote], &admin.account);
+        assert_same_rows(&nodes, |node| {
+            calimero_governance_store::MetaRepository::new(node)
+                .load(&world.namespace)
+                .expect("read the meta")
+                .map(|meta| meta.owner_identity)
+        });
     }
 
     /// A nonce no signer of the world has used: a reused one is dropped as a duplicate.

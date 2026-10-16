@@ -1466,12 +1466,13 @@ fn caps(w: &World, who: &Person) -> Option<u32> {
 #[test]
 fn a_capability_a_void_op_granted_is_taken_back_when_the_removal_arrives() {
     let w = World::new();
-    let [_, s, _] = w.founded();
+    let [_, s, b] = w.founded();
     let before = caps(&w, &w.bob);
 
     let grant = w.sign(
         &w.sam,
-        &[&s],
+        // Bob's add is in the grant's cut: a capability is set only on a member there.
+        &[&b],
         &GroupOp::MemberCapabilitySet {
             member: w.bob.account,
             capabilities: calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS,

@@ -259,6 +259,19 @@ impl<'a> GroupApplyCtx<'a> {
         MembershipRepository::new(self.store).role_of(self.group_id, member)
     }
 
+    /// Whether `member` is a member of this group at the op's cut, inherited or direct, or
+    /// live where that is sound.
+    pub(crate) fn is_member_at_cut(&self, member: &AccountId) -> EyreResult<bool> {
+        if let Some(role) =
+            self.authorizer
+                .effective_role_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(role.is_some());
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        MembershipRepository::new(self.store).is_member(self.group_id, member)
+    }
+
     /// The exit among `member`'s latest changes in this group at the op's cut, or live
     /// where that is sound.
     pub(crate) fn exit_at_cut(
