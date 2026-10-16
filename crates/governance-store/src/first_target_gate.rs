@@ -30,13 +30,23 @@
 //!
 //! The walk runs only for a delegated `TargetApplicationSet`, which a group
 //! sees at most once in its life, so its cost is not on any hot path.
+//!
+//! # Which application a group ran at a cut
+//!
+//! [`applications_at_cut`] asks the same ancestry a wider question for the
+//! device-link scope check: not whether the group had chosen, but what it
+//! could have been running. A link scoped to some applications reaches a group
+//! only if every application the group may have targeted at the link's cut is
+//! one of them, so whether a replica folded a concurrent `TargetApplicationSet`
+//! before or after the link no longer decides whether the device is bound
+//! there (core#4603).
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
-use calimero_primitives::application::ZERO_APPLICATION_ID;
+use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
@@ -112,6 +122,62 @@ pub fn refuse_unless_untargeted(store: &Store, group_id: &ContextGroupId) -> Eyr
         return Err(DelegationRefusal::TargetApplicationAlreadyChosen(group_id.to_string()).into());
     }
     Ok(())
+}
+
+/// The most op visits one [`applications_at_cut`] walk makes, counting the
+/// walks into the groups a subgroup was created under. A link's walk reads
+/// every op since the group's newest target choice, and the history behind
+/// that choice, so a namespace with a longer history answers
+/// [`ApplicationsAtCut::Unknown`] and the link falls back as an unreadable
+/// ancestry does.
+pub(crate) const MAX_TARGET_WALK_VISITS: usize = 16_384;
+
+/// The applications a group may have been targeting at a cut.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ApplicationsAtCut {
+    /// Every application some peer that folded exactly the cut could read as
+    /// the group's target. [`ZERO_APPLICATION_ID`] stands for "none chosen".
+    /// More than one when target choices are concurrent with each other, or a
+    /// `CascadeUpgrade` may or may not have matched the group.
+    Known(BTreeSet<ApplicationId>),
+    /// Part of the ancestry is not readable here, or it is longer than
+    /// [`MAX_TARGET_WALK_VISITS`].
+    Unknown,
+}
+
+/// The applications `group_id` may have been targeting at the cut named by
+/// `parents`, read from the cut's ancestry in the namespace op log.
+///
+/// What writes a group's target: a `TargetApplicationSet` on the group, which
+/// replaces everything before it; the group's own `GroupCreated`, which copies
+/// its parent's target at that creation's cut; the namespace genesis, which
+/// starts the root at none; and a `CascadeUpgrade` signed on the group or on a
+/// group above it, which moves the group only if its bytecode matched when the
+/// cascade applied. That is read from live rows the ancestry does not record,
+/// so a cascade adds its application without taking away the ones before it.
+/// A writer that is an ancestor of a replacing writer in the cut is out of
+/// force and is dropped.
+///
+/// Which groups are above `group_id` is read from the live parent edges, as
+/// the cascade's own apply reads its descendants.
+///
+/// # Errors
+/// A store failure.
+pub(crate) fn applications_at_cut(
+    store: &Store,
+    group_id: &ContextGroupId,
+    parents: &[[u8; 32]],
+) -> EyreResult<ApplicationsAtCut> {
+    if parents.is_empty() {
+        return Ok(ApplicationsAtCut::Unknown);
+    }
+    let namespace = NamespaceRepository::new(store).resolve(group_id)?;
+    let walk = AncestryWalk {
+        store,
+        namespace: NamespaceId::from(namespace.to_bytes()),
+    };
+    let mut budget = MAX_TARGET_WALK_VISITS;
+    walk.applications_at(*group_id, parents, &mut budget)
 }
 
 fn targets_an_application_now(store: &Store, group_id: &ContextGroupId) -> EyreResult<bool> {
@@ -246,6 +312,181 @@ impl AncestryWalk<'_> {
     }
 }
 
+/// What one op in the ancestry wrote to the target of the group being asked
+/// after.
+enum Write {
+    Nothing,
+    /// Replaced the target with this application.
+    Set(ApplicationId),
+    /// May have moved the target to this application.
+    Maybe(ApplicationId),
+    /// Created the group under this parent, copying the parent's target.
+    CreatedUnder(ContextGroupId),
+    /// Concerns the group but cannot be read here.
+    Unreadable,
+}
+
+/// An op in the ancestry that wrote the group's target.
+struct Writer {
+    hash: [u8; 32],
+    applications: BTreeSet<ApplicationId>,
+}
+
+impl AncestryWalk<'_> {
+    /// The applications `group` may have targeted at `parents`, drawing on
+    /// `budget` for every op visited.
+    ///
+    /// One pass over the ancestry. An op is reached either "in force" (no
+    /// replacing writer lies between it and the cut) or "shadowed" (one does);
+    /// a shadowed op only passes the shadow on to its parents, and one reached
+    /// both ways is shadowed. The answer is the writers still in force.
+    fn applications_at(
+        &self,
+        group: ContextGroupId,
+        parents: &[[u8; 32]],
+        budget: &mut usize,
+    ) -> EyreResult<ApplicationsAtCut> {
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace);
+        let above = self.groups_above(group)?;
+        let mut shadowed: HashMap<[u8; 32], bool> = HashMap::new();
+        let mut queue: VecDeque<([u8; 32], bool)> =
+            parents.iter().map(|hash| (*hash, false)).collect();
+        let mut writers: Vec<Writer> = Vec::new();
+        while let Some((hash, shadow)) = queue.pop_front() {
+            match shadowed.get(&hash) {
+                Some(true) => continue,
+                Some(false) if !shadow => continue,
+                _ => {}
+            }
+            let _previous = shadowed.insert(hash, shadow);
+            let Some(left) = budget.checked_sub(1) else {
+                return Ok(ApplicationsAtCut::Unknown);
+            };
+            *budget = left;
+            // Absent or undecodable: ancestry this node cannot vouch for, and
+            // a shadow that stops here could leave a writer counted that the
+            // cut has replaced.
+            let Ok(Some(op)) = op_log.get_signed_op(hash) else {
+                return Ok(ApplicationsAtCut::Unknown);
+            };
+            if shadow {
+                queue.extend(op.parent_op_hashes.iter().map(|parent| (*parent, true)));
+                continue;
+            }
+            let replaced = match self.write(group, &above, &op)? {
+                Write::Unreadable => return Ok(ApplicationsAtCut::Unknown),
+                Write::Set(application) => Some(BTreeSet::from([application])),
+                Write::CreatedUnder(parent) => {
+                    match self.applications_at(parent, &op.parent_op_hashes, budget)? {
+                        ApplicationsAtCut::Known(applications) => Some(applications),
+                        ApplicationsAtCut::Unknown => return Ok(ApplicationsAtCut::Unknown),
+                    }
+                }
+                // The genesis: the root starts with no application.
+                Write::Nothing if op.parent_op_hashes.is_empty() => {
+                    Some(BTreeSet::from([ZERO_APPLICATION_ID]))
+                }
+                Write::Maybe(application) => {
+                    writers.push(Writer {
+                        hash,
+                        applications: BTreeSet::from([application]),
+                    });
+                    None
+                }
+                Write::Nothing => None,
+            };
+            let shadow_parents = replaced.is_some();
+            if let Some(applications) = replaced {
+                writers.push(Writer { hash, applications });
+            }
+            queue.extend(
+                op.parent_op_hashes
+                    .iter()
+                    .map(|parent| (*parent, shadow_parents)),
+            );
+        }
+        Ok(ApplicationsAtCut::Known(
+            writers
+                .into_iter()
+                .filter(|writer| shadowed.get(&writer.hash) == Some(&false))
+                .flat_map(|writer| writer.applications)
+                .collect(),
+        ))
+    }
+
+    /// `group` and every group above it, by the live parent edges.
+    fn groups_above(&self, group: ContextGroupId) -> EyreResult<HashSet<ContextGroupId>> {
+        let namespaces = NamespaceRepository::new(self.store);
+        let mut above = HashSet::from([group]);
+        let mut current = group;
+        while let Some(parent) = namespaces.parent(&current)? {
+            if !above.insert(parent) {
+                break;
+            }
+            current = parent;
+        }
+        Ok(above)
+    }
+
+    fn write(
+        &self,
+        group: ContextGroupId,
+        above: &HashSet<ContextGroupId>,
+        op: &SignedNamespaceOp,
+    ) -> EyreResult<Write> {
+        let creation = |finding| match finding {
+            Finding::CreatedUnder(parent) => Write::CreatedUnder(parent),
+            _ => Write::Nothing,
+        };
+        let is_root = group.to_bytes() == self.namespace.to_bytes();
+        match &op.op {
+            // No root op creates the namespace root, and none writes a target.
+            NamespaceOp::Root(_) | NamespaceOp::RootSealed { .. } if is_root => Ok(Write::Nothing),
+            NamespaceOp::Root(root) => Ok(creation(created(group, root))),
+            NamespaceOp::RootSealed { key_id, encrypted } => {
+                match crate::namespace::open_sealed_root_op(
+                    self.store,
+                    self.namespace,
+                    key_id.as_bytes(),
+                    encrypted,
+                ) {
+                    Ok(Some(root)) => Ok(creation(created(group, &root))),
+                    Ok(None) | Err(_) => Ok(Write::Unreadable),
+                }
+            }
+            NamespaceOp::Group {
+                group_id,
+                key_id,
+                encrypted,
+                ..
+            } => {
+                // Only an op on this group or a group above it can write this
+                // group's target, so nothing else needs opening.
+                if !above.contains(group_id) {
+                    return Ok(Write::Nothing);
+                }
+                let Some(inner) = self.open_group_op(*group_id, key_id.as_bytes(), encrypted)?
+                else {
+                    return Ok(Write::Unreadable);
+                };
+                Ok(match unwrap_on_behalf(&inner) {
+                    GroupOp::TargetApplicationSet {
+                        target_application_id,
+                        ..
+                    } if *group_id == group => Write::Set(*target_application_id),
+                    GroupOp::CascadeUpgrade {
+                        target_application_id,
+                        ..
+                    } => Write::Maybe(*target_application_id),
+                    _ => Write::Nothing,
+                })
+            }
+            // The remaining envelopes carry joins, which set no application.
+            _ => Ok(Write::Nothing),
+        }
+    }
+}
+
 fn unwrap_on_behalf(op: &GroupOp) -> &GroupOp {
     match op {
         GroupOp::OnBehalf { op, .. } => op,
@@ -273,7 +514,8 @@ mod tests {
     use std::cell::Cell;
 
     use calimero_account::{
-        AccountId, GovernanceDelegation, GovernanceOpKind, GovernanceTerms, GovernanceWarrant,
+        AccountGenesis, AccountId, AccountMemberEndorsement, DeviceCert, DeviceId,
+        GovernanceDelegation, GovernanceOpKind, GovernanceTerms, GovernanceWarrant, KemPublicKey,
     };
     use calimero_context_client::local_governance::{
         GroupOp, NamespaceOp, RootOp, SignedNamespaceOp,
@@ -842,5 +1084,231 @@ mod tests {
             "undecidable at this gate, not a later one: {err:?}"
         );
         assert_eq!(r.target(&r.ns), ZERO_APPLICATION_ID, "nothing written");
+    }
+
+    /// A `TargetApplicationSet` on `group` choosing `application`.
+    fn target(application: [u8; 32]) -> GroupOp {
+        GroupOp::TargetApplicationSet {
+            bytecode_id: BytecodeId::from(BUNDLE),
+            target_application_id: ApplicationId::from(application),
+            package: "com.example.app".to_owned(),
+            version: "1.0.0".to_owned(),
+        }
+    }
+
+    const APP_B: [u8; 32] = [0x89; 32];
+    const DEVICE_SEED: u8 = 0x5D;
+
+    impl Rig {
+        /// A link of a fresh account's device into the root, endorsed by
+        /// the founder, its scope naming `applications`.
+        fn link(&self, applications: &[[u8; 32]]) -> GroupOp {
+            let owner_sk = PrivateKey::from([DEVICE_SEED; 32]);
+            let genesis = AccountGenesis::new(owner_sk.public_key());
+            let account = genesis.account_id();
+            let device = DeviceId::mint(account, [DEVICE_SEED; 16]);
+            let cert = DeviceCert::sign(
+                &owner_sk,
+                account,
+                device,
+                &owner_sk.public_key(),
+                &KemPublicKey::from([DEVICE_SEED; 32]),
+                0,
+                0,
+            )
+            .expect("cert");
+            GroupOp::AccountDeviceLinked {
+                genesis,
+                chain: vec![],
+                cert,
+                endorsement: AccountMemberEndorsement::sign(&self.founder_sk, account)
+                    .expect("endorse"),
+                scope: Box::new(crate::test_fixtures::device_scope(
+                    &owner_sk,
+                    &cert,
+                    applications
+                        .iter()
+                        .copied()
+                        .map(ApplicationId::from)
+                        .collect(),
+                    0,
+                )),
+            }
+        }
+
+        fn linked_device_bound(&self) -> bool {
+            let account =
+                AccountGenesis::new(PrivateKey::from([DEVICE_SEED; 32]).public_key()).account_id();
+            crate::AccountBindingRepository::new(&self.store)
+                .live_bindings(&self.ns)
+                .expect("read")
+                .iter()
+                .any(|binding| binding.account == account)
+        }
+
+        fn applications_at(&self, parents: &[[u8; 32]]) -> super::ApplicationsAtCut {
+            super::applications_at_cut(&self.store, &self.ns, parents).expect("walk")
+        }
+    }
+
+    fn known(applications: &[[u8; 32]]) -> super::ApplicationsAtCut {
+        super::ApplicationsAtCut::Known(
+            applications
+                .iter()
+                .copied()
+                .map(ApplicationId::from)
+                .collect(),
+        )
+    }
+
+    /// core#4603: a link made while the root targets A, scoped to A, races a
+    /// `TargetApplicationSet` to B. Both replicas bind the device, whichever of
+    /// the two ops each folds first, because the link is judged at its own cut.
+    #[test]
+    fn a_link_racing_a_target_change_binds_on_either_side_of_it() {
+        let mut bound = Vec::new();
+        for target_first in [true, false] {
+            let r = rig();
+            let at_a = r
+                .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP))
+                .expect("the root targets A");
+            let link = r.link(&[APP]);
+            if target_first {
+                let _b = r
+                    .group_op(&r.founder_sk, r.ns, vec![at_a], &target(APP_B))
+                    .expect("the root moves to B");
+                assert_eq!(r.target(&r.ns), ApplicationId::from(APP_B), "live reads B");
+                let _link = r
+                    .group_op(&r.founder_sk, r.ns, vec![at_a], &link)
+                    .expect("the link applies");
+            } else {
+                let _link = r
+                    .group_op(&r.founder_sk, r.ns, vec![at_a], &link)
+                    .expect("the link applies");
+                let _b = r
+                    .group_op(&r.founder_sk, r.ns, vec![at_a], &target(APP_B))
+                    .expect("the root moves to B");
+            }
+            bound.push(r.linked_device_bound());
+        }
+        assert_eq!(
+            bound,
+            [true, true],
+            "the same signed link reaches the same verdict on both replicas"
+        );
+    }
+
+    /// The same race, but the link's scope does not name the target in force at
+    /// its cut: refused on both replicas, even the one whose live target the
+    /// scope names.
+    #[test]
+    fn a_link_scoped_to_the_next_target_is_refused_on_either_side_of_it() {
+        let mut bound = Vec::new();
+        for target_first in [true, false] {
+            let r = rig();
+            let at_a = r
+                .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP))
+                .expect("the root targets A");
+            let link = r.link(&[APP_B]);
+            let move_to_b = |r: &Rig| {
+                let _b = r
+                    .group_op(&r.founder_sk, r.ns, vec![at_a], &target(APP_B))
+                    .expect("the root moves to B");
+            };
+            if target_first {
+                move_to_b(&r);
+            }
+            let _link = r
+                .group_op(&r.founder_sk, r.ns, vec![at_a], &link)
+                .expect("a refused link is still logged");
+            if !target_first {
+                move_to_b(&r);
+            }
+            bound.push(r.linked_device_bound());
+        }
+        assert_eq!(bound, [false, false]);
+    }
+
+    /// Two target choices concurrent with each other are both in force at a cut
+    /// holding both: a link there binds only if its scope names both.
+    #[test]
+    fn concurrent_targets_at_a_cut_must_all_be_in_scope() {
+        let r = rig();
+        let a = r
+            .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP))
+            .expect("A");
+        let b = r
+            .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP_B))
+            .expect("B, concurrent with A");
+        assert_eq!(r.applications_at(&[a, b]), known(&[APP, APP_B]));
+
+        let _narrow = r
+            .group_op(&r.founder_sk, r.ns, vec![a, b], &r.link(&[APP]))
+            .expect("logged");
+        assert!(!r.linked_device_bound(), "B may be the target at the cut");
+        let r = rig();
+        let a = r
+            .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP))
+            .expect("A");
+        let b = r
+            .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP_B))
+            .expect("B");
+        let _wide = r
+            .group_op(&r.founder_sk, r.ns, vec![a, b], &r.link(&[APP, APP_B]))
+            .expect("logged");
+        assert!(
+            r.linked_device_bound(),
+            "a scope naming both reaches the group"
+        );
+    }
+
+    /// A choice the cut has replaced is out of force, even where another head
+    /// of the cut reaches it by a path that does not pass the replacement.
+    #[test]
+    fn a_replaced_target_is_out_of_force_at_the_cut() {
+        let r = rig();
+        let a = r
+            .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP))
+            .expect("A");
+        let b = r
+            .group_op(&r.founder_sk, r.ns, vec![a], &target(APP_B))
+            .expect("B replaces A");
+        let (_, beside) = r.subgroup(0xE3, vec![a]);
+        assert_eq!(r.applications_at(&[b, beside]), known(&[APP_B]));
+        assert_eq!(r.applications_at(&[beside]), known(&[APP]));
+        assert_eq!(r.applications_at(&[r.genesis]), known(&[[0u8; 32]]));
+    }
+
+    /// A subgroup runs what its parent ran at its creation's cut, until it
+    /// chooses for itself.
+    #[test]
+    fn a_subgroup_reads_its_parents_target_at_its_creation() {
+        let r = rig();
+        let a = r
+            .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP))
+            .expect("A");
+        let (sub, created) = r.subgroup(0xE4, vec![a]);
+        let sub = ContextGroupId::from(sub);
+        let _b = r
+            .group_op(&r.founder_sk, r.ns, vec![created], &target(APP_B))
+            .expect("the root moves on");
+        let at = |parents: &[[u8; 32]]| {
+            super::applications_at_cut(&r.store, &sub, parents).expect("walk")
+        };
+        assert_eq!(at(&[created]), known(&[APP]));
+        let own = r
+            .group_op(&r.founder_sk, sub, vec![created], &target(APP_B))
+            .expect("the subgroup chooses");
+        assert_eq!(at(&[own]), known(&[APP_B]));
+    }
+
+    /// An ancestry with an op this node does not hold is not "no target".
+    #[test]
+    fn a_missing_ancestor_leaves_the_target_unknown() {
+        let r = rig();
+        assert_eq!(
+            r.applications_at(&[[0xAB; 32]]),
+            super::ApplicationsAtCut::Unknown
+        );
     }
 }
