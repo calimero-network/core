@@ -12,6 +12,7 @@ use super::super::op_log::NamespaceOpLogService;
 use super::super::retry::{order_causally, NamespaceRetryService, ReplayCandidate, RetryCandidate};
 use super::MAX_RETRY_REENTRY;
 use super::{ensure_subgroup_sealed_carries_a_join, open_relayed_join, NamespaceGovernance};
+use crate::authorizer::AtCutAuthorizer;
 use crate::held_ops::HeldOps;
 use crate::metrics::record_namespace_retry_event;
 use crate::void_ledger::Parked;
@@ -270,11 +271,16 @@ impl NamespaceGovernance<'_> {
         }
         let delta_id = candidate.signed_op.content_hash()?;
         let held_ops = HeldOps::new(self.store, self.namespace_id);
-        // A held op waits on its group's own key; until one is held nothing applies it.
+        // A held op waits on its group's own key only while that group's history is what
+        // it lacks; one held for another hole is judged once its cut reads whole.
+        let sealed_in_group = |judge: &dyn AtCutAuthorizer| {
+            judge.history_sealed_in_group(&group_id, &candidate.signed_op.parent_op_hashes)
+        };
         if GroupKeyring::new(self.store, group_id)
             .load_current_key()?
             .is_none()
             && held_ops.contains(delta_id)?
+            && self.authorizer.at_cut().is_none_or(sealed_in_group)
         {
             record_namespace_retry_event("still_held");
             return Ok(Step::default());
