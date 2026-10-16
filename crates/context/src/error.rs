@@ -565,6 +565,18 @@ pub enum ContextError {
         reason: &'static str,
     },
 
+    /// A `409`: the namespace's stored target is not the application the caller
+    /// expected, so activating it would switch to a release they did not name.
+    #[error("namespace {namespace_id} targets application {actual}, not the expected {expected}")]
+    UpgradeTargetMismatch {
+        /// Hex rendering of the namespace the caller named (for the message only).
+        namespace_id: String,
+        /// The application the caller expected.
+        expected: String,
+        /// The application the namespace targets.
+        actual: String,
+    },
+
     /// A `400`: the group a leave names is a namespace root. Leaving it here
     /// would apply the cascade without unsubscribing from the namespace topic,
     /// which only the namespace leave does.

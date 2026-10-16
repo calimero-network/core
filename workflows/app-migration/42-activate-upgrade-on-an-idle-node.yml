@@ -1,0 +1,236 @@
+name: 42 - Activating an upgrade on a node that never ran the app serves post-upgrade writes (2-node)
+description: >
+  Node 1 cascades the namespace v1 to v2 (code-only, the pure-bugfix pair)
+  and writes on v2. Node 2 never calls the app, so it holds that write back.
+  An operator (or the fleet sidecar) installs v2 on node 2 and asks it to
+  switch with POST /groups/{namespace}/upgrade/activate. The switch moves
+  node 2's context to v2 and replays the held write, so node 2's first read
+  returns it. A repeated activation moves nothing; a wrong expected
+  application is refused with 409; an unknown namespace with 404.
+
+  Topology mirrors a chat channel: namespace + one Open subgroup + one
+  context in the subgroup, upgraded with one cascade from the namespace.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-activate
+  base_port: 10270
+  base_rpc_port: 10370
+
+steps:
+  - name: Install scenario-pure-bugfix-v1 on node 1
+    type: install_application
+    node: app-migration-activate-1
+    path: dist/com.calimero.scenario-pure-bugfix-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-activate-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-activate-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "activate-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-activate-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-activate-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-activate-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-activate-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-activate-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-activate-2
+    context_id: "{{ctx_id}}"
+
+  - name: Write v1 item k1=10 on node 1
+    type: call
+    node: app-migration-activate-1
+    context_id: "{{ctx_id}}"
+    method: add_value
+    args:
+      key: "k1"
+      value: 10
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-activate-1
+      - app-migration-activate-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Install scenario-pure-bugfix-v2 on node 1
+    type: install_application
+    node: app-migration-activate-1
+    path: dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Cascade namespace v1 to v2 (initiated by node 1)
+    type: upgrade_group
+    node: app-migration-activate-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    cascade: true
+
+  - name: Write v2 item k2=20 on node 1 (switches node 1's context first)
+    type: call
+    node: app-migration-activate-1
+    context_id: "{{ctx_id}}"
+    method: add_value
+    args:
+      key: "k2"
+      value: 20
+
+  # Fixed wait, not wait_for_sync: node 2 holds the v2 write back, so the two
+  # nodes' state cannot match until node 2 switches.
+  - name: Wait for the cascade and the v2 write to reach node 2
+    type: wait
+    seconds: 15
+
+  # The release must be installed before it can be activated: activation never
+  # installs one.
+  - name: Install scenario-pure-bugfix-v2 on node 2
+    type: install_application
+    node: app-migration-activate-2
+    path: dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk
+    dev: true
+
+  - name: A wrong expected application is refused
+    type: script
+    script: workflows/app-migration/activate-upgrade.sh
+    target: local
+    args:
+      - app-migration-activate-2
+      - "{{namespace_id}}"
+      # A well-formed application id that no namespace targets.
+      - '{"expectedApplicationId": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}'
+      - "409"
+
+  - name: An unknown namespace is refused
+    type: script
+    script: workflows/app-migration/activate-upgrade.sh
+    target: local
+    args:
+      - app-migration-activate-2
+      - "0000000000000000000000000000000000000000000000000000000000000000"
+      - "{}"
+      - "404"
+      - '.error != null'
+
+  - name: Node 2 activates the upgrade without having run the app
+    type: script
+    script: workflows/app-migration/activate-upgrade.sh
+    target: local
+    args:
+      - app-migration-activate-2
+      - "{{namespace_id}}"
+      - '{"expectedApplicationId": "{{app_v2}}"}'
+      - "200"
+      - '.data.targetApplicationId == "{{app_v2}}" and .data.switchedContexts == 1 and .data.replayedDeltas >= 1'
+
+  - name: Activating again moves nothing
+    type: script
+    script: workflows/app-migration/activate-upgrade.sh
+    target: local
+    args:
+      - app-migration-activate-2
+      - "{{namespace_id}}"
+      - "{}"
+      - "200"
+      - '.data.switchedContexts == 0 and .data.replayedDeltas == 0'
+
+  - name: Node 2's first read returns node 1's v2 write
+    type: call
+    node: app-migration-activate-2
+    context_id: "{{ctx_id}}"
+    method: get_value
+    args:
+      key: "k2"
+    outputs:
+      first_read_k2: result
+
+  - name: Assert node 2's first read returns node 1's v2 write
+    type: json_assert
+    statements:
+      - 'json_equal({{first_read_k2}}, {"output": 20})'
+
+  - name: Read k1 on node 2 (v1 state survives the switch)
+    type: call
+    node: app-migration-activate-2
+    context_id: "{{ctx_id}}"
+    method: get_value
+    args:
+      key: "k1"
+    outputs:
+      read_k1: result
+
+  - name: Assert k1 = 10 on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{read_k1}}, {"output": 10})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-activate-1
+    context_id: "{{ctx_id}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-activate-1
+    group_id: "{{group_id}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-activate-1
+    namespace_id: "{{namespace_id}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-activate-1
+    application_id: "{{app_v1}}"
+
+stop_all_nodes: false

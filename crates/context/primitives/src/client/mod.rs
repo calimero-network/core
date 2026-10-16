@@ -24,7 +24,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AbortMigrationRequest, AbortMigrationResponse, ActivateUpgradeRequest, AddGroupMembersRequest,
+    AbortMigrationRequest, AbortMigrationResponse, ActivateNamespaceUpgradeRequest,
+    ActivateNamespaceUpgradeResponse, ActivateUpgradeRequest, AddGroupMembersRequest,
     AdmitTeeNodeRequest, AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest,
     CascadeStatusEntry, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
     CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
@@ -2361,6 +2362,12 @@ impl ContextClient {
         ActivateUpgrade,
         ActivateUpgradeRequest,
         eyre::Result<bool>
+    );
+    forward_to_actor!(
+        activate_namespace_upgrade,
+        ActivateNamespaceUpgrade,
+        ActivateNamespaceUpgradeRequest,
+        eyre::Result<ActivateNamespaceUpgradeResponse>
     );
 
     // --- Methods with custom parameter handling (not suitable for forward_to_actor!) ---

@@ -3,6 +3,8 @@
 use eyre::Result;
 
 use calimero_server_primitives::admin::AbortMigrationApiResponse;
+use calimero_server_primitives::admin::ActivateGroupUpgradeApiRequest;
+use calimero_server_primitives::admin::ActivateGroupUpgradeApiResponse;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiResponse;
 use calimero_server_primitives::admin::DeleteGroupApiRequest;
@@ -304,6 +306,22 @@ where
             .connection
             .post_with_timeout(
                 &format!("admin-api/groups/{group_id}/upgrade/retry"),
+                request,
+                NETWORK_BOUND_REQUEST_TIMEOUT,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn activate_group_upgrade(
+        &self,
+        namespace_id: &str,
+        request: ActivateGroupUpgradeApiRequest,
+    ) -> Result<ActivateGroupUpgradeApiResponse> {
+        let response = self
+            .connection
+            .post_with_timeout(
+                &format!("admin-api/groups/{namespace_id}/upgrade/activate"),
                 request,
                 NETWORK_BOUND_REQUEST_TIMEOUT,
             )

@@ -6,6 +6,7 @@ use crate::ContextManager;
 
 pub mod abort_migration;
 pub mod acquire_context_lock;
+pub mod activate_namespace_upgrade;
 pub mod add_group_members;
 pub mod admit_tee_node;
 pub mod apply_signed_group_op;
@@ -325,6 +326,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ActivateUpgrade { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::ActivateNamespaceUpgrade { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

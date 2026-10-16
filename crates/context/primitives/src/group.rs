@@ -1705,6 +1705,30 @@ impl Message for ActivateUpgradeRequest {
     type Result = eyre::Result<bool>;
 }
 
+/// Switch every context of a namespace on this node to its group's stored target
+/// release and replay the deltas held back for it. Never installs a release.
+///
+/// `expected_application_id`, when set, must equal the namespace's stored target.
+#[derive(Clone, Copy, Debug)]
+pub struct ActivateNamespaceUpgradeRequest {
+    pub namespace_id: ContextGroupId,
+    pub expected_application_id: Option<ApplicationId>,
+}
+
+impl Message for ActivateNamespaceUpgradeRequest {
+    type Result = eyre::Result<ActivateNamespaceUpgradeResponse>;
+}
+
+/// Outcome of an [`ActivateNamespaceUpgradeRequest`].
+#[derive(Clone, Copy, Debug)]
+pub struct ActivateNamespaceUpgradeResponse {
+    pub target_application_id: ApplicationId,
+    /// Contexts this request moved; `0` when every one was already current.
+    pub switched_contexts: u32,
+    /// Held deltas replayed into the namespace's contexts.
+    pub replayed_deltas: u32,
+}
+
 /// Outcome of a [`ResyncContextRequest`].
 #[derive(Clone, Copy, Debug)]
 pub struct ResyncContextResponse {

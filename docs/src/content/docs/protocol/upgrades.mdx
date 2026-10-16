@@ -552,6 +552,7 @@ The cascade is driven and observed through the admin API
 | `POST /groups/:group_id/upgrade` | trigger the upgrade (set `cascade: true` for the whole subtree) |
 | `GET /groups/:group_id/upgrade/status` | signed-group upgrade status |
 | `POST /groups/:group_id/upgrade/retry` | re-drive a stalled upgrade |
+| `POST /groups/:namespace_id/upgrade/activate` | switch this node's contexts to the stored target now and replay the held deltas (`meroctl group upgrade activate`); the release must already be installed |
 | `GET /groups/:namespace_id/cascade-status` | per-subgroup cascade rollout rollup |
 | `GET /groups/:namespace_id/migration-status` | cohort migration rollup (incl. `authored_remaining`), admin-only |
 | `POST /groups/:namespace_id/migration/abort` | admin stop of a rolling migration |
