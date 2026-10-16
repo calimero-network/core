@@ -349,6 +349,45 @@ pub fn assert_transport_ready(
     Ok(())
 }
 
+/// How long [`await_transport_ready`] waits for the mesh to reach the readiness
+/// bar before it refuses a publish.
+pub const TRANSPORT_READY_WAIT: Duration = Duration::from_secs(5);
+
+/// How often [`await_transport_ready`] re-samples the mesh while it waits.
+pub const TRANSPORT_READY_POLL: Duration = Duration::from_millis(250);
+
+/// [`assert_transport_ready`], re-sampled until it passes or `wait` runs out.
+///
+/// For a publish with no local apply behind it: an op it refuses is never
+/// signed and never reaches any peer, sync included, so a mesh that drops to
+/// zero for one sample would lose the op for good. `sample` returns the mesh
+/// size and the known subscriber count; the answer is the mesh the gate passed
+/// with, or the last refusal once `wait` has run out.
+///
+/// # Errors
+/// [`GovernanceBroadcastError::NamespaceNotReady`] when the mesh is still below
+/// the bar at the deadline.
+pub async fn await_transport_ready<F, Fut>(
+    mut sample: F,
+    mesh_n_low: usize,
+    wait: Duration,
+    poll: Duration,
+) -> Result<usize, GovernanceBroadcastError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = (usize, usize)>,
+{
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let (mesh, known_subscribers) = sample().await;
+        match assert_transport_ready(mesh, known_subscribers, mesh_n_low) {
+            Ok(()) => return Ok(mesh),
+            Err(err) if tokio::time::Instant::now() >= deadline => return Err(err),
+            Err(_) => tokio::time::sleep(poll).await,
+        }
+    }
+}
+
 /// Phase-3 typed-outcome on a successful publish: the originator's view
 /// of who acked the op and how long it took (start of publish to `min_acks`-th
 /// distinct valid signer).
