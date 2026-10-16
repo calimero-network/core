@@ -24,8 +24,9 @@ use libp2p::gossipsub::TopicHash;
 
 use crate::deferred_rotation::DeferredRotations;
 use crate::governance_broadcast::{
-    self, assert_transport_ready, classify_publish_readiness, ns_topic,
+    self, await_transport_ready, classify_publish_readiness, ns_topic,
     publish_and_await_ack_namespace, timeout_for_namespace_op, DeliveryReport, PublishReadiness,
+    TRANSPORT_READY_POLL, TRANSPORT_READY_WAIT,
 };
 use crate::held_ops::HeldOps;
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
@@ -1172,12 +1173,22 @@ impl<'a> NamespaceGovernance<'a> {
         required_signers: Option<Vec<PublicKey>>,
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
-        let mesh = node_client
-            .mesh_peer_count_for_namespace(self.namespace_id.to_bytes())
-            .await;
-        let known = node_client.known_subscribers(&topic).await;
-        assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
-            .map_err(|e| eyre::eyre!(e))?;
+        // Waited for, not sampled once: nothing is applied locally behind this
+        // publish, so a refusal loses the op, and a mesh that is empty for one
+        // sample under load is usually back within a few polls.
+        let mesh = await_transport_ready(
+            || async {
+                let mesh = node_client
+                    .mesh_peer_count_for_namespace(self.namespace_id.to_bytes())
+                    .await;
+                (mesh, node_client.known_subscribers(&topic).await)
+            },
+            node_client.gossipsub_mesh_n_low(),
+            TRANSPORT_READY_WAIT,
+            TRANSPORT_READY_POLL,
+        )
+        .await
+        .map_err(|e| eyre::eyre!(e))?;
 
         // Quorum / no-local-apply path: a publish that never reaches a
         // quorum is a genuine failure — nothing was applied locally to

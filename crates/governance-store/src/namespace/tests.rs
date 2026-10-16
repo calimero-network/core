@@ -11031,6 +11031,84 @@ fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
     assert_eq!(registered.source.as_ref(), SOURCE);
 }
 
+/// A paired device learns its group's target from `ContextRegistered` alone, and
+/// the lazy upgrade fetches that target by the coordinates the target records.
+#[test]
+fn context_registered_records_its_coordinates_on_a_zeroed_target() {
+    let store = test_store();
+    let signer_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
+    let ns_gid = ContextGroupId::from([0xD1; 32]);
+    let signer_account = enrol_member(&store, &ns_gid, &signer_sk.public_key());
+    let mut meta = sample_meta_with_admin(signer_account);
+    meta.target = calimero_store::key::GroupTarget::default();
+    MetaRepository::new(&store).save(&ns_gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &signer_account, GroupMemberRole::Admin)
+        .unwrap();
+    let group_key = [0xD1; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    // The newer release this device installed before it was paired.
+    let application_id = ApplicationId::from([0xA7; 32]);
+    let newer = types::ApplicationMeta::new(
+        BlobMeta::new(BlobId::from([0xE2; 32])),
+        42,
+        "https://reg.example/app-2.0.0.mpk".into(),
+        Box::default(),
+        BlobMeta::new(BlobId::from([0; 32])),
+        types::PackageInfo {
+            package: "com.acme.app".into(),
+            version: "2.0.0".into(),
+            signer_id: "did:key:installer".into(),
+            state_version: 0,
+        },
+    );
+    store
+        .handle()
+        .put(&ApplicationMeta::new(application_id), &newer)
+        .unwrap();
+
+    let inner = GroupOp::ContextRegistered {
+        context_id: ContextId::from([0xD2; 32]),
+        application_id,
+        blob_id: BlobId::from([0xB7; 32]),
+        source: "https://reg.example/app-1.0.0.mpk".to_owned(),
+        service_name: None,
+        package: "com.acme.app".to_owned(),
+        version: "1.0.0".to_owned(),
+    };
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        ns_gid.to_bytes().into(),
+        vec![],
+        1,
+        NamespaceOp::Group {
+            group_id: ns_gid.to_bytes().into(),
+            key_id: key_id.into(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    NamespaceGovernance::new(&store, ns_gid.to_bytes().into())
+        .apply_signed_op(&op)
+        .expect("apply ContextRegistered");
+
+    let target = MetaRepository::new(&store)
+        .load(&ns_gid)
+        .unwrap()
+        .unwrap()
+        .target;
+    assert_eq!(target.bytecode_id, [0xB7; 32]);
+    assert_eq!(
+        (&*target.package, &*target.version),
+        ("com.acme.app", "1.0.0"),
+        "the target must name the release the op registered, or nothing can fetch it"
+    );
+}
+
 /// Runs `stub_writer` on its own thread while an install holds the row lock,
 /// writes the installer's row, and checks the stub writer waited and kept off it.
 fn assert_stub_waits_for_install(

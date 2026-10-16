@@ -1,4 +1,5 @@
 use crate::{MetaRepository, MetadataRepository};
+use calimero_app_downloader::registry::{stored_coords, RegistryCoords};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
@@ -31,9 +32,10 @@ impl<'a> ContextRegistrationService<'a> {
         context_id: &ContextId,
         application_id: &ApplicationId,
         blob_id: &BlobId,
+        coords: RegistryCoords<'_>,
     ) -> EyreResult<()> {
         permissions.require_can_create_context(signer)?;
-        self.register_authorized(context_id, application_id, blob_id)
+        self.register_authorized(context_id, application_id, blob_id, coords)
     }
 
     /// Register a context whose authorization has already been decided.
@@ -47,6 +49,7 @@ impl<'a> ContextRegistrationService<'a> {
         context_id: &ContextId,
         application_id: &ApplicationId,
         blob_id: &BlobId,
+        coords: RegistryCoords<'_>,
     ) -> EyreResult<()> {
         tracing::info!(
             %context_id,
@@ -56,7 +59,7 @@ impl<'a> ContextRegistrationService<'a> {
         );
 
         ContextTreeService::new(self.store, self.group_id).register_context(context_id)?;
-        self.backfill_application_if_needed(context_id, application_id, blob_id)
+        self.backfill_application_if_needed(context_id, application_id, blob_id, coords)
     }
 
     pub fn detach(
@@ -85,6 +88,7 @@ impl<'a> ContextRegistrationService<'a> {
         context_id: &ContextId,
         application_id: &ApplicationId,
         blob_id: &BlobId,
+        coords: RegistryCoords<'_>,
     ) -> EyreResult<()> {
         if *application_id == ZERO_APPLICATION_ID {
             return Ok(());
@@ -100,13 +104,22 @@ impl<'a> ContextRegistrationService<'a> {
             // healing it locally cannot diverge this replica.
             let heal_application = meta.target.application_id == ZERO_APPLICATION_ID;
             let heal_bytecode = meta.target.bytecode_id == [0u8; 32];
-            if heal_application || heal_bytecode {
+            // The coordinates are what the lazy upgrade fetches the target by, so
+            // they only join a blob this op names.
+            let heal_coords = (heal_bytecode || meta.target.bytecode_id == **blob_id)
+                && stored_coords(&meta.target.package, &meta.target.version).is_none()
+                && stored_coords(coords.package, coords.version).is_some();
+            if heal_application || heal_bytecode || heal_coords {
                 let mut updated = meta;
                 if heal_application {
                     updated.target.application_id = *application_id;
                 }
                 if heal_bytecode {
                     updated.target.bytecode_id = **blob_id;
+                }
+                if heal_coords {
+                    updated.target.package = coords.package.into();
+                    updated.target.version = coords.version.into();
                 }
                 MetaRepository::new(self.store).save(&self.group_id, &updated)?;
                 tracing::info!(
@@ -115,6 +128,7 @@ impl<'a> ContextRegistrationService<'a> {
                     %blob_id,
                     heal_application,
                     heal_bytecode,
+                    heal_coords,
                     "healed group meta from ContextRegistered"
                 );
             }
