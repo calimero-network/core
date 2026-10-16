@@ -10812,7 +10812,7 @@ fn assert_concurrent_ops_land_the_same(
     f: &TeeAdmissionFixture,
     first: &SignedNamespaceOp,
     second: &SignedNamespaceOp,
-) {
+) -> Store {
     let replica = keyed_replica(f);
     play(f, &f.store, &[Arrival::Op(first), Arrival::Op(second)]);
     play(f, &replica, &[Arrival::Op(second), Arrival::Op(first)]);
@@ -10822,32 +10822,13 @@ fn assert_concurrent_ops_land_the_same(
         &[first.clone(), second.clone()],
         "the concurrent ops in the other order",
     );
+    replica
 }
 
 /// A context capability grant concurrent with its context's detach, in both orders, with
 /// the context registered by `registration`, an op the fixture signs, or outside the log.
 fn assert_a_grant_and_a_detach_land_the_same(seed: u8, logged: bool) {
-    let f = TeeAdmissionFixture::new(seed);
-    let context = ContextId::from([seed; 32]);
-    if logged {
-        let register = f.group_op_signed_at(
-            &f.verifier_sk,
-            &f.heads(),
-            f.next_nonce(),
-            &GroupOp::ContextRegistered {
-                context_id: context,
-                application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
-                blob_id: calimero_primitives::blobs::BlobId::from([0; 32]),
-                source: String::new(),
-                service_name: None,
-                package: String::new(),
-                version: String::new(),
-            },
-        );
-        f.apply(&register);
-    } else {
-        register_context_in_group(&f.store, &f.ns_gid, &context).expect("register the context");
-    }
+    let (f, context) = registered_context(seed, logged);
     let member =
         crate::test_fixtures::account_for(&PrivateKey::random(&mut UnwrapErr(SysRng)).public_key());
     let add = f.group_op_signed_at(
@@ -10892,6 +10873,122 @@ fn assert_a_grant_and_a_detach_land_the_same(seed: u8, logged: bool) {
         None,
         "the grant was refused at a cut that holds its context"
     );
+}
+
+/// A fixture whose namespace group holds a context, registered by an op the verifier signs
+/// or outside the log.
+fn registered_context(seed: u8, logged: bool) -> (TeeAdmissionFixture, ContextId) {
+    let f = TeeAdmissionFixture::new(seed);
+    let context = ContextId::from([seed; 32]);
+    if logged {
+        let register = f.group_op_signed_at(
+            &f.verifier_sk,
+            &f.heads(),
+            f.next_nonce(),
+            &GroupOp::ContextRegistered {
+                context_id: context,
+                application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
+                blob_id: calimero_primitives::blobs::BlobId::from([0; 32]),
+                source: String::new(),
+                service_name: None,
+                package: String::new(),
+                version: String::new(),
+            },
+        );
+        f.apply(&register);
+    } else {
+        register_context_in_group(&f.store, &f.ns_gid, &context).expect("register the context");
+    }
+    (f, context)
+}
+
+/// The verifier's detach of `context`, signed at `heads` with `nonce`.
+fn detach_of(
+    f: &TeeAdmissionFixture,
+    context: ContextId,
+    heads: &[[u8; 32]],
+    nonce: u64,
+) -> SignedNamespaceOp {
+    f.group_op_signed_at(
+        &f.verifier_sk,
+        heads,
+        nonce,
+        &GroupOp::ContextDetached {
+            context_id: context,
+        },
+    )
+}
+
+/// The context's group and metadata on `store`.
+fn context_rows(f: &TeeAdmissionFixture, store: &Store, context: &ContextId) -> String {
+    format!(
+        "{:?} {:?}",
+        crate::get_group_for_context(store, context).expect("read the registration"),
+        crate::MetadataRepository::new(store)
+            .context_metadata(&f.ns_gid, context)
+            .expect("read the metadata")
+            .map(|record| record.name)
+    )
+}
+
+/// A context's metadata set concurrent with its detach lands the same in either order.
+#[test]
+fn a_context_metadata_set_concurrent_with_its_detach_lands_the_same_in_either_order() {
+    for logged in [true, false] {
+        let (f, context) = registered_context(0xE7, logged);
+        let (heads, nonce) = (f.heads(), f.next_nonce());
+        let metadata = f.group_op_signed_at(
+            &f.verifier_sk,
+            &heads,
+            nonce,
+            &GroupOp::ContextMetadataSet {
+                context_id: context,
+                name: Some("ctx".to_owned()),
+                data: std::collections::BTreeMap::new(),
+            },
+        );
+        let detach = detach_of(&f, context, &heads, nonce + 1);
+
+        let replica = assert_concurrent_ops_land_the_same(&f, &metadata, &detach);
+
+        assert_eq!(
+            context_rows(&f, &f.store, &context),
+            context_rows(&f, &replica, &context),
+            "the two orders left different rows (logged: {logged})"
+        );
+    }
+}
+
+/// Two detaches of one context from one cut land the same in either order.
+#[test]
+fn two_detaches_of_one_context_land_the_same_in_either_order() {
+    for logged in [true, false] {
+        let (f, context) = registered_context(0xE8, logged);
+        let (heads, nonce) = (f.heads(), f.next_nonce());
+        let first = detach_of(&f, context, &heads, nonce);
+        let second = detach_of(&f, context, &heads, nonce + 1);
+
+        let replica = assert_concurrent_ops_land_the_same(&f, &first, &second);
+
+        for store in [&f.store, &replica] {
+            for op in [&first, &second] {
+                assert_eq!(
+                    crate::void_ledger::parked_op(
+                        store,
+                        f.namespace_id.into(),
+                        op.content_hash().unwrap()
+                    )
+                    .expect("read the verdict"),
+                    None,
+                    "a detach was refused at a cut that holds its context (logged: {logged})"
+                );
+            }
+        }
+        assert_eq!(
+            context_rows(&f, &f.store, &context),
+            context_rows(&f, &replica, &context)
+        );
+    }
 }
 
 /// A context capability grant is judged by where the context was registered at its

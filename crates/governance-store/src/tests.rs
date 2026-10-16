@@ -331,12 +331,18 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
     let ctx_meta: calimero_store::types::ContextMeta = handle.get(&ctx_meta_key).unwrap().unwrap();
     assert_eq!(ctx_meta.application.application_id(), app_id);
 
-    assert!(service.detach(&permissions, &creator_pk, &context).is_err());
-    service.detach(&permissions, &admin_pk, &context).unwrap();
+    assert!(service
+        .detach(&permissions, &creator_pk, &context, true)
+        .is_err());
+    service
+        .detach(&permissions, &admin_pk, &context, true)
+        .unwrap();
     assert_eq!(get_group_for_context(&store, &context).unwrap(), None);
 
     register_context_in_group(&store, &other_gid, &context).unwrap();
-    assert!(service.detach(&permissions, &admin_pk, &context).is_err());
+    assert!(service
+        .detach(&permissions, &admin_pk, &context, false)
+        .is_err());
 }
 
 #[test]

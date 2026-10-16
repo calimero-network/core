@@ -69,25 +69,26 @@ impl<'a> ContextRegistrationService<'a> {
         self.backfill_application_if_needed(context_id, application_id, blob_id, coords)
     }
 
+    /// Detach `context_id`, which `registered` says the op's cut holds in this group.
     pub fn detach(
         &self,
         permissions: &PermissionChecker<'_>,
         signer: &PublicKey,
         context_id: &ContextId,
+        registered: bool,
     ) -> EyreResult<()> {
         permissions.require_admin(signer)?;
-        match get_group_for_context(self.store, context_id)? {
-            Some(g) if g == self.group_id => {
-                ContextTreeService::new(self.store, self.group_id)
-                    .unregister_context(context_id)?;
-                // Drop the context's metadata record so detach doesn't leave
-                // an orphaned `GroupContextMetadata` row behind.
-                MetadataRepository::new(self.store).delete_context(&self.group_id, context_id)?;
-                Ok(())
-            }
-            Some(_) => bail!("context is registered to a different group"),
-            None => bail!("context is not registered in any group"),
+        if !registered {
+            bail!("context is not registered in this group");
         }
+        // A concurrent detach may have taken it already.
+        if get_group_for_context(self.store, context_id)? == Some(self.group_id) {
+            ContextTreeService::new(self.store, self.group_id).unregister_context(context_id)?;
+            // Drop the context's metadata record so detach doesn't leave
+            // an orphaned `GroupContextMetadata` row behind.
+            MetadataRepository::new(self.store).delete_context(&self.group_id, context_id)?;
+        }
+        Ok(())
     }
 
     fn backfill_application_if_needed(
