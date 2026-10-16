@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-16
+
+The first stable 0.11 release. It carries every change shipped across
+0.11.0-rc.11 through 0.11.0-rc.89, listed below, on top of the
+0.11.0-rc.1 to 0.11.0-rc.10 entries that follow it.
+
 ### Added
 
 - **A node's operator can trust more origins for login callbacks.**
@@ -2832,7 +2838,8 @@ Integrations:
 
 <!-- versions -->
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.11.0-rc.10...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.11.0...HEAD
+[0.11.0]: https://github.com/calimero-network/core/compare/0.11.0-rc.10...0.11.0
 [0.11.0-rc.10]: https://github.com/calimero-network/core/compare/0.11.0-rc.9...0.11.0-rc.10
 [0.11.0-rc.9]: https://github.com/calimero-network/core/compare/0.11.0-rc.8...0.11.0-rc.9
 [0.11.0-rc.8]: https://github.com/calimero-network/core/compare/0.11.0-rc.7...0.11.0-rc.8
