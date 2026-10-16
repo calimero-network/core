@@ -1006,9 +1006,10 @@ mod held_ops {
 mod concurrent {
     use calimero_account::AccountId;
     use calimero_governance_store::test_fixtures::{
-        account_for, dummy_member_removed_op, fork_store,
+        account_for, dummy_member_removed_op, fork_store, real_join_account, signed_invitation_for,
     };
-    use calimero_governance_store::{parked_op, Parked};
+    use calimero_governance_store::{parked_op, NamespaceOpLogService, Parked};
+    use calimero_governance_types::RootOp;
 
     use super::*;
 
@@ -1120,5 +1121,239 @@ mod concurrent {
                 "the removed member kept a row"
             );
         }
+    }
+
+    /// `member_sk`'s join of the namespace with the owner's invitation `nonce`, signed at `parents`.
+    fn join_at(
+        world: &World,
+        member_sk: &PrivateKey,
+        nonce: [u8; 32],
+        parents: &[[u8; 32]],
+        op_nonce: u64,
+    ) -> SignedNamespaceOp {
+        let member = account_for(&member_sk.public_key());
+        let invitation = signed_invitation_for(&world.owner_sk, world.namespace, nonce);
+        let endorsement = calimero_governance_types::AdmitterEndorsement::sign(
+            &world.owner_sk,
+            &world.namespace.to_bytes(),
+            &member,
+            &nonce,
+        )
+        .expect("the owner endorses the join");
+        let mut join = SignedNamespaceOp::sign(
+            member_sk,
+            world.namespace.to_bytes().into(),
+            parents.to_vec(),
+            op_nonce,
+            NamespaceOp::Root(RootOp::MemberJoinedAt {
+                member,
+                signed_invitation: invitation,
+                joined_at: 1,
+                account: real_join_account(&member_sk.public_key()),
+            }),
+        )
+        .expect("sign the join");
+        join.admitter_endorsement = Some(Box::new(endorsement));
+        join
+    }
+
+    /// A member that joined with the owner's invitation `nonce`, and the heads after it.
+    async fn joined_member(store: &Store, world: &World, seed: u8, nonce: [u8; 32]) -> PrivateKey {
+        let member_sk = PrivateKey::from([seed; 32]);
+        let join = join_at(world, &member_sk, nonce, &heads(store, world), 1);
+        apply(store, &join).await.expect("the member joins");
+        member_sk
+    }
+
+    fn heads(store: &Store, world: &World) -> Vec<[u8; 32]> {
+        NamespaceGovernance::new(store, world.namespace.to_bytes().into())
+            .read_head_record()
+            .expect("read the DAG head")
+            .parent_hashes
+    }
+
+    /// Both `ops` reached every node's log with the same verdicts, and `member` holds the
+    /// same row everywhere.
+    fn assert_landed_the_same(
+        nodes: &[Store; 2],
+        world: &World,
+        ops: &[&SignedNamespaceOp],
+        member: &AccountId,
+    ) {
+        let rows: Vec<_> = nodes
+            .iter()
+            .map(|node| {
+                for op in ops {
+                    let id = op.content_hash().expect("hash the op");
+                    assert!(
+                        NamespaceOpLogService::new(node, world.namespace.to_bytes().into())
+                            .contains_op(id)
+                            .expect("read the op log"),
+                        "a node dropped an op, which stalls its namespace DAG"
+                    );
+                }
+                (
+                    verdicts(node, world, ops),
+                    MembershipRepository::new(node)
+                        .role_of(&world.namespace, member)
+                        .expect("read the role"),
+                )
+            })
+            .collect();
+        assert_eq!(rows[0], rows[1], "the two orders landed differently");
+    }
+
+    #[actix::test]
+    async fn a_rejoin_concurrent_with_the_joiners_removal_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let member_sk = joined_member(&store, world, 0xE6, [0xE6; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let parents = heads(&store, world);
+        let rejoin = join_at(world, &member_sk, [0xE7; 32], &parents, 2);
+        let remove = signed_at(
+            &store,
+            world,
+            &admin.sign_sk,
+            &parents,
+            next_nonce(&store, world),
+            &dummy_member_removed_op(member),
+        );
+
+        let nodes = in_both_orders(&store, &rejoin, &remove).await;
+
+        assert_landed_the_same(&nodes, world, &[&rejoin, &remove], &member);
+    }
+
+    #[actix::test]
+    async fn a_rejoin_with_a_spent_invitation_concurrent_with_a_leave_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let member_sk = joined_member(&store, world, 0xE8, [0xE8; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let parents = heads(&store, world);
+        let rejoin = join_at(world, &member_sk, [0xE8; 32], &parents, 2);
+        let leave = signed_at(
+            &store,
+            world,
+            &member_sk,
+            &parents,
+            3,
+            &GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+
+        let nodes = in_both_orders(&store, &rejoin, &leave).await;
+
+        assert_landed_the_same(&nodes, world, &[&rejoin, &leave], &member);
+    }
+
+    /// A join refused at its cut is refused on every node: neither logs it.
+    fn assert_refused_everywhere(nodes: &[Store; 2], world: &World, join: &SignedNamespaceOp) {
+        let id = join.content_hash().expect("hash the join");
+        for node in nodes {
+            assert!(
+                !NamespaceOpLogService::new(node, world.namespace.to_bytes().into())
+                    .contains_op(id)
+                    .expect("read the op log"),
+                "a node applied a join its cut refuses"
+            );
+        }
+    }
+
+    #[actix::test]
+    async fn a_removed_members_rejoin_concurrent_with_its_readmission_is_refused_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let member_sk = joined_member(&store, world, 0xE9, [0xE9; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        publish(
+            &store,
+            &world.namespace,
+            &admin.sign_sk,
+            &dummy_member_removed_op(member),
+        )
+        .await
+        .expect("the admin removes the member");
+        let parents = heads(&store, world);
+        let readd = signed_at(
+            &store,
+            world,
+            &world.owner_sk,
+            &parents,
+            next_nonce(&store, world),
+            &GroupOp::MemberAdded {
+                member,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let rejoin = join_at(world, &member_sk, [0xEA; 32], &parents, 2);
+
+        let nodes = in_both_orders(&store, &readd, &rejoin).await;
+
+        assert_refused_everywhere(&nodes, world, &rejoin);
+    }
+
+    #[actix::test]
+    async fn two_rejoins_with_one_invitation_land_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let member_sk = joined_member(&store, world, 0xEB, [0xEB; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let leave = signed_at(
+            &store,
+            world,
+            &member_sk,
+            &heads(&store, world),
+            2,
+            &GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+        apply(&store, &leave).await.expect("the member leaves");
+        let parents = heads(&store, world);
+        // The same fresh invitation, presented twice from one cut, e.g. from two devices.
+        let first = join_at(world, &member_sk, [0xEC; 32], &parents, 3);
+        let second = join_at(world, &member_sk, [0xEC; 32], &parents, 4);
+
+        let nodes = in_both_orders(&store, &first, &second).await;
+
+        assert_landed_the_same(&nodes, world, &[&first, &second], &member);
+    }
+
+    #[actix::test]
+    async fn a_rejoin_with_the_invitation_a_member_left_with_is_refused_at_its_cut() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let member_sk = joined_member(&store, world, 0xED, [0xED; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let leave = signed_at(
+            &store,
+            world,
+            &member_sk,
+            &heads(&store, world),
+            2,
+            &GroupOp::MemberLeft {
+                member,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+        apply(&store, &leave).await.expect("the member leaves");
+        let rejoin = join_at(world, &member_sk, [0xED; 32], &heads(&store, world), 3);
+
+        let applied = apply(&store, &rejoin).await;
+
+        assert!(applied.is_err(), "a spent invitation readmitted its member");
+    }
+
+    fn next_nonce(store: &Store, world: &World) -> u64 {
+        NamespaceGovernance::new(store, world.namespace.to_bytes().into())
+            .read_head_record()
+            .expect("read the DAG head")
+            .next_nonce
     }
 }

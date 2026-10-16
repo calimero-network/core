@@ -27,8 +27,10 @@ use calimero_governance_store::metrics::{
 };
 use calimero_governance_store::{
     CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
-    NamespaceDagService, NamespaceOpLogService, NamespaceRepository,
+    NamespaceDagService, NamespaceOpLogService, NamespaceRepository, OpenedNamespaceOp,
+    ReentryAtCut,
 };
+use calimero_governance_types::{NamespaceOp, RootOp};
 use calimero_op::{Op, OpPayload, ScopeId};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -37,6 +39,7 @@ use calimero_projection::{Acting, AuthorityBase, CutAncestry, ScopeState};
 use calimero_storage::address::Id;
 use calimero_storage::entities::OpMask;
 use calimero_storage::shared_writers::{CellWriters, OverBudget, WritersUnavailable};
+use calimero_store::key::GroupExitReason;
 use calimero_store::Store;
 
 use crate::governance_dag::signed_namespace_op_to_delta;
@@ -2849,6 +2852,93 @@ impl ScopeProjections {
         )
     }
 
+    /// What a join of `member` into `group` with the invitation `nonce` meets at the cut:
+    /// the exit among its latest changes there, and whether a join of its own already
+    /// spent `nonce` there. `None` when the cut is not fully folded or a join does not read.
+    #[must_use]
+    pub fn reentry_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        nonce: &[u8; 32],
+        heads: &[[u8; 32]],
+    ) -> Option<ReentryAtCut> {
+        let _readable = self.auth_cut_context(store, group, heads)?;
+        let namespace_id = NamespaceRepository::new(store)
+            .resolve(&group)
+            .ok()?
+            .to_bytes();
+        let scope = ScopeId::from(namespace_id);
+        let log = self.logs.get(&scope)?;
+        let walked = self.walk(&scope, log, heads, authority_base(store, namespace_id)?);
+        let root = ContextGroupId::from(namespace_id);
+        let mut changes = Vec::new();
+        for op in walked
+            .ops()
+            .iter()
+            .copied()
+            .filter(|op| !walked.is_void(op))
+        {
+            let exit = match &op.payload {
+                OpPayload::MemberAdded {
+                    group: g,
+                    member: m,
+                    ..
+                }
+                | OpPayload::MemberJoinedWithDevice {
+                    group: g,
+                    member: m,
+                    ..
+                } if *g == group && m == member => None,
+                OpPayload::MemberRemoved {
+                    group: g,
+                    member: m,
+                } if *g == group && m == member => Some(GroupExitReason::Removed),
+                OpPayload::MemberLeft {
+                    group: g,
+                    member: m,
+                } if *g == group && m == member => Some(GroupExitReason::Left),
+                // A namespace leave exits only the subgroups it took a direct row from.
+                OpPayload::MemberLeft {
+                    group: g,
+                    member: m,
+                } if *g == root
+                    && m == member
+                    && self
+                        .direct_role_at_cut(store, group, member, &op.parents)?
+                        .is_some() =>
+                {
+                    Some(GroupExitReason::Left)
+                }
+                _ => continue,
+            };
+            changes.push((op, exit));
+        }
+        let superseded: BTreeSet<[u8; 32]> = changes
+            .iter()
+            .flat_map(|(op, _)| ScopeState::cut_ancestry(log, &op.parents).ops().to_vec())
+            .map(Op::id)
+            .collect();
+        let op_log = NamespaceOpLogService::new(store, namespace_id.into());
+        let mut reentry = ReentryAtCut::default();
+        for (op, exit) in changes {
+            if !superseded.contains(&op.id()) && reentry.exit != Some(GroupExitReason::Removed) {
+                reentry.exit = exit.or(reentry.exit);
+            }
+            // A join admits, and so spends its invitation, only where its cut holds no row.
+            if exit.is_none()
+                && joins_with(store, &op_log, op.id(), group, member, nonce)?
+                && self
+                    .direct_role_at_cut(store, group, member, &op.parents)?
+                    .is_none()
+            {
+                reentry.spent = true;
+            }
+        }
+        Some(reentry)
+    }
+
     /// The group `context`'s cells were rotated in, if `group`, at the cut; `None` when the
     /// cut is unreadable. Counts a step from a cell's genesis set by a standing admin of it.
     #[must_use]
@@ -3287,6 +3377,51 @@ fn effective_role_in(
             .cloned()
             .map(Some),
     }
+}
+
+/// Whether the logged op `id` is `member`'s join of `group` with the invitation `nonce`;
+/// `None` when a sealed op there does not open here.
+fn joins_with(
+    store: &Store,
+    op_log: &NamespaceOpLogService<'_>,
+    id: [u8; 32],
+    group: ContextGroupId,
+    member: &AccountId,
+    nonce: &[u8; 32],
+) -> Option<bool> {
+    let signed = op_log.get_signed_op(id).ok()??;
+    let root = match &signed.op {
+        NamespaceOp::Root(root) => root.clone(),
+        NamespaceOp::Group { .. } => return Some(false),
+        _ => {
+            let opened = OpenedNamespaceOp::open(store, &signed);
+            match (opened.sealed_root, opened.relayed_join) {
+                (Some(root), _) => root,
+                (None, Some(inner)) => match inner.op {
+                    NamespaceOp::Root(root) => root,
+                    _ => return Some(false),
+                },
+                (None, None) => return None,
+            }
+        }
+    };
+    Some(match root {
+        RootOp::MemberJoined {
+            member: joiner,
+            signed_invitation,
+            ..
+        }
+        | RootOp::MemberJoinedAt {
+            member: joiner,
+            signed_invitation,
+            ..
+        } => {
+            joiner == *member
+                && signed_invitation.invitation.group_id == group
+                && signed_invitation.invitation.invitation_nonce == *nonce
+        }
+        _ => false,
+    })
 }
 
 /// The account `key` is bound to in `view`, if any.

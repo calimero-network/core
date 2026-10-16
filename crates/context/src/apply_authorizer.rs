@@ -21,7 +21,8 @@ use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::metrics::{record_at_cut_undecidable, UndecidableCause};
 use calimero_governance_store::{
-    AtCutAuthorizer, AtCutMembershipPath, GroupRows, NamespaceDagService, StandingReads,
+    AtCutAuthorizer, AtCutMembershipPath, GroupRows, NamespaceDagService, ReentryAtCut,
+    StandingReads,
 };
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::application::ApplicationId;
@@ -447,6 +448,22 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         self.folded(group)?
             .0
             .direct_role_at_cut(self.store, *group, member, parents)
+    }
+
+    fn reentry_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        nonce: &[u8; 32],
+        parents: &[[u8; 32]],
+    ) -> Option<ReentryAtCut> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .reentry_at_cut(self.store, *group, member, nonce, parents)
     }
 
     fn context_rotation_group_at_cut(

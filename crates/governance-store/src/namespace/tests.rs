@@ -10417,53 +10417,6 @@ impl TeeAdmissionFixture {
         .expect("verifier signs the admission")
     }
 
-    /// `member_sk`'s join with `invitation`, signed at `parents` and endorsed by the
-    /// verifier.
-    fn join_signed_at(
-        &self,
-        member_sk: &PrivateKey,
-        invitation: calimero_context_config::types::SignedGroupOpenInvitation,
-        parents: &[[u8; 32]],
-        nonce: u64,
-    ) -> SignedNamespaceOp {
-        use calimero_context_client::local_governance::RootOp;
-
-        let member = crate::test_fixtures::account_for(&member_sk.public_key());
-        let endorsement = calimero_governance_types::AdmitterEndorsement::sign(
-            &self.verifier_sk,
-            &self.namespace_id,
-            &member,
-            &invitation.invitation.invitation_nonce,
-        )
-        .expect("sign the admitter endorsement");
-        let mut join = SignedNamespaceOp::sign(
-            member_sk,
-            self.namespace_id.into(),
-            parents.to_vec(),
-            nonce,
-            NamespaceOp::Root(RootOp::MemberJoinedAt {
-                member,
-                signed_invitation: invitation,
-                joined_at: 1,
-                account: crate::test_fixtures::real_join_account(&member_sk.public_key()),
-            }),
-        )
-        .expect("sign the join");
-        join.admitter_endorsement = Some(Box::new(endorsement));
-        join
-    }
-
-    /// A member who joined with `invitation`, applied here.
-    fn joined_member(
-        &self,
-        invitation: calimero_context_config::types::SignedGroupOpenInvitation,
-    ) -> PrivateKey {
-        let member_sk = PrivateKey::random(&mut UnwrapErr(SysRng));
-        let join = self.join_signed_at(&member_sk, invitation, &self.heads(), 1);
-        self.apply(&join);
-        member_sk
-    }
-
     fn is_member(&self) -> bool {
         MembershipRepository::new(&self.store)
             .is_member(&self.ns_gid, &self.account.statement.account)
@@ -10913,61 +10866,6 @@ fn a_context_grant_concurrent_with_its_contexts_detach_lands_the_same_in_either_
     );
 
     assert_concurrent_ops_land_the_same(&f, &grant, &detach);
-}
-
-/// A join is judged by its joiner's re-entry block at its cut, not after a concurrent
-/// removal of the joiner.
-#[test]
-#[ignore = "a join reads its joiner's re-entry block live; none is read at a cut"]
-fn a_rejoin_concurrent_with_the_joiners_removal_lands_the_same_in_either_order() {
-    let f = TeeAdmissionFixture::new(0xE6);
-    let member_sk = f.joined_member(crate::test_fixtures::signed_invitation_for(
-        &f.verifier_sk,
-        f.ns_gid,
-        [0xE6; 32],
-    ));
-    let member = crate::test_fixtures::account_for(&member_sk.public_key());
-    let heads = f.heads();
-    let rejoin = f.join_signed_at(
-        &member_sk,
-        crate::test_fixtures::signed_invitation_for(&f.verifier_sk, f.ns_gid, [0xE7; 32]),
-        &heads,
-        2,
-    );
-    let remove = f.group_op_signed_at(
-        &f.verifier_sk,
-        &heads,
-        f.next_nonce(),
-        &crate::test_fixtures::dummy_member_removed_op(member),
-    );
-
-    assert_concurrent_ops_land_the_same(&f, &rejoin, &remove);
-}
-
-/// A join is judged by whether its invitation was spent at its cut, not after a
-/// concurrent leave of the joiner.
-#[test]
-#[ignore = "a join reads its spent invitations live; none is read at a cut"]
-fn a_rejoin_with_a_spent_invitation_concurrent_with_a_leave_lands_the_same_in_either_order() {
-    let f = TeeAdmissionFixture::new(0xE8);
-    let invitation =
-        crate::test_fixtures::signed_invitation_for(&f.verifier_sk, f.ns_gid, [0xE8; 32]);
-    let member_sk = f.joined_member(invitation.clone());
-    let member = crate::test_fixtures::account_for(&member_sk.public_key());
-    let heads = f.heads();
-    let rejoin = f.join_signed_at(&member_sk, invitation, &heads, 2);
-    let leave = f.group_op_signed_at(
-        &member_sk,
-        &heads,
-        3,
-        &GroupOp::MemberLeft {
-            member,
-            expected_group_state_hash: [0; 32],
-            expected_context_state_hashes: Vec::new(),
-        },
-    );
-
-    assert_concurrent_ops_land_the_same(&f, &rejoin, &leave);
 }
 
 /// The honest admission still applies: a quote that commits to the credential

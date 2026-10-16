@@ -24,6 +24,7 @@ use calimero_op::Op;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::GroupExitReason;
 
 /// The apply-gate decision source, resolved at an op's causal cut (its parent op
 /// hashes). Implemented in `crates/context` over the unified projection; this
@@ -150,6 +151,18 @@ pub trait AtCutAuthorizer: Send + Sync {
         _member: &AccountId,
         _parents: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    /// What a join of `member` into `group` with the invitation `nonce` meets at the cut.
+    /// `None` defers. Default `None`, as for [`Self::direct_role_at_cut`].
+    fn reentry_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _nonce: &[u8; 32],
+        _parents: &[[u8; 32]],
+    ) -> Option<ReentryAtCut> {
         None
     }
 
@@ -323,6 +336,15 @@ pub struct GroupRows {
     /// Accounts whose standing in the group needs no member row in the log: its
     /// genesis admin and the namespace owner. Their stored rows are never taken back.
     pub anchored: BTreeSet<AccountId>,
+}
+
+/// What a re-entering joiner meets in a group, at a cut or in the live rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReentryAtCut {
+    /// The exit among the joiner's latest changes there; `Removed` outranks `Left`.
+    pub exit: Option<GroupExitReason>,
+    /// Whether a join of the joiner already admitted it there with this invitation.
+    pub spent: bool,
 }
 
 /// How an identity reaches membership of a group at a cut — the at-cut analogue of
