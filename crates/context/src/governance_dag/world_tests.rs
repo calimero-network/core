@@ -1089,7 +1089,7 @@ mod concurrent {
             world,
             &admin.sign_sk,
             &head.parent_hashes,
-            head.next_nonce,
+            unused_nonce(),
             &GroupOp::MemberRoleSet {
                 member,
                 role: GroupMemberRole::ReadOnly,
@@ -1100,7 +1100,7 @@ mod concurrent {
             world,
             &admin.sign_sk,
             &head.parent_hashes,
-            head.next_nonce + 1,
+            unused_nonce(),
             &dummy_member_removed_op(member),
         );
 
@@ -1218,7 +1218,7 @@ mod concurrent {
             world,
             &admin.sign_sk,
             &parents,
-            next_nonce(&store, world),
+            unused_nonce(),
             &dummy_member_removed_op(member),
         );
 
@@ -1286,7 +1286,7 @@ mod concurrent {
             world,
             &world.owner_sk,
             &parents,
-            next_nonce(&store, world),
+            unused_nonce(),
             &GroupOp::MemberAdded {
                 member,
                 role: GroupMemberRole::Member,
@@ -1410,7 +1410,7 @@ mod concurrent {
             &world.open_chain,
             &admin.sign_sk,
             &parents,
-            next_nonce(&store, world),
+            unused_nonce(),
             &dummy_member_removed_op(member),
         );
 
@@ -1514,7 +1514,7 @@ mod concurrent {
         .await
         .expect("the owner admits the TEE");
         let parents = heads(&store, world);
-        let nonce = next_nonce(&store, world);
+        let nonce = unused_nonce();
         let readmit = signed_in(
             &store,
             world,
@@ -1555,13 +1555,13 @@ mod concurrent {
             world,
             &tee_sk,
             &heads(&store, world),
-            next_nonce(&store, world),
+            unused_nonce(),
         );
         apply(&store, &first)
             .await
             .expect("the owner admits the TEE");
         let parents = heads(&store, world);
-        let nonce = next_nonce(&store, world);
+        let nonce = unused_nonce();
         let readmit = root_admission(&store, world, &tee_sk, &parents, nonce);
         let remove = signed_in(
             &store,
@@ -1582,10 +1582,74 @@ mod concurrent {
         );
     }
 
-    fn next_nonce(store: &Store, world: &World) -> u64 {
-        NamespaceGovernance::new(store, world.namespace.to_bytes().into())
-            .read_head_record()
-            .expect("read the DAG head")
-            .next_nonce
+    /// A TEE the owner admitted through the log, and the cut after it.
+    async fn admitted_tee(store: &Store, world: &World, seed: u8) -> AccountId {
+        admit_mock_tees(store, world).await;
+        let tee = account_for(&PrivateKey::from([seed; 32]).public_key());
+        let admission = signed_in(
+            store,
+            world,
+            &world.namespace,
+            &world.owner_sk,
+            &heads(store, world),
+            unused_nonce(),
+            &group_admission(tee, [seed; 32]),
+        );
+        apply(store, &admission)
+            .await
+            .expect("the owner admits the TEE");
+        assert_eq!(
+            MembershipRepository::new(store)
+                .role_of(&world.namespace, &tee)
+                .expect("read the role"),
+            Some(GroupMemberRole::ReadOnlyTee),
+            "precondition: the TEE is admitted"
+        );
+        tee
+    }
+
+    #[actix::test]
+    async fn an_add_over_a_tee_concurrent_with_its_removal_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let tee = admitted_tee(&store, world, 0xF4).await;
+        let parents = heads(&store, world);
+        let nonce = unused_nonce();
+        let add = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            nonce,
+            &GroupOp::MemberAdded {
+                member: tee,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let remove = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &world.owner_sk,
+            &parents,
+            nonce,
+            &dummy_member_removed_op(tee),
+        );
+
+        let nodes = in_both_orders(&store, &add, &remove).await;
+
+        assert_landed_the_same(&nodes, world, &[&add, &remove], &tee);
+        assert_eq!(
+            verdicts(&nodes[0], world, &[&add, &remove]),
+            vec![Some(Parked::Refused), None],
+            "an add moved a TEE row the cut holds out of the TEE roles"
+        );
+    }
+
+    /// A nonce no signer of the world has used: a reused one is dropped as a duplicate.
+    fn unused_nonce() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 32);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }

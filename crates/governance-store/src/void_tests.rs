@@ -286,6 +286,24 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         )
     }
 
+    fn direct_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        if parents.is_empty() {
+            return None;
+        }
+        let path = self
+            .view(parents)
+            .member_path_at_cut(*group, member, self.base().root, 0);
+        Some(match path {
+            calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
+            _ => None,
+        })
+    }
+
     fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
         Some(self)
     }
