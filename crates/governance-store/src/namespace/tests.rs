@@ -10306,9 +10306,15 @@ impl TeeAdmissionFixture {
 
     /// The TEE fleet's chain, applied here: the policy (a group op), the replica's
     /// admission under it (a root op), and the namespace TEE key the admitted replica
-    /// delivers (a group op only a TEE may sign).
-    fn fleet_chain(&self) -> Vec<SignedNamespaceOp> {
+    /// delivers (a group op only a TEE may sign). With `rekey`, the namespace moves to
+    /// that key after the policy, so the rest is sealed under it.
+    fn fleet_chain(&self, rekey: Option<&[u8; 32]>) -> Vec<SignedNamespaceOp> {
         let policy = self.set_policy();
+        if let Some(key) = rekey {
+            let _key_id = GroupKeyring::new(&self.store, self.ns_gid)
+                .store_key(key)
+                .expect("the namespace moves to a new key");
+        }
         let quote = self.honest_quote();
         let quote_hash = crate::tee::sha256(&quote);
         let admission = self.admission_signed_by(&self.verifier_sk, quote, quote_hash);
@@ -10436,19 +10442,17 @@ enum Arrival<'a> {
 }
 
 /// Play `arrivals` on `replica` as the node takes them: an op is applied at its own
-/// cut, and a key is stored and replays whatever it opens.
+/// cut, and a key is stored and replays whatever it opens. An op the apply turns
+/// away stays pending, as in the DAG, and is offered again after every arrival.
 fn play(f: &TeeAdmissionFixture, replica: &Store, arrivals: &[Arrival<'_>]) {
     let judge = crate::test_fixtures::LiveCutJudge {
         store: replica,
         namespace: f.namespace_id.into(),
     };
+    let mut pending: Vec<&SignedNamespaceOp> = Vec::new();
     for arrival in arrivals {
         match arrival {
-            Arrival::Op(op) => {
-                let _taken =
-                    apply_signed_namespace_op_at_cut(replica, op, &op.parent_op_hashes, &judge)
-                        .expect("the replica takes the op");
-            }
+            Arrival::Op(op) => pending.push(op),
             Arrival::Key(key) => {
                 let _key_id = GroupKeyring::new(replica, f.ns_gid)
                     .store_key(key)
@@ -10461,6 +10465,11 @@ fn play(f: &TeeAdmissionFixture, replica: &Store, arrivals: &[Arrival<'_>]) {
                 )
                 .expect("the key arrival replays the namespace");
             }
+        }
+        while let Some(at) = pending.iter().position(|op| {
+            apply_signed_namespace_op_at_cut(replica, op, &op.parent_op_hashes, &judge).is_ok()
+        }) {
+            let _taken = pending.remove(at);
         }
     }
 }
@@ -10475,6 +10484,12 @@ fn assert_lands_as_on_the_keyed_node(
 ) {
     for (at, op) in chain.iter().enumerate() {
         let id = op.content_hash().expect("content hash");
+        assert!(
+            NamespaceOpLogService::new(replica, f.namespace_id.into())
+                .contains_op(id)
+                .expect("read the op log"),
+            "op {at} of the chain never reached the replica's log ({schedule})"
+        );
         let verdict =
             |store: &Store| crate::void_ledger::parked_op(store, f.namespace_id.into(), id);
         assert_eq!(
@@ -10546,7 +10561,7 @@ fn a_tee_admission_without_a_policy_is_refused_by_the_key_arrival() {
 fn a_tee_fleet_chain_replayed_after_a_late_key_lands_as_it_did_live() {
     let f = TeeAdmissionFixture::without_policy(0xDB);
     let (replica, key) = keyless_replica(&f);
-    let chain = f.fleet_chain();
+    let chain = f.fleet_chain(None);
 
     replay_after_late_key(&f, &replica, &key, &chain.iter().collect::<Vec<_>>());
 
@@ -10560,7 +10575,7 @@ fn a_tee_fleet_chain_lands_the_same_wherever_the_key_arrives_in_it() {
     for key_at in 0..=3 {
         let f = TeeAdmissionFixture::without_policy(0xDC);
         let (replica, key) = keyless_replica(&f);
-        let chain = f.fleet_chain();
+        let chain = f.fleet_chain(None);
         let mut arrivals: Vec<Arrival<'_>> = chain.iter().map(Arrival::Op).collect();
         arrivals.insert(key_at, Arrival::Key(key));
 
@@ -10572,6 +10587,70 @@ fn a_tee_fleet_chain_lands_the_same_wherever_the_key_arrives_in_it() {
             &chain,
             &format!("the key after {key_at} ops"),
         );
+    }
+}
+
+/// A node holding the key the admission is sealed under, but not the older one its
+/// policy is sealed under, reads the admission while the policy is still a hole in
+/// its cut. That is no verdict: the admission lands once the policy does, as on a
+/// node holding both keys.
+#[test]
+fn an_admission_read_while_its_policy_is_still_sealed_lands_once_the_policy_does() {
+    let f = TeeAdmissionFixture::without_policy(0xDD);
+    let (replica, old_key) = keyless_replica(&f);
+    let new_key = [0x9B; 32];
+    let chain = f.fleet_chain(Some(&new_key));
+
+    play(
+        &f,
+        &replica,
+        &[
+            Arrival::Key(new_key),
+            Arrival::Op(&chain[0]),
+            Arrival::Op(&chain[1]),
+            Arrival::Op(&chain[2]),
+            Arrival::Key(old_key),
+        ],
+    );
+
+    assert_lands_as_on_the_keyed_node(&f, &replica, &chain, "the newer key first");
+}
+
+/// Neither the order two keys arrive in nor where they fall among the chain's ops
+/// decides what lands.
+#[test]
+fn a_tee_fleet_chain_across_a_rekey_lands_the_same_in_every_arrival_order() {
+    for first in 0..5 {
+        for second in first + 1..5 {
+            for newer_first in [false, true] {
+                let f = TeeAdmissionFixture::without_policy(0xDE);
+                let (replica, old_key) = keyless_replica(&f);
+                let new_key = [0x9C; 32];
+                let chain = f.fleet_chain(Some(&new_key));
+                let (a, b) = if newer_first {
+                    (new_key, old_key)
+                } else {
+                    (old_key, new_key)
+                };
+                let mut ops = chain.iter();
+                let arrivals: Vec<Arrival<'_>> = (0..5)
+                    .map(|slot| match slot {
+                        s if s == first => Arrival::Key(a),
+                        s if s == second => Arrival::Key(b),
+                        _ => Arrival::Op(ops.next().expect("three ops fill three slots")),
+                    })
+                    .collect();
+
+                play(&f, &replica, &arrivals);
+
+                assert_lands_as_on_the_keyed_node(
+                    &f,
+                    &replica,
+                    &chain,
+                    &format!("keys at {first} and {second}, newer first: {newer_first}"),
+                );
+            }
+        }
     }
 }
 

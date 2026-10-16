@@ -1047,10 +1047,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// A parked op whose cut cannot be resolved is judged by this pass's gates, and an
-    /// apply is all it records.
+    /// A parked op whose cut cannot be resolved is not judged: the live rows are another
+    /// cut, so neither an apply nor a refusal there is the verdict at its own.
     #[test]
-    fn a_parked_op_with_an_unresolvable_cut_is_judged_live_and_records_only_an_apply() {
+    fn a_parked_op_with_an_unresolvable_cut_stays_unjudged() {
         let ns = ContextGroupId::from([0x53; 32]);
         let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
         let mallory = crate::test_support::account_for(&mallory_sk.public_key());
@@ -1074,25 +1074,21 @@ pub(crate) mod tests {
         let members = MembershipRepository::new(&store);
         assert_eq!(
             members.role_of(&ns, &yara).unwrap(),
-            Some(GroupMemberRole::Admin),
-            "the live gates admit the owner's op"
-        );
-        assert_eq!(
-            calimero_governance_store::parked_op(&store, by_owner.namespace_id, owner_op).unwrap(),
-            None,
-            "an apply clears the mark"
+            Some(GroupMemberRole::Member),
+            "the owner's op is not applied on the live rows"
         );
         assert_eq!(
             members.role_of(&ns, &mallory).unwrap(),
             Some(GroupMemberRole::Member),
-            "the live gates refuse Mallory's op"
+            "nor is Mallory's"
         );
-        assert_eq!(
-            calimero_governance_store::parked_op(&store, by_mallory.namespace_id, mallory_op)
-                .unwrap(),
-            Some(calimero_governance_store::Parked::Undecided),
-            "a live refusal on an unresolvable cut is no verdict at the cut"
-        );
+        for (op, id) in [(&by_owner, owner_op), (&by_mallory, mallory_op)] {
+            assert_eq!(
+                calimero_governance_store::parked_op(&store, op.namespace_id, id).unwrap(),
+                Some(calimero_governance_store::Parked::Undecided),
+                "an op whose cut is unresolvable stays parked"
+            );
+        }
     }
 
     /// An op a replay refused at its cut stays refused when a later replay cannot

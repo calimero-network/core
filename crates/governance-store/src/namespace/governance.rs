@@ -386,7 +386,11 @@ impl<'a> NamespaceGovernance<'a> {
             parked,
         } = match self.apply_payload(op, delta_id, op_sequence) {
             Err(err) if matches!(self.logs_refusal(op, &err), Ok(true)) => {
-                self.refused_payload(op, delta_id, err)?
+                if self.cut_reads_whole(self.authorizer, op) {
+                    self.refused_payload(op, delta_id, err)?
+                } else {
+                    self.held_payload(op, delta_id, op_sequence, &err)?
+                }
             }
             outcome => outcome?,
         };
@@ -949,6 +953,35 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(!self.authored_here(op)?)
     }
 
+    /// Can `judge` read `op`'s cut whole? A refusal at a cut holding an op this node
+    /// cannot read yet rests on what this node lacks, so it is no verdict.
+    fn cut_reads_whole(
+        &self,
+        judge: &dyn crate::authorizer::AtCutAuthorizer,
+        op: &SignedNamespaceOp,
+    ) -> bool {
+        judge.can_resolve_cut(&self.judged_group(op), &op.parent_op_hashes)
+    }
+
+    /// The group whose authority judges `op`: the one a group op or a subgroup-sealed
+    /// join names, the namespace root for any other op.
+    fn judged_group(&self, op: &SignedNamespaceOp) -> ContextGroupId {
+        match &op.op {
+            NamespaceOp::Group { group_id, .. }
+            | NamespaceOp::RootSealedForGroup { group_id, .. } => *group_id,
+            _ => ContextGroupId::from(self.namespace_id.to_bytes()),
+        }
+    }
+
+    /// Why a replay leaves `op` unjudged: its cut does not read whole yet.
+    fn cut_not_whole(&self, op: &SignedNamespaceOp) -> eyre::Report {
+        crate::ApplyError::AuthorityUndecidable {
+            group_id: hex::encode(self.judged_group(op).to_bytes()),
+            signer: op.signer.to_string(),
+        }
+        .into()
+    }
+
     /// Whether this node signed `op`.
     fn authored_here(&self, op: &SignedNamespaceOp) -> EyreResult<bool> {
         let namespace = ContextGroupId::from(self.namespace_id.to_bytes());
@@ -977,6 +1010,46 @@ impl<'a> NamespaceGovernance<'a> {
                 refused: Some(err),
                 ..ApplyNamespaceOpResult::default()
             },
+            ..AppliedPayload::default()
+        })
+    }
+
+    /// The payload of an op refused at a cut that does not read whole: nothing applied,
+    /// kept unjudged like an op this node cannot read, for the replay that reads its cut.
+    fn held_payload(
+        &self,
+        op: &SignedNamespaceOp,
+        delta_id: [u8; 32],
+        op_sequence: u64,
+        err: &eyre::Report,
+    ) -> EyreResult<AppliedPayload> {
+        tracing::warn!(
+            namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+            delta_id = %hex::encode(delta_id),
+            signer = %op.signer,
+            error = %format!("{err:#}"),
+            "holding an op refused at a cut this node cannot read whole; it is judged once \
+             the ops it cannot read yet are"
+        );
+        let keep_bytes = self.admit_unreadable(op)?;
+        if let (
+            true,
+            NamespaceOp::Group {
+                group_id,
+                key_rotation,
+                ..
+            },
+        ) = (keep_bytes, &op.op)
+        {
+            HeldOps::new(self.store, self.namespace_id).hold(delta_id, group_id.to_bytes())?;
+            if key_rotation.is_some() {
+                DeferredRotations::new(self.store, self.namespace_id)
+                    .defer(delta_id, op_sequence)?;
+            }
+        }
+        Ok(AppliedPayload {
+            keep_bytes,
+            parked: keep_bytes.then_some(Parked::Undecided),
             ..AppliedPayload::default()
         })
     }
@@ -2439,9 +2512,9 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
-    /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
-    /// An undecidable cut, or no at-cut judge, falls back to this pass's gates and
-    /// records only an apply.
+    /// Apply a parked root op at its own cut, as on arrival, and record the verdict. A
+    /// cut that does not read whole judges nothing; an undecidable gate, or no at-cut
+    /// judge, falls back to this pass's gates and records only an apply.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
@@ -2453,6 +2526,9 @@ impl<'a> NamespaceGovernance<'a> {
             eyre::bail!("a root op refused at its cut stays refused");
         }
         if let Some(judge) = self.authorizer.at_cut() {
+            if !self.cut_reads_whole(judge, parked) {
+                return Err(self.cut_not_whole(parked));
+            }
             let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
                 .with_apply_auth(&parked.parent_op_hashes, judge)
                 .apply_root_op(gate_op, root);
@@ -2469,8 +2545,8 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     /// [`Self::decrypt_and_apply_group_op`] for a replay. A parked op is judged at its
-    /// own cut as [`Self::replay_parked_root_op`] judges one; any other keeps this
-    /// pass's gates.
+    /// own cut, or left unjudged, as [`Self::replay_parked_root_op`] judges one; any
+    /// other keeps this pass's gates.
     fn replay_group_op(
         &self,
         ns_op: &SignedNamespaceOp,
@@ -2483,6 +2559,9 @@ impl<'a> NamespaceGovernance<'a> {
             eyre::bail!("a group op refused at its cut stays refused");
         }
         if let Some(judge) = self.authorizer.at_cut().filter(|_| parked.is_some()) {
+            if !self.cut_reads_whole(judge, ns_op) {
+                return Err(self.cut_not_whole(ns_op));
+            }
             let at_cut = NamespaceGovernance::new(self.store, self.namespace_id)
                 .with_apply_auth(&ns_op.parent_op_hashes, judge)
                 .decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
