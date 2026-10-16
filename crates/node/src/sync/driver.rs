@@ -57,6 +57,10 @@ use crate::sync_session_bridge::{
 /// enough that a namespace with genuinely nothing to pull stops asking.
 const MAX_NS_SYNC_RETRIES: u8 = 5;
 
+/// Floor between unforced syncs of a context that holds deltas for a release this
+/// node has not switched to; a sync cannot close that gap, only switching does.
+const BEHIND_SYNC_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Retries still owed to a namespace pull after an attempt that delivered
 /// nothing, or `None` when the budget is spent and the driver should stop
 /// re-arming it.
@@ -544,6 +548,19 @@ impl SyncDriver {
                 is_first_sync
             }
         };
+
+        if !force
+            && self
+                .tracker
+                .synced_within(&context_id, BEHIND_SYNC_INTERVAL)
+            && super::helpers::holds_absorbed(self.context_client.datastore(), &context_id)
+        {
+            debug!(
+                %context_id,
+                "Skipping sync, this node holds deltas for a release it has not switched to"
+            );
+            return;
+        }
 
         debug!(%context_id, "Scheduled sync");
 

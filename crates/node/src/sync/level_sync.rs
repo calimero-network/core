@@ -659,6 +659,11 @@ async fn run_initiator_impl<T: SyncTransport>(
                 "entity roots agree but scope_root differs — ACL/membership divergence; \
                  pulling governance from the peer to propagate the rotation"
             );
+        } else if super::helpers::holds_absorbed(store, &context_id) {
+            debug!(
+                %context_id,
+                "LevelWise sync left the roots apart: this node holds deltas for a release it has not switched to"
+            );
         } else {
             warn!(
                 %context_id,
