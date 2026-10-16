@@ -1136,8 +1136,9 @@ impl NodeClient {
     }
 
     /// Replay the deltas this node held back for `context_id` until it switched
-    /// to their release, and wait for the replay to finish.
-    pub async fn drain_absorbed(&self, context_id: ContextId) -> eyre::Result<()> {
+    /// to their release, and wait for the replay to finish. Returns how many
+    /// were replayed.
+    pub async fn drain_absorbed(&self, context_id: ContextId) -> eyre::Result<usize> {
         let (tx, rx) = oneshot::channel();
         self.node_manager
             .send(NodeMessage::DrainAbsorbed {

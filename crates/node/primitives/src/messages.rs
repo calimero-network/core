@@ -91,10 +91,11 @@ pub enum NodeMessage {
     /// fallback if the signal is dropped.
     RefreshMigrationFacts { namespace_id: [u8; 32] },
     /// Replay the deltas this node held back for a context because they were
-    /// produced on a release it had not switched to. Answers once the replay ran.
+    /// produced on a release it had not switched to. Answers with how many were
+    /// replayed, once the replay ran.
     DrainAbsorbed {
         context_id: ContextId,
-        outcome: oneshot::Sender<()>,
+        outcome: oneshot::Sender<usize>,
     },
     /// Read the best-effort sync-status snapshot the sync run-loop has
     /// recorded for a context. Routed through `NodeClient -> NodeManager`

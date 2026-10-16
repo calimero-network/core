@@ -379,6 +379,10 @@ pub(crate) fn setup(
             post(groups::retry_group_upgrade::handler),
         )
         .route(
+            "/groups/{namespace_id}/upgrade/activate",
+            post(groups::activate_group_upgrade::handler),
+        )
+        .route(
             "/groups/{group_id}/issue-ownership-proof",
             post(groups::issue_ownership_proof::handler),
         )
@@ -1055,6 +1059,7 @@ fn group_lifecycle_refusal_status(
         | Refusal::UpgradeAlreadyTargeting { .. }
         | Refusal::UpgradeNoContexts { .. }
         | Refusal::UpgradeNotRetryable { .. }
+        | Refusal::UpgradeTargetMismatch { .. }
         | Refusal::UpgradeRefused { .. }
         | Refusal::InvitationExpired { .. }
         | Refusal::GroupAlreadyExists { .. }
@@ -2442,6 +2447,11 @@ mod parse_api_error_tests {
                 ContextError::UpgradeNotRetryable {
                     group_id: group_id(),
                     reason: "is already completed",
+                },
+                ContextError::UpgradeTargetMismatch {
+                    namespace_id: group_id(),
+                    expected: "app-a".to_owned(),
+                    actual: "app-b".to_owned(),
                 },
             ] {
                 let message = err.to_string();

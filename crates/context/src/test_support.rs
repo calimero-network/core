@@ -1207,7 +1207,7 @@ pub(crate) mod actor {
                     outcome,
                 } => {
                     let _ignored = self.drains.send(context_id);
-                    let _ignored = outcome.send(());
+                    let _ignored = outcome.send(0);
                 }
                 other => self.held.push(other),
             }

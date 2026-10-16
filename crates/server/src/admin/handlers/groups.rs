@@ -1,4 +1,5 @@
 pub mod abort_migration;
+pub mod activate_group_upgrade;
 pub mod add_group_members;
 pub mod create_group;
 pub mod create_group_invitation;

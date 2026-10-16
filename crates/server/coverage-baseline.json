@@ -2,5 +2,9 @@
   {
     "route": "DELETE /admin-api/identity/revoked-from",
     "reason": "mero-js has no client or e2e for it yet. A single CI node never has a revoked device to acknowledge, though the call itself is idempotent. Drop this entry when the mero-js e2e lands."
+  },
+  {
+    "route": "POST /admin-api/groups/{namespace_id}/upgrade/activate",
+    "reason": "Switches a node's contexts to the namespace's stored target; mero-js has no client or e2e for it yet. Drop this entry when the mero-js e2e lands."
   }
 ]
