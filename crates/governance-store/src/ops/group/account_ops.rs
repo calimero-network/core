@@ -22,7 +22,7 @@ use calimero_account::{
     DeviceLabel, DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
 };
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::application::ApplicationId;
+use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
 use eyre::Result as EyreResult;
 
 /// `GroupOp::AccountDeviceLinked` — record a device as speaking for an account.
@@ -70,6 +70,17 @@ pub(crate) fn apply_device_linked(
             .load(&group_id)?
             .map(|meta| meta.target.application_id);
         if !calimero_account::scope_covers(&scope.statement.applications, application) {
+            // A replica's root meta names the zero placeholder until the sealed op
+            // setting its target folds, and a key-arrival replay can reach this link
+            // while that op, an ancestor of it, is still parked. Undecided rather
+            // than refused: a refusal spends the nonce, so the replay after the
+            // target folds would skip the link and leave the device unbound.
+            if application.is_none_or(|app| app == ZERO_APPLICATION_ID) {
+                eyre::bail!(crate::ApplyError::AuthorityUndecidable {
+                    group_id: group_id.to_string(),
+                    signer: endorsement.member.to_string(),
+                });
+            }
             tracing::warn!(group_id = ?group_id, device = %cert.device, ?application,
                            "device link: the carried scope does not reach this group");
             return Ok(());
