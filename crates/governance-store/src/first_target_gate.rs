@@ -1302,6 +1302,40 @@ mod tests {
         assert_eq!(at(&[own]), known(&[APP_B]));
     }
 
+    /// A cascade moves the group only if its bytecode matched when it applied,
+    /// which the ancestry does not record: it adds its application to the ones
+    /// in force before it, and a later choice replaces both.
+    #[test]
+    fn a_cascade_adds_its_application_until_a_choice_replaces_it() {
+        let r = rig();
+        let a = r
+            .group_op(&r.founder_sk, r.ns, vec![r.genesis], &target(APP))
+            .expect("A");
+        let cascade = r
+            .group_op(
+                &r.founder_sk,
+                r.ns,
+                vec![a],
+                &GroupOp::CascadeUpgrade {
+                    from_bytecode_id: BytecodeId::from(BUNDLE),
+                    bytecode_id: BytecodeId::from([0x78; 32]),
+                    target_application_id: ApplicationId::from(APP_B),
+                    to_state_version: 0,
+                    migration: None,
+                    cascade_hlc: calimero_storage::logical_clock::HybridTimestamp::zero(),
+                    package: "com.example.app".to_owned(),
+                    version: "2.0.0".to_owned(),
+                },
+            )
+            .expect("the root cascades to B");
+        assert_eq!(r.applications_at(&[cascade]), known(&[APP, APP_B]));
+
+        let c = r
+            .group_op(&r.founder_sk, r.ns, vec![cascade], &target([0x8A; 32]))
+            .expect("C replaces both");
+        assert_eq!(r.applications_at(&[c]), known(&[[0x8A; 32]]));
+    }
+
     /// An ancestry with an op this node does not hold is not "no target".
     #[test]
     fn a_missing_ancestor_leaves_the_target_unknown() {
