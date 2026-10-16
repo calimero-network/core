@@ -1354,7 +1354,7 @@ mod concurrent {
         assert!(applied.is_err(), "a spent invitation readmitted its member");
     }
 
-    /// `op` of `group`, sealed under the namespace key that covers it.
+    /// `op` of `group`, sealed under the key that covers it.
     fn signed_in(
         store: &Store,
         world: &World,
@@ -1364,10 +1364,16 @@ mod concurrent {
         nonce: u64,
         op: &GroupOp,
     ) -> SignedNamespaceOp {
-        let (key_id, key) = GroupKeyring::new(store, world.namespace)
+        // The Restricted subgroup has a key of its own; the rest are under the namespace's.
+        let keyring = if *group == world.restricted {
+            *group
+        } else {
+            world.namespace
+        };
+        let (key_id, key) = GroupKeyring::new(store, keyring)
             .load_current_key()
-            .expect("read the namespace keyring")
-            .expect("the world keys the namespace");
+            .expect("read the keyring")
+            .expect("the world keys the group");
         SignedNamespaceOp::sign(
             signer,
             world.namespace.to_bytes().into(),
@@ -1888,6 +1894,99 @@ mod concurrent {
                 .expect("read the meta")
                 .map(|meta| meta.owner_identity)
         });
+    }
+
+    /// A root removal of a TEE takes its subgroup rows with it and blocks its re-entry there,
+    /// as the live apply does. A subgroup re-admission whose cut holds that removal is
+    /// refused, whichever concurrent op a node took first.
+    #[actix::test]
+    async fn a_root_tee_removal_cascades_into_its_subgroups_at_the_cut() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let tee = admitted_tee(&store, world, 0xFB).await;
+        let seat = signed_in(
+            &store,
+            world,
+            &world.restricted,
+            &world.owner_sk,
+            &heads(&store, world),
+            unused_nonce(),
+            &group_admission(tee, [0xFC; 32]),
+        );
+        apply(&store, &seat)
+            .await
+            .expect("the owner seats the TEE in the subgroup");
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&world.restricted, &tee)
+                .expect("read the role"),
+            Some(GroupMemberRole::ReadOnlyTee),
+            "precondition: the TEE holds a subgroup row"
+        );
+        let remove = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &heads(&store, world),
+            unused_nonce(),
+            &dummy_member_removed_op(tee),
+        );
+        apply(&store, &remove)
+            .await
+            .expect("the admin removes the TEE at the root");
+        let parents = heads(&store, world);
+        let readmit = signed_in(
+            &store,
+            world,
+            &world.restricted,
+            &world.owner_sk,
+            &parents,
+            unused_nonce(),
+            &group_admission(tee, [0xFD; 32]),
+        );
+        let other = logged_member(&store, world, 0xFE).await;
+        let unrelated = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::MemberRoleSet {
+                member: other,
+                role: GroupMemberRole::ReadOnly,
+            },
+        );
+
+        let capability = signed_in(
+            &store,
+            world,
+            &world.restricted,
+            &world.owner_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::MemberCapabilitySet {
+                member: tee,
+                capabilities: calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+            },
+        );
+
+        // The owner is this node's identity, so its refused op is not logged at all.
+        for evicted in [&readmit, &capability] {
+            let nodes = in_both_orders(&store, evicted, &unrelated).await;
+            let id = evicted.content_hash().expect("hash the op");
+            for node in &nodes {
+                let logged = NamespaceOpLogService::new(node, world.namespace.to_bytes().into())
+                    .contains_op(id)
+                    .expect("read the op log");
+                assert!(
+                    !logged || verdicts(node, world, &[evicted]) == vec![Some(Parked::Refused)],
+                    "an op on a TEE the root removal evicted from the subgroup applied at a cut \
+                     holding the removal"
+                );
+            }
+        }
     }
 
     /// A nonce no signer of the world has used: a reused one is dropped as a duplicate.

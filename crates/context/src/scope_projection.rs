@@ -2844,12 +2844,23 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>> {
         let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
-        Some(
-            match view.member_path_at_cut(group, member, root, default_cap_base) {
-                calimero_authz::MemberPathAtCut::Direct { role } => Some(role),
-                _ => None,
-            },
-        )
+        let calimero_authz::MemberPathAtCut::Direct { role } =
+            view.member_path_at_cut(group, member, root, default_cap_base)
+        else {
+            return Some(None);
+        };
+        // The fold keeps the subgroup rows a root removal of a TEE takes; the apply does not.
+        let cut = self.membership_cut(store, group, heads)?;
+        if ContextGroupId::from(cut.namespace) != group {
+            let changes = self.membership_changes(store, &cut, group, member)?;
+            let root = ContextGroupId::from(cut.namespace);
+            if latest_changes(cut.log, &changes).any(|(op, _)| {
+                matches!(op.payload, OpPayload::MemberRemoved { group: g, .. } if g == root)
+            }) {
+                return Some(None);
+            }
+        }
+        Some(Some(role))
     }
 
     /// What a join of `member` into `group` with the invitation `nonce` meets at the cut:
@@ -2995,6 +3006,22 @@ impl ScopeProjections {
                     group: g,
                     member: m,
                 } if *g == group && m == member => Some(GroupExitReason::Left),
+                // A root removal of a TEE evicts it from every subgroup it holds a row in.
+                OpPayload::MemberRemoved {
+                    group: g,
+                    member: m,
+                } if *g == root
+                    && group != root
+                    && m == member
+                    && self
+                        .direct_role_at_cut(store, root, member, &op.parents)?
+                        .is_some_and(|role| role.is_tee())
+                    && self
+                        .direct_role_at_cut(store, group, member, &op.parents)?
+                        .is_some() =>
+                {
+                    Some(GroupExitReason::Removed)
+                }
                 // A namespace leave exits only the subgroups it took a direct row from.
                 OpPayload::MemberLeft {
                     group: g,
@@ -3464,16 +3491,24 @@ struct MembershipCut<'a> {
 /// The exit among the latest of `changes`, those no other one follows; `Removed`
 /// outranks `Left`.
 fn latest_exit(log: &[Op], changes: &[(&Op, Option<GroupExitReason>)]) -> Option<GroupExitReason> {
+    latest_changes(log, changes)
+        .filter_map(|(_, exit)| *exit)
+        .max_by_key(|exit| *exit == GroupExitReason::Removed)
+}
+
+/// The changes no other one of `changes` follows.
+fn latest_changes<'a, 'o>(
+    log: &[Op],
+    changes: &'a [(&'o Op, Option<GroupExitReason>)],
+) -> impl Iterator<Item = &'a (&'o Op, Option<GroupExitReason>)> {
     let superseded: BTreeSet<[u8; 32]> = changes
         .iter()
         .flat_map(|(op, _)| ScopeState::cut_ancestry(log, &op.parents).ops().to_vec())
         .map(Op::id)
         .collect();
-    let latest = changes
+    changes
         .iter()
-        .filter(|(op, _)| !superseded.contains(&op.id()))
-        .filter_map(|(_, exit)| *exit);
-    latest.max_by_key(|exit| *exit == GroupExitReason::Removed)
+        .filter(move |(op, _)| !superseded.contains(&op.id()))
 }
 
 /// Whether the logged op `id` is `member`'s join of `group` with the invitation `nonce`;
