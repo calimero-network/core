@@ -174,3 +174,218 @@ fn extended_client_token_reaches_every_sdk_route() {
 
     assert_token_reaches(&validator, &strings(MULTI_CONTEXT_PERMISSIONS_NEXT));
 }
+
+// ---------------------------------------------------------------------------
+// Every grant set an app is actually handed today, against every route an app
+// actually calls.
+//
+// The constants above stopped tracking mero-react after its first three
+// grants, so nothing here noticed when three hand copies of the MultiContext
+// list (the desktop's per-app key, admin-dashboard's, auth-frontend's
+// allowlist) were left without `context:delete`: every app got 403 on
+// `DELETE /admin-api/contexts/:id` (tauri-app#361, admin-dashboard#188,
+// auth-frontend#67). Each copy is pinned verbatim below. When one changes,
+// change it here, and the route table says what the change costs.
+// ---------------------------------------------------------------------------
+
+/// mero-react `getPermissionsForMode(AppMode.MultiContext)`
+/// (`src/context/MeroContext.tsx`), verbatim. auth-frontend forwards it.
+const MERO_REACT_MULTI_CONTEXT: &[&str] = &[
+    "context:create",
+    "context:delete",
+    "context:list",
+    "context:execute",
+    "context:subscribe",
+    "application:list",
+    "namespace",
+    "group",
+    "blob",
+    "context:alias",
+];
+
+/// mero-react `getPermissionsForMode(AppMode.SingleContext)`, verbatim.
+const MERO_REACT_SINGLE_CONTEXT: &[&str] = &[
+    "context:execute",
+    "context:list",
+    "context:subscribe",
+    "application:list",
+    "blob",
+    "context:alias",
+];
+
+/// tauri-app `APP_TOKEN_PERMISSIONS` (`apps/desktop/src/lib/app-tokens.ts`):
+/// the key the desktop mints for each app window.
+const DESKTOP_APP_TOKEN: &[&str] = &[
+    "context:create",
+    "context:delete",
+    "context:list",
+    "context:execute",
+    "context:subscribe",
+    "application:list",
+    "namespace",
+    "group",
+    "blob",
+    "context:alias",
+];
+
+/// admin-dashboard `APP_TOKEN_PERMISSIONS` (`src/utils/openApp.ts`): the key
+/// minted for an app opened from the dashboard. Narrower blob verbs on purpose
+/// (no node-wide blob listing).
+const DASHBOARD_APP_TOKEN: &[&str] = &[
+    "context:create",
+    "context:delete",
+    "context:list",
+    "context:execute",
+    "context:subscribe",
+    "application:list",
+    "namespace",
+    "group",
+    "blob:add",
+    "blob:get",
+    "blob:remove",
+    "context:alias",
+];
+
+/// What the desktop minted before tauri-app#361: the MultiContext list
+/// without `context:delete`. Kept to pin the 403 it produced.
+const DESKTOP_APP_TOKEN_BEFORE_361: &[&str] = &[
+    "context:list",
+    "context:create",
+    "context:execute",
+    "context:subscribe",
+    "application:list",
+    "namespace",
+    "group",
+    "blob",
+    "context:alias",
+];
+
+const CTX: &str = "5f4be3609f2916888dcfc0d6568bbcbb2778381cf9669f69738a056ee2617346";
+
+/// The routes a multi-context app calls through mero-js / mero-react after
+/// login. `{ctx}` is replaced with [`CTX`].
+const MULTI_CONTEXT_APP_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/admin-api/contexts"),
+    ("POST", "/admin-api/contexts"),
+    ("GET", "/admin-api/contexts/{ctx}"),
+    ("DELETE", "/admin-api/contexts/{ctx}"),
+    ("GET", "/admin-api/contexts/{ctx}/identities-owned"),
+    ("POST", "/jsonrpc"),
+    ("GET", "/sse"),
+    ("POST", "/sse/subscription"),
+    ("GET", "/ws"),
+    ("GET", "/admin-api/applications"),
+    ("GET", "/admin-api/namespaces"),
+    ("POST", "/admin-api/namespaces"),
+    ("POST", "/admin-api/groups"),
+    ("PUT", "/admin-api/blobs"),
+    ("POST", "/admin-api/alias/create/context"),
+    ("POST", "/admin-api/alias/lookup/context"),
+];
+
+/// A single-context app never creates, deletes or governs: it runs, reads,
+/// streams and stores files in the context it was opened on.
+const SINGLE_CONTEXT_APP_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/admin-api/contexts/{ctx}/identities-owned"),
+    ("POST", "/jsonrpc"),
+    ("GET", "/sse"),
+    ("POST", "/sse/subscription"),
+    ("GET", "/ws"),
+    ("GET", "/admin-api/applications"),
+    ("PUT", "/admin-api/blobs"),
+    ("POST", "/admin-api/alias/lookup/context"),
+];
+
+/// Every route `routes` names that `token` cannot call, as `METHOD path`.
+fn refused(
+    validator: &PermissionValidator,
+    token: &[&str],
+    routes: &[(&str, &str)],
+) -> Vec<String> {
+    let token = strings(token);
+    routes
+        .iter()
+        .map(|(method, path)| (*method, path.replace("{ctx}", CTX)))
+        .filter(|(method, path)| {
+            let required = validator.determine_required_permissions(&request(method, path));
+            !validator.validate_permissions(&token, &required)
+        })
+        .map(|(method, path)| format!("{method} {path}"))
+        .collect()
+}
+
+#[test]
+fn every_multi_context_grant_set_reaches_every_app_route() {
+    let validator = PermissionValidator::new();
+
+    for (source, token) in [
+        ("mero-react MultiContext", MERO_REACT_MULTI_CONTEXT),
+        ("desktop app token", DESKTOP_APP_TOKEN),
+        ("admin-dashboard app token", DASHBOARD_APP_TOKEN),
+    ] {
+        assert_eq!(
+            refused(&validator, token, MULTI_CONTEXT_APP_ROUTES),
+            Vec::<String>::new(),
+            "{source} {token:?} is refused on routes an app calls",
+        );
+    }
+}
+
+#[test]
+fn single_context_grant_set_reaches_every_single_context_route() {
+    let validator = PermissionValidator::new();
+
+    assert_eq!(
+        refused(
+            &validator,
+            MERO_REACT_SINGLE_CONTEXT,
+            SINGLE_CONTEXT_APP_ROUTES
+        ),
+        Vec::<String>::new(),
+    );
+}
+
+/// The copies may differ in shape (the dashboard narrows `blob`) but never in
+/// what an app can reach: none may hold a grant mero-react does not ask for
+/// beyond a narrower verb of one it does.
+#[test]
+fn no_app_grant_set_holds_more_than_mero_react_asks_for() {
+    let multi: Vec<_> = MERO_REACT_MULTI_CONTEXT
+        .iter()
+        .map(|p| {
+            p.parse::<mero_auth::auth::permissions::Permission>()
+                .unwrap()
+        })
+        .collect();
+
+    for (source, token) in [
+        ("desktop app token", DESKTOP_APP_TOKEN),
+        ("admin-dashboard app token", DASHBOARD_APP_TOKEN),
+    ] {
+        for grant in token {
+            let held = grant
+                .parse::<mero_auth::auth::permissions::Permission>()
+                .unwrap_or_else(|e| panic!("{source}: {grant} must parse: {e}"));
+            assert!(
+                multi.iter().any(|m| m.satisfies(&held)),
+                "{source} holds {grant}, which mero-react's MultiContext set does not cover",
+            );
+        }
+    }
+}
+
+/// The 403 tauri-app#361 fixed, pinned: a token without `context:delete` is
+/// refused deleting a context and nothing else an app calls.
+#[test]
+fn a_grant_set_without_context_delete_is_refused_only_on_delete() {
+    let validator = PermissionValidator::new();
+
+    assert_eq!(
+        refused(
+            &validator,
+            DESKTOP_APP_TOKEN_BEFORE_361,
+            MULTI_CONTEXT_APP_ROUTES
+        ),
+        vec![format!("DELETE /admin-api/contexts/{CTX}")],
+    );
+}
