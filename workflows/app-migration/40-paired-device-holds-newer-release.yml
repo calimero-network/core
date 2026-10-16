@@ -1,0 +1,117 @@
+name: 40 — A paired device that already holds a newer release runs the namespace's own
+description: >
+  Node 1 creates a namespace on migration-suite 1.0.0 and writes into a context.
+  Node 2 already has migration-suite 2.0.0 installed, the same package and so the
+  same application id, and is then paired into node 1's account, as a laptop
+  joining a desktop does. Node 2 must run the release the group names and read
+  node 1's state.
+
+  The paired device learns the group's target from `ContextRegistered`, which
+  carries the release's registry coordinates. Needs the http lane: dht fetches by
+  blob id and never reads coordinates.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: paired-newer-release
+  base_port: 9250
+  base_rpc_port: 9350
+
+steps:
+  - name: Install migration-suite 1.0.0 on node 1
+    type: install_application
+    node: paired-newer-release-1
+    path: dist/com.calimero.migration-suite-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite 2.0.0 on node 2, before it is paired
+    type: install_application
+    node: paired-newer-release-2
+    path: dist/com.calimero.migration-suite-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Both releases share one application id
+    type: json_assert
+    statements:
+      - 'equal("{{app_v1}}", "{{app_v2}}")'
+
+  - name: Create namespace on node 1
+    type: create_namespace
+    node: paired-newer-release-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create a subgroup on node 1
+    type: create_group_in_namespace
+    node: paired-newer-release-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "paired-newer-release-channel"
+    outputs:
+      group_id: groupId
+
+  - name: Create a context in the subgroup on node 1
+    type: create_context
+    node: paired-newer-release-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Node 1 writes state
+    type: call
+    node: paired-newer-release-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "written-on-1.0.0"
+
+  - name: What node 1 speaks as
+    type: node_identity
+    node: paired-newer-release-1
+    outputs:
+      root_key: accountRootPublicKey
+      account_ns: accountNamespaceId
+
+  - name: Pair node 2 into node 1's account, naming only the account namespace
+    type: account_pair
+    node: paired-newer-release-2
+    holder: paired-newer-release-1
+    root_key: "{{root_key}}"
+    account_namespace: "{{account_ns}}"
+    await_self: true
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: paired-newer-release-2
+    context_id: "{{ctx_id}}"
+
+  - name: Wait for state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - paired-newer-release-1
+      - paired-newer-release-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 2 reads node 1's state
+    type: call
+    node: paired-newer-release-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      schema_node2: result
+
+  - name: Node 2 ran 1.0.0, the release the group names
+    type: json_assert
+    statements:
+      - 'json_subset({{schema_node2}}, {"output": {"schema_version": "1.0.0", "description": "written-on-1.0.0"}})'

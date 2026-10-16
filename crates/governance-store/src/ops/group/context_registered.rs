@@ -3,6 +3,7 @@
 
 use super::super::super::set_context_service_name;
 use super::context::GroupApplyCtx;
+use calimero_app_downloader::registry::RegistryCoords;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -14,6 +15,7 @@ pub(crate) fn apply(
     application_id: &ApplicationId,
     blob_id: &BlobId,
     service_name: &Option<String>,
+    coords: RegistryCoords<'_>,
 ) -> EyreResult<()> {
     let signer = ctx.signer();
     let group_id = ctx.group_id();
@@ -27,6 +29,7 @@ pub(crate) fn apply(
         context_id,
         application_id,
         blob_id,
+        coords,
     )?;
     if let Some(name) = service_name {
         set_context_service_name(store, context_id, name)?;
