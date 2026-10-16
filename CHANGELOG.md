@@ -512,6 +512,30 @@
 
 ### Fixed
 
+- **A member added to a subgroup while its key recovery is replaying is no
+  longer left out.** Once a group's key recovery ends, the node replays that
+  group's held ops again, so an add or capability change that arrived by
+  gossip during the first replay is applied and the subgroup's state hash
+  converges. Before, a member outside a Restricted subgroup that was later
+  opened could miss their own member row in it for good. (#4596)
+
+- **A request proof signs the query as well as the path.** The signed target
+  is the request line's path and query, byte for byte, under the domain
+  `calimero.auth.request.v2`; a proof for one query no longer admits another.
+  A reverse proxy in front of a node must forward the path and query
+  unchanged. (breaking: SDKs must sign v2 targets, as mero-js does since
+  calimero-network/mero-js#262, released in 25.3.1; older SDKs stop
+  authenticating with request proofs against this node) (#4549)
+
+- **A client key bound to an application acts only for that application.**
+  On the admin API such a key was answered as the node owner, so an app's
+  token could list, read and delete other apps' contexts, namespaces and
+  blobs. A bound key now reaches only the groups and contexts its binding
+  permits, cannot install applications or gain admin, and lists only what
+  its binding covers; `trusted_admin_applications` names apps whose keys are
+  minted unbound. (breaking for apps that relied on a bound key's node-wide
+  admin access) (#4564)
+
 - **A written-once entry that receives two signed values is sealed.** A
   `WriteOnce`, `ModeratedOnce` or `Frozen` entry given two different authentic
   values by the party allowed to write it now keeps both signed writes as
