@@ -1006,10 +1006,12 @@ mod held_ops {
 mod concurrent {
     use calimero_account::AccountId;
     use calimero_governance_store::test_fixtures::{
-        account_for, dummy_member_removed_op, fork_store, real_join_account, signed_invitation_for,
+        account_for, admission_quote_with, dummy_member_removed_op, fork_store, guarded_group_op,
+        real_join_account, seal_for_test, signed_invitation_for,
     };
     use calimero_governance_store::{parked_op, NamespaceOpLogService, Parked};
     use calimero_governance_types::RootOp;
+    use sha2::Digest;
 
     use super::*;
 
@@ -1348,6 +1350,236 @@ mod concurrent {
         let applied = apply(&store, &rejoin).await;
 
         assert!(applied.is_err(), "a spent invitation readmitted its member");
+    }
+
+    /// `op` of `group`, sealed under the namespace key that covers it.
+    fn signed_in(
+        store: &Store,
+        world: &World,
+        group: &ContextGroupId,
+        signer: &PrivateKey,
+        parents: &[[u8; 32]],
+        nonce: u64,
+        op: &GroupOp,
+    ) -> SignedNamespaceOp {
+        let (key_id, key) = GroupKeyring::new(store, world.namespace)
+            .load_current_key()
+            .expect("read the namespace keyring")
+            .expect("the world keys the namespace");
+        SignedNamespaceOp::sign(
+            signer,
+            world.namespace.to_bytes().into(),
+            parents.to_vec(),
+            nonce,
+            NamespaceOp::Group {
+                group_id: group.to_bytes().into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(&key, op).expect("seal a group op"),
+                key_rotation: None,
+            },
+        )
+        .expect("sign a namespace op")
+    }
+
+    #[actix::test]
+    async fn an_open_join_concurrent_with_its_removal_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let member_sk = joined_member(&store, world, 0xF0, [0xF0; 32]).await;
+        let member = account_for(&member_sk.public_key());
+        let parents = heads(&store, world);
+        let open_join = SignedNamespaceOp::sign(
+            &member_sk,
+            world.namespace.to_bytes().into(),
+            parents.clone(),
+            2,
+            seal_for_test(
+                &store,
+                world.namespace,
+                RootOp::MemberJoinedOpen {
+                    member,
+                    group_id: world.open_chain,
+                    account: real_join_account(&member_sk.public_key()),
+                },
+            ),
+        )
+        .expect("sign the open join");
+        let remove = signed_in(
+            &store,
+            world,
+            &world.open_chain,
+            &admin.sign_sk,
+            &parents,
+            next_nonce(&store, world),
+            &dummy_member_removed_op(member),
+        );
+
+        let nodes = in_both_orders(&store, &open_join, &remove).await;
+
+        let ops = [&open_join, &remove];
+        assert_eq!(
+            verdicts(&nodes[0], world, &ops),
+            verdicts(&nodes[1], world, &ops),
+            "the open join was judged after the removal its cut does not hold"
+        );
+        assert_eq!(verdicts(&nodes[0], world, &ops), vec![None, None]);
+    }
+
+    /// The owner's admission policy that accepts mock attestations.
+    async fn admit_mock_tees(store: &Store, world: &World) {
+        let policy = guarded_group_op(
+            store,
+            &world.namespace,
+            &world.owner_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec!["m1".to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        );
+        publish(store, &world.namespace, &world.owner_sk, &policy)
+            .await
+            .expect("the owner sets the admission policy");
+    }
+
+    /// The owner's group-form admission of `member` with the quote hashed `quote_hash`.
+    fn group_admission(member: AccountId, quote_hash: [u8; 32]) -> GroupOp {
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member,
+            quote_hash,
+            mrtd: "m1".to_owned(),
+            rtmr0: String::new(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        }
+    }
+
+    /// The owner's root-form admission of `tee_sk`'s node, sealed and signed at `parents`.
+    fn root_admission(
+        store: &Store,
+        world: &World,
+        tee_sk: &PrivateKey,
+        parents: &[[u8; 32]],
+        nonce: u64,
+    ) -> SignedNamespaceOp {
+        let account = real_join_account(&tee_sk.public_key());
+        let quote = admission_quote_with(&world.namespace, &tee_sk.public_key(), &account);
+        let quote_hash: [u8; 32] = sha2::Sha256::digest(&quote).into();
+        SignedNamespaceOp::sign(
+            &world.owner_sk,
+            world.namespace.to_bytes().into(),
+            parents.to_vec(),
+            nonce,
+            seal_for_test(
+                store,
+                world.namespace,
+                RootOp::MemberJoinedViaTeeAttestation {
+                    group_id: world.namespace,
+                    member: tee_sk.public_key(),
+                    quote_hash,
+                    mrtd: "m1".to_owned(),
+                    rtmr0: String::new(),
+                    rtmr1: "r1".to_owned(),
+                    rtmr2: "r2".to_owned(),
+                    rtmr3: "r3".to_owned(),
+                    tcb_status: "ok".to_owned(),
+                    role: GroupMemberRole::ReadOnlyTee,
+                    account,
+                    quote,
+                },
+            ),
+        )
+        .expect("sign the admission")
+    }
+
+    #[actix::test]
+    async fn a_tee_readmission_concurrent_with_its_removal_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        admit_mock_tees(&store, world).await;
+        let tee = account_for(&PrivateKey::from([0xF1; 32]).public_key());
+        publish(
+            &store,
+            &world.namespace,
+            &world.owner_sk,
+            &group_admission(tee, [0xF1; 32]),
+        )
+        .await
+        .expect("the owner admits the TEE");
+        let parents = heads(&store, world);
+        let nonce = next_nonce(&store, world);
+        let readmit = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &world.owner_sk,
+            &parents,
+            nonce,
+            &group_admission(tee, [0xF2; 32]),
+        );
+        let remove = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            nonce,
+            &dummy_member_removed_op(tee),
+        );
+
+        let nodes = in_both_orders(&store, &readmit, &remove).await;
+
+        assert_landed_the_same(&nodes, world, &[&readmit, &remove], &tee);
+        assert_eq!(
+            verdicts(&nodes[0], world, &[&readmit, &remove]),
+            vec![None, None]
+        );
+    }
+
+    #[actix::test]
+    async fn a_root_tee_readmission_concurrent_with_its_removal_lands_the_same_in_either_order() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        admit_mock_tees(&store, world).await;
+        let tee_sk = PrivateKey::from([0xF3; 32]);
+        let tee = account_for(&tee_sk.public_key());
+        let first = root_admission(
+            &store,
+            world,
+            &tee_sk,
+            &heads(&store, world),
+            next_nonce(&store, world),
+        );
+        apply(&store, &first)
+            .await
+            .expect("the owner admits the TEE");
+        let parents = heads(&store, world);
+        let nonce = next_nonce(&store, world);
+        let readmit = root_admission(&store, world, &tee_sk, &parents, nonce);
+        let remove = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            nonce,
+            &dummy_member_removed_op(tee),
+        );
+
+        let nodes = in_both_orders(&store, &readmit, &remove).await;
+
+        assert_landed_the_same(&nodes, world, &[&readmit, &remove], &tee);
+        assert_eq!(
+            verdicts(&nodes[0], world, &[&readmit, &remove]),
+            vec![None, None]
+        );
     }
 
     fn next_nonce(store: &Store, world: &World) -> u64 {

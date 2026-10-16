@@ -1709,3 +1709,16 @@ pub fn apply_member_joined(
         .and_then(crate::ApplyNamespaceOpResult::verdict)
         .map(|_result| ())
 }
+
+/// A mock admission quote for `credential` admitted as `key` into `namespace`.
+pub fn admission_quote_with(
+    namespace: &ContextGroupId,
+    key: &PublicKey,
+    credential: &JoinAccountCredential,
+) -> Vec<u8> {
+    let namespace = namespace.to_bytes();
+    let binding =
+        calimero_op_adapter::tee_admission_binding(&namespace, &namespace, key, credential);
+    let report_data = calimero_tee_attestation::admission_report_data(&[0x01; 32], &binding);
+    calimero_tee_attestation::generate_mock_attestation(report_data).quote_bytes
+}

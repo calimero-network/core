@@ -135,18 +135,25 @@ pub(crate) fn apply(
     // Runs after the signer/namespace guards (never read state on the say-so of
     // an unauthenticated op) and before the path resolution below.
     //
-    // A removal from a group the inheritance passes through ends it too; read
-    // live because the projection below folds no deny-list or re-entry rows.
-    let membership = MembershipRepository::new(store);
-    let exited = if ReentryRepository::new(store)
-        .block_of(&gid, &member)?
-        .is_some()
-    {
-        Some(gid)
-    } else if membership.has_direct_member(&gid, &member)? {
-        None
-    } else {
-        membership.exited_ancestor(&gid, &member)?
+    // A removal from a group the inheritance passes through ends it too. Read at the
+    // op's cut, so a concurrent exit does not refuse it on one node only.
+    let (parents, authorizer) = ctx.apply_auth();
+    let exited = match authorizer.inheritance_wall_at_cut(&gid, &member, parents) {
+        Some(wall) => wall,
+        None => {
+            ctx.ensure_live_fallback_is_sound(&gid, &member)?;
+            let membership = MembershipRepository::new(store);
+            if ReentryRepository::new(store)
+                .block_of(&gid, &member)?
+                .is_some()
+            {
+                Some(gid)
+            } else if membership.has_direct_member(&gid, &member)? {
+                None
+            } else {
+                membership.exited_ancestor(&gid, &member)?
+            }
+        }
     };
     if let Some(exited) = exited {
         eyre::bail!(ApplyError::MemberJoinedOpenRejected(

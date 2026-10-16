@@ -2864,21 +2864,117 @@ impl ScopeProjections {
         nonce: &[u8; 32],
         heads: &[[u8; 32]],
     ) -> Option<ReentryAtCut> {
+        let cut = self.membership_cut(store, group, heads)?;
+        let changes = self.membership_changes(store, &cut, group, member)?;
+        let op_log = NamespaceOpLogService::new(store, cut.namespace.into());
+        let mut reentry = ReentryAtCut {
+            exit: latest_exit(cut.log, &changes),
+            spent: false,
+        };
+        for (op, exit) in changes {
+            // A join admits, and so spends its invitation, only where its cut holds no row.
+            if exit.is_none()
+                && joins_with(store, &op_log, op.id(), group, member, nonce)?
+                && self
+                    .direct_role_at_cut(store, group, member, &op.parents)?
+                    .is_none()
+            {
+                reentry.spent = true;
+            }
+        }
+        Some(reentry)
+    }
+
+    /// The exit among `member`'s latest changes in `group` at the cut; `Some(None)` is
+    /// none, `None` a cut not fully folded.
+    #[must_use]
+    pub fn exit_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<GroupExitReason>> {
+        let cut = self.membership_cut(store, group, heads)?;
+        let changes = self.membership_changes(store, &cut, group, member)?;
+        Some(latest_exit(cut.log, &changes))
+    }
+
+    /// Where `member`'s inheritance into `group` stops at the cut: `group` itself if it
+    /// exited it, else the Open ancestor it exited below any row it holds or group it
+    /// administers. `Some(None)` is no wall, `None` a cut not fully folded.
+    #[must_use]
+    pub fn inheritance_wall_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        member: &AccountId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        let (view, root, default_cap_base) = self.auth_cut_context(store, group, heads)?;
+        let cut = self.membership_cut(store, group, heads)?;
+        let exited = |at: ContextGroupId| {
+            self.membership_changes(store, &cut, at, member)
+                .map(|changes| latest_exit(cut.log, &changes).is_some())
+        };
+        if exited(group)? {
+            return Some(Some(group));
+        }
+        if matches!(
+            view.member_path_at_cut(group, member, root, default_cap_base),
+            calimero_authz::MemberPathAtCut::Direct { .. }
+        ) {
+            return Some(None);
+        }
+        let mut unread = false;
+        let wall = view.exited_ancestor(group, member, root, |at| {
+            exited(at).unwrap_or_else(|| {
+                unread = true;
+                false
+            })
+        });
+        (!unread).then_some(wall)
+    }
+
+    /// The walked cut the membership reads take, once its ancestry reads whole.
+    fn membership_cut<'s>(
+        &'s self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<MembershipCut<'s>> {
         let _readable = self.auth_cut_context(store, group, heads)?;
-        let namespace_id = NamespaceRepository::new(store)
+        let namespace = NamespaceRepository::new(store)
             .resolve(&group)
             .ok()?
             .to_bytes();
-        let scope = ScopeId::from(namespace_id);
+        let scope = ScopeId::from(namespace);
         let log = self.logs.get(&scope)?;
-        let walked = self.walk(&scope, log, heads, authority_base(store, namespace_id)?);
-        let root = ContextGroupId::from(namespace_id);
+        let walked = self.walk(&scope, log, heads, authority_base(store, namespace)?);
+        Some(MembershipCut {
+            namespace,
+            log,
+            walked,
+        })
+    }
+
+    /// `member`'s changes to its direct row in `group` within `cut`, each with the exit it
+    /// is; `None` when one cannot be read.
+    fn membership_changes<'c>(
+        &self,
+        store: &Store,
+        cut: &MembershipCut<'c>,
+        group: ContextGroupId,
+        member: &AccountId,
+    ) -> Option<Vec<(&'c Op, Option<GroupExitReason>)>> {
+        let root = ContextGroupId::from(cut.namespace);
         let mut changes = Vec::new();
-        for op in walked
+        for op in cut
+            .walked
             .ops()
             .iter()
             .copied()
-            .filter(|op| !walked.is_void(op))
+            .filter(|op| !cut.walked.is_void(op))
         {
             let exit = match &op.payload {
                 OpPayload::MemberAdded {
@@ -2915,28 +3011,7 @@ impl ScopeProjections {
             };
             changes.push((op, exit));
         }
-        let superseded: BTreeSet<[u8; 32]> = changes
-            .iter()
-            .flat_map(|(op, _)| ScopeState::cut_ancestry(log, &op.parents).ops().to_vec())
-            .map(Op::id)
-            .collect();
-        let op_log = NamespaceOpLogService::new(store, namespace_id.into());
-        let mut reentry = ReentryAtCut::default();
-        for (op, exit) in changes {
-            if !superseded.contains(&op.id()) && reentry.exit != Some(GroupExitReason::Removed) {
-                reentry.exit = exit.or(reentry.exit);
-            }
-            // A join admits, and so spends its invitation, only where its cut holds no row.
-            if exit.is_none()
-                && joins_with(store, &op_log, op.id(), group, member, nonce)?
-                && self
-                    .direct_role_at_cut(store, group, member, &op.parents)?
-                    .is_none()
-            {
-                reentry.spent = true;
-            }
-        }
-        Some(reentry)
+        Some(changes)
     }
 
     /// The group `context`'s cells were rotated in, if `group`, at the cut; `None` when the
@@ -3377,6 +3452,28 @@ fn effective_role_in(
             .cloned()
             .map(Some),
     }
+}
+
+/// A namespace's op log walked from a cut, for the membership reads.
+struct MembershipCut<'a> {
+    namespace: [u8; 32],
+    log: &'a [Op],
+    walked: CutAncestry<'a>,
+}
+
+/// The exit among the latest of `changes`, those no other one follows; `Removed`
+/// outranks `Left`.
+fn latest_exit(log: &[Op], changes: &[(&Op, Option<GroupExitReason>)]) -> Option<GroupExitReason> {
+    let superseded: BTreeSet<[u8; 32]> = changes
+        .iter()
+        .flat_map(|(op, _)| ScopeState::cut_ancestry(log, &op.parents).ops().to_vec())
+        .map(Op::id)
+        .collect();
+    let latest = changes
+        .iter()
+        .filter(|(op, _)| !superseded.contains(&op.id()))
+        .filter_map(|(_, exit)| *exit);
+    latest.max_by_key(|exit| *exit == GroupExitReason::Removed)
 }
 
 /// Whether the logged op `id` is `member`'s join of `group` with the invitation `nonce`;

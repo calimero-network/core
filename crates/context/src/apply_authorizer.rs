@@ -29,6 +29,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_projection::Acting;
+use calimero_store::key::GroupExitReason;
 use calimero_store::Store;
 
 use crate::scope_projection::{authority_base, ScopeProjections};
@@ -448,6 +449,36 @@ impl AtCutAuthorizer for EphemeralProjectionAuthorizer<'_> {
         self.folded(group)?
             .0
             .direct_role_at_cut(self.store, *group, member, parents)
+    }
+
+    fn exit_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<GroupExitReason>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .exit_at_cut(self.store, *group, member, parents)
+    }
+
+    fn inheritance_wall_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        // Empty cut ⇒ defer to live (see `is_admin_at_cut`).
+        if parents.is_empty() {
+            return None;
+        }
+        self.folded(group)?
+            .0
+            .inheritance_wall_at_cut(self.store, *group, member, parents)
     }
 
     fn reentry_at_cut(

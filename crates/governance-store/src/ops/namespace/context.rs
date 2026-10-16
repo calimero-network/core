@@ -219,6 +219,36 @@ impl<'a> NamespaceApplyCtx<'a> {
             .membership_path_at_cut(group, member, self.parents)
     }
 
+    /// `member`'s direct role in `group` at the op's cut, or live where that is sound.
+    pub(crate) fn direct_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+    ) -> EyreResult<Option<calimero_primitives::context::GroupMemberRole>> {
+        if let Some(role) = self
+            .authorizer
+            .direct_role_at_cut(group, member, self.parents)
+        {
+            return Ok(role);
+        }
+        self.ensure_live_fallback_is_sound(group, member)?;
+        MembershipRepository::new(self.store).role_of(group, member)
+    }
+
+    /// The exit among `member`'s latest changes in `group` at the op's cut, or live
+    /// where that is sound.
+    pub(crate) fn exit_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+    ) -> EyreResult<Option<calimero_store::key::GroupExitReason>> {
+        if let Some(exit) = self.authorizer.exit_at_cut(group, member, self.parents) {
+            return Ok(exit);
+        }
+        self.ensure_live_fallback_is_sound(group, member)?;
+        crate::ReentryRepository::new(self.store).block_of(group, member)
+    }
+
     /// Guard a fall-back to the live resolver, same contract as
     /// `require_namespace_admin`'s inline check above.
     ///

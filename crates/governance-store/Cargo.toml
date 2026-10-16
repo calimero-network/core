@@ -76,4 +76,4 @@ default = []
 # build correctly — membership rows AND the binding rows that make an account's
 # own ops verify. Reimplementing that setup per crate is how a test ends up
 # asserting against a member whose ops would be refused in production.
-testing = ["dep:tempfile", "dep:calimero-blobstore", "dep:strum"]
+testing = ["dep:tempfile", "dep:calimero-blobstore", "dep:strum", "calimero-tee-attestation/mock-attestation"]

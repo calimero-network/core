@@ -259,6 +259,22 @@ impl<'a> GroupApplyCtx<'a> {
         MembershipRepository::new(self.store).role_of(self.group_id, member)
     }
 
+    /// The exit among `member`'s latest changes in this group at the op's cut, or live
+    /// where that is sound.
+    pub(crate) fn exit_at_cut(
+        &self,
+        member: &AccountId,
+    ) -> EyreResult<Option<calimero_store::key::GroupExitReason>> {
+        if let Some(exit) = self
+            .authorizer
+            .exit_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(exit);
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        crate::ReentryRepository::new(self.store).block_of(self.group_id, member)
+    }
+
     /// Guard a fall-back to the live resolver, mirroring
     /// `PermissionChecker::ensure_live_fallback_is_sound`.
     ///

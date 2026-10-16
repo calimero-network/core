@@ -16,7 +16,7 @@
 
 use super::context::NamespaceApplyCtx;
 use crate::membership::TeeAttestationClaims;
-use crate::{DenyListRepository, MembershipError, ReentryRepository};
+use crate::{DenyListRepository, MembershipError, MembershipRepository};
 use calimero_context_client::local_governance::{JoinAccountCredential, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
@@ -104,15 +104,23 @@ pub(crate) fn apply(
     //
     // A `Left` block does not stop re-admission: re-attesting is itself a fresh
     // authorization, unlike passively re-inheriting into an Open subgroup.
-    if let Some(GroupExitReason::Removed) =
-        ReentryRepository::new(store).block_of(&group_id, &member_account)?
-    {
+    if let Some(GroupExitReason::Removed) = ctx.exit_at_cut(&group_id, &member_account)? {
         bail!(MembershipError::RemovedFromGroup {
             group_id: group_id.to_string(),
             identity: member.to_string(),
         });
     }
 
+    // A re-attestation of a node the cut seats writes no row a concurrent removal took.
+    if ctx
+        .direct_role_at_cut(&group_id, &member_account)?
+        .is_some()
+        && MembershipRepository::new(store)
+            .role_of(&group_id, &member_account)?
+            .is_none()
+    {
+        return Ok(());
+    }
     policy_gate.admit_or_convert_tee_member(&member_account, role)?;
     // Not redundant with the deny-list retraction inside `add_member`:
     // `admit_member_if_absent` gates on the inheritance-aware `is_member`, so a

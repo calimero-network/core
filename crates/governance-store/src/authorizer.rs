@@ -166,6 +166,28 @@ pub trait AtCutAuthorizer: Send + Sync {
         None
     }
 
+    /// The exit among `member`'s latest changes in `group` at the cut: `Some(None)` is none,
+    /// `None` defers.
+    fn exit_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupExitReason>> {
+        None
+    }
+
+    /// Where `member`'s inheritance into `group` stops at the cut, `group` itself included
+    /// (see `MembershipRepository::exited_ancestor`): `Some(None)` is no wall, `None` defers.
+    fn inheritance_wall_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
     /// The group `context`'s cells were rotated in if it is `group`, at the cut. `Some(None)` =
     /// not there; `None` = defer to live. Judged in `group` only: a registration elsewhere rests on live.
     fn context_rotation_group_at_cut(
