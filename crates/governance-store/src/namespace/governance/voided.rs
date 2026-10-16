@@ -367,16 +367,21 @@ impl NamespaceGovernance<'_> {
             }
         }
 
-        // Only ever closes: the fold's Open may rest on a flip no gate judged here.
-        if written.visibility
-            && rows.restricted == Some(true)
-            && capabilities.subgroup_visibility(group)? == VisibilityMode::Open
-        {
-            capabilities.set_subgroup_visibility(group, VisibilityMode::Restricted)?;
-            crate::op_events::notify(crate::op_events::OpEvent::SubgroupVisibilityChanged {
-                group_id: group.to_bytes(),
-                open: false,
-            });
+        // Every flip the fold counts passed its gate at its cut, void or not.
+        if let Some(restricted) = rows.restricted.filter(|_| written.visibility) {
+            let wanted = if restricted {
+                VisibilityMode::Restricted
+            } else {
+                VisibilityMode::Open
+            };
+            if capabilities.subgroup_visibility(group)? != wanted {
+                capabilities.set_subgroup_visibility(group, wanted)?;
+                // Inherited auto-follow re-runs on a rollback as on the flip it undoes.
+                crate::op_events::notify(crate::op_events::OpEvent::SubgroupVisibilityChanged {
+                    group_id: group.to_bytes(),
+                    open: !restricted,
+                });
+            }
         }
 
         for account in &written.members {
