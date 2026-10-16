@@ -1302,11 +1302,13 @@ pub(crate) mod tests {
         MembershipRepository::new(&store)
             .add_member(&sub, &owner, GroupMemberRole::Admin)
             .unwrap();
+        // The owner's key speaks for its account at the cut only through a folded credential.
+        let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
         let created = SignedNamespaceOp::sign(
             &owner_sk,
             namespace_id.into(),
-            vec![],
-            1,
+            vec![owner_joined],
+            2,
             NamespaceOp::Root(RootOp::GroupCreated {
                 admin: owner,
                 group_id: sub.to_bytes().into(),
@@ -1316,7 +1318,7 @@ pub(crate) mod tests {
             }),
         )
         .unwrap();
-        land(&store, namespace_id, &created, &[]);
+        land(&store, namespace_id, &created, &[owner_joined]);
         let created_id = created.content_hash().unwrap();
 
         // Sealed under the subgroup's own key, which this node does not hold
@@ -1338,7 +1340,7 @@ pub(crate) mod tests {
             .unwrap()
         };
         let named = sealed(
-            2,
+            3,
             vec![created_id],
             GroupOp::GroupMetadataSet {
                 name: Some("K".to_owned()),
@@ -1352,7 +1354,7 @@ pub(crate) mod tests {
         // as a hole. The add arrives in this window, readable, and is held.
         let _ = GroupKeyring::new(&store, sub).store_key(&sub_key).unwrap();
         let add = sealed(
-            3,
+            4,
             vec![named_id],
             GroupOp::MemberAdded {
                 member: bob,
