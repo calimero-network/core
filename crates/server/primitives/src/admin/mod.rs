@@ -1487,6 +1487,12 @@ pub struct GroupInfoApiResponseData {
     #[serde(rename = "appKey")]
     pub bytecode_id: String,
     pub target_application_id: ApplicationId,
+    /// Package and version the group targets, from the group itself, so they are
+    /// present before that release is installed on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
     pub member_count: u64,
     pub context_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4906,10 +4912,14 @@ pub struct NamespaceApiResponse {
     pub subgroup_count: usize,
     /// Bundle-manifest version of this namespace's `bytecode_id` blob — the
     /// per-namespace truth (the shared application row only says "latest
-    /// fetched"). `None` when unresolvable (raw-wasm app, legacy key,
-    /// blob not retained locally).
+    /// fetched"). Falls back to the version the group targets when the blob
+    /// is not held locally; `None` for a raw-wasm app or legacy key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Package of the release the namespace targets, from the group itself, so
+    /// it is present before that release is installed on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_package: Option<String>,
     /// What the id was derived from: the founder and salt carried by the
     /// namespace's `NamespaceCreatedV2` genesis. Present on every node that has
     /// applied that genesis, not only the founder's; absent only on a node that
@@ -5097,6 +5107,8 @@ mod naming_back_compat_tests {
             group_id: "g".to_owned(),
             bytecode_id: "b".to_owned(),
             target_application_id: ApplicationId::from([0_u8; 32]),
+            app_package: None,
+            app_version: None,
             member_count: 0,
             context_count: 0,
             active_upgrade: None,
@@ -5110,6 +5122,39 @@ mod naming_back_compat_tests {
         let json = serde_json::to_string(&data).expect("serialize");
         assert!(json.contains("\"appKey\""), "got: {json}");
         assert!(!json.contains("\"bytecodeId\""), "got: {json}");
+    }
+
+    // The release fields are new: an old server omits them and a node with no
+    // named release does too, so neither may be required or serialized as null.
+    #[test]
+    fn group_info_release_fields_are_optional_on_the_wire() {
+        let mut data = GroupInfoApiResponseData {
+            group_id: "g".to_owned(),
+            bytecode_id: "b".to_owned(),
+            target_application_id: ApplicationId::from([0_u8; 32]),
+            app_package: None,
+            app_version: None,
+            member_count: 0,
+            context_count: 0,
+            active_upgrade: None,
+            default_capabilities: 0,
+            subgroup_visibility: String::new(),
+            metadata: None,
+            group_state_hash: String::new(),
+            namespace_id: String::new(),
+            owner_op_counter: 0,
+        };
+        let unnamed = serde_json::to_value(&data).expect("serialize");
+        assert!(unnamed.get("appPackage").is_none(), "got: {unnamed}");
+        assert!(unnamed.get("appVersion").is_none(), "got: {unnamed}");
+        let _: GroupInfoApiResponseData =
+            serde_json::from_value(unnamed).expect("a body without the release fields");
+
+        data.app_package = Some("com.acme.app".to_owned());
+        data.app_version = Some("2.0.0".to_owned());
+        let named = serde_json::to_value(&data).expect("serialize");
+        assert_eq!(named["appPackage"], "com.acme.app");
+        assert_eq!(named["appVersion"], "2.0.0");
     }
 
     // The request half of the same contract: an old server only knows `appKey`,

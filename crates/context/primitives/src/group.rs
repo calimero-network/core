@@ -5,6 +5,7 @@ use calimero_account::{
     AccountGenesis, AccountId, DeviceId, KemPublicKey, PairingStatement, SignedDeviceRevocation,
     SignedOwnerOp,
 };
+use calimero_app_downloader::registry::stored_coords;
 use calimero_context_config::types::{BytecodeId, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -14,7 +15,28 @@ use calimero_primitives::metadata::MetadataRecord;
 use calimero_storage::logical_clock::HybridTimestamp;
 use thiserror::Error as ThisError;
 
+use calimero_store::key::GroupTarget;
+
 pub use calimero_store::key::GroupUpgradeStatus;
+
+/// The release a group's target names, read from the group itself so it is
+/// known on a node that has not installed that release.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TargetRelease {
+    pub package: String,
+    pub version: String,
+}
+
+impl TargetRelease {
+    /// `None` until governance names a release for the group.
+    #[must_use]
+    pub fn of(target: &GroupTarget) -> Option<Self> {
+        stored_coords(&target.package, &target.version).map(|coords| Self {
+            package: coords.package.to_owned(),
+            version: coords.version.to_owned(),
+        })
+    }
+}
 
 /// Snapshot of an in-progress or completed group upgrade, returned by the API.
 ///
@@ -198,6 +220,7 @@ pub struct GroupInfoResponse {
     pub group_id: ContextGroupId,
     pub bytecode_id: BytecodeId,
     pub target_application_id: ApplicationId,
+    pub target_release: Option<TargetRelease>,
     pub member_count: u64,
     pub context_count: u64,
     pub active_upgrade: Option<GroupUpgradeInfo>,
@@ -1572,6 +1595,7 @@ pub struct NamespaceSummary {
     pub namespace_id: ContextGroupId,
     pub bytecode_id: BytecodeId,
     pub target_application_id: ApplicationId,
+    pub target_release: Option<TargetRelease>,
     pub created_at: u64,
     pub name: Option<String>,
     pub member_count: usize,
@@ -2548,5 +2572,40 @@ mod migration_status_tests {
             mapped.migration_failed,
             Some(MigrationFailureKind::ApplyFailed)
         );
+    }
+}
+
+#[cfg(test)]
+mod target_release_tests {
+    use calimero_primitives::application::ApplicationId;
+    use calimero_store::key::GroupTarget;
+
+    use super::TargetRelease;
+
+    fn target(package: &str, version: &str) -> GroupTarget {
+        GroupTarget {
+            application_id: ApplicationId::from([1; 32]),
+            bytecode_id: [2; 32],
+            package: package.into(),
+            version: version.into(),
+        }
+    }
+
+    #[test]
+    fn a_named_target_reports_its_release() {
+        assert_eq!(
+            TargetRelease::of(&target("com.acme.app", "2.0.0")),
+            Some(TargetRelease {
+                package: "com.acme.app".to_owned(),
+                version: "2.0.0".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_unnamed_or_placeholder_target_reports_none() {
+        assert_eq!(TargetRelease::of(&GroupTarget::default()), None);
+        assert_eq!(TargetRelease::of(&target("com.acme.app", "")), None);
+        assert_eq!(TargetRelease::of(&target("unknown", "0.0.0")), None);
     }
 }
