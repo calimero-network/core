@@ -552,24 +552,45 @@ impl<'a> PermissionChecker<'a> {
     /// and the creator's namespace role are read at the flip's cut, and a concurrent
     /// namespace removal voids the flip.
     ///
-    /// A group with no recorded creator - a namespace root, which no
+    /// The creator is read at the flip's cut: a subgroup its cut does not hold was opened
+    /// by no creator. A group with no recorded creator - a namespace root, which no
     /// `GroupCreated` makes, and whose history every member reads anyway - keeps
     /// the admin / `CAN_MANAGE_VISIBILITY` rule, as the projection does.
     pub fn require_creator_opens(&self, identity: &PublicKey) -> EyreResult<()> {
-        let Some(creator) = crate::group_creator::GroupCreatorRepository::new(self.store)
-            .creator(&self.group_id)?
-        else {
-            return self.require_can_manage_visibility(identity);
-        };
         let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let at_namespace = PermissionChecker::new(self.store, namespace)
             .with_apply_auth(self.parents, self.authorizer);
-        let signer = match self.principal_account(identity) {
-            Some(account) => Some(account),
-            None => at_namespace.account_for_signer_at_cut(identity)?,
+        let creator = match self
+            .authorizer
+            .group_creator_at_cut(&self.group_id, self.parents)
+        {
+            Some(Some(creator)) => Some(creator),
+            Some(None)
+                if !crate::ops::namespace::group_created::is_namespace_root(
+                    self.store,
+                    self.group_id,
+                )? =>
+            {
+                None
+            }
+            _ => {
+                let Some(creator) = crate::group_creator::GroupCreatorRepository::new(self.store)
+                    .creator(&self.group_id)?
+                else {
+                    return self.require_can_manage_visibility(identity);
+                };
+                at_namespace.ensure_live_fallback_is_sound(identity)?;
+                Some(creator)
+            }
         };
-        if signer == Some(creator) && at_namespace.effective_role_at_cut(&creator)?.is_some() {
-            return Ok(());
+        if let Some(creator) = creator {
+            let signer = match self.principal_account(identity) {
+                Some(account) => Some(account),
+                None => at_namespace.account_for_signer_at_cut(identity)?,
+            };
+            if signer == Some(creator) && at_namespace.effective_role_at_cut(&creator)?.is_some() {
+                return Ok(());
+            }
         }
         bail!(CapabilitiesError::Unauthorized {
             group_id: self.group_id.to_string(),

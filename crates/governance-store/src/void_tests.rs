@@ -304,6 +304,17 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         })
     }
 
+    fn group_creator_at_cut(
+        &self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        if parents.is_empty() || !self.can_resolve_cut(group, parents) {
+            return None;
+        }
+        Some(self.view(parents).group_creator.get(group).copied())
+    }
+
     fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
         Some(self)
     }
@@ -2656,10 +2667,9 @@ fn a_flip_that_counts_again_lands_the_same_wherever_its_sealed_ops_and_key_arriv
     );
 }
 
-/// Alice opens her subgroup from a cut that does not hold its creation. The creator is
-/// read from the live row, so the flip's verdict follows whether the creation landed first.
+/// Alice opens her subgroup from a cut that does not hold its creation: no creator opened
+/// it there, whether or not the creation landed first.
 #[test]
-#[ignore = "the creator is read from the live row, not at the flip's cut"]
 fn a_flip_concurrent_with_its_creation_lands_the_same_in_either_order() {
     use calimero_context_config::VisibilityMode;
 
