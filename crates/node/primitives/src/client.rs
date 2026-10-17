@@ -1135,6 +1135,21 @@ impl NodeClient {
         &self.sync_client
     }
 
+    /// Replay the deltas this node held back for `context_id` until it switched
+    /// to their release, and wait for the replay to finish.
+    pub async fn drain_absorbed(&self, context_id: ContextId) -> eyre::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.node_manager
+            .send(NodeMessage::DrainAbsorbed {
+                context_id,
+                outcome: tx,
+            })
+            .await
+            .map_err(|_| eyre::eyre!("node manager mailbox dropped"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("absorb drain response channel dropped"))
+    }
+
     /// Read the best-effort sync-status snapshot for `context_id`.
     ///
     /// Round-trips through `NodeManager`, which owns the run-loop-published

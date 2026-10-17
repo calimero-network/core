@@ -324,6 +324,9 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::ResyncContext { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::ActivateUpgrade { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
         }
     }
 }
