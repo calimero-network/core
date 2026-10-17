@@ -211,6 +211,18 @@ pub(crate) fn author_proof_hex() -> String {
 /// The admin API's unauthenticated router as a relay serves it
 /// (`delegated_access`), over `store` with this node's identity provisioned.
 pub(crate) async fn public_router(store: &Store) -> (axum::Router, TempDir) {
+    let (_protected, public, blob_dir) = admin_routers(store).await;
+    (public, blob_dir)
+}
+
+/// The admin API's credentialed router, over `store` with this node's identity
+/// provisioned.
+pub(crate) async fn protected_router(store: &Store) -> (axum::Router, TempDir) {
+    let (protected, _public, blob_dir) = admin_routers(store).await;
+    (protected, blob_dir)
+}
+
+async fn admin_routers(store: &Store) -> (axum::Router, axum::Router, TempDir) {
     let (state, blob_dir) = admin_state(store).await;
     let config = crate::config::ServerConfig::new(
         vec![],
@@ -220,9 +232,9 @@ pub(crate) async fn public_router(store: &Store) -> (axum::Router, TempDir) {
         None,
         None,
     );
-    let (_path, _protected, public) =
+    let (_path, protected, public) =
         crate::admin::service::setup(&config, state).expect("admin api enabled");
-    (public, blob_dir)
+    (protected, public, blob_dir)
 }
 
 /// `GET`s `uri` from `router`, answering the status and the body.
