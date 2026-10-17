@@ -630,6 +630,7 @@ fn admin_changed_is_guarded_and_owner_only() {
             )
             .unwrap(),
         )
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
     };
     let admin_pin = || {
         MetaRepository::new(&store)

@@ -127,6 +127,32 @@ impl AclView {
         )
     }
 
+    /// The Open ancestor of `group` that `author` exited (`exited` says which), below any
+    /// row it holds and any group it administers: the wall its inheritance stops at.
+    pub fn exited_ancestor(
+        &self,
+        group: ContextGroupId,
+        author: &AccountId,
+        root: Option<(ContextGroupId, AccountId)>,
+        mut exited: impl FnMut(ContextGroupId) -> bool,
+    ) -> Option<ContextGroupId> {
+        let mut exit = None;
+        for parent in self.open_ancestors(group) {
+            if self.is_membership_admin(parent, author, root) {
+                return None;
+            }
+            if exit.is_none() {
+                if self.has_direct_row(parent, author) {
+                    return None;
+                }
+                if exited(parent) {
+                    exit = Some(parent);
+                }
+            }
+        }
+        exit
+    }
+
     /// Does `author` hold a direct membership row in `group`?
     fn has_direct_row(&self, group: ContextGroupId, author: &AccountId) -> bool {
         self.groups

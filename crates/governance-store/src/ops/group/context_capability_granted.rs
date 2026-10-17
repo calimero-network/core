@@ -2,10 +2,8 @@
 //! `apply_group_op_mutations` in #2304.
 
 use super::context::GroupApplyCtx;
-use crate::{
-    get_group_for_context, CapabilitiesRepository, ContextRegistrationError, MembershipError,
-    MembershipRepository,
-};
+use crate::context_registration::registered_at_cut;
+use crate::{CapabilitiesRepository, ContextRegistrationError, MembershipError};
 use calimero_account::AccountId;
 use calimero_governance_types::ContextCapabilityBits;
 use calimero_primitives::context::ContextId;
@@ -23,11 +21,10 @@ pub(crate) fn apply(
 
     ctx.permissions()
         .require_manage_members(signer, "grant context capability")?;
-    // The context must be registered in THIS group, or the grant writes a
-    // per-context capability row scoped to a context owned by a different
-    // group (or none) — the same orphan-row hazard `ContextMetadataSet`
-    // guards against.
-    if get_group_for_context(store, context_id)? != Some(*group_id) {
+    // The context must be registered in THIS group at the op's cut, or the grant
+    // writes a capability row scoped to a context another group owns. A detach
+    // concurrent with it leaves the row behind on every node alike.
+    if !registered_at_cut(store, group_id, context_id, ctx.cut(), ctx.authorizer())? {
         bail!(ContextRegistrationError::NotInGroup {
             group_id: hex::encode(group_id.to_bytes()),
             context_id: context_id.to_string(),
@@ -41,10 +38,7 @@ pub(crate) fn apply(
     // (e.g. a parent-group admin who never joined this subgroup) is rejected
     // here and must be added as a direct member before receiving a per-context
     // grant.
-    if MembershipRepository::new(store)
-        .role_of(group_id, member)?
-        .is_none()
-    {
+    if ctx.direct_role(member)?.is_none() {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(group_id.to_bytes()),
             identity: member.to_string(),

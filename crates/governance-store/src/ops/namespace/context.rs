@@ -192,6 +192,16 @@ impl<'a> NamespaceApplyCtx<'a> {
             .with_principal(self.principal)
     }
 
+    /// A [`MembershipPolicy`](crate::membership::MembershipPolicy) for `group` at this
+    /// op's causal cut, so the policy it enforces is the one the op's parents saw.
+    pub(crate) fn membership_policy_for(
+        &self,
+        group: ContextGroupId,
+    ) -> crate::membership::MembershipPolicy<'a> {
+        crate::membership::MembershipPolicy::new(self.store, group)
+            .with_apply_auth(self.parents, self.authorizer)
+    }
+
     /// The PROJECTION's at-cut membership PATH for `member` in `group`, for the
     /// `MemberJoinedOpen` gate (F5 #29b flip): `membership_path_at_cut` at the op's
     /// causal cut, validated divergence-free on the `membership-path` plane. `None`
@@ -207,6 +217,36 @@ impl<'a> NamespaceApplyCtx<'a> {
     ) -> Option<crate::authorizer::AtCutMembershipPath> {
         self.authorizer
             .membership_path_at_cut(group, member, self.parents)
+    }
+
+    /// `member`'s direct role in `group` at the op's cut, or live where that is sound.
+    pub(crate) fn direct_role_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+    ) -> EyreResult<Option<calimero_primitives::context::GroupMemberRole>> {
+        if let Some(role) = self
+            .authorizer
+            .direct_role_at_cut(group, member, self.parents)
+        {
+            return Ok(role);
+        }
+        self.ensure_live_fallback_is_sound(group, member)?;
+        MembershipRepository::new(self.store).role_of(group, member)
+    }
+
+    /// The exit among `member`'s latest changes in `group` at the op's cut, or live
+    /// where that is sound.
+    pub(crate) fn exit_at_cut(
+        &self,
+        group: &ContextGroupId,
+        member: &AccountId,
+    ) -> EyreResult<Option<calimero_store::key::GroupExitReason>> {
+        if let Some(exit) = self.authorizer.exit_at_cut(group, member, self.parents) {
+            return Ok(exit);
+        }
+        self.ensure_live_fallback_is_sound(group, member)?;
+        crate::ReentryRepository::new(self.store).block_of(group, member)
     }
 
     /// Guard a fall-back to the live resolver, same contract as

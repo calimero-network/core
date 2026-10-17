@@ -34,9 +34,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use calimero_account::{AccountId, DeviceId, KemPublicKey};
+use calimero_account::{
+    AccountGenesis, AccountId, AccountProof, DeviceCert, DeviceId, KemPublicKey, RootKeyHandoff,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::ScopeId;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
@@ -107,6 +110,10 @@ pub struct AclView {
     /// proof must name exactly this count for its group; see
     /// `OpPayload::RootGuarded`.
     pub owner_op_counts: BTreeMap<ContextGroupId, u64>,
+    /// The application the scope root targets at the cut; `None` before any op set one.
+    pub target_application: Option<ApplicationId>,
+    /// The account whose account namespace this scope is, if its genesis marked one.
+    pub account_namespace: Option<AccountId>,
 }
 
 /// What a TEE member's verified attestation evidence established, at a cut.
@@ -259,4 +266,46 @@ impl AclView {
     pub fn is_root_admin(&self, author: &AccountId) -> bool {
         self.root_admin.as_ref() == Some(author)
     }
+
+    /// Does a device of `account`, scoped to `applications`, reach this scope?
+    #[must_use]
+    pub fn scope_reaches(&self, account: &AccountId, applications: &[ApplicationId]) -> bool {
+        scope_reaches(
+            applications,
+            self.target_application,
+            self.account_namespace.as_ref() == Some(account),
+        )
+    }
+}
+
+/// Whether a genesis carrying `cert` for `founder` was signed by that credential's own
+/// key: the one check the apply and the projection make before honouring its mark.
+#[must_use]
+pub fn founder_signed(
+    founder: &AccountId,
+    genesis: &AccountGenesis,
+    chain: &[RootKeyHandoff],
+    cert: &DeviceCert,
+    signer: &PublicKey,
+) -> bool {
+    cert.account == *founder
+        && cert.sign_pk == *signer
+        && AccountProof {
+            genesis: *genesis,
+            chain: chain.to_vec(),
+            statement: *cert,
+        }
+        .verify(*founder)
+        .is_ok()
+}
+
+/// Whether a device scoped to `applications` reaches a scope targeting `target`: its own
+/// account's namespace always, elsewhere only if the scope covers it. The projection's rule too.
+#[must_use]
+pub fn scope_reaches(
+    applications: &[ApplicationId],
+    target: Option<ApplicationId>,
+    own_account_namespace: bool,
+) -> bool {
+    own_account_namespace || calimero_account::scope_covers(applications, target)
 }

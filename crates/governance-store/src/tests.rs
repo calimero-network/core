@@ -331,12 +331,18 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
     let ctx_meta: calimero_store::types::ContextMeta = handle.get(&ctx_meta_key).unwrap().unwrap();
     assert_eq!(ctx_meta.application.application_id(), app_id);
 
-    assert!(service.detach(&permissions, &creator_pk, &context).is_err());
-    service.detach(&permissions, &admin_pk, &context).unwrap();
+    assert!(service
+        .detach(&permissions, &creator_pk, &context, true)
+        .is_err());
+    service
+        .detach(&permissions, &admin_pk, &context, true)
+        .unwrap();
     assert_eq!(get_group_for_context(&store, &context).unwrap(), None);
 
     register_context_in_group(&store, &other_gid, &context).unwrap();
-    assert!(service.detach(&permissions, &admin_pk, &context).is_err());
+    assert!(service
+        .detach(&permissions, &admin_pk, &context, false)
+        .is_err());
 }
 
 #[test]
@@ -7873,6 +7879,86 @@ fn a_device_withdrawal_at_an_unfolded_cut_is_undecidable() {
 }
 
 #[test]
+fn a_repeat_invitation_join_reuses_the_device_binding() {
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let (ns_id, ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_sk.public_key());
+    let member_sk = PrivateKey::random(&mut rng);
+    let member = crate::test_fixtures::account_for(&member_sk.public_key());
+
+    for (nonce, invitation_nonce) in [(1, [0xB1; 32]), (2, [0xB2; 32])] {
+        let invitation = signed_invitation_for(&admin_sk, subgroup, invitation_nonce);
+        apply_member_joined(&store, ns_id, &member_sk, invitation, nonce, &admin_sk)
+            .expect("the join applies");
+    }
+
+    let bound: Vec<_> = crate::AccountBindingRepository::new(&store)
+        .live_bindings(&ns_gid)
+        .expect("read bindings")
+        .into_iter()
+        .filter(|binding| binding.account == member)
+        .collect();
+    assert_eq!(
+        bound.len(),
+        1,
+        "a repeat join minted a second device: {bound:?}"
+    );
+}
+
+#[test]
+fn a_refused_credential_leaves_the_membership_intact() {
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let store = test_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let (ns_id, ns_gid, subgroup, _admin_account) = reentry_fixture(&store, &admin_sk.public_key());
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member = crate::test_fixtures::account_for(&member_pk);
+
+    // The joiner's own credential, at a device epoch this namespace already spent
+    // on another key of the same device, so `apply_link` refuses it.
+    let credential = crate::test_fixtures::real_join_account(&member_pk);
+    let fork = calimero_account::DeviceCert::sign(
+        &PrivateKey::from(*member_pk),
+        credential.statement.account,
+        credential.statement.device,
+        &PrivateKey::random(&mut rng).public_key(),
+        &credential.statement.kem_pk,
+        0,
+        0,
+    )
+    .expect("sign the fork");
+    let _ = crate::AccountBindingRepository::new(&store)
+        .apply_link(&ns_gid, &credential.genesis, &[], &fork, 0)
+        .expect("seed the conflicting key at the same epoch");
+
+    let invitation = signed_invitation_for(&admin_sk, subgroup, [0xB3; 32]);
+    apply_member_joined(&store, ns_id, &member_sk, invitation, 1, &admin_sk)
+        .expect("a credential this group cannot admit must not orphan the membership op");
+
+    assert!(
+        crate::AccountBindingRepository::new(&store)
+            .binding_for_sign_pk(&ns_gid, &member_pk)
+            .expect("read bindings")
+            .is_none(),
+        "a refused credential records no binding"
+    );
+    assert!(
+        MembershipRepository::new(&store)
+            .has_direct_member(&subgroup, &member)
+            .expect("read the row"),
+        "a member without a binding is survivable, a member the DAG cannot apply is not"
+    );
+}
+
+#[test]
 fn a_leaver_cannot_replay_their_invitation_but_a_fresh_one_readmits_them() {
     use rand::rand_core::UnwrapErr;
     use rand::rngs::SysRng;
@@ -8184,6 +8270,7 @@ fn a_kicked_member_cannot_re_inherit_into_the_open_subgroup_they_were_kicked_fro
     )
     .unwrap();
     let err = apply_signed_namespace_op(&store, &signed)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .expect_err("a kicked member must not re-inherit back into the subgroup");
 
     assert!(
@@ -12794,9 +12881,10 @@ mod account_plane_apply {
     use tokio::sync::broadcast;
 
     use crate::op_events::{self, OpEvent};
-    use crate::test_fixtures::{FixedAuthorizer, TEST_CUT as CUT};
+    use crate::test_fixtures::{binding_rejection, FixedAuthorizer, TEST_CUT as CUT};
     use crate::{
         AccountBindingRepository, AccountDeviceRegistry, AccountNamespaceSet, AccountRoot,
+        BindingRejected,
     };
 
     fn key(seed: u8) -> PrivateKey {
@@ -13010,7 +13098,7 @@ mod account_plane_apply {
         .unwrap();
 
         // Not a member yet → refused, and nothing recorded.
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13023,7 +13111,12 @@ mod account_plane_apply {
                 scope: link_scope(&key(9), &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link for an account that is not a member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         let _repo = AccountBindingRepository::new(&store);
         assert!(
             live_for(&store, &gid, account).is_empty(),
@@ -13141,7 +13234,7 @@ mod account_plane_apply {
         )
         .unwrap();
 
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13154,7 +13247,12 @@ mod account_plane_apply {
                 scope: link_scope(&key(20), &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link endorsed by a key bound to no member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         assert!(live_for(&store, &gid, account).is_empty());
     }
 
@@ -13315,7 +13413,7 @@ mod account_plane_apply {
         // Endorsed by a NON-member → refused. The endorsement is valid; the endorser
         // simply has no standing here.
         let stranger = key(7);
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13328,7 +13426,12 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link endorsed by a non-member is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::AccountNotMember)
+        );
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "a valid endorsement from a non-member must not admit a link"
@@ -13339,7 +13442,7 @@ mod account_plane_apply {
         let mut forged =
             calimero_account::AccountMemberEndorsement::sign(&admin_sk, account).unwrap();
         forged.signature = [0u8; 64];
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13351,7 +13454,12 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link under a forged endorsement is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::EndorsementInvalid)
+        );
         assert!(
             live_for(&store, &gid, account).is_empty(),
             "naming a member is not endorsing — the signature has to verify"
@@ -13361,7 +13469,7 @@ mod account_plane_apply {
         // signed by a member. Otherwise a genuine endorsement could be paired with
         // an unrelated credential.
         let other_account = AccountGenesis::new(key(8).public_key()).account_id();
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &admin_sk,
@@ -13377,7 +13485,12 @@ mod account_plane_apply {
                 scope: link_scope(&offline_root, &cert, 0),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a link endorsing another account is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::EndorsementAccountMismatch)
+        );
         assert!(live_for(&store, &gid, account).is_empty());
 
         // Endorsed by a member, correctly, for this account → admitted. Note the
@@ -13617,7 +13730,11 @@ mod account_plane_apply {
 
     /// The account's root withdraws its own second device, through the relay,
     /// in the namespace — where an account's devices are revoked.
-    fn withdraw_through_the_relay(w: &UnboundSecondDevice, account: AccountId, root: &PrivateKey) {
+    fn withdraw_through_the_relay(
+        w: &UnboundSecondDevice,
+        account: AccountId,
+        root: &PrivateKey,
+    ) -> eyre::Result<()> {
         let proof = SignedDeviceRevocation {
             genesis: AccountGenesis::new(root.public_key()),
             chain: vec![],
@@ -13634,7 +13751,7 @@ mod account_plane_apply {
                 proof: Some(proof),
             },
         )
-        .unwrap();
+        .map(|_| ())
     }
 
     fn admit(w: &UnboundSecondDevice) -> eyre::Result<()> {
@@ -13662,7 +13779,8 @@ mod account_plane_apply {
                 panic!("admitted while the device stands (subgroup: {in_subgroup}): {err}")
             });
 
-            withdraw_through_the_relay(&w, w.account, &w.root);
+            withdraw_through_the_relay(&w, w.account, &w.root)
+                .expect("the account withdraws its own device");
 
             let bindings = AccountBindingRepository::new(&w.store);
             assert!(
@@ -13709,7 +13827,12 @@ mod account_plane_apply {
         let attacker_root = key(0x66);
         let attacker = AccountGenesis::new(attacker_root.public_key()).account_id();
 
-        withdraw_through_the_relay(&w, attacker, &attacker_root);
+        let refused = withdraw_through_the_relay(&w, attacker, &attacker_root)
+            .expect_err("a withdrawal naming an account the device was not minted for is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::DeviceNotMintedForAccount)
+        );
 
         assert!(
             !AccountBindingRepository::new(&w.store)
@@ -13891,7 +14014,7 @@ mod account_plane_apply {
              ownership, which is exactly why it cannot stand alone"
         );
 
-        sign_apply_local_group_op_borsh(
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &attacker_sk,
@@ -13901,7 +14024,12 @@ mod account_plane_apply {
                 proof: Some(forged),
             },
         )
-        .unwrap();
+        .err()
+        .expect("a withdrawal naming an account the device was not minted for is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::DeviceNotMintedForAccount)
+        );
 
         assert!(
             !bindings.is_revoked(&gid, device).unwrap(),
@@ -14054,10 +14182,9 @@ mod account_plane_apply {
         let bindings = AccountBindingRepository::new(&store);
         assert_eq!(live_for(&store, &gid, account).len(), 1);
 
-        // A fellow member signs the revocation. Refused deterministically — the
-        // apply returns Ok (every replica reaches the same verdict, and erroring
-        // would stall on an op that can never succeed) but records nothing.
-        sign_apply_local_group_op_borsh(
+        // A fellow member signs the revocation. Refused deterministically, as an
+        // error, so the op is never logged for the projection to fold.
+        let refused = sign_apply_local_group_op_borsh(
             &store,
             &gid,
             &attacker_sk,
@@ -14067,7 +14194,12 @@ mod account_plane_apply {
                 proof: None,
             },
         )
-        .unwrap();
+        .err()
+        .expect("a non-admin without a proof is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::WithdrawalUnauthorised)
+        );
         assert!(
             !bindings.is_revoked(&gid, device).unwrap(),
             "a non-admin must not be able to spend another member's device id"
@@ -14906,7 +15038,7 @@ mod account_plane_apply {
 
         // A valid, root-signed narrowing - replayed by a member of this namespace
         // that speaks for some other account.
-        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+        let refused = crate::apply_group_op_mutations(
             &store,
             &gid,
             &admin_sk.public_key(),
@@ -14914,9 +15046,12 @@ mod account_plane_apply {
             &CUT,
             &FixedAuthorizer(true),
         )
-        .unwrap();
+        .expect_err("a replay by another account is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::SignerNotTheAccount)
+        );
 
-        assert_eq!(events, vec![]);
         assert!(
             is_live(&store, &gid, account, device),
             "a replay by a member of another account must not unbind the device"
@@ -15020,7 +15155,7 @@ mod account_plane_apply {
 
         // `test_meta`'s target, so the replacement still names this namespace.
         let covering = vec![ApplicationId::from([0xCC; 32])];
-        let (_handled, _divergence, events) = crate::apply_group_op_mutations(
+        let refused = crate::apply_group_op_mutations(
             &store,
             &gid,
             &owner_sk.public_key(),
@@ -15028,10 +15163,13 @@ mod account_plane_apply {
             &CUT,
             &FixedAuthorizer(true),
         )
-        .unwrap();
+        .expect_err("a scope that still covers the namespace is refused");
+        assert_eq!(
+            binding_rejection(&refused),
+            Some(BindingRejected::NotANarrowing)
+        );
 
         assert_eq!(live_for(&store, &gid, genesis.account_id()).len(), 1);
-        assert_eq!(events, vec![]);
     }
 
     /// The op carries the application its publisher resolved, so a replica whose
@@ -15234,16 +15372,168 @@ mod account_plane_apply {
         );
     }
 
-    /// The apply pipeline re-runs a mutation before the op-log dedup gate, so a
-    /// second run has to find no binding and say nothing rather than fail.
+    /// A cut at which `signer` speaks for `account`, as a self-descope's own cut
+    /// does on a re-run after the descope unbound the signing device.
+    struct SignerAtCut {
+        signer: PublicKey,
+        account: AccountId,
+    }
+
+    impl crate::authorizer::AtCutAuthorizer for SignerAtCut {
+        fn is_admin_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &PublicKey,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_or_capability_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &PublicKey,
+            _: u32,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_or_capability_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: u32,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_admin_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn is_last_admin_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<bool> {
+            Some(false)
+        }
+
+        fn membership_path_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<crate::authorizer::AtCutMembershipPath> {
+            None
+        }
+
+        fn effective_role_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &AccountId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<GroupMemberRole>> {
+            None
+        }
+
+        fn context_rotation_group_at_cut(
+            &self,
+            _: &ContextGroupId,
+            _: &calimero_primitives::context::ContextId,
+            _: &[[u8; 32]],
+        ) -> Option<Option<ContextGroupId>> {
+            None
+        }
+
+        fn signer_account_at_cut(
+            &self,
+            _: &ContextGroupId,
+            signer: &PublicKey,
+            _: &[[u8; 32]],
+        ) -> Option<Option<AccountId>> {
+            Some((*signer == self.signer).then_some(self.account))
+        }
+    }
+
+    /// Founds a namespace with `founder_sk`, then applies an account-namespace genesis
+    /// replaying its public credential, signed by `replayer`; the founder mark after.
+    fn account_namespace_founder_after_replay(
+        founder_sk: &PrivateKey,
+        salt: [u8; 32],
+        replayer: &PrivateKey,
+    ) -> Option<AccountId> {
+        use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+        let store = test_store();
+        let (genesis, founder, id) =
+            crate::test_fixtures::namespace_genesis_v2_for(founder_sk, salt);
+        let signed = SignedNamespaceOp::sign(founder_sk, id.into(), vec![], 1, genesis.clone())
+            .expect("sign the genesis");
+        let _founded = crate::apply_signed_namespace_op(&store, &signed).expect("it founds");
+        let NamespaceOp::Root(RootOp::NamespaceCreatedV2 { account, salt, .. }) = genesis else {
+            unreachable!("the fixture builds a NamespaceCreatedV2")
+        };
+
+        let replay = NamespaceOp::Root(RootOp::AccountNamespaceCreated {
+            founder,
+            account,
+            salt,
+        });
+        let signed = SignedNamespaceOp::sign(replayer, id.into(), vec![], 2, replay)
+            .expect("sign the replay");
+        let _replayed = crate::apply_signed_namespace_op(&store, &signed);
+
+        crate::NamespaceFoundingRepository::new(&store)
+            .account_namespace_founder(&ContextGroupId::from(id))
+            .expect("read the mark")
+    }
+
+    /// The founder's salt and credential are public in its genesis, so another key
+    /// replaying them as an account-namespace genesis must not mark the namespace.
     #[test]
-    fn re_applying_a_descope_is_a_silent_no_op() {
+    fn only_the_founder_marks_its_account_namespace() {
+        assert_eq!(
+            account_namespace_founder_after_replay(&key(0x61), [0x62; 32], &key(0x63)),
+            None,
+            "a replay by another key marked the founder's namespace as its account namespace"
+        );
+    }
+
+    /// A namespace founded as an ordinary one stays one: its own founder's device cannot
+    /// mark it as the account namespace with a later genesis.
+    #[test]
+    fn an_ordinary_namespace_is_never_marked_after_the_fact() {
+        let founder_sk = key(0x64);
+        assert_eq!(
+            account_namespace_founder_after_replay(&founder_sk, [0x65; 32], &founder_sk),
+            None,
+            "the founder marked an ordinary namespace as its account namespace"
+        );
+    }
+
+    /// A re-run before the op-log dedup names the signer at the op's cut, so a self-descope
+    /// is not refused for having unbound its own device, and narrows nothing again.
+    #[test]
+    fn re_applying_a_descope_narrows_nothing_again() {
         let store = test_store();
         let gid = test_group_id();
         let admin_sk = key(1);
         let _admin = group_with_admin(&store, &gid, &admin_sk);
-        let (owner_sk, _genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
+        let (owner_sk, genesis, device) = a_linked_device(&store, &gid, &admin_sk, 5);
         let op = descoped(&owner_sk, device, elsewhere(), 1);
+        let at_cut = SignerAtCut {
+            signer: owner_sk.public_key(),
+            account: genesis.account_id(),
+        };
 
         let mut last = None;
         for _ in 0..2 {
@@ -15253,12 +15543,19 @@ mod account_plane_apply {
                 &owner_sk.public_key(),
                 &op,
                 &CUT,
-                &FixedAuthorizer(true),
+                &at_cut,
             )
             .unwrap();
             last = Some(events);
         }
-        assert_eq!(last.unwrap(), vec![], "the second run owes no wake-up");
+        assert!(
+            !last
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, OpEvent::DeviceDescoped { .. })),
+            "the second run narrows nothing again"
+        );
+        assert!(!is_live(&store, &gid, genesis.account_id(), device));
     }
 
     /// An account seated here through one bound key, which is no admin, and a
@@ -15672,7 +15969,7 @@ mod account_plane_apply {
             link_scope(&owner_sk, &sibling_cert, 0),
             link_scope(&stranger_sk, &cert, 0),
         ] {
-            sign_apply_local_group_op_borsh(
+            let refused = sign_apply_local_group_op_borsh(
                 &store,
                 &gid,
                 &admin_sk,
@@ -15684,7 +15981,12 @@ mod account_plane_apply {
                     scope,
                 },
             )
-            .unwrap();
+            .err()
+            .expect("a scope that does not authorise this device is refused");
+            assert!(matches!(
+                binding_rejection(&refused),
+                Some(BindingRejected::ScopeInvalid(_))
+            ));
             assert!(
                 live_for(&store, &gid, account).is_empty(),
                 "a scope that does not authorise THIS device admits no link"
@@ -16763,6 +17065,7 @@ mod invite_capability {
             SignedNamespaceOp::sign(joiner_sk, f.ns_id.into(), TEST_CUT.to_vec(), 1, wire).unwrap();
         signed.admitter_endorsement = Some(Box::new(endorsement));
         crate::apply_signed_namespace_op_at_cut(&f.store, &signed, &TEST_CUT, authorizer)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_result| ())
     }
 

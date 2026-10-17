@@ -42,7 +42,7 @@ pub(crate) fn apply(
     // path that derives authority from the membership set rather than the
     // meta field.
     let membership = MembershipRepository::new(store);
-    let Some(existing_role) = membership.role_of(&ns_gid, &new_admin)? else {
+    let Some(existing_role) = ctx.direct_role_at_cut(&ns_gid, &new_admin)? else {
         bail!(MembershipError::NotMember {
             group_id: hex::encode(ns_gid.to_bytes()),
             identity: new_admin.to_string(),
@@ -72,7 +72,9 @@ pub(crate) fn apply(
     // role, so this never downgrades, and leaving another role in place would
     // make `is_admin` return false for the very identity the meta names as
     // admin.
-    if existing_role != GroupMemberRole::Admin {
+    // A row a concurrent removal took is not written back.
+    if existing_role != GroupMemberRole::Admin && membership.role_of(&ns_gid, &new_admin)?.is_some()
+    {
         // Role-only update — `set_role` preserves the row's other fields rather
         // than zeroing them as a full-row `add_member` overwrite would.
         membership.set_role(&ns_gid, &new_admin, GroupMemberRole::Admin)?;

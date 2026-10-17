@@ -11,7 +11,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 /// A candidate's rank inside one causal layer of the retry replay.
-type TieBreak = ([u8; 32], u64);
+pub(crate) type TieBreak = ([u8; 32], u64);
 
 /// A namespace group operation that can be retried locally because the
 /// corresponding group key is now available.
@@ -20,13 +20,27 @@ pub struct RetryCandidate {
     pub group_key: [u8; 32],
 }
 
-/// Something a retry pass replays: a buffered op, plus whatever the pass needs
-/// alongside it to open the op.
-///
-/// Both replay passes order through [`order_causally`] — the group-op pass and
-/// the sealed-root pass — and this is the one thing the ordering needs from
-/// either of them.
-pub(super) trait Replayable {
+/// An op a key-arrival replay can open: a sealed root op with the key that opens it,
+/// or a readable group op. Root and group ops share one DAG, so they replay in one order.
+pub(super) enum ReplayCandidate {
+    Root {
+        signed_op: SignedNamespaceOp,
+        key: [u8; 32],
+    },
+    Group(RetryCandidate),
+}
+
+impl ReplayCandidate {
+    pub(super) fn id(&self) -> EyreResult<[u8; 32]> {
+        self.signed_op()
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))
+    }
+}
+
+/// Something a replay orders: a buffered op, plus whatever is needed alongside it
+/// to open the op.
+pub(crate) trait Replayable {
     fn signed_op(&self) -> &SignedNamespaceOp;
 
     /// Order inside one causal layer: a signer's own ops in publish order, and
@@ -44,9 +58,18 @@ impl Replayable for RetryCandidate {
     }
 }
 
-impl Replayable for super::op_log::StoredSignedGroupOp {
+impl Replayable for SignedNamespaceOp {
     fn signed_op(&self) -> &SignedNamespaceOp {
-        &self.signed_op
+        self
+    }
+}
+
+impl Replayable for ReplayCandidate {
+    fn signed_op(&self) -> &SignedNamespaceOp {
+        match self {
+            Self::Root { signed_op, .. } => signed_op,
+            Self::Group(candidate) => &candidate.signed_op,
+        }
     }
 }
 
@@ -342,10 +365,61 @@ impl<'a> NamespaceRetryService<'a> {
         Ok(held.into_iter().collect())
     }
 
+    /// Every op a replay can open now, unordered: each sealed root op whose key is
+    /// held, and each readable group op of `groups` this node did not sign.
+    pub(super) fn collect_replay_candidates(
+        &self,
+        groups: &BTreeSet<[u8; 32]>,
+    ) -> EyreResult<Vec<ReplayCandidate>> {
+        let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        let mut candidates = Vec::new();
+        for entry in op_log
+            .collect_sealed_root_ops()
+            .map_err(|e| eyre::eyre!("collect_sealed_root_ops: {e}"))?
+        {
+            // A subgroup-sealed join opens in the keyring of the group it names.
+            let keyring_group = match &entry.signed_op.op {
+                NamespaceOp::RootSealedForGroup { group_id, .. } => *group_id,
+                _ => ns_typed,
+            };
+            let Some(key) = GroupKeyring::new(self.store, keyring_group)
+                .load_key_by_id(entry.key_id.as_bytes())
+                .map_err(|e| eyre::eyre!("load key for sealed root op: {e}"))?
+            else {
+                continue;
+            };
+            candidates.push(ReplayCandidate::Root {
+                signed_op: entry.signed_op,
+                key,
+            });
+        }
+        for group in groups {
+            candidates.extend(
+                self.group_candidates(*group)?
+                    .into_iter()
+                    .map(ReplayCandidate::Group),
+            );
+        }
+        Ok(candidates)
+    }
+
     pub fn collect_retry_candidates_for_group(
         &self,
         group_id: [u8; 32],
     ) -> EyreResult<Vec<RetryCandidate>> {
+        let candidates = self.group_candidates(group_id)?;
+        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
+        // Replay in causal order: an op whose ancestor is in the same batch
+        // applies after it, and `(signer, nonce)` decides the rest — so a
+        // signer's own ops keep publish order (a higher nonce applying first
+        // would window the lower one away as a duplicate) and two replicas
+        // order concurrent ops identically.
+        order_causally(&op_log, candidates)
+    }
+
+    /// The readable ops of `group_id` this node did not sign, unordered.
+    fn group_candidates(&self, group_id: [u8; 32]) -> EyreResult<Vec<RetryCandidate>> {
         let mut candidates = Vec::new();
         let gid_typed = ContextGroupId::from(group_id);
         let ns_typed = ContextGroupId::from(self.namespace_id.to_bytes());
@@ -403,13 +477,7 @@ impl<'a> NamespaceRetryService<'a> {
                 group_key,
             });
         }
-
-        // Replay in causal order: an op whose ancestor is in the same batch
-        // applies after it, and `(signer, nonce)` decides the rest — so a
-        // signer's own ops keep publish order (a higher nonce applying first
-        // would window the lower one away as a duplicate) and two replicas
-        // order concurrent ops identically.
-        order_causally(&op_log, candidates)
+        Ok(candidates)
     }
 }
 
@@ -418,7 +486,7 @@ impl<'a> NamespaceRetryService<'a> {
 /// Ancestry comes from the stored DAG rather than from a candidate's own
 /// `parent_op_hashes`, because the path between two buffered ops usually runs
 /// through ops that are not candidates (cleartext root ops, ops applied live).
-pub(super) fn order_causally<T: Replayable>(
+pub(crate) fn order_causally<T: Replayable>(
     op_log: &NamespaceOpLogService<'_>,
     candidates: Vec<T>,
 ) -> EyreResult<Vec<T>> {

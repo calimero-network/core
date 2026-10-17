@@ -1,9 +1,18 @@
-use crate::{MembershipError, MembershipPath, MembershipRepository, NamespaceRepository};
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::authorizer::AtCutAuthorizer;
+use crate::namespace::{order_causally, NamespaceOpLogService};
+use crate::void_ledger::{Parked, VoidLedger};
+use crate::{
+    GroupKeyring, MembershipError, MembershipPath, MembershipRepository, NamespaceRepository,
+};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{
-    GroupOp, JoinAccountCredential, NamespaceOp, RootOp, SignedGroupOp, TeeAdmissionMode,
+    GroupOp, JoinAccountCredential, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
+    TeeAdmissionMode,
 };
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_types::NamespaceId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -11,6 +20,8 @@ use eyre::Result as EyreResult;
 use sha2::{Digest, Sha256};
 
 use super::read_op_log_after;
+
+type PoliciesAtCut = HashMap<[u8; 32], (SignedNamespaceOp, TeeAdmissionPolicy)>; // by op id
 
 /// Reconstructed TEE admission policy from the governance DAG.
 ///
@@ -132,124 +143,8 @@ pub fn read_tee_admission_policy(
             }
         };
 
-        // Either form supersedes the other: the newest policy op in the log
-        // is the policy, whichever kind it is. The unversioned ops predate the
-        // mode and read as a replica policy, which is what they always were.
-        //
-        // Seen through a `RootGuarded` wrapper: since schema 20 every policy is
-        // published inside one, and the log holds only ops that applied, so a
-        // wrapper here has already passed its guard. Bare policies in the log
-        // are from before the guard existed and applied under the old rule.
-        match op.op.into_unguarded() {
-            GroupOp::TeeAdmissionPolicySet {
-                allowed_mrtd,
-                allowed_rtmr0,
-                allowed_rtmr1,
-                allowed_rtmr2,
-                allowed_rtmr3,
-                allowed_tcb_statuses,
-                accept_mock,
-            } => {
-                latest = Some(TeeAdmissionPolicy {
-                    allowed_mrtd,
-                    allowed_rtmr0,
-                    allowed_rtmr1,
-                    allowed_rtmr2,
-                    allowed_rtmr3,
-                    allowed_tcb_statuses,
-                    accept_mock,
-                    release_trust: None,
-                    mode: TeeAdmissionMode::Replica,
-                });
-            }
-            GroupOp::TeeAdmissionPolicySetV2 {
-                allowed_mrtd,
-                allowed_rtmr0,
-                allowed_rtmr1,
-                allowed_rtmr2,
-                allowed_rtmr3,
-                allowed_tcb_statuses,
-                accept_mock,
-                mode,
-            } => {
-                latest = Some(TeeAdmissionPolicy {
-                    allowed_mrtd,
-                    allowed_rtmr0,
-                    allowed_rtmr1,
-                    allowed_rtmr2,
-                    allowed_rtmr3,
-                    allowed_tcb_statuses,
-                    accept_mock,
-                    release_trust: None,
-                    mode,
-                });
-            }
-            GroupOp::TeeReleaseAdmissionPolicySetV2 {
-                allowed_profiles,
-                min_release_version,
-                allowed_tcb_statuses,
-                accept_mock,
-                mode,
-            } => {
-                latest = Some(TeeAdmissionPolicy {
-                    allowed_mrtd: Vec::new(),
-                    allowed_rtmr0: Vec::new(),
-                    allowed_rtmr1: Vec::new(),
-                    allowed_rtmr2: Vec::new(),
-                    allowed_rtmr3: Vec::new(),
-                    allowed_tcb_statuses,
-                    accept_mock,
-                    release_trust: Some(TeeReleaseTrust {
-                        allowed_profiles,
-                        min_release_version,
-                    }),
-                    mode,
-                });
-            }
-            // A namespace founded through a relay gets its first policy from the
-            // relay's verified attestation: signed releases of the profile it
-            // runs, `UpToDate`, relay mode. See
-            // `ops::group::founding_relay_attested`, which admitted it.
-            GroupOp::FoundingRelayAttested { profile, mock, .. } => {
-                latest = Some(TeeAdmissionPolicy {
-                    allowed_mrtd: Vec::new(),
-                    allowed_rtmr0: Vec::new(),
-                    allowed_rtmr1: Vec::new(),
-                    allowed_rtmr2: Vec::new(),
-                    allowed_rtmr3: Vec::new(),
-                    allowed_tcb_statuses: vec![
-                        crate::ops::group::founding_relay_attested::FOUNDING_TCB_STATUS.to_owned(),
-                    ],
-                    accept_mock: mock,
-                    release_trust: Some(TeeReleaseTrust {
-                        allowed_profiles: vec![profile],
-                        min_release_version: None,
-                    }),
-                    mode: TeeAdmissionMode::Relay,
-                });
-            }
-            GroupOp::TeeReleaseAdmissionPolicySet {
-                allowed_profiles,
-                min_release_version,
-                allowed_tcb_statuses,
-                accept_mock,
-            } => {
-                latest = Some(TeeAdmissionPolicy {
-                    allowed_mrtd: Vec::new(),
-                    allowed_rtmr0: Vec::new(),
-                    allowed_rtmr1: Vec::new(),
-                    allowed_rtmr2: Vec::new(),
-                    allowed_rtmr3: Vec::new(),
-                    allowed_tcb_statuses,
-                    accept_mock,
-                    release_trust: Some(TeeReleaseTrust {
-                        allowed_profiles,
-                        min_release_version,
-                    }),
-                    mode: TeeAdmissionMode::Replica,
-                });
-            }
-            _ => {}
+        if let Some(policy) = policy_from(op.op) {
+            latest = Some(policy);
         }
     }
 
@@ -283,6 +178,208 @@ pub fn read_tee_admission_policy(
             Ok(TeeAdmissionPolicyRead::Unreadable { undecodable })
         }
         None => Ok(TeeAdmissionPolicyRead::NotSet),
+    }
+}
+
+/// [`read_tee_admission_policy`] at the cut `parents`: the causally latest applied policy in
+/// its ancestry. An unreadable ancestry reads live only where `authorizer` says that is sound.
+pub(crate) fn read_tee_admission_policy_at_cut(
+    store: &Store,
+    group_id: &ContextGroupId,
+    parents: &[[u8; 32]],
+    authorizer: &dyn AtCutAuthorizer,
+) -> EyreResult<TeeAdmissionPolicyRead> {
+    if parents.is_empty() {
+        return read_tee_admission_policy(store, group_id);
+    }
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
+    let Some(mut policies) = policy_ops_at_cut(store, root, parents)? else {
+        if !authorizer.can_resolve_cut(&root, parents) {
+            eyre::bail!(crate::ApplyError::AuthorityUndecidable {
+                group_id: root.to_string(),
+                signer: "the TEE admission policy at the op's cut".to_owned(),
+            });
+        }
+        return read_tee_admission_policy(store, group_id);
+    };
+    let op_log = NamespaceOpLogService::new(store, NamespaceId::from(root.to_bytes()));
+    let ops = policies.values().map(|(op, _)| op.clone()).collect();
+    let Some(latest) = order_causally(&op_log, ops)?.pop() else {
+        return Ok(TeeAdmissionPolicyRead::NotSet);
+    };
+    let latest = latest
+        .content_hash()
+        .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+    Ok(policies
+        .remove(&latest)
+        .map_or(TeeAdmissionPolicyRead::NotSet, |(_, policy)| {
+            TeeAdmissionPolicyRead::Set(policy)
+        }))
+}
+
+/// Every policy set by an op in the ancestry of `parents` that applied; `None` when an
+/// op there that may set one cannot be read here.
+fn policy_ops_at_cut(
+    store: &Store,
+    root: ContextGroupId,
+    parents: &[[u8; 32]],
+) -> EyreResult<Option<PoliciesAtCut>> {
+    let namespace = NamespaceId::from(root.to_bytes());
+    let op_log = NamespaceOpLogService::new(store, namespace);
+    let ledger = VoidLedger::new(store, namespace);
+    let voided = ledger.voided()?;
+    let keyring = GroupKeyring::new(store, root);
+    let mut policies = HashMap::new();
+    let mut visited: HashSet<[u8; 32]> = HashSet::new();
+    let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
+    while let Some(id) = queue.pop_front() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let Ok(Some(op)) = op_log.get_signed_op(id) else {
+            return Ok(None);
+        };
+        queue.extend(op.parent_op_hashes.iter().copied());
+        let NamespaceOp::Group {
+            group_id,
+            key_id,
+            encrypted,
+            ..
+        } = &op.op
+        else {
+            continue;
+        };
+        if *group_id != root || voided.contains(&id) {
+            continue;
+        }
+        match ledger.parked(id)? {
+            Some(Parked::Refused) => continue,
+            Some(Parked::Undecided) => return Ok(None),
+            None => {}
+        }
+        let Some(key) = keyring.load_key_by_id(key_id.as_bytes())? else {
+            return Ok(None);
+        };
+        let Ok(inner) = GroupKeyring::decrypt_op(&key, encrypted) else {
+            return Ok(None);
+        };
+        if let Some(policy) = policy_from(inner) {
+            let _ = policies.insert(id, (op, policy));
+        }
+    }
+    Ok(Some(policies))
+}
+
+/// The policy `op` sets, if it sets one.
+fn policy_from(op: GroupOp) -> Option<TeeAdmissionPolicy> {
+    // Either form supersedes the other: the newest policy op in the log
+    // is the policy, whichever kind it is. The unversioned ops predate the
+    // mode and read as a replica policy, which is what they always were.
+    //
+    // Seen through a `RootGuarded` wrapper: since schema 20 every policy is
+    // published inside one, and the log holds only ops that applied, so a
+    // wrapper here has already passed its guard. Bare policies in the log
+    // are from before the guard existed and applied under the old rule.
+    match op.into_unguarded() {
+        GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd,
+            allowed_rtmr0,
+            allowed_rtmr1,
+            allowed_rtmr2,
+            allowed_rtmr3,
+            allowed_tcb_statuses,
+            accept_mock,
+        } => Some(TeeAdmissionPolicy {
+            allowed_mrtd,
+            allowed_rtmr0,
+            allowed_rtmr1,
+            allowed_rtmr2,
+            allowed_rtmr3,
+            allowed_tcb_statuses,
+            accept_mock,
+            release_trust: None,
+            mode: TeeAdmissionMode::Replica,
+        }),
+        GroupOp::TeeAdmissionPolicySetV2 {
+            allowed_mrtd,
+            allowed_rtmr0,
+            allowed_rtmr1,
+            allowed_rtmr2,
+            allowed_rtmr3,
+            allowed_tcb_statuses,
+            accept_mock,
+            mode,
+        } => Some(TeeAdmissionPolicy {
+            allowed_mrtd,
+            allowed_rtmr0,
+            allowed_rtmr1,
+            allowed_rtmr2,
+            allowed_rtmr3,
+            allowed_tcb_statuses,
+            accept_mock,
+            release_trust: None,
+            mode,
+        }),
+        GroupOp::TeeReleaseAdmissionPolicySetV2 {
+            allowed_profiles,
+            min_release_version,
+            allowed_tcb_statuses,
+            accept_mock,
+            mode,
+        } => Some(TeeAdmissionPolicy {
+            allowed_mrtd: Vec::new(),
+            allowed_rtmr0: Vec::new(),
+            allowed_rtmr1: Vec::new(),
+            allowed_rtmr2: Vec::new(),
+            allowed_rtmr3: Vec::new(),
+            allowed_tcb_statuses,
+            accept_mock,
+            release_trust: Some(TeeReleaseTrust {
+                allowed_profiles,
+                min_release_version,
+            }),
+            mode,
+        }),
+        // A namespace founded through a relay gets its first policy from the
+        // relay's verified attestation: signed releases of the profile it
+        // runs, `UpToDate`, relay mode. See
+        // `ops::group::founding_relay_attested`, which admitted it.
+        GroupOp::FoundingRelayAttested { profile, mock, .. } => Some(TeeAdmissionPolicy {
+            allowed_mrtd: Vec::new(),
+            allowed_rtmr0: Vec::new(),
+            allowed_rtmr1: Vec::new(),
+            allowed_rtmr2: Vec::new(),
+            allowed_rtmr3: Vec::new(),
+            allowed_tcb_statuses: vec![
+                crate::ops::group::founding_relay_attested::FOUNDING_TCB_STATUS.to_owned(),
+            ],
+            accept_mock: mock,
+            release_trust: Some(TeeReleaseTrust {
+                allowed_profiles: vec![profile],
+                min_release_version: None,
+            }),
+            mode: TeeAdmissionMode::Relay,
+        }),
+        GroupOp::TeeReleaseAdmissionPolicySet {
+            allowed_profiles,
+            min_release_version,
+            allowed_tcb_statuses,
+            accept_mock,
+        } => Some(TeeAdmissionPolicy {
+            allowed_mrtd: Vec::new(),
+            allowed_rtmr0: Vec::new(),
+            allowed_rtmr1: Vec::new(),
+            allowed_rtmr2: Vec::new(),
+            allowed_rtmr3: Vec::new(),
+            allowed_tcb_statuses,
+            accept_mock,
+            release_trust: Some(TeeReleaseTrust {
+                allowed_profiles,
+                min_release_version,
+            }),
+            mode: TeeAdmissionMode::Replica,
+        }),
+        _ => None,
     }
 }
 
@@ -1497,18 +1594,7 @@ pub(crate) mod tests {
         )
     }
 
-    /// A mock admission quote for `credential` admitted as `key`.
-    pub(crate) fn admission_quote_with(
-        namespace: &ContextGroupId,
-        key: &PublicKey,
-        credential: &calimero_context_client::local_governance::JoinAccountCredential,
-    ) -> Vec<u8> {
-        let namespace = namespace.to_bytes();
-        let binding =
-            calimero_op_adapter::tee_admission_binding(&namespace, &namespace, key, credential);
-        let report_data = calimero_tee_attestation::admission_report_data(&[0x01; 32], &binding);
-        calimero_tee_attestation::generate_mock_attestation(report_data).quote_bytes
-    }
+    pub(crate) use crate::test_fixtures::admission_quote_with;
 
     fn evidence_op(
         signer_sk: &PrivateKey,
