@@ -19,7 +19,11 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>, new_owner: &AccountId) -> EyreR
 
     // Ownership names an account; the signer presents a key. Resolve, then
     // compare — an unresolvable key owns nothing.
-    if ctx.signer_account()? != Some(meta.owner_identity) {
+    let owner = crate::group_owner::owner_at_cut(store, group_id, ctx.cut(), ctx.authorizer())?;
+    if ctx
+        .signer_account()?
+        .is_none_or(|signer| Some(signer) != owner)
+    {
         bail!(MembershipError::OnlyOwnerCanTransfer(hex::encode(
             group_id.to_bytes()
         )));

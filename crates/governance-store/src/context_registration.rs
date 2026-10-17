@@ -253,7 +253,7 @@ fn registration_in_log(
 }
 
 /// Every op in the ancestry of `parents`; `None` when one is missing here.
-fn ancestry_of(
+pub(crate) fn ancestry_of(
     op_log: &NamespaceOpLogService<'_>,
     parents: &[[u8; 32]],
 ) -> EyreResult<Option<HashSet<[u8; 32]>>> {

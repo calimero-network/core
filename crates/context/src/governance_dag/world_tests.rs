@@ -2213,6 +2213,175 @@ mod concurrent {
     }
 
     /// A nonce no signer of the world has used: a reused one is dropped as a duplicate.
+    /// The owner's transfer of `group` to `new_owner`, signed at `parents`.
+    fn transfer_at(
+        store: &Store,
+        world: &World,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+        new_owner: AccountId,
+    ) -> SignedNamespaceOp {
+        signed_in(
+            store,
+            world,
+            group,
+            &world.owner_sk,
+            parents,
+            unused_nonce(),
+            &guarded_group_op(
+                store,
+                group,
+                &world.owner_sk.public_key(),
+                GroupOp::TransferOwnership { new_owner },
+            ),
+        )
+    }
+
+    fn owner_of(node: &Store, group: &ContextGroupId) -> Option<AccountId> {
+        calimero_governance_store::MetaRepository::new(node)
+            .load(group)
+            .expect("read the meta")
+            .map(|meta| meta.owner_identity)
+    }
+
+    /// At the removal's cut the admin owns nothing, so a transfer to it that lands first does
+    /// not make it immune.
+    #[actix::test]
+    async fn a_removal_of_the_incoming_owner_concurrent_with_the_transfer_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let other_sk = joined_member(&store, world, 0xC1, [0xC1; 32]).await;
+        publish(
+            &store,
+            &world.namespace,
+            &world.owner_sk,
+            &GroupOp::MemberRoleSet {
+                member: account_for(&other_sk.public_key()),
+                role: GroupMemberRole::Admin,
+            },
+        )
+        .await
+        .expect("the owner promotes another admin");
+        let parents = heads(&store, world);
+        let transfer = transfer_at(&store, world, &world.namespace, &parents, admin.account);
+        let remove = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &other_sk,
+            &parents,
+            unused_nonce(),
+            &dummy_member_removed_op(admin.account),
+        );
+
+        let nodes = in_both_orders(&store, &transfer, &remove).await;
+
+        assert_landed_the_same(&nodes, world, &[&transfer, &remove], &admin.account);
+        assert_same_rows(&nodes, |node| owner_of(node, &world.namespace));
+    }
+
+    /// The owner's transfer to the logged admin and that admin's leave, both at one cut,
+    /// applied in each order; `other_admin` seats a second admin first.
+    async fn transfer_and_leave(other_admin: Option<u8>) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        if let Some(seed) = other_admin {
+            let other_sk = joined_member(&store, world, seed, [seed; 32]).await;
+            publish(
+                &store,
+                &world.namespace,
+                &world.owner_sk,
+                &GroupOp::MemberRoleSet {
+                    member: account_for(&other_sk.public_key()),
+                    role: GroupMemberRole::Admin,
+                },
+            )
+            .await
+            .expect("the owner promotes another admin");
+        }
+        let parents = heads(&store, world);
+        let transfer = transfer_at(&store, world, &world.namespace, &parents, admin.account);
+        let leave = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::MemberLeft {
+                member: admin.account,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+
+        let nodes = in_both_orders(&store, &transfer, &leave).await;
+
+        assert_landed_the_same(&nodes, world, &[&transfer, &leave], &admin.account);
+        assert_same_rows(&nodes, |node| owner_of(node, &world.namespace));
+    }
+
+    /// At the leave's cut the admin owns nothing, so a transfer to it that lands first does not
+    /// hold it in the namespace.
+    #[actix::test]
+    async fn a_leave_of_the_incoming_owner_concurrent_with_the_transfer_lands_the_same_in_either_order(
+    ) {
+        transfer_and_leave(Some(0xC2)).await;
+    }
+
+    /// With no other admin row, the last-admin check counts the namespace's genesis admin,
+    /// which the projection takes from the live meta a transfer that landed first moved.
+    #[actix::test]
+    #[ignore = "the projection's AuthorityBase reads the namespace admin from live meta"]
+    async fn a_leave_of_the_incoming_owner_as_the_only_admin_row_lands_the_same_in_either_order() {
+        transfer_and_leave(None).await;
+    }
+
+    /// A namespace leave refuses a leaver that owns a subgroup; at the leave's cut the admin
+    /// owns none, whichever of the two a node took first.
+    #[actix::test]
+    async fn a_namespace_leave_concurrent_with_a_subgroup_transfer_to_the_leaver_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let seat = signed_in(
+            &store,
+            world,
+            &world.open_chain,
+            &world.owner_sk,
+            &heads(&store, world),
+            unused_nonce(),
+            &GroupOp::MemberAdded {
+                member: admin.account,
+                role: GroupMemberRole::Admin,
+            },
+        );
+        apply(&store, &seat)
+            .await
+            .expect("the owner seats the admin in the subgroup");
+        let parents = heads(&store, world);
+        let transfer = transfer_at(&store, world, &world.open_chain, &parents, admin.account);
+        let leave = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::MemberLeft {
+                member: admin.account,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+
+        let nodes = in_both_orders(&store, &transfer, &leave).await;
+
+        assert_landed_the_same(&nodes, world, &[&transfer, &leave], &admin.account);
+        assert_same_rows(&nodes, |node| owner_of(node, &world.open_chain));
+    }
+
     fn unused_nonce() -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 32);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
