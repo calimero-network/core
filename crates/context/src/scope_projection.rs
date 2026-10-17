@@ -2867,6 +2867,21 @@ impl ScopeProjections {
         Some(Some(role))
     }
 
+    /// The account whose `GroupCreated` made `group`, at the cut: `Some(None)` is no creation
+    /// there, `None` a cut not fully folded.
+    #[must_use]
+    pub fn group_creator_at_cut(
+        &self,
+        store: &Store,
+        group: ContextGroupId,
+        heads: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        // A creation is a root op: the subgroup's own sealed history does not hide it.
+        let namespace = NamespaceRepository::new(store).resolve(&group).ok()?;
+        let (view, _, _) = self.auth_cut_context(store, namespace, heads)?;
+        Some(view.group_creator.get(&group).copied())
+    }
+
     /// What a join of `member` into `group` with the invitation `nonce` meets at the cut:
     /// the exit among its latest changes there, and whether a join of its own already
     /// spent `nonce` there. `None` when the cut is not fully folded or a join does not read.

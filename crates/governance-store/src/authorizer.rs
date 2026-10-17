@@ -188,6 +188,16 @@ pub trait AtCutAuthorizer: Send + Sync {
         None
     }
 
+    /// The account whose `GroupCreated` made `group`, at the cut: `Some(None)` is no creation
+    /// there, `None` defers.
+    fn group_creator_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        None
+    }
+
     /// The group `context`'s cells were rotated in if it is `group`, at the cut. `Some(None)` =
     /// not there; `None` = defer to live. Judged in `group` only: a registration elsewhere rests on live.
     fn context_rotation_group_at_cut(

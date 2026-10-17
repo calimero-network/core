@@ -315,7 +315,10 @@ pub(crate) fn refuse_foreign_existing_group(
 
 /// Only a namespace has a founding record or a governance DAG head of its own;
 /// the head also marks a root established before derived-id geneses.
-fn is_namespace_root(store: &calimero_store::Store, gid: ContextGroupId) -> EyreResult<bool> {
+pub(crate) fn is_namespace_root(
+    store: &calimero_store::Store,
+    gid: ContextGroupId,
+) -> EyreResult<bool> {
     Ok(NamespaceFoundingRepository::new(store).get(&gid)?.is_some()
         || store
             .handle()
