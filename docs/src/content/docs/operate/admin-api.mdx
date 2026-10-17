@@ -377,11 +377,31 @@ the path parameter — these are reproduced exactly as routed below.
 | GET | `/admin-api/namespaces/:namespace_id` | Get a namespace. |
 | DELETE | `/admin-api/namespaces/:namespace_id` | Delete a namespace. |
 | POST | `/admin-api/namespaces/:namespace_id/invite` | Invite into a namespace. Body may name `admitters` and `admitterAddrs` — see [below](#invitation-body-admitters-and-addresses). |
-| POST | `/admin-api/namespaces/:namespace_id/join` | Join a namespace. |
+| POST | `/admin-api/namespaces/:namespace_id/join` | Join a namespace. A refusal carries a `code` — see [below](#join-refusals). |
 | POST | `/admin-api/namespaces/:namespace_id/admit` | Publish a join signed by a keyholder that has no node of its own. See [Direct Admission](/protocol/direct-admission/). |
 | POST | `/admin-api/namespaces/:namespace_id/leave` | Leave a namespace. |
 | GET | `/admin-api/namespaces/:namespace_id/revoked-devices` | Device ids revoked in the namespace (`revokedDevices`) and `sha256(account \|\| device)` of devices an account withdrew there (`withdrawnSlots`). Admin only, on a member node. |
 | GET | `/admin-api/namespaces/for-application/:application_id` | List namespaces for an application. |
+
+#### Join refusals
+
+A refused join (`/namespaces/:namespace_id/join` and `/groups/join`) answers
+`{ "error": <message>, "code": <code> }`. The status says whether trying again can
+help; the `code` says which refusal it was, since several share a status and
+each asks something different of the person joining.
+
+| `code` | Status | Meaning |
+| --- | --- | --- |
+| `invitation_expired` | 409 | The invitation's 24-hour window has passed. A new invitation is needed. |
+| `invitation_invalid` | 400 | The invitation is missing something a join needs. A new invitation is needed. |
+| `invitation_already_used` | 409 | This identity joined with this invitation before and has since left. A new invitation is needed. |
+| `removed_from_group` | 409 | An admin removed this identity. No invitation readmits it; an admin must re-add it. |
+| `reentry_blocked` | 409 | This identity left and cannot come back by inheritance; it must be re-invited or re-added. |
+| `join_refused_by_member` | 503 | Every member that answered refused; the message quotes the last one's reason. Retryable: a member behind on the namespace's history refuses what it has not seen yet. |
+| `no_admitter_reached` | 503 | A member answered but is not an admitter the invitation names. Retry once one is online. |
+| `no_member_reachable` | 504 | No member of the namespace answered. Retry once the inviting node is online. |
+
+Any other failure has no `code`.
 
 #### Invitation body: admitters and addresses
 

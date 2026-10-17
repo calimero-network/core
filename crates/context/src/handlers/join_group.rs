@@ -261,6 +261,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // Whether the direct request reached anyone, for the refusal
                 // below if nobody endorses the join.
                 let mut reached_a_peer = true;
+                // What a member said when it refused, for that same refusal.
+                let mut refusal: Option<String> = None;
                 let join_result = match node_client
                     .request_namespace_join(
                         namespace_id,
@@ -278,6 +280,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             "direct namespace-join request found no reachable mesh peer; \
                              recording local membership and relying on gossip/sync catch-up"
                         );
+                        refusal = e
+                            .downcast_ref::<calimero_node_primitives::NamespaceJoinRefused>()
+                            .map(|refused| refused.reason.clone());
                         reached_a_peer = false;
                         JoinBundle::empty()
                     }
@@ -591,7 +596,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // preference.
                 let Some(endorsement_bytes) = join_result.admitter_endorsement_bytes.as_ref()
                 else {
-                    return Err(ContextError::JoinNotEndorsed { reached_a_peer }.into());
+                    return Err(ContextError::JoinNotEndorsed {
+                        reached_a_peer,
+                        refusal,
+                    }
+                    .into());
                 };
                 let admitter_endorsement = Box::new(
                     borsh::from_slice::<calimero_governance_types::AdmitterEndorsement>(
@@ -1610,7 +1619,8 @@ mod tests {
                     .as_ref()
                     .map_err(|e| e.downcast_ref::<crate::error::ContextError>()),
                 Err(Some(crate::error::ContextError::JoinNotEndorsed {
-                    reached_a_peer: false
+                    reached_a_peer: false,
+                    refusal: None,
                 }))
             ),
             "got: {first:?}"

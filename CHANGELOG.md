@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A refused join says which refusal it was.** `POST /namespaces/{id}/join`
+  and `POST /groups/join` answer a refusal with a `code` beside `error`:
+  `invitation_expired`, `invitation_invalid`, `invitation_already_used`,
+  `removed_from_group`, `reentry_blocked`, `join_refused_by_member`,
+  `no_admitter_reached` or `no_member_reachable`. Several share a status, and
+  apps told every one of them "you can't join with this invitation". A join
+  every answering member refused is now a `503` that quotes the member's reason,
+  not the `504` "could not reach any member" it was answered as before.
+
 - **A node's operator can trust more origins for login callbacks.**
   `trusted_callback_origins` under `[server.embedded_auth.development]` lists
   app origins the node's sign-in page may hand a new token pair to, besides its

@@ -877,6 +877,57 @@ impl ApiError {
     }
 }
 
+impl ApiError {
+    /// The response, with a machine-readable `code` beside `error` when there is
+    /// one. The status says what kind of answer this is; the code says which one,
+    /// for a client that tells a person what to do next and should not have to
+    /// match the message to do it.
+    pub(crate) fn into_coded_response(self, code: Option<&'static str>) -> Response<Body> {
+        let Some(code) = code else {
+            return self.into_response();
+        };
+        let body = json!({ "error": self.message, "code": code }).to_string();
+        Response::builder()
+            .status(self.status_code)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+}
+
+/// Why a join was refused, as a stable token for clients: the join routes
+/// (`POST /namespaces/{id}/join`, `POST /groups/join`) send it as `code`.
+///
+/// Several of these share a status, and the person joining is told different
+/// things for each: an expired link and a link they already used both need a
+/// new one, a removal needs an admin to re-add them, and a member's refusal may
+/// clear once that member catches up. `None` for anything else.
+pub(crate) fn join_refusal_code(err: &Report) -> Option<&'static str> {
+    use calimero_context::error::ContextError;
+
+    if let Some(refusal) = err.downcast_ref::<MembershipError>() {
+        return match refusal {
+            MembershipError::InvitationAlreadyConsumed { .. } => Some("invitation_already_used"),
+            MembershipError::RemovedFromGroup { .. } => Some("removed_from_group"),
+            MembershipError::ReentryBlocked { .. } => Some("reentry_blocked"),
+            _ => None,
+        };
+    }
+    match err.downcast_ref::<ContextError>()? {
+        ContextError::InvitationExpired { .. } => Some("invitation_expired"),
+        ContextError::InvitationInvalid { .. } => Some("invitation_invalid"),
+        ContextError::JoinNotEndorsed {
+            refusal: Some(_), ..
+        } => Some("join_refused_by_member"),
+        ContextError::JoinNotEndorsed {
+            reached_a_peer: true,
+            ..
+        } => Some("no_admitter_reached"),
+        ContextError::JoinNotEndorsed { .. } => Some("no_member_reachable"),
+        _ => None,
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response<Body> {
         let body = json!({ "error": self.message }).to_string();
@@ -1348,12 +1399,17 @@ pub fn parse_api_error(err: Report) -> ApiError {
     // A join no admitter endorsed. Retryable either way, so never the generic
     // 500: `504` when no peer of the namespace answered at all, which is what a
     // client sees while the inviting node is offline, and `503` when one answered
-    // but is not an admitter the invitation names.
-    if let Some(calimero_context::error::ContextError::JoinNotEndorsed { reached_a_peer }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    // but is not an admitter the invitation names, or answered and refused. A
+    // refusal stays retryable because a peer behind on governance refuses what it
+    // has not seen yet; its reason is in the message, and `join_refusal_code`
+    // names it, so a client can still tell the two apart.
+    if let Some(calimero_context::error::ContextError::JoinNotEndorsed {
+        reached_a_peer,
+        refusal,
+    }) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
-            status_code: if *reached_a_peer {
+            status_code: if *reached_a_peer || refusal.is_some() {
                 StatusCode::SERVICE_UNAVAILABLE
             } else {
                 StatusCode::GATEWAY_TIMEOUT
@@ -2719,8 +2775,10 @@ mod parse_api_error_tests {
             NamespaceError,
         };
         use calimero_primitives::context::ContextId;
+        use eyre::Report;
 
         use super::{parse_api_error, StatusCode};
+        use crate::admin::service::join_refusal_code;
 
         fn status(err: eyre::Report) -> StatusCode {
             parse_api_error(err).status_code
@@ -3007,12 +3065,14 @@ mod parse_api_error_tests {
             let unreachable = parse_api_error(
                 ContextError::JoinNotEndorsed {
                     reached_a_peer: false,
+                    refusal: None,
                 }
                 .into(),
             );
             let wrong_peer = parse_api_error(
                 ContextError::JoinNotEndorsed {
                     reached_a_peer: true,
+                    refusal: None,
                 }
                 .into(),
             );
@@ -3021,6 +3081,81 @@ mod parse_api_error_tests {
             assert_eq!(wrong_peer.status_code, StatusCode::SERVICE_UNAVAILABLE);
             assert!(unreachable.message.contains("could not reach any member"));
             assert!(wrong_peer.message.contains("not an admitter"));
+        }
+
+        /// A member that answered and refused is not "nobody online": the
+        /// joiner is told what it said. It was answered as the `504` above,
+        /// telling them to wait for an inviter who had already been reached.
+        #[test]
+        fn a_refused_join_carries_the_members_reason() {
+            let refused: Report = ContextError::JoinNotEndorsed {
+                reached_a_peer: false,
+                refusal: Some(
+                    "identity abc was removed from group def and cannot rejoin; an admin \
+                     must re-add them"
+                        .to_owned(),
+                ),
+            }
+            .into();
+
+            assert_eq!(join_refusal_code(&refused), Some("join_refused_by_member"));
+            let answer = parse_api_error(refused);
+            assert_eq!(answer.status_code, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(answer.message.contains("refused it"), "{}", answer.message);
+            assert!(
+                answer.message.contains("was removed from group"),
+                "{}",
+                answer.message
+            );
+        }
+
+        /// Each refusal a person is told something different about has its own
+        /// code, wrapped or not: the join relay wraps the refusal for context.
+        #[test]
+        fn join_refusals_are_named_by_code() {
+            let code = |err: Report| join_refusal_code(&err.wrap_err("joining"));
+
+            assert_eq!(
+                code(
+                    ContextError::InvitationExpired {
+                        group_id: "g".to_owned(),
+                        expired_at: 1,
+                    }
+                    .into()
+                ),
+                Some("invitation_expired")
+            );
+            assert_eq!(
+                code(
+                    MembershipError::InvitationAlreadyConsumed {
+                        group_id: "g".to_owned(),
+                        identity: "i".to_owned(),
+                    }
+                    .into()
+                ),
+                Some("invitation_already_used")
+            );
+            assert_eq!(
+                code(
+                    MembershipError::RemovedFromGroup {
+                        group_id: "g".to_owned(),
+                        identity: "i".to_owned(),
+                    }
+                    .into()
+                ),
+                Some("removed_from_group")
+            );
+            assert_eq!(
+                code(
+                    ContextError::JoinNotEndorsed {
+                        reached_a_peer: false,
+                        refusal: None,
+                    }
+                    .into()
+                ),
+                Some("no_member_reachable")
+            );
+            assert_eq!(code(eyre::eyre!("disk full")), None);
         }
     }
 }
