@@ -529,7 +529,6 @@ impl Handler<ExecuteRequest> for ContextManager {
         // ActorFuture is in flight on the same actor).
         let lazy_upgrade_task = guard_task.map(move |guard, _act, _ctx| {
             if let Some(action) = lazy_upgrade_params {
-                debug!(%context_id, %executor, "performing lazy upgrade before execution");
                 return Ok(Either::Right((guard, action)));
             }
             Ok(Either::Left(guard))
@@ -1348,6 +1347,7 @@ impl ContextManager {
         executor: PublicKey,
         action: LazyUpgradeAction,
     ) -> actix::fut::LocalBoxActorFuture<Self, eyre::Result<ContextGuard>> {
+        debug!(%context_id, %executor, "performing lazy upgrade before execution");
         let act = self;
         match action {
             // Replay the group's upgrade ladder hop by hop, re-resolving
