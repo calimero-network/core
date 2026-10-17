@@ -59,6 +59,7 @@ mod governance_signer;
 pub mod group_creator;
 mod group_governance_publisher;
 mod group_keys;
+mod group_owner;
 mod group_settings;
 pub mod held_ops;
 mod local_state;
@@ -68,6 +69,7 @@ mod metadata;
 mod namespace;
 mod namespace_founding;
 mod node_device;
+mod nonce_spenders;
 pub mod nonce_window;
 mod on_behalf;
 mod op_budget;
@@ -157,14 +159,14 @@ pub use self::namespace::{
     namespace_groups_member_but_keyless, namespace_groups_with_held_key_buffered_ops,
     namespace_root_participating_but_unbootstrapped, open_relayed_join_for_read,
     open_sealed_root_op, open_sealed_root_op_for_group, redrive_buffered_ops_for_group,
-    redrive_buffered_ops_for_group_with, redrive_namespace_with, retry_encrypted_ops_for_group,
-    retry_encrypted_ops_for_group_with, seal_root_op_for_group_if_keyed, seal_root_op_for_publish,
-    seal_root_op_if_keyed, sign_and_apply_namespace_op_without_publish,
-    sign_and_publish_namespace_op, sign_apply_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op_returning_op, ApplyNamespaceOpResult, CascadePayload,
-    KeyUnwrapFailure, NamespaceDagService, NamespaceGovernance, NamespaceHead,
-    NamespaceIdentityRecord, NamespaceMembershipService, NamespaceOpLogService,
-    NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
+    redrive_buffered_ops_for_group_with, redrive_namespace_with, relayed_join_applied,
+    retry_encrypted_ops_for_group, retry_encrypted_ops_for_group_with,
+    seal_root_op_for_group_if_keyed, seal_root_op_for_publish, seal_root_op_if_keyed,
+    sign_and_apply_namespace_op_without_publish, sign_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op, sign_apply_and_publish_namespace_op_returning_op,
+    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
+    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
+    NamespaceOpLogService, NamespaceRetryService, ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::node_device::{
     account_for_context, account_for_group, AccountRoot, DeviceSecret, ImportedRoot,

@@ -6219,6 +6219,9 @@ fn opening_is_decided_where_the_subgroups_history_is_sealed() {
     let creator = enrol_member(&store, &namespace, &creator_pk);
     let admin = enrol_member(&store, &namespace, &admin_pk);
     MembershipRepository::new(&store)
+        .add_member(&namespace, &creator, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
         .add_member(&subgroup, &admin, GroupMemberRole::Admin)
         .unwrap();
     crate::group_creator::GroupCreatorRepository::new(&store)

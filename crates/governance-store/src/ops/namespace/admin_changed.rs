@@ -26,10 +26,9 @@ pub(crate) fn apply(
     // Owner-only. `meta.admin_identity` is the admin pin no member-row change can
     // revoke, so repointing it is taking the namespace: any admin could otherwise
     // name themselves or an accomplice and keep it for good.
-    let owner = MetaRepository::new(store)
-        .load(&ns_gid)?
-        .ok_or(NamespaceError::RootMissing)?
-        .owner_identity;
+    let (parents, authorizer) = ctx.apply_auth();
+    let owner = crate::group_owner::owner_at_cut(store, &ns_gid, parents, authorizer)?
+        .ok_or(NamespaceError::RootMissing)?;
     if signer_account != owner {
         bail!(MembershipError::OnlyOwnerCanChangeAdmin(hex::encode(
             ns_gid.to_bytes()

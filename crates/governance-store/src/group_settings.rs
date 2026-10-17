@@ -140,14 +140,23 @@ impl<'a> GroupSettingsService<'a> {
         signer: &PublicKey,
         mode: VisibilityMode,
     ) -> EyreResult<()> {
+        self.require_may_set_subgroup_visibility(signer, mode)?;
+        CapabilitiesRepository::new(self.store).set_subgroup_visibility(&self.group_id, mode)
+    }
+
+    /// The gate of [`Self::set_subgroup_visibility`], without the write.
+    pub(crate) fn require_may_set_subgroup_visibility(
+        &self,
+        signer: &PublicKey,
+        mode: VisibilityMode,
+    ) -> EyreResult<()> {
         let permissions = self.permissions();
         match mode {
             // Opening is the creator's alone, and decidable without the
             // subgroup's sealed history (see `require_creator_opens`).
-            VisibilityMode::Open => permissions.require_creator_opens(signer)?,
-            VisibilityMode::Restricted => permissions.require_can_manage_visibility(signer)?,
+            VisibilityMode::Open => permissions.require_creator_opens(signer),
+            VisibilityMode::Restricted => permissions.require_can_manage_visibility(signer),
         }
-        CapabilitiesRepository::new(self.store).set_subgroup_visibility(&self.group_id, mode)
     }
 
     pub fn set_group_migration(

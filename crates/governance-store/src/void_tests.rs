@@ -304,6 +304,17 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
         })
     }
 
+    fn group_creator_at_cut(
+        &self,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        if parents.is_empty() || !self.can_resolve_cut(group, parents) {
+            return None;
+        }
+        Some(self.view(parents).group_creator.get(group).copied())
+    }
+
     fn at_cut(&self) -> Option<&dyn AtCutAuthorizer> {
         Some(self)
     }
@@ -407,6 +418,10 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
                 .chain(self.base().root.as_ref().map(|(_, owner)| owner))
                 .copied()
                 .collect(),
+            restricted: view
+                .subgroups
+                .get(&ScopeId::from(group.to_bytes()))
+                .map(|edge| edge.restricted),
         })
     }
 }
@@ -2394,4 +2409,295 @@ fn a_flip_whose_creation_is_still_sealed_is_judged_once_the_creation_reads() {
             "the flip lands differently with the key at {key_at}"
         );
     }
+}
+
+#[test]
+fn a_creator_removed_from_the_namespace_cannot_open_its_restricted_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let [_, _, b] = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &b);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    w.apply(&removal).expect("the owner removes alice");
+    assert_eq!(w.role(&w.alice), None, "control: alice left the namespace");
+    assert_eq!(visibility(&w, &subgroup), VisibilityMode::Restricted);
+
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&removal],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let applied = w.apply(&flip);
+
+    assert_eq!(
+        visibility(&w, &subgroup),
+        VisibilityMode::Restricted,
+        "a removed creator opened its subgroup (apply: {:?})",
+        applied.map_err(|err| format!("{err:#}")),
+    );
+}
+
+#[test]
+fn a_flip_voided_by_a_concurrent_removal_leaves_the_subgroup_restricted_on_every_node() {
+    use calimero_context_config::VisibilityMode;
+
+    let flip_first = World::new();
+    let removal_first = flip_first.replica(true);
+    let w = &flip_first;
+    let founding = w.founded();
+    for op in &founding {
+        removal_first.apply(op).expect("the replica follows");
+    }
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(w, &founding[2]);
+    for node in [&flip_first, &removal_first] {
+        node.apply(&create)
+            .expect("alice creates a Restricted subgroup");
+    }
+
+    let flip = sign_in_group(
+        w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    flip_first.apply(&flip).expect("alice's flip applies first");
+    flip_first
+        .apply(&removal)
+        .expect("the removal applies and rolls the flip back");
+    removal_first
+        .apply(&removal)
+        .expect("the owner removes alice");
+    let _ = removal_first.apply(&flip);
+
+    assert_eq!(
+        (
+            visibility(&flip_first, &subgroup),
+            visibility(&removal_first, &subgroup)
+        ),
+        (VisibilityMode::Restricted, VisibilityMode::Restricted),
+        "a flip voided by its creator's concurrent removal opened the subgroup"
+    );
+}
+
+#[test]
+fn a_flip_that_counts_again_after_its_removal_is_voided_does_not_open_the_subgroup() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let founding = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+
+    // Bob, no creator, opens it while Sam removes Bob and Alice removes Sam.
+    let flip = sign_in_group(
+        &w,
+        &w.bob,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let removes_bob = w.remove(&w.sam, &[&create], &w.bob, None);
+    let removes_sam = w.remove(&w.alice, &[&create], &w.sam, None);
+    w.apply(&removes_bob).expect("sam removes bob");
+    let _void = w.apply(&flip);
+    let _voids_the_removal = w.apply(&removes_sam);
+
+    assert_eq!(
+        visibility(&w, &subgroup),
+        VisibilityMode::Restricted,
+        "a flip no gate judged opened the subgroup once its removal was voided"
+    );
+}
+
+/// Every order of `items`.
+fn permutations<T: Copy>(items: &[T]) -> Vec<Vec<T>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+    let mut all = Vec::new();
+    for at in 0..items.len() {
+        let mut rest = items.to_vec();
+        let first = rest.remove(at);
+        for mut tail in permutations(&rest) {
+            tail.insert(0, first);
+            all.push(tail);
+        }
+    }
+    all
+}
+
+/// Alice's opening flip, Sam's concurrent removal of Alice, and Bob's concurrent
+/// removal of Sam, which voids Sam's removal and so lets the flip count again.
+struct FlipCountsAgain {
+    history: Vec<SignedNamespaceOp>,
+    flip: SignedNamespaceOp,
+    sam_removes_alice: SignedNamespaceOp,
+    bob_removes_sam: SignedNamespaceOp,
+    subgroup: ContextGroupId,
+}
+
+fn flip_counts_again(w: &World) -> FlipCountsAgain {
+    use calimero_context_config::VisibilityMode;
+
+    let [a, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(w, &promote);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let flip = sign_in_group(
+        w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let sam_removes_alice = w.remove(&w.sam, &[&create], &w.alice, None);
+    let bob_removes_sam = w.remove(&w.bob, &[&create], &w.sam, None);
+    FlipCountsAgain {
+        history: vec![a, s, b, promote, create],
+        flip,
+        sam_removes_alice,
+        bob_removes_sam,
+        subgroup,
+    }
+}
+
+#[test]
+fn a_flip_that_counts_again_ends_with_the_same_visibility_in_every_arrival_order() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let f = flip_counts_again(&w);
+    let ops = [&f.flip, &f.sam_removes_alice, &f.bob_removes_sam];
+    let mut landed = Vec::new();
+    for order in permutations(&[0, 1, 2]) {
+        let replica = replica_after(&w, &f.history.iter().collect::<Vec<_>>());
+        for at in &order {
+            let _verdict = replica.apply(ops[*at]);
+        }
+        landed.push((order, visibility(&replica, &f.subgroup)));
+    }
+
+    assert!(
+        landed.iter().all(|(_, mode)| *mode == VisibilityMode::Open),
+        "Sam's removal of Alice is void, so her flip stands in every order: {landed:?}"
+    );
+}
+
+/// The subgroup's creation and the removal that voids Sam's are sealed under a key the
+/// replica takes late: neither the flip's sealed ancestor nor where the key falls decides.
+#[test]
+fn a_flip_that_counts_again_lands_the_same_wherever_its_sealed_ops_and_key_arrive() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let [a, s, b] = w.founded();
+    let promote = w.add(&w.owner, &[&b], &w.bob, GroupMemberRole::Admin);
+    w.apply(&promote).expect("bob is an admin");
+    let replica_history = [&a, &s, &b, &promote];
+    let _ = GroupKeyring::new(&w.store, LogAuthorizer::group())
+        .store_key(&K_LATE)
+        .expect("the signer holds the later key");
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &promote);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let sam_removes_alice = w.remove(&w.sam, &[&create], &w.alice, None);
+    let bob_removes_sam = w.sign_under(
+        &K_LATE,
+        &w.bob,
+        &[&create],
+        &GroupOp::MemberRemoved {
+            member: w.sam.account,
+            expected_group_state_hash: [0u8; 32],
+            expected_context_state_hashes: Vec::new(),
+        },
+        None,
+    );
+    let groups = [LogAuthorizer::group(), subgroup];
+
+    let ops = [&create, &flip, &sam_removes_alice, &bob_removes_sam];
+    let mut landed = Vec::new();
+    for order in permutations(&[0, 1, 2, 3]) {
+        for key_at in 0..=order.len() {
+            let replica = replica_after(&w, &replica_history);
+            let mut arrivals: Vec<Arrival<'_>> =
+                order.iter().map(|at| Arrival::Op(ops[*at])).collect();
+            arrivals.insert(key_at, Arrival::Key(K_LATE));
+            play(&replica, &groups, &arrivals);
+            let mode = visibility(&replica, &subgroup);
+            if mode != VisibilityMode::Open {
+                landed.push((order.clone(), key_at, mode));
+            }
+        }
+    }
+
+    assert!(
+        landed.is_empty(),
+        "Sam's removal of Alice is void, so her flip stands; these schedules \
+         (order of [create, flip, sam, bob], key slot) did not open it: {landed:?}"
+    );
+}
+
+/// Alice opens her subgroup from a cut that does not hold its creation: no creator opened
+/// it there, whether or not the creation landed first.
+#[test]
+fn a_flip_concurrent_with_its_creation_lands_the_same_in_either_order() {
+    use calimero_context_config::VisibilityMode;
+
+    let w = World::new();
+    let founding = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&founding[2]],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    let history = founding.iter().collect::<Vec<_>>();
+    let create_first = replica_after(&w, &history);
+    let flip_first = replica_after(&w, &history);
+    let _ = create_first.apply(&create);
+    let _ = create_first.apply(&flip);
+    let _ = flip_first.apply(&flip);
+    let _ = flip_first.apply(&create);
+
+    let mark = |node: &World| {
+        crate::void_ledger::VoidLedger::new(&node.store, NS.into())
+            .parked(flip.content_hash().expect("hash"))
+            .expect("read the mark")
+    };
+    assert_eq!(
+        (visibility(&create_first, &subgroup), mark(&create_first)),
+        (visibility(&flip_first, &subgroup), mark(&flip_first)),
+        "the flip lands differently by arrival order"
+    );
 }

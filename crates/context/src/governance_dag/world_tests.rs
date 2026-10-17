@@ -657,7 +657,7 @@ mod held_ops {
 
     use calimero_governance_store::held_ops::HeldOps;
     use calimero_governance_store::test_fixtures::{
-        derived_group_id, group_created, seal_for_test,
+        derived_group_id, fork_store, group_created, seal_for_test,
     };
     use calimero_governance_store::unified_op_decode::OpenedNamespaceOp;
 
@@ -998,6 +998,133 @@ mod held_ops {
             applied.is_err(),
             "this node's own refused op was logged: {applied:?}"
         );
+    }
+
+    #[actix::test]
+    async fn an_op_reusing_a_spent_nonce_is_refused_and_folds_as_nothing() {
+        let (world, store) = world_targeting().await;
+        let member = world.actor(ActorState::DirectMember);
+        let ns = world.namespace;
+        let named = sign_next(
+            &store,
+            &ns,
+            &member.sign_sk,
+            under_namespace_key(
+                &store,
+                &ns,
+                &ns,
+                &GroupOp::MemberMetadataSet {
+                    member: member.account,
+                    name: Some("me".to_owned()),
+                    data: BTreeMap::new(),
+                },
+            ),
+        );
+        apply(&store, &named)
+            .await
+            .expect("the member names itself");
+        let head = NamespaceGovernance::new(&store, ns.to_bytes().into())
+            .read_head_record()
+            .expect("read the DAG head");
+        let reuse = SignedNamespaceOp::sign(
+            &member.sign_sk,
+            ns.to_bytes().into(),
+            head.parent_hashes,
+            named.nonce,
+            under_namespace_key(
+                &store,
+                &ns,
+                &ns,
+                &GroupOp::MemberRoleSet {
+                    member: member.account,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+        )
+        .expect("sign the reuse");
+        apply(&store, &reuse).await.expect("the reuse is logged");
+        assert!(OpenedNamespaceOp::open(&store, &reuse).refused);
+
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let demote = sign_next(
+            &store,
+            &ns,
+            &member.sign_sk,
+            under_namespace_key(
+                &store,
+                &ns,
+                &ns,
+                &GroupOp::MemberRoleSet {
+                    member: admin.account,
+                    role: GroupMemberRole::ReadOnly,
+                },
+            ),
+        );
+        let _refused = apply(&store, &demote).await;
+        assert_eq!(
+            MembershipRepository::new(&store)
+                .role_of(&ns, &admin.account)
+                .expect("read the role"),
+            Some(GroupMemberRole::Admin),
+            "a member acted as admin after reusing a spent nonce"
+        );
+    }
+
+    /// Two ops one signer minted at the same head share its nonce, as two sessions of
+    /// one signer do; neither is in the other's past, so both apply in either order.
+    #[actix::test]
+    async fn concurrent_ops_sharing_a_nonce_both_apply_in_either_order() {
+        let (world, first) = world_targeting().await;
+        let second = fork_store(&first);
+        let ns = world.namespace;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let member = world.actor(ActorState::DirectMember);
+        let head = NamespaceGovernance::new(&first, ns.to_bytes().into())
+            .read_head_record()
+            .expect("read the DAG head");
+        let at_head = |op: &GroupOp| {
+            SignedNamespaceOp::sign(
+                &admin.sign_sk,
+                ns.to_bytes().into(),
+                head.parent_hashes.clone(),
+                head.next_nonce,
+                under_namespace_key(&first, &ns, &ns, op),
+            )
+            .expect("sign at the head")
+        };
+        let demote = at_head(&GroupOp::MemberRoleSet {
+            member: member.account,
+            role: GroupMemberRole::ReadOnly,
+        });
+        let named = at_head(&GroupOp::MemberMetadataSet {
+            member: admin.account,
+            name: Some("admin".to_owned()),
+            data: BTreeMap::new(),
+        });
+
+        for (store, order) in [(&first, [&demote, &named]), (&second, [&named, &demote])] {
+            for op in order {
+                apply(store, op).await.expect("the op is logged");
+                assert!(
+                    !OpenedNamespaceOp::open(store, op).refused,
+                    "a concurrent op was refused"
+                );
+            }
+            assert_eq!(
+                MembershipRepository::new(store)
+                    .role_of(&ns, &member.account)
+                    .expect("read the role"),
+                Some(GroupMemberRole::ReadOnly),
+                "the demotion did not apply"
+            );
+            assert!(
+                calimero_governance_store::MetadataRepository::new(store)
+                    .member_metadata(&ns, &admin.account)
+                    .expect("read the metadata")
+                    .is_some(),
+                "the naming did not apply"
+            );
+        }
     }
 }
 
@@ -2086,6 +2213,175 @@ mod concurrent {
     }
 
     /// A nonce no signer of the world has used: a reused one is dropped as a duplicate.
+    /// The owner's transfer of `group` to `new_owner`, signed at `parents`.
+    fn transfer_at(
+        store: &Store,
+        world: &World,
+        group: &ContextGroupId,
+        parents: &[[u8; 32]],
+        new_owner: AccountId,
+    ) -> SignedNamespaceOp {
+        signed_in(
+            store,
+            world,
+            group,
+            &world.owner_sk,
+            parents,
+            unused_nonce(),
+            &guarded_group_op(
+                store,
+                group,
+                &world.owner_sk.public_key(),
+                GroupOp::TransferOwnership { new_owner },
+            ),
+        )
+    }
+
+    fn owner_of(node: &Store, group: &ContextGroupId) -> Option<AccountId> {
+        calimero_governance_store::MetaRepository::new(node)
+            .load(group)
+            .expect("read the meta")
+            .map(|meta| meta.owner_identity)
+    }
+
+    /// At the removal's cut the admin owns nothing, so a transfer to it that lands first does
+    /// not make it immune.
+    #[actix::test]
+    async fn a_removal_of_the_incoming_owner_concurrent_with_the_transfer_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let other_sk = joined_member(&store, world, 0xC1, [0xC1; 32]).await;
+        publish(
+            &store,
+            &world.namespace,
+            &world.owner_sk,
+            &GroupOp::MemberRoleSet {
+                member: account_for(&other_sk.public_key()),
+                role: GroupMemberRole::Admin,
+            },
+        )
+        .await
+        .expect("the owner promotes another admin");
+        let parents = heads(&store, world);
+        let transfer = transfer_at(&store, world, &world.namespace, &parents, admin.account);
+        let remove = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &other_sk,
+            &parents,
+            unused_nonce(),
+            &dummy_member_removed_op(admin.account),
+        );
+
+        let nodes = in_both_orders(&store, &transfer, &remove).await;
+
+        assert_landed_the_same(&nodes, world, &[&transfer, &remove], &admin.account);
+        assert_same_rows(&nodes, |node| owner_of(node, &world.namespace));
+    }
+
+    /// The owner's transfer to the logged admin and that admin's leave, both at one cut,
+    /// applied in each order; `other_admin` seats a second admin first.
+    async fn transfer_and_leave(other_admin: Option<u8>) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        if let Some(seed) = other_admin {
+            let other_sk = joined_member(&store, world, seed, [seed; 32]).await;
+            publish(
+                &store,
+                &world.namespace,
+                &world.owner_sk,
+                &GroupOp::MemberRoleSet {
+                    member: account_for(&other_sk.public_key()),
+                    role: GroupMemberRole::Admin,
+                },
+            )
+            .await
+            .expect("the owner promotes another admin");
+        }
+        let parents = heads(&store, world);
+        let transfer = transfer_at(&store, world, &world.namespace, &parents, admin.account);
+        let leave = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::MemberLeft {
+                member: admin.account,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+
+        let nodes = in_both_orders(&store, &transfer, &leave).await;
+
+        assert_landed_the_same(&nodes, world, &[&transfer, &leave], &admin.account);
+        assert_same_rows(&nodes, |node| owner_of(node, &world.namespace));
+    }
+
+    /// At the leave's cut the admin owns nothing, so a transfer to it that lands first does not
+    /// hold it in the namespace.
+    #[actix::test]
+    async fn a_leave_of_the_incoming_owner_concurrent_with_the_transfer_lands_the_same_in_either_order(
+    ) {
+        transfer_and_leave(Some(0xC2)).await;
+    }
+
+    /// With no other admin row, the last-admin check counts the namespace's genesis admin,
+    /// which the projection takes from the live meta a transfer that landed first moved.
+    #[actix::test]
+    #[ignore = "the projection's AuthorityBase reads the namespace admin from live meta"]
+    async fn a_leave_of_the_incoming_owner_as_the_only_admin_row_lands_the_same_in_either_order() {
+        transfer_and_leave(None).await;
+    }
+
+    /// A namespace leave refuses a leaver that owns a subgroup; at the leave's cut the admin
+    /// owns none, whichever of the two a node took first.
+    #[actix::test]
+    async fn a_namespace_leave_concurrent_with_a_subgroup_transfer_to_the_leaver_lands_the_same_in_either_order(
+    ) {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let seat = signed_in(
+            &store,
+            world,
+            &world.open_chain,
+            &world.owner_sk,
+            &heads(&store, world),
+            unused_nonce(),
+            &GroupOp::MemberAdded {
+                member: admin.account,
+                role: GroupMemberRole::Admin,
+            },
+        );
+        apply(&store, &seat)
+            .await
+            .expect("the owner seats the admin in the subgroup");
+        let parents = heads(&store, world);
+        let transfer = transfer_at(&store, world, &world.open_chain, &parents, admin.account);
+        let leave = signed_in(
+            &store,
+            world,
+            &world.namespace,
+            &admin.sign_sk,
+            &parents,
+            unused_nonce(),
+            &GroupOp::MemberLeft {
+                member: admin.account,
+                expected_group_state_hash: [0; 32],
+                expected_context_state_hashes: Vec::new(),
+            },
+        );
+
+        let nodes = in_both_orders(&store, &transfer, &leave).await;
+
+        assert_landed_the_same(&nodes, world, &[&transfer, &leave], &admin.account);
+        assert_same_rows(&nodes, |node| owner_of(node, &world.open_chain));
+    }
+
     fn unused_nonce() -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 32);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

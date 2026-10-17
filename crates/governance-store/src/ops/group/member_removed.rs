@@ -5,7 +5,7 @@ use super::super::super::verify_post_apply_state_hashes;
 use super::context::GroupApplyCtx;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
-    MembershipRepository, MetaRepository, NamespaceRepository, ReentryRepository,
+    MembershipRepository, NamespaceRepository, ReentryRepository,
 };
 use calimero_account::AccountId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -29,12 +29,12 @@ pub(crate) fn apply(
     // Owner is immune to involuntary removal. Owner must
     // `TransferOwnership` first to step down, then they can be
     // removed (or self-leave once that op exists).
-    if let Some(meta) = MetaRepository::new(store).load(group_id)? {
-        if meta.owner_identity == *member {
-            bail!(MembershipError::OwnerImmuneFromRemoval(hex::encode(
-                group_id.to_bytes()
-            )));
-        }
+    if crate::group_owner::owner_at_cut(store, group_id, ctx.cut(), ctx.authorizer())?
+        == Some(*member)
+    {
+        bail!(MembershipError::OwnerImmuneFromRemoval(hex::encode(
+            group_id.to_bytes()
+        )));
     }
     ctx.membership_policy()
         .ensure_not_last_admin_removal(member)?;

@@ -188,6 +188,16 @@ pub trait AtCutAuthorizer: Send + Sync {
         None
     }
 
+    /// The account whose `GroupCreated` made `group`, at the cut: `Some(None)` is no creation
+    /// there, `None` defers.
+    fn group_creator_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        None
+    }
+
     /// The group `context`'s cells were rotated in if it is `group`, at the cut. `Some(None)` =
     /// not there; `None` = defer to live. Judged in `group` only: a registration elsewhere rests on live.
     fn context_rotation_group_at_cut(
@@ -358,6 +368,8 @@ pub struct GroupRows {
     /// Accounts whose standing in the group needs no member row in the log: its
     /// genesis admin and the namespace owner. Their stored rows are never taken back.
     pub anchored: BTreeSet<AccountId>,
+    /// Whether the group is Restricted, if it is a subgroup the log holds.
+    pub restricted: Option<bool>,
 }
 
 /// What a re-entering joiner meets in a group, at a cut or in the live rows.

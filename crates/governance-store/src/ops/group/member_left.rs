@@ -6,8 +6,7 @@ use super::context::GroupApplyCtx;
 use crate::pending_rotation::group_rotates_on_departure;
 use crate::{
     cascade_remove_member_from_group_tree, DenyListRepository, MembershipError, MembershipPolicy,
-    MembershipRepository, MetaRepository, NamespaceRepository, PendingRotationRepository,
-    ReentryRepository,
+    MembershipRepository, NamespaceRepository, PendingRotationRepository, ReentryRepository,
 };
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
@@ -61,12 +60,12 @@ pub(crate) fn apply(
     };
 
     // Owner cannot self-leave. Must TransferOwnership first.
-    if let Some(meta) = MetaRepository::new(store).load(group_id)? {
-        if meta.owner_identity == *member {
-            bail!(MembershipError::OwnerCannotSelfLeave(hex::encode(
-                group_id.to_bytes()
-            )));
-        }
+    if crate::group_owner::owner_at_cut(store, group_id, ctx.cut(), ctx.authorizer())?
+        == Some(*member)
+    {
+        bail!(MembershipError::OwnerCannotSelfLeave(hex::encode(
+            group_id.to_bytes()
+        )));
     }
 
     // Last-admin protection — same helper used by MemberRemoved.
@@ -96,12 +95,12 @@ pub(crate) fn apply(
         let mut direct_descendants: Vec<(ContextGroupId, GroupMemberRole)> = Vec::new();
         for sub in &descendants {
             if let Some(role) = MembershipRepository::new(store).role_of(sub, member)? {
-                if let Some(sub_meta) = MetaRepository::new(store).load(sub)? {
-                    if sub_meta.owner_identity == *member {
-                        bail!(MembershipError::OwnerOwnsSubgroup(hex::encode(
-                            sub.to_bytes()
-                        )));
-                    }
+                if crate::group_owner::owner_at_cut(store, sub, ctx.cut(), ctx.authorizer())?
+                    == Some(*member)
+                {
+                    bail!(MembershipError::OwnerOwnsSubgroup(hex::encode(
+                        sub.to_bytes()
+                    )));
                 }
                 let sub_policy = MembershipPolicy::new(store, *sub);
                 sub_policy.ensure_not_last_admin_removal(member)?;

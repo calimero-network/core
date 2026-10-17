@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities;
+use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_op::{Op, OpPayload};
 use calimero_op_adapter::payload_from_group_op;
 use calimero_primitives::context::GroupMemberRole;
@@ -70,6 +70,7 @@ struct Written {
     members: BTreeSet<AccountId>,
     explicit_caps: BTreeSet<AccountId>,
     default_caps: bool,
+    visibility: bool,
 }
 
 impl NamespaceGovernance<'_> {
@@ -366,6 +367,23 @@ impl NamespaceGovernance<'_> {
             }
         }
 
+        // Every flip the fold counts passed its gate at its cut, void or not.
+        if let Some(restricted) = rows.restricted.filter(|_| written.visibility) {
+            let wanted = if restricted {
+                VisibilityMode::Restricted
+            } else {
+                VisibilityMode::Open
+            };
+            if capabilities.subgroup_visibility(group)? != wanted {
+                capabilities.set_subgroup_visibility(group, wanted)?;
+                // Inherited auto-follow re-runs on a rollback as on the flip it undoes.
+                crate::op_events::notify(crate::op_events::OpEvent::SubgroupVisibilityChanged {
+                    group_id: group.to_bytes(),
+                    open: !restricted,
+                });
+            }
+        }
+
         for account in &written.members {
             let wanted = rows.members.get(account);
             let held = membership.role_of(group, account)?;
@@ -420,6 +438,9 @@ fn payload_written_group(payload: &OpPayload) -> Option<ContextGroupId> {
         | OpPayload::MemberLeft { group, .. }
         | OpPayload::MemberCapabilitySet { group, .. }
         | OpPayload::DefaultCapabilitiesSet { group, .. } => Some(*group),
+        OpPayload::SubgroupVisibilitySet { scope, .. } => {
+            Some(ContextGroupId::from(*scope.as_bytes()))
+        }
         _ => None,
     }
 }
@@ -435,6 +456,7 @@ fn record_write(entry: &mut Written, payload: &OpPayload) {
             let _ = entry.explicit_caps.insert(*member);
         }
         OpPayload::DefaultCapabilitiesSet { .. } => entry.default_caps = true,
+        OpPayload::SubgroupVisibilitySet { .. } => entry.visibility = true,
         _ => {}
     }
 }
