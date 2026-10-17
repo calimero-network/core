@@ -14,6 +14,7 @@
 
 use super::context::GroupApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
+use crate::first_target_gate::{applications_at_cut, ApplicationsAtCut};
 use crate::membership::MembershipPath;
 use crate::op_events::OpEvent;
 use crate::{AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository};
@@ -65,26 +66,12 @@ pub(crate) fn apply_device_linked(
     }
     // The account namespace is exempt, recognised node-locally: pairing publishes a
     // device's first link there BEFORE the certificate that would name it.
-    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? != Some(group_id) {
-        let application = crate::MetaRepository::new(ctx.store())
-            .load(&group_id)?
-            .map(|meta| meta.target.application_id);
-        if !calimero_account::scope_covers(&scope.statement.applications, application) {
-            // A replica's root meta names the zero placeholder until the sealed op
-            // setting its target folds, and a key-arrival replay can reach this link
-            // while that op, an ancestor of it, is still parked. Undecided rather
-            // than refused: a refusal spends the nonce, so the replay after the
-            // target folds would skip the link and leave the device unbound.
-            if application.is_none_or(|app| app == ZERO_APPLICATION_ID) {
-                eyre::bail!(crate::ApplyError::AuthorityUndecidable {
-                    group_id: group_id.to_string(),
-                    signer: endorsement.member.to_string(),
-                });
-            }
-            tracing::warn!(group_id = ?group_id, device = %cert.device, ?application,
-                           "device link: the carried scope does not reach this group");
-            return Ok(());
-        }
+    if crate::NodeDeviceRepository::new(ctx.store()).account_namespace()? != Some(group_id)
+        && !scope_reaches_group(ctx, &scope.statement.applications, &endorsement.member)?
+    {
+        tracing::warn!(group_id = ?group_id, device = %cert.device,
+                       "device link: the carried scope does not reach this group");
+        return Ok(());
     }
 
     // The policy gate, in three steps: the endorsement is about this account, it
@@ -685,6 +672,56 @@ pub(crate) fn apply_device_labelled(
     }
     tracing::debug!(group_id = ?group_id, %device, label_epoch, "account device labelled");
     Ok(())
+}
+
+/// Whether a link scoped to `applications` reaches this op's group: every
+/// application the group may have been targeting at the link's cut is one of
+/// them (`first_target_gate::applications_at_cut`).
+///
+/// Read at the cut, not from the group's live target, because the same signed
+/// link applied on either side of a concurrent `TargetApplicationSet` would
+/// otherwise bind the device on one replica and refuse it on another, with no
+/// later op to reconcile them (core#4603). Where the cut's ancestry is not
+/// readable here, the live target decides only if `can_resolve_cut` says live
+/// is sound; otherwise the link parks as undecidable and is retried when the
+/// history arrives.
+fn scope_reaches_group(
+    ctx: &GroupApplyCtx<'_>,
+    applications: &[ApplicationId],
+    endorser: &calimero_primitives::identity::PublicKey,
+) -> EyreResult<bool> {
+    if applications.is_empty() {
+        return Ok(true);
+    }
+    let group_id = ctx.group_id();
+    let cut = ctx.cut();
+    if let ApplicationsAtCut::Known(targets) = applications_at_cut(ctx.store(), group_id, cut)? {
+        return Ok(targets
+            .into_iter()
+            .all(|target| calimero_account::scope_covers(applications, Some(target))));
+    }
+    let undecidable = || crate::ApplyError::AuthorityUndecidable {
+        group_id: group_id.to_string(),
+        signer: endorser.to_string(),
+    };
+    if !cut.is_empty() && !ctx.authorizer().can_resolve_cut(group_id, cut) {
+        eyre::bail!(undecidable());
+    }
+    let application = crate::MetaRepository::new(ctx.store())
+        .load(group_id)?
+        .map(|meta| meta.target.application_id);
+    if calimero_account::scope_covers(applications, application) {
+        return Ok(true);
+    }
+    // A replica's root meta names the zero placeholder until the sealed op
+    // setting its target folds, and a key-arrival replay can reach this link
+    // while that op, an ancestor of it, is still parked. Undecided rather than
+    // refused: a refusal spends the nonce, so the replay after the target folds
+    // would skip the link and leave the device unbound.
+    if application.is_none_or(|app| app == ZERO_APPLICATION_ID) {
+        eyre::bail!(undecidable());
+    }
+    Ok(false)
 }
 
 /// Is the account behind `endorser`'s key a member of this group at the op's

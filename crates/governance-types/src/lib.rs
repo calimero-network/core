@@ -2387,7 +2387,13 @@ pub struct SignedNamespaceOp {
 ///
 /// v25: `RootOp::OnBehalf` and the group-op wrappers gained the relay's signed
 /// `stamped_at`, judged against the warrant's `not_after` on apply.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 25;
+///
+/// v26: an `AccountDeviceLinked` scope is judged against every application the
+/// group may have targeted at the link's cut, read from its ancestry, not the
+/// live target (core#4603). Nothing moves on the wire, but a v25 node binds or
+/// refuses by the order it folded a concurrent `TargetApplicationSet` in: a
+/// coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,
