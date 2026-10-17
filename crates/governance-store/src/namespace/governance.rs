@@ -208,6 +208,12 @@ struct SealedRootRetry {
     divergence: Option<super::super::DivergenceReport>,
 }
 
+/// What one [`NamespaceGovernance::retry_round`] achieved.
+struct RetryRound {
+    divergence: Option<super::super::DivergenceReport>,
+    group_applied: usize,
+}
+
 /// What [`NamespaceGovernance::root_op_side_effects`] observed while running an
 /// op's effects, for the caller to fold into its own report.
 ///
@@ -1908,7 +1914,7 @@ impl<'a> NamespaceGovernance<'a> {
         // rotation legitimately replaces the current key. Composed review of
         // this path showed the exemption was the most dangerous line here.
         // `expected_key_ids` comes from the cleartext `key_id` of buffered
-        // `NamespaceOp::Group` envelopes, which the signer chooses and which no
+        // `NamespaceOp::Group` and sealed root envelopes, which the signer chooses and which no
         // gate checks: the receive path verifies only the topic and the
         // signature, an unresolvable `key_id` decrypts nothing and raises
         // nothing, and the op is logged regardless. So the "attestation" is
@@ -2338,6 +2344,44 @@ impl<'a> NamespaceGovernance<'a> {
             );
             return Ok(None);
         }
+        // Rounds repeat while one settles a parked op, so the parked count bounds them.
+        // A re-entrant call runs one: the round that triggered it picks up its progress.
+        let mut undecided = self.undecided_parked();
+        let rounds = if depth == 0 { undecided.max(1) } else { 1 };
+        let mut retry_divergence = None;
+        let mut group_applied = 0;
+        let mut failure = None;
+        for _ in 0..rounds {
+            match self.retry_round(group_id, depth) {
+                Ok(round) => {
+                    group_applied += round.group_applied;
+                    if round.divergence.is_some() {
+                        retry_divergence = round.divergence;
+                    }
+                }
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+            let left = self.undecided_parked();
+            if left == 0 || left >= undecided {
+                break;
+            }
+            undecided = left;
+        }
+
+        // A key that arrives late replays ops that may include a removal, or ops a
+        // removal voids; what they wrote is rebuilt once, after all of them.
+        if group_applied > 0 && depth == 0 {
+            self.reconcile_voided(None)?;
+        }
+
+        failure.map_or(Ok(retry_divergence), Err)
+    }
+
+    /// One root, group, root sweep; the caller repeats it while parked ops settle.
+    fn retry_round(&self, group_id: [u8; 32], depth: u8) -> EyreResult<RetryRound> {
         self.authorizer.forget();
         // Sealed root ops first, and here rather than at a caller. A key reaches a
         // node two ways — a `KeyDelivery` op, and the pull in `group_key_pull` —
@@ -2521,12 +2565,9 @@ impl<'a> NamespaceGovernance<'a> {
         // arrives. The subgroup then has a member every keyed peer sees and this
         // node does not, with nothing failing to say so.
         //
-        // Two passes, not a fixed point. The class of edges is small and known
-        // -- `GroupCreated` unblocks group ops, a folded group op unblocks the
-        // root ops gated on it -- so one pass in each direction closes it. A
-        // longer alternating chain (a group op gated on a membership only
-        // `MemberJoinedOpen` establishes) would still need the next key arrival
-        // or the startup sweep; that is the accepted bound, not an oversight.
+        // One pass in each direction closes the known edges -- `GroupCreated`
+        // unblocks group ops, a folded group op unblocks the root ops gated on it.
+        // A longer alternating chain is closed by the caller repeating this round.
         //
         // Only when the group phase folded something. The sealed-root walk has
         // no per-op applied marker -- it re-feeds every sealed root op in the log
@@ -2556,13 +2597,10 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        // A key that arrives late replays ops that may include a removal, or ops a
-        // removal voids; what they wrote is rebuilt once, after all of them.
-        if group_applied > 0 && depth == 0 {
-            self.reconcile_voided(None)?;
-        }
-
-        Ok(retry_divergence)
+        Ok(RetryRound {
+            divergence: retry_divergence,
+            group_applied,
+        })
     }
 
     /// Curative re-drive variant that returns the count of ops it ACTUALLY
@@ -2975,9 +3013,8 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(())
     }
 
-    /// Apply a parked root op at its own cut, as on arrival, and record the verdict.
-    /// An undecidable cut, or no at-cut judge, falls back to this pass's gates and
-    /// records only an apply; an op already refused is not given that fallback.
+    /// Apply a parked root op at its own cut and record the verdict; an undecidable cut
+    /// falls back to the live gates unless the op is refused or waits on its own group's key.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
@@ -2991,6 +3028,10 @@ impl<'a> NamespaceGovernance<'a> {
                 .apply_root_op(gate_op, root);
             if state == Parked::Refused || !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(parked, at_cut.is_ok());
+                return at_cut;
+            }
+            let own_group = ContextGroupId::from(self.namespace_id.to_bytes());
+            if judge.history_sealed_in_group(&own_group, &parked.parent_op_hashes) {
                 return at_cut;
             }
         }
@@ -3018,6 +3059,9 @@ impl<'a> NamespaceGovernance<'a> {
                 .decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
             if parked == Some(Parked::Refused) || !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(ns_op, at_cut.is_ok());
+                return at_cut;
+            }
+            if judge.history_sealed_in_group(group_id, &ns_op.parent_op_hashes) {
                 return at_cut;
             }
         }
@@ -3326,8 +3370,8 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// This is the content half of authorizing a delivery, and the reason it is
     /// worth anything is the provenance: these ids come from buffered
-    /// `NamespaceOp::Group` envelopes, signed by group members, which is a
-    /// THIRD party relative to whoever is delivering. A `key_id` carried on the
+    /// `NamespaceOp::Group` and sealed root envelopes, signed by namespace members,
+    /// which is a THIRD party relative to whoever is delivering. A `key_id` carried on the
     /// delivery itself would be signed by the deliverer alongside the key it
     /// chose, so the hash would match by construction and check nothing — which
     /// is why this needs no new field on `RootOp::KeyDelivery` and no wire
@@ -3467,7 +3511,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // to it would be signed by the deliverer alongside the key it
                 // chose, matching by construction and checking nothing. What
                 // can speak to the content is a DIFFERENT signed op: a buffered
-                // `NamespaceOp::Group` envelope naming the group's `key_id`.
+                // `NamespaceOp::Group` or sealed root envelope naming the group's `key_id`.
                 // That is bound below where one exists; where none does the
                 // delivery is genuinely unverifiable, and the direct-pull path
                 // already ruled on those — `key_servers_allowed` accepts an

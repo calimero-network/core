@@ -196,6 +196,10 @@ impl AtCutAuthorizer for VoidJudge<'_> {
         self.0.forget();
     }
 
+    fn history_sealed_in_group(&self, group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        self.0.history_sealed_in_group(group, parents)
+    }
+
     fn op_is_void(&self, group: &ContextGroupId, capability: u32, op: &Op) -> Option<bool> {
         self.0.op_is_void(group, capability, op)
     }
