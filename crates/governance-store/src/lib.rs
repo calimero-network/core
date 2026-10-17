@@ -59,6 +59,7 @@ mod governance_signer;
 pub mod group_creator;
 mod group_governance_publisher;
 mod group_keys;
+mod group_owner;
 mod group_settings;
 pub mod held_ops;
 mod local_state;

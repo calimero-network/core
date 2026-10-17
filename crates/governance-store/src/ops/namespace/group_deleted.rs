@@ -49,13 +49,15 @@ pub(crate) fn apply(
     // first pass, so we skip the auth check here and let the (idempotent)
     // cascade finish any remaining cleanup.
     let ns_gid = ContextGroupId::from(namespace_id.to_bytes());
-    if let Some(root_meta) = MetaRepository::new(store).load(&root_gid)? {
+    if MetaRepository::new(store).load(&root_gid)?.is_some() {
         ctx.require_in_namespace(&root_gid)?;
         // Ownership names an account, the op carries a key: resolve, then
         // compare. An unresolvable signer is not the owner and falls through to
         // the capability gate below, which refuses it for the same reason.
         let signer_account = ctx.signer_account_live(&ns_gid, &op.signer)?;
-        if signer_account != Some(root_meta.owner_identity) {
+        let (parents, authorizer) = ctx.apply_auth();
+        let owner = crate::group_owner::owner_at_cut(store, &root_gid, parents, authorizer)?;
+        if signer_account.is_none_or(|signer| Some(signer) != owner) {
             if let Err(e) = PermissionChecker::new(store, ns_gid)
                 .with_principal(ctx.principal())
                 .require_can_delete_subgroup(&op.signer)
