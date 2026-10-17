@@ -375,7 +375,7 @@ wat = "1.243.0"
 web3 = "0.19.0"
 webbrowser = "1.2.2"
 zeroize = "1.8"
-zip = { version = "8.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 
 pyo3 = "0.20"
 
