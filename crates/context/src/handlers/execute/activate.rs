@@ -35,9 +35,7 @@ impl Handler<ActivateUpgradeRequest> for ContextManager {
         }
         // Spares a call with nothing to switch the wait for the write lock; the
         // decision is made again under it.
-        if self.upgrade_gated(&context_id)
-            || maybe_lazy_upgrade(&self.datastore, &context_id, &application_id).is_none()
-        {
+        if !self.upgrade_pending(&context_id, &application_id) {
             return ActorResponse::reply(Ok(false));
         }
         let Some(context) = self.contexts.get(&context_id) else {
@@ -56,12 +54,12 @@ impl Handler<ActivateUpgradeRequest> for ContextManager {
         // Decided under the lock, so a concurrent caller that already switched
         // the context leaves nothing to do here.
         let switch = guard_task.then(move |guard, act, _ctx| {
-            let pending = (!act.upgrade_gated(&context_id))
-                .then(|| {
-                    let current = act.contexts.get(&context_id)?.meta.application_id;
-                    maybe_lazy_upgrade(&act.datastore, &context_id, &current)
-                })
-                .flatten();
+            let pending = act
+                .contexts
+                .get(&context_id)
+                .map(|context| context.meta.application_id)
+                .filter(|current| act.upgrade_pending(&context_id, current))
+                .and_then(|current| maybe_lazy_upgrade(&act.datastore, &context_id, &current));
             let run = match pending {
                 Some(action) => act.run_lazy_upgrade(guard, context_id, executor, action),
                 None => async move { Ok((guard, UpgradeOutcome::Unchanged)) }
@@ -84,6 +82,16 @@ impl Handler<ActivateUpgradeRequest> for ContextManager {
 }
 
 impl ContextManager {
+    /// Whether execute would switch the context's release before its call.
+    pub(super) fn upgrade_pending(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> bool {
+        !self.upgrade_gated(context_id)
+            && maybe_lazy_upgrade(&self.datastore, context_id, application_id).is_some()
+    }
+
     /// Whether the context's group holds the in-progress write freeze, under
     /// which execute runs no lazy upgrade either.
     fn upgrade_gated(&self, context_id: &calimero_primitives::context::ContextId) -> bool {

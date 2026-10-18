@@ -203,6 +203,12 @@ impl Handler<ExecuteRequest> for ContextManager {
                 .and_then(|cached| cached.read_only.as_ref())
                 .is_some_and(|set| set.contains(method.as_str()))
         };
+        // The switch commits, so a view that triggers one still takes the write lock.
+        let shared_lock = is_read_only_call
+            && self
+                .contexts
+                .get(&context_id)
+                .is_some_and(|cm| !self.upgrade_pending(&context_id, &cm.meta.application_id));
 
         let context = match self.get_or_fetch_context(&context_id) {
             Ok(Some(context)) => context,
@@ -224,7 +230,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let (guard, is_atomic) = match atomic {
             None => {
-                let g = if is_read_only_call {
+                let g = if shared_lock {
                     context.lock_read()
                 } else {
                     context.lock()
@@ -522,11 +528,16 @@ impl Handler<ExecuteRequest> for ContextManager {
         // context_task future can call update_application_id / update_application_with_migration
         // directly without routing through the actor mailbox (which would deadlock while an
         // ActorFuture is in flight on the same actor).
-        let lazy_upgrade_task = guard_task.map(move |guard, _act, _ctx| {
-            if let Some(action) = lazy_upgrade_params {
-                return Ok(Either::Right((guard, action)));
-            }
-            Ok(Either::Left(guard))
+        let lazy_upgrade_task = guard_task.map(move |guard, act, _ctx| {
+            // Decided again under the lock: a call ahead of this one may have switched the context.
+            let action = lazy_upgrade_params.and_then(|_| {
+                let current = act.contexts.get(&context_id)?.meta.application_id;
+                maybe_lazy_upgrade(&act.datastore, &context_id, &current)
+            });
+            Ok(match action {
+                Some(action) => Either::Right((guard, action)),
+                None => Either::Left(guard),
+            })
         });
 
         let context_task = lazy_upgrade_task.and_then(move |either, act, _ctx| {
