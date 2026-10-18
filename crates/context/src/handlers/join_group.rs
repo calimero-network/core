@@ -1572,6 +1572,51 @@ mod tests {
         (store, outcome)
     }
 
+    /// A join every member refused carries the member's reason.
+    ///
+    /// It used to read as "could not reach any member": the joiner loop gave
+    /// the refusal back untyped, so the join took its no-peer branch and the
+    /// person was told to wait for the inviter to come online when a member had
+    /// already said why it would not admit them.
+    #[actix::test]
+    async fn a_refused_join_keeps_the_members_reason() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let group = ContextGroupId::from(GROUP);
+        let joiner_sk = [0xE1; 32];
+        calimero_governance_store::NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("hold an account root, as an initialised node does");
+        calimero_governance_store::NamespaceRepository::new(&store)
+            .store_identity(
+                &group,
+                &PrivateKey::from(joiner_sk).public_key(),
+                &joiner_sk,
+            )
+            .expect("hold the joiner's namespace identity");
+        let reason = "identity abc was removed from group def and cannot rejoin";
+
+        let harness = actor::over_refusing_joins(store, reason).await;
+        let outcome = harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(group),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers");
+
+        let refusal = match outcome
+            .as_ref()
+            .map_err(|e| e.downcast_ref::<crate::error::ContextError>())
+        {
+            Err(Some(crate::error::ContextError::JoinNotEndorsed { refusal, .. })) => {
+                refusal.clone()
+            }
+            other => panic!("expected an unendorsed join, got: {other:?}"),
+        };
+        assert_eq!(refusal.as_deref(), Some(reason));
+    }
+
     /// A join that reached no peer, retried once one answers, still leaves the
     /// joiner with the namespace's default capabilities.
     ///
