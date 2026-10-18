@@ -21,6 +21,7 @@ use std::fmt::Display;
 
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::VisibilityMode;
 use calimero_op::Op;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -387,8 +388,8 @@ pub struct GroupRows {
     /// Accounts whose standing in the group needs no member row in the log: its
     /// genesis admin and the namespace owner. Their stored rows are never taken back.
     pub anchored: BTreeSet<AccountId>,
-    /// Whether the group is Restricted, if it is a subgroup the log holds.
-    pub restricted: Option<bool>,
+    /// The group's visibility, if it is a subgroup the log holds.
+    pub visibility: Option<VisibilityMode>,
 }
 
 /// What a re-entering joiner meets in a group, at a cut or in the live rows.

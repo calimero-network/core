@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::VisibilityMode;
 use calimero_governance_store::metrics::{
     record_at_cut_undecidable, UndecidableCause, UndecidableRemedy,
 };
@@ -585,10 +586,16 @@ impl ScopeProjections {
                 .chain(base.root.as_ref().map(|(_, owner)| owner))
                 .copied()
                 .collect(),
-            restricted: view
+            visibility: view
                 .subgroups
                 .get(&ScopeId::from(group.to_bytes()))
-                .map(|edge| edge.restricted),
+                .map(|edge| {
+                    if edge.restricted {
+                        VisibilityMode::Restricted
+                    } else {
+                        VisibilityMode::Open
+                    }
+                }),
         })
     }
 

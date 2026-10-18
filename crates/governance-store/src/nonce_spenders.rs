@@ -10,8 +10,8 @@ use calimero_store::slice::Slice;
 use calimero_store::types::GenericData;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-use sha2::{Digest, Sha256};
 
+use crate::void_ledger::{delete_scope, rows_under, truncated_hash};
 use crate::{load_nonce_window, open_relayed_join_for_read, NamespaceOpLogService};
 
 const NO_LIMIT: usize = usize::MAX; // a read lists every spender of one key
@@ -62,13 +62,13 @@ impl<'a> NonceSpenders<'a> {
     /// Forget every record of the namespace, as when this node leaves it, so a
     /// rejoin that replays the log does not take each op for its own replay.
     pub(crate) fn clear(&self) -> EyreResult<()> {
-        crate::void_ledger::delete_scope(self.store, self.scope())
+        delete_scope(self.store, self.scope())
     }
 
     /// Record, once, the ops a log written before these rows existed applied: those
     /// whose nonce its window holds, since that window recorded a nonce only on apply.
     fn ensure_backfilled(&self) -> EyreResult<()> {
-        let marker = self.key(truncated(&[b"backfilled"]), [0; 32]);
+        let marker = self.key(truncated_hash(&[b"backfilled"]), [0; 32]);
         if self.store.handle().has(&marker)? {
             return Ok(());
         }
@@ -124,7 +124,7 @@ impl<'a> NonceSpenders<'a> {
         prefix[16..].copy_from_slice(&head);
         let handle = self.store.handle();
         let mut spenders = Vec::new();
-        for key in crate::void_ledger::rows_under(self.store, &prefix, NO_LIMIT)? {
+        for key in rows_under(self.store, &prefix, NO_LIMIT)? {
             if let Some(data) = handle.get(&key)? {
                 let bytes: &[u8] = data.as_ref();
                 spenders.push(bytes.try_into()?);
@@ -141,28 +141,17 @@ impl<'a> NonceSpenders<'a> {
     }
 
     fn scope(&self) -> [u8; 16] {
-        truncated(&[b"calimero-noncesp", self.namespace.as_bytes()])
+        truncated_hash(&[b"calimero-noncesp", self.namespace.as_bytes()])
     }
 }
 
 fn nonce_head(group: &ContextGroupId, signer: &PublicKey, nonce: u64) -> [u8; 16] {
     let signer: &[u8; 32] = signer.as_ref();
-    truncated(&[b"nonce", &group.to_bytes(), signer, &nonce.to_le_bytes()])
+    truncated_hash(&[b"nonce", &group.to_bytes(), signer, &nonce.to_le_bytes()])
 }
 
 fn join_head(inner_id: [u8; 32]) -> [u8; 16] {
-    truncated(&[b"join", &inner_id])
-}
-
-fn truncated(parts: &[&[u8]]) -> [u8; 16] {
-    let mut hasher = Sha256::new();
-    for part in parts {
-        hasher.update(part);
-    }
-    let digest: [u8; 32] = hasher.finalize().into();
-    let mut head = [0; 16];
-    head.copy_from_slice(&digest[..16]);
-    head
+    truncated_hash(&[b"join", &inner_id])
 }
 
 #[cfg(test)]

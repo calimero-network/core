@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::MemberCapabilities as Caps;
+use calimero_context_config::{MemberCapabilities as Caps, VisibilityMode};
 use calimero_op::{Op, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -418,10 +418,16 @@ impl AtCutAuthorizer for LogAuthorizer<'_> {
                 .chain(self.base().root.as_ref().map(|(_, owner)| owner))
                 .copied()
                 .collect(),
-            restricted: view
+            visibility: view
                 .subgroups
                 .get(&ScopeId::from(group.to_bytes()))
-                .map(|edge| edge.restricted),
+                .map(|edge| {
+                    if edge.restricted {
+                        VisibilityMode::Restricted
+                    } else {
+                        VisibilityMode::Open
+                    }
+                }),
         })
     }
 }

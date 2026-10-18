@@ -91,6 +91,18 @@ pub(crate) fn delete_scope(store: &Store, scope: [u8; 16]) -> EyreResult<()> {
     }
 }
 
+/// The first 16 bytes of the SHA-256 of `parts`, concatenated: a `Generic` scope or key head.
+pub(crate) fn truncated_hash(parts: &[&[u8]]) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut head = [0; 16];
+    head.copy_from_slice(&digest[..16]);
+    head
+}
+
 /// The row a raw `Generic` key names, if it starts with `prefix`.
 fn row_under(prefix: &[u8], key: &[u8]) -> Option<GenericKey> {
     if !key.starts_with(prefix) {
@@ -241,13 +253,7 @@ impl<'a> VoidLedger<'a> {
 
     /// Each namespace's parked rows share one scope, so leaving it can find them all.
     fn parked_scope(&self) -> [u8; 16] {
-        let mut hasher = Sha256::new();
-        hasher.update(b"calimero-parked");
-        hasher.update(self.namespace.as_bytes());
-        let digest: [u8; 32] = hasher.finalize().into();
-        let mut scope = [0; 16];
-        scope.copy_from_slice(&digest[..16]);
-        scope
+        truncated_hash(&[b"calimero-parked", self.namespace.as_bytes()])
     }
 
     fn parked_key(&self, op: [u8; 32]) -> GenericKey {

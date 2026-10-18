@@ -349,7 +349,7 @@ impl<'a> NamespaceGovernance<'a> {
         // guard never firing. The encrypted-op *retry* path is unaffected: it
         // re-applies
         // via `decrypt_and_apply_group_op` → `apply_group_op_inner`, not
-        // `apply_signed_op`, and is bounded by the per-signer nonce check there.
+        // `apply_signed_op`, and is bounded by the nonce-spender check there.
         if NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(delta_id)? {
             tracing::debug!(
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
@@ -749,17 +749,8 @@ impl<'a> NamespaceGovernance<'a> {
                     // deny-list gated, so that is an admin decision undone by
                     // someone without admin.
                     //
-                    // The two cases need different answers because the inner op
-                    // is stored only when it arrived in the clear:
-                    //
-                    // 1. The joiner published this join itself, and it is in the
-                    //    op log under its OWN content hash. Ask the log.
-                    // 2. The join only ever arrived relayed, so the log holds
-                    //    envelopes and never the inner op. The envelopes recorded
-                    //    as carrying the same signed join answer that one.
-                    //
-                    // A copy in this envelope's causal past refuses it; a concurrent
-                    // copy is logged and applies nothing, in either arrival order.
+                    // A copy of the join (in the clear or relayed) in this envelope's
+                    // past refuses it; a concurrent copy applies nothing.
                     if !self.replays_relayed_join(delta_id, &op.parent_op_hashes, inner)? {
                         root_events = self.apply_root_op(inner, root)?;
 
@@ -2392,7 +2383,7 @@ impl<'a> NamespaceGovernance<'a> {
         // "not admin": swallowing it would silently drop a legitimate rotation
         // and leave the node unable to decrypt subsequent ops. Propagating lets
         // the apply fail and be retried; the inner op re-applies idempotently
-        // (per-signer nonce window) and the rotation is re-attempted.
+        // (recorded nonce spenders) and the rotation is re-attempted.
         let permissions = PermissionChecker::new(self.store, *group_id)
             .with_apply_auth(&op.parent_op_hashes, self.authorizer);
         // A relay carrying an admin's removal rotates on the admin's authority:
@@ -2556,7 +2547,7 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
         let outcome = self.decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
-        if parked.is_some() && (outcome.is_ok() || is_respent(outcome.as_ref().err())) {
+        if parked.is_some() && (outcome.is_ok() || outcome.as_ref().is_err_and(is_respent)) {
             self.settle_parked(ns_op, outcome.is_ok());
         }
         outcome
@@ -2601,23 +2592,8 @@ impl<'a> NamespaceGovernance<'a> {
         self.apply_group_op_inner(group_id, &signed_group_op, delta_id, void)
     }
 
-    /// Whether `delta_id` already spent `signer`'s `nonce` here: a replay. Refused when
-    /// another spender is in its causal past; one spent only concurrently is judged on its merits.
-    fn replays_spent_nonce(
-        &self,
-        group: &ContextGroupId,
-        signer: &PublicKey,
-        nonce: u64,
-        delta_id: [u8; 32],
-        parents: &[[u8; 32]],
-    ) -> EyreResult<bool> {
-        let spenders =
-            NonceSpenders::new(self.store, self.namespace_id).spenders(group, signer, nonce)?;
-        self.replays_spender(group, signer, nonce, delta_id, parents, spenders)
-    }
-
-    /// [`Self::replays_spent_nonce`] over `spenders`: a replay when `delta_id` is one of
-    /// them applied here, refused when another is in its causal past.
+    /// Whether `delta_id` replays `signer`'s `nonce`: one of `spenders` applied here. Refused
+    /// when another spender is in its causal past; a concurrent one is judged on its merits.
     fn replays_spender(
         &self,
         group: &ContextGroupId,
@@ -2627,14 +2603,10 @@ impl<'a> NamespaceGovernance<'a> {
         parents: &[[u8; 32]],
         spenders: Vec<[u8; 32]>,
     ) -> EyreResult<bool> {
-        let mut others: HashSet<[u8; 32]> = spenders.into_iter().collect();
-        if others.remove(&delta_id)
-            && VoidLedger::new(self.store, self.namespace_id)
-                .parked(delta_id)?
-                .is_none()
-        {
+        if self.spent_here(&spenders, delta_id)? {
             return Ok(true);
         }
+        let others: HashSet<[u8; 32]> = spenders.into_iter().filter(|s| *s != delta_id).collect();
         if others.is_empty() {
             return Ok(false);
         }
@@ -2665,9 +2637,14 @@ impl<'a> NamespaceGovernance<'a> {
         nonce: u64,
         delta_id: [u8; 32],
     ) -> EyreResult<bool> {
-        Ok(NonceSpenders::new(self.store, self.namespace_id)
-            .spenders(group, signer, nonce)?
-            .contains(&delta_id)
+        let spenders =
+            NonceSpenders::new(self.store, self.namespace_id).spenders(group, signer, nonce)?;
+        self.spent_here(&spenders, delta_id)
+    }
+
+    /// Whether `delta_id` is one of `spenders` and not parked: applied here, or judged void.
+    fn spent_here(&self, spenders: &[[u8; 32]], delta_id: [u8; 32]) -> EyreResult<bool> {
+        Ok(spenders.contains(&delta_id)
             && VoidLedger::new(self.store, self.namespace_id)
                 .parked(delta_id)?
                 .is_none())
@@ -2688,12 +2665,15 @@ impl<'a> NamespaceGovernance<'a> {
         // KeyDelivery) re-feeds the group's whole op log, so already-applied ops
         // arrive again and are skipped here as their own replay.
         let mut nonce_window = load_nonce_window(self.store, group_id, signer)?;
-        if self.replays_spent_nonce(
+        let spenders =
+            NonceSpenders::new(self.store, self.namespace_id).spenders(group_id, signer, nonce)?;
+        if self.replays_spender(
             group_id,
             signer,
             nonce,
             delta_id,
             &signed_group_op.parent_op_hashes,
+            spenders,
         )? {
             tracing::debug!(
                 nonce,
@@ -2926,13 +2906,6 @@ impl<'a> NamespaceGovernance<'a> {
         // for a deferrable precondition failure, and we deliberately DO advance
         // it for a successful apply — the security check against the policy is
         // never skipped, only made visible in time.
-        // Record into the window loaded at the dedup guard above. `record`
-        // advances the contiguous floor through any run this nonce completed,
-        // or parks it in the above-floor set if an earlier sibling is still
-        // missing — so the missing sibling is NOT treated as already-processed
-        // when it arrives (the #2516 fix). The same post-apply ordering as the
-        // old single-nonce write holds: a deferrable precondition failure
-        // `Err`s above and leaves the window untouched, so the op retries.
         self.spend_nonce(group_id, signer, nonce, delta_id, &mut nonce_window)?;
         Ok(divergence)
     }
@@ -2945,14 +2918,7 @@ impl<'a> NamespaceGovernance<'a> {
         parents: &[[u8; 32]],
         inner: &SignedNamespaceOp,
     ) -> EyreResult<bool> {
-        let inner_id = inner.content_hash()?;
-        let in_the_clear =
-            NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(inner_id)?;
-        let copies: Vec<[u8; 32]> = NonceSpenders::new(self.store, self.namespace_id)
-            .copies(inner_id)?
-            .into_iter()
-            .chain(in_the_clear.then_some(inner_id))
-            .collect();
+        let copies = join_copies(self.store, self.namespace_id, inner.content_hash()?)?;
         let copied = copies.iter().any(|copy| *copy != delta_id);
         let ns_gid = ContextGroupId::from(self.namespace_id.to_bytes());
         if self.replays_spender(
@@ -3443,14 +3409,12 @@ impl<'a> NamespaceGovernance<'a> {
 }
 
 /// Whether `err` refuses an op for reusing a nonce spent in its past: a verdict at any cut.
-fn is_respent(err: Option<&eyre::Report>) -> bool {
-    err.is_some_and(|err| {
-        err.chain().any(|cause| {
-            matches!(
-                cause.downcast_ref::<crate::ApplyError>(),
-                Some(crate::ApplyError::NonceRespent { .. })
-            )
-        })
+fn is_respent(err: &eyre::Report) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::NonceRespent { .. })
+        )
     })
 }
 
@@ -3497,13 +3461,21 @@ pub fn relayed_join_applied(
     namespace_id: NamespaceId,
     inner: &SignedNamespaceOp,
 ) -> EyreResult<bool> {
-    let inner_id = inner.content_hash()?;
-    Ok(
-        NamespaceOpLogService::new(store, namespace_id).contains_op(inner_id)?
-            || !NonceSpenders::new(store, namespace_id)
-                .copies(inner_id)?
-                .is_empty(),
-    )
+    Ok(!join_copies(store, namespace_id, inner.content_hash()?)?.is_empty())
+}
+
+/// The ops carrying the join `inner_id`: its recorded relays, and the join itself if logged.
+fn join_copies(
+    store: &Store,
+    namespace_id: NamespaceId,
+    inner_id: [u8; 32],
+) -> EyreResult<Vec<[u8; 32]>> {
+    let in_the_clear = NamespaceOpLogService::new(store, namespace_id).contains_op(inner_id)?;
+    Ok(NonceSpenders::new(store, namespace_id)
+        .copies(inner_id)?
+        .into_iter()
+        .chain(in_the_clear.then_some(inner_id))
+        .collect())
 }
 
 /// Decrypt the cleartext [`GroupOp`] carried by a `NamespaceOp::Group` envelope
