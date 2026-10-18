@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{
     ActivateNamespaceUpgradeRequest, ActivateNamespaceUpgradeResponse, ActivateUpgradeRequest,
@@ -7,16 +5,20 @@ use calimero_context_client::group::{
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
     find_local_signing_identity, get_group_for_context, MetaRepository, NamespaceRepository,
+    UpgradeLadderRepository,
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::GroupTarget;
 use calimero_store::Store;
 use eyre::{bail, WrapErr};
 use tracing::debug;
 
+use crate::activation::next_rung;
 use crate::error::ContextError;
+use crate::hlc_fence::loaded_reader_bytecode_id;
 use crate::ContextManager;
 
 /// What an activation switches, read from the store before any context moves.
@@ -80,8 +82,8 @@ impl Handler<ActivateNamespaceUpgradeRequest> for ContextManager {
 
 /// Resolve the namespace's stored target and the contexts this node can switch.
 ///
-/// Refuses when a target blob a switch needs is not local, so the switch can
-/// never reach for a release that was not installed first.
+/// Refuses when a release a switch steps through is not installed here, so the
+/// switch never fetches or installs one.
 fn plan_activation(
     store: &Store,
     has_blob: impl Fn(&BlobId) -> eyre::Result<bool>,
@@ -104,7 +106,7 @@ fn plan_activation(
     check_expected(request, namespace_id, target_application_id)?;
 
     let mut contexts = Vec::new();
-    let mut target_blobs = BTreeSet::new();
+    let mut chains = Vec::new();
     for context_id in NamespaceRepository::new(store)
         .collect_subtree_for_cascade(namespace_id)?
         .contexts
@@ -118,18 +120,17 @@ fn plan_activation(
                 check_expected(request, &group_id, group.target.application_id)?;
                 // A zero id names no blob, as in the lazy upgrade's own check.
                 if group.target.bytecode_id != [0u8; 32] {
-                    let _new = target_blobs.insert(group.target.bytecode_id);
+                    chains.push(switch_chain(store, &context_id, &group_id, &group.target)?);
                 }
             }
         }
         contexts.push((context_id, executor));
     }
 
-    for bytecode_id in target_blobs {
-        let blob_id = BlobId::from(bytecode_id);
-        if !has_blob(&blob_id)? {
+    for chain in chains {
+        if let Some(missing) = first_not_installed(store, &has_blob, &chain)? {
             bail!(ContextError::BytecodeNotInstalled {
-                blob_id: blob_id.to_string(),
+                blob_id: missing.to_string(),
             });
         }
     }
@@ -138,6 +139,54 @@ fn plan_activation(
         target_application_id,
         contexts,
     })
+}
+
+/// The releases a switch of `context_id` steps through, oldest first and ending at
+/// the group target: the ladder from its bound, walked as the lazy upgrade does.
+fn switch_chain(
+    store: &Store,
+    context_id: &ContextId,
+    group_id: &ContextGroupId,
+    target: &GroupTarget,
+) -> eyre::Result<Vec<(ApplicationId, BlobId)>> {
+    let ladder = UpgradeLadderRepository::new(store).load(group_id)?;
+    let mut chain = Vec::new();
+    if let Some(mut bound) = loaded_reader_bytecode_id(store, context_id)? {
+        for _ in 0..ContextManager::LADDER_HOP_BUDGET {
+            let Some(rung) = next_rung(&ladder, bound, target.bytecode_id) else {
+                break;
+            };
+            bound = rung.bytecode_id;
+            chain.push((rung.application_id, BlobId::from(rung.bytecode_id)));
+        }
+    }
+    chain.push((target.application_id, BlobId::from(target.bytecode_id)));
+    Ok(chain)
+}
+
+/// The first release of `chain` a switch would fetch or install: its blob is not local,
+/// or its row names neither it nor a later release (a bundle's versions share one row).
+fn first_not_installed(
+    store: &Store,
+    has_blob: &impl Fn(&BlobId) -> eyre::Result<bool>,
+    chain: &[(ApplicationId, BlobId)],
+) -> eyre::Result<Option<BlobId>> {
+    for (position, (application_id, blob_id)) in chain.iter().enumerate() {
+        let row = store
+            .handle()
+            .get(&calimero_store::key::ApplicationMeta::new(*application_id))?
+            .map(|row| row.bytecode.blob_id());
+        let bound_by_row = row.is_some_and(|row| {
+            chain
+                .iter()
+                .skip(position)
+                .any(|(app, blob)| app == application_id && *blob == row)
+        });
+        if !bound_by_row || !has_blob(blob_id)? {
+            return Ok(Some(*blob_id));
+        }
+    }
+    Ok(None)
 }
 
 /// Refuse when the caller expected another application than `group_id` targets.
@@ -160,9 +209,9 @@ fn check_expected(
 mod tests {
     use std::sync::Arc;
 
-    use calimero_governance_store::{register_context_in_group, UpgradeLadderRepository};
+    use calimero_governance_store::register_context_in_group;
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::{GroupMetaValue, GroupTarget, LadderRung};
+    use calimero_store::key::{GroupMetaValue, LadderRung};
 
     use super::*;
 

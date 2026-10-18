@@ -1346,7 +1346,7 @@ impl ContextManager {
     /// Max ladder hops one access replays — bounds a pathological
     /// marker-write failure loop; ladders are realistically 1-3 rungs and a
     /// longer one resumes on the next access from the last committed rung.
-    const LADDER_HOP_BUDGET: u8 = 8;
+    pub(crate) const LADDER_HOP_BUDGET: u8 = 8;
 
     /// Switch `context_id` to its group's target release under the caller's `guard`. A failed
     /// step leaves it as it was; a committed one asks for the replay of deltas held for it.
