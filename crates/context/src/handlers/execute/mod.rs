@@ -84,7 +84,7 @@ pub(crate) use signing::{persist_signed_signatures, sign_authorized_actions, sig
 use storage::{ContextPrivateStorage, ContextStorage, ReadOnlyContextStorage};
 use upgrade_gate::{
     maybe_lazy_upgrade, resolve_producing_bytecode_id, should_block, upgrade_blocks_write,
-    upgrade_rejects_committed_write, LazyUpgradeAction,
+    upgrade_rejects_committed_write, LazyUpgradeAction, UpgradeOutcome,
 };
 
 impl Handler<ExecuteRequest> for ContextManager {
@@ -542,6 +542,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                 Either::Right(parts) => parts,
             };
             act.run_lazy_upgrade(guard, context_id, executor, action)
+                .map_ok(|(guard, _outcome), _act, _ctx| guard)
+                .boxed_local()
         });
 
         // Re-fetch context after possible lazy upgrade (application_id may have changed)
@@ -1346,7 +1348,7 @@ impl ContextManager {
         context_id: ContextId,
         executor: PublicKey,
         action: LazyUpgradeAction,
-    ) -> actix::fut::LocalBoxActorFuture<Self, eyre::Result<ContextGuard>> {
+    ) -> actix::fut::LocalBoxActorFuture<Self, eyre::Result<(ContextGuard, UpgradeOutcome)>> {
         debug!(%context_id, %executor, "performing lazy upgrade before execution");
         let act = self;
         match action {
@@ -1370,6 +1372,7 @@ impl ContextManager {
                     context_id,
                     executor,
                     ContextManager::LADDER_HOP_BUDGET,
+                    false,
                 )
             }
             // Marker-less context: the pre-ladder single jump to the
@@ -1439,7 +1442,7 @@ impl ContextManager {
                             let migration_v2 = act.config.migration_v2;
                             let scope_projections = Arc::clone(&act.scope_projections);
                             async move {
-                                match module_result {
+                                let outcome = match module_result {
                                     Ok(module) => {
                                         match update_application_with_migration(
                                             datastore.clone(),
@@ -1467,6 +1470,7 @@ impl ContextManager {
                                                     &cid,
                                                     target_bytecode_id,
                                                 );
+                                                UpgradeOutcome::Advanced
                                             }
                                             Ok(_) => {
                                                 // Migrate ran against the application row
@@ -1479,6 +1483,9 @@ impl ContextManager {
                                                     %target_app,
                                                     "lazy migrate ran against the application row (target blob unavailable); not recording activation"
                                                 );
+                                                UpgradeOutcome::Failed(eyre::eyre!(
+                                                    "target bytecode unavailable"
+                                                ))
                                             }
                                             Err(err) => {
                                                 warn!(
@@ -1487,6 +1494,7 @@ impl ContextManager {
                                                     %err,
                                                     "lazy upgrade (migration) failed, proceeding with current application"
                                                 );
+                                                UpgradeOutcome::Failed(err)
                                             }
                                         }
                                     }
@@ -1497,9 +1505,10 @@ impl ContextManager {
                                             %err,
                                             "failed to load module for lazy upgrade migration"
                                         );
+                                        UpgradeOutcome::Failed(err)
                                     }
-                                }
-                                Ok(guard)
+                                };
+                                Ok((guard, outcome))
                             }
                             .into_actor(act)
                         })
@@ -1534,7 +1543,7 @@ impl ContextManager {
                         }
                         let marker_datastore = act.datastore.clone();
                         async move {
-                            match update_application_id(
+                            let outcome = match update_application_id(
                                 datastore,
                                 node_client,
                                 context_client,
@@ -1558,8 +1567,11 @@ impl ContextManager {
                                         &cid,
                                         target_bytecode_id,
                                     );
+                                    UpgradeOutcome::Advanced
                                 }
-                                Ok(_) => {}
+                                Ok(_) => UpgradeOutcome::Failed(eyre::eyre!(
+                                    "target bytecode unavailable"
+                                )),
                                 Err(err) => {
                                     warn!(
                                         %cid,
@@ -1567,9 +1579,10 @@ impl ContextManager {
                                         %err,
                                         "lazy upgrade failed, proceeding with current application"
                                     );
+                                    UpgradeOutcome::Failed(err)
                                 }
-                            }
-                            Ok(guard)
+                            };
+                            Ok((guard, outcome))
                         }
                         .into_actor(act)
                     })
@@ -1587,13 +1600,15 @@ impl ContextManager {
     /// context's current version; activation is recorded per committed hop,
     /// so the next access resumes from a real version. `budget` bounds one
     /// access's hops (a longer ladder simply resumes on the next access).
+    /// `advanced` says whether this access already committed a hop.
     fn replay_upgrade_ladder(
         &mut self,
         guard: ContextGuard,
         context_id: ContextId,
         executor: PublicKey,
         budget: u8,
-    ) -> actix::fut::LocalBoxActorFuture<Self, eyre::Result<ContextGuard>> {
+        advanced: bool,
+    ) -> actix::fut::LocalBoxActorFuture<Self, eyre::Result<(ContextGuard, UpgradeOutcome)>> {
         use calimero_governance_store::{get_group_for_context, UpgradeLadderRepository};
 
         let datastore = self.datastore.clone();
@@ -1610,7 +1625,9 @@ impl ContextManager {
             });
 
         let Some((ladder, bound, group_target)) = walk else {
-            return async move { Ok(guard) }.into_actor(self).boxed_local();
+            return async move { Ok((guard, UpgradeOutcome::of_walk(advanced, None))) }
+                .into_actor(self)
+                .boxed_local();
         };
         let Some(rung) = crate::activation::next_rung(&ladder, bound, group_target) else {
             // Reaching the target is every execute's steady state; a missing hop
@@ -1623,11 +1640,15 @@ impl ContextManager {
                     "no ladder hop to replay"
                 );
             }
-            return async move { Ok(guard) }.into_actor(self).boxed_local();
+            return async move { Ok((guard, UpgradeOutcome::of_walk(advanced, None))) }
+                .into_actor(self)
+                .boxed_local();
         };
         if budget == 0 {
             warn!(%context_id, "ladder hop budget exhausted; resuming on next access");
-            return async move { Ok(guard) }.into_actor(self).boxed_local();
+            return async move { Ok((guard, UpgradeOutcome::of_walk(advanced, None))) }
+                .into_actor(self)
+                .boxed_local();
         }
 
         let rung_bytecode_id = rung.bytecode_id;
@@ -1699,7 +1720,10 @@ impl ContextManager {
                         %context_id, %err,
                         "ladder hop blocked; proceeding with current application"
                     );
-                    return async move { Ok(guard) }.into_actor(act).boxed_local();
+                    let outcome = UpgradeOutcome::of_walk(advanced, Some(err));
+                    return async move { Ok((guard, outcome)) }
+                        .into_actor(act)
+                        .boxed_local();
                 }
             };
             let datastore = act.datastore.clone();
@@ -1750,9 +1774,13 @@ impl ContextManager {
                         }
                         .into_actor(act)
                         .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
-                            Ok(()) => {
-                                act.replay_upgrade_ladder(guard, context_id, executor, budget - 1)
-                            }
+                            Ok(()) => act.replay_upgrade_ladder(
+                                guard,
+                                context_id,
+                                executor,
+                                budget - 1,
+                                true,
+                            ),
                             Err(err) => {
                                 // Rung resolved but its migrate failed to apply:
                                 // surface ApplyFailed (not the stale resolve-time
@@ -1767,7 +1795,10 @@ impl ContextManager {
                                     %context_id, %err,
                                     "ladder hop failed, proceeding with current application"
                                 );
-                                async move { Ok(guard) }.into_actor(act).boxed_local()
+                                let outcome = UpgradeOutcome::of_walk(advanced, Some(err));
+                                async move { Ok((guard, outcome)) }
+                                    .into_actor(act)
+                                    .boxed_local()
                             }
                         })
                         .boxed_local()
@@ -1803,7 +1834,9 @@ impl ContextManager {
                 }
                 .into_actor(act)
                 .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
-                    Ok(()) => act.replay_upgrade_ladder(guard, context_id, executor, budget - 1),
+                    Ok(()) => {
+                        act.replay_upgrade_ladder(guard, context_id, executor, budget - 1, true)
+                    }
                     Err(err) => {
                         // Code-only rung swap failed: surface ApplyFailed so the
                         // context reports its real failure mode, not a stale one.
@@ -1816,7 +1849,10 @@ impl ContextManager {
                             %context_id, %err,
                             "ladder hop failed, proceeding with current application"
                         );
-                        async move { Ok(guard) }.into_actor(act).boxed_local()
+                        let outcome = UpgradeOutcome::of_walk(advanced, Some(err));
+                        async move { Ok((guard, outcome)) }
+                            .into_actor(act)
+                            .boxed_local()
                     }
                 })
                 .boxed_local()
@@ -3550,6 +3586,8 @@ fn returns_error(err: FunctionCallError) -> eyre::Report {
     }
 }
 
+#[cfg(test)]
+mod activate_tests;
 #[cfg(test)]
 mod read_as_tests;
 #[cfg(test)]

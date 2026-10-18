@@ -63,6 +63,26 @@ pub(super) enum LazyUpgradeAction {
     Replay { bound: [u8; 32] },
 }
 
+/// What a lazy upgrade did to its context. A ladder walk that committed a hop
+/// before stopping is `Advanced`: the context moved, and the stop is persisted on it.
+#[derive(Debug)]
+pub(super) enum UpgradeOutcome {
+    Advanced,
+    Unchanged,
+    Failed(eyre::Report),
+}
+
+impl UpgradeOutcome {
+    /// How a ladder walk ended, given whether it committed a hop and why it stopped.
+    pub(super) fn of_walk(advanced: bool, failure: Option<eyre::Report>) -> Self {
+        match (advanced, failure) {
+            (true, _) => Self::Advanced,
+            (false, Some(err)) => Self::Failed(err),
+            (false, None) => Self::Unchanged,
+        }
+    }
+}
+
 /// Whether this context needs an upgrade or migration, and via which mode.
 /// Caller loads bytecode by blob key, not app id - the application row may still hold OLD wasm.
 pub(super) fn maybe_lazy_upgrade(

@@ -3,7 +3,7 @@ use calimero_context_client::group::ActivateUpgradeRequest;
 use calimero_governance_store::{get_group_for_context, UpgradesRepository};
 use either::Either;
 
-use super::upgrade_gate::{maybe_lazy_upgrade, should_block};
+use super::upgrade_gate::{maybe_lazy_upgrade, should_block, UpgradeOutcome};
 use crate::ContextManager;
 
 impl Handler<ActivateUpgradeRequest> for ContextManager {
@@ -45,14 +45,16 @@ impl Handler<ActivateUpgradeRequest> for ContextManager {
                     maybe_lazy_upgrade(&act.datastore, &context_id, &current)
                 })
                 .flatten();
-            let before = crate::activation::activated_bytecode(&act.datastore, &context_id);
             let run = match pending {
                 Some(action) => act.run_lazy_upgrade(guard, context_id, executor, action),
-                None => async move { Ok(guard) }.into_actor(act).boxed_local(),
+                None => async move { Ok((guard, UpgradeOutcome::Unchanged)) }
+                    .into_actor(act)
+                    .boxed_local(),
             };
-            run.map(move |result, act, _ctx| {
-                drop(result?);
-                Ok(crate::activation::activated_bytecode(&act.datastore, &context_id) != before)
+            run.map(|result, _act, _ctx| match result?.1 {
+                UpgradeOutcome::Advanced => Ok(true),
+                UpgradeOutcome::Unchanged => Ok(false),
+                UpgradeOutcome::Failed(err) => Err(err),
             })
         });
 

@@ -1717,8 +1717,8 @@ impl Message for ResyncContextRequest {
 
 /// Switch a context to its group's target release now, as its next call would.
 ///
-/// `executor` is who the switch runs as, as for that call. Answers whether this
-/// request moved the context; `false` when it was current or the switch was blocked.
+/// `executor` is who the switch runs as, as for that call. Answers `true` when this
+/// request moved the context, `false` when nothing moved it, and the error when it failed.
 #[derive(Clone, Copy, Debug)]
 pub struct ActivateUpgradeRequest {
     pub context_id: ContextId,
