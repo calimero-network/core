@@ -391,6 +391,47 @@ fn the_namespace_owner_survives_a_concurrent_removal() {
     assert!(is_admin(&v, ZED));
 }
 
+/// The owner hands the namespace to Alice: the log so far and the transfer.
+fn transferred_to_alice() -> (Vec<Op>, Op) {
+    let ad = admins();
+    let transfer = gov(
+        OWNER,
+        &[&ad[2]],
+        OpPayload::AdminChanged {
+            new_admin: acct(ALICE),
+        },
+    );
+    let mut log = ad;
+    log.push(transfer.clone());
+    (log, transfer)
+}
+
+#[test]
+fn an_owner_that_handed_the_namespace_over_loses_its_concurrent_ops() {
+    let (mut log, transfer) = transferred_to_alice();
+    let removal = remove(ALICE, &[&transfer], OWNER);
+    let by_old_owner = add(OWNER, &[&transfer], YARA, GroupMemberRole::Member);
+    log.extend([removal.clone(), by_old_owner.clone()]);
+
+    assert!(
+        void(&log).contains(&by_old_owner.id()),
+        "an op made after handing ownership over is not the owner's"
+    );
+}
+
+#[test]
+fn the_incoming_owner_survives_a_concurrent_removal() {
+    let (mut log, transfer) = transferred_to_alice();
+    let removal = remove(BOB, &[&transfer], ALICE);
+    let by_new_owner = add(ALICE, &[&transfer], YARA, GroupMemberRole::Member);
+    log.extend([removal.clone(), by_new_owner.clone()]);
+
+    assert!(
+        !void(&log).contains(&by_new_owner.id()),
+        "the owner at the op's cut is exempt"
+    );
+}
+
 #[test]
 fn a_demoted_admin_loses_its_concurrent_ops() {
     let ad = admins();

@@ -70,6 +70,20 @@ fn inherited_via_parent_admin_and_root_genesis_admin() {
     assert!(!v.is_member_at_cut(child, &other, Some((root, admin)), 0));
 }
 
+/// A transfer folded at the cut moves the root carve-out from the founder `root` names to its heir.
+#[test]
+fn the_root_carve_out_follows_a_folded_transfer() {
+    let root = ContextGroupId::from([9u8; 32]);
+    let founder = AccountId::from([0xAA; 32]);
+    let heir = AccountId::from([0xBB; 32]);
+    let v = AclView {
+        root_admin: Some(heir),
+        ..Default::default()
+    };
+    assert!(!v.is_member_at_cut(root, &founder, Some((root, founder)), 0));
+    assert!(v.is_member_at_cut(root, &heir, Some((root, founder)), 0));
+}
+
 /// An explicit grant is authoritative, including a grant of nothing.
 ///
 /// `MemberCapabilitySet { capabilities: empty }` is how an admin revokes every
