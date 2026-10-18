@@ -3439,6 +3439,22 @@ mod tests {
             );
         }
 
+        #[tokio::test]
+        async fn drain_deletes_a_record_it_cannot_reconstruct() {
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            let repo = AbsorbRepository::new(&store);
+            let mut corrupt = sample_record([0xD4; 32], APP_V2);
+            corrupt.source_peer = vec![0xFF]; // not a valid PeerId
+            repo.save(&ctx, APP_V2, &corrupt).unwrap();
+
+            let noop = |_buffered: BufferedDelta| async move { Ok::<bool, eyre::Report>(true) };
+            let drained = drain_absorbed_records(&store, &ctx, noop).await.unwrap();
+
+            assert_eq!(drained, 0);
+            assert!(repo.enumerate_pending(&ctx).unwrap().is_empty());
+            assert!(!repo.has_any(&ctx, APP_V2).unwrap());
+        }
+
         /// A FUTURE-schema delta — `producing == v2` (the target), node still
         /// behind on `loaded == v1 < target` — must be SKIPPED (the binary can't
         /// read it yet, never translate). Once the node advances so
