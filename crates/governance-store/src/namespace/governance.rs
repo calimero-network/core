@@ -41,6 +41,8 @@ use super::dag::{NamespaceDagService, NamespaceHead};
 use super::op_log::NamespaceOpLogService;
 use super::retry::{NamespaceRetryService, RetryCandidate};
 
+#[cfg(test)]
+mod retry_loop_tests;
 mod voided;
 
 use self::voided::may_void_others;
@@ -2374,7 +2376,7 @@ impl<'a> NamespaceGovernance<'a> {
         // A key that arrives late replays ops that may include a removal, or ops a
         // removal voids; what they wrote is rebuilt once, after all of them.
         if group_applied > 0 && depth == 0 {
-            self.reconcile_voided(None)?;
+            failure = failure.or(self.reconcile_voided(None).err());
         }
 
         failure.map_or(Ok(retry_divergence), Err)
