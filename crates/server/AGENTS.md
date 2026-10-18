@@ -314,6 +314,12 @@ covers the token path.
 
 `POST /admin-api/contexts/{id}/presence-intents` (`admin/handlers/context/presence_intent.rs`) is how an account with no node publishes ephemeral presence. It sits on the public `delegated_execution_routes()` router with the other intents routes: the device's signature over the `PresenceStatement` is the credential, and the certificate in `authorProof` ties the device to its account. The handler only rebuilds the update (the context from the path, the author from the certificate's key, so a client cannot name another) and hands it to `NodeClient::publish_delegated_ephemeral`, which makes every decision. Each `DelegatedPresenceError` has its own status (`status_for`). It is not `/intents`: presence runs nothing, spends no warrant nonce and changes no state.
 
+## Direct admission
+
+`POST /admin-api/namespaces/{id}/admit` (`admin/handlers/namespaces/admit_join.rs`) publishes a join a keyholder with no node signed. It sits on the public router on every node (`admission_routes()` in `admin/service.rs`), not behind `delegated_access`: its caller holds a device key and an invitation and nothing on this node, the joiner's signature is the authorization, and the inviter's signed `admitters` list is this node's consent. Gating it on the relay flag would make a peer-to-peer join cloud-only.
+
+Because the caller chooses what a request costs, the handler refuses cheapest first and before anything is signed or published: this node named in `admitters` (a forged list only passes this and fails the invitation check), then decode, join-only, `op.validate()` bounds, the op's invitation is the one presented, the op signature, `validate_open_invitation`, and last a join already applied here (op log or the joiner's nonce window, the two halves the apply guards a relayed join with) answers `published: false` without relaying again, since each relay is a new envelope on every peer's DAG. Keep that order when adding a check. `tests/route_manifest.rs::direct_admission_is_on_the_public_router` fails if the route moves back behind the guard.
+
 ## Client key bindings
 
 A client key minted by `POST /admin/client-key` with `context_id` or `application_id` is bound.
@@ -374,7 +380,7 @@ sealed under the session and responses stream back in sealed frames. Seven rules
   `InnerScope::Uncredentialed` (set in `lib.rs` when auth is not embedded):
   `merod` guards nothing itself there, and the proxy sees only `POST /sealed/v2`,
   so an opened request for any route outside `UNCREDENTIALED_ADMIN_PATHS` (plus
-  `.../intents` with `delegated_access`) is refused inside the envelope with
+  `/namespaces/{id}/admit` always, and `.../intents` with `delegated_access`) is refused inside the envelope with
   `sealed_route_unguarded`. Matched exactly, never by prefix. Keep the list in
   step with the public router in `admin/service.rs`: a route added there is not
   sealable in proxy mode until it is added here, which is the safe direction.
@@ -481,7 +487,7 @@ request re-stamps it.
   `CALIMERO_WEBUI_SHA256`. A local archive in `CALIMERO_WEBUI_SRC` is verified
   only if you pass one, and a local directory is never hashed. Bumping the dashboard
   means updating the version and sha256 constants together
-- Admin API requires authentication
+- Admin API requires authentication, except the public router: probes, the public TEE routes, direct admission (always) and delegated execution (with `delegated_access`)
 - JSON-RPC follows JSON-RPC 2.0 spec
 - WebSocket requires context subscription
 - A WebSocket has no CORS, so `ws_handler` asks `OriginGuard::admits` itself, in every auth mode.
