@@ -204,10 +204,6 @@ fn classify_report_readiness(
     classify_publish_readiness(authoritative_ack, report.acked_by.len(), ackable_members)
 }
 
-/// How deep a key-arrival replay may nest: not at all, since what an op it replays opens
-/// joins its own next round.
-const MAX_RETRY_REENTRY: u8 = 0;
-
 /// What [`NamespaceGovernance::root_op_side_effects`] observed while running an
 /// op's effects, for the caller to fold into its own report.
 ///
@@ -903,16 +899,7 @@ impl<'a> NamespaceGovernance<'a> {
                             held = true;
                             unread = true;
                             applied = None;
-                            keep_bytes &= self.admit_unreadable(op)?;
-                            // Over the budget it keeps only its place, which no replay can apply.
-                            if keep_bytes {
-                                HeldOps::new(self.store, self.namespace_id)
-                                    .hold(delta_id, group_id_typed.to_bytes())?;
-                            }
-                            if keep_bytes && key_rotation.is_some() {
-                                DeferredRotations::new(self.store, self.namespace_id)
-                                    .defer(delta_id, op_sequence)?;
-                            }
+                            keep_bytes &= self.hold(op, delta_id, op_sequence)?;
                         }
                         Err(e) => return Err(e),
                     }
@@ -1030,6 +1017,22 @@ impl<'a> NamespaceGovernance<'a> {
             "holding an op refused at a cut this node cannot read whole; it is judged once \
              the ops it cannot read yet are"
         );
+        let keep_bytes = self.hold(op, delta_id, op_sequence)?;
+        Ok(AppliedPayload {
+            keep_bytes,
+            parked: keep_bytes.then_some(Parked::Undecided),
+            ..AppliedPayload::default()
+        })
+    }
+
+    /// Keep `op` unjudged for the replay, its rotation deferred to its sequence; `false`
+    /// when over the budget, where it keeps only its place, which no replay can apply.
+    fn hold(
+        &self,
+        op: &SignedNamespaceOp,
+        delta_id: [u8; 32],
+        op_sequence: u64,
+    ) -> EyreResult<bool> {
         let keep_bytes = self.admit_unreadable(op)?;
         if let (
             true,
@@ -1046,11 +1049,7 @@ impl<'a> NamespaceGovernance<'a> {
                     .defer(delta_id, op_sequence)?;
             }
         }
-        Ok(AppliedPayload {
-            keep_bytes,
-            parked: keep_bytes.then_some(Parked::Undecided),
-            ..AppliedPayload::default()
-        })
+        Ok(keep_bytes)
     }
 
     /// Like [`Self::sign_apply_and_publish`] but also hands back the signed op,
@@ -2191,7 +2190,8 @@ impl<'a> NamespaceGovernance<'a> {
             );
         }
 
-        self.retry_encrypted_ops_for_group_at_depth(group_id, depth)
+        self.replay(group_id, depth)
+            .map(|replay| replay.divergence)
             .map_err(|e| eyre::eyre!("retry_encrypted_ops_for_group: {e}"))
     }
 
@@ -2221,17 +2221,7 @@ impl<'a> NamespaceGovernance<'a> {
         &self,
         group_id: [u8; 32],
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        self.retry_encrypted_ops_for_group_at_depth(group_id, 0)
-    }
-
-    /// [`Self::retry_encrypted_ops_for_group`], from inside the replay chain `depth`
-    /// levels deep, which [`MAX_RETRY_REENTRY`] bounds.
-    fn retry_encrypted_ops_for_group_at_depth(
-        &self,
-        group_id: [u8; 32],
-        depth: u8,
-    ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        Ok(self.replay(group_id, depth)?.divergence)
+        Ok(self.replay(group_id, 0)?.divergence)
     }
 
     /// Did replaying a held op fail only because it is still held: undecidable,
@@ -2968,7 +2958,7 @@ impl<'a> NamespaceGovernance<'a> {
     /// and a partial one.
     ///
     /// `depth` bounds re-entry: two of these effects call back into the retry
-    /// machinery that called us. See [`MAX_RETRY_REENTRY`].
+    /// machinery that called us, and a replay at `depth > 0` starts none.
     ///
     /// # Errors
     ///
@@ -3250,7 +3240,10 @@ impl<'a> NamespaceGovernance<'a> {
             RootOp::GroupCreated { group_id, .. } => {
                 // The create wrote the group's meta and admin row, so its buffered ops and a
                 // deferred `KeyDelivery` can land; a replayed create joins the running replay.
-                match self.retry_encrypted_ops_for_group_at_depth(group_id.to_bytes(), depth) {
+                match self
+                    .replay(group_id.to_bytes(), depth)
+                    .map(|replay| replay.divergence)
+                {
                     Ok(divergence) => {
                         if divergence.is_some() {
                             effects.divergence = divergence;

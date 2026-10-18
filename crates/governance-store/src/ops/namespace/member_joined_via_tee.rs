@@ -15,7 +15,7 @@
 //! place.
 
 use super::context::NamespaceApplyCtx;
-use crate::membership::TeeAttestationClaims;
+use crate::membership::{MembershipPolicy, TeeAttestationClaims};
 use crate::{DenyListRepository, MembershipError, MembershipRepository};
 use calimero_context_client::local_governance::{JoinAccountCredential, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
@@ -73,7 +73,8 @@ pub(crate) fn apply(
     }
     let member_account = account.statement.account;
 
-    let policy_gate = ctx.membership_policy_for(group_id);
+    let (parents, authorizer) = ctx.apply_auth();
+    let policy_gate = MembershipPolicy::new(store, group_id).with_apply_auth(parents, authorizer);
     // The verifier vouched for the quote, so its key resolves to the account
     // whose authority is checked: an admin, or an already-admitted TEE. A key
     // bound to no account here vouches for nobody.

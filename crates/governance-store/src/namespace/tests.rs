@@ -21,6 +21,7 @@ use calimero_store::types;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
+use super::retry::{order_causally, ReplayCandidate, RetryCandidate};
 use super::NamespaceGovernance;
 use crate::ops::group::context::seed_target_application_row;
 use crate::{
@@ -1140,6 +1141,28 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
     assert_eq!(selected[0].key_id.to_bytes(), [0x11; 32]);
 }
 
+/// The readable ops of `group` a replay would re-drive, in the order it applies them.
+fn group_retry_candidates(
+    store: &Store,
+    namespace_id: NamespaceId,
+    group: [u8; 32],
+) -> Vec<RetryCandidate> {
+    let candidates = NamespaceRetryService::new(store, namespace_id)
+        .collect_replay_candidates(&std::collections::BTreeSet::from([group]))
+        .unwrap()
+        .into_iter()
+        .filter(|candidate| matches!(candidate, ReplayCandidate::Group(_)))
+        .collect();
+    order_causally(&NamespaceOpLogService::new(store, namespace_id), candidates)
+        .unwrap()
+        .into_iter()
+        .filter_map(|candidate| match candidate {
+            ReplayCandidate::Group(candidate) => Some(candidate),
+            ReplayCandidate::Root { .. } => None,
+        })
+        .collect()
+}
+
 #[test]
 fn namespace_retry_service_collects_only_retryable_group_ops() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
@@ -1206,10 +1229,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
     governance.store_operation(&group_b_op).unwrap();
     governance.store_operation(&root_op).unwrap();
 
-    let retry = NamespaceRetryService::new(&store, namespace_id.into());
-    let retryable = retry
-        .collect_retry_candidates_for_group(group_a.to_bytes())
-        .unwrap();
+    let retryable = group_retry_candidates(&store, namespace_id.into(), group_a.to_bytes());
 
     assert_eq!(retryable.len(), 1, "expected only one retryable op");
     match &retryable[0].signed_op.op {
@@ -1273,9 +1293,7 @@ fn namespace_retry_service_skips_the_nodes_own_ops() {
     gov.store_operation(&mk(&own_sk, 1)).unwrap();
     gov.store_operation(&mk(&peer_sk, 1)).unwrap();
 
-    let candidates = NamespaceRetryService::new(&store, namespace_id.into())
-        .collect_retry_candidates_for_group(group.to_bytes())
-        .unwrap();
+    let candidates = group_retry_candidates(&store, namespace_id.into(), group.to_bytes());
 
     assert_eq!(
         candidates.len(),
@@ -1402,10 +1420,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
          sort from a missing sort, so this test would silently pass on a regression."
     );
 
-    let retry = NamespaceRetryService::new(&store, namespace_id.into());
-    let candidates = retry
-        .collect_retry_candidates_for_group(group.to_bytes())
-        .unwrap();
+    let candidates = group_retry_candidates(&store, namespace_id.into(), group.to_bytes());
 
     assert_eq!(candidates.len(), 4, "expected 4 retry candidates");
 
@@ -12395,7 +12410,7 @@ fn a_sealed_root_op_is_given_the_ack_budget_its_cleartext_variant_earns() {
 /// This also pins that the chain TERMINATES, and that is not incidental. The
 /// replay has no nonce dedup — it re-feeds every sealed root op in the log — so
 /// a `KeyDelivery` whose effect re-drives its own group reaches this same op
-/// again one level down, forever. Raise `MAX_RETRY_REENTRY` and this test does
+/// again one level down, forever. Let a replay at `depth > 0` nest and this test does
 /// not fail, it aborts the process on a stack overflow, from an op any peer can
 /// send. That is why #3850 deferred wiring these effects in rather than adding
 /// the call and moving on.
@@ -14942,9 +14957,7 @@ fn causally_independent_retry_candidates_fold_by_signer_then_nonce() {
     ))
     .unwrap();
 
-    let candidates = NamespaceRetryService::new(&store, namespace_id.into())
-        .collect_retry_candidates_for_group(namespace_id)
-        .unwrap();
+    let candidates = group_retry_candidates(&store, namespace_id.into(), namespace_id);
 
     assert_eq!(
         candidates.len(),
@@ -15025,17 +15038,11 @@ fn the_retry_replay_order_is_causal_then_signer_and_nonce() {
         vec![&descendant, &second, &ancestor, &first],
         vec![&first, &ancestor, &second, &descendant],
     ] {
-        let candidates = input
-            .iter()
-            .map(|op| super::retry::RetryCandidate {
-                signed_op: (*op).clone(),
-                group_key: [0u8; 32],
-            })
-            .collect();
-        let ordered: Vec<_> = super::retry::order_causally(&op_log, candidates)
+        let candidates = input.into_iter().cloned().collect();
+        let ordered: Vec<_> = order_causally(&op_log, candidates)
             .unwrap()
             .iter()
-            .map(|c| c.signed_op.content_hash().unwrap())
+            .map(|op| op.content_hash().unwrap())
             .collect();
         assert_eq!(
             ordered, expected,

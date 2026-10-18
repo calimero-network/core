@@ -52,12 +52,6 @@ pub(crate) trait Replayable {
     }
 }
 
-impl Replayable for RetryCandidate {
-    fn signed_op(&self) -> &SignedNamespaceOp {
-        &self.signed_op
-    }
-}
-
 impl Replayable for SignedNamespaceOp {
     fn signed_op(&self) -> &SignedNamespaceOp {
         self
@@ -402,20 +396,6 @@ impl<'a> NamespaceRetryService<'a> {
             );
         }
         Ok(candidates)
-    }
-
-    pub fn collect_retry_candidates_for_group(
-        &self,
-        group_id: [u8; 32],
-    ) -> EyreResult<Vec<RetryCandidate>> {
-        let candidates = self.group_candidates(group_id)?;
-        let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
-        // Replay in causal order: an op whose ancestor is in the same batch
-        // applies after it, and `(signer, nonce)` decides the rest — so a
-        // signer's own ops keep publish order (a higher nonce applying first
-        // would window the lower one away as a duplicate) and two replicas
-        // order concurrent ops identically.
-        order_causally(&op_log, candidates)
     }
 
     /// The readable ops of `group_id` this node did not sign, unordered.

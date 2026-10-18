@@ -4,19 +4,16 @@
 use std::collections::{BTreeSet, HashSet};
 
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
-use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::identity::PublicKey;
 use eyre::Result as EyreResult;
 
 use super::super::op_log::NamespaceOpLogService;
 use super::super::retry::{order_causally, NamespaceRetryService, ReplayCandidate, RetryCandidate};
-use super::MAX_RETRY_REENTRY;
 use super::{ensure_subgroup_sealed_carries_a_join, open_relayed_join, NamespaceGovernance};
 use crate::authorizer::AtCutAuthorizer;
 use crate::held_ops::HeldOps;
 use crate::metrics::record_namespace_retry_event;
 use crate::void_ledger::Parked;
-use crate::{load_nonce_window, DivergenceReport, GroupKeyring, NamespaceRepository};
+use crate::{load_nonce_window, DivergenceReport, GroupKeyring};
 
 /// What a key-arrival replay achieved.
 #[derive(Default)]
@@ -49,7 +46,7 @@ impl NamespaceGovernance<'_> {
     /// Replay every op this node can open, root and group, in one causal order, in rounds
     /// while one finds an op not seen before (a key or group a landed op opens) or lands one.
     pub(super) fn replay(&self, target: [u8; 32], depth: u8) -> EyreResult<Replay> {
-        if depth > MAX_RETRY_REENTRY {
+        if depth > 0 {
             tracing::debug!(
                 namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                 depth,
@@ -62,10 +59,6 @@ impl NamespaceGovernance<'_> {
         let ns = self.namespace_id.to_bytes();
         let retry = NamespaceRetryService::new(self.store, self.namespace_id);
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
-        let own = NamespaceRepository::new(self.store)
-            .identity(&ContextGroupId::from(ns))
-            .map_err(|e| eyre::eyre!("resolve own namespace identity: {e}"))?
-            .map(|(pk, _sk)| pk);
 
         let mut replay = Replay::default();
         let mut opened = BTreeSet::from([target]);
@@ -102,7 +95,7 @@ impl NamespaceGovernance<'_> {
                 let id = candidate.id()?;
                 let step = match &candidate {
                     ReplayCandidate::Root { signed_op, key } => {
-                        self.replay_root(signed_op, key, own.as_ref(), depth, &mut replay)?
+                        self.replay_root(signed_op, key, depth, &mut replay)?
                     }
                     ReplayCandidate::Group(candidate) => {
                         self.replay_group(candidate, &mut replay)?
@@ -134,12 +127,11 @@ impl NamespaceGovernance<'_> {
         &self,
         parked: &SignedNamespaceOp,
         key: &[u8; 32],
-        own: Option<&PublicKey>,
         depth: u8,
         replay: &mut Replay,
     ) -> EyreResult<Step> {
         // This node signed it, so it held the key and applied it then.
-        if own == Some(&parked.signer) {
+        if self.authored_here(parked)? {
             self.settle_parked(parked, true);
             return Ok(Step::settled());
         }
@@ -345,8 +337,9 @@ impl NamespaceGovernance<'_> {
 fn group_opened_by(root: &RootOp) -> Option<[u8; 32]> {
     match root {
         RootOp::OnBehalf { op, .. } | RootOp::RootGuarded { op, .. } => group_opened_by(op),
-        RootOp::KeyDelivery { group_id, .. } => Some(group_id.to_bytes()),
-        RootOp::GroupCreated { group_id, .. } => Some(group_id.to_bytes()),
+        RootOp::KeyDelivery { group_id, .. } | RootOp::GroupCreated { group_id, .. } => {
+            Some(group_id.to_bytes())
+        }
         _ => None,
     }
 }
