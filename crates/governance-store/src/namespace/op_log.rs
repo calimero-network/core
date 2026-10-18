@@ -551,6 +551,21 @@ impl<'a> NamespaceOpLogService<'a> {
     /// instead is what made the same fan-in blind a second time, once the
     /// admission became a sealed op.
     pub fn collect_root_ops(&self) -> EyreResult<Vec<SignedNamespaceOp>> {
+        self.collect_ops(|op| {
+            matches!(
+                op,
+                NamespaceOp::Root(_)
+                    | NamespaceOp::RootSealed { .. }
+                    | NamespaceOp::RootSealedForGroup { .. }
+            )
+        })
+    }
+
+    /// Every op in this namespace's log that `keep` selects, oldest first.
+    pub(crate) fn collect_ops(
+        &self,
+        keep: impl Fn(&NamespaceOp) -> bool,
+    ) -> EyreResult<Vec<SignedNamespaceOp>> {
         let mut entries = Vec::new();
         let handle = self.store.handle();
         let start =
@@ -635,12 +650,7 @@ impl<'a> NamespaceOpLogService<'a> {
             let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
                 continue;
             };
-            if matches!(
-                signed_op.op,
-                NamespaceOp::Root(_)
-                    | NamespaceOp::RootSealed { .. }
-                    | NamespaceOp::RootSealedForGroup { .. }
-            ) {
+            if keep(&signed_op.op) {
                 entries.push(signed_op);
             }
         }

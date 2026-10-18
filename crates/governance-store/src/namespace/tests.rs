@@ -13075,6 +13075,170 @@ async fn a_relayed_rejoin_at_the_first_joins_nonce_applies() {
     );
 }
 
+/// A store written before the spender rows existed holds none, so the first replay
+/// after an upgrade must still know which ops this node already applied.
+#[actix::test]
+async fn an_upgraded_store_applies_none_of_its_ops_again() {
+    use calimero_context_client::local_governance::RootOp;
+
+    let (store, _node_client, _ack_router, ns_id, admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let members = MembershipRepository::new(&store);
+    let held = [0x5Au8; 32];
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&held)
+        .expect("hold a namespace key");
+
+    let admin_sk = PrivateKey::from([0x71u8; 32]);
+    let admin = crate::test_fixtures::enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    members
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+        .expect("seat another admin");
+    let added = crate::test_fixtures::account_for(&PrivateKey::from([0x72u8; 32]).public_key());
+    let head = gov.read_head_record().expect("head");
+    let add = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        head.parent_hashes,
+        head.next_nonce,
+        NamespaceOp::Group {
+            group_id: ns_gid,
+            key_id: GroupKeyring::key_id_for(&held).into(),
+            encrypted: GroupKeyring::encrypt_op(
+                &held,
+                &GroupOp::MemberAdded {
+                    member: added,
+                    role: GroupMemberRole::Member,
+                },
+            )
+            .expect("seal"),
+            key_rotation: None,
+            registers: None,
+        },
+    )
+    .expect("sign");
+    gov.apply_signed_op(&add).expect("the add applies");
+
+    let joiner_sk = PrivateKey::from([0x73u8; 32]);
+    let joiner = crate::test_fixtures::account_for(&joiner_sk.public_key());
+    let (signed_invitation, admitter_endorsement) =
+        endorsed_invitation(&admitter_sk, ns_id, &joiner);
+    let mut join = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedAt {
+            member: joiner,
+            signed_invitation,
+            joined_at: 0,
+            account: crate::test_fixtures::real_join_account(&joiner_sk.public_key()),
+        }),
+    )
+    .expect("the joiner signs");
+    join.admitter_endorsement = Some(admitter_endorsement);
+    let parents = gov.read_head_record().expect("head").parent_hashes;
+    let relay = |signer: u8| {
+        SignedNamespaceOp::sign(
+            &PrivateKey::from([signer; 32]),
+            ns_id,
+            parents.clone(),
+            gov.read_head_record().expect("head").next_nonce,
+            crate::test_fixtures::relay_seal_for_test(&store, ns_gid, &join),
+        )
+        .expect("sign the envelope")
+    };
+    gov.apply_signed_op(&relay(0x74)).expect("the join applies");
+
+    for account in [added, joiner] {
+        members
+            .remove_member(&ns_gid, &account)
+            .expect("an admin removes the member");
+    }
+    crate::nonce_spenders::NonceSpenders::new(&store, ns_id)
+        .clear()
+        .expect("drop the rows a store before the upgrade never had");
+    crate::set_local_gov_nonce(&store, &ns_gid, &joiner_sk.public_key(), 1)
+        .expect("the window that build kept for a relayed join");
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+        .expect("the replay runs");
+
+    for (account, what) in [(added, "an add"), (joiner, "a relayed join")] {
+        assert!(
+            !members
+                .is_member(&ns_gid, &account)
+                .expect("read membership"),
+            "{what} applied before the upgrade was applied again"
+        );
+    }
+    // A copy concurrent with the join folds as logged, as on a node that kept the rows.
+    let backdated = relay(0x75);
+    gov.apply_signed_op(&backdated).expect("the copy is logged");
+    assert!(
+        !crate::unified_op_decode::OpenedNamespaceOp::open(&store, &backdated).refused,
+        "a copy of a join relayed before the upgrade was judged as a new join"
+    );
+}
+
+/// A build before parked marks logged an op it could not read with no mark and no
+/// nonce spent, so the upgrade must leave it to apply once its key arrives.
+#[actix::test]
+async fn an_op_an_older_store_left_unread_applies_when_its_key_arrives() {
+    let (store, _node_client, _ack_router, ns_id, _admitter_sk, _tmp, _node_msgs) =
+        crate::test_fixtures::namespace_publish_fixture().await;
+    let ns_gid = ContextGroupId::from(ns_id.to_bytes());
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let members = MembershipRepository::new(&store);
+    let admin_sk = PrivateKey::from([0x76u8; 32]);
+    let admin = crate::test_fixtures::enrol_member(&store, &ns_gid, &admin_sk.public_key());
+    members
+        .add_member(&ns_gid, &admin, GroupMemberRole::Admin)
+        .expect("seat another admin");
+
+    let late = [0x77u8; 32];
+    let added = crate::test_fixtures::account_for(&PrivateKey::from([0x78u8; 32]).public_key());
+    let head = gov.read_head_record().expect("head");
+    let add = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        head.parent_hashes.clone(),
+        head.next_nonce,
+        NamespaceOp::Group {
+            group_id: ns_gid,
+            key_id: GroupKeyring::key_id_for(&late).into(),
+            encrypted: GroupKeyring::encrypt_op(
+                &late,
+                &GroupOp::MemberAdded {
+                    member: added,
+                    role: GroupMemberRole::Member,
+                },
+            )
+            .expect("seal"),
+            key_rotation: None,
+            registers: None,
+        },
+    )
+    .expect("sign");
+    NamespaceOpLogService::new(&store, ns_id)
+        .store_signed_operation(&add)
+        .expect("log the op unread");
+    super::NamespaceDagService::new(&store, ns_id)
+        .advance_dag_head(add.content_hash().expect("hash"), &head.parent_hashes, 0)
+        .expect("advance the head past it");
+
+    let _ = GroupKeyring::new(&store, ns_gid)
+        .store_key(&late)
+        .expect("the key arrives");
+    super::governance::retry_encrypted_ops_for_group(&store, ns_id, ns_id.to_bytes())
+        .expect("the replay runs");
+    assert!(
+        members.is_member(&ns_gid, &added).expect("read membership"),
+        "an op logged unread before the upgrade was taken as applied"
+    );
+}
+
 /// A re-seal backdated to the join's own parents is concurrent with it, so it folds as
 /// on every node, whatever arrived first, and never applies the join a second time.
 #[actix::test]

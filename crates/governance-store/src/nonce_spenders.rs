@@ -1,6 +1,7 @@
 //! Which ops spent each `(group, signer, nonce)` of a namespace, and which envelopes
 //! carried each relayed join: what tells a replay apart from a different op reusing it.
 
+use calimero_context_client::local_governance::NamespaceOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
 use calimero_primitives::identity::PublicKey;
@@ -10,6 +11,8 @@ use calimero_store::types::GenericData;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use sha2::{Digest, Sha256};
+
+use crate::{load_nonce_window, open_relayed_join_for_read, NamespaceOpLogService};
 
 const NO_LIMIT: usize = usize::MAX; // a read lists every spender of one key
 
@@ -30,6 +33,7 @@ impl<'a> NonceSpenders<'a> {
         signer: &PublicKey,
         nonce: u64,
     ) -> EyreResult<Vec<[u8; 32]>> {
+        self.ensure_backfilled()?;
         self.read(nonce_head(group, signer, nonce))
     }
 
@@ -46,6 +50,7 @@ impl<'a> NonceSpenders<'a> {
 
     /// The relay envelopes recorded as carrying the join `inner_id`.
     pub(crate) fn copies(&self, inner_id: [u8; 32]) -> EyreResult<Vec<[u8; 32]>> {
+        self.ensure_backfilled()?;
         self.read(join_head(inner_id))
     }
 
@@ -58,6 +63,52 @@ impl<'a> NonceSpenders<'a> {
     /// rejoin that replays the log does not take each op for its own replay.
     pub(crate) fn clear(&self) -> EyreResult<()> {
         crate::void_ledger::delete_scope(self.store, self.scope())
+    }
+
+    /// Record, once, the ops a log written before these rows existed applied: those
+    /// whose nonce its window holds, since that window recorded a nonce only on apply.
+    fn ensure_backfilled(&self) -> EyreResult<()> {
+        let marker = self.key(truncated(&[b"backfilled"]), [0; 32]);
+        if self.store.handle().has(&marker)? {
+            return Ok(());
+        }
+        let ops = NamespaceOpLogService::new(self.store, self.namespace).collect_ops(|op| {
+            matches!(
+                op,
+                NamespaceOp::Group { .. } | NamespaceOp::RootRelaySealed { .. }
+            )
+        })?;
+        let applied = |group: &ContextGroupId, signer: &PublicKey, nonce: u64| {
+            load_nonce_window(self.store, group, signer).map(|window| window.contains(nonce))
+        };
+        let namespace = ContextGroupId::from(self.namespace.to_bytes());
+        for op in ops {
+            let delta_id = op.content_hash()?;
+            match &op.op {
+                NamespaceOp::Group { group_id, .. } => {
+                    if applied(group_id, &op.signer, op.nonce)? {
+                        self.record(group_id, &op.signer, op.nonce, delta_id)?;
+                    }
+                }
+                // A relayed join spent the joiner's nonce in the namespace's window.
+                NamespaceOp::RootRelaySealed { key_id, encrypted } => {
+                    if let Ok(Some(inner)) = open_relayed_join_for_read(
+                        self.store,
+                        self.namespace,
+                        key_id.as_bytes(),
+                        encrypted,
+                    ) {
+                        if applied(&namespace, &inner.signer, inner.nonce)? {
+                            self.record_copy(inner.content_hash()?, delta_id)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let built = GenericData::from(Slice::from(Vec::new()));
+        self.store.handle().put(&marker, &built)?;
+        Ok(())
     }
 
     /// One row per op, so a key many ops share costs a write each, not a rewrite.
