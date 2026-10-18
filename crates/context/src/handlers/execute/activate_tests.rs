@@ -2,12 +2,14 @@
 //! `ContextManager` over the write-gate fixture.
 
 use calimero_context_client::group::ActivateUpgradeRequest;
+use calimero_context_client::messages::{ExecuteRequest, WriteSource};
 use calimero_governance_store::{MetaRepository, UpgradeLadderRepository};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupMetaValue, LadderRung};
 
-use super::state_write_gate_tests::{fixture, Fixture, LocalRole};
+use super::state_write_gate_tests::{fixture, fixture_switching, Fixture, LocalRole};
+use crate::test_support::eventually;
 
 async fn member() -> Fixture {
     fixture(LocalRole::Role(GroupMemberRole::Member)).await
@@ -26,6 +28,10 @@ async fn activate(fx: &Fixture, executor: PublicKey) -> eyre::Result<bool> {
 
 fn marker(fx: &Fixture) -> Option<[u8; 32]> {
     crate::activation::activated_bytecode(&fx.store, &fx.context_id)
+}
+
+fn group_target(fx: &Fixture) -> [u8; 32] {
+    edit_meta(fx, |meta| meta.target.bytecode_id)
 }
 
 /// Rewrite the group's meta, answering what `edit` returns.
@@ -82,4 +88,43 @@ async fn seeding_a_marker_less_context_is_not_a_switch() {
 
     assert!(!moved, "no hop was taken");
     assert_eq!(marker(&fx), Some(row), "the seed still binds the context");
+}
+
+/// A switch made by execute's own lazy path, as an xcall or event handler makes
+/// it, still asks the node to replay what it held back for the context.
+#[actix::test]
+async fn a_switch_inside_execute_replays_held_deltas() {
+    let mut fx = fixture_switching(LocalRole::Role(GroupMemberRole::Member)).await;
+    let target = group_target(&fx);
+
+    let _outcome = fx
+        .harness
+        .manager
+        .send(ExecuteRequest {
+            context: fx.context_id,
+            executor: fx.executor,
+            method: "set".to_owned(),
+            payload: Vec::new(),
+            atomic: None,
+            xcall_origin: None,
+            xcall_depth: 0,
+            delegation: None,
+            read_as: None,
+            tee_trigger: None,
+            event_handler: false,
+            write_source: WriteSource::Local,
+            governance_position: None,
+        })
+        .await
+        .expect("mailbox");
+    assert_eq!(marker(&fx), Some(target), "the call switched the context");
+
+    let mut drains = Vec::new();
+    let asked = eventually(|| {
+        drains.extend(fx.harness.drains());
+        !drains.is_empty()
+    })
+    .await;
+    assert!(asked, "the switch asked for no replay");
+    assert!(drains.iter().all(|drained| *drained == fx.context_id));
 }

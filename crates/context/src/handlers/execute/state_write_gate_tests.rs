@@ -112,13 +112,30 @@ pub(super) async fn fixture_running(
     role: LocalRole,
     module: impl FnOnce(AccountId) -> String,
 ) -> Fixture {
+    fixture_with(role, module, false).await
+}
+
+/// [`fixture`], on a node that can switch the context's release.
+pub(super) async fn fixture_switching(role: LocalRole) -> Fixture {
+    fixture_with(role, |_| MODULE.to_owned(), true).await
+}
+
+async fn fixture_with(
+    role: LocalRole,
+    module: impl FnOnce(AccountId) -> String,
+    switching: bool,
+) -> Fixture {
     global_runtime();
     let holds_marker = !matches!(role, LocalRole::Outsider);
     let store = Store::new(Arc::new(InMemoryDB::owned()));
     NodeDeviceRepository::new(&store)
         .provision_account_root()
         .expect("provision the account root an initialised node has");
-    let harness = actor::over(store.clone()).await;
+    let harness = if switching {
+        actor::over_switching(store.clone()).await
+    } else {
+        actor::over(store.clone()).await
+    };
 
     let group_id = ContextGroupId::from([0x6A; 32]);
     let executor_sk = PrivateKey::from([0x22; 32]);
