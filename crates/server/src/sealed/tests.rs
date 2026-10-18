@@ -69,6 +69,7 @@ fn app(
         .route("/admin-api/contexts", get(echo).delete(echo))
         .route("/admin-api/contexts/{context_id}/intents", post(echo))
         .route("/admin-api/groups/{group_id}/context-intents", post(echo))
+        .route("/admin-api/namespaces/{namespace_id}/admit", post(echo))
         .route(
             "/admin-api/groups/{group_id}/governance-intents",
             post(echo),
@@ -1098,6 +1099,12 @@ async fn delegated_execution_is_reachable_sealed_only_where_it_is_public() {
     let (status, body) = sealed_call(&transport, "POST", &create, b"").await;
     assert_eq!(status, 403, "and delegated context creation with them");
     assert_eq!(error_code(&body), "sealed_route_unguarded");
+
+    // Direct admission is public on every node, so it is sealable on every node.
+    let admit = format!("/admin-api/namespaces/{CONTEXT}/admit");
+    let (status, body) = sealed_call(&transport, "POST", &admit, b"join").await;
+    assert_eq!(status, 200, "a signed join carries its own authorization");
+    assert_eq!(body, b"join");
 }
 
 #[test]
@@ -1119,6 +1126,7 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         format!("/admin-api/contexts/{CONTEXT}/intents"),
         format!("/admin-api/groups/{CONTEXT}/context-intents"),
         format!("/admin-api/groups/{CONTEXT}/governance-intents"),
+        format!("/admin-api/namespaces/{CONTEXT}/admit"),
     ] {
         assert!(root.allows_inner(&allowed), "{allowed}");
     }
@@ -1150,6 +1158,12 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         format!("/admin-api/groups/{CONTEXT}/intents"),
         format!("/admin-api/contexts/{CONTEXT}/context-intents"),
         "/admin-api/groups/../context-intents".to_owned(),
+        format!("/admin-api/namespaces/{}/admit", CONTEXT.to_uppercase()),
+        format!("/admin-api/namespaces/{}/admit", &CONTEXT[1..]),
+        format!("/admin-api/namespaces/{CONTEXT}/admit/"),
+        format!("/admin-api/namespaces/{CONTEXT}/join"),
+        format!("/admin-api/namespaces/{CONTEXT}/admin"),
+        "/admin-api/namespaces/../admit".to_owned(),
         "/jsonrpc".to_owned(),
         "/auth/token".to_owned(),
     ] {

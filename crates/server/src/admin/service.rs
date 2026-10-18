@@ -502,11 +502,6 @@ pub(crate) fn setup(
             post(namespaces::join_namespace::handler),
         )
         .route(
-            "/namespaces/{namespace_id}/admit",
-            post(namespaces::admit_join::handler),
-
-        )
-        .route(
             "/namespaces/{namespace_id}/leave",
             post(namespaces::leave_namespace::handler),
         )
@@ -544,6 +539,8 @@ pub(crate) fn setup(
         .route("/ready", get(readiness_check_handler))
         .route("/is-authed", get(is_authed_handler))
         .nest("/tee", tee::service())
+        // On every node, whatever `delegated_access` says; see `admission_routes`.
+        .merge(admission_routes())
         .merge(if admin_config.delegated_access {
             info!(
                 "Delegated execution is served publicly: a warrant is the credential on \
@@ -599,6 +596,31 @@ fn delegated_execution_routes() -> Router {
             "/groups/{group_id}/governance-intents",
             post(governance_intent::handler).get(governance_intent::describe_handler),
         )
+}
+
+/// Direct admission: publish a join a keyholder signed but cannot publish
+/// itself.
+///
+/// Public on every node, and deliberately not behind `delegated_access`. Its
+/// caller holds a device key and an invitation, nothing on this node, and so
+/// nothing a guard could check: the joiner's signature over the op is the
+/// authorization, and every peer checks it again at apply
+/// (`signer == credential.statement.sign_pk`). What this node contributes is
+/// its consent to carry the op, which the inviter granted by naming it in the
+/// signed `admitters` list. A node named in no invitation refuses every
+/// request here before it decodes the op, so serving the route grants no
+/// authority. Gating it on the relay flag would make a peer-to-peer flow
+/// cloud-only: the inviter may name a peer's self-hosted node, which is not a
+/// relay and should not have to become one to admit somebody.
+///
+/// Its own function, for the same reason as [`delegated_execution_routes`]:
+/// the route is built once and mounted on exactly one router, and
+/// `tests/route_manifest.rs` checks that the protected router never names it.
+fn admission_routes() -> Router {
+    Router::new().route(
+        "/namespaces/{namespace_id}/admit",
+        post(namespaces::admit_join::handler),
+    )
 }
 
 /// Creates a router for serving static node-ui files and providing fallback to `index.html` for SPA routing.

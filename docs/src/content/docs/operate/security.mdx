@@ -159,6 +159,8 @@ never the route inside. So on such a node a sealed request may reach only what
 
 - `/admin-api/health`, `/admin-api/ready`, `/admin-api/is-authed`,
   `GET /admin-api/tee/info`, `POST /admin-api/tee/attest`;
+- `POST /admin-api/namespaces/{id}/admit`, on every node. The joiner's signed op
+  is the authorization there ([direct admission](/protocol/direct-admission/#served-without-a-credential));
 - `GET`/`POST /admin-api/contexts/{id}/intents`, when `[server.admin]
   delegated_access` is on. The warrant in the body is the credential there.
 
