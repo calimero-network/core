@@ -573,16 +573,28 @@ pub enum ContextError {
         reason: &'static str,
     },
 
-    /// A `409`: the namespace's stored target is not the application the caller
-    /// expected, so activating it would switch to a release they did not name.
-    #[error("namespace {namespace_id} targets application {actual}, not the expected {expected}")]
+    /// A `409`: a group being activated targets another application than the
+    /// caller expected, so activating it would switch to a release they did not name.
+    #[error("group {group_id} targets application {actual}, not the expected {expected}")]
     UpgradeTargetMismatch {
-        /// Hex rendering of the namespace the caller named (for the message only).
-        namespace_id: String,
+        /// Hex rendering of the group whose target differs (for the message only).
+        group_id: String,
         /// The application the caller expected.
         expected: String,
-        /// The application the namespace targets.
+        /// The application the group targets.
         actual: String,
+    },
+
+    /// A `400`: the group an activation names is a subgroup. Activation switches a
+    /// whole namespace, so it names the root.
+    #[error(
+        "{group_id} is a subgroup of namespace {namespace_id}; activate the namespace instead"
+    )]
+    NotANamespaceRoot {
+        /// Hex rendering of the group the caller named (for the message only).
+        group_id: String,
+        /// Hex rendering of the namespace it belongs to.
+        namespace_id: String,
     },
 
     /// A `400`: the group a leave names is a namespace root. Leaving it here

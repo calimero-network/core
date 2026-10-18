@@ -351,7 +351,7 @@ the path parameter — these are reproduced exactly as routed below.
 | POST | `/admin-api/groups/:group_id/upgrade` | Upgrade a group. |
 | GET | `/admin-api/groups/:group_id/upgrade/status` | Get group upgrade status. |
 | POST | `/admin-api/groups/:group_id/upgrade/retry` | Retry a group upgrade. |
-| POST | `/admin-api/groups/:namespace_id/upgrade/activate` | Switch this node's contexts of a namespace to its stored target release and replay the deltas held for them; never installs the release. Optional body field `expectedApplicationId`; `409` when it differs from the stored target. |
+| POST | `/admin-api/groups/:namespace_id/upgrade/activate` | Switch this node's contexts of a namespace to its stored target release and replay the deltas held for them; never installs the release. Takes the namespace root (`400` for a subgroup). Optional body field `expectedApplicationId`; `409` naming the group when the namespace or any subgroup being switched targets another application. |
 | GET | `/admin-api/groups/:namespace_id/cascade-status` | Get cascade status (by namespace). |
 | GET | `/admin-api/groups/:namespace_id/migration-status` | Get migration status (by namespace). |
 | POST | `/admin-api/groups/:namespace_id/migration/abort` | Abort a migration (by namespace). |

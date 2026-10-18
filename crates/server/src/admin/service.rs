@@ -1049,6 +1049,7 @@ fn group_lifecycle_refusal_status(
 
     Some(match err {
         Refusal::LeaveGroupIsNamespace { .. }
+        | Refusal::NotANamespaceRoot { .. }
         | Refusal::InvitationInvalid { .. }
         | Refusal::TeePolicyInvalid { .. }
         | Refusal::OwnershipProofInvalid { .. }
@@ -2449,7 +2450,7 @@ mod parse_api_error_tests {
                     reason: "is already completed",
                 },
                 ContextError::UpgradeTargetMismatch {
-                    namespace_id: group_id(),
+                    group_id: group_id(),
                     expected: "app-a".to_owned(),
                     actual: "app-b".to_owned(),
                 },

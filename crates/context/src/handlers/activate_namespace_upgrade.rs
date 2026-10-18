@@ -4,6 +4,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{
     ActivateNamespaceUpgradeRequest, ActivateNamespaceUpgradeResponse, ActivateUpgradeRequest,
 };
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
     find_local_signing_identity, get_group_for_context, MetaRepository, NamespaceRepository,
 };
@@ -92,16 +93,15 @@ fn plan_activation(
             namespace_id: namespace_id.to_string(),
         });
     };
-    let target_application_id = meta.target.application_id;
-    if let Some(expected) = request.expected_application_id {
-        if expected != target_application_id {
-            bail!(ContextError::UpgradeTargetMismatch {
-                namespace_id: namespace_id.to_string(),
-                expected: expected.to_string(),
-                actual: target_application_id.to_string(),
-            });
-        }
+    let resolved = NamespaceRepository::new(store).resolve(namespace_id)?;
+    if resolved != *namespace_id {
+        bail!(ContextError::NotANamespaceRoot {
+            group_id: namespace_id.to_string(),
+            namespace_id: resolved.to_string(),
+        });
     }
+    let target_application_id = meta.target.application_id;
+    check_expected(request, namespace_id, target_application_id)?;
 
     let mut contexts = Vec::new();
     let mut target_blobs = BTreeSet::new();
@@ -115,6 +115,7 @@ fn plan_activation(
         };
         if let Some(group_id) = get_group_for_context(store, &context_id)? {
             if let Some(group) = MetaRepository::new(store).load(&group_id)? {
+                check_expected(request, &group_id, group.target.application_id)?;
                 // A zero id names no blob, as in the lazy upgrade's own check.
                 if group.target.bytecode_id != [0u8; 32] {
                     let _new = target_blobs.insert(group.target.bytecode_id);
@@ -139,11 +140,26 @@ fn plan_activation(
     })
 }
 
+/// Refuse when the caller expected another application than `group_id` targets.
+fn check_expected(
+    request: &ActivateNamespaceUpgradeRequest,
+    group_id: &ContextGroupId,
+    actual: ApplicationId,
+) -> eyre::Result<()> {
+    match request.expected_application_id {
+        Some(expected) if expected != actual => bail!(ContextError::UpgradeTargetMismatch {
+            group_id: group_id.to_string(),
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        }),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::register_context_in_group;
     use calimero_store::db::InMemoryDB;
     use calimero_store::key::{GroupMetaValue, GroupTarget};
