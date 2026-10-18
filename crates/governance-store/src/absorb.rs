@@ -110,6 +110,26 @@ impl<'a> AbsorbRepository<'a> {
         Ok(results)
     }
 
+    /// Whether any record produced on `producing_bytecode_id` is buffered for
+    /// `context_id`. One seek over keys only, so an undecodable record still counts.
+    pub fn has_any(
+        &self,
+        context_id: &ContextId,
+        producing_bytecode_id: [u8; 32],
+    ) -> EyreResult<bool> {
+        let target = *context_id.as_ref();
+        let handle = self.store.handle();
+        let mut iter = handle.iter::<AbsorbBufferKey>()?;
+        let first = iter.seek(AbsorbBufferKey::new(
+            target,
+            producing_bytecode_id,
+            [0u8; 32],
+        ))?;
+        Ok(first.is_some_and(|key| {
+            key.context_id() == target && key.producing_bytecode_id() == producing_bytecode_id
+        }))
+    }
+
     /// Distinct contexts that have at least one pending absorbed delta. Used by
     /// the startup recovery scan to know which contexts to attempt to drain.
     pub fn enumerate_all_contexts(&self) -> EyreResult<Vec<ContextId>> {
