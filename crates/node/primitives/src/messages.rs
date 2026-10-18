@@ -90,18 +90,18 @@ pub enum NodeMessage {
     /// lingers as stale `failed`. Fire-and-forget; the periodic tick is the
     /// fallback if the signal is dropped.
     RefreshMigrationFacts { namespace_id: [u8; 32] },
-    /// Read the best-effort sync-status snapshot the sync run-loop has
-    /// recorded for a context. Routed through `NodeClient -> NodeManager`
-    /// because the snapshot lives on the node-crate-private `NodeState`,
-    /// which the server layer cannot name directly. `outcome` carries
-    /// `None` when the run-loop has no record for the context (never
-    /// synced — e.g. created locally or just joined).
     /// Replay the deltas this node held back for a context because they were
     /// produced on a release it had not switched to. Answers once the replay ran.
     DrainAbsorbed {
         context_id: ContextId,
         outcome: oneshot::Sender<()>,
     },
+    /// Read the best-effort sync-status snapshot the sync run-loop has
+    /// recorded for a context. Routed through `NodeClient -> NodeManager`
+    /// because the snapshot lives on the node-crate-private `NodeState`,
+    /// which the server layer cannot name directly. `outcome` carries
+    /// `None` when the run-loop has no record for the context (never
+    /// synced — e.g. created locally or just joined).
     GetSyncStatus {
         context_id: ContextId,
         outcome: oneshot::Sender<Option<crate::SyncStatusSnapshot>>,
