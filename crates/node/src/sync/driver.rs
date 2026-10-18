@@ -36,6 +36,7 @@ use calimero_node_primitives::client::{
 };
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_primitives::context::ContextId;
+use calimero_store::Store;
 use eyre::Result;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use libp2p::PeerId;
@@ -71,6 +72,19 @@ const BEHIND_SYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// retried at all.
 fn retries_left_after_failure(remaining: u8) -> Option<u8> {
     remaining.checked_sub(1).filter(|left| *left > 0)
+}
+
+/// Whether an unforced sync of a context behind its group's release waits out
+/// [`BEHIND_SYNC_INTERVAL`] after its last one.
+fn waits_for_release_switch(
+    tracker: &SessionTracker,
+    store: &Store,
+    context_id: &ContextId,
+    force: bool,
+) -> bool {
+    !force
+        && tracker.synced_within(context_id, BEHIND_SYNC_INTERVAL)
+        && super::helpers::holds_absorbed(store, context_id)
 }
 
 /// Cross-actor message handlers and store accessors the driver calls
@@ -549,12 +563,12 @@ impl SyncDriver {
             }
         };
 
-        if !force
-            && self
-                .tracker
-                .synced_within(&context_id, BEHIND_SYNC_INTERVAL)
-            && super::helpers::holds_absorbed(self.context_client.datastore(), &context_id)
-        {
+        if waits_for_release_switch(
+            &self.tracker,
+            self.context_client.datastore(),
+            &context_id,
+            force,
+        ) {
             debug!(
                 %context_id,
                 "Skipping sync, this node holds deltas for a release it has not switched to"
