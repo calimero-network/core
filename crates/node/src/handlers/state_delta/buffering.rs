@@ -661,8 +661,9 @@ where
                     %context_id,
                     delta_id = ?delta_id,
                     %err,
-                    "absorb drain: corrupt AbsorbRecord — cannot reconstruct buffered delta; skipping"
+                    "absorb drain: corrupt AbsorbRecord — cannot reconstruct buffered delta; deleting"
                 );
+                repo.delete(context_id, producing_bytecode_id, delta_id)?;
                 continue;
             }
         };
