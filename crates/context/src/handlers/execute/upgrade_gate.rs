@@ -582,4 +582,22 @@ mod tests {
             Some(("com.acme.app", "2.0.0"))
         );
     }
+
+    /// A walk that committed a hop and then stopped on a failure has not reached
+    /// the target, so it reports the failure; only a clean walk counts as moved.
+    #[test]
+    fn a_walk_that_fails_after_a_hop_is_a_failure() {
+        assert!(matches!(
+            UpgradeOutcome::of_walk(true, Some(eyre::eyre!("second hop failed"))),
+            UpgradeOutcome::Failed(_)
+        ));
+        assert!(matches!(
+            UpgradeOutcome::of_walk(true, None),
+            UpgradeOutcome::Advanced
+        ));
+        assert!(matches!(
+            UpgradeOutcome::of_walk(false, None),
+            UpgradeOutcome::Unchanged
+        ));
+    }
 }
