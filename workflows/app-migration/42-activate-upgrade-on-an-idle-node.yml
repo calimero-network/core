@@ -170,7 +170,7 @@ steps:
       - "{{namespace_id}}"
       - '{"expectedApplicationId": "{{app_v2}}"}'
       - "200"
-      - '.data.targetApplicationId == "{{app_v2}}" and .data.switchedContexts == 1 and .data.replayedDeltas >= 1'
+      - '.data.targetApplicationId == "{{app_v2}}" and .data.switchedContexts == 1 and .data.replayedDeltas >= 1 and .data.failedContexts == []'
 
   - name: Activating again moves nothing
     type: script
@@ -181,7 +181,7 @@ steps:
       - "{{namespace_id}}"
       - "{}"
       - "200"
-      - '.data.switchedContexts == 0 and .data.replayedDeltas == 0'
+      - '.data.switchedContexts == 0 and .data.replayedDeltas == 0 and .data.failedContexts == []'
 
   - name: Node 2's first read returns node 1's v2 write
     type: call

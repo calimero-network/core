@@ -557,6 +557,21 @@ impl Report for ActivateGroupUpgradeApiResponse {
         let _ = table.add_row(vec!["Application ID", &d.target_application_id.to_string()]);
         let _ = table.add_row(vec!["Contexts Switched", &d.switched_contexts.to_string()]);
         let _ = table.add_row(vec!["Deltas Replayed", &d.replayed_deltas.to_string()]);
+        let _ = table.add_row(vec![
+            "Contexts Failed",
+            &d.failed_contexts.len().to_string(),
+        ]);
+        for failed in &d.failed_contexts {
+            let retry = if failed.retryable {
+                "retryable"
+            } else {
+                "not retryable"
+            };
+            let _ = table.add_row(vec![
+                format!("Failed {}", failed.context_id),
+                format!("{} ({retry})", failed.error),
+            ]);
+        }
         println!("{table}");
     }
 }

@@ -2203,6 +2203,17 @@ pub struct ActivateGroupUpgradeApiResponseData {
     pub switched_contexts: u32,
     /// Held deltas replayed into the namespace's contexts.
     pub replayed_deltas: u32,
+    /// Contexts this request could not finish; calling again retries only these.
+    pub failed_contexts: Vec<ActivateGroupUpgradeFailedContext>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeFailedContext {
+    pub context_id: ContextId,
+    pub error: String,
+    /// `false` when the switch itself failed (a migration or load), which a retry repeats.
+    pub retryable: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

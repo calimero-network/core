@@ -1,9 +1,10 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
-    ActivateGroupUpgradeApiRequest, RetryGroupUpgradeApiRequest, UpgradeGroupApiRequest,
+    ActivateGroupUpgradeApiRequest, ActivateGroupUpgradeApiResponseData,
+    RetryGroupUpgradeApiRequest, UpgradeGroupApiRequest,
 };
 use clap::{Parser, Subcommand};
-use eyre::Result;
+use eyre::{bail, Result};
 
 use crate::cli::Environment;
 
@@ -146,8 +147,19 @@ impl ActivateUpgradeCommand {
 
         environment.output.write(&response);
 
-        Ok(())
+        ensure_all_switched(&response.data)
     }
+}
+
+/// A non-zero exit when any context did not switch, so a script notices.
+fn ensure_all_switched(data: &ActivateGroupUpgradeApiResponseData) -> Result<()> {
+    if data.failed_contexts.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "{} context(s) did not switch; running this again retries only those",
+        data.failed_contexts.len()
+    )
 }
 
 #[cfg(test)]

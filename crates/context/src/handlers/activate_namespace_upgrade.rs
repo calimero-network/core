@@ -1,6 +1,10 @@
+use std::future::Future;
+use std::time::Duration;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{
     ActivateNamespaceUpgradeRequest, ActivateNamespaceUpgradeResponse, ActivateUpgradeRequest,
+    FailedContext,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
@@ -13,13 +17,16 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupTarget;
 use calimero_store::Store;
-use eyre::{bail, WrapErr};
-use tracing::debug;
+use eyre::bail;
+use tracing::{debug, warn};
 
 use crate::activation::next_rung;
 use crate::error::ContextError;
 use crate::hlc_fence::loaded_reader_bytecode_id;
 use crate::ContextManager;
+
+const ACTIVATE_RETRY_ATTEMPTS: u32 = 3; // tries per context before a retryable failure is listed
+const ACTIVATE_RETRY_BASE_DELAY: Duration = Duration::from_millis(200); // doubles after each failed try
 
 /// What an activation switches, read from the store before any context moves.
 #[derive(Debug)]
@@ -46,37 +53,123 @@ impl Handler<ActivateNamespaceUpgradeRequest> for ContextManager {
         };
 
         let context_client = self.context_client.clone();
-        let node_client = self.node_client.clone();
-        let run = async move {
-            let mut response = ActivateNamespaceUpgradeResponse {
-                target_application_id: plan.target_application_id,
-                switched_contexts: 0,
-                replayed_deltas: 0,
-            };
-            for (context_id, executor) in plan.contexts {
-                let switched = context_client
+        let switch = move |context_id, executor| {
+            let context_client = context_client.clone();
+            async move {
+                context_client
                     .activate_upgrade(ActivateUpgradeRequest {
                         context_id,
                         executor,
                     })
                     .await
-                    .wrap_err_with(|| format!("switching context {context_id}"))?;
-                response.switched_contexts += u32::from(switched);
+            }
+        };
+        let node_client = self.node_client.clone();
+        let drain = move |context_id| {
+            let node_client = node_client.clone();
+            async move { node_client.drain_absorbed(context_id).await }
+        };
+        let run = async move {
+            Ok(activate_contexts(plan, switch, drain, ACTIVATE_RETRY_BASE_DELAY).await)
+        };
 
-                // Also for a context that was already current: its held deltas
-                // may have been left unreplayed by an earlier lazy switch.
-                let replayed = node_client
-                    .drain_absorbed(context_id)
-                    .await
-                    .wrap_err_with(|| format!("replaying held deltas of context {context_id}"))?;
+        ActorResponse::r#async(run.into_actor(self))
+    }
+}
+
+/// Switch and drain each planned context, listing the ones that still fail
+/// rather than abandoning the rest of the namespace.
+async fn activate_contexts<S, SF, D, DF>(
+    plan: ActivationPlan,
+    switch: S,
+    drain: D,
+    base_delay: Duration,
+) -> ActivateNamespaceUpgradeResponse
+where
+    S: Fn(ContextId, PublicKey) -> SF,
+    SF: Future<Output = eyre::Result<bool>>,
+    D: Fn(ContextId) -> DF,
+    DF: Future<Output = eyre::Result<usize>>,
+{
+    let mut response = ActivateNamespaceUpgradeResponse {
+        target_application_id: plan.target_application_id,
+        switched_contexts: 0,
+        replayed_deltas: 0,
+        failed_contexts: Vec::new(),
+    };
+    for (context_id, executor) in plan.contexts {
+        let (switched, outcome) =
+            activate_context(context_id, executor, &switch, &drain, base_delay).await;
+        response.switched_contexts += u32::from(switched);
+        match outcome {
+            Ok(replayed) => {
                 response.replayed_deltas = response
                     .replayed_deltas
                     .saturating_add(u32::try_from(replayed).unwrap_or(u32::MAX));
             }
-            Ok(response)
-        };
+            Err(failed) => {
+                warn!(
+                    %context_id,
+                    error = %failed.error,
+                    retryable = failed.retryable,
+                    "context not activated"
+                );
+                response.failed_contexts.push(failed);
+            }
+        }
+    }
+    response
+}
 
-        ActorResponse::r#async(run.into_actor(self))
+/// Switch one context and replay its held deltas, retrying infrastructure failures
+/// with a doubling delay. Returns whether it moved, and its replay count or failure.
+async fn activate_context<S, SF, D, DF>(
+    context_id: ContextId,
+    executor: PublicKey,
+    switch: &S,
+    drain: &D,
+    base_delay: Duration,
+) -> (bool, Result<usize, FailedContext>)
+where
+    S: Fn(ContextId, PublicKey) -> SF,
+    SF: Future<Output = eyre::Result<bool>>,
+    D: Fn(ContextId) -> DF,
+    DF: Future<Output = eyre::Result<usize>>,
+{
+    let mut switched = false;
+    let mut delay = base_delay;
+    let mut attempt = 1;
+    loop {
+        let (err, retryable) = match switch(context_id, executor).await {
+            Ok(moved) => {
+                switched |= moved;
+                // Also for a context that was already current: its held deltas
+                // may have been left unreplayed by an earlier lazy switch.
+                match drain(context_id).await {
+                    Ok(replayed) => return (switched, Ok(replayed)),
+                    Err(err) => (err.wrap_err("replaying held deltas"), true),
+                }
+            }
+            Err(err) => {
+                let retryable = !matches!(
+                    err.downcast_ref::<ContextError>(),
+                    Some(ContextError::UpgradeSwitchFailed { .. })
+                );
+                (err, retryable)
+            }
+        };
+        if !retryable || attempt == ACTIVATE_RETRY_ATTEMPTS {
+            let failed = FailedContext {
+                context_id,
+                error: format!("{err:#}"),
+                retryable,
+            };
+            return (switched, Err(failed));
+        }
+        debug!(%context_id, attempt, %err, "activation failed; retrying");
+        tokio::time::sleep(delay).await;
+        delay *= 2;
+        attempt += 1;
     }
 }
 

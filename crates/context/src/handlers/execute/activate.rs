@@ -4,6 +4,7 @@ use calimero_governance_store::{get_group_for_context, UpgradesRepository};
 use either::Either;
 
 use super::upgrade_gate::{maybe_lazy_upgrade, should_block, UpgradeOutcome};
+use crate::error::ContextError;
 use crate::ContextManager;
 
 impl Handler<ActivateUpgradeRequest> for ContextManager {
@@ -67,10 +68,14 @@ impl Handler<ActivateUpgradeRequest> for ContextManager {
                     .into_actor(act)
                     .boxed_local(),
             };
-            run.map(|result, _act, _ctx| match result?.1 {
+            run.map(move |result, _act, _ctx| match result?.1 {
                 UpgradeOutcome::Advanced => Ok(true),
                 UpgradeOutcome::Unchanged => Ok(false),
-                UpgradeOutcome::Failed(err) => Err(err),
+                UpgradeOutcome::Failed(err) => {
+                    Err(err.wrap_err(ContextError::UpgradeSwitchFailed {
+                        context_id: context_id.to_string(),
+                    }))
+                }
             })
         });
 

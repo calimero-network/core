@@ -585,6 +585,14 @@ pub enum ContextError {
         actual: String,
     },
 
+    /// A context's switch to its group's target failed (a migration or a load), so
+    /// retrying the same switch fails the same way. Wraps the failure itself.
+    #[error("switching context {context_id} to its group's target release failed")]
+    UpgradeSwitchFailed {
+        /// The context that did not switch.
+        context_id: String,
+    },
+
     /// A `400`: the group an activation names is a subgroup. Activation switches a
     /// whole namespace, so it names the root.
     #[error(

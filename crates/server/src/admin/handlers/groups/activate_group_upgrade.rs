@@ -6,7 +6,7 @@ use axum::Extension;
 use calimero_context_client::group::ActivateNamespaceUpgradeRequest;
 use calimero_server_primitives::admin::{
     ActivateGroupUpgradeApiRequest, ActivateGroupUpgradeApiResponse,
-    ActivateGroupUpgradeApiResponseData,
+    ActivateGroupUpgradeApiResponseData, ActivateGroupUpgradeFailedContext,
 };
 use tracing::{debug, error, info};
 
@@ -45,14 +45,25 @@ pub async fn handler(
                 namespace_id=%namespace_id_str,
                 switched = resp.switched_contexts,
                 replayed = resp.replayed_deltas,
+                failed = resp.failed_contexts.len(),
                 "Namespace upgrade activated"
             );
+            let failed_contexts = resp
+                .failed_contexts
+                .into_iter()
+                .map(|failed| ActivateGroupUpgradeFailedContext {
+                    context_id: failed.context_id,
+                    error: failed.error,
+                    retryable: failed.retryable,
+                })
+                .collect();
             ApiResponse {
                 payload: ActivateGroupUpgradeApiResponse {
                     data: ActivateGroupUpgradeApiResponseData {
                         target_application_id: resp.target_application_id,
                         switched_contexts: resp.switched_contexts,
                         replayed_deltas: resp.replayed_deltas,
+                        failed_contexts,
                     },
                 },
             }

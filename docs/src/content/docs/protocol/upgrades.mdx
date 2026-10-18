@@ -563,6 +563,13 @@ forward "stop" (un-migrated contexts stop switching), **not** a rewind of any co
 that already migrated. Operationally these are reachable via
 [meroctl](/operate/meroctl/) and the admin surface.
 
+`activate` answers `200` with `targetApplicationId`, `switchedContexts`, `replayedDeltas` and `failedContexts`.
+One context failing does not stop the others: each failure is listed as `{contextId, error, retryable}`, and the list is empty when every context finished.
+The node itself retries a failure of its own (a store read, a dropped message) a few times before listing it with `retryable: true`.
+`retryable: false` means the switch itself failed (a migration or a load), which another call repeats until the release or the state changes.
+Calling `activate` again retries only what failed, since contexts already on the target switch nothing.
+`meroctl group upgrade activate` exits non-zero when `failedContexts` is not empty.
+
 ### Identity-gated data: owner-driven follow-up
 
 A cascade migrates **structural** state, but identity-gated entries

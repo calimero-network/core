@@ -1746,13 +1746,24 @@ impl Message for ActivateNamespaceUpgradeRequest {
 }
 
 /// Outcome of an [`ActivateNamespaceUpgradeRequest`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ActivateNamespaceUpgradeResponse {
     pub target_application_id: ApplicationId,
     /// Contexts this request moved; `0` when every one was already current.
     pub switched_contexts: u32,
     /// Held deltas replayed into the namespace's contexts.
     pub replayed_deltas: u32,
+    /// Contexts left unswitched or unreplayed; the others went ahead regardless.
+    pub failed_contexts: Vec<FailedContext>,
+}
+
+/// A context an [`ActivateNamespaceUpgradeRequest`] could not finish.
+#[derive(Clone, Debug)]
+pub struct FailedContext {
+    pub context_id: ContextId,
+    pub error: String,
+    /// `false` when the switch itself failed (a migration or load), which a retry repeats.
+    pub retryable: bool,
 }
 
 /// Outcome of a [`ResyncContextRequest`].
