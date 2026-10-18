@@ -8,7 +8,7 @@ use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_store::Store;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// `true` when a group-upgrade status blocks ALL writes (user calls and
 /// state-ops alike): only `GroupUpgradeStatus::InProgress` blocks. Both
@@ -131,13 +131,13 @@ pub(super) fn maybe_lazy_upgrade(
         // Fall through: activation (migration and/or bytecode swap) pending.
     }
 
-    info!(
+    debug!(
         %context_id,
         ?group_id,
         %current_application_id,
         target_app=%meta.target.application_id,
         marker = activated.is_some(),
-        "lazy upgrade triggered for context"
+        "lazy upgrade pending for context"
     );
 
     Some(match activated {

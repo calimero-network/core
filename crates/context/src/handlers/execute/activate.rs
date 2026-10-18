@@ -17,15 +17,25 @@ impl Handler<ActivateUpgradeRequest> for ContextManager {
         }: ActivateUpgradeRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let context = match self.get_or_fetch_context(&context_id) {
-            Ok(Some(context)) => context,
+        let (application_id, root_hash) = match self.get_or_fetch_context(&context_id) {
+            Ok(Some(context)) => (context.meta.application_id, *context.meta.root_hash),
             Ok(None) => return ActorResponse::reply(Ok(false)),
             Err(err) => return ActorResponse::reply(Err(err)),
         };
         // An uninitialized context has no state to switch; execute refuses it on its own.
-        if *context.meta.root_hash == [0; 32] {
+        if root_hash == [0; 32] {
             return ActorResponse::reply(Ok(false));
         }
+        // Spares a call with nothing to switch the wait for the write lock; the
+        // decision is made again under it.
+        if self.upgrade_gated(&context_id)
+            || maybe_lazy_upgrade(&self.datastore, &context_id, &application_id).is_none()
+        {
+            return ActorResponse::reply(Ok(false));
+        }
+        let Some(context) = self.contexts.get(&context_id) else {
+            return ActorResponse::reply(Ok(false));
+        };
         let guard = context.lock();
 
         let guard_task = async move {

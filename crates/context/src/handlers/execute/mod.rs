@@ -1349,6 +1349,7 @@ impl ContextManager {
         executor: PublicKey,
         action: LazyUpgradeAction,
     ) -> actix::fut::LocalBoxActorFuture<Self, eyre::Result<(ContextGuard, UpgradeOutcome)>> {
+        info!(%context_id, ?action, "lazy upgrade triggered for context");
         debug!(%context_id, %executor, "performing lazy upgrade before execution");
         let act = self;
         match action {
