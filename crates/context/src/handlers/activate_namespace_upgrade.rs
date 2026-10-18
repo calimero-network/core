@@ -160,12 +160,13 @@ fn check_expected(
 mod tests {
     use std::sync::Arc;
 
-    use calimero_governance_store::register_context_in_group;
+    use calimero_governance_store::{register_context_in_group, UpgradeLadderRepository};
     use calimero_store::db::InMemoryDB;
-    use calimero_store::key::{GroupMetaValue, GroupTarget};
+    use calimero_store::key::{GroupMetaValue, GroupTarget, LadderRung};
 
     use super::*;
 
+    const CREATION_BLOB: [u8; 32] = [0x01; 32];
     const TARGET_BLOB: [u8; 32] = [0x02; 32];
 
     fn store() -> Store {
@@ -177,14 +178,35 @@ mod tests {
     }
 
     fn seed_group(store: &Store, id: u8) -> ContextGroupId {
-        seed_group_targeting(store, id, app())
+        seed_group_at(store, id, app(), TARGET_BLOB)
     }
 
-    fn seed_group_targeting(
+    /// A group targeting `bytecode_id` of `application_id`, with that release installed.
+    fn seed_group_at(
         store: &Store,
         id: u8,
         application_id: ApplicationId,
+        bytecode_id: [u8; 32],
     ) -> ContextGroupId {
+        store
+            .handle()
+            .put(
+                &calimero_store::key::ApplicationMeta::new(application_id),
+                &calimero_store::types::ApplicationMeta::new(
+                    calimero_store::key::BlobMeta::new(bytecode_id.into()),
+                    0,
+                    Box::default(),
+                    Box::default(),
+                    calimero_store::key::BlobMeta::new([0u8; 32].into()),
+                    calimero_store::types::PackageInfo {
+                        package: Box::default(),
+                        version: Box::default(),
+                        signer_id: Box::default(),
+                        state_version: 0,
+                    },
+                ),
+            )
+            .unwrap();
         let gid = ContextGroupId::from([id; 32]);
         let admin = PublicKey::from([0x07; 32]);
         MetaRepository::new(store)
@@ -193,7 +215,7 @@ mod tests {
                 &GroupMetaValue {
                     target: GroupTarget {
                         application_id,
-                        bytecode_id: TARGET_BLOB,
+                        bytecode_id,
                         package: Box::default(),
                         version: Box::default(),
                     },
@@ -295,7 +317,7 @@ mod tests {
     fn a_subgroup_targeting_another_application_than_expected_is_refused() {
         let store = store();
         let ns = seed_group(&store, 0x10);
-        let sub = seed_group_targeting(&store, 0x11, ApplicationId::from([0xBB; 32]));
+        let sub = seed_group_at(&store, 0x11, ApplicationId::from([0xBB; 32]), TARGET_BLOB);
         NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
         let _root_ctx = seed_context(&store, &ns, 0x21, true);
         let _sub_ctx = seed_context(&store, &sub, 0x22, true);
@@ -337,6 +359,54 @@ mod tests {
             refusal(&err),
             ContextError::BytecodeNotInstalled { .. }
         ));
+    }
+
+    /// A namespace whose ladder runs `CREATION_BLOB` -> each of `rungs`, the last
+    /// being its target, and one local context still on `CREATION_BLOB`.
+    fn seed_ladder(store: &Store, rungs: [[u8; 32]; 3]) -> (ContextGroupId, ContextId) {
+        let ns = seed_group_at(store, 0x10, app(), rungs[2]);
+        for bytecode_id in rungs {
+            UpgradeLadderRepository::new(store)
+                .append(
+                    &ns,
+                    LadderRung {
+                        bytecode_id,
+                        application_id: app(),
+                        package: String::new(),
+                        version: String::new(),
+                    },
+                )
+                .unwrap();
+        }
+        let ctx = seed_context(store, &ns, 0x21, true);
+        crate::activation::record_activation(store, &ctx, CREATION_BLOB);
+        (ns, ctx)
+    }
+
+    #[test]
+    fn a_ladder_rung_that_is_not_installed_is_refused_even_when_the_target_is() {
+        let store = store();
+        let rungs = [[0x03; 32], [0x04; 32], [0x05; 32]];
+        let (ns, _ctx) = seed_ladder(&store, rungs);
+
+        let only_target =
+            |blob: &BlobId| -> eyre::Result<bool> { Ok(*blob == BlobId::from(rungs[2])) };
+        let err = plan_activation(&store, only_target, &request(ns, None)).unwrap_err();
+        assert!(matches!(
+            refusal(&err),
+            ContextError::BytecodeNotInstalled { blob_id }
+                if *blob_id == BlobId::from(rungs[0]).to_string()
+        ));
+    }
+
+    #[test]
+    fn a_ladder_of_local_rungs_under_a_row_naming_the_target_is_planned() {
+        let store = store();
+        let (ns, ctx) = seed_ladder(&store, [[0x03; 32], [0x04; 32], [0x05; 32]]);
+
+        let plan = plan_activation(&store, installed, &request(ns, None)).unwrap();
+        let planned: Vec<_> = plan.contexts.iter().map(|(id, _)| *id).collect();
+        assert_eq!(planned, vec![ctx]);
     }
 
     #[test]
