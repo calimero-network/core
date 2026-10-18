@@ -15,6 +15,12 @@
 //! What that buys: a hostile admitter can refuse to publish, and nothing else.
 //! It cannot admit a different account, alter the group, or grant itself a role,
 //! because all of that is inside a signature it does not hold.
+//!
+//! **Served without a credential, on every node** (`admission_routes` in
+//! `admin/service.rs`). The caller holds nothing on this node a guard could
+//! check, so the request is the whole authority, and the checks below run
+//! cheapest first: a node the invitation does not name refuses before the op is
+//! decoded, and nothing is signed or published until every check has passed.
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -27,6 +33,7 @@ use reqwest::StatusCode;
 use tracing::info;
 
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::handlers::identity::get_node_identity::node_identity;
@@ -48,6 +55,40 @@ pub async fn handler(
         return ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: "invitation group_id does not match namespace_id in path".into(),
+        }
+        .into_response();
+    }
+
+    // Refuse before publishing, never after: once an op reaches the topic it is
+    // on every peer's DAG, so "was this node entitled to carry it" has to be
+    // answered while the answer still changes anything.
+    //
+    // And first, before the op is so much as decoded. The route takes no
+    // credential, so whoever calls it chooses what it costs; a node the
+    // invitation does not name answers with one store read and a list scan,
+    // whatever bytes came with it. Running this ahead of the invitation's own
+    // signature check is safe because it can only refuse: an `admitters` list
+    // forged to name this node passes here and fails `validate_open_invitation`
+    // below, before anything is signed or published.
+    let self_account = match node_identity(&state.store) {
+        Ok(Some((account, ..))) => account,
+        Ok(None) => {
+            return ApiError {
+                status_code: StatusCode::CONFLICT,
+                message: "this node holds no device, so it cannot admit anyone".to_owned(),
+            }
+            .into_response();
+        }
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    if let Err(err) = calimero_governance_store::NamespaceMembershipService::require_may_admit(
+        &req.invitation,
+        &self_account,
+    ) {
+        return ApiError {
+            status_code: StatusCode::FORBIDDEN,
+            message: err.to_string(),
         }
         .into_response();
     }
@@ -87,10 +128,37 @@ pub async fn handler(
         .into_response();
     }
 
-    if !carries_a_join(&op.op) {
+    let Some((member, claimed_invitation)) = join_claim(&op.op) else {
         return ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: "signed_op is not a join; an admitter carries joins only".to_owned(),
+        }
+        .into_response();
+    };
+    let member = *member;
+
+    // The bounds every peer applies to this op (parents, the invitation's
+    // admitter and address lists), here rather than only at apply: an op over
+    // them is refused by every replica, so carrying it is pure cost.
+    if let Err(err) = op.validate() {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("signed_op is out of bounds: {err}"),
+        }
+        .into_response();
+    }
+
+    // The invitation checked below has to be the one the op claims. Otherwise
+    // `validate_open_invitation` vouches for an invitation the op never names,
+    // and anyone holding one invitation that lists this node could have it
+    // carry joins under any other — an expired one, one for another group —
+    // which every peer then refuses, after the op has travelled under this
+    // node's name.
+    if !same_signed_invitation(claimed_invitation, &req.invitation) {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "signed_op claims an invitation that is not the invitation presented"
+                .to_owned(),
         }
         .into_response();
     }
@@ -114,32 +182,6 @@ pub async fn handler(
         .into_response();
     }
 
-    // Refuse before publishing, never after: once an op reaches the topic it is
-    // on every peer's DAG, so "was this node entitled to carry it" has to be
-    // answered while the answer still changes anything.
-    let self_account = match node_identity(&state.store) {
-        Ok(Some((account, ..))) => account,
-        Ok(None) => {
-            return ApiError {
-                status_code: StatusCode::CONFLICT,
-                message: "this node holds no device, so it cannot admit anyone".to_owned(),
-            }
-            .into_response();
-        }
-        Err(err) => return parse_api_error(err).into_response(),
-    };
-
-    if let Err(err) = calimero_governance_store::NamespaceMembershipService::require_may_admit(
-        &req.invitation,
-        &self_account,
-    ) {
-        return ApiError {
-            status_code: StatusCode::FORBIDDEN,
-            message: err.to_string(),
-        }
-        .into_response();
-    }
-
     // Being a designated admitter is permission to carry a *valid* claim, not
     // permission to skip checking it: inviter signature, the group belonging to
     // this namespace, the inviter's permission to invite, and expiry.
@@ -154,6 +196,30 @@ pub async fn handler(
             message: format!("invitation rejected: {err}"),
         }
         .into_response();
+    }
+
+    // A join this node has already applied is not carried again.
+    //
+    // Each relay is a fresh envelope with its own id, so a replay of the same
+    // signed op would put a new op on every peer's DAG per request, folding
+    // nothing — and the route takes no credential, so whoever holds one valid
+    // body could do that without end. One relay is enough: the first one is in
+    // this node's op log, and sync carries it to any peer that missed the
+    // gossip. The same two halves the apply guards a relayed join with: the op
+    // log for a join that arrived in the clear, the joiner's nonce window for
+    // one that only ever arrived relayed.
+    match join_already_applied(&state.store, &namespace_id, &op) {
+        Ok(false) => {}
+        Ok(true) => {
+            info!(namespace_id=%namespace_id_str, "a join already applied here; not relayed again");
+            return ApiResponse {
+                payload: AdmitJoinApiResponse {
+                    data: AdmitJoinApiResponseData { published: false },
+                },
+            }
+            .into_response();
+        }
+        Err(err) => return parse_api_error(err).into_response(),
     }
 
     // This node's consent, attached to the op it is about to carry.
@@ -171,18 +237,6 @@ pub async fn handler(
     // be re-verified to be worth keeping, and there is nothing to gain by
     // keeping it: any endorsement that verifies is over the same namespace,
     // joiner and invitation as the one written here.
-    let member = match joining_member(&op.op) {
-        Some(member) => *member,
-        // `carries_a_join` already established the variant.
-        None => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "signed_op is not a join; an admitter carries joins only".to_owned(),
-            }
-            .into_response();
-        }
-    };
-
     match calimero_governance_store::NamespaceMembershipService::endorse_join(
         &state.store,
         &namespace_id,
@@ -242,7 +296,8 @@ pub async fn handler(
     .into_response()
 }
 
-/// Whether this op is one an admitter is designated to carry.
+/// The account a join admits and the invitation it claims, for either join
+/// variant; `None` for anything an admitter does not carry.
 ///
 /// Only a join. Being named in `admitters` is authority to admit somebody, not
 /// to publish governance at large on their behalf — without this an admitter is
@@ -251,20 +306,61 @@ pub async fn handler(
 ///
 /// `MemberJoinedOpen` is deliberately absent: it carries no invitation, so there
 /// is nothing naming this node as entitled to carry it.
-/// The account a join op admits, for either join variant.
-const fn joining_member(op: &NamespaceOp) -> Option<&calimero_account::AccountId> {
+const fn join_claim(
+    op: &NamespaceOp,
+) -> Option<(&calimero_account::AccountId, &SignedGroupOpenInvitation)> {
     match op {
         NamespaceOp::Root(
-            RootOp::MemberJoined { member, .. } | RootOp::MemberJoinedAt { member, .. },
-        ) => Some(member),
+            RootOp::MemberJoined {
+                member,
+                signed_invitation,
+                ..
+            }
+            | RootOp::MemberJoinedAt {
+                member,
+                signed_invitation,
+                ..
+            },
+        ) => Some((member, signed_invitation)),
         _ => None,
     }
 }
 
+#[cfg(test)]
 const fn carries_a_join(op: &NamespaceOp) -> bool {
-    matches!(
-        op,
-        NamespaceOp::Root(RootOp::MemberJoined { .. } | RootOp::MemberJoinedAt { .. })
+    join_claim(op).is_some()
+}
+
+/// Whether two invitations are the same signed claim: the invitation the
+/// inviter signed, and its signature. `admitter_addrs` and the other unsigned
+/// hints may differ, since anyone relaying an invitation may rewrite them.
+fn same_signed_invitation(a: &SignedGroupOpenInvitation, b: &SignedGroupOpenInvitation) -> bool {
+    a.inviter_signature == b.inviter_signature
+        && matches!(
+            (borsh::to_vec(&a.invitation), borsh::to_vec(&b.invitation)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
+/// Whether `op` is a join this node has already applied, in the clear or
+/// relayed. Mirrors the replay guard `NamespaceGovernance::apply_signed_op`
+/// puts on a relayed join's inner op, read without recording anything.
+fn join_already_applied(
+    store: &calimero_store::Store,
+    namespace_id: &ContextGroupId,
+    op: &SignedNamespaceOp,
+) -> eyre::Result<bool> {
+    let id = op
+        .content_hash()
+        .map_err(|e| eyre::eyre!("signed_op content hash: {e}"))?;
+    if calimero_governance_store::NamespaceOpLogService::new(store, namespace_id.to_bytes().into())
+        .contains_op(id)?
+    {
+        return Ok(true);
+    }
+    Ok(
+        calimero_governance_store::load_nonce_window(store, namespace_id, &op.signer)?
+            .contains(op.nonce),
     )
 }
 
@@ -330,5 +426,226 @@ mod tests {
             policy_bytes: Vec::new(),
         });
         assert!(!carries_a_join(&policy));
+    }
+}
+
+/// The route as a joiner meets it: a node with embedded auth, assembled the way
+/// `start` assembles it, and a caller holding no credential of any kind.
+#[cfg(test)]
+mod over_http {
+    use std::sync::Arc;
+
+    use axum::http::StatusCode;
+    use axum::Router;
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::types::{
+        ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use serde_json::{json, Value};
+    use tempfile::TempDir;
+
+    use crate::admin::handlers::identity::get_node_identity::node_identity;
+    use crate::admin::service::AdminConfig;
+    use crate::config::{AuthMode, ServerConfig};
+    use crate::service_mounts::{mount_runtime_services, RuntimeServiceDeps};
+    use crate::test_support::{admin_state, embedded_auth_service, post_json_uncredentialed};
+
+    const NAMESPACE: [u8; 32] = [0x5a; 32];
+
+    /// A node with embedded auth and the default posture: `delegated_access`
+    /// off, so nothing about this route depends on the relay flag.
+    async fn embedded_auth_node(store: &Store) -> (Router, TempDir) {
+        let (state, blob_dir) = admin_state(store).await;
+        let mut config = ServerConfig::new(
+            vec![],
+            libp2p::identity::Keypair::generate_ed25519(),
+            Some(AdminConfig::new(true, false)),
+            None,
+            None,
+            None,
+        );
+        config.auth_mode = AuthMode::Embedded;
+        let deps = RuntimeServiceDeps {
+            auth_service: Some(embedded_auth_service().await),
+            ctx_client: state.ctx_client.clone(),
+            node_client: state.node_client.clone(),
+            datastore: store.clone(),
+            shared_state: Arc::clone(&state),
+            prom_registry: prometheus_client::registry::Registry::default(),
+        };
+        (
+            mount_runtime_services(Router::new(), &config, deps).router,
+            blob_dir,
+        )
+    }
+
+    fn admit_uri() -> String {
+        format!("/admin-api/namespaces/{}/admit", hex::encode(NAMESPACE))
+    }
+
+    /// An invitation to the namespace naming `admitters`. Its inviter signature
+    /// is not a real one: every refusal below must come before it is checked.
+    fn invitation(admitters: Vec<calimero_account::AccountId>) -> SignedGroupOpenInvitation {
+        SignedGroupOpenInvitation {
+            inviter_account: None,
+            invitation: GroupInvitationFromAdmin {
+                inviter_identity: SignerId::from([0x11; 32]),
+                group_id: ContextGroupId::from(NAMESPACE),
+                expiration_timestamp: 0,
+                invitation_nonce: [0x22; 32],
+                invited_role: 1,
+                admitters,
+            },
+            inviter_signature: String::new(),
+            admitter_addrs: Vec::new(),
+            application_id: None,
+            bytecode_id: None,
+        }
+    }
+
+    fn body(invitation: &SignedGroupOpenInvitation, signed_op: &str) -> Value {
+        json!({ "invitation": invitation, "signedOp": signed_op })
+    }
+
+    /// This node's own account, which an invitation must name for it to admit.
+    fn this_node(store: &Store) -> calimero_account::AccountId {
+        node_identity(store)
+            .expect("read this node's identity")
+            .expect("this node has an account root")
+            .0
+    }
+
+    /// A joiner's signed join of the namespace under `invitation`.
+    fn signed_join(
+        joiner: &PrivateKey,
+        invitation: SignedGroupOpenInvitation,
+    ) -> SignedNamespaceOp {
+        let account =
+            calimero_governance_store::test_fixtures::real_join_account(&joiner.public_key());
+        SignedNamespaceOp::sign(
+            joiner,
+            NAMESPACE.into(),
+            vec![],
+            1,
+            NamespaceOp::Root(RootOp::MemberJoined {
+                member: account.statement.account,
+                signed_invitation: invitation,
+                account,
+            }),
+        )
+        .expect("the joiner signs its join")
+    }
+
+    /// A join this node already applied is not relayed again: each relay is a
+    /// new envelope on every peer's DAG, and the route takes no credential.
+    #[test]
+    fn a_join_already_applied_is_recognised_by_its_nonce_or_its_id() {
+        use calimero_governance_store::{load_nonce_window, store_nonce_window};
+
+        use super::join_already_applied;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let namespace = ContextGroupId::from(NAMESPACE);
+        let joiner = PrivateKey::from([0x44; 32]);
+        let op = signed_join(&joiner, invitation(vec![]));
+
+        assert!(!join_already_applied(&store, &namespace, &op).unwrap());
+
+        let mut window = load_nonce_window(&store, &namespace, &op.signer).unwrap();
+        assert!(window.record(op.nonce));
+        store_nonce_window(&store, &namespace, &op.signer, &window).unwrap();
+        assert!(
+            join_already_applied(&store, &namespace, &op).unwrap(),
+            "a relayed join leaves only the joiner's nonce behind"
+        );
+    }
+
+    /// The bug: a joiner holds a device key and an invitation, nothing on this
+    /// node, and every SDK posts with no `Authorization` and no proof. On a node
+    /// with embedded auth the route sat behind the guard, so the joiner was
+    /// answered `401` before the handler ever saw the signed op that is its
+    /// authorization.
+    #[actix::test]
+    async fn an_uncredentialed_admit_reaches_the_handler_on_an_embedded_auth_node() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (router, _blob_dir) = embedded_auth_node(&store).await;
+
+        // An invitation naming some other node: the handler's own refusal,
+        // not the guard's.
+        let elsewhere = calimero_account::AccountId::from([0x33; 32]);
+        let (status, answer) = post_json_uncredentialed(
+            router.clone(),
+            &admit_uri(),
+            &body(&invitation(vec![elsewhere]), "00"),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "an admit carrying no credential was refused by the auth guard: {answer}"
+        );
+        assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+        assert!(answer.contains("not an admitter"), "{answer}");
+
+        // Only this route left the guard: its namespace siblings still need one.
+        let join = format!("/admin-api/namespaces/{}/join", hex::encode(NAMESPACE));
+        let (status, _) = post_json_uncredentialed(router, &join, &json!({})).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// Without a credential the request is the authority, so everything the
+    /// handler refuses must still be refused, and before anything is published.
+    #[actix::test]
+    async fn an_uncredentialed_admit_that_does_not_verify_is_refused() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (router, _blob_dir) = embedded_auth_node(&store).await;
+        let named = invitation(vec![this_node(&store)]);
+
+        let joiner = PrivateKey::from([0x44; 32]);
+        let mut forged = signed_join(&joiner, named.clone());
+        forged.signature[0] ^= 0xff;
+
+        let mut other_invitation = named.clone();
+        other_invitation.invitation.invitation_nonce = [0x99; 32];
+        let under_another_invitation = signed_join(&joiner, other_invitation);
+
+        for (case, signed_op, expect) in [
+            ("not hex", "zz".to_owned(), "signed_op is not hex"),
+            (
+                "not a signed op",
+                hex::encode([0xab; 16]),
+                "signed_op is not a SignedNamespaceOp",
+            ),
+            (
+                "a join whose signature does not verify",
+                hex::encode(borsh::to_vec(&forged).unwrap()),
+                "signature does not verify",
+            ),
+            (
+                "a join carrying another invitation than the one presented",
+                hex::encode(borsh::to_vec(&under_another_invitation).unwrap()),
+                "not the invitation presented",
+            ),
+        ] {
+            let (status, answer) =
+                post_json_uncredentialed(router.clone(), &admit_uri(), &body(&named, &signed_op))
+                    .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{case}: {answer}");
+            assert!(answer.contains(expect), "{case}: {answer}");
+        }
+
+        // A well-formed join whose invitation's inviter signature is worthless.
+        let unsigned = signed_join(&joiner, named.clone());
+        let (status, answer) = post_json_uncredentialed(
+            router,
+            &admit_uri(),
+            &body(&named, &hex::encode(borsh::to_vec(&unsigned).unwrap())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+        assert!(answer.contains("invitation rejected"), "{answer}");
     }
 }

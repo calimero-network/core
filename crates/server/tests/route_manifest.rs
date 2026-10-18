@@ -168,3 +168,55 @@ fn route_manifest_matches_source() {
          regenerate: UPDATE_MANIFEST=1 cargo test -p calimero-server --test route_manifest",
     );
 }
+
+/// The source text between `start` and the first `end` after it.
+fn region<'a>(src: &'a str, start: &str, end: &str) -> &'a str {
+    let from = src
+        .find(start)
+        .unwrap_or_else(|| panic!("`{start}` is not in admin/service.rs"));
+    let rest = &src[from..];
+    let to = rest
+        .find(end)
+        .unwrap_or_else(|| panic!("`{end}` does not follow `{start}`"));
+    &rest[..to]
+}
+
+/// Direct admission is served without a credential, on every node.
+///
+/// Its caller holds only a device key, so a route behind the auth guard answers
+/// it `401` before the signed op that authorizes it is read. `endpoints.json`
+/// lists the route but not the router it is on, so the manifest alone cannot
+/// see it move back; this does. The route lives in `admission_routes`, which
+/// the public router merges unconditionally, and the protected router names it
+/// nowhere.
+#[test]
+fn direct_admission_is_on_the_public_router() {
+    let src = include_str!("../src/admin/service.rs");
+    let admit = format!("POST {ADMIN_PREFIX}/namespaces/{{namespace_id}}/admit");
+
+    let mut admission = BTreeSet::new();
+    collect(
+        region(src, "fn admission_routes()", "\n}\n"),
+        "",
+        &mut admission,
+    );
+    assert_eq!(admission, BTreeSet::from([admit.clone()]));
+
+    let protected = region(src, "let protected_routes", "let public_routes");
+    let mut guarded = BTreeSet::new();
+    collect(protected, "", &mut guarded);
+    assert!(
+        !guarded.contains(&admit),
+        "{admit} is back behind the auth guard"
+    );
+    assert!(
+        !protected.contains("admission_routes"),
+        "the protected router merges admission_routes"
+    );
+
+    let public = region(src, "let public_routes", "Some((admin_path");
+    assert!(
+        public.contains(".merge(admission_routes())"),
+        "the public router must merge admission_routes unconditionally"
+    );
+}

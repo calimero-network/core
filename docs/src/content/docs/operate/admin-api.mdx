@@ -378,7 +378,7 @@ the path parameter — these are reproduced exactly as routed below.
 | DELETE | `/admin-api/namespaces/:namespace_id` | Delete a namespace. |
 | POST | `/admin-api/namespaces/:namespace_id/invite` | Invite into a namespace. Body may name `admitters` and `admitterAddrs` — see [below](#invitation-body-admitters-and-addresses). |
 | POST | `/admin-api/namespaces/:namespace_id/join` | Join a namespace. A refusal carries a `code` — see [below](#join-refusals). |
-| POST | `/admin-api/namespaces/:namespace_id/admit` | Publish a join signed by a keyholder that has no node of its own. See [Direct Admission](/protocol/direct-admission/). |
+| POST | `/admin-api/namespaces/:namespace_id/admit` | Publish a join signed by a keyholder that has no node of its own. Takes **no credential** on any node: the signed op is the authorization, and a node the invitation does not name refuses it `403`. A join already applied here answers `published: false`. See [Direct Admission](/protocol/direct-admission/#served-without-a-credential). |
 | POST | `/admin-api/namespaces/:namespace_id/leave` | Leave a namespace. |
 | GET | `/admin-api/namespaces/:namespace_id/revoked-devices` | Device ids revoked in the namespace (`revokedDevices`) and `sha256(account \|\| device)` of devices an account withdrew there (`withdrawnSlots`). Admin only, on a member node. |
 | GET | `/admin-api/namespaces/for-application/:application_id` | List namespaces for an application. |
