@@ -131,7 +131,7 @@ never asks the inheritance questions itself; `crates/context` is what calls them
 | `SetWriters { object, .. }` | `AclView::is_owner(author, object)` (holds `ADMIN` on `object`) | `NotOwner` |
 | `SharedWritersRotated { prior, .. }` | `prior[author]` holds `ADMIN` | `NotOwner` |
 | `MemberAdded` / `MemberRemoved { group, .. }` | `AclView::is_group_admin(author, group)` | `NotGroupAdmin` |
-| `SubgroupVisibilitySet { scope, .. }` | `is_group_admin(author, scope-as-group)` | `NotGroupAdmin` |
+| `SubgroupVisibilitySet { scope, restricted }` | closing, or the namespace root (`scope == op.scope`): `is_group_admin(author, scope-as-group)`; opening a subgroup: `is_group_creator`, so a cut without its creation opens nothing | `NotGroupAdmin` / `NotGroupCreator` |
 | `DefaultCapabilitiesSet` / `MemberCapabilitySet { group, .. }` | `is_group_admin(author, group)` | `NotGroupAdmin` |
 | `AdminChanged` / `PolicyUpdated` / `SubgroupCreated` / `SubgroupReparented` / `SubgroupDeleted` | `AclView::is_root_admin(author)` | `NotRootAdmin` |
 | `Noop` | always `Ok(())` - a graph-only node, mutates nothing | - |
