@@ -309,7 +309,7 @@ impl NamespaceGovernance<'_> {
                     held_ops.release(delta_id)?;
                     tracing::info!(
                         group_id = %hex::encode(group_id.to_bytes()),
-                        "replayed a group op once its key arrived"
+                        "retried encrypted op after KeyDelivery"
                     );
                 } else {
                     record_namespace_retry_event("nonce_skip");
