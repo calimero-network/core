@@ -3061,6 +3061,64 @@ mod tests {
         }
     }
 
+    /// Every SortedIndex row in the store, as the live column holds it.
+    fn index_rows(store: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
+        store
+            .raw_scan(
+                calimero_store::db::Column::SortedIndex,
+                &[],
+                &[0xFF; 64],
+                None,
+            )
+            .expect("scan index")
+    }
+
+    /// An aborted migration leaves no ordered-index rows, and a committed one flushes them.
+    #[tokio::test]
+    async fn migration_abort_leaves_no_sorted_index_rows() {
+        use calimero_runtime::store::Storage as _;
+
+        let store = create_test_store();
+        let context_id = ContextId::from([7u8; 32]);
+        let mut context = create_test_context(context_id, ApplicationId::from([12u8; 32]));
+        let executor = PublicKey::from([8u8; 32]);
+        let projections = Arc::new(std::sync::RwLock::new(
+            crate::scope_projection::ScopeProjections::new(),
+        ));
+        let v2_bytes = borsh::to_vec(&"v2".to_owned()).expect("serialize v2");
+
+        let mut staging =
+            crate::handlers::execute::storage_at_current_cut(&store, &projections, context_id)
+                .expect("storage");
+        assert!(staging.index_set(b"coll-key", b"row"));
+        assert_eq!(staging.index_scan(b"", &[0xFF; 16], 0, None).len(), 1);
+        assert!(super::commit_or_abort_migration(
+            &store,
+            &mut context,
+            &v2_bytes,
+            executor,
+            super::MigrationGateDecision::Abort,
+            staging,
+        )
+        .is_err());
+        assert!(index_rows(&store).is_empty(), "abort must drop index rows");
+
+        let mut staging =
+            crate::handlers::execute::storage_at_current_cut(&store, &projections, context_id)
+                .expect("storage");
+        assert!(staging.index_set(b"coll-key", b"row"));
+        super::commit_or_abort_migration(
+            &store,
+            &mut context,
+            &v2_bytes,
+            executor,
+            super::MigrationGateDecision::Commit,
+            staging,
+        )
+        .expect("commit");
+        assert_eq!(index_rows(&store).len(), 1, "commit must flush index rows");
+    }
+
     /// The gate-decision seam: every commit/abort decision funnels through one
     /// [`MigrationGateDecision`] so a future canary-subgroup gate (deferred) can
     /// supply the decision later without touching `commit_or_abort_migration`.
