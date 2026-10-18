@@ -148,6 +148,15 @@ pub(crate) mod tests {
         admin_sk: &PrivateKey,
         group: ContextGroupId,
     ) -> calimero_context_config::types::SignedGroupOpenInvitation {
+        invitation_with(admin_sk, group, [0x42; 32], Vec::new())
+    }
+
+    fn invitation_with(
+        admin_sk: &PrivateKey,
+        group: ContextGroupId,
+        nonce: [u8; 32],
+        admitters: Vec<calimero_account::AccountId>,
+    ) -> calimero_context_config::types::SignedGroupOpenInvitation {
         use sha2::{Digest, Sha256};
         let invitation = calimero_context_config::types::GroupInvitationFromAdmin {
             inviter_identity: calimero_context_config::types::SignerId::from(
@@ -155,9 +164,9 @@ pub(crate) mod tests {
             ),
             group_id: group,
             expiration_timestamp: 0,
-            invitation_nonce: [0x42; 32],
+            invitation_nonce: nonce,
             invited_role: 1,
-            admitters: Vec::new(),
+            admitters,
         };
         let bytes = borsh::to_vec(&invitation).unwrap();
         let signature = admin_sk.sign(&Sha256::digest(&bytes)).unwrap();
@@ -1587,33 +1596,12 @@ pub(crate) mod tests {
         joiner_sk: &PrivateKey,
         key: &[u8; 32],
     ) -> SignedNamespaceOp {
-        use sha2::{Digest, Sha256};
         let owner = crate::test_support::account_for(&owner_sk.public_key());
         let member = crate::test_support::account_for(&joiner_sk.public_key());
         let nonce = [0x43; 32];
-        let invitation = calimero_context_config::types::GroupInvitationFromAdmin {
-            inviter_identity: calimero_context_config::types::SignerId::from(
-                *owner_sk.public_key().digest(),
-            ),
-            group_id: ns,
-            expiration_timestamp: 0,
-            invitation_nonce: nonce,
-            invited_role: 1,
-            admitters: vec![owner],
-        };
-        let signature = owner_sk
-            .sign(&Sha256::digest(borsh::to_vec(&invitation).unwrap()))
-            .unwrap();
         let join = RootOp::MemberJoined {
             member,
-            signed_invitation: calimero_context_config::types::SignedGroupOpenInvitation {
-                inviter_account: None,
-                invitation,
-                inviter_signature: hex::encode(signature.to_bytes()),
-                application_id: None,
-                bytecode_id: None,
-                admitter_addrs: Vec::new(),
-            },
+            signed_invitation: invitation_with(owner_sk, ns, nonce, vec![owner]),
             account: crate::test_support::credential(&joiner_sk.public_key()),
         };
         let mut signed = SignedNamespaceOp::sign(
