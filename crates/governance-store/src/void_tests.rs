@@ -2807,3 +2807,69 @@ fn an_owner_a_void_transfer_moved_is_not_read_live_at_a_cut_holding_a_parked_op(
         "the row a void transfer moved was read as the owner: {owner:?}"
     );
 }
+
+/// A rollback's visibility event is announced only once the removal that caused it is
+/// logged, like every other event of an applied op.
+#[test]
+#[serial_test::serial]
+fn a_rollbacks_visibility_event_fires_after_the_removal_is_logged() {
+    use std::sync::{Arc, Barrier};
+
+    use crate::op_events::{self, OpEvent};
+
+    let w = World::new();
+    let founding = w.founded();
+    let (create, subgroup) = alice_creates_a_restricted_subgroup(&w, &founding[2]);
+    w.apply(&create)
+        .expect("alice creates a Restricted subgroup");
+    let flip = sign_in_group(
+        &w,
+        &w.alice,
+        subgroup,
+        &[&create],
+        &GroupOp::SubgroupVisibilitySet {
+            mode: VisibilityMode::Open,
+        },
+    );
+    w.apply(&flip).expect("alice's flip applies first");
+    let removal = w.remove(&w.owner, &[&create], &w.alice, None);
+    let removal_id = removal.content_hash().expect("hash");
+
+    let mut rx = op_events::subscribe();
+    let observer_store = w.store.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let observer_barrier = Arc::clone(&barrier);
+    let observer = std::thread::spawn(move || {
+        observer_barrier.wait();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(OpEvent::SubgroupVisibilityChanged {
+                    group_id,
+                    open: false,
+                }) if group_id == subgroup.to_bytes() => {
+                    return Some(
+                        crate::NamespaceOpLogService::new(&observer_store, NS.into())
+                            .contains_op(removal_id)
+                            .expect("read the log"),
+                    );
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                    panic!("observer lagged by {n} events: inconclusive");
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
+                _ => std::thread::yield_now(),
+            }
+        }
+        None
+    });
+    barrier.wait();
+    w.apply(&removal)
+        .expect("the removal applies and rolls the flip back");
+
+    assert_eq!(
+        observer.join().expect("the observer"),
+        Some(true),
+        "the rollback announced its visibility before the removal was logged"
+    );
+}

@@ -377,7 +377,7 @@ impl<'a> NamespaceGovernance<'a> {
 
         let AppliedPayload {
             result,
-            root_events,
+            mut root_events,
             unified: applied,
             keep_bytes,
             parked,
@@ -410,7 +410,7 @@ impl<'a> NamespaceGovernance<'a> {
         // An op that takes authority away may void ops already applied. Done before
         // the op is stored, so a failure leaves it to be applied again.
         if let Some(applied) = applied.as_ref().filter(|op| may_void_others(op)) {
-            self.reconcile_voided(Some((applied, op, delta_id)))?;
+            root_events.extend(self.reconcile_voided(Some((applied, op, delta_id)))?);
         }
         // Recorded whatever the verdict: a reuse is refused by the op it copies being
         // logged in its past, so a node that could not read or refused it answers alike.

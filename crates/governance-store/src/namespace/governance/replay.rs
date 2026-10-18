@@ -119,7 +119,10 @@ impl NamespaceGovernance<'_> {
         // A key that arrives late replays ops that may include a removal, or ops a
         // removal voids; what they wrote is rebuilt once, after all of them.
         if replay.applied > 0 {
-            self.reconcile_voided(None)?;
+            // Every replayed op is logged already.
+            for event in self.reconcile_voided(None)? {
+                crate::op_events::notify(event);
+            }
         }
         Ok(replay)
     }
