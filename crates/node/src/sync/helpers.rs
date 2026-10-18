@@ -1926,7 +1926,12 @@ pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calimero_governance_store::{AbsorbRecord, AbsorbRepository};
     use calimero_primitives::application::ApplicationId;
+    use calimero_store::key::AbsorbBufferKey;
+
+    const V1: [u8; 32] = [0x11; 32]; // the release a behind context still runs
+    const V2: [u8; 32] = [0x22; 32]; // its group's target release
 
     fn leaf_under(schema: Option<[u8; 32]>) -> TreeLeafData {
         let mut metadata = LeafMetadata::new(CrdtType::lww_register(), 100, [0; 32]);
@@ -1956,21 +1961,80 @@ mod tests {
 
     #[test]
     fn a_node_holds_absorbed_only_for_a_release_it_has_not_switched_to() {
-        let store = Store::new(std::sync::Arc::new(calimero_store::db::InMemoryDB::owned()));
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
         let context_id = ContextId::from([0xCC; 32]);
-        let repo = calimero_governance_store::AbsorbRepository::new(&store);
-        assert!(!holds_absorbed(&store, &context_id));
+        let repo = AbsorbRepository::new(&store);
 
-        let mut parked =
-            calimero_governance_store::AbsorbRecord::from_leaf([1; 32], vec![1], [9; 32]);
+        repo.save(
+            &context_id,
+            V2,
+            &AbsorbRecord::from_leaf([1; 32], vec![1], V2),
+        )
+        .unwrap();
+        assert!(
+            !holds_absorbed(&store, &context_id),
+            "a context in no group has no release to be behind on"
+        );
+        repo.delete(&context_id, V2, [1; 32]).unwrap();
+
+        crate::test_support::seed_context_release(&store, &context_id, V1, V2);
+        let mut parked = AbsorbRecord::from_leaf([2; 32], vec![2], V2);
         parked.pending_application = Some([5; 32]);
-        repo.save(&context_id, [9; 32], &parked).unwrap();
-        assert!(!holds_absorbed(&store, &context_id));
+        repo.save(&context_id, [5; 32], &parked).unwrap();
+        assert!(
+            !holds_absorbed(&store, &context_id),
+            "parked on an application"
+        );
 
-        let behind = calimero_governance_store::AbsorbRecord::from_leaf([2; 32], vec![2], [9; 32]);
-        repo.save(&context_id, [9; 32], &behind).unwrap();
+        repo.save(
+            &context_id,
+            V1,
+            &AbsorbRecord::from_leaf([3; 32], vec![3], V1),
+        )
+        .unwrap();
+        assert!(
+            !holds_absorbed(&store, &context_id),
+            "a lagging peer's leaf under the loaded release"
+        );
+
+        repo.save(
+            &context_id,
+            V2,
+            &AbsorbRecord::from_leaf([4; 32], vec![4], V2),
+        )
+        .unwrap();
         assert!(holds_absorbed(&store, &context_id));
         assert!(!holds_absorbed(&store, &ContextId::from([0xCD; 32])));
+    }
+
+    #[test]
+    fn a_node_on_its_target_release_does_not_hold_absorbed() {
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        let context_id = ContextId::from([0xCC; 32]);
+        crate::test_support::seed_context_release(&store, &context_id, V2, V2);
+        AbsorbRepository::new(&store)
+            .save(
+                &context_id,
+                V2,
+                &AbsorbRecord::from_leaf([1; 32], vec![1], V2),
+            )
+            .unwrap();
+        assert!(!holds_absorbed(&store, &context_id));
+    }
+
+    #[test]
+    fn an_undecodable_record_for_the_target_still_holds_the_context() {
+        let store = Store::new(std::sync::Arc::new(InMemoryDB::owned()));
+        let context_id = ContextId::from([0xCC; 32]);
+        crate::test_support::seed_context_release(&store, &context_id, V1, V2);
+        let mut handle = store.handle();
+        handle
+            .put(
+                &AbsorbBufferKey::new(*context_id.as_ref(), V2, [1; 32]),
+                &vec![0xFF],
+            )
+            .unwrap();
+        assert!(holds_absorbed(&store, &context_id));
     }
 
     fn leaf(len: usize) -> TreeLeafData {

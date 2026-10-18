@@ -829,6 +829,81 @@ mod tests {
 }
 
 #[cfg(test)]
+mod release_switch_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use calimero_governance_store::{AbsorbRecord, AbsorbRepository};
+    use calimero_node_primitives::sync::SyncProtocol;
+    use calimero_primitives::context::ContextId;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use dashmap::DashMap;
+    use libp2p::PeerId;
+
+    use super::waits_for_release_switch;
+    use crate::sync::session::SessionTracker;
+    use crate::sync_session_bridge::SyncSessionResult;
+    use crate::test_support::seed_context_release;
+
+    const V1: [u8; 32] = [0x11; 32]; // the release the context still runs
+    const V2: [u8; 32] = [0x22; 32]; // its group's target release
+    const CONTEXT: [u8; 32] = [0xCC; 32];
+
+    /// A tracker whose last session for `context` finished just now.
+    fn just_synced(context: ContextId) -> SessionTracker {
+        let mut tracker = SessionTracker::new(
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+            Arc::new(DashMap::new()),
+            None,
+        );
+        let generation = tracker.begin_dispatch_generation(context);
+        tracker.record_dispatch_succeeded(context, true);
+        tracker.apply_result(SyncSessionResult {
+            context_id: context,
+            peer_id: PeerId::random(),
+            took: Duration::ZERO,
+            generation,
+            result: Ok(Ok(SyncProtocol::None)),
+        });
+        tracker
+    }
+
+    /// A store where the context runs `V1`, targets `V2`, and holds one record produced on `slot`.
+    fn holding_a_record_under(slot: [u8; 32]) -> Store {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let context = ContextId::from(CONTEXT);
+        seed_context_release(&store, &context, V1, V2);
+        AbsorbRepository::new(&store)
+            .save(
+                &context,
+                slot,
+                &AbsorbRecord::from_leaf([1; 32], vec![1], slot),
+            )
+            .expect("save the record");
+        store
+    }
+
+    #[test]
+    fn a_context_holding_a_record_for_its_target_waits() {
+        let context = ContextId::from(CONTEXT);
+        let tracker = just_synced(context);
+        let store = holding_a_record_under(V2);
+        assert!(waits_for_release_switch(&tracker, &store, &context, false));
+        assert!(!waits_for_release_switch(&tracker, &store, &context, true));
+    }
+
+    #[test]
+    fn a_context_holding_only_a_lagging_peers_record_does_not_wait() {
+        let context = ContextId::from(CONTEXT);
+        let tracker = just_synced(context);
+        let store = holding_a_record_under(V1);
+        assert!(!waits_for_release_switch(&tracker, &store, &context, false));
+    }
+}
+
+#[cfg(test)]
 mod tee_admission_tests {
     //! The loop keeps serving while a direct TEE admission is in flight.
     //!
