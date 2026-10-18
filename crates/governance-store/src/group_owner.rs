@@ -19,11 +19,11 @@ use crate::{MetaRepository, NamespaceRepository, OpenedNamespaceOp};
 enum Logged {
     Owner(AccountId),
     NeverTransferred,
-    Unread,
+    Unknown,
 }
 
 /// `group`'s owner at `parents`: the causally latest transfer of it there, else the account
-/// its creation in the cut names; live only where the cut is sound.
+/// its creation in the cut names; live only where no transfer moved it or the cut is sound.
 pub(crate) fn owner_at_cut(
     store: &Store,
     group: &ContextGroupId,
@@ -33,9 +33,11 @@ pub(crate) fn owner_at_cut(
     if !parents.is_empty() {
         match owner_in_log(store, group, parents)? {
             Logged::Owner(owner) => return Ok(Some(owner)),
+            // No transfer moved the live row, whatever the cut lacks.
+            Logged::NeverTransferred => {}
             // A node outside `group` is never served the key its sealed history needs, so
             // the namespace ops it judges (a deletion, a leave) read what its own rows hold.
-            Logged::NeverTransferred | Logged::Unread => {
+            Logged::Unknown => {
                 if !authorizer.can_resolve_cut(group, parents)
                     && !authorizer.history_sealed_in_group(group, parents)
                 {
@@ -64,32 +66,45 @@ fn owner_in_log(store: &Store, group: &ContextGroupId, parents: &[[u8; 32]]) -> 
     let voided = VoidLedger::new(store, namespace).voided()?;
     let mut new_owners = HashMap::new();
     let mut transfers = Vec::new();
+    let mut moved_by_void = false;
     for entry in op_log.collect_signed_group_ops_for_group(group.to_bytes())? {
         let id = entry
             .signed_op
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
         let opened = OpenedNamespaceOp::open(store, &entry.signed_op);
-        if opened.refused || voided.contains(&id) {
+        let void = voided.contains(&id);
+        if opened.refused {
             continue;
         }
         let Some(op) = opened.group_op else {
-            return Ok(Logged::Unread);
+            if void {
+                continue;
+            }
+            return Ok(Logged::Unknown);
         };
         let op = match op.into_unguarded() {
             GroupOp::OnBehalf { op, .. } => *op,
             op => op,
         };
         if let GroupOp::TransferOwnership { new_owner } = op {
-            let _ = new_owners.insert(id, new_owner);
-            transfers.push(entry.signed_op);
+            // A void transfer that arrived before its voiding op still moved the live row.
+            moved_by_void |= void;
+            if !void {
+                let _ = new_owners.insert(id, new_owner);
+                transfers.push(entry.signed_op);
+            }
         }
     }
     if transfers.is_empty() {
-        return Ok(Logged::NeverTransferred);
+        return Ok(if moved_by_void {
+            Logged::Unknown
+        } else {
+            Logged::NeverTransferred
+        });
     }
     let Some(ancestry) = op_log.ancestry(parents)? else {
-        return Ok(Logged::Unread);
+        return Ok(Logged::Unknown);
     };
     let inside = transfers
         .into_iter()

@@ -2710,3 +2710,100 @@ fn a_flip_concurrent_with_its_creation_lands_the_same_in_either_order() {
         "the flip lands differently by arrival order"
     );
 }
+
+/// No transfer ever moved the namespace's owner, so its owner at a cut holding a parked op
+/// is the live one rather than undecidable until that op's key arrives.
+#[test]
+fn an_owner_no_transfer_moved_is_read_live_at_a_cut_holding_a_parked_op() {
+    let w = World::new();
+    let founding = w.founded();
+    // A root op sealed under a key this node does not hold yet: no op of the group itself.
+    let sealer = test_store();
+    let _ = GroupKeyring::new(&sealer, LogAuthorizer::group())
+        .store_key(&K_LATE)
+        .expect("the sealer holds the later key");
+    let parked = SignedNamespaceOp::sign(
+        &w.alice.sk,
+        NS.into(),
+        vec![founding[2].content_hash().expect("hash")],
+        w.next_nonce(&w.alice),
+        crate::test_fixtures::seal_for_test(
+            &sealer,
+            LogAuthorizer::group(),
+            crate::test_fixtures::group_created(w.alice.account, NS, true, 0x73),
+        ),
+    )
+    .expect("sign the sealed create");
+    w.apply(&parked).expect("the op parks unread");
+
+    let owner = crate::group_owner::owner_at_cut(
+        &w.store,
+        &LogAuthorizer::group(),
+        &[parked.content_hash().expect("hash")],
+        &LogAuthorizer::new(&w.store),
+    );
+
+    assert_eq!(
+        owner.map_err(|err| format!("{err:#}")),
+        Ok(Some(w.owner.account)),
+        "an owner no transfer moved was not read live"
+    );
+}
+
+/// A transfer judged void after it applied still moved the live owner, so the owner at a
+/// cut that does not read whole is undecidable rather than that moved row.
+#[test]
+fn an_owner_a_void_transfer_moved_is_not_read_live_at_a_cut_holding_a_parked_op() {
+    let w = World::new();
+    let founding = w.founded();
+    let transfer = w.sign(
+        &w.owner,
+        &[&founding[2]],
+        &crate::test_fixtures::guarded_group_op(
+            &w.store,
+            &LogAuthorizer::group(),
+            &w.owner.pk,
+            GroupOp::TransferOwnership {
+                new_owner: w.alice.account,
+            },
+        ),
+        None,
+    );
+    w.apply(&transfer).expect("the owner transfers to alice");
+    let transfer_id = transfer.content_hash().expect("hash");
+    crate::void_ledger::VoidLedger::new(&w.store, NS.into())
+        .set_voided(&BTreeSet::from([transfer_id]))
+        .expect("the transfer is judged void after it applied");
+    let sealer = test_store();
+    let _ = GroupKeyring::new(&sealer, LogAuthorizer::group())
+        .store_key(&K_LATE)
+        .expect("the sealer holds the later key");
+    let parked = SignedNamespaceOp::sign(
+        &w.alice.sk,
+        NS.into(),
+        vec![transfer_id],
+        w.next_nonce(&w.alice),
+        crate::test_fixtures::seal_for_test(
+            &sealer,
+            LogAuthorizer::group(),
+            crate::test_fixtures::group_created(w.alice.account, NS, true, 0x74),
+        ),
+    )
+    .expect("sign the sealed create");
+    w.apply(&parked).expect("the op parks unread");
+
+    let owner = crate::group_owner::owner_at_cut(
+        &w.store,
+        &LogAuthorizer::group(),
+        &[parked.content_hash().expect("hash")],
+        &LogAuthorizer::new(&w.store),
+    );
+
+    assert!(
+        owner.as_ref().is_err_and(|err| matches!(
+            err.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::AuthorityUndecidable { .. })
+        )),
+        "the row a void transfer moved was read as the owner: {owner:?}"
+    );
+}
