@@ -68,6 +68,10 @@ fn app(
         .route("/admin-api/health", get(|| async { "alive" }))
         .route("/admin-api/contexts", get(echo).delete(echo))
         .route("/admin-api/contexts/{context_id}/intents", post(echo))
+        .route(
+            "/admin-api/contexts/{context_id}/presence-intents",
+            post(echo),
+        )
         .route("/admin-api/groups/{group_id}/context-intents", post(echo))
         .route("/admin-api/namespaces/{namespace_id}/admit", post(echo))
         .route(
@@ -1059,6 +1063,14 @@ async fn behind_an_auth_proxy_only_uncredentialed_routes_are_reachable_sealed() 
     assert_eq!(status, 200, "and delegated governance");
     assert_eq!(body, b"governance");
 
+    let presence = format!("/admin-api/contexts/{CONTEXT}/presence-intents");
+    let (status, body) = sealed_call(&transport, "POST", &presence, b"statement").await;
+    assert_eq!(
+        status, 200,
+        "an account's presence carries its own signed statement"
+    );
+    assert_eq!(body, b"statement");
+
     let (status, body) = sealed_call(&transport, "GET", "/admin-api/health", b"").await;
     assert_eq!(status, 200);
     assert_eq!(body, b"alive");
@@ -1100,6 +1112,11 @@ async fn delegated_execution_is_reachable_sealed_only_where_it_is_public() {
     assert_eq!(status, 403, "and delegated context creation with them");
     assert_eq!(error_code(&body), "sealed_route_unguarded");
 
+    let presence = format!("/admin-api/contexts/{CONTEXT}/presence-intents");
+    let (status, body) = sealed_call(&transport, "POST", &presence, b"").await;
+    assert_eq!(status, 403, "and an account's presence");
+    assert_eq!(error_code(&body), "sealed_route_unguarded");
+
     // Direct admission is public on every node, so it is sealable on every node.
     let admit = format!("/admin-api/namespaces/{CONTEXT}/admit");
     let (status, body) = sealed_call(&transport, "POST", &admit, b"join").await;
@@ -1124,6 +1141,7 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         "/admin-api/tee/attest".to_owned(),
         "/admin-api/tee/info".to_owned(),
         format!("/admin-api/contexts/{CONTEXT}/intents"),
+        format!("/admin-api/contexts/{CONTEXT}/presence-intents"),
         format!("/admin-api/groups/{CONTEXT}/context-intents"),
         format!("/admin-api/groups/{CONTEXT}/governance-intents"),
         format!("/admin-api/namespaces/{CONTEXT}/admit"),
@@ -1140,6 +1158,15 @@ fn the_uncredentialed_scope_matches_paths_exactly() {
         format!("/admin-api/contexts/{CONTEXT}/intents/extra"),
         format!("/admin-api/contexts/{CONTEXT}/storage"),
         "/admin-api/contexts/../intents".to_owned(),
+        format!(
+            "/admin-api/contexts/{}/presence-intents",
+            CONTEXT.to_uppercase()
+        ),
+        format!("/admin-api/contexts/{}/presence-intents", &CONTEXT[1..]),
+        format!("/admin-api/contexts/{CONTEXT}/presence-intents/"),
+        format!("/admin-api/contexts/{CONTEXT}/presence-intents/extra"),
+        format!("/admin-api/groups/{CONTEXT}/presence-intents"),
+        "/admin-api/contexts/../presence-intents".to_owned(),
         format!(
             "/admin-api/groups/{}/context-intents",
             CONTEXT.to_uppercase()
