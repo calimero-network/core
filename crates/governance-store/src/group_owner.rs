@@ -13,7 +13,10 @@ use eyre::{bail, Result as EyreResult};
 use crate::authorizer::AtCutAuthorizer;
 use crate::namespace::{order_causally, NamespaceOpLogService};
 use crate::void_ledger::VoidLedger;
-use crate::{MetaRepository, NamespaceRepository, OpenedNamespaceOp};
+use crate::{
+    GenesisKind, MetaRepository, NamespaceFoundingRepository, NamespaceRepository,
+    OpenedNamespaceOp,
+};
 
 /// What `group`'s logged transfers say of its owner at a cut.
 enum Logged {
@@ -49,6 +52,31 @@ pub(crate) fn owner_at_cut(
     Ok(MetaRepository::new(store)
         .load(group)?
         .map(|meta| meta.owner_identity))
+}
+
+/// The account that founded `namespace`: what its founding row or its logged genesis names,
+/// else the live meta of a store holding neither. A transfer never moves it.
+pub fn namespace_founder(
+    store: &Store,
+    namespace: &ContextGroupId,
+) -> EyreResult<Option<AccountId>> {
+    if let Some((founder, _)) = NamespaceFoundingRepository::new(store).get(namespace)? {
+        return Ok(Some(founder));
+    }
+    let id = NamespaceId::from(namespace.to_bytes());
+    let logged = NamespaceOpLogService::new(store, id)
+        .collect_root_ops()?
+        .into_iter()
+        .find_map(|op| match op.op {
+            NamespaceOp::Root(root) => first_owner(&root, namespace, &id),
+            _ => None,
+        });
+    if logged.is_some() {
+        return Ok(logged);
+    }
+    Ok(MetaRepository::new(store)
+        .load(namespace)?
+        .map(|meta| meta.admin_identity))
 }
 
 fn undecidable(group: &ContextGroupId) -> crate::ApplyError {
@@ -143,12 +171,96 @@ fn first_owner(
         RootOp::GroupCreated {
             group_id, admin, ..
         } if group_id == group => Some(*admin),
-        RootOp::NamespaceCreatedV2 { founder, .. }
-        | RootOp::AccountNamespaceCreated { founder, .. }
-            if group.to_bytes() == namespace.to_bytes() =>
+        // A genesis logged on an established namespace applied as a no-op, so only one
+        // that derives the id names its founder.
+        RootOp::NamespaceCreatedV2 { founder, salt, .. }
+            if group.to_bytes() == namespace.to_bytes()
+                && GenesisKind::Ordinary.derives(&namespace.to_bytes(), founder, salt) =>
+        {
+            Some(*founder)
+        }
+        RootOp::AccountNamespaceCreated { founder, salt, .. }
+            if group.to_bytes() == namespace.to_bytes()
+                && GenesisKind::AccountNamespace.derives(&namespace.to_bytes(), founder, salt) =>
         {
             Some(*founder)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_context_client::local_governance::SignedNamespaceOp;
+    use calimero_primitives::identity::PrivateKey;
+
+    use super::*;
+    use crate::namespace::NamespaceGovernance;
+    use crate::test_fixtures::{namespace_genesis_v2_for, sample_meta_with_admin, test_store};
+
+    const SALT: [u8; 32] = [0x5D; 32];
+
+    fn sk(seed: u8) -> PrivateKey {
+        PrivateKey::from([seed; 32])
+    }
+
+    /// `founder`'s genesis, signed, and the namespace it founds.
+    fn genesis(founder: &PrivateKey) -> (SignedNamespaceOp, AccountId, ContextGroupId) {
+        let (op, account, id) = namespace_genesis_v2_for(founder, SALT);
+        let signed = SignedNamespaceOp::sign(founder, id.into(), vec![], 0, op).expect("sign");
+        (signed, account, ContextGroupId::from(id))
+    }
+
+    fn move_meta_admin(store: &Store, namespace: &ContextGroupId, to: AccountId) {
+        MetaRepository::new(store)
+            .save(namespace, &sample_meta_with_admin(to))
+            .expect("write the meta");
+    }
+
+    #[test]
+    fn the_founder_outlives_a_transfer_of_the_meta_admin() {
+        let store = test_store();
+        let (signed, founder, namespace) = genesis(&sk(0x51));
+        let _applied = NamespaceGovernance::new(&store, namespace.to_bytes().into())
+            .apply_signed_op(&signed)
+            .expect("the genesis applies");
+        move_meta_admin(&store, &namespace, AccountId::from([0x52; 32]));
+
+        assert_eq!(
+            namespace_founder(&store, &namespace).unwrap(),
+            Some(founder)
+        );
+    }
+
+    #[test]
+    fn without_a_founding_row_the_logged_genesis_names_the_founder() {
+        let store = test_store();
+        let (signed, founder, namespace) = genesis(&sk(0x53));
+        NamespaceOpLogService::new(&store, namespace.to_bytes().into())
+            .store_signed_operation(&signed)
+            .expect("log the genesis");
+        move_meta_admin(&store, &namespace, AccountId::from([0x54; 32]));
+
+        assert_eq!(
+            namespace_founder(&store, &namespace).unwrap(),
+            Some(founder)
+        );
+    }
+
+    #[test]
+    fn a_logged_genesis_that_does_not_derive_the_id_names_no_founder() {
+        let store = test_store();
+        let (_, _, namespace) = genesis(&sk(0x55));
+        let (forged, _, _) = namespace_genesis_v2_for(&sk(0x56), SALT);
+        let forged =
+            SignedNamespaceOp::sign(&sk(0x56), namespace.to_bytes().into(), vec![], 0, forged)
+                .expect("sign");
+        NamespaceOpLogService::new(&store, namespace.to_bytes().into())
+            .store_signed_operation(&forged)
+            .expect("log the forgery");
+        let live = AccountId::from([0x57; 32]);
+        move_meta_admin(&store, &namespace, live);
+
+        assert_eq!(namespace_founder(&store, &namespace).unwrap(), Some(live));
     }
 }

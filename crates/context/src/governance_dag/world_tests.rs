@@ -2583,10 +2583,9 @@ mod concurrent {
         transfer_and_leave(Some(0xC2)).await;
     }
 
-    /// With no other admin row, the last-admin check counts the namespace's genesis admin,
-    /// which the projection takes from the live meta a transfer that landed first moved.
+    /// With no other admin row, the last-admin check counts the namespace's owner at the
+    /// leave's cut, never the one a transfer that landed first made.
     #[actix::test]
-    #[ignore = "the projection's AuthorityBase reads the namespace admin from live meta"]
     async fn a_leave_of_the_incoming_owner_as_the_only_admin_row_lands_the_same_in_either_order() {
         transfer_and_leave(None).await;
     }

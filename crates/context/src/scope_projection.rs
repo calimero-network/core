@@ -27,7 +27,7 @@ use calimero_governance_store::metrics::{
     record_at_cut_undecidable, UndecidableCause, UndecidableRemedy,
 };
 use calimero_governance_store::{
-    CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
+    namespace_founder, CapabilitiesRepository, DenyListRepository, MembershipRepository,
     NamespaceDagService, NamespaceOpLogService, NamespaceRepository, OpenedNamespaceOp,
     ReentryAtCut,
 };
@@ -119,19 +119,19 @@ fn account_for_author(view: &calimero_authz::AclView, key: &PublicKey) -> Option
 }
 
 /// The two immutable bases every at-cut membership walk in a namespace takes:
-/// the namespace root's genesis admin (no governance op carries it) and the
-/// root's default member capability (`CAN_JOIN_OPEN_SUBGROUPS` is set there at
-/// creation as a store write, not an op) — the inheritance walk's cap fallback.
+/// the namespace root's founder (a transfer at a cut replaces it, see
+/// `AclView::root_at_cut`) and the root's default member capability
+/// (`CAN_JOIN_OPEN_SUBGROUPS` is set there at creation as a store write, not an
+/// op) — the inheritance walk's cap fallback.
 fn membership_bases(
     store: &Store,
     namespace_id: [u8; 32],
 ) -> (Option<(ContextGroupId, AccountId)>, u32) {
     let root_group = ContextGroupId::from(namespace_id);
-    let root = MetaRepository::new(store)
-        .load(&root_group)
+    let root = namespace_founder(store, &root_group)
         .ok()
         .flatten()
-        .map(|meta| (root_group, meta.admin_identity));
+        .map(|founder| (root_group, founder));
     let default_cap_base = CapabilitiesRepository::new(store)
         .default_capabilities(&root_group)
         .ok()
@@ -308,10 +308,9 @@ impl Deref for StateRef<'_> {
 pub(crate) fn authority_base(store: &Store, namespace_id: [u8; 32]) -> Option<AuthorityBase> {
     let root_group = ContextGroupId::from(namespace_id);
     Some(AuthorityBase {
-        root: MetaRepository::new(store)
-            .load(&root_group)
+        root: namespace_founder(store, &root_group)
             .ok()?
-            .map(|meta| (root_group, meta.admin_identity)),
+            .map(|founder| (root_group, founder)),
         default_cap_base: CapabilitiesRepository::new(store)
             .default_capabilities(&root_group)
             .ok()?
@@ -583,8 +582,8 @@ impl ScopeProjections {
                 .get(group)
                 .into_iter()
                 .chain(view.root_admin.as_ref())
-                .chain(base.root.as_ref().map(|(_, owner)| owner))
                 .copied()
+                .chain(view.root_at_cut(base.root).map(|(_, owner)| owner))
                 .collect(),
             visibility: view
                 .subgroups
@@ -1466,17 +1465,7 @@ impl ScopeProjections {
         namespace_id: [u8; 32],
         group: &ContextGroupId,
     ) -> std::collections::BTreeSet<AccountId> {
-        let root_group = ContextGroupId::from(namespace_id);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
-        let default_cap_base = CapabilitiesRepository::new(store)
-            .default_capabilities(&root_group)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
+        let (root, default_cap_base) = membership_bases(store, namespace_id);
         Self::member_accounts_in_view_with_ctx(
             view,
             store,
@@ -1488,11 +1477,11 @@ impl ScopeProjections {
     }
 
     /// [`member_accounts_in_view`](Self::member_accounts_in_view) with the
-    /// genesis `root` tuple + `default_cap_base` supplied by the caller instead of
+    /// founder `root` tuple + `default_cap_base` supplied by the caller instead of
     /// re-read here. `member_entries_with` passes the SAME values its role walk
     /// (`member_path_at_cut`) uses, so the candidate filter and the role resolution
     /// can't disagree on the admin/cap base across two store reads, and the
-    /// `MetaRepository`/`CapabilitiesRepository` reads happen once per request.
+    /// founder/`CapabilitiesRepository` reads happen once per request.
     #[must_use]
     pub fn member_accounts_in_view_with_ctx(
         view: &calimero_authz::AclView,
@@ -1517,8 +1506,8 @@ impl ScopeProjections {
             candidates.extend(members.keys().copied());
         }
         candidates.extend(view.group_admin.values().copied());
-        if let Some((_, admin)) = root {
-            let _ = candidates.insert(admin);
+        if let Some((_, owner)) = view.root_at_cut(root) {
+            let _ = candidates.insert(owner);
         }
 
         let deny = DenyListRepository::new(store);
@@ -1995,10 +1984,10 @@ impl ScopeProjections {
         // admin (subgroup creator / `Admin` role), or inherited through an open-
         // subgroup chain — a faithful port of the live `check_path` +
         // `acl_view_at` carve-outs, but over the cut's state, so a membership the
-        // cut revoked (e.g. remove-from-root) is NOT granted. The ONLY live read
-        // is the immutable namespace-root genesis admin (no governance op carries
-        // it); every mutable input — memberships, caps, visibility, the subgroup
-        // tree, subgroup-creator admin — comes from the fold.
+        // cut revoked (e.g. remove-from-root) is NOT granted. The ONLY store read
+        // is the immutable namespace founder, whom a transfer in the cut replaces;
+        // every mutable input — memberships, caps, visibility, the subgroup tree,
+        // subgroup-creator admin — comes from the fold.
         let view = self.acl_view_at(&scope, heads);
         let (root, default_cap_base) = membership_bases(store, namespace_id);
         if view.as_ref().is_some_and(|v| {
@@ -2384,8 +2373,8 @@ impl ScopeProjections {
     /// reads.
     ///
     /// `member` is an admin via a direct `Admin`-role row OR the genesis admin
-    /// (`group_admin` / namespace-root). "another admin" = another `Admin`-role ROW
-    /// (`groups[group]`) OR the genesis admin when it is some other identity.
+    /// (`group_admin`, or the namespace owner at the cut). "another admin" = another
+    /// `Admin`-role ROW (`groups[group]`) OR the genesis admin when it is some other identity.
     ///
     /// Causal position: this reads the op's PARENT cut (admin set as of the op's own
     /// ancestry) — the correct state for a pre-mutation invariant — whereas the live
@@ -2402,9 +2391,10 @@ impl ScopeProjections {
         heads: &[[u8; 32]],
     ) -> Option<bool> {
         let (view, root, _) = self.auth_cut_context(store, group, heads)?;
+        let root = view.root_at_cut(root);
         let rows = view.groups.get(&group);
         // `member` is an admin: a direct `Admin` row, or the genesis admin (the
-        // folded subgroup creator, or the namespace-root genesis admin).
+        // folded subgroup creator, or the namespace owner at the cut).
         let member_is_admin = rows
             .and_then(|m| m.get(member))
             .is_some_and(|r| *r == GroupMemberRole::Admin)
@@ -3212,16 +3202,7 @@ impl ScopeProjections {
         namespace_id: [u8; 32],
     ) -> impl Fn(&calimero_authz::AclView, &PublicKey) -> Option<AccountId> + 's {
         let root_group = ContextGroupId::from(namespace_id);
-        let root = MetaRepository::new(store)
-            .load(&root_group)
-            .ok()
-            .flatten()
-            .map(|meta| (root_group, meta.admin_identity));
-        let default_cap_base = CapabilitiesRepository::new(store)
-            .default_capabilities(&root_group)
-            .ok()
-            .flatten()
-            .unwrap_or(0);
+        let (root, default_cap_base) = membership_bases(store, namespace_id);
         move |view, key| {
             let account = bound_account(view, key)?;
             let stands = effective_role_in(view, group, &account, root, default_cap_base)
@@ -3805,6 +3786,7 @@ mod tests {
     use calimero_context_config::types::{
         ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
     };
+    use calimero_governance_store::MetaRepository;
     use calimero_governance_types::{NamespaceOp, RootOp, SignedNamespaceOp};
     use calimero_op::OpPayload;
     use calimero_primitives::context::GroupMemberRole;
