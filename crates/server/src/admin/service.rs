@@ -2461,6 +2461,20 @@ mod parse_api_error_tests {
             }
         }
 
+        /// Activating a subgroup rather than its namespace. `400`: the request
+        /// names the wrong group, and the message names the namespace to use.
+        #[test]
+        fn activating_a_subgroup_maps_to_400() {
+            let api = parse_api_error(
+                ContextError::NotANamespaceRoot {
+                    group_id: "ContextGroupId(b2)".to_owned(),
+                    namespace_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
+        }
+
         /// The upgrade gate refusing a target. `409`, with the gate's own message
         /// unchanged: it is what says which target to pick instead.
         #[test]

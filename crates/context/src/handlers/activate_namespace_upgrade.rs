@@ -161,6 +161,14 @@ mod tests {
     }
 
     fn seed_group(store: &Store, id: u8) -> ContextGroupId {
+        seed_group_targeting(store, id, app())
+    }
+
+    fn seed_group_targeting(
+        store: &Store,
+        id: u8,
+        application_id: ApplicationId,
+    ) -> ContextGroupId {
         let gid = ContextGroupId::from([id; 32]);
         let admin = PublicKey::from([0x07; 32]);
         MetaRepository::new(store)
@@ -168,7 +176,7 @@ mod tests {
                 &gid,
                 &GroupMetaValue {
                     target: GroupTarget {
-                        application_id: app(),
+                        application_id,
                         bytecode_id: TARGET_BLOB,
                         package: Box::default(),
                         version: Box::default(),
@@ -246,6 +254,37 @@ mod tests {
             &request(ns, Some(ApplicationId::from([0xBB; 32]))),
         )
         .unwrap_err();
+        assert!(matches!(
+            refusal(&err),
+            ContextError::UpgradeTargetMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn a_subgroup_is_refused_as_not_a_namespace_root() {
+        let store = store();
+        let ns = seed_group(&store, 0x10);
+        let sub = seed_group(&store, 0x11);
+        NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
+        let _ctx = seed_context(&store, &sub, 0x22, true);
+
+        let err = plan_activation(&store, installed, &request(sub, None)).unwrap_err();
+        assert!(matches!(
+            refusal(&err),
+            ContextError::NotANamespaceRoot { .. }
+        ));
+    }
+
+    #[test]
+    fn a_subgroup_targeting_another_application_than_expected_is_refused() {
+        let store = store();
+        let ns = seed_group(&store, 0x10);
+        let sub = seed_group_targeting(&store, 0x11, ApplicationId::from([0xBB; 32]));
+        NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
+        let _root_ctx = seed_context(&store, &ns, 0x21, true);
+        let _sub_ctx = seed_context(&store, &sub, 0x22, true);
+
+        let err = plan_activation(&store, installed, &request(ns, Some(app()))).unwrap_err();
         assert!(matches!(
             refusal(&err),
             ContextError::UpgradeTargetMismatch { .. }
