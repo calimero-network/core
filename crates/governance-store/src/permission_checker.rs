@@ -536,26 +536,8 @@ impl<'a> PermissionChecker<'a> {
         })
     }
 
-    /// Allow only the group's creator to open it (#4522).
-    ///
-    /// Opening a Restricted subgroup is its creator's decision alone: not an
-    /// admin promoted inside it, not an admin of a group above it. The creator is
-    /// fixed at the subgroup's birth and recorded from its `GroupCreated`, which
-    /// every namespace member reads, and the signer's account is resolved at the
-    /// NAMESPACE scope. So a member outside the subgroup - who cannot read its
-    /// sealed history - reaches the same verdict as one inside, and the flip
-    /// applies on every node instead of being held where the key is missing.
-    ///
-    /// A creator later removed from the subgroup can still open it: that removal
-    /// is sealed under the subgroup's key, so honouring it would bring back the
-    /// split this rule removes. Removal from the namespace does stop it: the signer
-    /// and the creator's namespace role are read at the flip's cut, and a concurrent
-    /// namespace removal voids the flip.
-    ///
-    /// The creator is read at the flip's cut: a subgroup its cut does not hold was opened
-    /// by no creator. A group with no recorded creator - a namespace root, which no
-    /// `GroupCreated` makes, and whose history every member reads anyway - keeps
-    /// the admin / `CAN_MANAGE_VISIBILITY` rule, as the projection does.
+    /// Allow only the group's creator, read at the flip's cut and still in the namespace, to
+    /// open it; a group with no recorded creator (a namespace root) keeps the admin rule.
     pub fn require_creator_opens(&self, identity: &PublicKey) -> EyreResult<()> {
         let namespace = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let at_namespace = PermissionChecker::new(self.store, namespace)

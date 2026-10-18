@@ -408,8 +408,8 @@ impl<'a> NamespaceRetryService<'a> {
         // the local authoring path (`sign_apply_and_publish` →
         // `sign_apply_local_group_op_borsh`) at publish time, which records the
         // GROUP-level nonce. The retry replays from the namespace op-log and the
-        // receive apply dedups on the NAMESPACE-level nonce — a separate sequence
-        // the local path never wrote — so a node's own op is NOT recognised as
+        // receive apply dedups on the namespace's recorded nonce spenders, which
+        // the local path never wrote, so a node's own op is NOT recognised as
         // already-applied and its mutation re-runs. For an upsert that is
         // harmless, but re-running a REMOVAL (`MemberLeft` / `MemberRemoved`)
         // out of causal order re-deletes membership / `ContextIdentity` /

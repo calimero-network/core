@@ -1,6 +1,5 @@
-//! A group's owner at an op's cut, for the gates that only the owner passes or that the
-//! owner is immune to. The owner row is moved by `TransferOwnership`, so a live read
-//! answers by whether a concurrent transfer landed first.
+//! A group's owner at an op's cut, for the owner-only gates and the owner's immunities:
+//! a live read would answer by whether a concurrent transfer landed first.
 
 use std::collections::HashMap;
 
