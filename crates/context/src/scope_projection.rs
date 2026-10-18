@@ -5864,6 +5864,7 @@ mod tests {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
             signature: [0u8; 64],
             admitter_endorsement: None,

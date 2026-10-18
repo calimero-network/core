@@ -1134,6 +1134,7 @@ mod tests {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
         )
         .expect("sign");
@@ -1193,6 +1194,7 @@ mod tests {
                         ciphertext: Vec::new(),
                     },
                     key_rotation: None,
+                    registers: None,
                 },
             )
             .expect("sign");
@@ -2201,6 +2203,7 @@ mod founding_tests {
                         ciphertext: Vec::new(),
                     },
                     key_rotation: None,
+                    registers: None,
                 },
             )
             .expect("sign");

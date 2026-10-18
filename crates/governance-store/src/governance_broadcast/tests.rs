@@ -229,6 +229,7 @@ fn timeout_classifier_assigns_per_op_kind() {
                 nonce: [0u8; 12],
             },
             key_rotation: None,
+            registers: None,
         }),
         OP_ACK_MEMBER_CHANGE_TIMEOUT
     );

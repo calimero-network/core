@@ -1177,6 +1177,17 @@ impl GroupOp {
     /// the match is naturally exhaustive — adding a new variant
     /// surfaces as a compile error here, keeping the metric label set
     /// in sync with the wire format.
+    /// The context a bare `ContextRegistered` / `ContextRegisteredOnBehalf` registers;
+    /// `None` for every other op, wrappers included.
+    #[must_use]
+    pub const fn registered_context(&self) -> Option<ContextId> {
+        match self {
+            GroupOp::ContextRegistered { context_id, .. }
+            | GroupOp::ContextRegisteredOnBehalf { context_id, .. } => Some(*context_id),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn op_kind_label(&self) -> &'static str {
         match self {
@@ -1259,6 +1270,9 @@ pub enum NamespaceOp {
         /// each remaining member. Lives outside the encrypted payload so
         /// the removed member cannot read it.
         key_rotation: Option<KeyRotation>,
+        /// The context a bare registration inside registers, in the clear so a node
+        /// without the group key still sees which group took it. Apply binds it to the payload.
+        registers: Option<ContextId>,
     },
     /// A root op sealed under the namespace key.
     ///

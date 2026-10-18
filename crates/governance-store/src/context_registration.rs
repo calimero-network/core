@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
 use crate::namespace::{order_causally, NamespaceOpLogService};
 use crate::void_ledger::VoidLedger;
-use crate::{MetaRepository, MetadataRepository, NamespaceRepository, OpenedNamespaceOp};
+use crate::{
+    MetaRepository, MetadataRepository, NamespaceDagService, NamespaceRepository, OpenedNamespaceOp,
+};
 use calimero_app_downloader::registry::{stored_coords, RegistryCoords};
-use calimero_context_client::local_governance::{GroupOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::{GroupOp, NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
 use calimero_primitives::application::ApplicationId;
@@ -250,4 +252,52 @@ fn registration_in_log(
         Some(first) => registered_by(first).map(|registers| Some(!registers)),
         None => Ok(None),
     }
+}
+
+/// Whether `context` belongs to a group other than `group` at the cut `parents`: an op
+/// there claims it for another group in the clear, counted whatever that op's verdict.
+pub(crate) fn registered_elsewhere_at_cut(
+    store: &Store,
+    namespace: NamespaceId,
+    group: &ContextGroupId,
+    context: &ContextId,
+    parents: &[[u8; 32]],
+    authorizer: &dyn AtCutAuthorizer,
+) -> EyreResult<bool> {
+    let op_log = NamespaceOpLogService::new(store, namespace);
+    if !parents.is_empty() {
+        if let Some(ancestry) = op_log.ancestry(parents)? {
+            return Ok(claimed_elsewhere(ancestry.values(), group, context));
+        }
+        ensure_cut_resolvable(
+            authorizer,
+            group,
+            parents,
+            "the context's registration in another group at the op's cut",
+        )?;
+        // A cut outside the namespace log (a local group-DAG apply) reads the log's heads.
+        let heads = NamespaceDagService::new(store, namespace)
+            .read_head_record()?
+            .parent_hashes;
+        if let Some(ancestry) = op_log.ancestry(&heads)? {
+            if claimed_elsewhere(ancestry.values(), group, context) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(get_group_for_context(store, context)?.is_some_and(|owner| owner != *group))
+}
+
+fn claimed_elsewhere<'a>(
+    ops: impl IntoIterator<Item = &'a SignedNamespaceOp>,
+    group: &ContextGroupId,
+    context: &ContextId,
+) -> bool {
+    ops.into_iter().any(|op| {
+        matches!(
+            &op.op,
+            NamespaceOp::Group { group_id, registers: Some(claimed), .. }
+                if group_id != group && claimed == context
+        )
+    })
 }

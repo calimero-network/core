@@ -433,6 +433,7 @@ mod tests {
                     key_id: GroupKeyring::key_id_for(&NAMESPACE_KEY).into(),
                     encrypted: GroupKeyring::encrypt_op(&NAMESPACE_KEY, op)?,
                     key_rotation: None,
+                    registers: op.registered_context(),
                 },
             )
         }

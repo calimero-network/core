@@ -2793,6 +2793,7 @@ mod tests {
                 key_id: key_id.into(),
                 encrypted,
                 key_rotation: None,
+                registers: inner_op.registered_context(),
             },
         )
         .expect("sign ContextRegistered");

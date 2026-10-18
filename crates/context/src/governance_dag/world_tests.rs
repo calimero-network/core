@@ -51,6 +51,7 @@ fn sealed_group_op(store: &Store, namespace: &ContextGroupId, op: &GroupOp) -> N
         key_id: key_id.into(),
         encrypted: GroupKeyring::encrypt_op(&key, op).expect("seal a group op"),
         key_rotation: None,
+        registers: op.registered_context(),
     }
 }
 
@@ -660,6 +661,8 @@ mod held_ops {
         derived_group_id, group_created, seal_for_test,
     };
     use calimero_governance_store::unified_op_decode::OpenedNamespaceOp;
+    use calimero_governance_store::{get_group_for_context, parked_op, Parked};
+    use calimero_primitives::context::ContextId;
 
     use super::*;
 
@@ -680,6 +683,7 @@ mod held_ops {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&key, op).expect("seal a group op"),
             key_rotation: None,
+            registers: op.registered_context(),
         }
     }
 
@@ -779,6 +783,7 @@ mod held_ops {
                 )
                 .expect("seal under the subgroup's key"),
                 key_rotation: None,
+                registers: None,
             },
         );
         for store in [&inside, &outside] {
@@ -973,6 +978,172 @@ mod held_ops {
                 .expect("read the role"),
             Some(GroupMemberRole::Member)
         );
+    }
+
+    fn registration(context: ContextId) -> GroupOp {
+        GroupOp::ContextRegistered {
+            context_id: context,
+            application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
+            blob_id: calimero_primitives::blobs::BlobId::from([0; 32]),
+            source: String::new(),
+            service_name: None,
+            package: String::new(),
+            version: String::new(),
+        }
+    }
+
+    /// `op` in the sealed subgroup under its own key, claiming `registers` in the clear.
+    fn in_subgroup(f: &SealedSubgroup, op: &GroupOp, registers: Option<ContextId>) -> NamespaceOp {
+        NamespaceOp::Group {
+            group_id: f.subgroup.to_bytes().into(),
+            key_id: GroupKeyring::key_id_for(&SUBGROUP_KEY).into(),
+            encrypted: GroupKeyring::encrypt_op(&SUBGROUP_KEY, op).expect("seal a group op"),
+            key_rotation: None,
+            registers,
+        }
+    }
+
+    /// `op` in the namespace root under the namespace key, claiming `registers` in the clear.
+    fn at_root(f: &SealedSubgroup, op: &GroupOp, registers: Option<ContextId>) -> NamespaceOp {
+        let namespace = f.world.namespace;
+        let NamespaceOp::Group {
+            group_id,
+            key_id,
+            encrypted,
+            key_rotation,
+            ..
+        } = under_namespace_key(&f.inside, &namespace, &namespace, op)
+        else {
+            unreachable!("built as a group op");
+        };
+        NamespaceOp::Group {
+            group_id,
+            key_id,
+            encrypted,
+            key_rotation,
+            registers,
+        }
+    }
+
+    /// `signer` signs `op` at the inside node's heads, and both nodes apply it.
+    async fn on_both(
+        f: &SealedSubgroup,
+        signer: &PrivateKey,
+        op: NamespaceOp,
+    ) -> SignedNamespaceOp {
+        let signed = sign_next(&f.inside, &f.world.namespace, signer, op);
+        for store in [&f.inside, &f.outside] {
+            apply(store, &signed)
+                .await
+                .expect("the op applies or is logged");
+        }
+        signed
+    }
+
+    fn verdict(store: &Store, f: &SealedSubgroup, op: &SignedNamespaceOp) -> Option<Parked> {
+        let id = op.content_hash().expect("hash the op");
+        parked_op(store, f.world.namespace.to_bytes().into(), id).expect("read the verdict")
+    }
+
+    fn group_of(store: &Store, context: &ContextId) -> Option<ContextGroupId> {
+        get_group_for_context(store, context).expect("read the registration")
+    }
+
+    #[actix::test]
+    async fn a_context_registered_in_a_sealed_subgroup_is_refused_at_the_root_on_every_node() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        let admin = f.world.actor(ActorState::NamespaceAdmin);
+        let context = ContextId::from([0xA6; 32]);
+        let _first = on_both(
+            &f,
+            &f.world.owner_sk,
+            in_subgroup(&f, &registration(context), Some(context)),
+        )
+        .await;
+        assert_eq!(
+            group_of(&f.inside, &context),
+            Some(f.subgroup),
+            "setup: the subgroup holds the context inside"
+        );
+
+        let again = on_both(
+            &f,
+            &admin.sign_sk,
+            at_root(&f, &registration(context), Some(context)),
+        )
+        .await;
+
+        for (node, store) in [("inside", &f.inside), ("outside", &f.outside)] {
+            assert_eq!(
+                verdict(store, &f, &again),
+                Some(Parked::Refused),
+                "{node} did not refuse a second group's registration"
+            );
+        }
+        assert_ne!(
+            group_of(&f.outside, &context),
+            Some(f.world.namespace),
+            "outside registered the subgroup's context at the root"
+        );
+    }
+
+    #[actix::test]
+    async fn a_cleartext_claim_that_does_not_match_the_sealed_op_is_refused() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        let admin = f.world.actor(ActorState::NamespaceAdmin);
+        let member = f.world.actor(ActorState::DirectMember);
+        let [claimed, sealed, unclaimed, stray] =
+            [0xD1, 0xD2, 0xD3, 0xD4].map(|seed| ContextId::from([seed; 32]));
+
+        let swapped = on_both(
+            &f,
+            &admin.sign_sk,
+            in_subgroup(&f, &registration(sealed), Some(claimed)),
+        )
+        .await;
+        let hidden = on_both(
+            &f,
+            &admin.sign_sk,
+            at_root(&f, &registration(unclaimed), None),
+        )
+        .await;
+        let demote = GroupOp::MemberRoleSet {
+            member: member.account,
+            role: GroupMemberRole::ReadOnly,
+        };
+        let invented = on_both(&f, &admin.sign_sk, at_root(&f, &demote, Some(stray))).await;
+
+        for op in [&swapped, &hidden, &invented] {
+            assert_eq!(verdict(&f.inside, &f, op), Some(Parked::Refused));
+        }
+        for context in [&claimed, &sealed, &unclaimed, &stray] {
+            assert_eq!(
+                group_of(&f.inside, context),
+                None,
+                "a refused claim wrote a row"
+            );
+        }
+        assert_eq!(
+            MembershipRepository::new(&f.inside)
+                .role_of(&f.world.namespace, &member.account)
+                .expect("read the role"),
+            Some(GroupMemberRole::Member),
+            "a refused claim demoted the member"
+        );
+
+        let later = on_both(
+            &f,
+            &admin.sign_sk,
+            at_root(&f, &registration(claimed), Some(claimed)),
+        )
+        .await;
+        for (node, store) in [("inside", &f.inside), ("outside", &f.outside)] {
+            assert_eq!(
+                verdict(store, &f, &later),
+                Some(Parked::Refused),
+                "{node} let another group take a context a refused op claimed"
+            );
+        }
     }
 
     #[actix::test]
@@ -1384,6 +1555,7 @@ mod concurrent {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&key, op).expect("seal a group op"),
                 key_rotation: None,
+                registers: op.registered_context(),
             },
         )
         .expect("sign a namespace op")

@@ -282,6 +282,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap();
@@ -546,6 +547,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap();
@@ -726,6 +728,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap()
@@ -902,6 +905,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap();
@@ -1024,6 +1028,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: Some(rotation),
+                registers: None,
             },
         )
         .unwrap();
@@ -1331,6 +1336,7 @@ pub(crate) mod tests {
                     key_id: GroupKeyring::key_id_for(&sub_key).into(),
                     encrypted: GroupKeyring::encrypt_op(&sub_key, &op).unwrap(),
                     key_rotation: None,
+                    registers: op.registered_context(),
                 },
             )
             .unwrap()

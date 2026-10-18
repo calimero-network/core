@@ -318,6 +318,7 @@ async fn squat_application(node: &Node, squat: &[u8]) {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &registered).expect("encrypt"),
             key_rotation: None,
+            registers: registered.registered_context(),
         },
     )
     .expect("sign the registration");

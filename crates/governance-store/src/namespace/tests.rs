@@ -949,6 +949,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
             key_id: [0x01; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xA1; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1019,6 +1020,7 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
             key_id: [0x12; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1096,6 +1098,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
             key_id: [0x11; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1110,6 +1113,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
             key_id: [0x22; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xBB; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1195,6 +1199,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
             key_id: key_id.into(),
             encrypted: encrypted_a,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1209,6 +1214,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
             key_id: key_id.into(),
             encrypted: encrypted_b,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1284,6 +1290,7 @@ fn namespace_retry_service_skips_the_nodes_own_ops() {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap()
@@ -1369,6 +1376,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
                         key_id: key_id.into(),
                         encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
                         key_rotation: None,
+                        registers: None,
                     },
                 )
                 .unwrap()
@@ -1946,6 +1954,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1990,6 +1999,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
             key_id: key_id.into(),
             encrypted: join_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -2086,6 +2096,7 @@ fn tee_admission_is_vouched_only_by_admin_or_admitted_tee() {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, op).unwrap(),
                 key_rotation: None,
+                registers: op.registered_context(),
             },
         )
         .unwrap()
@@ -2275,6 +2286,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -2311,6 +2323,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
             key_id: key_id.into(),
             encrypted: join_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -3571,6 +3584,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
+            registers: inner_a.registered_context(),
         },
     )
     .unwrap();
@@ -3598,6 +3612,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
+            registers: inner_b.registered_context(),
         },
     )
     .unwrap();
@@ -3700,6 +3715,7 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, inner).unwrap(),
                 key_rotation: None,
+                registers: inner.registered_context(),
             },
         )
         .unwrap()
@@ -3811,6 +3827,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
+            registers: inner_a.registered_context(),
         },
     )
     .unwrap();
@@ -3836,6 +3853,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
+            registers: inner_b.registered_context(),
         },
     )
     .unwrap();
@@ -4786,6 +4804,7 @@ fn build_rotation_op(
             key_id: old_key_id.into(),
             encrypted,
             key_rotation: Some(rotation),
+            registers: None,
         },
     )
     .unwrap()
@@ -7336,6 +7355,7 @@ fn groups_awaiting_key_reports_then_clears() {
             key_id: GroupKeyring::key_id_for(&[0xAA; 32]).into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -7904,6 +7924,7 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
             key_id: GroupKeyring::key_id_for(&subgroup_key).into(),
             encrypted: GroupKeyring::encrypt_op(&subgroup_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -8022,6 +8043,7 @@ fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
             key_id: real_key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -8195,6 +8217,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
             key_id: GroupKeyring::key_id_for(&group_key).into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -8334,6 +8357,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
             key_id: GroupKeyring::key_id_for(&group_key).into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -8689,6 +8713,7 @@ fn curative_sweep_redrives_stranded_context() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: inner_op.registered_context(),
         },
     )
     .unwrap();
@@ -8796,6 +8821,7 @@ fn curative_sweep_redrives_stranded_context() {
             key_id: GroupKeyring::key_id_for(&nokey_key).into(),
             encrypted: nokey_encrypted,
             key_rotation: None,
+            registers: nokey_inner.registered_context(),
         },
     )
     .unwrap();
@@ -8921,6 +8947,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
             key_id: ns_key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -9148,6 +9175,7 @@ fn held_flip_setup() -> HeldFlipSetup {
             )
             .expect("seal the flip"),
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("owner signs the flip to Restricted");
@@ -10013,6 +10041,7 @@ fn a_tee_admission_binds_the_replicas_device() {
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("verifier signs the policy op");
@@ -10133,6 +10162,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("verifier signs the policy op");
@@ -10292,6 +10322,7 @@ impl TeeAdmissionFixture {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, op).expect("encrypt the op"),
                 key_rotation: None,
+                registers: op.registered_context(),
             },
         )
         .expect("sign the group op")
@@ -11561,6 +11592,7 @@ fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
                     key_id: key_id.into(),
                     encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
                     key_rotation: None,
+                    registers: inner.registered_context(),
                 },
             )
             .unwrap();
@@ -11644,6 +11676,7 @@ fn context_registered_records_its_coordinates_on_a_zeroed_target() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
             key_rotation: None,
+            registers: inner.registered_context(),
         },
     )
     .unwrap();
@@ -11755,6 +11788,7 @@ fn a_registered_context_stub_waits_for_an_install_of_the_same_application() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
             key_rotation: None,
+            registers: inner.registered_context(),
         },
     )
     .unwrap();
@@ -11949,6 +11983,7 @@ fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -12057,6 +12092,7 @@ fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -13368,6 +13404,7 @@ fn an_inherited_tee_that_left_and_re_attested_is_a_live_member_again() {
                 key_id: key_id.into(),
                 encrypted: policy,
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap(),
@@ -13573,6 +13610,7 @@ fn a_direct_member_adopts_the_key_riding_a_flip_to_restricted() {
                     .build_rotation(&new_key, &admin_sk, &recipients)
                     .unwrap(),
             ),
+            registers: flip.registered_context(),
         },
     )
     .unwrap();
@@ -13655,6 +13693,7 @@ fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
             encrypted: GroupKeyring::encrypt_op(&[0; 32], &relayed(VisibilityMode::Restricted))
                 .unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -14588,6 +14627,7 @@ fn an_anchors_key_delivery_is_refused_when_it_is_not_the_awaited_key() {
             key_id: real_key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -14685,6 +14725,7 @@ fn a_key_delivery_matching_the_awaited_key_is_applied() {
             key_id: real_key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -14919,6 +14960,7 @@ fn causally_independent_retry_candidates_fold_by_signer_then_nonce() {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, op).unwrap(),
                 key_rotation: None,
+                registers: op.registered_context(),
             },
         )
         .unwrap()
@@ -15014,6 +15056,7 @@ fn the_retry_replay_order_is_causal_then_signer_and_nonce() {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap()
@@ -15155,6 +15198,7 @@ fn replay_link_after_target_application(link_signer_sorts_first: bool, via_inter
                     key_id: key_id.into(),
                     encrypted: GroupKeyring::encrypt_op(&namespace_key, op).unwrap(),
                     key_rotation: None,
+                    registers: op.registered_context(),
                 },
             )
             .unwrap()

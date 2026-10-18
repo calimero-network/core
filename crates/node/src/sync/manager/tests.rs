@@ -375,6 +375,7 @@ mod key_recovery_trigger {
                 key_id: GroupKeyring::key_id_for(&[0xAA; 32]).into(),
                 encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap();

@@ -576,6 +576,7 @@ impl World {
                 key_id: GroupKeyring::key_id_for(key).into(),
                 encrypted,
                 key_rotation,
+                registers: None,
             },
         )
         .expect("sign")
@@ -1404,6 +1405,7 @@ fn unreadable_op(who: &Person, nonce: u64) -> SignedNamespaceOp {
                 ciphertext: vec![nonce as u8; 1 << 20],
             },
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("sign")
@@ -2278,6 +2280,7 @@ fn sign_in_group(
             key_id: GroupKeyring::key_id_for(&w.k0).into(),
             encrypted: GroupKeyring::encrypt_op(&w.k0, op).expect("encrypt"),
             key_rotation: None,
+            registers: op.registered_context(),
         },
     )
     .expect("sign a group op")

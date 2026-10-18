@@ -806,6 +806,7 @@ impl<'a> NamespaceGovernance<'a> {
                     key_id,
                     encrypted,
                     key_rotation,
+                    ..
                 },
                 _,
             ) => {
@@ -2309,6 +2310,7 @@ impl<'a> NamespaceGovernance<'a> {
             key_id,
             encrypted,
             key_rotation: Some(_),
+            ..
         } = &candidate.signed_op.op
         else {
             return Ok(false);
@@ -2574,6 +2576,17 @@ impl<'a> NamespaceGovernance<'a> {
         encrypted: &EncryptedGroupOp,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let inner_op = GroupKeyring::decrypt_op(group_key, encrypted)?;
+        let claimed = match &ns_op.op {
+            NamespaceOp::Group { registers, .. } => *registers,
+            _ => None,
+        };
+        let sealed = inner_op.registered_context();
+        if claimed != sealed {
+            eyre::bail!(crate::ApplyError::RegisteredContextMismatch {
+                claimed: claimed.map(|c| c.to_string()),
+                sealed: sealed.map(|c| c.to_string()),
+            });
+        }
         // Judged before anything is applied: an op whose signer's removal is
         // concurrent with it is logged and carries no authority.
         let void = self.op_is_void(

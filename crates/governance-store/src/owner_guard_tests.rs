@@ -744,6 +744,7 @@ fn a_guarded_subgroup_transfer_names_no_root_admin_but_is_counted() {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
             signature: [0u8; 64],
             admitter_endorsement: None,
