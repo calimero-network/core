@@ -51,7 +51,7 @@ pub fn key_id_for(group_key: &[u8; 32]) -> [u8; 32] {
 }
 ```
 
-Every encrypted group op travels as `NamespaceOp::Group { group_id, key_id, encrypted, key_rotation }`. A receiver resolves `key_id` against its keyring (`load_key_by_id`) and decrypts with whatever key hashes to it — so an op encrypted under an _old_ key still decodes for a node that retained that key, and a node that has only the new key transparently fails to read superseded epochs it was never meant to. The `KeyRotation` bundle carries the next epoch's id as `new_key_id = sha256(new_group_key)`.
+Every encrypted group op travels as `NamespaceOp::Group { group_id, key_id, encrypted, key_rotation, registers }`. A receiver resolves `key_id` against its keyring (`load_key_by_id`) and decrypts with whatever key hashes to it — so an op encrypted under an _old_ key still decodes for a node that retained that key, and a node that has only the new key transparently fails to read superseded epochs it was never meant to. The `KeyRotation` bundle carries the next epoch's id as `new_key_id = sha256(new_group_key)`.
 
 <Aside type="note">
 `key_id` is a non-secret label: it is a hash of the key, not the key. It leaks nothing usable — you cannot invert SHA-256 to recover the 32-byte key — but it lets every node agree on epoch boundaries without a separate counter.
