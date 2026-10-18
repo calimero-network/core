@@ -7,8 +7,9 @@ use calimero_context_client::group::ActivateUpgradeRequest;
 use calimero_context_client::messages::{ExecuteRequest, WriteSource};
 use calimero_governance_store::{MetaRepository, UpgradeLadderRepository};
 use calimero_primitives::context::GroupMemberRole;
-use calimero_primitives::identity::PublicKey;
-use calimero_store::key::{GroupMetaValue, LadderRung};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::key::{self, GroupMetaValue, LadderRung};
+use calimero_store::types;
 
 use super::state_write_gate_tests::{fixture, fixture_switching, Fixture, LocalRole};
 use crate::test_support::eventually;
@@ -151,4 +152,24 @@ async fn a_current_context_answers_without_its_lock() {
         .expect("answered while the lock is held");
 
     assert!(!answer.expect("nothing to switch"));
+}
+
+/// A switch runs as its executor, so one this node holds no key for switches
+/// nothing, as execute would refuse its call.
+#[actix::test]
+async fn an_executor_this_node_cannot_sign_for_switches_nothing() {
+    let fx = fixture_switching(LocalRole::Role(GroupMemberRole::Member)).await;
+    let stranger = PrivateKey::from([0x44; 32]).public_key();
+    fx.store
+        .handle()
+        .put(
+            &key::ContextIdentity::new(fx.context_id, stranger),
+            &types::ContextIdentity { private_key: None },
+        )
+        .expect("record a keyless identity");
+
+    let moved = activate(&fx, stranger).await.expect("nothing failed");
+
+    assert!(!moved, "the stranger switched the context");
+    assert_eq!(marker(&fx), None);
 }
