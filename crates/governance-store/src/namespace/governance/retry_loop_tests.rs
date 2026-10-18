@@ -234,13 +234,6 @@ fn keyed_after_parking(store: Store) -> World {
     replica
 }
 
-/// [`keyed_after_parking`] on a [`GroupReadsFail`] store, plus stand-ins for the probe to settle.
-fn failing_after_a_productive_round(armed: &Arc<AtomicBool>) -> (World, Vec<[u8; 32]>) {
-    let replica = keyed_after_parking(failing_store(armed));
-    let stand_ins = park_stand_ins(&replica.store, 6);
-    (replica, stand_ins)
-}
-
 #[test]
 fn a_round_that_settles_no_parked_op_is_the_last() {
     let w = World::new();
@@ -281,50 +274,33 @@ fn a_reentrant_retry_runs_one_round_and_does_not_rebuild() {
 
 #[test]
 fn a_failed_round_after_a_productive_one_still_rebuilds_and_returns_its_error() {
-    let armed = Arc::new(AtomicBool::new(false));
-    let (replica, stand_ins) = failing_after_a_productive_round(&armed);
-    let probe = Probe {
-        fail_at: Some((stand_ins.len(), Arc::clone(&armed))),
-        stand_ins: Mutex::new(stand_ins),
-        ..Probe::new(&replica.store)
-    };
+    // With a void op the rebuild reads the op log too, which the armed store refuses.
+    for voided in [BTreeSet::new(), BTreeSet::from([[0xEE; 32]])] {
+        let armed = Arc::new(AtomicBool::new(false));
+        let replica = keyed_after_parking(failing_store(&armed));
+        let stand_ins = park_stand_ins(&replica.store, 6);
+        let probe = Probe {
+            fail_at: Some((stand_ins.len(), Arc::clone(&armed))),
+            stand_ins: Mutex::new(stand_ins),
+            voided: voided.clone(),
+            ..Probe::new(&replica.store)
+        };
 
-    let err = probe.retry(0).expect_err("the second round fails");
+        let err = probe.retry(0).expect_err("the second round fails");
 
-    assert!(
-        err.to_string()
-            .starts_with("collect_retry_candidates_for_group"),
-        "{err:#}"
-    );
-    assert_eq!(
-        probe.reconciles(),
-        1,
-        "what the first round applied is rebuilt"
-    );
-    assert!(
-        probe.ledger().undecided_parked().unwrap() > 0,
-        "no round runs after the failed one, though ops were still settling"
-    );
-}
-
-#[test]
-fn a_rebuild_that_fails_after_a_failed_round_does_not_mask_its_error() {
-    let armed = Arc::new(AtomicBool::new(false));
-    let (replica, stand_ins) = failing_after_a_productive_round(&armed);
-    let probe = Probe {
-        fail_at: Some((stand_ins.len(), Arc::clone(&armed))),
-        stand_ins: Mutex::new(stand_ins),
-        // A void op makes the rebuild read the op log, which the armed store refuses.
-        voided: BTreeSet::from([[0xEE; 32]]),
-        ..Probe::new(&replica.store)
-    };
-
-    let err = probe.retry(0).expect_err("the second round fails");
-
-    assert_eq!(probe.reconciles(), 1);
-    assert!(
-        err.to_string()
-            .starts_with("collect_retry_candidates_for_group"),
-        "{err:#}"
-    );
+        assert!(
+            err.to_string()
+                .starts_with("collect_retry_candidates_for_group"),
+            "{err:#} (voided: {voided:?})"
+        );
+        assert_eq!(
+            probe.reconciles(),
+            1,
+            "what the first round applied is rebuilt (voided: {voided:?})"
+        );
+        assert!(
+            probe.ledger().undecided_parked().unwrap() > 0,
+            "no round runs after the failed one, though ops were still settling (voided: {voided:?})"
+        );
+    }
 }
