@@ -64,7 +64,7 @@ pub(super) enum LazyUpgradeAction {
 }
 
 /// What a lazy upgrade did to its context. A ladder walk that committed a hop
-/// before stopping is `Advanced`: the context moved, and the stop is persisted on it.
+/// before failing is `Failed`: the context moved, but not to the target.
 #[derive(Debug)]
 pub(super) enum UpgradeOutcome {
     Advanced,
@@ -76,8 +76,8 @@ impl UpgradeOutcome {
     /// How a ladder walk ended, given whether it committed a hop and why it stopped.
     pub(super) fn of_walk(advanced: bool, failure: Option<eyre::Report>) -> Self {
         match (advanced, failure) {
-            (true, _) => Self::Advanced,
-            (false, Some(err)) => Self::Failed(err),
+            (_, Some(err)) => Self::Failed(err),
+            (true, None) => Self::Advanced,
             (false, None) => Self::Unchanged,
         }
     }
