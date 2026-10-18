@@ -346,14 +346,9 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         }
 
-        let identity = match self.context_client.get_identity(&context_id, &executor) {
-            Ok(Some(
-                identity @ ContextIdentity {
-                    private_key: Some(_),
-                    ..
-                },
-            )) => identity,
-            Ok(_) => {
+        let identity = match self.signing_identity(&context_id, &executor) {
+            Ok(Some(identity)) => identity,
+            Ok(None) => {
                 return ActorResponse::reply(Err(ExecuteError::Unauthorized {
                     context_id,
                     public_key: executor,
@@ -1335,6 +1330,19 @@ impl Handler<ExecuteRequest> for ContextManager {
 }
 
 impl ContextManager {
+    /// `executor`'s identity in `context_id` when this node holds its private key,
+    /// which anything run as `executor` needs.
+    fn signing_identity(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+    ) -> eyre::Result<Option<ContextIdentity>> {
+        Ok(self
+            .context_client
+            .get_identity(context_id, executor)?
+            .filter(|identity| identity.private_key.is_some()))
+    }
+
     /// Max ladder hops one access replays — bounds a pathological
     /// marker-write failure loop; ladders are realistically 1-3 rungs and a
     /// longer one resumes on the next access from the last committed rung.

@@ -26,6 +26,12 @@ impl Handler<ActivateUpgradeRequest> for ContextManager {
         if root_hash == [0; 32] {
             return ActorResponse::reply(Ok(false));
         }
+        // The switch runs as `executor`, which execute refuses unless this node holds its key.
+        match self.signing_identity(&context_id, &executor) {
+            Ok(Some(_)) => {}
+            Ok(None) => return ActorResponse::reply(Ok(false)),
+            Err(err) => return ActorResponse::reply(Err(err)),
+        }
         // Spares a call with nothing to switch the wait for the write lock; the
         // decision is made again under it.
         if self.upgrade_gated(&context_id)
