@@ -29,7 +29,11 @@ pub(crate) fn owner_at_cut(
         if let Some(owner) = owner_in_log(store, group, parents)? {
             return Ok(Some(owner));
         }
-        if !authorizer.can_resolve_cut(group, parents) {
+        // A node outside `group` is never served the key its sealed history needs, so the
+        // namespace ops it judges (a deletion, a leave) read what its own rows hold.
+        if !authorizer.can_resolve_cut(group, parents)
+            && !authorizer.history_sealed_in_group(group, parents)
+        {
             bail!(crate::ApplyError::AuthorityUndecidable {
                 group_id: group.to_string(),
                 signer: "the group's owner at the op's cut".to_owned(),

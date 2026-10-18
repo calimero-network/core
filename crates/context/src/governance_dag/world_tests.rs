@@ -893,6 +893,39 @@ mod held_ops {
         );
     }
 
+    /// The owner's deletion of the subgroup is a namespace op every member judges, so the node
+    /// outside, which reads none of the subgroup's history, applies it as the inside one does.
+    #[actix::test]
+    async fn a_subgroup_deletion_applies_inside_and_outside_the_subgroup() {
+        let f = unauthorized_op_under_the_namespace_key().await;
+        let delete = sign_next(
+            &f.inside,
+            &f.world.namespace,
+            &f.world.owner_sk,
+            seal_for_test(
+                &f.inside,
+                f.world.namespace,
+                calimero_governance_types::RootOp::GroupDeleted {
+                    root_group_id: f.subgroup.to_bytes().into(),
+                    cascade_group_ids: Vec::new(),
+                    cascade_context_ids: Vec::new(),
+                },
+            ),
+        );
+
+        for (node, store) in [("inside", &f.inside), ("outside", &f.outside)] {
+            let applied = apply(store, &delete).await;
+            assert!(applied.is_ok(), "{node} refused the deletion: {applied:?}");
+            assert!(
+                calimero_governance_store::MetaRepository::new(store)
+                    .load(&f.subgroup)
+                    .expect("read the meta")
+                    .is_none(),
+                "{node} kept the subgroup"
+            );
+        }
+    }
+
     #[actix::test]
     async fn a_node_that_gets_the_key_later_reaches_the_inside_verdict() {
         let f = unauthorized_op_under_the_namespace_key().await;
