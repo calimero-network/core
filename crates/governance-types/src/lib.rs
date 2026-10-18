@@ -2400,7 +2400,10 @@ pub struct SignedNamespaceOp {
 /// a device link, unlink or descope the apply refuses on the op alone or at its cut is an
 /// error, so it is never logged or folded; `RootOp::AccountNamespaceCreated` is appended,
 /// and a link's endorser and a descope's signer are named at the op's cut.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 25;
+///
+/// v26: verdicts are reached at the op's cut, and `NamespaceOp::Group` carries the
+/// context id it registers in the clear (`registers`), a layout change.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,
