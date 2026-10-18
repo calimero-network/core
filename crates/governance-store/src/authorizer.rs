@@ -17,6 +17,7 @@
 //! [`NamespaceApplyCtx::require_namespace_admin`]: crate::ops::namespace::NamespaceApplyCtx
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Display;
 
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
@@ -25,6 +26,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupExitReason;
+use eyre::{bail, Result as EyreResult};
 
 /// The apply-gate decision source, resolved at an op's causal cut (its parent op
 /// hashes). Implemented in `crates/context` over the unified projection; this
@@ -344,6 +346,23 @@ pub trait AtCutAuthorizer: Send + Sync {
     ) -> Option<bool> {
         None
     }
+}
+
+/// Refuse a live read for a real cut `authorizer` cannot resolve; `subject` names the
+/// undecidable authority in the error.
+pub(crate) fn ensure_cut_resolvable(
+    authorizer: &dyn AtCutAuthorizer,
+    group: &ContextGroupId,
+    parents: &[[u8; 32]],
+    subject: impl Display,
+) -> EyreResult<()> {
+    if authorizer.can_resolve_cut(group, parents) {
+        return Ok(());
+    }
+    bail!(crate::ApplyError::AuthorityUndecidable {
+        group_id: group.to_string(),
+        signer: subject.to_string(),
+    });
 }
 
 /// A group's direct rows as the log minus its void ops leaves them.

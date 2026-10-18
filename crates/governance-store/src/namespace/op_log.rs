@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use calimero_context_client::local_governance::{
     NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
 };
@@ -88,6 +90,26 @@ impl<'a> NamespaceOpLogService<'a> {
                     hex::encode(delta_id)
                 )
             })
+    }
+
+    /// Every op in the ancestry of `parents`, by id; `None` when one is missing here.
+    pub(crate) fn ancestry(
+        &self,
+        parents: &[[u8; 32]],
+    ) -> EyreResult<Option<HashMap<[u8; 32], SignedNamespaceOp>>> {
+        let mut seen = HashMap::new();
+        let mut queue = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if seen.contains_key(&id) {
+                continue;
+            }
+            let Some(op) = self.get_signed_op(id)? else {
+                return Ok(None);
+            };
+            queue.extend(op.parent_op_hashes.iter().copied());
+            let _ = seen.insert(id, op);
+        }
+        Ok(Some(seen))
     }
 
     pub fn store_signed_operation(&self, op: &SignedNamespaceOp) -> EyreResult<()> {

@@ -7,7 +7,7 @@
 //! rather than pre-built — namespace handlers don't share a fixed
 //! set of helpers the way the group-op handlers do.
 
-use crate::authorizer::AtCutAuthorizer;
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
 use crate::permission_checker::PermissionChecker;
 use crate::{MembershipError, MembershipRepository, NamespaceError, NamespaceRepository};
 use calimero_account::AccountId;
@@ -144,12 +144,7 @@ impl<'a> NamespaceApplyCtx<'a> {
                 // Abstained. Live is sound only when there is no cut to resolve
                 // against; if the cut is real but unfolded here, answering from live
                 // would decide this op against a DIFFERENT cut than peers used.
-                if !self.authorizer.can_resolve_cut(&ns_gid, self.parents) {
-                    bail!(crate::ApplyError::AuthorityUndecidable {
-                        group_id: hex::encode(self.namespace_id.as_bytes()),
-                        signer: format!("{signer}"),
-                    });
-                }
+                ensure_cut_resolvable(self.authorizer, &ns_gid, self.parents, signer)?;
                 match crate::member_account_in_namespace(self.store, &ns_gid, signer)? {
                     Some(account) => {
                         MembershipRepository::new(self.store).is_admin(&ns_gid, &account)?
@@ -264,12 +259,6 @@ impl<'a> NamespaceApplyCtx<'a> {
         group: &ContextGroupId,
         identity: &AccountId,
     ) -> EyreResult<()> {
-        if self.authorizer.can_resolve_cut(group, self.parents) {
-            return Ok(());
-        }
-        bail!(crate::ApplyError::AuthorityUndecidable {
-            group_id: group.to_string(),
-            signer: identity.to_string(),
-        });
+        ensure_cut_resolvable(self.authorizer, group, self.parents, identity)
     }
 }

@@ -1,4 +1,4 @@
-use crate::authorizer::{AtCutAuthorizer, ReentryAtCut};
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer, ReentryAtCut};
 use crate::{MembershipRepository, NamespaceRepository, PermissionChecker, ReentryRepository};
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::JoinAccountCredential;
@@ -100,13 +100,12 @@ impl<'a> NamespaceMembershipService<'a> {
 
     /// Refuse to read live rows for a real cut the authorizer cannot read.
     fn ensure_live_is_sound(&self, group: &ContextGroupId) -> EyreResult<()> {
-        if self.authorizer.can_resolve_cut(group, self.parents) {
-            return Ok(());
-        }
-        bail!(crate::ApplyError::AuthorityUndecidable {
-            group_id: group.to_string(),
-            signer: "the joiner's standing at the join's cut".to_owned(),
-        });
+        ensure_cut_resolvable(
+            self.authorizer,
+            group,
+            self.parents,
+            "the joiner's standing at the join's cut",
+        )
     }
 
     pub fn apply_member_joined(

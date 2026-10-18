@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::authorizer::AtCutAuthorizer;
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
 use crate::namespace::{order_causally, NamespaceOpLogService};
 use crate::void_ledger::VoidLedger;
 use crate::{MetaRepository, MetadataRepository, NamespaceRepository, OpenedNamespaceOp};
@@ -174,12 +174,12 @@ pub(crate) fn registered_at_cut(
         if let Some(registered) = registration_in_log(store, group, context, parents)? {
             return Ok(registered);
         }
-        if !authorizer.can_resolve_cut(group, parents) {
-            bail!(crate::ApplyError::AuthorityUndecidable {
-                group_id: group.to_string(),
-                signer: "the context's registration at the op's cut".to_owned(),
-            });
-        }
+        ensure_cut_resolvable(
+            authorizer,
+            group,
+            parents,
+            "the context's registration at the op's cut",
+        )?;
     }
     Ok(get_group_for_context(store, context)? == Some(*group))
 }
@@ -230,12 +230,12 @@ fn registration_in_log(
     if changes.is_empty() {
         return Ok(None);
     }
-    let Some(ancestry) = ancestry_of(&op_log, parents)? else {
+    let Some(ancestry) = op_log.ancestry(parents)? else {
         return Ok(None);
     };
     let (inside, outside): (Vec<_>, Vec<_>) = changes
         .into_iter()
-        .partition(|op| op.content_hash().is_ok_and(|id| ancestry.contains(&id)));
+        .partition(|op| op.content_hash().is_ok_and(|id| ancestry.contains_key(&id)));
     let registered_by = |op: &SignedNamespaceOp| -> EyreResult<bool> {
         let id = op
             .content_hash()
@@ -250,23 +250,4 @@ fn registration_in_log(
         Some(first) => registered_by(first).map(|registers| Some(!registers)),
         None => Ok(None),
     }
-}
-
-/// Every op in the ancestry of `parents`; `None` when one is missing here.
-fn ancestry_of(
-    op_log: &NamespaceOpLogService<'_>,
-    parents: &[[u8; 32]],
-) -> EyreResult<Option<HashSet<[u8; 32]>>> {
-    let mut seen = HashSet::new();
-    let mut queue = parents.to_vec();
-    while let Some(id) = queue.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        let Some(op) = op_log.get_signed_op(id)? else {
-            return Ok(None);
-        };
-        queue.extend(op.parent_op_hashes);
-    }
-    Ok(Some(seen))
 }

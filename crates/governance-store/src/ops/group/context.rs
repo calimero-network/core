@@ -15,6 +15,7 @@
 //! re-binding the authorization context (`signer`, `group_id`,
 //! `store`) within a dispatch call.
 
+use crate::authorizer::ensure_cut_resolvable;
 use crate::{
     ContextRegistrationService, DivergenceReport, GroupSettingsService, MembershipPolicy,
     MembershipRepository, PermissionChecker,
@@ -27,7 +28,7 @@ use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 
 pub(crate) struct GroupApplyCtx<'a> {
     store: &'a Store,
@@ -301,13 +302,7 @@ impl<'a> GroupApplyCtx<'a> {
     /// differently. In that case refuse to answer; the op is retried once the
     /// missing history arrives.
     pub(crate) fn ensure_live_fallback_is_sound(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self.authorizer.can_resolve_cut(self.group_id, self.parents) {
-            return Ok(());
-        }
-        bail!(crate::ApplyError::AuthorityUndecidable {
-            group_id: self.group_id.to_string(),
-            signer: format!("{identity}"),
-        });
+        ensure_cut_resolvable(self.authorizer, self.group_id, self.parents, identity)
     }
 }
 

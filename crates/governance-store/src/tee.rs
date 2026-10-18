@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
-use crate::authorizer::AtCutAuthorizer;
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
 use crate::namespace::{order_causally, NamespaceOpLogService};
 use crate::void_ledger::{Parked, VoidLedger};
 use crate::{
@@ -194,12 +194,12 @@ pub(crate) fn read_tee_admission_policy_at_cut(
     }
     let root = NamespaceRepository::new(store).resolve(group_id)?;
     let Some(mut policies) = policy_ops_at_cut(store, root, parents)? else {
-        if !authorizer.can_resolve_cut(&root, parents) {
-            eyre::bail!(crate::ApplyError::AuthorityUndecidable {
-                group_id: root.to_string(),
-                signer: "the TEE admission policy at the op's cut".to_owned(),
-            });
-        }
+        ensure_cut_resolvable(
+            authorizer,
+            &root,
+            parents,
+            "the TEE admission policy at the op's cut",
+        )?;
         return read_tee_admission_policy(store, group_id);
     };
     let op_log = NamespaceOpLogService::new(store, NamespaceId::from(root.to_bytes()));
@@ -230,16 +230,10 @@ fn policy_ops_at_cut(
     let voided = ledger.voided()?;
     let keyring = GroupKeyring::new(store, root);
     let mut policies = HashMap::new();
-    let mut visited: HashSet<[u8; 32]> = HashSet::new();
-    let mut queue: VecDeque<[u8; 32]> = parents.iter().copied().collect();
-    while let Some(id) = queue.pop_front() {
-        if !visited.insert(id) {
-            continue;
-        }
-        let Ok(Some(op)) = op_log.get_signed_op(id) else {
-            return Ok(None);
-        };
-        queue.extend(op.parent_op_hashes.iter().copied());
+    let Ok(Some(ancestry)) = op_log.ancestry(parents) else {
+        return Ok(None);
+    };
+    for (id, op) in ancestry {
         let NamespaceOp::Group {
             group_id,
             key_id,

@@ -38,9 +38,9 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_governance_types::NamespaceId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_store::Store;
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 
-use crate::authorizer::AtCutAuthorizer;
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
 use crate::delegation_gate::DelegationRefusal;
 use crate::namespace::NamespaceOpLogService;
 use crate::{GroupKeyring, MetaRepository, NamespaceRepository};
@@ -85,11 +85,13 @@ pub(crate) fn refuse_unless_first_target(
         TargetAtCut::Unchosen => false,
         TargetAtCut::Chosen => true,
         TargetAtCut::Unknown => {
-            if !parents.is_empty() && !authorizer.can_resolve_cut(group_id, parents) {
-                bail!(crate::ApplyError::AuthorityUndecidable {
-                    group_id: group_id.to_string(),
-                    signer: "the group's application at the op's cut".to_owned(),
-                });
+            if !parents.is_empty() {
+                ensure_cut_resolvable(
+                    authorizer,
+                    group_id,
+                    parents,
+                    "the group's application at the op's cut",
+                )?;
             }
             targets_an_application_now(store, group_id)?
         }

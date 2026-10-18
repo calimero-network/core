@@ -1,4 +1,4 @@
-use crate::authorizer::AtCutAuthorizer;
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
 use crate::MembershipRepository;
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
@@ -124,31 +124,13 @@ impl<'a> PermissionChecker<'a> {
     /// In the second case, refuse to answer rather than guess. The op is retried once
     /// the missing history arrives.
     fn ensure_live_fallback_is_sound(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self
-            .authorizer
-            .can_resolve_cut(&self.group_id, self.parents)
-        {
-            return Ok(());
-        }
-        bail!(ApplyError::AuthorityUndecidable {
-            group_id: self.group_id.to_string(),
-            signer: format!("{identity}"),
-        });
+        ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, identity)
     }
 
     /// [`ensure_live_fallback_is_sound`](Self::ensure_live_fallback_is_sound)
     /// for a gate whose subject is an account rather than a signing key.
     fn ensure_live_fallback_is_sound_for_account(&self, member: &AccountId) -> EyreResult<()> {
-        if self
-            .authorizer
-            .can_resolve_cut(&self.group_id, self.parents)
-        {
-            return Ok(());
-        }
-        bail!(ApplyError::AuthorityUndecidable {
-            group_id: self.group_id.to_string(),
-            signer: member.to_string(),
-        });
+        ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, member)
     }
 
     /// The account `identity` speaks for on the live path, or `None`.

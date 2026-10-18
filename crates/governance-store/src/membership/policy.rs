@@ -1,3 +1,4 @@
+use crate::authorizer::ensure_cut_resolvable;
 use crate::MembershipRepository;
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
@@ -78,15 +79,7 @@ impl<'a> MembershipPolicy<'a> {
         {
             return Ok(blocks);
         }
-        if !self
-            .authorizer
-            .can_resolve_cut(&self.group_id, self.parents)
-        {
-            bail!(crate::ApplyError::AuthorityUndecidable {
-                group_id: self.group_id.to_string(),
-                signer: format!("{member}"),
-            });
-        }
+        ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, member)?;
         Ok(self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?)
     }
 
