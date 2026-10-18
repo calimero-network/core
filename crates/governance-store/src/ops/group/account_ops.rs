@@ -411,23 +411,9 @@ pub(crate) fn apply_device_unlinked(
         }
     }
 
-    // What the account's devices carry: never a proof for an account the binding does not name.
-    let carried = verified.filter(|_| binding.is_none() || device_belongs_to_account);
-
     let self_service = match proof {
         // Unbound: the account's own withdrawal above is all a proof can do here.
         Some(_) if binding.is_none() => false,
-        // Defence in depth: the mint check above leaves no binding to another account.
-        Some(_) if !device_belongs_to_account => {
-            tracing::warn!(
-                group_id = ?group_id,
-                account = %account,
-                device = %device,
-                "account device unlink: revocation proof names an account this group \
-                 does not have this device bound to; falling back to the admin gate"
-            );
-            false
-        }
         Some(proof) => match proof.authorises(*account, *device) {
             Ok(_) => true,
             Err(err) => {
@@ -455,7 +441,7 @@ pub(crate) fn apply_device_unlinked(
     // must park the apply for retry rather than be read as "not an admin".
     if !self_service && !ctx.permissions().is_admin(ctx.signer())? {
         // The account's own withdrawal above still has to reach its other namespaces.
-        if let Some(proof) = carried {
+        if let Some(proof) = verified {
             ctx.queue_event(OpEvent::DeviceRevoked {
                 group_id: group_id.to_bytes(),
                 account: *account,
@@ -466,19 +452,7 @@ pub(crate) fn apply_device_unlinked(
         }
         // Without a valid proof every replica refuses alike, from the op and its cut,
         // and an error keeps the op out of the log so its tombstone is never folded.
-        if verified.is_none() {
-            bail!(BindingRejected::WithdrawalUnauthorised);
-        }
-        // Defence in depth: past the mint check a valid proof is always carried above.
-        tracing::warn!(
-            group_id = ?group_id,
-            signer = %ctx.signer(),
-            account = %account,
-            device = %device,
-            "account device unlink not recorded: signer is neither an admin at the \
-             op's cut nor the holder of a valid revocation proof"
-        );
-        return Ok(());
+        bail!(BindingRejected::WithdrawalUnauthorised);
     }
 
     AccountBindingRepository::new(ctx.store()).apply_revocation(&group_id, *device)?;
@@ -510,7 +484,7 @@ pub(crate) fn apply_device_unlinked(
         account: *account,
         device: *device,
         // One that did not verify authorises nothing, and the admin gate does not travel.
-        proof: carried.map(|proof| Box::new(proof.clone())),
+        proof: verified.map(|proof| Box::new(proof.clone())),
     });
 
     tracing::debug!(
