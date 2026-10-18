@@ -1489,6 +1489,9 @@ impl SyncManager {
         let mut rejected_peers: std::collections::HashSet<libp2p::PeerId> =
             std::collections::HashSet::new();
         let mut last_rejection: Option<String> = None;
+        // Only a peer's own `NamespaceJoinRejected`, never a failed send or recv:
+        // this is what the joiner is told a member said, so it must be one.
+        let mut last_refusal: Option<String> = None;
         let mut last_connect_err: Option<String> = None;
         // Rounds whose connect found no peer after some peer refused; see where
         // it is counted.
@@ -1591,6 +1594,13 @@ impl SyncManager {
                     // empty search (32 rounds of it was minutes) while the
                     // caller waits, so give the refusal back.
                     if connect_failures_after_rejection >= MAX_CONNECT_FAILURES_AFTER_REJECTION {
+                        if let Some(reason) = last_refusal {
+                            return Err(calimero_node_primitives::NamespaceJoinRefused {
+                                reason,
+                                refusers: rejected_peers.len(),
+                            }
+                            .into());
+                        }
                         eyre::bail!(
                             "namespace join refused: {} ({} peer(s) refused; no other peer to ask)",
                             last_rejection.as_deref().unwrap_or("no reason given"),
@@ -1698,6 +1708,7 @@ impl SyncManager {
                         "namespace join: peer rejected, trying next peer"
                     );
                     rejected_peers.insert(peer);
+                    last_refusal = Some(reason.clone());
                     last_rejection = Some(reason);
                     continue;
                 }
@@ -1737,6 +1748,13 @@ impl SyncManager {
             }
         }
 
+        if let Some(reason) = last_refusal {
+            return Err(calimero_node_primitives::NamespaceJoinRefused {
+                reason,
+                refusers: rejected_peers.len(),
+            }
+            .into());
+        }
         eyre::bail!(
             "namespace join exhausted {} protocol attempts (last rejection: {:?}, \
              last connect_err: {:?}, {} peer(s) rejected)",

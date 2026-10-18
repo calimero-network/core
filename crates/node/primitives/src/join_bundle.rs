@@ -51,6 +51,22 @@ pub struct JoinBundle {
     pub admitter_peer: Option<libp2p::PeerId>,
 }
 
+/// Every namespace peer that answered a join refused it, and no other was left
+/// to ask.
+///
+/// Typed so the join handler can tell "someone answered no" from "nobody
+/// answered": the two read the same to a person only if the refusal is lost,
+/// and it used to be — the joiner was told to wait for the inviter to come
+/// online when a member had already said why it would not admit them.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("namespace join refused: {reason} ({refusers} peer(s) refused; no other peer to ask)")]
+pub struct NamespaceJoinRefused {
+    /// The last refusing peer's own words (`NamespaceJoinRejected::reason`).
+    pub reason: String,
+    /// How many peers refused.
+    pub refusers: usize,
+}
+
 impl JoinBundle {
     pub fn has_key(&self) -> bool {
         !self.key_envelope_bytes.is_empty()
