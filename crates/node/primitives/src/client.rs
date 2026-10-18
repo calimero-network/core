@@ -1150,6 +1150,18 @@ impl NodeClient {
             .map_err(|_| eyre::eyre!("absorb drain response channel dropped"))
     }
 
+    /// [`Self::drain_absorbed`] without waiting, for a caller holding the context
+    /// lock the replay needs: the replay runs once that lock is released.
+    pub fn start_drain_absorbed(&self, context_id: ContextId) {
+        let (outcome, _) = oneshot::channel();
+        if let Err(err) = self.node_manager.try_send(NodeMessage::DrainAbsorbed {
+            context_id,
+            outcome,
+        }) {
+            warn!(?err, %context_id, "failed to enqueue the held-delta replay");
+        }
+    }
+
     /// Read the best-effort sync-status snapshot for `context_id`.
     ///
     /// Round-trips through `NodeManager`, which owns the run-loop-published

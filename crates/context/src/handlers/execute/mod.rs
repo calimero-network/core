@@ -1340,8 +1340,8 @@ impl ContextManager {
     /// longer one resumes on the next access from the last committed rung.
     const LADDER_HOP_BUDGET: u8 = 8;
 
-    /// Switch `context_id` to its group's target release as `action` says,
-    /// under the caller's `guard`; a failed or blocked step leaves it as it was.
+    /// Switch `context_id` to its group's target release under the caller's `guard`. A failed
+    /// step leaves it as it was; a committed one asks for the replay of deltas held for it.
     fn run_lazy_upgrade(
         &mut self,
         guard: ContextGuard,
@@ -1441,6 +1441,7 @@ impl ContextManager {
                             let application = act.applications.get(&target_app).cloned();
                             let migration_v2 = act.config.migration_v2;
                             let scope_projections = Arc::clone(&act.scope_projections);
+                            let drain_client = act.node_client.clone();
                             async move {
                                 let outcome = match module_result {
                                     Ok(module) => {
@@ -1470,6 +1471,7 @@ impl ContextManager {
                                                     &cid,
                                                     target_bytecode_id,
                                                 );
+                                                drain_client.start_drain_absorbed(cid);
                                                 UpgradeOutcome::Advanced
                                             }
                                             Ok(_) => {
@@ -1542,6 +1544,7 @@ impl ContextManager {
                             act.evict_application_caches(target_app);
                         }
                         let marker_datastore = act.datastore.clone();
+                        let drain_client = act.node_client.clone();
                         async move {
                             let outcome = match update_application_id(
                                 datastore,
@@ -1567,6 +1570,7 @@ impl ContextManager {
                                         &cid,
                                         target_bytecode_id,
                                     );
+                                    drain_client.start_drain_absorbed(cid);
                                     UpgradeOutcome::Advanced
                                 }
                                 Ok(_) => UpgradeOutcome::Failed(eyre::eyre!(
@@ -1774,13 +1778,16 @@ impl ContextManager {
                         }
                         .into_actor(act)
                         .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
-                            Ok(()) => act.replay_upgrade_ladder(
-                                guard,
-                                context_id,
-                                executor,
-                                budget - 1,
-                                true,
-                            ),
+                            Ok(()) => {
+                                act.node_client.start_drain_absorbed(context_id);
+                                act.replay_upgrade_ladder(
+                                    guard,
+                                    context_id,
+                                    executor,
+                                    budget - 1,
+                                    true,
+                                )
+                            }
                             Err(err) => {
                                 // Rung resolved but its migrate failed to apply:
                                 // surface ApplyFailed (not the stale resolve-time
@@ -1835,6 +1842,7 @@ impl ContextManager {
                 .into_actor(act)
                 .then(move |hop: eyre::Result<()>, act, _ctx| match hop {
                     Ok(()) => {
+                        act.node_client.start_drain_absorbed(context_id);
                         act.replay_upgrade_ladder(guard, context_id, executor, budget - 1, true)
                     }
                     Err(err) => {
