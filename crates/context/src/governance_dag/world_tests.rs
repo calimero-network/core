@@ -2596,7 +2596,29 @@ mod concurrent {
     #[actix::test]
     async fn a_namespace_leave_concurrent_with_a_subgroup_transfer_to_the_leaver_lands_the_same_in_either_order(
     ) {
+        leave_and_subgroup_transfer(false).await;
+    }
+
+    /// A store written before creator rows existed holds none for the subgroup; its first
+    /// owner is still read from the creation in the log, never from the moved live row.
+    #[actix::test]
+    async fn a_subgroup_transfer_concurrent_with_a_leave_lands_the_same_without_a_creator_row() {
+        leave_and_subgroup_transfer(true).await;
+    }
+
+    /// The owner's transfer of the open subgroup to the logged admin and that admin's
+    /// namespace leave, both at one cut, applied in each order.
+    async fn leave_and_subgroup_transfer(drop_creator_row: bool) {
         let (world, store) = world_with_a_logged_admin().await;
+        if drop_creator_row {
+            store
+                .handle()
+                .delete(&calimero_store::key::Generic::new(
+                    *b"calimero-gcreatr",
+                    world.open_chain.to_bytes(),
+                ))
+                .expect("drop the creator row");
+        }
         let admin = world.actor(ActorState::NamespaceAdmin);
         let seat = signed_in(
             &store,
