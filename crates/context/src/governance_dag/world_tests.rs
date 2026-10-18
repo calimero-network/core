@@ -2227,13 +2227,8 @@ mod concurrent {
         });
     }
 
-    /// The projection's view drops a TEE's subgroup rows with its root removal, as the
-    /// apply does, so every view-backed gate sees the eviction.
-    #[actix::test]
-    #[ignore = "the fold is stamp-ordered and a MemberRemoved payload does not say the removed \
-                row was a TEE, so AclView cannot cascade it; the at-cut membership reads do, \
-                and the view needs the cascade in OpPayload, a format change"]
-    async fn the_view_drops_a_root_removed_tees_subgroup_rows() {
+    /// A TEE seated in the Restricted subgroup, then removed at the namespace root.
+    async fn a_tee_removed_at_the_root() -> (&'static World, Store, AccountId) {
         let (world, store) = world_with_a_logged_admin().await;
         let admin = world.actor(ActorState::NamespaceAdmin);
         let tee = admitted_tee(&store, world, 0xC8).await;
@@ -2257,14 +2252,57 @@ mod concurrent {
         )
         .await
         .expect("the admin removes the TEE at the root");
+        (world, store, tee)
+    }
+
+    fn subgroup_role_in_the_view(
+        store: &Store,
+        world: &World,
+        member: &AccountId,
+    ) -> Option<Option<GroupMemberRole>> {
         let (projection, _namespace, heads) =
-            ScopeProjections::ephemeral_projection(&store, &world.namespace)
+            ScopeProjections::ephemeral_projection(store, &world.namespace)
                 .expect("fold the namespace");
+        projection.effective_role_at_cut(store, world.restricted, member, &heads)
+    }
+
+    /// The projection's view drops a TEE's subgroup rows with its root removal, as the
+    /// apply does, so every view-backed gate sees the eviction.
+    #[actix::test]
+    async fn the_view_drops_a_root_removed_tees_subgroup_rows() {
+        let (world, store, tee) = a_tee_removed_at_the_root().await;
 
         assert_eq!(
-            projection.effective_role_at_cut(&store, world.restricted, &tee, &heads),
+            subgroup_role_in_the_view(&store, world, &tee),
             Some(None),
             "the view kept a subgroup row the root removal took"
+        );
+    }
+
+    /// A subgroup re-add that follows the root removal stands in the view.
+    #[actix::test]
+    async fn the_view_keeps_a_subgroup_readd_that_follows_a_root_tee_removal() {
+        let (world, store, tee) = a_tee_removed_at_the_root().await;
+        let readd = signed_in(
+            &store,
+            world,
+            &world.restricted,
+            &world.owner_sk,
+            &heads(&store, world),
+            unused_nonce(),
+            &GroupOp::MemberAdded {
+                member: tee,
+                role: GroupMemberRole::Member,
+            },
+        );
+        apply(&store, &readd)
+            .await
+            .expect("the owner re-adds the account to the subgroup");
+
+        assert_eq!(
+            subgroup_role_in_the_view(&store, world, &tee),
+            Some(Some(GroupMemberRole::Member)),
+            "the view dropped a re-add that follows the removal"
         );
     }
 

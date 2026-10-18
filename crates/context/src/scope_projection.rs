@@ -255,10 +255,18 @@ pub struct ScopeProjections {
     /// Each scope's void set, and the state its log leaves without those ops,
     /// valid until the scope's log next changes.
     voided: Mutex<HashMap<ScopeId, Voided>>,
+    /// The subgroup rows root TEE removals took at each cut, valid until the scope's log
+    /// next changes; each is read again at every removal's parents, so recomputing recurses.
+    evicted: Mutex<HashMap<EvictionCut, EvictedRows>>,
     /// The cut that last showed an account seated as a relay for a group. Only a
     /// hint of where to look first: the cut is asked again on every read.
     relay_seats: Mutex<HashMap<(ContextGroupId, AccountId), [u8; 32]>>,
 }
+
+/// A cut [`ScopeProjections::evicted`] is keyed by: its scope, authority base and sorted heads.
+type EvictionCut = (ScopeId, AuthorityBase, Vec<[u8; 32]>);
+
+type EvictedRows = Arc<Vec<(ContextGroupId, AccountId)>>;
 
 /// What a scope's log holds that carries no authority (see
 /// [`ScopeState::void_ops`]), computed for one [`AuthorityBase`].
@@ -328,6 +336,10 @@ impl ScopeProjections {
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&op.scope);
+        self.evicted
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(scope, ..), _| *scope != op.scope);
         self.states.entry(op.scope).or_default().apply(op);
         // O(1) dedup: `insert` is true only for a not-yet-seen id.
         if self.seen.entry(op.scope).or_default().insert(op.id()) {
@@ -2567,7 +2579,7 @@ impl ScopeProjections {
         if !walked.is_complete() {
             return Err(self.classify_unresolvable_cut(&scope, heads));
         }
-        let view = ScopeState::acl_view_from_ancestry(&walked);
+        let mut view = ScopeState::acl_view_from_ancestry(&walked);
 
         // Complete is not enough to ANSWER with. An `Opaque` op folds to nothing,
         // so a verdict taken over one describes a history this node cannot see —
@@ -2594,8 +2606,82 @@ impl ScopeProjections {
         if walked.first_opaque_in_any(&relevant).is_some() {
             return Err(UndecidableCause::AncestryUnreadable);
         }
+        let mut sorted_heads = heads.to_vec();
+        sorted_heads.sort_unstable();
+        let key = (scope, base, sorted_heads);
+        let cached = self
+            .evicted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        let evicted = match cached {
+            Some(rows) => rows,
+            None => {
+                let cut = MembershipCut {
+                    namespace: namespace_id,
+                    log,
+                    walked,
+                };
+                let rows = Arc::new(self.root_evicted_rows(store, &cut, &view));
+                let _ = self
+                    .evicted
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(key, Arc::clone(&rows));
+                rows
+            }
+        };
+        for (group, member) in evicted.iter() {
+            if let Some(rows) = view.groups.get_mut(group) {
+                let _row = rows.remove(member);
+            }
+            let _caps = view.member_caps.remove(&(*group, *member));
+        }
 
         Ok((view, base.root, base.default_cap_base))
+    }
+
+    /// The subgroup rows in `view` a root removal of a TEE took, as the apply's cascade
+    /// does: the fold removes only the root row. A change that follows the removal stands.
+    fn root_evicted_rows(
+        &self,
+        store: &Store,
+        cut: &MembershipCut<'_>,
+        view: &calimero_authz::AclView,
+    ) -> Vec<(ContextGroupId, AccountId)> {
+        let root = ContextGroupId::from(cut.namespace);
+        let removed: BTreeSet<AccountId> = cut
+            .walked
+            .ops()
+            .iter()
+            .filter(|op| !cut.walked.is_void(op))
+            .filter_map(|op| match &op.payload {
+                OpPayload::MemberRemoved { group, member } if *group == root => Some(*member),
+                _ => None,
+            })
+            .collect();
+        let mut evicted = Vec::new();
+        for member in removed {
+            let groups: Vec<ContextGroupId> = view
+                .groups
+                .iter()
+                .filter(|(group, rows)| **group != root && rows.contains_key(&member))
+                .map(|(group, _)| *group)
+                .collect();
+            for group in groups {
+                // An unreadable history of `group` leaves every question about it undecided.
+                let Some(changes) = self.membership_changes(store, cut, group, &member) else {
+                    continue;
+                };
+                if latest_changes(cut.log, &changes).any(|(op, _)| {
+                    matches!(op.payload, OpPayload::MemberRemoved { group: g, .. } if g == root)
+                }) {
+                    evicted.push((group, member));
+                }
+            }
+        }
+        evicted
     }
 
     /// Why can't this scope's retained log resolve the cut at `heads`?
@@ -2849,17 +2935,6 @@ impl ScopeProjections {
         else {
             return Some(None);
         };
-        // The fold keeps the subgroup rows a root removal of a TEE takes; the apply does not.
-        let cut = self.membership_cut(store, group, heads)?;
-        if ContextGroupId::from(cut.namespace) != group {
-            let changes = self.membership_changes(store, &cut, group, member)?;
-            let root = ContextGroupId::from(cut.namespace);
-            if latest_changes(cut.log, &changes).any(|(op, _)| {
-                matches!(op.payload, OpPayload::MemberRemoved { group: g, .. } if g == root)
-            }) {
-                return Some(None);
-            }
-        }
         Some(Some(role))
     }
 
