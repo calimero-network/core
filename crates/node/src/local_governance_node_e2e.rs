@@ -3119,6 +3119,7 @@ async fn restricted_ctx_redriven_after_group_created() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: Some(context_id),
         },
     )
     .expect("sign NamespaceOp::Group(ContextRegistered)");
@@ -3406,6 +3407,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: Some(context_id),
         },
     )
     .expect("sign NamespaceOp::Group(ContextRegistered)");
@@ -3783,6 +3785,7 @@ async fn tee_matrix_restricted_late_join() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: Some(context_id),
         },
     )
     .expect("sign NamespaceOp::Group(ContextRegistered)");
