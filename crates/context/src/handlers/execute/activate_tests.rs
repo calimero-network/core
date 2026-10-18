@@ -1,6 +1,8 @@
 //! What switching a context before a direct call reports, driven through a live
 //! `ContextManager` over the write-gate fixture.
 
+use std::time::Duration;
+
 use calimero_context_client::group::ActivateUpgradeRequest;
 use calimero_context_client::messages::{ExecuteRequest, WriteSource};
 use calimero_governance_store::{MetaRepository, UpgradeLadderRepository};
@@ -10,6 +12,8 @@ use calimero_store::key::{GroupMetaValue, LadderRung};
 
 use super::state_write_gate_tests::{fixture, fixture_switching, Fixture, LocalRole};
 use crate::test_support::eventually;
+
+const ANSWER_WITHIN: Duration = Duration::from_secs(5); // a lock wait never ends; any bound shows it
 
 async fn member() -> Fixture {
     fixture(LocalRole::Role(GroupMemberRole::Member)).await
@@ -127,4 +131,24 @@ async fn a_switch_inside_execute_replays_held_deltas() {
     .await;
     assert!(asked, "the switch asked for no replay");
     assert!(drains.iter().all(|drained| *drained == fx.context_id));
+}
+
+/// A context already on its target answers without queueing for its write lock,
+/// so a direct view does not wait behind a call that is running.
+#[actix::test]
+async fn a_current_context_answers_without_its_lock() {
+    let fx = member().await;
+    crate::activation::record_activation(&fx.store, &fx.context_id, group_target(&fx));
+    let _held = fx
+        .harness
+        .context_client
+        .acquire_lock(&fx.context_id)
+        .await
+        .expect("the context's lock");
+
+    let answer = tokio::time::timeout(ANSWER_WITHIN, activate(&fx, fx.executor))
+        .await
+        .expect("answered while the lock is held");
+
+    assert!(!answer.expect("nothing to switch"));
 }
