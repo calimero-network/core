@@ -152,6 +152,9 @@ impl ActivateUpgradeCommand {
 
 #[cfg(test)]
 mod tests {
+    use calimero_primitives::context::ContextId;
+    use calimero_server_primitives::admin::ActivateGroupUpgradeFailedContext;
+
     use super::*;
 
     fn activate(args: &[&str]) -> ActivateUpgradeCommand {
@@ -175,6 +178,24 @@ mod tests {
         let app_arg = app.to_string();
         let pinned = activate(&["ns1", "--expect-application-id", &app_arg]);
         assert_eq!(pinned.expect_application_id, Some(app));
+    }
+
+    #[test]
+    fn activate_fails_when_any_context_did_not_switch() {
+        let data = |failed_contexts| ActivateGroupUpgradeApiResponseData {
+            target_application_id: ApplicationId::from([0xAA; 32]),
+            switched_contexts: 1,
+            replayed_deltas: 0,
+            failed_contexts,
+        };
+
+        assert!(ensure_all_switched(&data(Vec::new())).is_ok());
+        let failed = ActivateGroupUpgradeFailedContext {
+            context_id: ContextId::from([0x21; 32]),
+            error: "migration trapped".to_owned(),
+            retryable: false,
+        };
+        assert!(ensure_all_switched(&data(vec![failed])).is_err());
     }
 
     #[test]

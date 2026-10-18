@@ -751,6 +751,7 @@ async fn retry_group_upgrade() {
 #[tokio::test]
 async fn activate_group_upgrade() {
     let target = ApplicationId::from([0xAA; 32]);
+    let failed = ContextId::from([0x21; 32]);
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/upgrade/activate")))
@@ -761,7 +762,12 @@ async fn activate_group_upgrade() {
             "data": {
                 "targetApplicationId": target.to_string(),
                 "switchedContexts": 2,
-                "replayedDeltas": 5
+                "replayedDeltas": 5,
+                "failedContexts": [{
+                    "contextId": failed.to_string(),
+                    "error": "migration trapped",
+                    "retryable": false
+                }]
             }
         })))
         .expect(1)
@@ -782,6 +788,11 @@ async fn activate_group_upgrade() {
     assert_eq!(resp.data.target_application_id, target);
     assert_eq!(resp.data.switched_contexts, 2);
     assert_eq!(resp.data.replayed_deltas, 5);
+    let [only] = resp.data.failed_contexts.as_slice() else {
+        panic!("one failed context, got {:?}", resp.data.failed_contexts);
+    };
+    assert_eq!(only.context_id, failed);
+    assert!(!only.retryable);
 }
 
 #[tokio::test]

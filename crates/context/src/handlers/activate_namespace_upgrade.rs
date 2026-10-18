@@ -207,6 +207,7 @@ fn check_expected(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::Arc;
 
     use calimero_governance_store::register_context_in_group;
@@ -466,5 +467,105 @@ mod tests {
 
         let plan = plan_activation(&store, |_| Ok(false), &request(ns, None)).unwrap();
         assert!(plan.contexts.is_empty());
+    }
+
+    fn plan_of(contexts: &[ContextId]) -> ActivationPlan {
+        ActivationPlan {
+            target_application_id: app(),
+            contexts: contexts
+                .iter()
+                .map(|id| (*id, PublicKey::from([0x07; 32])))
+                .collect(),
+        }
+    }
+
+    /// What a migration or load failure looks like once the context side typed it.
+    fn switch_failed(context_id: ContextId) -> eyre::Report {
+        eyre::eyre!("migration trapped").wrap_err(ContextError::UpgradeSwitchFailed {
+            context_id: context_id.to_string(),
+        })
+    }
+
+    fn failures(response: &ActivateNamespaceUpgradeResponse) -> Vec<(ContextId, bool)> {
+        response
+            .failed_contexts
+            .iter()
+            .map(|failed| (failed.context_id, failed.retryable))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_context_whose_switch_fails_is_listed_and_the_others_still_switch() {
+        let [first, broken, last] = [0x21, 0x22, 0x23].map(|id| ContextId::from([id; 32]));
+        let broken_tries = Cell::new(0);
+        let switch = |context_id: ContextId, _: PublicKey| {
+            let failure = (context_id == broken).then(|| {
+                broken_tries.set(broken_tries.get() + 1);
+                switch_failed(context_id)
+            });
+            async move { failure.map_or(Ok(true), Err) }
+        };
+        let drain = |_: ContextId| async { Ok::<usize, eyre::Report>(2) };
+
+        let response = activate_contexts(
+            plan_of(&[first, broken, last]),
+            switch,
+            drain,
+            Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(response.switched_contexts, 2);
+        assert_eq!(response.replayed_deltas, 4);
+        assert_eq!(failures(&response), vec![(broken, false)]);
+        assert_eq!(broken_tries.get(), 1, "a failed switch is not retried");
+    }
+
+    #[tokio::test]
+    async fn an_infrastructure_failure_is_retried_and_not_listed_once_it_succeeds() {
+        let ctx = ContextId::from([0x21; 32]);
+        let tries = Cell::new(0);
+        let switch = |_: ContextId, _: PublicKey| {
+            tries.set(tries.get() + 1);
+            let first = tries.get() == 1;
+            async move {
+                if first {
+                    Err(eyre::eyre!("context manager mailbox closed"))
+                } else {
+                    Ok(true)
+                }
+            }
+        };
+        let drain = |_: ContextId| async { Ok::<usize, eyre::Report>(0) };
+
+        let response = activate_contexts(plan_of(&[ctx]), switch, drain, Duration::ZERO).await;
+
+        assert_eq!(tries.get(), 2);
+        assert_eq!(response.switched_contexts, 1);
+        assert!(response.failed_contexts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_infrastructure_failure_outlasting_the_retries_is_listed_as_retryable() {
+        let ctx = ContextId::from([0x21; 32]);
+        let moved = Cell::new(false);
+        let switch = |_: ContextId, _: PublicKey| {
+            let first = !moved.replace(true);
+            async move { Ok::<bool, eyre::Report>(first) }
+        };
+        let drains = Cell::new(0);
+        let drain = |_: ContextId| {
+            drains.set(drains.get() + 1);
+            async { Err::<usize, _>(eyre::eyre!("node manager mailbox dropped")) }
+        };
+
+        let response = activate_contexts(plan_of(&[ctx]), switch, drain, Duration::ZERO).await;
+
+        assert_eq!(drains.get(), ACTIVATE_RETRY_ATTEMPTS);
+        assert_eq!(
+            response.switched_contexts, 1,
+            "it moved before its replay failed"
+        );
+        assert_eq!(failures(&response), vec![(ctx, true)]);
     }
 }
