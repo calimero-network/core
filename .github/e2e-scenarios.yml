@@ -41,10 +41,12 @@ scenarios:
     file: workflows/delegated-session.yml
     app: scaffolding-e2e
   # Direct admission on an embedded-auth node: a joiner with no credential is
-  # answered by the admit handler, not the auth guard.
+  # answered by the admit handler, not the auth guard. Governance only: no
+  # context is created or joined, so the registry is never asked.
   - workflow: admit-without-credential
     file: workflows/admit-without-credential.yml
     app: scaffolding-e2e
+    registry_fetch: "false"
   # The other half of the architecture: no session and no token at all,
   # just a signature on each request. Verified by unit tests and by a
   # byte fixture three implementations agree on, but until this nothing
