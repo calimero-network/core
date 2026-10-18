@@ -380,7 +380,8 @@ sealed under the session and responses stream back in sealed frames. Seven rules
   `InnerScope::Uncredentialed` (set in `lib.rs` when auth is not embedded):
   `merod` guards nothing itself there, and the proxy sees only `POST /sealed/v2`,
   so an opened request for any route outside `UNCREDENTIALED_ADMIN_PATHS` (plus
-  `/namespaces/{id}/admit` always, and `.../intents` with `delegated_access`) is refused inside the envelope with
+  `/namespaces/{id}/admit` always, and with `delegated_access` the four `delegated_execution_routes()`:
+  `.../intents`, `.../presence-intents`, `.../context-intents`, `.../governance-intents`) is refused inside the envelope with
   `sealed_route_unguarded`. Matched exactly, never by prefix. Keep the list in
   step with the public router in `admin/service.rs`: a route added there is not
   sealable in proxy mode until it is added here, which is the safe direction.

@@ -191,6 +191,7 @@ pub enum InnerScope {
     /// refused with `403 sealed_route_unguarded`.
     Uncredentialed {
         /// Also allow `GET`/`POST {admin}/contexts/{id}/intents`,
+        /// `POST {admin}/contexts/{id}/presence-intents`,
         /// `{admin}/groups/{id}/context-intents` and
         /// `{admin}/groups/{id}/governance-intents`, public on this node
         /// (`[server.admin] delegated_access`).
@@ -360,7 +361,8 @@ impl SealedTransport {
             return true;
         }
         delegated_access
-            && (is_intents_path(admin)
+            && (is_context_intents_path(admin, "/intents")
+                || is_context_intents_path(admin, "/presence-intents")
                 || is_group_intents_path(admin, "/context-intents")
                 || is_group_intents_path(admin, "/governance-intents"))
     }
@@ -793,12 +795,13 @@ fn admit_start(
     Ok(take)
 }
 
-/// `/contexts/{id}/intents`, with `id` exactly 64 lowercase hex characters,
-/// as a context id renders.
-fn is_intents_path(admin_path: &str) -> bool {
+/// `/contexts/{id}{suffix}`, with `id` exactly 64 lowercase hex characters, as
+/// a context id renders — delegated execution (`/intents`) and an account's
+/// presence (`/presence-intents`), both on `delegated_execution_routes()`.
+fn is_context_intents_path(admin_path: &str, suffix: &str) -> bool {
     admin_path
         .strip_prefix("/contexts/")
-        .and_then(|rest| rest.strip_suffix("/intents"))
+        .and_then(|rest| rest.strip_suffix(suffix))
         .is_some_and(is_rendered_id)
 }
 
@@ -814,7 +817,7 @@ fn is_admit_path(admin_path: &str) -> bool {
 /// `/groups/{id}{suffix}`, with `id` exactly 64 lowercase hex characters, as a
 /// group id renders — delegated context creation (`/context-intents`) and
 /// delegated governance (`/governance-intents`), the same surface as
-/// [`is_intents_path`] and served on the same router.
+/// [`is_context_intents_path`] and served on the same router.
 fn is_group_intents_path(admin_path: &str, suffix: &str) -> bool {
     admin_path
         .strip_prefix("/groups/")
