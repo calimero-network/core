@@ -2162,18 +2162,34 @@ mod concurrent {
     }
 
     /// A context registered in one group, registered in another concurrently with its detach
-    /// from the first, lands the same in either order.
+    /// from the first, lands the same in either order: the first group owns it.
     #[actix::test]
-    #[ignore = "a registration reads live whether its context is in another group: the cut's \
-                answer needs every group's registrations of it, and a node outside a Restricted \
-                group cannot open them; folding registration into OpPayload is a format change"]
     async fn a_registration_concurrent_with_a_detach_from_another_group_lands_the_same_in_either_order(
     ) {
         let (world, store) = world_with_a_logged_admin().await;
         let admin = world.actor(ActorState::NamespaceAdmin);
         let context = calimero_primitives::context::ContextId::from([0xC7; 32]);
-        calimero_governance_store::register_context_in_group(&store, &world.open_chain, &context)
-            .expect("register the context outside the log");
+        let registration = GroupOp::ContextRegistered {
+            context_id: context,
+            application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
+            blob_id: calimero_primitives::blobs::BlobId::from([0; 32]),
+            source: String::new(),
+            service_name: None,
+            package: String::new(),
+            version: String::new(),
+        };
+        let first = signed_in(
+            &store,
+            world,
+            &world.open_chain,
+            &admin.sign_sk,
+            &heads(&store, world),
+            unused_nonce(),
+            &registration,
+        );
+        apply(&store, &first)
+            .await
+            .expect("the admin registers the context in the open chain");
         let parents = heads(&store, world);
         let register = signed_in(
             &store,
@@ -2182,15 +2198,7 @@ mod concurrent {
             &admin.sign_sk,
             &parents,
             unused_nonce(),
-            &GroupOp::ContextRegistered {
-                context_id: context,
-                application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
-                blob_id: calimero_primitives::blobs::BlobId::from([0; 32]),
-                source: String::new(),
-                service_name: None,
-                package: String::new(),
-                version: String::new(),
-            },
+            &registration,
         );
         let detach = signed_in(
             &store,
@@ -2207,10 +2215,13 @@ mod concurrent {
         let nodes = in_both_orders(&store, &register, &detach).await;
 
         let ops = [&register, &detach];
-        assert_eq!(
-            verdicts(&nodes[0], world, &ops),
-            verdicts(&nodes[1], world, &ops)
-        );
+        for node in &nodes {
+            assert_eq!(
+                verdicts(node, world, &ops),
+                vec![Some(Parked::Refused), None],
+                "a second group took a context the first one registered"
+            );
+        }
         assert_same_rows(&nodes, |node| {
             calimero_governance_store::get_group_for_context(node, &context).expect("read")
         });
