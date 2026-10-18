@@ -147,17 +147,25 @@ pub(crate) fn with_repair_cell_writers(
     }
 }
 
-/// Whether this node holds deltas or repair leaves for a release it has not switched to.
-/// It is behind on purpose then, and its roots cannot match a peer's until it does.
-/// A delta parked on a missing application is not this: that one syncing is what fetches it.
+/// Whether the context runs a release other than its group's target and holds records produced on
+/// it: it is behind on purpose then, and its roots cannot match a peer's until it switches.
 pub(crate) fn holds_absorbed(store: &Store, context_id: &ContextId) -> bool {
-    calimero_governance_store::AbsorbRepository::new(store)
-        .enumerate_pending(context_id)
-        .is_ok_and(|pending| {
-            pending
-                .iter()
-                .any(|(_, record)| record.pending_application.is_none())
-        })
+    let held = || -> Result<bool> {
+        let loaded = calimero_context::hlc_fence::loaded_reader_bytecode_id(store, context_id)?;
+        let target = calimero_context::hlc_fence::target_reader_bytecode_id(store, context_id)?;
+        let (Some(loaded), Some(target)) = (loaded, target) else {
+            return Ok(false);
+        };
+        // A delta parked on a missing application is keyed by that application, so it is not
+        // counted: syncing is what fetches the application.
+        Ok(loaded != target
+            && calimero_governance_store::AbsorbRepository::new(store)
+                .has_any(context_id, target)?)
+    };
+    held().unwrap_or_else(|err| {
+        tracing::debug!(%context_id, %err, "Could not tell if the context is behind its release");
+        false
+    })
 }
 
 /// Validates that peer's application ID matches ours.
