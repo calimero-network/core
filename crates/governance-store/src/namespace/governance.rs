@@ -751,28 +751,42 @@ impl<'a> NamespaceGovernance<'a> {
                     //
                     // A copy of the join (in the clear or relayed) in this envelope's
                     // past refuses it; a concurrent copy applies nothing.
-                    if !self.replays_relayed_join(delta_id, &op.parent_op_hashes, inner)? {
-                        root_events = self.apply_root_op(inner, root)?;
+                    match self.replays_relayed_join(delta_id, &op.parent_op_hashes, inner) {
+                        Ok(false) => {
+                            root_events = self.apply_root_op(inner, root)?;
 
-                        let effects = self.root_op_side_effects(inner, root, 0)?;
-                        if effects.divergence.is_some() {
-                            result.divergence = effects.divergence;
+                            let effects = self.root_op_side_effects(inner, root, 0)?;
+                            if effects.divergence.is_some() {
+                                result.divergence = effects.divergence;
+                            }
+                            result
+                                .key_unwrap_failures
+                                .extend(effects.key_unwrap_failures);
+
+                            // Persisted only after the apply succeeded: burning the
+                            // nonce for an apply that failed would make the failure
+                            // permanent.
+                            self.record_relayed_join(delta_id, inner)?;
                         }
-                        result
-                            .key_unwrap_failures
-                            .extend(effects.key_unwrap_failures);
-
-                        // Persisted only after the apply succeeded: burning the
-                        // nonce for an apply that failed would make the failure
-                        // permanent.
-                        self.record_relayed_join(delta_id, inner)?;
-                    } else {
-                        tracing::debug!(
+                        Ok(true) => tracing::debug!(
                             namespace_id = %hex::encode(self.namespace_id.as_bytes()),
                             signer = %inner.signer,
                             nonce = inner.nonce,
                             "a relayed join already applied here; applying nothing"
-                        );
+                        ),
+                        // Kept like an unread relay, for the replay that opens its past.
+                        Err(e) if is_undecidable(&e) => {
+                            tracing::warn!(
+                                namespace_id = %hex::encode(self.namespace_id.as_bytes()),
+                                delta_id = %hex::encode(delta_id),
+                                signer = %inner.signer,
+                                "holding a relayed join: a relay in its past this node \
+                                 cannot open may carry the same join"
+                            );
+                            unread = true;
+                            keep_bytes &= self.admit_unreadable(op)?;
+                        }
+                        Err(e) => return Err(e),
                     }
                 }
                 None => {
@@ -2931,12 +2945,49 @@ impl<'a> NamespaceGovernance<'a> {
         )? {
             return Ok(true);
         }
+        // A relay in the past this node cannot open may carry the same join, which a
+        // keyed node takes as the copy that refuses this one.
+        let unread = self.unread_relays(delta_id)?;
+        if !unread.is_empty()
+            && NamespaceOpLogService::new(self.store, self.namespace_id)
+                .past_reaches(parents, &unread)?
+                != Some(None)
+        {
+            return Err(crate::ApplyError::AuthorityUndecidable {
+                group_id: ns_gid.to_string(),
+                signer: inner.signer.to_string(),
+            }
+            .into());
+        }
         // A concurrent copy: a relay's parents are not the joiner's to bind, so it never
         // applies the join again, and is recorded so ops after it are judged alike.
         if copied {
             self.record_relayed_join(delta_id, inner)?;
         }
         Ok(copied)
+    }
+
+    /// The logged relays other than `delta_id` sealed under a namespace key not held here.
+    fn unread_relays(&self, delta_id: [u8; 32]) -> EyreResult<HashSet<[u8; 32]>> {
+        let keyring = GroupKeyring::new(
+            self.store,
+            ContextGroupId::from(self.namespace_id.to_bytes()),
+        );
+        let mut unread = HashSet::new();
+        for entry in
+            NamespaceOpLogService::new(self.store, self.namespace_id).collect_sealed_root_ops()?
+        {
+            if !matches!(entry.signed_op.op, NamespaceOp::RootRelaySealed { .. })
+                || keyring.load_key_by_id(entry.key_id.as_bytes())?.is_some()
+            {
+                continue;
+            }
+            let id = entry.signed_op.content_hash()?;
+            if id != delta_id {
+                let _ = unread.insert(id);
+            }
+        }
+        Ok(unread)
     }
 
     fn record_relayed_join(&self, delta_id: [u8; 32], inner: &SignedNamespaceOp) -> EyreResult<()> {

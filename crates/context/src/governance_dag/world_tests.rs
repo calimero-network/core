@@ -2466,7 +2466,6 @@ mod concurrent {
         );
     }
 
-    /// A nonce no signer of the world has used: a reused one is dropped as a duplicate.
     /// The owner's transfer of `group` to `new_owner`, signed at `parents`.
     fn transfer_at(
         store: &Store,
@@ -2636,6 +2635,66 @@ mod concurrent {
         assert_same_rows(&nodes, |node| owner_of(node, &world.open_chain));
     }
 
+    /// `inner` relayed by `relayer` at `parents`, sealed under the namespace key `key`.
+    fn relayed_under(
+        world: &World,
+        relayer: &PrivateKey,
+        parents: &[[u8; 32]],
+        key: &[u8; 32],
+        inner: &SignedNamespaceOp,
+    ) -> SignedNamespaceOp {
+        SignedNamespaceOp::sign(
+            relayer,
+            world.namespace.to_bytes().into(),
+            parents.to_vec(),
+            unused_nonce(),
+            NamespaceOp::RootRelaySealed {
+                key_id: GroupKeyring::key_id_for(key).into(),
+                encrypted: GroupKeyring::encrypt_relayed_op(key, inner).expect("seal the relay"),
+            },
+        )
+        .expect("sign the relay")
+    }
+
+    /// A second relay of one join, citing a first sealed under a key one node lacks: that
+    /// node must not apply the join through the second, which the keyed node refuses.
+    #[actix::test]
+    async fn a_relay_citing_an_unread_relay_of_the_same_join_lands_as_on_a_keyed_node() {
+        let (world, store) = world_with_a_logged_admin().await;
+        let admin = world.actor(ActorState::NamespaceAdmin);
+        let (_, current) = GroupKeyring::new(&store, world.namespace)
+            .load_current_key()
+            .expect("read the namespace keyring")
+            .expect("the world keys the namespace");
+        let older = [0x7A; 32];
+        let (keyed, unkeyed) = (fork_store(&store), fork_store(&store));
+        let _ = GroupKeyring::new(&keyed, world.namespace)
+            .store_key(&older)
+            .expect("only the keyed node holds the older key");
+
+        let joiner_sk = PrivateKey::from([0xC3; 32]);
+        let joiner = account_for(&joiner_sk.public_key());
+        let join = join_at(world, &joiner_sk, [0xC3; 32], &heads(&store, world), 1);
+        let first = relayed_under(world, &admin.sign_sk, &heads(&store, world), &older, &join);
+        let first_id = first.content_hash().expect("hash the relay");
+        let second = relayed_under(world, &admin.sign_sk, &[first_id], &current, &join);
+        for node in [&keyed, &unkeyed] {
+            for op in [&first, &second] {
+                let _applied = apply(node, op).await;
+            }
+        }
+        let _key_id = crate::group_key_pull::adopt_pulled_group_key(
+            &unkeyed,
+            world.namespace.to_bytes().into(),
+            world.namespace,
+            &older,
+        )
+        .expect("the older key reaches the unkeyed node");
+
+        assert_landed_the_same(&[keyed, unkeyed], world, &[&first, &second], &joiner);
+    }
+
+    /// A nonce no signer of the world has used: a reused one is refused at its cut.
     fn unused_nonce() -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 32);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
