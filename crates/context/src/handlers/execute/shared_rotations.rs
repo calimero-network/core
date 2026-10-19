@@ -187,11 +187,10 @@ pub(crate) fn storage_at_current_cut(
     context_id: ContextId,
 ) -> eyre::Result<ContextStorage> {
     let pinned = pin_cut(store, projections, context_id, None)?;
-    Ok(ContextStorage::with_writers_resolver(
-        store.clone(),
-        context_id,
-        pinned.writers,
-    ))
+    Ok(
+        ContextStorage::with_writers_resolver(store.clone(), context_id, pinned.writers)
+            .buffer_index(),
+    )
 }
 
 /// Asks `ask` once per cell: the cut is fixed for the run and the guest reads on every access.
