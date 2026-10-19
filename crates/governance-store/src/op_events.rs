@@ -156,10 +156,12 @@ pub enum OpEvent {
     },
     /// `GroupOp::AccountNamespaceLeft` - this namespace's account is no longer a
     /// member of `namespace`. Fires with or without a row: a device may follow
-    /// it from its pairing list and still have to unfollow.
+    /// it from its pairing list and still have to unfollow. `purge` marks an
+    /// `AccountNamespacePurged`, after which each device takes it off its disk.
     AccountNamespaceLeft {
         group_id: [u8; 32],
         namespace: ContextGroupId,
+        purge: bool,
     },
     /// `GroupOp::MemberSetAutoFollow` — auto-follow flags were updated
     /// for a member. Fires for every application of the op, including

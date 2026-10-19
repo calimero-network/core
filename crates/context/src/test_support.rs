@@ -384,6 +384,21 @@ pub fn holder_device_scoped_to(
     (account_namespace, device)
 }
 
+/// This holder's account namespace, created the way its first pairing creates it.
+///
+/// # Panics
+///
+/// Panics if this node holds no account root or the creation fails.
+pub async fn holders_account_namespace(
+    store: &Store,
+    context_client: &calimero_context_client::client::ContextClient,
+) -> ContextGroupId {
+    crate::handlers::ensure_account_namespace::ensure_account_namespace(store, context_client)
+        .await
+        .expect("the ensure runs")
+        .expect("the holder creates its account namespace")
+}
+
 /// Replace this node's own scope with `applications` at `scope_epoch`, as folding
 /// the account holder's `AccountDeviceCertified` does.
 ///

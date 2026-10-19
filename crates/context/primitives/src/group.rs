@@ -644,6 +644,9 @@ pub struct LeaveGroupResponse {
 #[derive(Debug)]
 pub struct LeaveNamespaceRequest {
     pub namespace_id: ContextGroupId,
+    /// Every device of the account, this one included, also takes the
+    /// namespace and its contexts off its disk.
+    pub purge: bool,
 }
 
 impl Message for LeaveNamespaceRequest {

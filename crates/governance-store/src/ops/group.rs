@@ -113,7 +113,10 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             application,
         } => account_ops::apply_namespace_gained(ctx, namespace, *application)?,
         GroupOp::AccountNamespaceLeft { namespace } => {
-            account_ops::apply_namespace_left(ctx, namespace)?
+            account_ops::apply_namespace_left(ctx, namespace, false)?
+        }
+        GroupOp::AccountNamespacePurged { namespace } => {
+            account_ops::apply_namespace_left(ctx, namespace, true)?
         }
         GroupOp::AccountDeviceDescoped {
             account,

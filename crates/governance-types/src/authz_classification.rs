@@ -96,7 +96,9 @@ fn classify_group_op(op: &GroupOp) -> Authz {
         GroupOp::AccountDeviceCertified { .. } => {
             uncovered!("records a device certificate and scope for an account")
         }
-        GroupOp::AccountNamespaceGained { .. } | GroupOp::AccountNamespaceLeft { .. } => {
+        GroupOp::AccountNamespaceGained { .. }
+        | GroupOp::AccountNamespaceLeft { .. }
+        | GroupOp::AccountNamespacePurged { .. } => {
             uncovered!("changes the namespaces an account's devices follow")
         }
         GroupOp::AccountDeviceLabelled { .. } => ungated!("names a device; grants no authority"),

@@ -1,13 +1,104 @@
 //! Takes a namespace and everything in it off this node's disk, publishing
 //! nothing; shared by every handler that ends this node's part in one.
 
+use actix::{ActorFutureExt, ActorResponse, Handler, Message, ResponseActFuture, WrapFuture};
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{CapabilitiesRepository, CascadePayload, MetadataRepository};
+use calimero_governance_store::{
+    CapabilitiesRepository, CascadePayload, MetadataRepository, NamespaceRepository,
+};
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
-use tracing::warn;
+use either::Either;
+use tracing::{info, warn};
 
 use crate::handlers::delete_context::purge_context_with_dag;
+use crate::ContextManager;
+
+/// Take a namespace root off this node, for a leave that asked every device of
+/// the account to. Crate-internal: it publishes nothing and checks no membership.
+#[derive(Debug, Message)]
+#[rtype(result = "eyre::Result<()>")]
+pub(crate) struct PurgeNamespace {
+    pub namespace: ContextGroupId,
+}
+
+impl Handler<PurgeNamespace> for ContextManager {
+    type Result = ActorResponse<Self, eyre::Result<()>>;
+
+    fn handle(
+        &mut self,
+        PurgeNamespace { namespace }: PurgeNamespace,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let repository = NamespaceRepository::new(&self.datastore);
+        let payload = match repository.resolve(&namespace).and_then(|resolved| {
+            eyre::ensure!(
+                resolved == namespace,
+                "{namespace:?} is not a namespace root"
+            );
+            repository.collect_subtree_for_cascade(&namespace)
+        }) {
+            Ok(payload) => payload,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        ActorResponse::r#async(self.purge_subtree(namespace, payload))
+    }
+}
+
+impl ContextManager {
+    /// [`purge_namespace`] with every cached context of `payload` locked, so no
+    /// run writes while its rows go; the purged contexts then leave the cache.
+    pub(crate) fn purge_subtree(
+        &self,
+        namespace: ContextGroupId,
+        payload: CascadePayload,
+    ) -> ResponseActFuture<Self, eyre::Result<()>> {
+        let locks: Vec<_> = payload
+            .contexts
+            .iter()
+            .filter_map(|context| self.contexts.get(context))
+            .map(|context| context.lock())
+            .collect();
+        let datastore = self.datastore.clone();
+        let node_client = self.node_client.clone();
+        let search = self.search.clone();
+
+        let task = async move {
+            let mut _held = Vec::with_capacity(locks.len());
+            for lock in locks {
+                _held.push(match lock {
+                    Either::Left(guard) => guard,
+                    Either::Right(task) => task.await,
+                });
+            }
+            let outcome = purge_namespace(
+                &datastore,
+                &node_client,
+                search.as_deref(),
+                &namespace,
+                &payload,
+            )
+            .await;
+            if outcome.is_ok() {
+                info!(
+                    ?namespace,
+                    total_groups = payload.descendant_groups.len() + 1,
+                    total_contexts = payload.contexts.len(),
+                    "removed namespace and subtree from this node"
+                );
+            }
+            (payload.contexts, outcome)
+        };
+
+        // Dropped on failure too: a purge cut short leaves cached state over missing rows.
+        Box::pin(task.into_actor(self).map(|(contexts, outcome), act, _ctx| {
+            for context in contexts {
+                let _ignored = act.contexts.remove(&context);
+            }
+            outcome
+        }))
+    }
+}
 
 /// Every context and group of `payload` (the namespace's subtree), and its
 /// namespace-level state, gone from this node; the topics dropped.

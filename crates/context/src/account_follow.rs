@@ -1,5 +1,5 @@
-//! Following what this account gains, unfollowing what it leaves, binding a
-//! sibling it certifies and carrying a revocation it proved: an op-event listener
+//! Following what this account gains, unfollowing (or purging) what it leaves,
+//! binding a sibling it certifies and carrying a revocation it proved: an op-event listener
 //! beside [`crate::auto_follow`], reacting only to this node's own account
 //! namespace, and sweeping both ways on every start.
 //!
@@ -13,6 +13,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use actix::Addr;
 use calimero_account::{AccountId, DeviceId, SignedDeviceRevocation};
 use calimero_context_client::local_governance::{AckRouter, GroupOp};
 use calimero_context_config::types::ContextGroupId;
@@ -35,6 +36,8 @@ use tracing::{debug, info, warn};
 
 use crate::account_namespace::account_is_member;
 use crate::handlers::pair_device_complete::{self, signing_identity};
+use crate::handlers::purge_namespace::PurgeNamespace;
+use crate::ContextManager;
 
 #[cfg(not(test))]
 const PROJECTION_JITTER_MAX_MS: u64 = 2_000; // damps k devices publishing one certification's m binds at once
@@ -47,7 +50,12 @@ static HANDLE: Mutex<Option<AbortHandle>> = Mutex::new(None);
 ///
 /// Subscribes before spawning, as `auto_follow::spawn` does: an event fired
 /// before the task's first poll would be lost until the next restart.
-pub fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRouter>) {
+pub fn spawn(
+    store: Store,
+    node_client: NodeClient,
+    ack_router: Arc<AckRouter>,
+    manager: Addr<ContextManager>,
+) {
     let mut slot = HANDLE.lock().expect("account-follow HANDLE poisoned");
     if slot.as_ref().is_some_and(|abort| !abort.is_finished()) {
         debug!("account-follow handler already running; skipping re-spawn");
@@ -56,7 +64,7 @@ pub fn spawn(store: Store, node_client: NodeClient, ack_router: Arc<AckRouter>) 
     let rx = op_events::subscribe();
     *slot = Some(
         tokio::spawn(async move {
-            run(rx, store, node_client, ack_router).await;
+            run(rx, store, node_client, ack_router, manager).await;
         })
         .abort_handle(),
     );
@@ -79,6 +87,7 @@ async fn run(
     store: Store,
     node_client: NodeClient,
     ack_router: Arc<AckRouter>,
+    manager: Addr<ContextManager>,
 ) {
     info!("account-follow handler started");
 
@@ -170,13 +179,19 @@ async fn run(
             OpEvent::AccountNamespaceLeft {
                 group_id,
                 namespace,
+                purge,
             } => {
                 let store = store.clone();
                 let node_client = node_client.clone();
+                let manager = manager.clone();
                 let topics = Arc::clone(&topics);
                 let _ = tasks.spawn(async move {
                     let _decided = topics.lock().await;
-                    handle_namespace_left(&store, &node_client, group_id, namespace).await;
+                    if purge {
+                        handle_namespace_purged(&store, &manager, group_id, namespace).await;
+                    } else {
+                        handle_namespace_left(&store, &node_client, group_id, namespace).await;
+                    }
                 });
             }
             OpEvent::AccountDeviceCertified { group_id, device } => {
@@ -751,6 +766,35 @@ async fn handle_namespace_left(
         );
     }
     unfollow(node_client, namespace).await;
+}
+
+/// Take `namespace` off this node: the account left it and asked every device to.
+/// No pull first, unlike [`handle_namespace_left`]: it would fold rows back.
+async fn handle_namespace_purged(
+    store: &Store,
+    manager: &Addr<ContextManager>,
+    group_id: [u8; 32],
+    namespace: ContextGroupId,
+) {
+    if !unfollows_on_left(store, group_id, namespace) {
+        return;
+    }
+    match manager.send(PurgeNamespace { namespace }).await {
+        Ok(Ok(())) => info!(
+            ?namespace,
+            "account-follow: purged a namespace the account left"
+        ),
+        Ok(Err(err)) => warn!(
+            ?err,
+            ?namespace,
+            "account-follow: failed to purge a namespace"
+        ),
+        Err(err) => warn!(
+            ?err,
+            ?namespace,
+            "account-follow: the purge was not delivered"
+        ),
+    }
 }
 
 /// Drop `namespace`'s topic.
@@ -1414,6 +1458,7 @@ mod tests {
             store.clone(),
             harness.node_client.clone(),
             Arc::clone(harness.context_client.ack_router()),
+            harness.manager.clone(),
         ))
     }
 
@@ -1464,6 +1509,7 @@ mod tests {
         op_events::notify(OpEvent::AccountNamespaceLeft {
             group_id: account_namespace.to_bytes(),
             namespace: left,
+            purge: false,
         });
 
         let seen = unsubscribes_until(&mut harness, |seen| seen.contains(&topic(left))).await;
@@ -1472,6 +1518,53 @@ mod tests {
             seen.contains(&topic(left)),
             "a leave the account announced has to drop the namespace's topic"
         );
+    }
+
+    /// A leave the account asked every device to purge on takes the namespace
+    /// and its contexts off this one too, and leaves no forgotten marker.
+    #[actix::test]
+    async fn a_purging_leave_this_account_announced_takes_the_namespace_off_this_node() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let left = ContextGroupId::from([0x96; 32]);
+        let context = calimero_primitives::context::ContextId::from([0x9C; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &left,
+                &calimero_governance_store::test_fixtures::test_meta(),
+            )
+            .expect("the namespace");
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&left)
+            .expect("take part");
+        calimero_governance_store::register_context_in_group(&store, &left, &context)
+            .expect("register");
+        let state = [[0x9C; 32].to_vec(), vec![1; 32]].concat();
+        store
+            .raw_put(calimero_store::db::Column::State, &state, b"value")
+            .expect("write");
+
+        let harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        op_events::notify(OpEvent::AccountNamespaceLeft {
+            group_id: account_namespace.to_bytes(),
+            namespace: left,
+            purge: true,
+        });
+
+        let purged =
+            eventually(|| MetaRepository::new(&store).load(&left).unwrap().is_none()).await;
+        listener.abort();
+        assert!(purged, "the namespace is gone from this device");
+        assert!(store
+            .raw_get(calimero_store::db::Column::State, &state)
+            .unwrap()
+            .is_none());
+        assert!(!NamespaceRepository::new(&store)
+            .participating_namespaces()
+            .unwrap()
+            .contains(&left));
+        assert_eq!(ForgottenNamespaces::new(&store).list().unwrap(), vec![]);
     }
 
     /// Nothing re-drives the certified op, so the sweep is what lets the uncovered

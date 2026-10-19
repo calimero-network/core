@@ -358,6 +358,13 @@ const GOLDEN_GROUP_OP_SHARED_WRITERS_ROTATED: &[u8] = &[
     0, 0, 0, 0, // new: empty
 ];
 
+/// GroupOp ordinal 44 - AccountNamespacePurged (zero namespace)
+const GOLDEN_GROUP_OP_ACCOUNT_NAMESPACE_PURGED: &[u8] = &[
+    44, // discriminant
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, // namespace
+];
+
 #[test]
 fn group_op_discriminants_are_golden() {
     // Ties the ordinals frozen below to the schema version they describe, so a
@@ -656,6 +663,11 @@ fn group_op_discriminants_are_golden() {
             && nonce == 0
             && new.is_empty(),
         43
+    );
+    check_group_op!(
+        GOLDEN_GROUP_OP_ACCOUNT_NAMESPACE_PURGED,
+        GroupOp::AccountNamespacePurged { namespace } if namespace == ContextGroupId::from([0u8; 32]),
+        44
     );
 
     assert!(

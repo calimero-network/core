@@ -878,6 +878,7 @@ impl Actor for ContextManager {
             self.datastore.clone(),
             self.node_client.clone(),
             Arc::clone(&self.ack_router),
+            ctx.address(),
         );
 
         // Hands the namespace TEE key to every TEE authority; a no-op on a node

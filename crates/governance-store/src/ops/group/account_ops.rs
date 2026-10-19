@@ -300,11 +300,13 @@ pub(crate) fn apply_namespace_gained(
     Ok(())
 }
 
-/// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left. The
-/// event fires with or without a row: a device may follow it from its pair list.
+/// `GroupOp::AccountNamespaceLeft` - drop a namespace this account has left; with
+/// `purge`, `AccountNamespacePurged`. The event fires with or without a row: a
+/// device may follow it from its pair list.
 pub(crate) fn apply_namespace_left(
     ctx: &mut GroupApplyCtx<'_>,
     namespace: &ContextGroupId,
+    purge: bool,
 ) -> EyreResult<()> {
     let group_id = *ctx.group_id();
     if owning_account_signer(ctx, "account namespace left")?.is_none() {
@@ -315,8 +317,9 @@ pub(crate) fn apply_namespace_left(
     ctx.queue_event(OpEvent::AccountNamespaceLeft {
         group_id: group_id.to_bytes(),
         namespace: *namespace,
+        purge,
     });
-    tracing::info!(group_id = ?group_id, ?namespace, "account namespace left");
+    tracing::info!(group_id = ?group_id, ?namespace, purge, "account namespace left");
     Ok(())
 }
 

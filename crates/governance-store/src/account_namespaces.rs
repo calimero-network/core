@@ -1,7 +1,8 @@
 //! The namespaces one account takes part in, as its own namespace records them.
 //!
 //! One row per namespace, written by the `AccountNamespaceGained` apply and
-//! deleted by `AccountNamespaceLeft`. A device paired or widened later walks it.
+//! deleted by `AccountNamespaceLeft` or `AccountNamespacePurged`. A device
+//! paired or widened later walks it.
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
