@@ -27,9 +27,8 @@
 //! the user-visible handler response; the listener also issues an
 //! unsubscribe (idempotent) as part of its TEE-eviction cleanup.
 //!
-//! With `purge`, this node takes the namespace off its disk (no forgotten
-//! marker: nothing is left to restore) and announces `AccountNamespacePurged`,
-//! which has every other device of the account do the same as it applies it.
+//! With `purge`, once an admin confirmed the leave, this node purges the namespace
+//! and announces `AccountNamespacePurged` so the account's other devices do too.
 
 use std::sync::Arc;
 
@@ -276,9 +275,8 @@ mod tests {
         );
     }
 
-    /// A namespace this holder created and handed to a second admin, since the
-    /// owner and the last admin are both refused a self-leave. Returns it with
-    /// the account namespace.
+    /// A namespace this holder created and handed to a second admin (an owner
+    /// cannot leave), with the account namespace.
     async fn a_namespace_this_node_may_leave(
         store: &Store,
         harness: &actor::Harness,
@@ -367,9 +365,7 @@ mod tests {
         PrivateKey::from([0xF2; 32])
     }
 
-    /// The account namespace is how the account's devices find each other, so
-    /// neither leave may end it - least of all the purging one, which would take
-    /// its rows off the disk.
+    /// Neither leave may end the account namespace, how the devices find each other.
     #[actix::test]
     async fn the_account_namespace_cannot_be_left_or_purged() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -403,6 +399,39 @@ mod tests {
                 .is_some(),
             "the refused purge left the account namespace in place"
         );
+    }
+
+    /// A paired device names the account namespace through its device row, not
+    /// through a root it does not hold, and is refused the same way.
+    #[actix::test]
+    async fn a_paired_device_cannot_leave_or_purge_its_account_namespace() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let account_namespace = ContextGroupId::from([0xC1; 32]);
+        let (_device, _root_sk) =
+            crate::test_support::paired_device_scoped_to(&store, &account_namespace, &[]);
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&account_namespace)
+            .expect("take part in the account namespace");
+        let harness = actor::over(store.clone()).await;
+
+        for purge in [false, true] {
+            let err = harness
+                .manager
+                .send(LeaveNamespaceRequest {
+                    namespace_id: account_namespace,
+                    purge,
+                })
+                .await
+                .expect("the manager answers")
+                .expect_err("the account namespace is not leavable");
+            assert!(
+                matches!(
+                    err.downcast_ref::<crate::error::ContextError>(),
+                    Some(crate::error::ContextError::AccountNamespaceNotRemovable { .. })
+                ),
+                "purge={purge}: {err:#}"
+            );
+        }
     }
 
     /// Leaving is the ACCOUNT leaving, so a device still following reads a

@@ -1,9 +1,5 @@
-//! A leave that purges: the leaving device and every other device of the account
-//! take the namespace off their disks, and neither follows it again after a restart.
-//!
-//! One node per test, since the listeners and the op-event bus are process-wide:
-//! the first is the device that leaves, the second a device of the same account
-//! applying the purge op from its account namespace.
+//! A purging leave empties the leaving node and, applied as the account namespace's
+//! purge op, any node of the account; neither follows the namespace after a restart.
 
 use std::sync::Arc;
 
@@ -37,9 +33,8 @@ fn the_other_admin() -> PrivateKey {
     PrivateKey::from([0xF2; 32])
 }
 
-/// A holder with its account namespace and a namespace it created, handed to a
-/// second admin (the owner and the last admin are refused a self-leave), holding
-/// a context with state. Both it and a namespace the account keeps are in the set.
+/// A holder whose namespace, with a context and state, is owned by a second admin
+/// (an owner cannot leave); it and a namespace the account keeps are in the set.
 async fn a_holder_in_a_namespace(node: &TestNode) -> (ContextGroupId, ContextGroupId) {
     let store = &node.store;
     let _root = NodeDeviceRepository::new(store)
@@ -209,7 +204,7 @@ async fn the_leaving_device_keeps_nothing_and_it_stays_gone_after_a_restart() {
 
 #[tokio::test]
 #[serial(boot_test_node)]
-async fn another_device_of_the_account_purges_as_it_applies_the_leave() {
+async fn applying_the_account_purge_op_empties_this_node() {
     calimero_context::account_follow::shutdown();
     let node = boot_test_node().await;
     let (namespace, account_namespace) = a_holder_in_a_namespace(&node).await;
@@ -217,6 +212,16 @@ async fn another_device_of_the_account_purges_as_it_applies_the_leave() {
         .identity(&account_namespace)
         .expect("read the identity")
         .expect("this device signs in its account namespace");
+
+    // The leave has folded here: the account is no longer a member.
+    let account = NodeDeviceRepository::new(&node.store)
+        .get()
+        .expect("read the device")
+        .expect("this node is a device")
+        .account;
+    MembershipRepository::new(&node.store)
+        .remove_member(&namespace, &account)
+        .expect("the account left");
 
     // What the leaving device publishes into the account namespace.
     let _report = calimero_governance_store::sign_apply_and_publish(

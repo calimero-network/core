@@ -31,4 +31,5 @@ STATUS=$(curl -sS -o "${OUT}" -w '%{http_code}' -X POST \
 BODY=$(cat "${OUT}")
 rm -f "${OUT}"
 [ "${STATUS}" = 200 ] || fail "the purging leave answered ${STATUS}: ${BODY}"
+[ "$(echo "${BODY}" | jq -r '.data.purged')" = true ] || fail "the leave did not purge: ${BODY}"
 echo "left ${NAMESPACE} with a purge"
