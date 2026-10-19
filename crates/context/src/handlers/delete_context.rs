@@ -225,14 +225,32 @@ pub(crate) fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> e
     Ok(())
 }
 
-/// [`purge_context_rows`] plus the context's `Delta` rows: for a node that has
-/// left the namespace and no longer serves the DAG to anyone.
+/// Single-row records keyed by the bare context id; in `ContextLocal` it is the
+/// authored-remaining counter, which a left marker's 64-byte key never matches.
+const CONTEXT_ROW_COLUMNS: [Column; 6] = [
+    Column::ContextMigrationFailed,
+    Column::ContextExecutingBlob,
+    Column::ContextActivatedBlob,
+    Column::ContextActivatedStateVersion,
+    Column::ContextResyncRequested,
+    Column::ContextLocal,
+];
+
+/// [`purge_context_rows`] plus everything else this node holds for the context
+/// but its replay ledger and left markers: its `Delta` rows, its unified op-log
+/// rows and its single-row records. For a node that has left the namespace and
+/// serves the context to no one.
 pub(crate) fn purge_context_with_dag(
     datastore: &Store,
     context_id: &ContextId,
 ) -> eyre::Result<()> {
     purge_context_rows(datastore, context_id)?;
-    datastore.raw_delete_prefix(Column::Delta, context_id.as_ref())?;
+    for column in [Column::Delta, Column::UnifiedOp] {
+        datastore.raw_delete_prefix(column, context_id.as_ref())?;
+    }
+    for column in CONTEXT_ROW_COLUMNS {
+        datastore.raw_delete(column, context_id.as_ref())?;
+    }
     Ok(())
 }
 
@@ -288,6 +306,16 @@ mod tests {
             (Column::SnapshotStage, prefixed(context, &[0x0b; 33])),
             // A left marker: context ‖ member key.
             (Column::ContextLocal, prefixed(context, &[0x0c; 32])),
+            // Op-log rows: scope ‖ op id.
+            (Column::UnifiedOp, prefixed(context, &[0x0d; 32])),
+            // Single-row records keyed by the bare context id; in ContextLocal
+            // the authored-remaining counter.
+            (Column::ContextMigrationFailed, context.to_vec()),
+            (Column::ContextExecutingBlob, context.to_vec()),
+            (Column::ContextActivatedBlob, context.to_vec()),
+            (Column::ContextActivatedStateVersion, context.to_vec()),
+            (Column::ContextResyncRequested, context.to_vec()),
+            (Column::ContextLocal, context.to_vec()),
         ]
     }
 
@@ -314,9 +342,21 @@ mod tests {
         purge_context_rows(&store, &DELETED.into()).expect("purge should succeed");
 
         for row in rows(DELETED) {
-            let expected = matches!(
+            let expected = !matches!(
                 row.0,
-                Column::Delta | Column::ContextWarrantNonce | Column::ContextLocal
+                Column::Meta
+                    | Column::Config
+                    | Column::State
+                    | Column::PrivateState
+                    | Column::Identity
+                    | Column::SortedIndex
+                    | Column::SortedIndexMeta
+                    | Column::SearchIndex
+                    | Column::SearchDirty
+                    | Column::ContextBlob
+                    | Column::AbsorbBuffer
+                    | Column::BlobOwner
+                    | Column::SnapshotStage
             );
             assert_eq!(
                 present(&store, &row),
@@ -335,7 +375,8 @@ mod tests {
     }
 
     #[test]
-    fn purging_with_the_dag_also_drops_deltas_but_keeps_the_replay_ledger_and_left_marker() {
+    fn purging_with_the_dag_also_drops_deltas_op_log_and_single_row_records_but_keeps_the_replay_ledger_and_left_marker(
+    ) {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         for row in rows(DELETED).iter().chain(rows(KEPT).iter()) {
             store
@@ -346,7 +387,9 @@ mod tests {
         purge_context_with_dag(&store, &DELETED.into()).expect("purge should succeed");
 
         for row in rows(DELETED) {
-            let expected = matches!(row.0, Column::ContextWarrantNonce | Column::ContextLocal);
+            // The replay ledger and the 64-byte left marker stay; the rest goes.
+            let expected = row.0 == Column::ContextWarrantNonce
+                || (row.0 == Column::ContextLocal && row.1.len() == 64);
             assert_eq!(
                 present(&store, &row),
                 expected,

@@ -5955,7 +5955,33 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
             .unwrap();
     }
 
+    // Op-log rows scoped to the namespace go with it; another scope's stay.
+    let op_row = |scope: [u8; 32]| [scope.to_vec(), vec![0x66; 32]].concat();
+    for scope in [ns_bytes, other_ns_bytes] {
+        store
+            .raw_put(calimero_store::db::Column::UnifiedOp, &op_row(scope), b"op")
+            .unwrap();
+    }
+
     delete_namespace_local_state(&store, &ns_id).unwrap();
+
+    assert!(
+        store
+            .raw_get(calimero_store::db::Column::UnifiedOp, &op_row(ns_bytes))
+            .unwrap()
+            .is_none(),
+        "the namespace's unified op-log rows should be cleared"
+    );
+    assert!(
+        store
+            .raw_get(
+                calimero_store::db::Column::UnifiedOp,
+                &op_row(other_ns_bytes)
+            )
+            .unwrap()
+            .is_some(),
+        "another namespace's op-log rows must stay"
+    );
 
     let handle = store.handle();
     assert!(

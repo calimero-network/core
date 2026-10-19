@@ -566,6 +566,9 @@ pub fn delete_namespace_local_state(
         }
     }
 
+    // The namespace is the scope of its governance ops in the unified op log.
+    store.raw_delete_prefix(calimero_store::db::Column::UnifiedOp, &ns_bytes)?;
+
     let mut handle = store.handle();
     handle.delete(&NamespaceGovHead::new(ns_bytes))?;
     handle.delete(&NamespaceParticipation::new(ns_bytes))?;

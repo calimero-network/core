@@ -31,9 +31,19 @@ const CONTEXT: [u8; 32] = [0xC1; 32];
 const ADMIN_SEED: [u8; 32] = [0x11; 32];
 const MEMBER_SEED: [u8; 32] = [0x22; 32];
 
-/// Columns that keep a purged context's id on purpose: the replay ledger.
-/// `ContextLocal` holds left markers and the forgotten marker itself.
-const KEPT: [Column; 2] = [Column::ContextWarrantNonce, Column::ContextLocal];
+/// The replay ledger outlives a purge on purpose. `ContextLocal` also keeps the
+/// left markers and the forgotten marker; only its 32-byte rows are a context's.
+const KEPT: [Column; 1] = [Column::ContextWarrantNonce];
+
+/// Node-local single-row records keyed by the bare context id.
+const CONTEXT_ROW_COLUMNS: [Column; 6] = [
+    Column::ContextMigrationFailed,
+    Column::ContextExecutingBlob,
+    Column::ContextActivatedBlob,
+    Column::ContextActivatedStateVersion,
+    Column::ContextResyncRequested,
+    Column::ContextLocal,
+];
 
 /// The namespace as a sync leaves it on a member whose admin is someone else:
 /// the group, both members, this node's identity and key, and a context with
@@ -119,10 +129,22 @@ fn a_member_with_a_synced_namespace(store: &Store, namespace: ContextGroupId) {
         let key = [CONTEXT.to_vec(), vec![tail; 32]].concat();
         store.raw_put(column, &key, b"value").expect("seed a row");
     }
+    for column in CONTEXT_ROW_COLUMNS {
+        store
+            .raw_put(column, &CONTEXT, b"value")
+            .expect("seed a row");
+    }
+    // Unified op-log rows, scoped to the namespace and to the context.
+    for scope in [NAMESPACE, CONTEXT] {
+        let key = [scope.to_vec(), vec![0x07; 32]].concat();
+        store
+            .raw_put(Column::UnifiedOp, &key, b"value")
+            .expect("seed an op-log row");
+    }
 }
 
 /// Every key outside [`KEPT`] and the account namespace's own rows that holds one
-/// of `ids` anywhere in it.
+/// of `ids` anywhere in it, left and forgotten markers aside.
 fn leftovers(
     store: &Store,
     ids: &[[u8; 32]],
@@ -134,6 +156,9 @@ fn leftovers(
             .raw_scan(column, &[], &[0xFF; 128], None)
             .expect("scan the column");
         for (key, _) in rows {
+            if column == Column::ContextLocal && key.len() != 32 {
+                continue;
+            }
             let holds = |id: &[u8; 32]| key.windows(32).any(|window| window == id);
             if ids.iter().any(holds) && !holds(&account_namespace) {
                 found.push((column, hex::encode(key)));
