@@ -12,6 +12,15 @@
   apps told every one of them "you can't join with this invitation". A join
   every answering member refused is now a `503` that quotes the member's reason,
   not the `504` "could not reach any member" it was answered as before.
+  (#4610)
+
+- **A namespace reports the release it targets before that release is
+  installed.** `GET /admin-api/namespaces`, `/namespaces/{id}` and
+  `/namespaces/for-application/{id}` gain an optional `appPackage`, and their
+  `appVersion` falls back to the group's target when the bundle is not on the
+  node. `GET /admin-api/groups/{id}` gains optional `appPackage` and
+  `appVersion`. A strict client that rejects unknown keys needs
+  calimero-network/mero-js#285. (#4607)
 
 - **A node's operator can trust more origins for login callbacks.**
   `trusted_callback_origins` under `[server.embedded_auth.development]` lists
@@ -527,8 +536,49 @@
   cut, read from its ancestry, instead of the group's live target. Before, a
   replica that folded a concurrent `TargetApplicationSet` ahead of the link
   refused a link another replica bound, and nothing reconciled them.
-  (breaking: namespace ops move to schema 26, so SDKs must sign at 26)
-  (#4603)
+  (breaking: namespace ops move to schema 26, so SDKs must sign at 26, as
+  mero-js does from calimero-network/mero-js#290; older SDKs' namespace ops
+  are refused) (#4605)
+
+- **A namespace admit is served without a credential.**
+  `POST /admin-api/namespaces/{id}/admit` moves to the public router on every
+  node: the joiner's signed op is its authorization, and an embedded-auth node
+  used to answer it `401`. The handler now refuses a join made under another
+  invitation than the one presented, and answers a join already applied here
+  `published: false` instead of relaying it again. mero-auth no longer grants
+  it under `namespace:manage`; a forward-auth proxy should exempt the path.
+  (#4611)
+
+- **A sealed request reaches `presence-intents` behind an auth proxy.** In
+  proxy mode with `delegated_access` on, a sealed
+  `POST /admin-api/contexts/{id}/presence-intents` was refused inside the
+  envelope with `403 sealed_route_unguarded`, so account presence through a
+  hosted relay failed. It is now sealable like the other delegated-execution
+  routes. (#4613)
+
+- **A device paired after a namespace key rotation folds the namespace's
+  Restricted subgroups.** The late-key replay repeats while it settles parked
+  ops, the key-pull asks for keys named by sealed root ops too, and a parked op
+  whose own group is still sealed waits for its key instead of applying through
+  the live gates. Before, such a device never synced its DMs and
+  `join_context` answered `404`. (#4592)
+
+- **A device link read before its namespace's target folds binds once it
+  does.** A link replayed while the namespace's root still names the
+  placeholder application is held as undecided instead of refused, so the
+  device is bound when the target arrives. (#4599)
+
+- **A publish with no local apply waits for the gossip mesh.** A key delivery
+  or TEE admission whose namespace mesh is momentarily empty waits up to 5 s
+  for a peer before it is refused; before, one empty sample lost the op for
+  good. (#4602)
+
+- **A paired device installs the release a context was registered with.** A
+  `ContextRegistered` now records its release's package and version on a group
+  target that lacks them, so a device paired after the group was created no
+  longer asks the registry for an empty release and reports "application not
+  installed". (#4590)
+
 - **A member added to a subgroup while its key recovery is replaying is no
   longer left out.** Once a group's key recovery ends, the node replays that
   group's held ops again, so an add or capability change that arrived by
