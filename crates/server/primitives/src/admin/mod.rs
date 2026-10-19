@@ -2143,6 +2143,10 @@ pub struct UpgradeGroupApiRequest {
     /// when `false` (default), a missing target ABI refuses the upgrade.
     #[serde(default)]
     pub force_code_only: bool,
+    /// When `true`, the migration is not trialled on this node's contexts before
+    /// the upgrade is published; when `false` (default), a failing trial refuses it.
+    #[serde(default)]
+    pub skip_trial: bool,
 }
 
 impl Validate for UpgradeGroupApiRequest {
@@ -2172,6 +2176,12 @@ pub struct UpgradeGroupApiResponseData {
     /// Contexts whose swap failed on this node; a non-zero value is what
     /// `retry_group_upgrade` picks up.
     pub local_contexts_failed: Option<u32>,
+    /// Contexts this node trialled the migration on before publishing.
+    #[serde(default)]
+    pub contexts_trialled: u32,
+    /// Contexts this node knows of but does not hold, so did not trial.
+    #[serde(default)]
+    pub contexts_not_held: u32,
 }
 
 /// Switch this node's contexts of a namespace to its stored target release.

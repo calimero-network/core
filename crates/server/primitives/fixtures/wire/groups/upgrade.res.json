@@ -1,5 +1,7 @@
 {
   "data": {
+    "contextsNotHeld": 2,
+    "contextsTrialled": 1,
     "groupId": "0000000000000000000000000000000000000000000000000000000000000000",
     "localContextsFailed": 0,
     "localContextsSwapped": 1,

@@ -30,7 +30,7 @@ use crate::group::{
     StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
     StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
     StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    TransferOwnershipRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    TransferOwnershipRequest, TrialUpgradeRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -989,6 +989,10 @@ pub enum ContextMessage {
     ActivateNamespaceUpgrade {
         request: ActivateNamespaceUpgradeRequest,
         outcome: oneshot::Sender<<ActivateNamespaceUpgradeRequest as Message>::Result>,
+    },
+    TrialUpgrade {
+        request: TrialUpgradeRequest,
+        outcome: oneshot::Sender<<TrialUpgradeRequest as Message>::Result>,
     },
 }
 

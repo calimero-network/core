@@ -730,7 +730,7 @@ pub(crate) async fn update_application_with_migration(
             let (new_state_bytes, migration_witness, migration_events, migration_logs, storage) =
                 match execute_migration(
                     &datastore,
-                    &scope_projections,
+                    storage_at_current_cut(&datastore, &scope_projections, context_id)?,
                     node_client.clone(),
                     &context,
                     module,
@@ -1032,7 +1032,7 @@ fn commit_or_abort_migration(
 /// Also returns events and logs produced by the migration so the caller can emit them and log them.
 async fn execute_migration(
     datastore: &calimero_store::Store,
-    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
+    storage: ContextStorage,
     node_client: NodeClient,
     context: &Context,
     module: calimero_runtime::Module,
@@ -1056,9 +1056,6 @@ async fn execute_migration(
         method = %method,
         "Preparing to execute migration function"
     );
-
-    // A rotated cell's writers come from the governance fold at the heads now, not its genesis set.
-    let storage = storage_at_current_cut(datastore, scope_projections, context_id)?;
 
     // Run the migrate body against `storage` (a `Temporal` buffer). Every
     // `env::storage_write` the migrate makes — `UnorderedMap::insert`,
@@ -1329,6 +1326,81 @@ async fn run_migration_check(
     };
 
     Ok((decode_migration_check_verdict(outcome.returns)?, storage))
+}
+
+/// The context's current root as the app's own state bytes, empty before any state exists.
+fn root_state_bytes(storage: &ContextStorage) -> Vec<u8> {
+    storage
+        .get(&calimero_storage::constants::root_storage_key().to_vec())
+        .and_then(|row| {
+            calimero_prelude::row::data(&ROOT_STORAGE_ENTRY_ID, &row).map(|d| d.into_owned())
+        })
+        .map(|entry| entry[..entry.len().saturating_sub(ROOT_STORAGE_ENTRY_ID.len())].to_vec())
+        .unwrap_or_default()
+}
+
+/// The modules of a ladder in order, each with the migrate method it runs, if any.
+pub(crate) type TrialRungs = Vec<(calimero_runtime::Module, Option<MigrationParams>)>;
+
+/// Runs a ladder's migrations and checks on `context` in a staging buffer that is dropped, so a
+/// release whose migrate or check fails on this state is found before it is published. Each rung
+/// reads the previous rung's output; no marker, event or live write is made.
+pub(crate) async fn trial_migration(
+    datastore: &calimero_store::Store,
+    scope_projections: &Arc<std::sync::RwLock<crate::scope_projection::ScopeProjections>>,
+    node_client: NodeClient,
+    context: &Context,
+    executor: PublicKey,
+    rungs: TrialRungs,
+) -> eyre::Result<()> {
+    let context_id = context.id;
+    let trial = async {
+        let account = calimero_governance_store::account_for_context(datastore, &context_id)?;
+        let mut storage = storage_at_current_cut(datastore, scope_projections, context_id)?;
+        for (module, migration) in rungs {
+            // A service that lacks the method has nothing to migrate: it is trialled as code-only.
+            let migration = migration.filter(|m| module.exports_function(&m.method));
+            let (state, witness) = match &migration {
+                Some(params) => {
+                    let (state, witness, _events, _logs, staged) = execute_migration(
+                        datastore,
+                        storage,
+                        node_client.clone(),
+                        context,
+                        module.clone(),
+                        params,
+                        executor,
+                    )
+                    .await?;
+                    storage = staged;
+                    (state, witness)
+                }
+                None => (root_state_bytes(&storage), None),
+            };
+            let (passed, staged) = run_migration_check(
+                node_client.clone(),
+                context,
+                module,
+                &state,
+                witness.as_deref(),
+                account,
+                executor,
+                storage,
+            )
+            .await?;
+            if !passed {
+                bail!(MigrationCheckFailed { context_id });
+            }
+            storage = staged;
+            if migration.is_some() {
+                storage = write_migration_state(datastore, storage, context, &state, executor)?.1;
+            }
+        }
+        Ok(())
+    };
+    let result = trial.await;
+    clear_pending_delta();
+    result
 }
 
 /// Run the app's `count_my_pending` export over the COMMITTED v2 state to read
