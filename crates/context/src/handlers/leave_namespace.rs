@@ -42,7 +42,9 @@ use crate::handlers::purge_namespace::PurgeNamespace;
 use crate::ContextManager;
 use calimero_governance_store;
 use calimero_governance_store::governance_broadcast::observe_handler_delivery;
-use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{
+    MembershipRepository, MetaRepository, NamespaceRepository, NodeDeviceRepository,
+};
 
 impl Handler<LeaveNamespaceRequest> for ContextManager {
     type Result = ActorResponse<Self, <LeaveNamespaceRequest as Message>::Result>;
@@ -73,6 +75,20 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                 "{:?} is not a namespace (root group); use leave_group for subgroups",
                 namespace_id
             )));
+        }
+
+        // The account namespace is how the account's devices find each other.
+        match NodeDeviceRepository::new(&self.datastore).account_namespace() {
+            Ok(Some(account_namespace)) if account_namespace == namespace_id => {
+                return ActorResponse::reply(Err(
+                    crate::error::ContextError::AccountNamespaceNotRemovable {
+                        namespace_id: hex::encode(namespace_id.to_bytes()),
+                    }
+                    .into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(err) => return ActorResponse::reply(Err(err)),
         }
 
         // Direct-row check at the root. Apply re-validates everything.
@@ -326,6 +342,44 @@ mod tests {
             .await
             .expect("the manager answers")
             .expect("the leave runs");
+    }
+
+    /// The account namespace is how the account's devices find each other, so
+    /// neither leave may end it - least of all the purging one, which would take
+    /// its rows off the disk.
+    #[actix::test]
+    async fn the_account_namespace_cannot_be_left_or_purged() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        holder(&store);
+        let harness = actor::over(store.clone()).await;
+        let account_namespace =
+            crate::test_support::holders_account_namespace(&store, &harness.context_client).await;
+
+        for purge in [false, true] {
+            let err = harness
+                .manager
+                .send(LeaveNamespaceRequest {
+                    namespace_id: account_namespace,
+                    purge,
+                })
+                .await
+                .expect("the manager answers")
+                .expect_err("the account namespace is not leavable");
+            assert!(
+                matches!(
+                    err.downcast_ref::<crate::error::ContextError>(),
+                    Some(crate::error::ContextError::AccountNamespaceNotRemovable { .. })
+                ),
+                "purge={purge}: {err:#}"
+            );
+        }
+        assert!(
+            MetaRepository::new(&store)
+                .load(&account_namespace)
+                .unwrap()
+                .is_some(),
+            "the refused purge left the account namespace in place"
+        );
     }
 
     /// Leaving is the ACCOUNT leaving, so a device still following reads a
