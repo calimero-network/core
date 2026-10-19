@@ -188,7 +188,7 @@ Asking before signing is not politeness. A nonce is spent from a monotonic per-d
 
 ## Reaching a relay you have no account on
 
-`POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, which is [recorded as the known gap](/protocol/direct-admission/#known-gap) in direct admission.
+`POST .../intents` sits on the admin API, which is guarded. For a member using their *own* node that is the right default and costs nothing. For the case delegated authorship exists for it is fatal: a browser tab or an agent holding one signing key has no relationship with the relay and so no credential on it, the same problem [direct admission](/protocol/direct-admission/#served-without-a-credential) answers for a join.
 
 So a node may be run as a relay, with `merod init --delegated-access` (or `server.admin.delegated_access = true` in `config.toml`). Both were called `public-intents` / `public_intents` until recently; the old flag and the old config key are still accepted for one release, but the name described only the write half and the surface now covers caller-scoped reads too. It does two things. First, it moves the two routes above onto the unauthenticated router, because they are the two that carry their own credential:
 

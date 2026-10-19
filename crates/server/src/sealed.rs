@@ -151,8 +151,9 @@ const UNSEALED_ADMIN_PATHS: [&str; 4] = ["/health", "/ready", "/tee/info", "/tee
 
 /// The admin routes this process serves without a credential, and so the only
 /// ones a sealed request may reach under [`InnerScope::Uncredentialed`]. They
-/// mirror the public router in `admin::service`; delegated execution is added
-/// separately, since it is public only when `delegated_access` is on.
+/// mirror the public router in `admin::service`. Direct admission
+/// ([`is_admit_path`]) and delegated execution are matched separately because
+/// they name an id; delegated execution only when `delegated_access` is on.
 const UNCREDENTIALED_ADMIN_PATHS: [&str; 5] = [
     "/health",
     "/ready",
@@ -182,14 +183,15 @@ pub enum InnerScope {
     #[default]
     Any,
     /// Only the routes this process serves without a credential: probes, the
-    /// public TEE routes, and delegated execution when `delegated_access` is
-    /// on. For a node whose auth a proxy enforces (`auth_mode = "proxy"`),
+    /// public TEE routes, direct admission, and delegated execution when
+    /// `delegated_access` is on. For a node whose auth a proxy enforces (`auth_mode = "proxy"`),
     /// where this process guards nothing itself. The proxy sees only
     /// `POST /sealed/v2`, never the request inside, so a route it would have
     /// guarded must not be reachable through an envelope: anything else is
     /// refused with `403 sealed_route_unguarded`.
     Uncredentialed {
         /// Also allow `GET`/`POST {admin}/contexts/{id}/intents`,
+        /// `POST {admin}/contexts/{id}/presence-intents`,
         /// `{admin}/groups/{id}/context-intents` and
         /// `{admin}/groups/{id}/governance-intents`, public on this node
         /// (`[server.admin] delegated_access`).
@@ -355,11 +357,12 @@ impl SealedTransport {
         else {
             return false;
         };
-        if UNCREDENTIALED_ADMIN_PATHS.contains(&admin) {
+        if UNCREDENTIALED_ADMIN_PATHS.contains(&admin) || is_admit_path(admin) {
             return true;
         }
         delegated_access
-            && (is_intents_path(admin)
+            && (is_context_intents_path(admin, "/intents")
+                || is_context_intents_path(admin, "/presence-intents")
                 || is_group_intents_path(admin, "/context-intents")
                 || is_group_intents_path(admin, "/governance-intents"))
     }
@@ -792,19 +795,29 @@ fn admit_start(
     Ok(take)
 }
 
-/// `/contexts/{id}/intents`, with `id` exactly 64 lowercase hex characters,
-/// as a context id renders.
-fn is_intents_path(admin_path: &str) -> bool {
+/// `/contexts/{id}{suffix}`, with `id` exactly 64 lowercase hex characters, as
+/// a context id renders — delegated execution (`/intents`) and an account's
+/// presence (`/presence-intents`), both on `delegated_execution_routes()`.
+fn is_context_intents_path(admin_path: &str, suffix: &str) -> bool {
     admin_path
         .strip_prefix("/contexts/")
-        .and_then(|rest| rest.strip_suffix("/intents"))
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .is_some_and(is_rendered_id)
+}
+
+/// `/namespaces/{id}/admit`, with `id` exactly 64 lowercase hex characters, as
+/// a namespace id renders: direct admission, public on every node.
+fn is_admit_path(admin_path: &str) -> bool {
+    admin_path
+        .strip_prefix("/namespaces/")
+        .and_then(|rest| rest.strip_suffix("/admit"))
         .is_some_and(is_rendered_id)
 }
 
 /// `/groups/{id}{suffix}`, with `id` exactly 64 lowercase hex characters, as a
 /// group id renders — delegated context creation (`/context-intents`) and
 /// delegated governance (`/governance-intents`), the same surface as
-/// [`is_intents_path`] and served on the same router.
+/// [`is_context_intents_path`] and served on the same router.
 fn is_group_intents_path(admin_path: &str, suffix: &str) -> bool {
     admin_path
         .strip_prefix("/groups/")
