@@ -1960,6 +1960,16 @@
 
 ### Changed
 
+- **auth-frontend v1.3.10 and admin dashboard v1.22.1 are embedded.** Both
+  give an app's client key `context:delete` (auth-frontend#67,
+  admin-dashboard#188), which `DELETE /admin-api/contexts/:id` requires: an
+  app signed in through the node's login page, or opened from the dashboard,
+  could create a context but deleting it answered 403. The key stays bound to
+  the app's own application, so it deletes only that application's contexts.
+  The dashboard moves up from v1.21.3, so v1.22.0 comes with it: opening an
+  app asks first and mints only the grants apps call, and marketplace
+  listings name the registry they come from.
+
 - **auth-frontend v1.3.9 is embedded.** A node's sign-in page now trusts more
   login callbacks, each one an origin something on the node side declared:
   the `trusted_callback_origins` in the node's own auth config
