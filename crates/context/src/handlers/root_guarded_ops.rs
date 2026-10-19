@@ -190,6 +190,7 @@ impl Handler<ChangeNamespaceAdminRequest> for ContextManager {
 mod tests {
     use std::sync::Arc;
 
+    use calimero_account::AccountId;
     use calimero_context_client::group::{
         CreateGroupRequest, OwnerDeleteGroupRequest, SetTeeAdmissionPolicyRequest,
         SetTeeAuthoringPolicyRequest, SignedReleaseTrust,
@@ -197,11 +198,11 @@ mod tests {
     use calimero_context_client::local_governance::TeeAdmissionMode;
     use calimero_context_config::types::ContextGroupId;
     use calimero_governance_store::{
-        get_op_head, register_context_in_group, GroupKeyring, KeyringError, MetaError,
-        MetaRepository, NodeDeviceRepository,
+        get_op_head, register_context_in_group, GroupKeyring, KeyringError, MembershipRepository,
+        MetaError, MetaRepository, NodeDeviceRepository,
     };
     use calimero_primitives::application::ApplicationId;
-    use calimero_primitives::context::ContextId;
+    use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
@@ -268,6 +269,28 @@ mod tests {
             ),
             "expected NoGroupKey, got {err:?}"
         );
+    }
+
+    fn release_policy(
+        group_id: ContextGroupId,
+        mode: TeeAdmissionMode,
+    ) -> SetTeeAdmissionPolicyRequest {
+        SetTeeAdmissionPolicyRequest {
+            group_id,
+            allowed_mrtd: vec![],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec![],
+            accept_mock: false,
+            signed_release: Some(SignedReleaseTrust {
+                allowed_profiles: vec!["locked-read-only".to_owned()],
+                min_release_version: None,
+            }),
+            mode,
+            root_proof: None,
+        }
     }
 
     async fn owner_delete(harness: &actor::Harness, group_id: ContextGroupId) -> eyre::Result<()> {
@@ -390,22 +413,7 @@ mod tests {
 
         let err = harness
             .manager
-            .send(SetTeeAdmissionPolicyRequest {
-                group_id: namespace,
-                allowed_mrtd: vec![],
-                allowed_rtmr0: vec![],
-                allowed_rtmr1: vec![],
-                allowed_rtmr2: vec![],
-                allowed_rtmr3: vec![],
-                allowed_tcb_statuses: vec![],
-                accept_mock: false,
-                signed_release: Some(SignedReleaseTrust {
-                    allowed_profiles: vec!["locked-read-only".to_owned()],
-                    min_release_version: None,
-                }),
-                mode: TeeAdmissionMode::Replica,
-                root_proof: None,
-            })
+            .send(release_policy(namespace, TeeAdmissionMode::Replica))
             .await
             .expect("the manager answers")
             .unwrap_err();
@@ -417,5 +425,34 @@ mod tests {
             "the policy was applied"
         );
         assert!(!harness.published_topics().contains(&topic(&namespace)));
+    }
+
+    #[actix::test]
+    async fn a_mode_switch_leaves_a_tee_row_in_a_subgroup_it_cannot_seal_for() {
+        let (store, mut harness, namespace, subgroup) = owned_namespace().await;
+        let tee = AccountId::from([0xE3; 32]);
+        let membership = MembershipRepository::new(&store);
+        for group in [namespace, subgroup] {
+            membership
+                .add_member(&group, &tee, GroupMemberRole::ReadOnlyTee)
+                .unwrap();
+        }
+        drop_keys(&store, subgroup);
+
+        harness
+            .manager
+            .send(release_policy(namespace, TeeAdmissionMode::Relay))
+            .await
+            .expect("the manager answers")
+            .expect("the policy is set");
+
+        let role = |group| membership.role_of(&group, &tee).unwrap();
+        assert_eq!(role(namespace), Some(GroupMemberRole::RelayTee));
+        assert_eq!(
+            role(subgroup),
+            Some(GroupMemberRole::ReadOnlyTee),
+            "a conversion nobody could be sent was applied here"
+        );
+        assert!(!harness.published_topics().is_empty());
     }
 }
