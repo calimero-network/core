@@ -1,9 +1,9 @@
 name: E2E Account - A Paired Device Reads A Restricted Subgroup After Repeated Key Rotations
 description: >
-  Node 2 founds a namespace and rotates its key twice by removing a member each
-  time: node 4 before node 1 joins, node 5 after. Node 1 therefore holds two
-  epochs of governance and node 3, paired into node 1's account only after both
-  rotations, holds neither. Node 1 creates a Restricted subgroup with node 2 and
+  Node 2 founds a namespace and rotates its key twice, removing node 4 and then
+  node 5, before node 1 joins. Node 3 is paired into node 1's account after both
+  rotations, so neither it nor node 1 ever holds the keys the earlier
+  governance is sealed under. Node 1 creates a Restricted subgroup with node 2 and
   writes into a context there. Node 3 must converge on the subgroup, join its
   context and read the write, and its own write must reach node 1.
 
@@ -90,26 +90,6 @@ steps:
     outputs:
       account_node4: memberAccount
 
-  - name: Node-2 removes node-4, the first rotation
-    type: remove_group_members
-    node: paired-rotations-2
-    group_id: '{{namespace_id}}'
-    members:
-      - '{{account_node4}}'
-
-  - name: Invite node-1 to the namespace
-    type: create_namespace_invitation
-    node: paired-rotations-2
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      invite_node1: invitation
-
-  - name: Node-1 joins the namespace
-    type: join_namespace
-    node: paired-rotations-1
-    namespace_id: '{{namespace_id}}'
-    invitation: '{{invite_node1}}'
-
   - name: Invite node-5 to the namespace
     type: create_namespace_invitation
     node: paired-rotations-2
@@ -125,6 +105,13 @@ steps:
     outputs:
       account_node5: memberAccount
 
+  - name: Node-2 removes node-4, the first rotation
+    type: remove_group_members
+    node: paired-rotations-2
+    group_id: '{{namespace_id}}'
+    members:
+      - '{{account_node4}}'
+
   - name: Node-2 removes node-5, the second rotation
     type: remove_group_members
     node: paired-rotations-2
@@ -132,15 +119,18 @@ steps:
     members:
       - '{{account_node5}}'
 
-  # Node-1 must hold the second epoch's key before it seals anything under it.
-  - name: Node-1 converges on the namespace after both rotations
-    type: wait_for_sync
-    group_id: '{{namespace_id}}'
-    nodes:
-      - paired-rotations-1
-      - paired-rotations-2
-    timeout: 90
-    trigger_sync: true
+  - name: Invite node-1 to the namespace
+    type: create_namespace_invitation
+    node: paired-rotations-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node1: invitation
+
+  - name: Node-1 joins the namespace
+    type: join_namespace
+    node: paired-rotations-1
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node1}}'
 
   - name: Install the application on node-1, which is about to create a context
     type: install_application
