@@ -243,6 +243,7 @@ steps:
     node: revoked-restricted-3
     context_id: '{{after_ctx}}'
     expected_failure: true
+    expected_error: not found
 
   - name: Node-2 writes into the second subgroup's context
     type: call
