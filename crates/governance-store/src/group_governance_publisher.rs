@@ -424,12 +424,8 @@ impl<'a> GroupGovernancePublisher<'a> {
         // Restricted subgroups (or any subgroup behind a Restricted
         // ancestor) keep their per-subgroup key, unchanged.
         //
-        // **Visibility-flip ops are special-cased.** A flip changes the
-        // very visibility this check reads, so neither side of it is safe
-        // to seal by: post-flip state would strand inheritance-eligible
-        // members on an `Open → Restricted` flip - they hold only the
-        // namespace key and could never decrypt the very op that says
-        // "you're no longer a member here."
+        // **Visibility-flip ops are special-cased:** a flip changes the visibility this
+        // check reads, so its boundary comes from the parent chain, as below.
         //
         // Resolution: for `SubgroupVisibilitySet`, decide the encryption
         // boundary from the **parent chain** (excluding `self.group_id`),
@@ -503,9 +499,8 @@ impl<'a> GroupGovernancePublisher<'a> {
         } = sealing;
         let namespace_bytes = namespace_id.to_bytes();
 
-        // Apply-FIRST, publish best-effort: the local mutation commits
-        // unconditionally, and an unformed mesh downgrades readiness instead
-        // of failing the call (the op reaches peers via sync).
+        // Apply first, publish best-effort: an unformed mesh downgrades readiness
+        // instead of failing the call, and the op reaches peers via sync.
         let _output =
             sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op.clone())?;
 

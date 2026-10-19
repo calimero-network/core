@@ -1,9 +1,5 @@
-//! An owner's delete reaching a peer: node A owns a namespace and deletes a
-//! subgroup, then the namespace, through its real handlers; node B receives
-//! each of A's publishes through its own gossip entrypoint.
-//!
-//! The harness has no transport, so B is given A's namespace key, standing in
-//! for the key delivery a join brings.
+//! An owner's delete reaching a peer: node A owner-deletes a subgroup, then its
+//! namespace, and node B receives each of A's publishes through its gossip entrypoint.
 use std::time::Duration;
 
 use calimero_context_client::group::{CreateGroupRequest, OwnerDeleteGroupRequest};
