@@ -501,15 +501,29 @@ mod cors_tests {
     //!
     //! Do not delete `expose_headers` without also breaking these tests.
 
+    use core::time::Duration;
+    use std::net::TcpListener;
+    use std::sync::Arc;
+
     use axum::body::Body;
     use axum::http::{header, HeaderValue, Request, StatusCode};
     use axum::response::Response;
     use axum::routing::get;
     use axum::Router;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use libp2p::identity::Keypair;
+    use prometheus_client::registry::Registry;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpStream;
+    use tokio_util::sync::CancellationToken;
     use tower::ServiceExt;
 
-    use super::build_cors_layer;
+    use super::{build_cors_layer, start, NodeReadiness};
+    use crate::admin::service::AdminConfig;
+    use crate::config::ServerConfig;
     use crate::origin_guard::OriginGuard;
+    use crate::test_support::admin_state;
 
     /// Origin header the Tauri desktop webview presents in production.
     const TAURI_ORIGIN: &str = "http://tauri.localhost";
@@ -790,6 +804,83 @@ mod cors_tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none(),
             "a non-allowlisted origin must not receive Access-Control-Allow-Origin"
+        );
+    }
+
+    /// Sends `POST /admin-api/account/sign-with-root` to the node on `port` as a
+    /// page served from `origin`, once the node accepts connections.
+    async fn post_sign_with_root(port: u16, origin: Option<&str>) -> String {
+        let mut attempts = 0;
+        let mut stream = loop {
+            match TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(stream) => break stream,
+                Err(err) if attempts >= 100 => panic!("the node never accepted: {err}"),
+                Err(_) => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        };
+        let origin = origin.map_or_else(String::new, |origin| format!("Origin: {origin}\r\n"));
+        let request = format!(
+            "POST /admin-api/account/sign-with-root HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+             {origin}Content-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("send the request");
+        let mut response = Vec::new();
+        let _read = stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read the response");
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    #[actix::test]
+    async fn a_started_node_without_caller_authentication_refuses_a_foreign_page_on_admin_routes() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("a free port")
+            .local_addr()
+            .expect("its address")
+            .port();
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let config = ServerConfig::new(
+            vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
+            Keypair::generate_ed25519(),
+            Some(AdminConfig::new(true, false)),
+            None,
+            None,
+            None,
+        );
+        let shutdown = CancellationToken::new();
+        let server = actix::spawn(start(
+            config,
+            state.ctx_client.clone(),
+            state.node_client.clone(),
+            store,
+            Registry::default(),
+            Arc::new(NodeReadiness::new()),
+            shutdown.clone(),
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+
+        let foreign = post_sign_with_root(port, Some("https://site.example")).await;
+        let direct = post_sign_with_root(port, None).await;
+
+        shutdown.cancel();
+        server
+            .await
+            .expect("the server task ends")
+            .expect("the server stops cleanly");
+        assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
+        assert!(foreign.contains("browser request refused"), "{foreign}");
+        assert!(
+            !direct.contains("browser request refused"),
+            "a request carrying no browser headers is left to the route: {direct}"
         );
     }
 }
