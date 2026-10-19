@@ -176,15 +176,18 @@ impl ClientKeyScope {
         }
 
         if let Some(application_id) = bindings.application_id.as_deref() {
-            let Some(meta) = verified_meta(store, group_id) else {
-                return false;
+            let held = match MetaRepository::new(store).load(group_id) {
+                Ok(Some(meta)) => (meta.admin_identity != placeholder_admin_identity())
+                    .then_some(meta.target.application_id),
+                // A removed namespace has no group rows; its marker names the application.
+                Ok(None) => calimero_governance_store::ForgottenNamespaces::new(store)
+                    .get(group_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|removed| removed.application_id),
+                Err(_) => None,
             };
-            if !meta
-                .target
-                .application_id
-                .to_string()
-                .eq_ignore_ascii_case(application_id)
-            {
+            if !held.is_some_and(|app| app.to_string().eq_ignore_ascii_case(application_id)) {
                 return false;
             }
         }

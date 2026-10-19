@@ -922,6 +922,31 @@ async fn an_app_origin_joins_a_namespace_this_node_does_not_hold_only_on_a_hint_
 }
 
 #[actix::test]
+async fn a_bound_key_restores_only_its_own_applications_removed_namespace() {
+    let node = Node::new().await;
+    let token = node.bound_to_mine().await;
+    let (mine, theirs) = (
+        ContextGroupId::from([0xc2; 32]),
+        ContextGroupId::from([0xc3; 32]),
+    );
+    let removals = calimero_governance_store::ForgottenNamespaces::new(&node.store);
+    removals
+        .mark(&mine, Some(node.mine.app), 1, None)
+        .expect("this application's removal");
+    removals
+        .mark(&theirs, Some(node.theirs.app), 1, None)
+        .expect("another application's removal");
+
+    for (namespace, permitted) in [(mine, true), (theirs, false)] {
+        let path = format!("/namespaces/{}/join", hex::encode(namespace.to_bytes()));
+        let (status, body) = node
+            .call(&token, Method::POST, &path, Some(json!({})))
+            .await;
+        assert_eq!(status != StatusCode::FORBIDDEN, permitted, "{path}: {body}");
+    }
+}
+
+#[actix::test]
 async fn an_unbound_key_keeps_the_node_wide_view() {
     let node = Node::new().await;
     let token = node.unbound().await;
