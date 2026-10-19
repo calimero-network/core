@@ -1,0 +1,244 @@
+name: E2E Account - A Paired Device Reads A Nested Restricted Subgroup After A Key Rotation
+description: >
+  Node 2 founds a namespace, lets members create subgroups, and rotates the
+  namespace key by removing node 4. Node 1 joins after that rotation and builds
+  a Restricted subgroup nested inside another Restricted subgroup, both holding
+  itself and node 2, then writes into a context in the inner one. Node 3 is then
+  paired into node 1's account. It must converge on the inner subgroup, join its
+  context and read the write.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 4
+  image: merod:local
+  prefix: paired-nested
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: paired-nested-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: paired-nested-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: paired-nested-3
+    username: dev
+    password: dev-password
+
+  - name: Login on node-4
+    type: login
+    node: paired-nested-4
+    username: dev
+    password: dev-password
+
+  - name: Install the application on node-2
+    type: install_application
+    node: paired-nested-2
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Node-2 creates the namespace
+    type: create_namespace
+    node: paired-nested-2
+    application_id: '{{app}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: What node-2 speaks as
+    type: node_identity
+    node: paired-nested-2
+    outputs:
+      account_node2: accountId
+
+  # The right to create a DM comes from the namespace default, as mero-chat sets it:
+  # 4 = CAN_JOIN_OPEN_SUBGROUPS, 32 = CAN_CREATE_SUBGROUP.
+  - name: Node-2 lets every member create subgroups
+    type: set_default_capabilities
+    node: paired-nested-2
+    group_id: '{{namespace_id}}'
+    capabilities: 36
+
+  # A removal rotates the namespace key before node-1 joins, so the default above
+  # is sealed under a key neither node-1 nor its paired device ever holds.
+  - name: Invite node-4 to the namespace
+    type: create_namespace_invitation
+    node: paired-nested-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node4: invitation
+
+  - name: Node-4 joins the namespace
+    type: join_namespace
+    node: paired-nested-4
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node4}}'
+    outputs:
+      account_node4: memberAccount
+
+  - name: Node-2 removes node-4, rotating the namespace key
+    type: remove_group_members
+    node: paired-nested-2
+    group_id: '{{namespace_id}}'
+    members:
+      - '{{account_node4}}'
+
+  - name: Invite node-1 to the namespace
+    type: create_namespace_invitation
+    node: paired-nested-2
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node1: invitation
+
+  - name: Node-1 joins the namespace
+    type: join_namespace
+    node: paired-nested-1
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node1}}'
+
+  - name: Install the application on node-1, which is about to create a context
+    type: install_application
+    node: paired-nested-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  - name: Node-1 creates the outer Restricted subgroup
+    type: create_group_in_namespace
+    node: paired-nested-1
+    namespace_id: '{{namespace_id}}'
+    group_name: team
+    outputs:
+      team_group: groupId
+
+  - name: Node-1 marks the outer subgroup Restricted
+    type: set_subgroup_visibility
+    node: paired-nested-1
+    group_id: '{{team_group}}'
+    visibility: restricted
+
+  - name: Node-1 adds node-2 to the outer subgroup
+    type: add_group_members
+    node: paired-nested-1
+    group_id: '{{team_group}}'
+    members:
+      - identity: '{{account_node2}}'
+        role: Member
+
+  - name: Node-1 creates the inner subgroup
+    type: create_group_in_namespace
+    node: paired-nested-1
+    namespace_id: '{{namespace_id}}'
+    group_name: dm
+    outputs:
+      dm_group: groupId
+
+  - name: Node-1 nests the inner subgroup inside the outer one
+    type: reparent_group
+    node: paired-nested-1
+    child_group_id: '{{dm_group}}'
+    new_parent_id: '{{team_group}}'
+
+  - name: Node-1 marks the inner subgroup Restricted
+    type: set_subgroup_visibility
+    node: paired-nested-1
+    group_id: '{{dm_group}}'
+    visibility: restricted
+
+  - name: Node-1 adds node-2 to the inner subgroup
+    type: add_group_members
+    node: paired-nested-1
+    group_id: '{{dm_group}}'
+    members:
+      - identity: '{{account_node2}}'
+        role: Member
+
+  - name: Node-1 creates a context in the inner subgroup
+    type: create_context
+    node: paired-nested-1
+    application_id: '{{app}}'
+    group_id: '{{dm_group}}'
+    outputs:
+      dm_ctx: contextId
+
+  - name: Node-1 writes into the inner subgroup's context
+    type: call
+    node: paired-nested-1
+    context_id: '{{dm_ctx}}'
+    method: set
+    args:
+      key: dm_key
+      value: from_node1
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: paired-nested-1
+    outputs:
+      root_key: accountRootPublicKey
+      account_ns: accountNamespaceId
+
+  - name: Pair node-3 into node-1's account, naming only the account namespace
+    type: account_pair
+    node: paired-nested-3
+    holder: paired-nested-1
+    root_key: '{{root_key}}'
+    account_namespace: '{{account_ns}}'
+    await_self: true
+
+  - name: Node-3 converges on the inner subgroup's governance
+    type: wait_for_sync
+    group_id: '{{dm_group}}'
+    nodes:
+      - paired-nested-1
+      - paired-nested-2
+      - paired-nested-3
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node-3 joins the inner subgroup's context
+    type: join_context
+    node: paired-nested-3
+    context_id: '{{dm_ctx}}'
+    outputs:
+      dm_ctx_key_node3: memberPublicKey
+
+  - name: Node-3 holds a context identity
+    type: assert
+    statements:
+      - "is_set({{dm_ctx_key_node3}})"
+
+  - name: Settle the inner subgroup's context across node-1 and node-3
+    type: wait_for_sync
+    context_id: '{{dm_ctx}}'
+    nodes:
+      - paired-nested-1
+      - paired-nested-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-3 reads node-1's write
+    type: call
+    node: paired-nested-3
+    context_id: '{{dm_ctx}}'
+    method: get
+    args:
+      key: dm_key
+    outputs:
+      dm_read_node3: result
+
+  - name: Node-3 sees the write
+    type: json_assert
+    statements:
+      - 'json_equal({{dm_read_node3}}, {"output": "from_node1"})'
+
+stop_all_nodes: true
