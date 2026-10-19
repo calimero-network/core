@@ -1,35 +1,28 @@
-//! Taking a namespace and everything in it off this node's disk.
-//!
-//! One definition, shared by every handler that ends this node's part in a
-//! namespace. Node-local: it publishes nothing.
+//! Takes a namespace and everything in it off this node's disk, publishing
+//! nothing; shared by every handler that ends this node's part in one.
 
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{CascadePayload, NamespaceRepository};
+use calimero_governance_store::{
+    CapabilitiesRepository, CascadePayload, MetadataRepository, NamespaceRepository,
+};
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::context::ContextId;
 use calimero_store::Store;
 use tracing::warn;
 
 use crate::handlers::delete_context::purge_context_with_dag;
 
-/// Every context and group of `namespace`'s subtree, and its namespace-level
-/// state, gone from this node; the topics dropped. `payload` is
-/// `collect_subtree_for_cascade` of the namespace root.
-///
-/// `ContextWarrantNonce` rows and left markers stay, as [`purge_context_rows`]
-/// documents; the caller removes the returned contexts from its cache.
-///
-/// [`purge_context_rows`]: crate::handlers::delete_context::purge_context_rows
+/// Every context and group of `payload` (the namespace's subtree), and its
+/// namespace-level state, gone from this node; the topics dropped.
 ///
 /// # Errors
-/// A store failure. Rerunning finishes what a failure left.
+/// A store failure; the namespace identity goes last, so a rerun finishes the job.
 pub(crate) async fn purge_namespace(
     datastore: &Store,
     node_client: &NodeClient,
     search: Option<&calimero_search::SearchService>,
     namespace: &ContextGroupId,
     payload: &CascadePayload,
-) -> eyre::Result<Vec<ContextId>> {
+) -> eyre::Result<()> {
     for context in &payload.contexts {
         // Close the index before the purge takes its files away.
         if let Some(search) = search {
@@ -55,6 +48,8 @@ pub(crate) async fn purge_namespace(
             calimero_governance_store::enumerate_group_contexts(datastore, &group, 0, usize::MAX)?
         {
             calimero_governance_store::unregister_context_from_group(datastore, &group, &context)?;
+            MetadataRepository::new(datastore).delete_context(&group, &context)?;
+            CapabilitiesRepository::new(datastore).delete_context_members(&group, &context)?;
         }
         let parent = NamespaceRepository::new(datastore).parent(&group)?;
         calimero_governance_store::delete_group_local_rows(datastore, &group)?;
@@ -75,7 +70,7 @@ pub(crate) async fn purge_namespace(
     {
         warn!(?namespace, %err, "failed to unsubscribe a purged namespace");
     }
-    Ok(payload.contexts.clone())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -148,11 +143,10 @@ mod tests {
             .collect_subtree_for_cascade(&root)
             .expect("collect the subtree");
 
-        let purged = purge_namespace(&store, &harness.node_client, None, &root, &payload)
+        purge_namespace(&store, &harness.node_client, None, &root, &payload)
             .await
             .expect("purge");
 
-        assert_eq!(purged.len(), 2, "both contexts of the subtree: {purged:?}");
         for context in [CTX_ROOT, CTX_SUB] {
             for row in context_rows(context) {
                 assert!(

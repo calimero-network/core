@@ -7,11 +7,13 @@ use calimero_context_client::messages::{DeleteContextRequest, DeleteContextRespo
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_store::db::Column;
+use calimero_store::key::Aliasable;
 use calimero_store::{key, Store};
 use either::Either;
 use tracing::warn;
 
-use calimero_primitives::identity::PrivateKey;
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 use crate::scope_projection::ScopeProjections;
 use crate::ContextManager;
@@ -236,10 +238,8 @@ const CONTEXT_ROW_COLUMNS: [Column; 6] = [
     Column::ContextLocal,
 ];
 
-/// [`purge_context_rows`] plus everything else this node holds for the context
-/// but its replay ledger and left markers: its `Delta` rows, its unified op-log
-/// rows and its single-row records. For a node that has left the namespace and
-/// serves the context to no one.
+/// [`purge_context_rows`] plus every other row this node holds for the context
+/// but its replay ledger and left markers, for a node that serves it to no one.
 pub(crate) fn purge_context_with_dag(
     datastore: &Store,
     context_id: &ContextId,
@@ -251,13 +251,38 @@ pub(crate) fn purge_context_with_dag(
     for column in CONTEXT_ROW_COLUMNS {
         datastore.raw_delete(column, context_id.as_ref())?;
     }
+    datastore
+        .handle()
+        .delete(&key::ContextServiceName::new(*context_id))?;
+    purge_context_aliases(datastore, context_id)
+}
+
+/// The context's own aliases and the aliases of its identities, which are
+/// scoped to the context.
+fn purge_context_aliases(datastore: &Store, context_id: &ContextId) -> eyre::Result<()> {
+    let mut identities = vec![<PublicKey as Aliasable>::KIND];
+    identities.extend_from_slice(context_id.as_ref());
+    datastore.raw_delete_prefix(Column::Alias, &identities)?;
+
+    let kind = <ContextId as Aliasable>::KIND;
+    for (alias, target) in datastore.raw_scan(Column::Alias, &[kind], &[kind + 1], None)? {
+        let target: Hash = borsh::from_slice(&target)?;
+        if *target == **context_id {
+            datastore.raw_delete(Column::Alias, &alias)?;
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
     use std::sync::Arc;
 
+    use calimero_primitives::alias::Alias;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::hash::Hash;
+    use calimero_primitives::identity::PublicKey;
     use calimero_store::db::{Column, InMemoryDB};
     use calimero_store::{key, Store};
 
@@ -404,5 +429,58 @@ mod tests {
                 row.0
             );
         }
+    }
+
+    /// The aliases a user gave the context and its identities, and its service
+    /// name, are about a context that is gone; its neighbour's stay.
+    #[test]
+    fn purging_with_the_dag_also_drops_the_service_name_and_aliases() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let aliased = |context: [u8; 32], name: &str| {
+            let id = ContextId::from(context);
+            let own = Alias::<ContextId>::from_str(name).expect("a context alias");
+            let identity = Alias::<PublicKey>::from_str("me").expect("an identity alias");
+            (
+                key::ContextServiceName::new(id),
+                key::Alias::new(None, own).expect("the context alias key"),
+                key::Alias::new(Some(id), identity).expect("the identity alias key"),
+            )
+        };
+        for (context, name) in [(DELETED, "gone"), (KEPT, "kept")] {
+            let (service, own, identity) = aliased(context, name);
+            let mut handle = store.handle();
+            handle
+                .put(
+                    &service,
+                    &key::ContextServiceNameValue {
+                        service_name: "svc".into(),
+                    },
+                )
+                .expect("write the service name");
+            handle
+                .put(&own, &Hash::from(context))
+                .expect("write the context alias");
+            handle
+                .put(&identity, &Hash::from([0x55; 32]))
+                .expect("write the identity alias");
+        }
+
+        purge_context_with_dag(&store, &DELETED.into()).expect("purge should succeed");
+
+        let handle = store.handle();
+        let (service, own, identity) = aliased(DELETED, "gone");
+        assert!(!handle.has(&service).expect("read"), "service name");
+        assert!(!handle.has(&own).expect("read"), "context alias");
+        assert!(!handle.has(&identity).expect("read"), "identity alias");
+        let (service, own, identity) = aliased(KEPT, "kept");
+        assert!(
+            handle.has(&service).expect("read"),
+            "neighbour's service name"
+        );
+        assert!(handle.has(&own).expect("read"), "neighbour's context alias");
+        assert!(
+            handle.has(&identity).expect("read"),
+            "neighbour's identity alias"
+        );
     }
 }

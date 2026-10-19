@@ -1,10 +1,13 @@
-use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
+use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResponse};
+use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
     member_account_in_namespace, ForgottenNamespaces, MembershipRepository, MetaRepository,
     NamespaceRepository,
 };
 use calimero_primitives::application::ZERO_APPLICATION_ID;
+use calimero_primitives::identity::PublicKey;
+use calimero_store::Store;
 use either::Either;
 use eyre::bail;
 use tracing::info;
@@ -20,10 +23,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         DeleteNamespaceRequest { namespace_id }: DeleteNamespaceRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Removing a namespace from this device is a purely local teardown - no
-        // DAG-replicated op. The account stays a member: peers and its other
-        // devices see no change, and the node refuses to follow the namespace
-        // again until the user joins it explicitly.
+        // A local teardown, no DAG op: the account stays a member and peers see nothing.
         let (signer, _) = match self.require_namespace_signing_key(&namespace_id) {
             Ok(key) => key,
             Err(err) => return ActorResponse::reply(Err(err)),
@@ -39,27 +39,16 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 );
             }
 
-            let Some(meta) = MetaRepository::new(&self.datastore).load(&namespace_id)? else {
-                bail!(crate::error::ContextError::NamespaceNotFound {
-                    namespace_id: namespace_id.to_string(),
-                });
-            };
-
-            // The marker is a restore proof, so only an account that is still a
-            // member gets one; a node that soft-left just clears its residue.
-            // Written before the purge: a purge cut short must not leave a
-            // namespace the next start follows again.
-            let membership = MembershipRepository::new(&self.datastore);
-            let is_member =
-                match member_account_in_namespace(&self.datastore, &namespace_id, &signer)? {
-                    Some(account) => membership.role_of(&namespace_id, &account)?.is_some(),
-                    None => false,
-                };
-            if is_member {
-                let application = meta.target.application_id;
+            // The marker is the restore proof, so only a member gets one; written
+            // first, so a purge cut short is not followed again.
+            if is_member(&self.datastore, &namespace_id, &signer)? {
+                let application = MetaRepository::new(&self.datastore)
+                    .load(&namespace_id)?
+                    .map(|meta| meta.target.application_id)
+                    .filter(|application| *application != ZERO_APPLICATION_ID);
                 ForgottenNamespaces::new(&self.datastore).mark(
                     &namespace_id,
-                    (application != ZERO_APPLICATION_ID).then_some(application),
+                    application,
                     now_ms(),
                 )?;
             }
@@ -92,36 +81,48 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 });
             }
 
-            let contexts = purge_namespace(
+            let outcome = purge_namespace(
                 &datastore,
                 &node_client,
                 search.as_deref(),
                 &namespace_id,
                 &payload,
             )
-            .await?;
+            .await;
 
-            info!(
-                ?namespace_id,
-                %signer,
-                total_groups = payload.descendant_groups.len() + 1,
-                total_contexts = contexts.len(),
-                "removed namespace and subtree from this node"
-            );
+            if outcome.is_ok() {
+                info!(
+                    ?namespace_id,
+                    %signer,
+                    total_groups = payload.descendant_groups.len() + 1,
+                    total_contexts = payload.contexts.len(),
+                    "removed namespace and subtree from this node"
+                );
+            }
 
-            Ok((contexts, DeleteNamespaceResponse { deleted: true }))
+            (
+                payload.contexts,
+                outcome.map(|()| DeleteNamespaceResponse { deleted: true }),
+            )
         };
 
-        ActorResponse::r#async(
-            task.into_actor(self)
-                .map_ok(|(contexts, response), act, _ctx| {
-                    for context in contexts {
-                        let _ignored = act.contexts.remove(&context);
-                    }
-                    response
-                }),
-        )
+        // Dropped on failure too: a purge cut short leaves cached state over missing rows.
+        ActorResponse::r#async(task.into_actor(self).map(|(contexts, outcome), act, _ctx| {
+            for context in contexts {
+                let _ignored = act.contexts.remove(&context);
+            }
+            outcome
+        }))
     }
+}
+
+fn is_member(store: &Store, namespace: &ContextGroupId, signer: &PublicKey) -> eyre::Result<bool> {
+    let Some(account) = member_account_in_namespace(store, namespace, signer)? else {
+        return Ok(false);
+    };
+    Ok(MembershipRepository::new(store)
+        .role_of(namespace, &account)?
+        .is_some())
 }
 
 fn now_ms() -> u64 {
@@ -142,7 +143,7 @@ mod tests {
         MembershipRepository, NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
-    use calimero_store::db::InMemoryDB;
+    use calimero_store::db::{Column, InMemoryDB};
     use calimero_store::Store;
 
     use super::*;
@@ -188,8 +189,8 @@ mod tests {
         (namespace, account)
     }
 
-    /// Removing a namespace from this device is the device's own business: a
-    /// plain member may do it, and it leaves the forgotten marker behind, the proof the account was a member.
+    /// A plain member may remove the namespace from its own device, and leaves the
+    /// forgotten marker as the proof the account was a member.
     #[actix::test]
     async fn a_plain_member_may_remove_the_namespace_from_this_device() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -249,5 +250,39 @@ mod tests {
         assert!(!ForgottenNamespaces::new(&store)
             .is_forgotten(&namespace)
             .expect("read the marker"));
+    }
+
+    /// The purge keeps the namespace identity to the end, so asking again finishes a
+    /// purge that went down after the group rows did.
+    #[actix::test]
+    async fn a_purge_cut_short_is_finished_by_asking_again() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let harness = actor::over(store.clone()).await;
+        let namespace = ContextGroupId::from([0xA3; 32]);
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&namespace)
+            .expect("this node takes part");
+        let leftover = [namespace.to_bytes().to_vec(), vec![0x07; 32]].concat();
+        store
+            .raw_put(Column::UnifiedOp, &leftover, b"op")
+            .expect("leave an op-log row behind");
+
+        harness
+            .manager
+            .send(DeleteNamespaceRequest {
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the rerun finishes the purge");
+
+        assert!(store
+            .raw_get(Column::UnifiedOp, &leftover)
+            .expect("read")
+            .is_none());
+        assert!(NamespaceRepository::new(&store)
+            .participating_namespaces()
+            .expect("read")
+            .is_empty());
     }
 }
