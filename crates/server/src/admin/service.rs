@@ -1201,7 +1201,8 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
             MemberJoinedOpenRejection::SignerMismatch { .. }
             | MemberJoinedOpenRejection::WrongNamespace { .. },
         )
-        | ApplyError::NamespaceCreatedRejected(_) => return None,
+        | ApplyError::NamespaceCreatedRejected(_)
+        | ApplyError::RegisteredContextMismatch { .. } => return None,
     })
 }
 
@@ -1533,13 +1534,17 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: format!("{err:#}"),
         };
     }
-    if let Some(ContextRegistrationError::NotInGroup { .. }) =
-        err.downcast_ref::<ContextRegistrationError>()
-    {
-        return ApiError {
-            status_code: StatusCode::NOT_FOUND,
-            message: format!("{err:#}"),
-        };
+    if let Some(refusal) = err.downcast_ref::<ContextRegistrationError>() {
+        if let Some(status_code) = match refusal {
+            ContextRegistrationError::NotInGroup { .. } => Some(StatusCode::NOT_FOUND),
+            ContextRegistrationError::RegisteredElsewhere { .. } => Some(StatusCode::CONFLICT),
+            ContextRegistrationError::HasRotatedCells { .. } => None,
+        } {
+            return ApiError {
+                status_code,
+                message: format!("{err:#}"),
+            };
+        }
     }
     if let Some(refusal) = err.downcast_ref::<MetaError>() {
         return ApiError {
@@ -3076,6 +3081,19 @@ mod parse_api_error_tests {
             );
             assert_eq!(
                 status(MetaError::HasRegisteredContexts.into()),
+                StatusCode::CONFLICT
+            );
+        }
+
+        #[test]
+        fn a_context_another_group_registered_first_is_409() {
+            assert_eq!(
+                status(
+                    ContextRegistrationError::RegisteredElsewhere {
+                        context_id: "c".to_owned(),
+                    }
+                    .into()
+                ),
                 StatusCode::CONFLICT
             );
         }

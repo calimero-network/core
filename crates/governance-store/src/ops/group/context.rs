@@ -15,18 +15,20 @@
 //! re-binding the authorization context (`signer`, `group_id`,
 //! `store`) within a dispatch call.
 
+use crate::authorizer::ensure_cut_resolvable;
 use crate::{
     ContextRegistrationService, DivergenceReport, GroupSettingsService, MembershipPolicy,
-    PermissionChecker,
+    MembershipRepository, PermissionChecker,
 };
 use calimero_account::AccountId;
 use calimero_app_downloader::registry::{RegistryCoords, PENDING_BLOB_SHARE_SOURCE};
 use calimero_context_config::types::ContextGroupId;
 use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 
 pub(crate) struct GroupApplyCtx<'a> {
     store: &'a Store,
@@ -246,6 +248,47 @@ impl<'a> GroupApplyCtx<'a> {
             .membership_path_at_cut(self.group_id, member, self.parents)
     }
 
+    /// `member`'s direct role in this group at the op's cut, or live where that is sound.
+    pub(crate) fn direct_role(&self, member: &AccountId) -> EyreResult<Option<GroupMemberRole>> {
+        if let Some(role) = self
+            .authorizer
+            .direct_role_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(role);
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        MembershipRepository::new(self.store).role_of(self.group_id, member)
+    }
+
+    /// Whether `member` is a member of this group at the op's cut, inherited or direct, or
+    /// live where that is sound.
+    pub(crate) fn is_member_at_cut(&self, member: &AccountId) -> EyreResult<bool> {
+        if let Some(role) =
+            self.authorizer
+                .effective_role_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(role.is_some());
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        MembershipRepository::new(self.store).is_member(self.group_id, member)
+    }
+
+    /// The exit among `member`'s latest changes in this group at the op's cut, or live
+    /// where that is sound.
+    pub(crate) fn exit_at_cut(
+        &self,
+        member: &AccountId,
+    ) -> EyreResult<Option<calimero_store::key::GroupExitReason>> {
+        if let Some(exit) = self
+            .authorizer
+            .exit_at_cut(self.group_id, member, self.parents)
+        {
+            return Ok(exit);
+        }
+        self.ensure_live_fallback_is_sound(self.signer)?;
+        crate::ReentryRepository::new(self.store).block_of(self.group_id, member)
+    }
+
     /// Guard a fall-back to the live resolver, mirroring
     /// `PermissionChecker::ensure_live_fallback_is_sound`.
     ///
@@ -259,13 +302,7 @@ impl<'a> GroupApplyCtx<'a> {
     /// differently. In that case refuse to answer; the op is retried once the
     /// missing history arrives.
     pub(crate) fn ensure_live_fallback_is_sound(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self.authorizer.can_resolve_cut(self.group_id, self.parents) {
-            return Ok(());
-        }
-        bail!(crate::ApplyError::AuthorityUndecidable {
-            group_id: self.group_id.to_string(),
-            signer: format!("{identity}"),
-        });
+        ensure_cut_resolvable(self.authorizer, self.group_id, self.parents, identity)
     }
 }
 

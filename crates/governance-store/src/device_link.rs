@@ -1444,7 +1444,7 @@ mod tests {
                 GroupOp::AccountDeviceUnlinked {
                     account: other.statement.account,
                     device: other.statement.device,
-                    proof: None,
+                    proof: Some(revocation_of(&root, &other)),
                 },
             )
             .await
@@ -1622,7 +1622,7 @@ mod tests {
             )
             .expect("the stranger signs for its own account"),
         };
-        let _applied = crate::sign_apply_local_group_op_borsh(
+        let refused = crate::sign_apply_local_group_op_borsh(
             &store,
             &account_namespace,
             &sk,
@@ -1632,7 +1632,12 @@ mod tests {
                 proof: Some(forged),
             },
         )
-        .expect("the stranger's withdrawal applies in the account namespace");
+        .err()
+        .expect("a withdrawal naming an account the device was not minted for is refused");
+        assert_eq!(
+            crate::test_fixtures::binding_rejection(&refused),
+            Some(crate::BindingRejected::DeviceNotMintedForAccount)
+        );
         let spent = certify(own.signing_key(), 0x7A, [0x7A; 32]);
         register(&store, own.signing_key(), &spent, &[]);
         let _applied = crate::sign_apply_local_group_op_borsh(

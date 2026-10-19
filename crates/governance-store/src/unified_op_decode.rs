@@ -145,6 +145,7 @@ fn root_credential(root: &RootOp) -> Option<&calimero_account::DeviceCert> {
         | RootOp::MemberJoinedOpen { account, .. }
         | RootOp::MemberJoinedAt { account, .. }
         | RootOp::NamespaceCreatedV2 { account, .. }
+        | RootOp::AccountNamespaceCreated { account, .. }
         | RootOp::MemberJoinedViaTeeAttestation { account, .. } => Some(&account.statement),
         _ => None,
     }
@@ -184,7 +185,7 @@ fn carried_authorship(
     let cert = match op {
         NamespaceOp::Root(root) => root_credential(root)?,
         // Sealed, and the certificate is inside it. Three of the four joins are
-        // published sealed, and a join is precisely the op that CREATES the
+        // published sealed, and an invitation join is the op that CREATES the
         // signer's binding — so the credential it carries is the only thing that
         // can name its author, and it is now behind the namespace key. Reading it
         // from the cleartext arm alone left every sealed join `unattributed`,
@@ -269,12 +270,8 @@ pub fn op_from_namespace_op_with_binding(
         // it from the foldable anchor membership + visibility + cap (default cap
         // via base fact) instead, so it tracks the anchor both ways.
         //
-        // Its CREDENTIAL is a different matter and is folded. The encoder returns
-        // a bare `DeviceLinked` for exactly this op, so what used to be a
-        // graph-only node now carries the device and nothing else — membership
-        // still inherited, binding still recorded. Leaving it a `Noop` was what
-        // let the apply path write a binding the projection never saw, which
-        // re-keys the joiner's writer principal on one plane only.
+        // Its credential folds as nothing too, as the apply writes no binding for
+        // it: a link made here would carry no device scope to check.
         NamespaceOp::Root(root) => root_payload(root),
         // Two different nothings. A group op this node COULD read but the
         // projection models nothing about (app config, metadata) folds to `Noop`;
@@ -473,8 +470,7 @@ pub struct OpenedNamespaceOp {
     /// credential and signer come from here and not from the envelope. The DAG
     /// identity stays the envelope's.
     pub relayed_join: Option<SignedNamespaceOp>,
-    /// A parked op a replay refused at its cut: it folds as nothing, as on a node
-    /// that held the key and refused it on arrival.
+    /// An op refused at its cut, on arrival or by a replay: it folds as nothing.
     pub refused: bool,
 }
 

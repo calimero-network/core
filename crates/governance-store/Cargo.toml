@@ -32,6 +32,8 @@ tracing.workspace = true
 
 calimero-app-downloader.workspace = true
 calimero-account.workspace = true
+# The one rule for whether a device scope reaches a namespace, shared with the projection.
+calimero-authz.workspace = true
 calimero-context-config.workspace = true
 calimero-context-client.workspace = true
 calimero-governance-types.workspace = true
@@ -58,7 +60,6 @@ calimero-tee-attestation = { workspace = true, features = ["mock-attestation"] }
 # (`calimero-op` is now a regular dependency — used by `unified_op_decode` —
 # so it no longer needs a dev-dependency entry.)
 calimero-projection.workspace = true
-calimero-authz.workspace = true
 # Serializes the op-event tests, which observe a process-global broadcast bus
 # (`op_events`) and would otherwise cross-talk / flood under parallel execution.
 serial_test.workspace = true
@@ -75,4 +76,4 @@ default = []
 # build correctly — membership rows AND the binding rows that make an account's
 # own ops verify. Reimplementing that setup per crate is how a test ends up
 # asserting against a member whose ops would be refused in production.
-testing = ["dep:tempfile", "dep:calimero-blobstore", "dep:strum"]
+testing = ["dep:tempfile", "dep:calimero-blobstore", "dep:strum", "calimero-tee-attestation/mock-attestation"]

@@ -551,6 +551,7 @@ impl<'a> GroupGovernancePublisher<'a> {
             key_id: stored_key.key_id.into(),
             encrypted,
             key_rotation,
+            registers: op.registered_context(),
         };
 
         // Stage-0 baseline: observe mesh-peer count *with the cleartext

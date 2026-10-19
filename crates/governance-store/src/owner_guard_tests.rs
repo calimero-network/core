@@ -630,6 +630,7 @@ fn admin_changed_is_guarded_and_owner_only() {
             )
             .unwrap(),
         )
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
     };
     let admin_pin = || {
         MetaRepository::new(&store)
@@ -743,6 +744,7 @@ fn a_guarded_subgroup_transfer_names_no_root_admin_but_is_counted() {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
             signature: [0u8; 64],
             admitter_endorsement: None,

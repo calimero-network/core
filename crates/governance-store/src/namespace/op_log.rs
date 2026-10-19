@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use calimero_context_client::local_governance::{
     NamespaceOp, OpaqueSkeleton, SignedNamespaceOp, StoredNamespaceEntry,
 };
@@ -15,6 +17,8 @@ pub(crate) enum Hole {
     Unreadable,
     /// An op that carries no authority: it keeps the payload the void rule reads.
     Void,
+    /// An op refused at its cut: it folds as nothing, so no reader abstains on it.
+    Refused,
 }
 
 /// Typed namespace group entry decoded from the namespace op-log.
@@ -86,6 +90,26 @@ impl<'a> NamespaceOpLogService<'a> {
                     hex::encode(delta_id)
                 )
             })
+    }
+
+    /// Every op in the ancestry of `parents`, by id; `None` when one is missing here.
+    pub(crate) fn ancestry(
+        &self,
+        parents: &[[u8; 32]],
+    ) -> EyreResult<Option<HashMap<[u8; 32], SignedNamespaceOp>>> {
+        let mut seen = HashMap::new();
+        let mut queue = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if seen.contains_key(&id) {
+                continue;
+            }
+            let Some(op) = self.get_signed_op(id)? else {
+                return Ok(None);
+            };
+            queue.extend(op.parent_op_hashes.iter().copied());
+            let _ = seen.insert(id, op);
+        }
+        Ok(Some(seen))
     }
 
     pub fn store_signed_operation(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
@@ -177,9 +201,13 @@ impl<'a> NamespaceOpLogService<'a> {
             &self.namespace_id.to_bytes().into(),
             &op.signer,
         );
+        let payload = match hole {
+            Hole::Refused => calimero_op::OpPayload::Noop,
+            _ => calimero_op::OpPayload::Opaque { group },
+        };
         let hole_op = crate::unified_op_decode::hole_op_from_namespace_op(
             op,
-            calimero_op::OpPayload::Opaque { group },
+            payload,
             binding,
             delta_id,
             &op.parent_op_hashes,

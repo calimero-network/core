@@ -72,6 +72,7 @@ impl Namespace {
             chain: vec![],
             cert: self.cert(key, 0),
             scope_epoch,
+            applications: vec![],
         };
         self.fold(Some(parent), key, payload)
     }

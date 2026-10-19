@@ -43,7 +43,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // and every replica that applies it keeps the pair
         // (`NamespaceFoundingRepository`). The salt is random unless the caller
         // passes one, which only the account namespace does (its salt is
-        // derived from the account root's secret, deliberately unlinkable).
+        // derived from the account root's secret, deliberately unlinkable), and
+        // its id is `account_namespace_id(founder, salt)`, under its own domain.
         //
         // A subgroup's id is derived too, from the create itself:
         // `created_subgroup_id(creator, parent, restricted, salt)`. It is not a
@@ -51,6 +52,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // binding it to its creator is what stops another member who saw the
         // id from racing a concurrent create for it. That needs the creator's
         // account, so it is derived below, once the account is resolved.
+
+        // Only the account namespace passes a salt, so its genesis marks it as one.
+        let account_namespace = salt.is_some();
         let (root_id, founding) = match parent_group_id {
             None => {
                 let founder = match crate::join_credential::founding_account(&self.datastore) {
@@ -63,8 +67,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 };
                 let salt: [u8; calimero_account::NAMESPACE_SALT_LEN] =
                     salt.unwrap_or_else(|| rand::rng().random());
-                let group_id =
-                    ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &salt));
+                let derive = if account_namespace {
+                    calimero_account::account_namespace_id
+                } else {
+                    calimero_account::founded_namespace_id
+                };
+                let group_id = ContextGroupId::from(derive(&founder, &salt));
                 (Some(group_id), Some((founder, salt)))
             }
             Some(_) if salt.is_some() => {
@@ -483,10 +491,18 @@ impl Handler<CreateGroupRequest> for ContextManager {
                              the salt its id was derived with"
                         );
                     };
-                    let genesis_op = NamespaceOp::Root(RootOp::NamespaceCreatedV2 {
-                        founder: admin_account,
-                        account: founder_credential,
-                        salt,
+                    let genesis_op = NamespaceOp::Root(if account_namespace {
+                        RootOp::AccountNamespaceCreated {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt,
+                        }
+                    } else {
+                        RootOp::NamespaceCreatedV2 {
+                            founder: admin_account,
+                            account: founder_credential,
+                            salt,
+                        }
                     });
                     match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
@@ -1361,7 +1377,7 @@ mod tests {
 
         assert_eq!(
             created.group_id,
-            ContextGroupId::from(calimero_account::founded_namespace_id(&founder, &SALT))
+            ContextGroupId::from(calimero_account::account_namespace_id(&founder, &SALT))
         );
         assert_eq!(
             created.founding,

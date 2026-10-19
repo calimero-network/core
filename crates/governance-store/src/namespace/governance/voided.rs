@@ -101,21 +101,22 @@ impl NamespaceGovernance<'_> {
         OpBudget::unreadable(self.store).admit_op(op)
     }
 
-    /// Mark an op kept unread as parked, for a replay to judge; clear a mark an
-    /// earlier, unfinished arrival of an op now read on arrival left behind.
+    /// Mark an op kept unjudged as parked, for a replay to judge, or one refused on
+    /// arrival as refused; clear a mark an earlier, unfinished arrival left behind.
     pub(super) fn mark_parked(
         &self,
         op: &SignedNamespaceOp,
         delta_id: [u8; 32],
-        parked: bool,
+        parked: Option<Parked>,
     ) -> EyreResult<()> {
         let ledger = VoidLedger::new(self.store, self.namespace_id);
-        if parked {
-            ledger.note_parked(delta_id)
-        } else if crate::unified_op_decode::can_be_parked(&op.op) {
-            ledger.forget_parked(delta_id)
-        } else {
-            Ok(())
+        match parked {
+            Some(Parked::Undecided) => ledger.note_parked(delta_id),
+            Some(Parked::Refused) => ledger.note_refused(delta_id),
+            None if crate::unified_op_decode::can_be_parked(&op.op) => {
+                ledger.forget_parked(delta_id)
+            }
+            None => Ok(()),
         }
     }
 
@@ -126,7 +127,15 @@ impl NamespaceGovernance<'_> {
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))
             .and_then(|id| {
-                VoidLedger::new(self.store, self.namespace_id).settle_parked(id, applied)
+                let settled =
+                    VoidLedger::new(self.store, self.namespace_id).settle_parked(id, applied)?;
+                // A verdict ends a hold, whichever way it went; a refused op owes no rotation.
+                crate::held_ops::HeldOps::new(self.store, self.namespace_id).release(id)?;
+                if !applied {
+                    crate::deferred_rotation::DeferredRotations::new(self.store, self.namespace_id)
+                        .forget(id)?;
+                }
+                Ok(settled)
             });
         match settled {
             Ok(true) => self.authorizer.forget(),
@@ -156,20 +165,6 @@ impl NamespaceGovernance<'_> {
         })
     }
 
-    /// How many parked ops no replay has judged yet; none when the ledger cannot be read.
-    pub(super) fn undecided_parked(&self) -> usize {
-        VoidLedger::new(self.store, self.namespace_id)
-            .undecided_parked()
-            .unwrap_or_else(|err| {
-                tracing::warn!(
-                    namespace_id = %hex::encode(self.namespace_id.as_bytes()),
-                    %err,
-                    "could not count the parked ops a replay has yet to judge"
-                );
-                0
-            })
-    }
-
     /// How `op` is stored: whole, or as the hole that keeps its place in the log when
     /// its bytes are over the unreadable budget, or over the void one for a void op.
     pub(super) fn storage_for(
@@ -177,9 +172,14 @@ impl NamespaceGovernance<'_> {
         op: &SignedNamespaceOp,
         delta_id: [u8; 32],
         unreadable_kept: bool,
+        parked: Option<Parked>,
     ) -> EyreResult<Option<Hole>> {
         if !unreadable_kept {
-            return Ok(Some(Hole::Unreadable));
+            return Ok(Some(if parked == Some(Parked::Refused) {
+                Hole::Refused
+            } else {
+                Hole::Unreadable
+            }));
         }
         let ledger = VoidLedger::new(self.store, self.namespace_id);
         if !ledger.voided()?.contains(&delta_id) || OpBudget::void(self.store).admit_op(op)? {
@@ -226,6 +226,7 @@ impl NamespaceGovernance<'_> {
                 | RootOp::MemberJoinedOpen { .. }
                 | RootOp::MemberJoinedViaTeeAttestation { .. }
                 | RootOp::NamespaceCreatedV2 { .. }
+                | RootOp::AccountNamespaceCreated { .. }
         ) {
             return Ok(false);
         }

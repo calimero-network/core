@@ -54,7 +54,7 @@ use calimero_store::{key, types, Store};
 use eyre::Result as EyreResult;
 
 use crate::account_bindings::AccountBindingRepository;
-use crate::authorizer::AtCutAuthorizer;
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
 use crate::capabilities::CapabilitiesRepository;
 use crate::membership::MembershipPath;
 use crate::warrant_gate::WarrantRefusal;
@@ -298,14 +298,8 @@ impl<'a> AdmissionCut<'a> {
         if let Some(reads) = self.authorizer.standing_reads_at_cut(group, self.parents) {
             return Ok(Some(reads));
         }
-        if self.authorizer.can_resolve_cut(group, self.parents) {
-            return Ok(None);
-        }
-        Err(crate::ApplyError::AuthorityUndecidable {
-            group_id: group.to_string(),
-            signer: author.to_string(),
-        }
-        .into())
+        ensure_cut_resolvable(self.authorizer, group, self.parents, author)?;
+        Ok(None)
     }
 
     /// Whether this cut reaches every head of `floor` — the governance heads
@@ -332,13 +326,7 @@ impl<'a> AdmissionCut<'a> {
             {
                 return Ok(covered);
             }
-            if !self.authorizer.can_resolve_cut(group, self.parents) {
-                return Err(crate::ApplyError::AuthorityUndecidable {
-                    group_id: group.to_string(),
-                    signer: "governance floor".to_owned(),
-                }
-                .into());
-            }
+            ensure_cut_resolvable(self.authorizer, group, self.parents, "governance floor")?;
         }
         let namespace = NamespaceRepository::new(store).resolve(group)?;
         let log = crate::NamespaceOpLogService::new(store, namespace.to_bytes().into());
