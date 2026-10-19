@@ -223,7 +223,9 @@ A TEE row changes role only between `ReadOnlyTee` and `RelayTee`, under the admi
 
 **Capabilities** are individual grants a non-admin can hold — for example: create contexts, invite members, join open subgroups, manage members, manage the application, or create/delete/configure subgroups. Admins pass every capability check implicitly; defaults can be set per group and overridden per member.
 
-The **owner** is not a role but a stored identity with exclusive rights — transfer ownership, delete the group or namespace — and the removal immunity noted above. Every other admin is a regular admin.
+The **owner** is not a role but a stored identity with exclusive rights — transfer ownership, delete the group — and the removal immunity noted above.
+Every other admin is a regular admin.
+Any member, owner or not, may remove a namespace from its own node: that is local, publishes nothing and leaves the account a member.
 
 ## Authorization: judged at the author's cut
 
@@ -490,7 +492,7 @@ A scope key is identified on the wire by `key_id = SHA-256(scope_key)`, so a rec
 
 ### Owner vs admin
 
-The owner is stored alongside admin in the group metadata (`owner_identity` vs `admin_identity`). A group may have several admins but exactly one owner. Only the owner may sign `TransferOwnership` or delete the group/namespace, and the owner is immune to involuntary removal. Ownership is itself folded into the governance hash, so an op signed before vs after a transfer resolves against different state.
+The owner is stored alongside admin in the group metadata (`owner_identity` vs `admin_identity`). A group may have several admins but exactly one owner. Only the owner may sign `TransferOwnership` or delete the group, and the owner is immune to involuntary removal. Ownership is itself folded into the governance hash, so an op signed before vs after a transfer resolves against different state.
 
 ## Where this leads
 

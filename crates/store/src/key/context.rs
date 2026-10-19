@@ -556,11 +556,8 @@ impl KeyComponent for NamespaceIdComponent {
     type LEN = U32;
 }
 
-/// Node-local record that the user removed a namespace from this device.
-/// Lives in the `ContextLocal` column - not synchronized.
-///
-/// Presence signals that no automatic path may follow or subscribe the namespace
-/// again on this node. An explicit join by the user clears it.
+/// Node-local record, in `ContextLocal` and never synced, that the user removed a
+/// namespace from this device; only an explicit join clears it.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct NamespaceForgotten(Key<(NamespaceForgottenPrefix, NamespaceIdComponent)>);

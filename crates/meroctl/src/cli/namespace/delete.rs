@@ -5,7 +5,7 @@ use eyre::Result;
 use crate::cli::Environment;
 
 #[derive(Clone, Debug, Parser)]
-#[command(about = "Delete a namespace")]
+#[command(about = "Remove a namespace from this node; any member may")]
 pub struct DeleteCommand {
     #[clap(name = "NAMESPACE_ID", help = "The hex-encoded namespace ID")]
     pub namespace_id: String,

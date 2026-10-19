@@ -1,7 +1,5 @@
-//! The namespaces the user removed from this node.
-//!
-//! A node-local record, never synced: no automatic path follows or subscribes a
-//! namespace that has one. An explicit join by the user is what clears it.
+//! The namespaces the user removed from this node, node-local and never synced:
+//! no automatic path follows one, and only an explicit join clears it.
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;

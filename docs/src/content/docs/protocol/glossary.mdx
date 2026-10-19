@@ -98,7 +98,7 @@ The reference reuses a small, load-bearing vocabulary. This page collects those 
 
 **Capability** — A fine-grained grant a non-admin can hold for a specific action (create contexts, invite members, join open subgroups, manage members / application / subgroups, etc.), encoded as a bit in a `u32` mask. Admins pass every capability check implicitly; defaults are per-group and overridable per member. See [Governance](/protocol/governance/).
 
-**Owner** — A distinguished stored identity (not a role) with exclusive rights — transfer ownership, delete the group or namespace — and immunity from involuntary removal. A group may have several admins but exactly one owner. See [Governance](/protocol/governance/).
+**Owner** — A distinguished stored identity (not a role) with exclusive rights — transfer ownership, delete the group — and immunity from involuntary removal. A group may have several admins but exactly one owner. See [Governance](/protocol/governance/).
 
 **Founder** — The identity a namespace's self-authorizing genesis operation names, recorded as the initial admin and owner. Every node that replays the DAG re-derives the same founder, so authority is established by a replayable operation, not out-of-band trust. See [Governance](/protocol/governance/).
 

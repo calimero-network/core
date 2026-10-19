@@ -21,7 +21,7 @@ pub const EXAMPLES: &str = r"
   # List all namespaces
   $ meroctl --node node1 namespace ls
 
-  # Get and delete a namespace
+  # Get a namespace and remove it from this node
   $ meroctl --node node1 namespace get <namespace_id>
   $ meroctl --node node1 namespace delete <namespace_id>
 

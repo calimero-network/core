@@ -203,9 +203,8 @@ impl PredefinedEntry for key::ContextLeftMarker {
     type DataType<'a> = ContextLeftMarker;
 }
 
-/// Value for `key::NamespaceForgotten`: what the user removed and when
-/// (millis since epoch). `application_id` is the application the namespace
-/// targeted, when it named one.
+/// Value for `key::NamespaceForgotten`: the namespace's target application, if it
+/// named one, and when it was removed (millis since epoch).
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[expect(
     clippy::exhaustive_structs,
