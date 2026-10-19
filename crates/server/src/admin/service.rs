@@ -1492,8 +1492,10 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: format!("{err:#}"),
         };
     }
-    if let Some(calimero_context::error::ContextError::AuthorityNotYetResolvable { .. }) =
-        err.downcast_ref::<calimero_context::error::ContextError>()
+    if let Some(
+        calimero_context::error::ContextError::AuthorityNotYetResolvable { .. }
+        | calimero_context::error::ContextError::NamespaceNotRestored { .. },
+    ) = err.downcast_ref::<calimero_context::error::ContextError>()
     {
         return ApiError {
             status_code: StatusCode::SERVICE_UNAVAILABLE,
@@ -2053,6 +2055,16 @@ mod parse_api_error_tests {
              got: {}",
             api.message
         );
+    }
+
+    #[test]
+    fn a_restore_whose_state_has_not_landed_maps_to_503() {
+        let err = calimero_context::error::ContextError::NamespaceNotRestored {
+            namespace_id: "test-namespace".to_owned(),
+        };
+        let api = parse_api_error(err.into());
+        assert_eq!(api.status_code, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(api.message.contains("retry"), "got: {}", api.message);
     }
 
     /// The pair that must stay apart: same shape of failure to a caller, opposite
