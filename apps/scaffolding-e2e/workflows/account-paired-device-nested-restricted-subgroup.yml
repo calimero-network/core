@@ -143,9 +143,10 @@ steps:
     outputs:
       dm_group: groupId
 
-  - name: Node-1 nests the inner subgroup inside the outer one
+  # Reparenting is a namespace-admin right, so the founder nests it.
+  - name: Node-2 nests the inner subgroup inside the outer one
     type: reparent_group
-    node: paired-nested-1
+    node: paired-nested-2
     child_group_id: '{{dm_group}}'
     new_parent_id: '{{team_group}}'
 
