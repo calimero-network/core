@@ -1,6 +1,9 @@
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResponse};
-use calimero_governance_store::{ForgottenNamespaces, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{
+    member_account_in_namespace, ForgottenNamespaces, MembershipRepository, MetaRepository,
+    NamespaceRepository,
+};
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use either::Either;
 use eyre::bail;
@@ -42,14 +45,24 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 });
             };
 
-            // Before the purge: a purge cut short must not leave a namespace the
-            // next start follows again.
-            let application = meta.target.application_id;
-            ForgottenNamespaces::new(&self.datastore).mark(
-                &namespace_id,
-                (application != ZERO_APPLICATION_ID).then_some(application),
-                now_ms(),
-            )?;
+            // The marker is a restore proof, so only an account that is still a
+            // member gets one; a node that soft-left just clears its residue.
+            // Written before the purge: a purge cut short must not leave a
+            // namespace the next start follows again.
+            let membership = MembershipRepository::new(&self.datastore);
+            let is_member =
+                match member_account_in_namespace(&self.datastore, &namespace_id, &signer)? {
+                    Some(account) => membership.role_of(&namespace_id, &account)?.is_some(),
+                    None => false,
+                };
+            if is_member {
+                let application = meta.target.application_id;
+                ForgottenNamespaces::new(&self.datastore).mark(
+                    &namespace_id,
+                    (application != ZERO_APPLICATION_ID).then_some(application),
+                    now_ms(),
+                )?;
+            }
 
             NamespaceRepository::new(&self.datastore).collect_subtree_for_cascade(&namespace_id)
         })();
@@ -136,11 +149,11 @@ mod tests {
     use crate::test_support::actor;
 
     /// A namespace this node founded, with this node's own account then made a
-    /// plain member of it.
+    /// plain member of it; returns the namespace and that account.
     async fn a_namespace_this_node_only_belongs_to(
         harness: &actor::Harness,
         store: &Store,
-    ) -> calimero_context_config::types::ContextGroupId {
+    ) -> (calimero_context_config::types::ContextGroupId, AccountId) {
         let created = harness
             .manager
             .send(CreateGroupRequest {
@@ -172,11 +185,11 @@ mod tests {
         row.owner_identity = AccountId::from([0xF2; 32]);
         meta.save(&namespace, &row)
             .expect("hand the namespace over");
-        namespace
+        (namespace, account)
     }
 
     /// Removing a namespace from this device is the device's own business: a
-    /// plain member may do it, and it leaves the forgotten marker behind.
+    /// plain member may do it, and it leaves the forgotten marker behind, the proof the account was a member.
     #[actix::test]
     async fn a_plain_member_may_remove_the_namespace_from_this_device() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -184,7 +197,7 @@ mod tests {
             .provision_account_root()
             .expect("the founder's account root");
         let harness = actor::over(store.clone()).await;
-        let namespace = a_namespace_this_node_only_belongs_to(&harness, &store).await;
+        let (namespace, _account) = a_namespace_this_node_only_belongs_to(&harness, &store).await;
 
         let deleted = harness
             .manager
@@ -201,6 +214,39 @@ mod tests {
             .expect("read the meta")
             .is_none());
         assert!(ForgottenNamespaces::new(&store)
+            .is_forgotten(&namespace)
+            .expect("read the marker"));
+    }
+
+    /// A node that soft-left keeps its residue, and may clear it. It is no
+    /// longer a member, so there is nothing for a later restore to come back to.
+    #[actix::test]
+    async fn a_node_that_soft_left_clears_its_residue_and_gets_no_marker() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the founder's account root");
+        let harness = actor::over(store.clone()).await;
+        let (namespace, account) = a_namespace_this_node_only_belongs_to(&harness, &store).await;
+        MembershipRepository::new(&store)
+            .remove_member(&namespace, &account)
+            .expect("the account left, leaving this node's identity behind");
+
+        let deleted = harness
+            .manager
+            .send(DeleteNamespaceRequest {
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("a soft-left node may clear what the leave kept");
+
+        assert!(deleted.deleted);
+        assert!(MetaRepository::new(&store)
+            .load(&namespace)
+            .expect("read the meta")
+            .is_none());
+        assert!(!ForgottenNamespaces::new(&store)
             .is_forgotten(&namespace)
             .expect("read the marker"));
     }
