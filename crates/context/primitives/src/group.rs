@@ -657,6 +657,9 @@ impl Message for LeaveNamespaceRequest {
 pub struct LeaveNamespaceResponse {
     pub namespace_id: ContextGroupId,
     pub member_public_key: PublicKey,
+    /// This node took the namespace off its disk. False for a leave that did not
+    /// ask, or asked while no admin had confirmed the `MemberLeft` yet.
+    pub purged: bool,
 }
 
 // ---- Metadata getters ----

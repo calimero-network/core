@@ -55,6 +55,7 @@ pub async fn handler(
                     data: LeaveNamespaceApiResponseData {
                         namespace_id: hex::encode(resp.namespace_id.to_bytes()),
                         member_public_key: resp.member_public_key,
+                        purged: resp.purged,
                     },
                 },
             }

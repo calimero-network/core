@@ -5,7 +5,9 @@
 //! the first is the device that leaves, the second a device of the same account
 //! applying the purge op from its account namespace.
 
-use calimero_context::test_support::{enrol, holders_account_namespace};
+use std::sync::Arc;
+
+use calimero_context::test_support::{ack_every_publish, enrol, holders_account_namespace};
 use calimero_context_client::group::{CreateGroupRequest, LeaveNamespaceRequest};
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_config::types::ContextGroupId;
@@ -15,18 +17,25 @@ use calimero_governance_store::{
 };
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PrivateKey;
 use calimero_store::db::Column;
 use calimero_store::key;
 use calimero_store::{types, Store};
 use serial_test::serial;
 
 use crate::namespace_forget_e2e::{eventually, leftovers};
-use crate::test_node_harness::{boot_test_node, boot_test_node_over, TestNode};
+use crate::test_node_harness::{
+    boot_test_node, boot_test_node_over, boot_test_node_with_a_subscriber, TestNode,
+};
 
 const APP: [u8; 32] = [0xA8; 32];
 const CONTEXT: [u8; 32] = [0xC2; 32];
 const CONTROL: [u8; 32] = [0x6B; 32];
+
+/// The second admin's key, which acks as the reachable owner would.
+fn the_other_admin() -> PrivateKey {
+    PrivateKey::from([0xF2; 32])
+}
 
 /// A holder with its account namespace and a namespace it created, handed to a
 /// second admin (the owner and the last admin are refused a self-leave), holding
@@ -51,7 +60,7 @@ async fn a_holder_in_a_namespace(node: &TestNode) -> (ContextGroupId, ContextGro
         .expect("the namespace is created")
         .group_id;
 
-    let other = enrol(store, &namespace, &PublicKey::from([0xF2; 32]));
+    let other = enrol(store, &namespace, &the_other_admin().public_key());
     MembershipRepository::new(store)
         .add_member(&namespace, &other, GroupMemberRole::Admin)
         .expect("a second admin");
@@ -176,10 +185,14 @@ async fn restart(node: TestNode, namespace: ContextGroupId, account_namespace: C
 #[serial(boot_test_node)]
 async fn the_leaving_device_keeps_nothing_and_it_stays_gone_after_a_restart() {
     calimero_context::account_follow::shutdown();
-    let node = boot_test_node().await;
+    let node = boot_test_node_with_a_subscriber().await;
     let (namespace, account_namespace) = a_holder_in_a_namespace(&node).await;
 
-    let _left = node
+    let acker = ack_every_publish(
+        Arc::clone(node.context_client.ack_router()),
+        the_other_admin(),
+    );
+    let left = node
         .context_client
         .leave_namespace(LeaveNamespaceRequest {
             namespace_id: namespace,
@@ -187,6 +200,8 @@ async fn the_leaving_device_keeps_nothing_and_it_stays_gone_after_a_restart() {
         })
         .await
         .expect("a second admin leaves with a purge");
+    acker.abort();
+    assert!(left.purged);
 
     nothing_of_the_namespace(&node.store, namespace, account_namespace);
     restart(node, namespace, account_namespace).await;

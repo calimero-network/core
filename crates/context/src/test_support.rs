@@ -384,6 +384,27 @@ pub fn holder_device_scoped_to(
     (account_namespace, device)
 }
 
+/// Acks every publish awaiting one as `signer`, an admin of the namespace: what a
+/// reachable admin does, and what lifts a publish to `PublishReadiness::Ready`.
+/// Abort the handle when done.
+pub fn ack_every_publish(
+    router: std::sync::Arc<calimero_context_client::local_governance::AckRouter>,
+    signer: PrivateKey,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            for op_hash in router.in_flight() {
+                if let Ok(ack) =
+                    calimero_governance_store::governance_broadcast::sign_ack(&signer, op_hash)
+                {
+                    let _routed = router.route(ack);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+}
+
 /// This holder's account namespace, created the way its first pairing creates it.
 ///
 /// # Panics
@@ -1166,6 +1187,8 @@ pub(crate) mod actor {
         /// A topic whose subscribe is not answered until the semaphore hands out a
         /// permit, so a test can hold a caller part-way through its work.
         held: Option<(String, Arc<Semaphore>)>,
+        /// Reports one peer subscribed to every topic, so a publish waits for acks.
+        subscriber: bool,
     }
 
     impl Actor for StubNetwork {
@@ -1215,7 +1238,12 @@ pub(crate) mod actor {
                     let _ignored = outcome.send(0);
                 }
                 NetworkMessage::SubscribedPeers { outcome, .. } => {
-                    let _ignored = outcome.send(Vec::new());
+                    let peers = if self.subscriber {
+                        vec![calimero_network_primitives::messages::PeerId::random()]
+                    } else {
+                        Vec::new()
+                    };
+                    let _ignored = outcome.send(peers);
                 }
                 NetworkMessage::Publish { request, outcome } => {
                     let _ignored = self.broadcast.send(request.topic.to_string());
@@ -1355,7 +1383,15 @@ pub(crate) mod actor {
         topic: String,
     ) -> (Harness, Arc<Semaphore>) {
         let gate = Arc::new(Semaphore::new(0));
-        let harness = build(store, None, None, Some((topic, Arc::clone(&gate))), false).await;
+        let harness = build(
+            store,
+            None,
+            None,
+            Some((topic, Arc::clone(&gate))),
+            false,
+            false,
+        )
+        .await;
         (harness, gate)
     }
 
@@ -1369,7 +1405,7 @@ pub(crate) mod actor {
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
-        build(store, bundle.map(Ok), None, None, false).await
+        build(store, bundle.map(Ok), None, None, false, false).await
     }
 
     /// [`over`], with every peer asked refusing the join for `reason`.
@@ -1378,7 +1414,13 @@ pub(crate) mod actor {
             reason: reason.to_owned(),
             refusers: 1,
         };
-        build(store, Some(Err(refused)), None, None, false).await
+        build(store, Some(Err(refused)), None, None, false, false).await
+    }
+
+    /// [`over`], with one peer subscribed to every topic: a publish then waits for
+    /// acks instead of returning at once.
+    pub(crate) async fn over_with_a_subscriber(store: Store) -> Harness {
+        build(store, None, None, None, false, true).await
     }
 
     /// [`over`], with full-text search turned on.
@@ -1386,13 +1428,13 @@ pub(crate) mod actor {
         store: Store,
         search: std::sync::Arc<calimero_search::SearchService>,
     ) -> Harness {
-        build(store, None, Some(search), None, false).await
+        build(store, None, Some(search), None, false, false).await
     }
 
     /// [`over`], on a node that can switch a context's release, recording the
     /// absorbed-delta replays it is asked for.
     pub(crate) async fn over_switching(store: Store) -> Harness {
-        build(store, None, None, None, true).await
+        build(store, None, None, None, true, false).await
     }
 
     async fn build(
@@ -1406,6 +1448,7 @@ pub(crate) mod actor {
         search: Option<std::sync::Arc<calimero_search::SearchService>>,
         held: Option<(String, Arc<Semaphore>)>,
         switching: bool,
+        subscriber: bool,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
         let (unsubscribed_tx, unsubscribed) = unbounded_channel();
@@ -1424,6 +1467,7 @@ pub(crate) mod actor {
                 published: published_tx,
                 live: stub_live,
                 held,
+                subscriber,
             }
         });
 

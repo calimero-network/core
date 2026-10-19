@@ -52,6 +52,8 @@ use crate::{NodeManager, NodeState};
 /// the publish path returns promptly and the local apply — the part this test
 /// asserts on — actually runs. It sends nothing on the wire: there is no peer.
 struct StubNetworkActor {
+    /// Reports one peer subscribed to every topic, so a publish waits for acks.
+    subscriber: bool,
     /// Every peer an outbound sync tried to open a stream to, in order. Lets a
     /// test assert *which* peer a pull targeted, not merely that one happened.
     stream_opens: Arc<Mutex<Vec<libp2p::PeerId>>>,
@@ -168,7 +170,12 @@ impl actix::Handler<calimero_network_primitives::messages::NetworkMessage> for S
             // an error. A caller that treats "no peers" as a failure is exercising
             // its real degraded path.
             NetworkMessage::SubscribedPeers { outcome, .. } => {
-                let _ = outcome.send(Vec::new());
+                let peers = if self.subscriber {
+                    vec![calimero_network_primitives::messages::PeerId::random()]
+                } else {
+                    Vec::new()
+                };
+                let _ = outcome.send(peers);
             }
             NetworkMessage::QueryBlob { outcome, .. } => {
                 let _ = outcome.send(Ok(Vec::new()));
@@ -293,9 +300,19 @@ pub(crate) async fn boot_test_node() -> TestNode {
     boot_test_node_over(Store::new(Arc::new(InMemoryDB::owned()))).await
 }
 
+/// [`boot_test_node`] with one peer subscribed to every topic, so a publish waits
+/// for acks instead of returning at once.
+pub(crate) async fn boot_test_node_with_a_subscriber() -> TestNode {
+    boot_node(Store::new(Arc::new(InMemoryDB::owned())), true).await
+}
+
 /// [`boot_test_node`] over an existing store: a restart of the node that
 /// owned it, once the earlier [`TestNode`] has been dropped.
 pub(crate) async fn boot_test_node_over(store: Store) -> TestNode {
+    boot_node(store, false).await
+}
+
+async fn boot_node(store: Store, subscriber: bool) -> TestNode {
     // An upgrade trials its migrations in wasm, which runs on the global runtime.
     crate::registered_bytecode_e2e::global_runtime();
     let mut pool = ArbiterPool::new().await.expect("arbiter pool");
@@ -436,6 +453,7 @@ pub(crate) async fn boot_test_node_over(store: Store) -> TestNode {
     let _network_addr = Actor::start_in_arbiter(&arb3, move |ctx| {
         assert!(network_recipient.init(ctx), "network recipient");
         StubNetworkActor {
+            subscriber,
             stream_opens: stub_opens,
             publishes: stub_publishes,
         }

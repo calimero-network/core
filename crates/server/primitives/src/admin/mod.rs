@@ -3699,6 +3699,10 @@ pub struct LeaveNamespaceApiResponse {
 pub struct LeaveNamespaceApiResponseData {
     pub namespace_id: String,
     pub member_public_key: PublicKey,
+    /// This node took the namespace off its disk; false when `purge` was not asked
+    /// for, or no admin had confirmed the leave yet.
+    #[serde(default)]
+    pub purged: bool,
 }
 
 // ---- Get Context Group ----
