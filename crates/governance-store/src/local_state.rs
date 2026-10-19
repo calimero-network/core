@@ -6,12 +6,13 @@ use crate::{
 use calimero_account::AccountId;
 use calimero_context_client::local_governance::SignedGroupOp;
 use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::context::{ContextId, GroupMemberRole};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
     GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue, GroupMemberContext, GroupOpHead,
     GroupOpHeadValue, GroupOpLog, NamespaceGovHead, NamespaceGovOp, NamespaceParticipation,
-    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
+    GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX,
+    NAMESPACE_GOV_OP_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -100,47 +101,19 @@ pub fn store_nonce_window(
     Ok(())
 }
 
-fn delete_local_gov_nonce_for_signer(
-    store: &Store,
-    group_id: &ContextGroupId,
-    signer: &PublicKey,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
+/// Drop every per-signer nonce window of a group being torn down. Not only its
+/// members': a signer that left (its own `MemberLeft` included) keeps a window.
+fn delete_local_gov_nonces(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let gid = group_id.to_bytes();
-    handle.delete(&GroupLocalGovNonceWindow::new(gid, *signer))?;
-    Ok(())
-}
-
-/// Delete all [`GroupLocalGovNonceWindow`] rows for current group members
-/// (best-effort; ignores missing).
-/// Drop the per-signer nonce windows belonging to a group's members.
-///
-/// The nonce window is keyed by the SIGNING KEY that authored an op — it is a
-/// replay guard, not a grant — while the member list names accounts. So the
-/// members are expanded to their live device keys before deleting. Best-effort
-/// throughout: this runs during group teardown, and a missed window costs
-/// nothing but a stale row.
-fn delete_local_gov_nonces_for_listed_members(
-    store: &Store,
-    group_id: &ContextGroupId,
-    members: &[(AccountId, GroupMemberRole)],
-) -> EyreResult<()> {
-    let namespace = crate::NamespaceRepository::new(store).resolve(group_id)?;
-    for binding in crate::AccountBindingRepository::new(store).live_bindings(&namespace)? {
-        if !members
-            .iter()
-            .any(|(account, _)| *account == binding.account)
-        {
-            continue;
-        }
-        if let Err(err) = delete_local_gov_nonce_for_signer(store, group_id, &binding.sign_pk) {
-            tracing::debug!(
-                group_id = %hex::encode(group_id.to_bytes()),
-                member = %binding.sign_pk,
-                ?err,
-                "best-effort nonce cleanup failed"
-            );
-        }
+    let windows = collect_keys_with_prefix(
+        store,
+        GroupLocalGovNonceWindow::new(gid, PublicKey::from([0u8; 32])),
+        GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
+        |k| k.group_id() == gid,
+    )?;
+    let mut handle = store.handle();
+    for key in windows {
+        handle.delete(&key)?;
     }
     Ok(())
 }
@@ -457,7 +430,7 @@ pub fn remove_all_member_context_joins(
 /// Caller must enforce admin authorization and `count_group_contexts == 0`.
 pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let members_snapshot = MembershipRepository::new(store).list(group_id, 0, usize::MAX)?;
-    delete_local_gov_nonces_for_listed_members(store, group_id, &members_snapshot)?;
+    delete_local_gov_nonces(store, group_id)?;
 
     for (account, _) in &members_snapshot {
         if let Err(err) = remove_all_member_context_joins(store, group_id, account) {
@@ -581,6 +554,7 @@ pub fn delete_namespace_local_state(
     ))?;
     drop(handle);
     crate::PendingSelfPurgeRepository::new(store).clear(namespace_id)?;
+    crate::NamespaceFoundingRepository::new(store).forget(namespace_id)?;
     crate::void_ledger::VoidLedger::new(store, ns_bytes.into()).clear()?;
     crate::nonce_spenders::NonceSpenders::new(store, ns_bytes.into()).clear()?;
 
