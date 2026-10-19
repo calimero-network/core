@@ -2430,9 +2430,8 @@ pub struct SignedNamespaceOp {
 /// group may have targeted at the link's cut, read from its ancestry, not the live
 /// target (core#4603).
 ///
-/// `GroupOp::AccountNamespacePurged` is appended WITHOUT a bump: it travels only
-/// in an account namespace, so the one peer that cannot decode it is an older
-/// device of that same account, while a bump would cut every older peer off.
+/// `GroupOp::AccountNamespacePurged` is appended without a bump: an older device of
+/// the same account stalls on it until it upgrades, so it ships in a batched release.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
