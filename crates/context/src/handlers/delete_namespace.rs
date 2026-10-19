@@ -39,9 +39,8 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 );
             }
 
-            let account_namespace = NodeDeviceRepository::new(&self.datastore)
-                .holder_root()?
-                .map(|root| root.account_namespace());
+            let account_namespace =
+                NodeDeviceRepository::new(&self.datastore).account_namespace()?;
             if account_namespace == Some(namespace_id) {
                 bail!(crate::error::ContextError::AccountNamespaceNotRemovable {
                     namespace_id: hex::encode(namespace_id.to_bytes()),
@@ -295,7 +294,7 @@ mod tests {
             .is_empty());
     }
 
-    /// Removing the account namespace would be re-founded by the next start.
+    /// The account namespace stays: on a holder the next start would re-found it.
     #[actix::test]
     async fn the_account_namespace_cannot_be_removed() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -327,5 +326,34 @@ mod tests {
                 .expect("read"),
             vec![namespace]
         );
+    }
+
+    /// A paired device records its account namespace instead of deriving it from a
+    /// root, and is held to the same refusal.
+    #[actix::test]
+    async fn a_paired_devices_account_namespace_cannot_be_removed_either() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let namespace = ContextGroupId::from([0xA7; 32]);
+        NodeDeviceRepository::new(&store)
+            .store_account_namespace(&namespace)
+            .expect("record what the pairing named");
+        let harness = actor::over(store.clone()).await;
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&namespace)
+            .expect("this node takes part");
+
+        let err = harness
+            .manager
+            .send(DeleteNamespaceRequest {
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("the account namespace stays");
+
+        assert!(matches!(
+            err.downcast_ref::<crate::error::ContextError>(),
+            Some(crate::error::ContextError::AccountNamespaceNotRemovable { .. })
+        ));
     }
 }

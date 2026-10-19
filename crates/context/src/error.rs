@@ -253,7 +253,7 @@ pub enum ContextError {
     },
 
     /// The namespace is this node's account namespace, which only the account
-    /// itself can end; removing it would re-found it on the next start.
+    /// itself can end.
     #[error("namespace '{namespace_id}' is this node's account namespace and cannot be removed")]
     AccountNamespaceNotRemovable {
         /// Hex rendering of the namespace id (for the message only).
