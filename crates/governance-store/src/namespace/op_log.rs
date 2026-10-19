@@ -580,8 +580,9 @@ impl<'a> NamespaceOpLogService<'a> {
         Ok(entries)
     }
 
-    /// Every buffered `NamespaceOp::Group` op for this namespace, as
-    /// `(group_id, key_id)` pairs. Same column walk and prefix-collision
+    /// Every buffered op sealed under a group key (`Group` and the sealed root
+    /// variants), as `(group_id, key_id)` pairs; a root op sealed under the
+    /// namespace key is keyed by the namespace id. Same column walk and prefix-collision
     /// termination as [`collect_signed_group_ops_for_group`](Self::collect_signed_group_ops_for_group)
     /// — see the long comment there — but across all groups, carrying the
     /// per-op `key_id` so the caller can decide decryptability per op
@@ -631,14 +632,20 @@ impl<'a> NamespaceOpLogService<'a> {
             let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
                 continue;
             };
-            if let NamespaceOp::Group {
-                group_id: op_group_id,
-                key_id,
-                ..
-            } = signed_op.op
-            {
-                seen.insert((op_group_id.to_bytes(), key_id.to_bytes()));
-            }
+            let sealed_under = match signed_op.op {
+                NamespaceOp::Group {
+                    group_id, key_id, ..
+                }
+                | NamespaceOp::RootSealedForGroup {
+                    group_id, key_id, ..
+                } => Some((group_id.to_bytes(), key_id.to_bytes())),
+                NamespaceOp::RootSealed { key_id, .. }
+                | NamespaceOp::RootRelaySealed { key_id, .. } => {
+                    Some((self.namespace_id.to_bytes(), key_id.to_bytes()))
+                }
+                _ => None,
+            };
+            seen.extend(sealed_under);
         }
 
         Ok(seen.into_iter().collect())

@@ -23,7 +23,7 @@ use crate::{
     NamespaceGovernance, NamespaceRepository,
 };
 
-const NS: [u8; 32] = [0xB8; 32];
+pub(crate) const NS: [u8; 32] = [0xB8; 32];
 
 /// The authorizer a node runs, built on the op-store the apply writes.
 struct LogAuthorizer<'s> {
@@ -363,30 +363,34 @@ impl Seeds {
     }
 }
 
-struct World {
-    store: Store,
+pub(crate) struct World {
+    pub(crate) store: Store,
     seeds: Seeds,
     owner: Person,
     alice: Person,
     sam: Person,
     bob: Person,
     xavier: Person,
-    k0: [u8; 32],
+    pub(crate) k0: [u8; 32],
     nonces: RefCell<BTreeMap<PublicKey, u64>>,
 }
 
 impl World {
-    fn new() -> Self {
-        Self::build(Seeds::random(), true)
+    pub(crate) fn new() -> Self {
+        Self::build(test_store(), Seeds::random(), true)
     }
 
     /// A second node of the same namespace, which holds the group key or not.
     fn replica(&self, keyed: bool) -> Self {
-        Self::build(self.seeds, keyed)
+        self.replica_on(test_store(), keyed)
     }
 
-    fn build(seeds: Seeds, keyed: bool) -> Self {
-        let store = test_store();
+    /// [`Self::replica`] on `store`, which must be shaped like [`test_store`]'s.
+    pub(crate) fn replica_on(&self, store: Store, keyed: bool) -> Self {
+        Self::build(store, self.seeds, keyed)
+    }
+
+    fn build(store: Store, seeds: Seeds, keyed: bool) -> Self {
         let ns = LogAuthorizer::group();
         let person = |store: &Store, bytes: [u8; 32]| {
             let sk = PrivateKey::from(bytes);
@@ -510,7 +514,7 @@ impl World {
         .expect("sign")
     }
 
-    fn apply(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
+    pub(crate) fn apply(&self, op: &SignedNamespaceOp) -> eyre::Result<()> {
         let authorizer = LogAuthorizer::new(&self.store);
         NamespaceGovernance::new(&self.store, NS.into())
             .with_apply_auth(&op.parent_op_hashes, &authorizer)
@@ -568,7 +572,7 @@ impl World {
     }
 
     /// Owner adds Alice and Sam as admins and Bob as a member; all applied.
-    fn founded(&self) -> [SignedNamespaceOp; 3] {
+    pub(crate) fn founded(&self) -> [SignedNamespaceOp; 3] {
         let a = self.add(&self.owner, &[], &self.alice, GroupMemberRole::Admin);
         self.apply(&a).expect("owner adds alice");
         let s = self.add(&self.owner, &[&a], &self.sam, GroupMemberRole::Admin);
