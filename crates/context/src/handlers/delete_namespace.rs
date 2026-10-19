@@ -3,7 +3,7 @@ use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResp
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
     member_account_in_namespace, ForgottenNamespaces, MembershipRepository, MetaRepository,
-    NamespaceRepository,
+    NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::identity::PublicKey;
@@ -37,6 +37,15 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                     "group '{namespace_id:?}' is not a namespace root; \
                      resolved namespace is '{resolved:?}' - use delete_group instead"
                 );
+            }
+
+            let account_namespace = NodeDeviceRepository::new(&self.datastore)
+                .holder_root()?
+                .map(|root| root.account_namespace());
+            if account_namespace == Some(namespace_id) {
+                bail!(crate::error::ContextError::AccountNamespaceNotRemovable {
+                    namespace_id: hex::encode(namespace_id.to_bytes()),
+                });
             }
 
             // The marker is the restore proof, so only a member gets one; written
@@ -284,5 +293,39 @@ mod tests {
             .participating_namespaces()
             .expect("read")
             .is_empty());
+    }
+
+    /// Removing the account namespace would be re-founded by the next start.
+    #[actix::test]
+    async fn the_account_namespace_cannot_be_removed() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let root = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the account root");
+        let harness = actor::over(store.clone()).await;
+        let namespace = root.account_namespace();
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&namespace)
+            .expect("this node takes part");
+
+        let err = harness
+            .manager
+            .send(DeleteNamespaceRequest {
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect_err("the account namespace stays");
+
+        assert!(matches!(
+            err.downcast_ref::<crate::error::ContextError>(),
+            Some(crate::error::ContextError::AccountNamespaceNotRemovable { .. })
+        ));
+        assert_eq!(
+            NamespaceRepository::new(&store)
+                .participating_namespaces()
+                .expect("read"),
+            vec![namespace]
+        );
     }
 }

@@ -252,6 +252,14 @@ pub enum ContextError {
         namespace_id: String,
     },
 
+    /// The namespace is this node's account namespace, which only the account
+    /// itself can end; removing it would re-found it on the next start.
+    #[error("namespace '{namespace_id}' is this node's account namespace and cannot be removed")]
+    AccountNamespaceNotRemovable {
+        /// Hex rendering of the namespace id (for the message only).
+        namespace_id: String,
+    },
+
     /// The named application is not installed on this node. See
     /// [`Self::GroupNotFound`] for why this is typed.
     #[error("application '{application_id}' not found")]
