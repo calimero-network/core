@@ -188,7 +188,14 @@ async fn run(
                 let _ = tasks.spawn(async move {
                     let _decided = topics.lock().await;
                     if purge {
-                        handle_namespace_purged(&store, &manager, group_id, namespace).await;
+                        handle_namespace_purged(
+                            &store,
+                            &node_client,
+                            &manager,
+                            group_id,
+                            namespace,
+                        )
+                        .await;
                     } else {
                         handle_namespace_left(&store, &node_client, group_id, namespace).await;
                     }
@@ -768,16 +775,44 @@ async fn handle_namespace_left(
     unfollow(node_client, namespace).await;
 }
 
-/// Take `namespace` off this node: the account left it and asked every device to.
-/// No pull first, unlike [`handle_namespace_left`]: it would fold rows back.
+/// Take `namespace` off this node, but only once the account is no longer a member
+/// of it: the op is signed by any device that speaks for the account, so it proves
+/// nothing alone. Pulls first, since the `MemberLeft` it follows travels on the
+/// namespace's own topic.
 async fn handle_namespace_purged(
     store: &Store,
+    node_client: &NodeClient,
     manager: &Addr<ContextManager>,
     group_id: [u8; 32],
     namespace: ContextGroupId,
 ) {
     if !unfollows_on_left(store, group_id, namespace) {
         return;
+    }
+    if let Err(err) = node_client.sync_namespace(namespace.to_bytes()).await {
+        warn!(
+            ?err,
+            ?namespace,
+            "account-follow: failed to pull a namespace before purging it"
+        );
+    }
+    match account_is_member(store, namespace) {
+        Ok(false) => {}
+        Ok(true) => {
+            warn!(
+                ?namespace,
+                "account-follow: ignoring a purge of a namespace the account still belongs to"
+            );
+            return;
+        }
+        Err(err) => {
+            warn!(
+                ?err,
+                ?namespace,
+                "account-follow: could not tell whether the account left; not purging"
+            );
+            return;
+        }
     }
     match manager.send(PurgeNamespace { namespace }).await {
         Ok(Ok(())) => info!(
@@ -1565,6 +1600,48 @@ mod tests {
             .unwrap()
             .contains(&left));
         assert_eq!(ForgottenNamespaces::new(&store).list().unwrap(), vec![]);
+    }
+
+    /// Any device the account's admin can sign for may publish the purge op, so a
+    /// sibling purges only a namespace its account no longer belongs to.
+    #[actix::test]
+    async fn a_purge_for_a_namespace_the_account_still_belongs_to_is_ignored() {
+        let store = store();
+        let (account_namespace, _device, _root_sk) = a_device_scoped_to(&store, &[]);
+        let kept = ContextGroupId::from([0x97; 32]);
+        MetaRepository::new(&store)
+            .save(
+                &kept,
+                &calimero_governance_store::test_fixtures::test_meta(),
+            )
+            .expect("the namespace");
+        let _identity = NamespaceRepository::new(&store)
+            .participate_in(&kept)
+            .expect("take part");
+        let account = NodeDeviceRepository::new(&store)
+            .get()
+            .expect("read the device")
+            .expect("this node is a device")
+            .account;
+        MembershipRepository::new(&store)
+            .add_member(&kept, &account, GroupMemberRole::Member)
+            .expect("the account is a member");
+
+        let harness = actor::over(store.clone()).await;
+        let listener = listen(&store, &harness);
+        op_events::notify(OpEvent::AccountNamespaceLeft {
+            group_id: account_namespace.to_bytes(),
+            namespace: kept,
+            purge: true,
+        });
+        // Nothing to wait on when nothing happens: give the listener the time a purge takes.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        listener.abort();
+
+        assert!(
+            MetaRepository::new(&store).load(&kept).unwrap().is_some(),
+            "the account is still a member, so the purge was ignored"
+        );
     }
 
     /// Nothing re-drives the certified op, so the sweep is what lets the uncovered
