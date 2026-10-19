@@ -4,7 +4,8 @@ description: >
   node 4. Node 3 is paired into node 1's account and proves it works by joining
   and reading the subgroup's context. Node 2 then removes node 1's account from
   the subgroup and opens a second context there. Node 4 still joins and reads it;
-  node 1 and its paired node 3 must both fail to join it.
+  node 1 and its paired node 3 must both fail to join it, and node 3 can no
+  longer read the first context, which node 2 wrote into after the removal.
 
 force_pull_image: false
 
@@ -180,6 +181,30 @@ steps:
     members:
       - '{{account_node1}}'
 
+  - name: Node-2 writes into the first context after the removal
+    type: call
+    node: removed-paired-2
+    context_id: '{{first_ctx}}'
+    method: set
+    args:
+      key: first_key
+      value: after_removal
+
+  - name: Node-4 reads the write made after the removal
+    type: wait_for_sync
+    context_id: '{{first_ctx}}'
+    nodes:
+      - removed-paired-2
+      - removed-paired-4
+    timeout: 60
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: first_key
+      equals:
+        output: after_removal
+
   - name: Node-2 creates a second context in the subgroup
     type: create_context
     node: removed-paired-2
@@ -231,11 +256,24 @@ steps:
     node: removed-paired-1
     context_id: '{{second_ctx}}'
     expected_failure: true
+    expected_error: not found
 
   - name: Node-3, a device of the removed account, cannot join the second context
     type: join_context
     node: removed-paired-3
     context_id: '{{second_ctx}}'
     expected_failure: true
+    expected_error: not found
+
+  # The removal purges the device's identity in the context, so the read is refused outright.
+  - name: Node-3 can no longer read the first context
+    type: call
+    node: removed-paired-3
+    context_id: '{{first_ctx}}'
+    method: get
+    args:
+      key: first_key
+    expected_failure: true
+    expected_error: No owned identity
 
 stop_all_nodes: true
