@@ -116,6 +116,7 @@ fn namespaces(store: &Store, app: Option<&ApplicationId>) -> Vec<NamespaceSummar
             namespace_id: ContextGroupId::from(id),
             bytecode_id: meta.target.bytecode_id.into(),
             target_application_id: meta.target.application_id,
+            target_release: None,
             created_at: meta.created_at,
             name: None,
             member_count: 0,
