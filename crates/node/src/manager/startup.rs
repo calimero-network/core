@@ -59,6 +59,13 @@ impl NodeManager {
                                 debug!(?group.group_id, "this device's scope no longer reaches this namespace; not subscribing");
                                 continue;
                             }
+                            if calimero_governance_store::ForgottenNamespaces::new(&datastore)
+                                .is_forgotten(&group.group_id)
+                                .unwrap_or(false)
+                            {
+                                debug!(?group.group_id, "removed from this device; not subscribing");
+                                continue;
+                            }
                             let ns_bytes = group.group_id.to_bytes();
                             if let Err(err) = node_client.subscribe_namespace(ns_bytes).await {
                                 error!(?group.group_id, %err, "Failed to subscribe to group topic");

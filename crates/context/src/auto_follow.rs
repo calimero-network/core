@@ -51,7 +51,7 @@ use tracing::{debug, info, warn};
 use calimero_governance_store;
 use calimero_governance_store::op_events::{self, OpEvent};
 use calimero_governance_store::{
-    MembershipPath, MembershipRepository, MetaRepository, NamespaceRepository,
+    ForgottenNamespaces, MembershipPath, MembershipRepository, MetaRepository, NamespaceRepository,
 };
 
 /// Token-bucket rate limit for auto-follow emissions.
@@ -431,6 +431,8 @@ pub(crate) enum ContextRegisteredDecision {
     /// Member has explicitly left this context on this node via
     /// `leave_context`; honour the opt-out.
     PreviouslyLeft,
+    /// The user removed the context's namespace from this node.
+    NamespaceForgotten,
     /// Conditions satisfied — emit a `JoinContextRequest`.
     Join,
 }
@@ -452,6 +454,9 @@ pub(crate) fn decide_on_context_registered(
     let Some(self_account) = self_account_for_group(store, &gid) else {
         return ContextRegisteredDecision::NotMember;
     };
+    if is_namespace_forgotten(store, &gid) {
+        return ContextRegisteredDecision::NamespaceForgotten;
+    }
     if !should_auto_follow_contexts(store, &gid, &self_account) {
         return ContextRegisteredDecision::NotAutoFollowing;
     }
@@ -567,7 +572,9 @@ async fn follow_registered_context(
     context_id: calimero_primitives::context::ContextId,
 ) {
     match decide_on_context_registered(store, group_id, &context_id) {
-        ContextRegisteredDecision::NotMember | ContextRegisteredDecision::NotAutoFollowing => {
+        ContextRegisteredDecision::NotMember
+        | ContextRegisteredDecision::NotAutoFollowing
+        | ContextRegisteredDecision::NamespaceForgotten => {
             return;
         }
         ContextRegisteredDecision::PreviouslyLeft => {
@@ -871,6 +878,24 @@ fn should_auto_follow_contexts(
     }
 }
 
+/// Whether the namespace owning `group_id` was removed from this node.
+fn is_namespace_forgotten(store: &Store, group_id: &ContextGroupId) -> bool {
+    let forgotten = NamespaceRepository::new(store)
+        .resolve(group_id)
+        .and_then(|namespace| ForgottenNamespaces::new(store).is_forgotten(&namespace));
+    match forgotten {
+        Ok(forgotten) => forgotten,
+        Err(err) => {
+            warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                ?err,
+                "auto-follow: failed to read the removal marker - defaulting to not removed"
+            );
+            false
+        }
+    }
+}
+
 /// Returns `true` if the member has explicitly called `leave_context` on this
 /// node for `(member, context_id)`. Looked up in the node-local
 /// `Column::ContextLocal` column — never synced to peers.
@@ -978,6 +1003,7 @@ mod tests {
 
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::{MemberCapabilities, VisibilityMode};
+        use calimero_governance_store::ForgottenNamespaces;
         use calimero_primitives::application::ApplicationId;
         use calimero_primitives::context::{ContextId, GroupMemberRole};
         use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -1169,6 +1195,22 @@ mod tests {
             assert_eq!(
                 decide_on_context_registered(&store, gid.to_bytes(), &context_id),
                 ContextRegisteredDecision::PreviouslyLeft,
+            );
+        }
+
+        #[test]
+        fn context_registered_skipped_when_the_namespace_was_removed_from_this_node() {
+            let mut rng = UnwrapErr(SysRng);
+            let gid = ContextGroupId::from([0x78u8; 32]);
+            let (store, _sk, _pk, _account) = seed_self_member(&mut rng, gid);
+            let context_id = ContextId::from([0x89u8; 32]);
+            ForgottenNamespaces::new(&store)
+                .mark(&gid, None, 1)
+                .expect("record the removal");
+
+            assert_eq!(
+                decide_on_context_registered(&store, gid.to_bytes(), &context_id),
+                ContextRegisteredDecision::NamespaceForgotten,
             );
         }
 
