@@ -1282,7 +1282,16 @@ pub(crate) mod actor {
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
-        build(store, bundle, None, None).await
+        build(store, bundle.map(Ok), None, None).await
+    }
+
+    /// [`over`], with every peer asked refusing the join for `reason`.
+    pub(crate) async fn over_refusing_joins(store: Store, reason: &str) -> Harness {
+        let refused = calimero_node_primitives::NamespaceJoinRefused {
+            reason: reason.to_owned(),
+            refusers: 1,
+        };
+        build(store, Some(Err(refused)), None, None).await
     }
 
     /// [`over`], with full-text search turned on.
@@ -1295,7 +1304,12 @@ pub(crate) mod actor {
 
     async fn build(
         store: Store,
-        bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
+        joins: Option<
+            Result<
+                calimero_node_primitives::join_bundle::JoinBundle,
+                calimero_node_primitives::NamespaceJoinRefused,
+            >,
+        >,
         search: Option<std::sync::Arc<calimero_search::SearchService>>,
         held: Option<(String, Arc<Semaphore>)>,
     ) -> Harness {
@@ -1317,12 +1331,12 @@ pub(crate) mod actor {
             }
         });
 
-        let (node_client, data_dir, blob_dir) = match bundle {
-            Some(bundle) => {
-                calimero_node_primitives::test_fixtures::node_client_over_answering_joins(
+        let (node_client, data_dir, blob_dir) = match joins {
+            Some(answer) => {
+                calimero_node_primitives::test_fixtures::node_client_over_join_answer(
                     store.clone(),
                     NetworkClient::new(network),
-                    bundle,
+                    answer,
                 )
                 .await
             }

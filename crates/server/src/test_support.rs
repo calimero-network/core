@@ -408,3 +408,51 @@ pub(crate) fn descope_by_root(
         }),
     }
 }
+
+/// The embedded auth service a node with `auth_mode = "embedded"` runs, over
+/// in-memory storage and with no providers: it can verify tokens, and no
+/// caller here holds one.
+pub(crate) async fn embedded_auth_service() -> std::sync::Arc<mero_auth::AuthService> {
+    use mero_auth::auth::token::TokenManager;
+    use mero_auth::config::JwtConfig;
+    use mero_auth::secrets::SecretManager;
+    use mero_auth::storage::{MemoryStorage, Storage};
+
+    let storage: std::sync::Arc<dyn Storage> = std::sync::Arc::new(MemoryStorage::new());
+    let secrets = std::sync::Arc::new(SecretManager::new(std::sync::Arc::clone(&storage)));
+    secrets.initialize().await.expect("auth secrets");
+    let tokens = TokenManager::new(
+        JwtConfig {
+            issuer: "test".to_owned(),
+            access_token_expiry: 3600,
+            refresh_token_expiry: 86400,
+            client_access_token_expiry: mero_auth::config::default_client_access_token_expiry(),
+            client_refresh_token_expiry: mero_auth::config::default_client_refresh_token_expiry(),
+            node_host: None,
+        },
+        storage,
+        secrets,
+    );
+    std::sync::Arc::new(mero_auth::AuthService::new(Vec::new(), tokens))
+}
+
+/// `POST`s `body` as JSON to `uri` on `router`, carrying no credential of any
+/// kind, and answers the status and the body.
+pub(crate) async fn post_json_uncredentialed(
+    router: axum::Router,
+    uri: &str,
+    body: &serde_json::Value,
+) -> (axum::http::StatusCode, String) {
+    use tower::ServiceExt as _;
+
+    let request = axum::http::Request::post(uri)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("a request");
+    let response = router.oneshot(request).await.expect("the route answers");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read the response");
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
