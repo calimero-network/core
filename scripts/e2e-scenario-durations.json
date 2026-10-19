@@ -10,6 +10,7 @@
   "account-namespace-left-unfollows": 19,
   "account-paired-device-after-repeated-rotations": 60,
   "account-paired-device-founds-namespace": 17,
+  "account-paired-device-offline-through-rotation": 75,
   "account-pairing-application-scope": 30,
   "account-pairing-missed-publish": 20,
   "account-registry-replicates": 13,
