@@ -173,6 +173,9 @@ scenarios:
   - workflow: account-paired-device-nested-restricted-subgroup
     file: workflows/account-paired-device-nested-restricted-subgroup.yml
     app: scaffolding-e2e
+  - workflow: account-revoked-device-misses-new-restricted-subgroup
+    file: workflows/account-revoked-device-misses-new-restricted-subgroup.yml
+    app: scaffolding-e2e
   - workflow: account-root-backup-restore
     file: workflows/account-root-backup-restore.yml
     app: scaffolding-e2e

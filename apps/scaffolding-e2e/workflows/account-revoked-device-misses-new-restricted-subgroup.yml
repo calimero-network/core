@@ -1,0 +1,273 @@
+name: E2E Account - A Revoked Device Cannot Join A Restricted Subgroup Opened After Its Revocation
+description: >
+  Node 1 founds a namespace and node 2 joins it. Node 3 is paired into node 1's
+  account and proves it works by joining and reading a Restricted subgroup node 1
+  shares with node 2. Node 1 then revokes node 3's device and opens a second
+  Restricted subgroup with node 2. Node 3 must fail to join that subgroup's
+  context, while node 1 and node 2 still read each other's writes in it.
+
+force_pull_image: false
+
+auth_mode: embedded
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: revoked-restricted
+
+steps:
+  - name: Login on node-1
+    type: login
+    node: revoked-restricted-1
+    username: dev
+    password: dev-password
+
+  - name: Login on node-2
+    type: login
+    node: revoked-restricted-2
+    username: dev
+    password: dev-password
+
+  - name: Login on node-3
+    type: login
+    node: revoked-restricted-3
+    username: dev
+    password: dev-password
+
+  - name: Install the application on node-1
+    type: install_application
+    node: revoked-restricted-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+    outputs:
+      app: applicationId
+
+  - name: Node-1 creates the namespace
+    type: create_namespace
+    node: revoked-restricted-1
+    application_id: '{{app}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to the namespace
+    type: create_namespace_invitation
+    node: revoked-restricted-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins the namespace
+    type: join_namespace
+    node: revoked-restricted-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      account_node2: memberAccount
+
+  - name: Node-1 creates a Restricted subgroup before the revocation
+    type: create_group_in_namespace
+    node: revoked-restricted-1
+    namespace_id: '{{namespace_id}}'
+    group_name: dm-before
+    outputs:
+      before_group: groupId
+
+  - name: Node-1 marks it Restricted
+    type: set_subgroup_visibility
+    node: revoked-restricted-1
+    group_id: '{{before_group}}'
+    visibility: restricted
+
+  - name: Node-1 adds node-2 to it
+    type: add_group_members
+    node: revoked-restricted-1
+    group_id: '{{before_group}}'
+    members:
+      - identity: '{{account_node2}}'
+        role: Member
+
+  - name: Node-1 creates a context in it
+    type: create_context
+    node: revoked-restricted-1
+    application_id: '{{app}}'
+    group_id: '{{before_group}}'
+    outputs:
+      before_ctx: contextId
+
+  - name: Node-1 writes into it
+    type: call
+    node: revoked-restricted-1
+    context_id: '{{before_ctx}}'
+    method: set
+    args:
+      key: before_key
+      value: before_revoke
+
+  - name: What node-1 speaks as
+    type: node_identity
+    node: revoked-restricted-1
+    outputs:
+      root_key: accountRootPublicKey
+      account_ns: accountNamespaceId
+
+  - name: Pair node-3 into node-1's account, naming only the account namespace
+    type: account_pair
+    node: revoked-restricted-3
+    holder: revoked-restricted-1
+    root_key: '{{root_key}}'
+    account_namespace: '{{account_ns}}'
+    await_self: true
+
+  - name: What node-3 speaks as, now that it is paired
+    type: node_identity
+    node: revoked-restricted-3
+    outputs:
+      paired_device: deviceId
+
+  - name: Node-3 converges on the first subgroup
+    type: wait_for_sync
+    group_id: '{{before_group}}'
+    nodes:
+      - revoked-restricted-1
+      - revoked-restricted-2
+      - revoked-restricted-3
+    timeout: 90
+    trigger_sync: true
+
+  # The control: without it, the refused join below could be a device that never worked.
+  - name: Node-3 joins the first subgroup's context
+    type: join_context
+    node: revoked-restricted-3
+    context_id: '{{before_ctx}}'
+
+  - name: Node-3 reads the first subgroup's write
+    type: wait_for_sync
+    context_id: '{{before_ctx}}'
+    nodes:
+      - revoked-restricted-1
+      - revoked-restricted-3
+    timeout: 60
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: before_key
+      equals:
+        output: before_revoke
+
+  - name: Node-1 revokes node-3's device
+    type: account_revoke
+    node: revoked-restricted-1
+    namespace_id: '{{namespace_id}}'
+    device_id: '{{paired_device}}'
+
+  # wait_for_sync cannot see a device tombstone, so gate on the apply-path marker.
+  - name: Node-3 folded its own revocation
+    type: assert_log_present
+    nodes:
+      - revoked-restricted-3
+    patterns:
+      - 'account device unlinked'
+    timeout: 60
+
+  - name: Node-1 creates a Restricted subgroup after the revocation
+    type: create_group_in_namespace
+    node: revoked-restricted-1
+    namespace_id: '{{namespace_id}}'
+    group_name: dm-after
+    outputs:
+      after_group: groupId
+
+  - name: Node-1 marks it Restricted
+    type: set_subgroup_visibility
+    node: revoked-restricted-1
+    group_id: '{{after_group}}'
+    visibility: restricted
+
+  - name: Node-1 adds node-2 to it
+    type: add_group_members
+    node: revoked-restricted-1
+    group_id: '{{after_group}}'
+    members:
+      - identity: '{{account_node2}}'
+        role: Member
+
+  - name: Node-1 creates a context in it
+    type: create_context
+    node: revoked-restricted-1
+    application_id: '{{app}}'
+    group_id: '{{after_group}}'
+    outputs:
+      after_ctx: contextId
+
+  - name: Node-1 writes into it
+    type: call
+    node: revoked-restricted-1
+    context_id: '{{after_ctx}}'
+    method: set
+    args:
+      key: after_key
+      value: after_revoke
+
+  - name: Node-2 converges on the second subgroup
+    type: wait_for_sync
+    group_id: '{{after_group}}'
+    nodes:
+      - revoked-restricted-1
+      - revoked-restricted-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node-2 joins the second subgroup's context
+    type: join_context
+    node: revoked-restricted-2
+    context_id: '{{after_ctx}}'
+
+  - name: Node-2 reads node-1's write after the revocation
+    type: wait_for_sync
+    context_id: '{{after_ctx}}'
+    nodes:
+      - revoked-restricted-1
+      - revoked-restricted-2
+    timeout: 60
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: after_key
+      equals:
+        output: after_revoke
+
+  - name: The revoked node-3 cannot join the second subgroup's context
+    type: join_context
+    node: revoked-restricted-3
+    context_id: '{{after_ctx}}'
+    expected_failure: true
+
+  - name: Node-2 writes into the second subgroup's context
+    type: call
+    node: revoked-restricted-2
+    context_id: '{{after_ctx}}'
+    method: set
+    args:
+      key: after_key_2
+      value: from_node2
+
+  - name: Node-1, the surviving device, reads node-2's write
+    type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-3 is revoked and holds no replica of this context.
+    context_id: '{{after_ctx}}'
+    nodes:
+      - revoked-restricted-1
+      - revoked-restricted-2
+    timeout: 60
+    trigger_sync: true
+    expect:
+      method: get
+      args:
+        key: after_key_2
+      equals:
+        output: from_node2
+
+stop_all_nodes: true

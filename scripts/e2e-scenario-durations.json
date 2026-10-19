@@ -16,6 +16,7 @@
   "account-pairing-missed-publish": 20,
   "account-registry-replicates": 13,
   "account-revoke-lost-device": 52,
+  "account-revoked-device-misses-new-restricted-subgroup": 45,
   "account-revoked-device-repairs": 17,
   "account-root-backup-restore": 27,
   "account-sibling-projected-by-founder": 44,
