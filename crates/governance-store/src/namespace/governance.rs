@@ -44,6 +44,8 @@ use super::op_log::NamespaceOpLogService;
 use super::retry::{NamespaceRetryService, RetryCandidate};
 
 mod replay;
+#[cfg(test)]
+mod retry_loop_tests;
 mod voided;
 
 use self::voided::may_void_others;
@@ -2058,7 +2060,7 @@ impl<'a> NamespaceGovernance<'a> {
         // rotation legitimately replaces the current key. Composed review of
         // this path showed the exemption was the most dangerous line here.
         // `expected_key_ids` comes from the cleartext `key_id` of buffered
-        // `NamespaceOp::Group` envelopes, which the signer chooses and which no
+        // `NamespaceOp::Group` and sealed root envelopes, which the signer chooses and which no
         // gate checks: the receive path verifies only the topic and the
         // signature, an unresolvable `key_id` decrypts nothing and raises
         // nothing, and the op is logged regardless. So the "attestation" is
@@ -2505,7 +2507,7 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     /// Apply a parked root op at its own cut and record the verdict, once that cut reads whole.
-    /// An undecidable gate, or no at-cut judge, falls back to live and records only an apply.
+    /// An undecidable gate falls back to live, unless the op is refused or waits on its group's key.
     fn replay_parked_root_op(
         &self,
         parked: &SignedNamespaceOp,
@@ -2525,6 +2527,10 @@ impl<'a> NamespaceGovernance<'a> {
                 .apply_root_op(gate_op, root);
             if !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(parked, at_cut.is_ok());
+                return at_cut;
+            }
+            let own_group = ContextGroupId::from(self.namespace_id.to_bytes());
+            if judge.history_sealed_in_group(&own_group, &parked.parent_op_hashes) {
                 return at_cut;
             }
         }
@@ -2557,6 +2563,9 @@ impl<'a> NamespaceGovernance<'a> {
                 .decrypt_and_apply_group_op(ns_op, group_id, group_key, encrypted);
             if !at_cut.as_ref().is_err_and(is_undecidable) {
                 self.settle_parked(ns_op, at_cut.is_ok());
+                return at_cut;
+            }
+            if judge.history_sealed_in_group(group_id, &ns_op.parent_op_hashes) {
                 return at_cut;
             }
         }
@@ -3014,8 +3023,8 @@ impl<'a> NamespaceGovernance<'a> {
     ///
     /// This is the content half of authorizing a delivery, and the reason it is
     /// worth anything is the provenance: these ids come from buffered
-    /// `NamespaceOp::Group` envelopes, signed by group members, which is a
-    /// THIRD party relative to whoever is delivering. A `key_id` carried on the
+    /// `NamespaceOp::Group` and sealed root envelopes, signed by namespace members,
+    /// which is a THIRD party relative to whoever is delivering. A `key_id` carried on the
     /// delivery itself would be signed by the deliverer alongside the key it
     /// chose, so the hash would match by construction and check nothing — which
     /// is why this needs no new field on `RootOp::KeyDelivery` and no wire
@@ -3155,7 +3164,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // to it would be signed by the deliverer alongside the key it
                 // chose, matching by construction and checking nothing. What
                 // can speak to the content is a DIFFERENT signed op: a buffered
-                // `NamespaceOp::Group` envelope naming the group's `key_id`.
+                // `NamespaceOp::Group` or sealed root envelope naming the group's `key_id`.
                 // That is bound below where one exists; where none does the
                 // delivery is genuinely unverifiable, and the direct-pull path
                 // already ruled on those — `key_servers_allowed` accepts an

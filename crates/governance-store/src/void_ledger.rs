@@ -210,6 +210,20 @@ impl<'a> VoidLedger<'a> {
         Ok(true)
     }
 
+    /// How many parked ops no replay has judged yet.
+    #[cfg(test)]
+    pub(crate) fn undecided_parked(&self) -> EyreResult<usize> {
+        let rows = rows_under(self.store, &self.parked_scope(), usize::MAX)?;
+        let handle = self.store.handle();
+        let mut undecided = 0;
+        for row in rows {
+            if let Some(data) = handle.get(&row)? {
+                undecided += usize::from(AsRef::<[u8]>::as_ref(&data) != [REFUSED]);
+            }
+        }
+        Ok(undecided)
+    }
+
     pub(crate) fn parked(&self, op: [u8; 32]) -> EyreResult<Option<Parked>> {
         let handle = self.store.handle();
         let Some(data) = handle.get(&self.parked_key(op))? else {
@@ -385,6 +399,22 @@ mod tests {
         assert_eq!(left.parked([7; 32]).unwrap(), None);
         assert_eq!(left.parked([8; 32]).unwrap(), None);
         assert_eq!(kept.parked([7; 32]).unwrap(), Some(Parked::Undecided));
+    }
+
+    #[test]
+    fn undecided_parked_counts_the_unjudged_ops_of_one_namespace() {
+        let store = test_store();
+        let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
+        let other = VoidLedger::new(&store, NamespaceId::from([2u8; 32]));
+        for op in [[1; 32], [2; 32], [3; 32]] {
+            ledger.note_parked(op).unwrap();
+        }
+        other.note_parked([9; 32]).unwrap();
+        assert_eq!(ledger.undecided_parked().unwrap(), 3);
+
+        assert!(ledger.settle_parked([1; 32], true).unwrap());
+        assert!(ledger.settle_parked([2; 32], false).unwrap());
+        assert_eq!(ledger.undecided_parked().unwrap(), 1);
     }
 
     #[test]

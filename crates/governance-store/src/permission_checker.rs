@@ -1,4 +1,5 @@
 use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
+use crate::first_target_gate::{applications_at_cut, ApplicationsAtCut};
 use crate::MembershipRepository;
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
@@ -264,16 +265,24 @@ impl<'a> PermissionChecker<'a> {
         ) {
             return Ok(verdict);
         }
-        self.ensure_live_fallback_is_sound_for_account(account)?;
         let root = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        let founder =
+            crate::NamespaceFoundingRepository::new(self.store).account_namespace_founder(&root)?;
+        let own_namespace = founder == Some(*account);
+        // Without the projection, the cut's ancestry names every target the root may run then.
+        if let ApplicationsAtCut::Known(targets) =
+            applications_at_cut(self.store, &root, self.parents)?
+        {
+            return Ok(targets.into_iter().all(|target| {
+                calimero_authz::scope_reaches(applications, Some(target), own_namespace)
+            }));
+        }
+        self.ensure_live_fallback_is_sound_for_account(account)?;
         let target = crate::MetaRepository::new(self.store)
             .load(&root)?
             .map(|meta| meta.target.application_id)
             .filter(|application| *application != ZERO_APPLICATION_ID);
-        let founder =
-            crate::NamespaceFoundingRepository::new(self.store).account_namespace_founder(&root)?;
-        let reaches =
-            calimero_authz::scope_reaches(applications, target, founder == Some(*account));
+        let reaches = calimero_authz::scope_reaches(applications, target, own_namespace);
         // A replica's meta names the zero placeholder until the sealed op setting its
         // target folds; a refusal then would spend the nonce the later replay needs.
         if !reaches && target.is_none() {

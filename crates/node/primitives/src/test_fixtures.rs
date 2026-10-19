@@ -265,6 +265,17 @@ pub async fn node_client_over_answering_joins(
     network_client: NetworkClient,
     bundle: JoinBundle,
 ) -> (NodeClient, TempDir, TempDir) {
+    node_client_over_join_answer(datastore, network_client, Ok(bundle)).await
+}
+
+/// [`node_client_over_answering_joins`], answering every namespace-join request
+/// with `answer`: a bundle, or the refusal the joiner loop gives back once
+/// every peer that answered said no.
+pub async fn node_client_over_join_answer(
+    datastore: Store,
+    network_client: NetworkClient,
+    answer: Result<JoinBundle, crate::NamespaceJoinRefused>,
+) -> (NodeClient, TempDir, TempDir) {
     let data_dir = TempDir::new().unwrap();
     let blob_dir = TempDir::new().unwrap();
 
@@ -295,7 +306,7 @@ pub async fn node_client_over_answering_joins(
     // somewhere other than the task making the request.
     let _responder = tokio::spawn(async move {
         while let Some((_params, reply)) = ns_join_rx.recv().await {
-            let _ignored = reply.send(Ok(bundle.clone()));
+            let _ignored = reply.send(answer.clone().map_err(Into::into));
         }
     });
 

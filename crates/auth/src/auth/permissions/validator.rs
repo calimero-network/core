@@ -59,18 +59,19 @@ static NAMESPACE_REGEX: LazyLock<Regex> =
 static NAMESPACE_READ_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/(identity|groups)$").unwrap());
 
-/// Membership operations on a namespace, plus `admit`.
+/// Membership operations on a namespace.
 ///
-/// `admit` publishes a join a keyholder signed but cannot publish itself, and
-/// its caller holds **only a key** — no account on this node and no way to be
-/// given one. So this mapping does not make the route usable by its intended
-/// caller; what it does is stop it demanding `admin`, which meant the only way
-/// to serve an admission was handing out node credentials. Making it reachable
-/// by a caller holding nothing is a separate change: the route has to leave the
-/// protected router entirely, the way the intent pair already has.
-static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave|admit)$").unwrap()
-});
+/// `admit` is deliberately absent. Its caller holds only a device key, nothing
+/// a token could stand for, so `calimero-server` serves it on the public admin
+/// router (`admission_routes`) and never consults this table for it; the
+/// joiner's signed op is the authorization. Mapping it here would only invite
+/// an operator behind a forward-auth proxy to hand keyholders
+/// `namespace:manage`, which also reaches invite, join and leave. Unmapped, it
+/// falls to the `admin` default-deny, so a proxy that has not exempted the
+/// anchored path (as mero-tee's ingress does) keeps it closed rather than
+/// half-open.
+static NAMESPACE_MEMBERSHIP_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/namespaces/([^/]+)/(invite|join|leave)$").unwrap());
 
 /// The group reads whose handlers narrow to the caller, and ONLY those: the
 /// group itself, its contexts, members, subgroups, metadata, one member's
@@ -1398,6 +1399,9 @@ mod tests {
             (Method::GET, "/admin-api/network/status"),
             (Method::GET, "/admin-api/peers"),
             (Method::POST, "/admin-api/contexts/invite-specialized-node"),
+            // Public in `calimero-server`, so a token never reaches it there;
+            // through a proxy that does not exempt it, only `admin` does.
+            (Method::POST, "/admin-api/namespaces/ns-1/admit"),
             (Method::GET, "/admin-api/totally-unknown-subpath"),
             // Mapped path, unhandled method (the `_ => vec![]` arms):
             (Method::POST, "/admin-api/contexts/ctx-1"),
@@ -1589,36 +1593,6 @@ mod tests {
 
         assert!(validator.validate_permissions(&["application:list[app-1]".to_owned()], &required));
         assert!(!validator.validate_permissions(&["application:list[app-2]".to_owned()], &required));
-    }
-
-    /// Admission must not cost node credentials.
-    ///
-    /// The caller of this route holds only a key — no account here, and no way
-    /// to be given one — so the mapping does not by itself make the route
-    /// usable; the route also has to leave the protected router. What the
-    /// mapping removes is the state where an operator who wants to serve an
-    /// admission has no option but to hand out `admin`.
-    #[test]
-    fn admitting_a_join_does_not_require_admin() {
-        let validator = PermissionValidator::new();
-
-        let post = Request::builder()
-            .method(Method::POST)
-            .uri("/admin-api/namespaces/ns-1/admit")
-            .body(Body::empty())
-            .unwrap();
-        let required = validator.determine_required_permissions(&post);
-
-        assert!(
-            matches!(
-                required.as_slice(),
-                [Permission::Namespace(NamespacePermission::Manage(_))]
-            ),
-            "expected a scoped namespace permission, got {required:?}",
-        );
-
-        assert!(validator.validate_permissions(&["namespace:manage[ns-1]".to_owned()], &required));
-        assert!(!validator.validate_permissions(&["namespace:manage[ns-2]".to_owned()], &required));
     }
 
     /// A delegated caller can read a namespace it is in, and an operator token

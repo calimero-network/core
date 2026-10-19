@@ -181,7 +181,7 @@ impl EventHandler<Event> for NetworkManager {
 }
 
 /// Most records a single peer may have accepted into the store at once.
-const MAX_RECORDS_PER_SOURCE: usize = 256;
+pub(crate) const MAX_RECORDS_PER_SOURCE: usize = 256;
 
 /// Tracks which stored record keys each peer handed us, so one peer cannot take
 /// the whole store. Keys that left the store (expired, removed) stop counting.

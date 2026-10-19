@@ -148,6 +148,15 @@ pub(crate) mod tests {
         admin_sk: &PrivateKey,
         group: ContextGroupId,
     ) -> calimero_context_config::types::SignedGroupOpenInvitation {
+        invitation_with(admin_sk, group, [0x42; 32], Vec::new())
+    }
+
+    fn invitation_with(
+        admin_sk: &PrivateKey,
+        group: ContextGroupId,
+        nonce: [u8; 32],
+        admitters: Vec<calimero_account::AccountId>,
+    ) -> calimero_context_config::types::SignedGroupOpenInvitation {
         use sha2::{Digest, Sha256};
         let invitation = calimero_context_config::types::GroupInvitationFromAdmin {
             inviter_identity: calimero_context_config::types::SignerId::from(
@@ -155,9 +164,9 @@ pub(crate) mod tests {
             ),
             group_id: group,
             expiration_timestamp: 0,
-            invitation_nonce: [0x42; 32],
+            invitation_nonce: nonce,
             invited_role: 1,
-            admitters: Vec::new(),
+            admitters,
         };
         let bytes = borsh::to_vec(&invitation).unwrap();
         let signature = admin_sk.sign(&Sha256::digest(&bytes)).unwrap();
@@ -1401,5 +1410,315 @@ pub(crate) mod tests {
             "the add must apply once the key recovery ends"
         );
         assert!(!held(), "an applied op is no longer listed as held");
+    }
+    /// A late key must fold a holder's subgroup create even when the chain behind
+    /// it alternates group and root ops: the join needs the flip and the member
+    /// add, the holder's own group op needs the binding the join records, and the
+    /// create is only judged at its cut once that group op has folded. The live
+    /// rows refuse the create, so a retry that stops after one round of root,
+    /// group, root passes leaves it unfolded.
+    #[test]
+    fn a_late_key_folds_a_create_behind_a_chain_of_alternating_ops() {
+        use calimero_context_config::MemberCapabilities as Caps;
+
+        let ns = ContextGroupId::from([0x5B; 32]);
+        let namespace_id = ns.to_bytes();
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let owner_sk = PrivateKey::from([0x71; 32]);
+        let holder_sk = PrivateKey::from([0x75; 32]);
+        let owner = crate::test_support::enrol(&store, &ns, &owner_sk.public_key());
+        // A member row with no binding: the holder's sealed join records it.
+        let holder = crate::test_support::account_for(&holder_sk.public_key());
+        MetaRepository::new(&store).save(&ns, &meta(owner)).unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_default_capabilities(&ns, Caps::CAN_JOIN_OPEN_SUBGROUPS.bits())
+            .unwrap();
+        let members = MembershipRepository::new(&store);
+        members
+            .add_member(&ns, &owner, GroupMemberRole::Admin)
+            .unwrap();
+        members
+            .add_member(&ns, &holder, GroupMemberRole::Member)
+            .unwrap();
+
+        let sub_salt = [0x76u8; 32];
+        let sub = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &owner,
+            &namespace_id,
+            true,
+            &sub_salt,
+        ));
+        NamespaceRepository::new(&store).nest(&ns, &sub).unwrap();
+        MetaRepository::new(&store)
+            .save(&sub, &meta(owner))
+            .unwrap();
+        // The cut names the owner as a member through this join.
+        let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
+        let sub_created = SignedNamespaceOp::sign(
+            &owner_sk,
+            namespace_id.into(),
+            vec![owner_joined],
+            2,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                admin: owner,
+                group_id: sub.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+                salt: sub_salt,
+            }),
+        )
+        .unwrap();
+        land(&store, namespace_id, &sub_created, &[owner_joined]);
+        let sub_created_id = sub_created.content_hash().unwrap();
+
+        let ns_key = [0x6Au8; 32];
+        let key_id = GroupKeyring::key_id_for(&ns_key);
+        let group_op = |sk: &PrivateKey, group: ContextGroupId, nonce, parent, op: GroupOp| {
+            SignedNamespaceOp::sign(
+                sk,
+                namespace_id.into(),
+                vec![parent],
+                nonce,
+                NamespaceOp::Group {
+                    group_id: group.to_bytes().into(),
+                    key_id: key_id.into(),
+                    encrypted: GroupKeyring::encrypt_op(&ns_key, &op).unwrap(),
+                    key_rotation: None,
+                    registers: op.registered_context(),
+                },
+            )
+            .unwrap()
+        };
+        let root_op = |sk: &PrivateKey, nonce, parent, op: RootOp| {
+            SignedNamespaceOp::sign(
+                sk,
+                namespace_id.into(),
+                vec![parent],
+                nonce,
+                NamespaceOp::RootSealed {
+                    key_id: key_id.into(),
+                    encrypted: GroupKeyring::encrypt_root_op(&ns_key, &op).unwrap(),
+                },
+            )
+            .unwrap()
+        };
+
+        // The add copies the old default into the holder's live row; the cut reads the raised one.
+        let added = group_op(
+            &owner_sk,
+            ns,
+            3,
+            sub_created_id,
+            GroupOp::MemberAdded {
+                member: holder,
+                role: GroupMemberRole::Member,
+            },
+        );
+        let defaults = group_op(
+            &owner_sk,
+            ns,
+            4,
+            added.content_hash().unwrap(),
+            GroupOp::DefaultCapabilitiesSet {
+                capabilities: Caps::CAN_JOIN_OPEN_SUBGROUPS | Caps::CAN_CREATE_SUBGROUP,
+            },
+        );
+        let flip = group_op(
+            &owner_sk,
+            sub,
+            5,
+            defaults.content_hash().unwrap(),
+            GroupOp::SubgroupVisibilitySet {
+                mode: VisibilityMode::Open,
+            },
+        );
+        let join = root_op(
+            &holder_sk,
+            1,
+            flip.content_hash().unwrap(),
+            RootOp::MemberJoinedOpen {
+                member: holder,
+                group_id: sub.to_bytes().into(),
+                account: crate::test_support::credential(&holder_sk.public_key()),
+            },
+        );
+        let follow = group_op(
+            &holder_sk,
+            ns,
+            2,
+            join.content_hash().unwrap(),
+            GroupOp::MemberSetAutoFollow {
+                target: holder,
+                auto_follow_contexts: true,
+                auto_follow_subgroups: false,
+            },
+        );
+        let dm_salt = [0x77u8; 32];
+        let dm = ContextGroupId::from(calimero_account::created_subgroup_id(
+            &holder,
+            &namespace_id,
+            true,
+            &dm_salt,
+        ));
+        let create = root_op(
+            &holder_sk,
+            3,
+            follow.content_hash().unwrap(),
+            RootOp::GroupCreated {
+                admin: holder,
+                group_id: dm.to_bytes().into(),
+                parent_id: namespace_id.into(),
+                restricted: true,
+                salt: dm_salt,
+            },
+        );
+
+        let mut parent = sub_created_id;
+        for op in [&added, &defaults, &flip, &join, &follow, &create] {
+            parent = arrive(&store, op, &[parent]);
+        }
+
+        let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &ns_key)
+            .expect("the pulled key stores");
+
+        assert_eq!(
+            CapabilitiesRepository::new(&store)
+                .subgroup_visibility(&sub)
+                .unwrap(),
+            VisibilityMode::Open,
+            "control: the flip folds"
+        );
+        assert!(
+            MetaRepository::new(&store).load(&dm).unwrap().is_some(),
+            "the holder's create must fold once the chain behind it has"
+        );
+    }
+
+    /// `joiner_sk`'s join of `ns`, admitted by the owner and sealed under `key`.
+    fn sealed_admitted_join(
+        owner_sk: &PrivateKey,
+        ns: ContextGroupId,
+        joiner_sk: &PrivateKey,
+        key: &[u8; 32],
+    ) -> SignedNamespaceOp {
+        let owner = crate::test_support::account_for(&owner_sk.public_key());
+        let member = crate::test_support::account_for(&joiner_sk.public_key());
+        let nonce = [0x43; 32];
+        let join = RootOp::MemberJoined {
+            member,
+            signed_invitation: invitation_with(owner_sk, ns, nonce, vec![owner]),
+            account: crate::test_support::credential(&joiner_sk.public_key()),
+        };
+        let mut signed = SignedNamespaceOp::sign(
+            joiner_sk,
+            ns.to_bytes().into(),
+            vec![],
+            1,
+            NamespaceOp::RootSealed {
+                key_id: GroupKeyring::key_id_for(key).into(),
+                encrypted: GroupKeyring::encrypt_root_op(key, &join).unwrap(),
+            },
+        )
+        .unwrap();
+        signed.admitter_endorsement = Some(Box::new(
+            calimero_governance_types::AdmitterEndorsement::sign(
+                owner_sk,
+                &ns.to_bytes(),
+                &member,
+                &nonce,
+            )
+            .unwrap(),
+        ));
+        signed
+    }
+
+    /// A device link sealed under one namespace key, endorsed by an account whose
+    /// join is sealed under another, binds the device whichever key arrives first.
+    #[test]
+    fn a_device_link_behind_a_sealed_join_binds_in_either_key_order() {
+        let link_key = [0x65u8; 32];
+        let join_key = [0x66u8; 32];
+        for (seed, keys) in [(0x55, [link_key, join_key]), (0x56, [join_key, link_key])] {
+            let ns = ContextGroupId::from([seed; 32]);
+            let namespace_id = ns.to_bytes();
+            let (store, owner_sk, _mallory_sk) = keyless_namespace(ns);
+            let member_sk = PrivateKey::from([0x76; 32]);
+            let member_pk = member_sk.public_key();
+            let account = crate::test_support::account_for(&member_pk);
+
+            let join = sealed_admitted_join(&owner_sk, ns, &member_sk, &join_key);
+            let join_id = arrive(&store, &join, &[]);
+
+            // `credential` derives the account root from the member's key.
+            let root_sk = PrivateKey::from(*member_pk);
+            let device_pk = PrivateKey::from([0x77; 32]).public_key();
+            let cert = calimero_account::DeviceCert::sign(
+                &root_sk,
+                account,
+                calimero_account::DeviceId::mint(account, [0x78; 16]),
+                &device_pk,
+                &calimero_account::KemPublicKey::from([0x79; 32]),
+                0,
+                0,
+            )
+            .unwrap();
+            let link = SignedNamespaceOp::sign(
+                &member_sk,
+                namespace_id.into(),
+                vec![join_id],
+                2,
+                NamespaceOp::Group {
+                    group_id: namespace_id.into(),
+                    key_id: GroupKeyring::key_id_for(&link_key).into(),
+                    encrypted: GroupKeyring::encrypt_op(
+                        &link_key,
+                        &GroupOp::AccountDeviceLinked {
+                            genesis: calimero_account::AccountGenesis::new(root_sk.public_key()),
+                            chain: vec![],
+                            cert,
+                            endorsement: calimero_account::AccountMemberEndorsement::sign(
+                                &member_sk, account,
+                            )
+                            .unwrap(),
+                            scope: Box::new(crate::test_support::device_scope(
+                                &root_sk,
+                                &cert,
+                                &[],
+                                0,
+                            )),
+                        },
+                    )
+                    .unwrap(),
+                    key_rotation: None,
+                    registers: None,
+                },
+            )
+            .unwrap();
+            let link_id = arrive(&store, &link, &[join_id]);
+            let bound = || {
+                calimero_governance_store::member_account_in_namespace(&store, &ns, &device_pk)
+                    .unwrap()
+            };
+            let parked =
+                || calimero_governance_store::parked_op(&store, namespace_id.into(), link_id);
+
+            let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &keys[0])
+                .expect("the pulled key stores");
+            assert_eq!(
+                parked().unwrap(),
+                Some(calimero_governance_store::Parked::Undecided),
+                "a link whose endorser's join is still sealed stays parked"
+            );
+            assert_eq!(bound(), None, "and binds nothing yet");
+
+            let _ = adopt_pulled_group_key(&store, namespace_id.into(), ns, &keys[1])
+                .expect("the pulled key stores");
+            assert_eq!(
+                bound(),
+                Some(account),
+                "the link binds once both keys are held"
+            );
+            assert_eq!(parked().unwrap(), None, "and is no longer parked");
+        }
     }
 }
