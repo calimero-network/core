@@ -1,6 +1,7 @@
 use calimero_governance_store::{
-    account_for_group, CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository,
-    MetadataRepository, NamespaceMembershipService, ReentryRepository,
+    account_for_group, CapabilitiesRepository, ForgottenNamespaces, GroupKeyring,
+    MembershipRepository, MetaRepository, MetadataRepository, NamespaceMembershipService,
+    ReentryRepository,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -1029,6 +1030,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     "member joined group via direct request-response"
                 );
 
+                // An explicit join lifts a removal, or no automatic path follows it again.
+                ForgottenNamespaces::new(&datastore).clear(&ns_id)?;
+
                 // Resolved after the join has applied, so a joiner that enrolled
                 // as part of it reports the account it actually writes as rather
                 // than the stand-in its key would have derived a moment earlier.
@@ -1544,9 +1548,7 @@ mod tests {
         bundle
     }
 
-    async fn join_with_bundle(
-        bundle: calimero_node_primitives::join_bundle::JoinBundle,
-    ) -> (Store, eyre::Result<JoinGroupResponse>) {
+    fn a_store_with_a_joiner() -> Store {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         let group = ContextGroupId::from(GROUP);
         let joiner_sk = [0xE1; 32];
@@ -1560,7 +1562,50 @@ mod tests {
                 &joiner_sk,
             )
             .expect("hold the joiner's namespace identity");
+        store
+    }
+
+    async fn join_with_bundle(
+        bundle: calimero_node_primitives::join_bundle::JoinBundle,
+    ) -> (Store, eyre::Result<JoinGroupResponse>) {
+        let store = a_store_with_a_joiner();
+        let outcome = join_over(&store, bundle).await;
+        (store, outcome)
+    }
+
+    async fn join_over(
+        store: &Store,
+        bundle: calimero_node_primitives::join_bundle::JoinBundle,
+    ) -> eyre::Result<JoinGroupResponse> {
         let harness = actor::over_answering_joins(store.clone(), Some(bundle)).await;
+        harness
+            .manager
+            .send(JoinGroupRequest {
+                invitation: an_invitation(ContextGroupId::from(GROUP)),
+                group_name: None,
+            })
+            .await
+            .expect("the manager answers")
+    }
+
+    /// A node that removed the namespace follows it again once the user joins it
+    /// by invitation; a join that fails leaves the removal in force.
+    #[actix::test]
+    async fn a_join_lifts_the_removal_only_once_it_succeeds() {
+        let group = ContextGroupId::from(GROUP);
+        let removed = |store: &Store| {
+            ForgottenNamespaces::new(store)
+                .mark(
+                    &group,
+                    Some(calimero_primitives::application::ApplicationId::from(APP)),
+                    1,
+                )
+                .expect("remove the namespace");
+        };
+
+        let refused = a_store_with_a_joiner();
+        removed(&refused);
+        let harness = actor::over_refusing_joins(refused.clone(), "not admitted").await;
         let outcome = harness
             .manager
             .send(JoinGroupRequest {
@@ -1569,7 +1614,28 @@ mod tests {
             })
             .await
             .expect("the manager answers");
-        (store, outcome)
+        assert!(outcome.is_err(), "the join is refused");
+        assert!(
+            ForgottenNamespaces::new(&refused)
+                .is_forgotten(&group)
+                .expect("read"),
+            "a refused join keeps the removal"
+        );
+
+        let joined = a_store_with_a_joiner();
+        removed(&joined);
+        let outcome = join_over(
+            &joined,
+            a_bundle_keyed_by(&PrivateKey::from([0xD3; 32]), &[0xE1; 32]),
+        )
+        .await;
+        assert!(outcome.is_ok(), "the join completes: {outcome:?}");
+        assert!(
+            !ForgottenNamespaces::new(&joined)
+                .is_forgotten(&group)
+                .expect("read"),
+            "the join lifts the removal, or a restart stops following the namespace"
+        );
     }
 
     /// A join every member refused carries the member's reason.
