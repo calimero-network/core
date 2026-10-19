@@ -17,7 +17,7 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_account::PairingOffer;
 use calimero_context_client::group::{PairDeviceInitRequest, PairDeviceInitResponse};
-use calimero_governance_store::NodeDeviceRepository;
+use calimero_governance_store::{ForgottenNamespaces, NodeDeviceRepository};
 use calimero_primitives::identity::PrivateKey;
 use tracing::debug;
 
@@ -50,6 +50,10 @@ impl Handler<PairDeviceInitRequest> for ContextManager {
                 // subscribes and pulls - all three needed before the link lands.
                 let mut identity = None;
                 for namespace_id in &namespaces {
+                    if ForgottenNamespaces::new(&store).is_forgotten(namespace_id)? {
+                        debug!(?namespace_id, "removed from this device; not following");
+                        continue;
+                    }
                     let (sign_pk, sign_sk) = follow(&store, &node_client, namespace_id).await?;
                     _ = identity.get_or_insert((sign_pk, PrivateKey::from(sign_sk)));
                 }
@@ -378,5 +382,35 @@ mod tests {
             .expect("an unlinked row yields to the new pairing");
 
         assert_eq!(devices.account_namespace().expect("read"), Some(theirs));
+    }
+
+    /// A namespace the user removed from this node is left out of a pairing, not a
+    /// reason to refuse it.
+    #[actix::test]
+    async fn a_removed_namespace_is_skipped_rather_than_failing_the_pairing() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        ForgottenNamespaces::new(&store)
+            .mark(&ContextGroupId::from(ONE), None, 1)
+            .expect("remove the namespace");
+        let mut harness = actor::over(store.clone()).await;
+
+        harness
+            .manager
+            .send(PairDeviceInitRequest {
+                namespaces: vec![ONE.into(), TWO.into()],
+                genesis: adopted_account(),
+                account_namespace: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace that remains is enough");
+
+        assert_eq!(
+            NamespaceRepository::new(&store)
+                .participating_namespaces()
+                .expect("read"),
+            vec![ContextGroupId::from(TWO)]
+        );
+        assert_eq!(harness.subscribed(), vec![topic(TWO)]);
     }
 }
