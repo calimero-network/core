@@ -149,6 +149,10 @@ scenarios:
     file: workflows/account-namespace-left-unfollows.yml
     app: scaffolding-e2e
     registry_fetch: "false"
+  - workflow: account-namespace-left-purges
+    file: workflows/account-namespace-left-purges.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   - workflow: account-registry-replicates
     file: workflows/account-registry-replicates.yml
     app: scaffolding-e2e
