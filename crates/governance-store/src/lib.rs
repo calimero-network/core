@@ -1596,6 +1596,21 @@ pub async fn sign_apply_and_publish(
         .await
 }
 
+/// [`sign_apply_and_publish`] for an op peers must receive. See
+/// [`GroupGovernancePublisher::sign_apply_and_publish_required`].
+pub async fn sign_apply_and_publish_required(
+    store: &Store,
+    node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
+    group_id: &ContextGroupId,
+    signer_sk: &PrivateKey,
+    op: GroupOp,
+) -> EyreResult<crate::governance_broadcast::DeliveryReport> {
+    GroupGovernancePublisher::new(store, node_client, *group_id)
+        .sign_apply_and_publish_required(ack_router, signer_sk, op)
+        .await
+}
+
 /// Like [`sign_apply_and_publish`] but attaches a [`KeyRotation`] bundle to
 /// the encrypted `MemberRemoved` op. Generates a new group key, wraps it for
 /// all remaining members, and stores the new key locally.

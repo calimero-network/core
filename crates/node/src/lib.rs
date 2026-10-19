@@ -84,6 +84,8 @@ mod upgrade_trial_e2e;
 #[cfg(test)]
 mod membership_republish_e2e;
 #[cfg(test)]
+mod owner_delete_e2e;
+#[cfg(test)]
 mod sync_responder_e2e;
 /// Feature-ungated (`#[cfg(test)]`-only) in-process node harness shared by
 /// `local_governance_node_e2e` and `cascade_dispatch_e2e`. Contains no mock
