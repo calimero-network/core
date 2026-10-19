@@ -514,6 +514,11 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     // doesn't inherit a stale set of people it refuses to admit.
     ReentryRepository::new(store).clear_all_for_group(group_id)?;
     delete_op_log_and_head(store, group_id)?;
+    store
+        .handle()
+        .delete(&calimero_store::key::GroupOwnerOpCounter::new(
+            group_id.to_bytes(),
+        ))?;
     MetaRepository::new(store).delete(group_id)?;
     Ok(())
 }
@@ -571,8 +576,11 @@ pub fn delete_namespace_local_state(
 
     let mut handle = store.handle();
     handle.delete(&NamespaceGovHead::new(ns_bytes))?;
-    handle.delete(&NamespaceParticipation::new(ns_bytes))?;
+    handle.delete(&calimero_store::key::NamespaceBootstrapInviter::new(
+        ns_bytes,
+    ))?;
     drop(handle);
+    crate::PendingSelfPurgeRepository::new(store).clear(namespace_id)?;
     crate::void_ledger::VoidLedger::new(store, ns_bytes.into()).clear()?;
     crate::nonce_spenders::NonceSpenders::new(store, ns_bytes.into()).clear()?;
 
@@ -591,11 +599,20 @@ pub fn delete_namespace_local_state(
     // What this is, is hygiene: an installation that takes part in nothing should
     // not sit on key material. Scoped to the last departure so it cannot break the
     // namespaces that remain.
-    if NamespaceRepository::new(store)
+    //
+    // A removal the account is still a member after leaves a forgotten marker,
+    // and the device must outlive it: a rejoin on a fresh device is one the
+    // inviter never wrapped a key for.
+    let still_participating = NamespaceRepository::new(store)
         .participating_namespaces()?
-        .is_empty()
-    {
+        .into_iter()
+        .any(|other| other != *namespace_id);
+    if !still_participating && crate::ForgottenNamespaces::new(store).list()?.is_empty() {
         crate::NodeDeviceRepository::new(store).delete()?;
     }
+    // Last, so a failure above leaves the anchor a rerun finds the namespace by.
+    store
+        .handle()
+        .delete(&NamespaceParticipation::new(ns_bytes))?;
     Ok(())
 }
