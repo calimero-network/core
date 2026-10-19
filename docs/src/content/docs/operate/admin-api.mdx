@@ -491,6 +491,7 @@ no stronger than the download path.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/admin-api/identity` | Get this node's account and device identity. Replaced the per-namespace route: identity is node-level, one root to one account to one device. |
+| DELETE | `/admin-api/identity/revoked-from` | Acknowledge that this node's device was revoked, clearing `revokedFrom` from `GET /admin-api/identity`. A no-op when nothing is recorded. |
 | POST | `/admin-api/identity/context` | Generate a new context identity (keypair). |
 | POST | `/admin-api/alias/create/context` | Create an alias for a context. |
 | POST | `/admin-api/alias/create/application` | Create an alias for an application. |

@@ -5030,9 +5030,16 @@ pub struct NodeIdentityApiResponseData {
     pub account_namespace_id: Option<String>,
 
     /// The account that withdrew this node's device, absent on a node no
-    /// revocation has reached.
+    /// revocation has reached or whose operator has acknowledged it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_from: Option<RevokedFromApiEntry>,
+}
+
+/// Acknowledging the withdrawal carries nothing back.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeRevokedFromApiResponse {
+    pub data: Empty,
 }
 
 /// Which account withdrew this node's device, and which device it was.

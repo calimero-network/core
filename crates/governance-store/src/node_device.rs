@@ -514,7 +514,6 @@ impl<'a> NodeDeviceRepository<'a> {
                 root_secret: *secret.as_bytes(),
             },
         )?;
-        self.clear_revoked_from()?;
         Ok(AccountRoot { secret })
     }
 
@@ -640,10 +639,8 @@ impl<'a> NodeDeviceRepository<'a> {
         .into();
 
         let doomed_certificate = calimero_store::key::NodeDeviceCertificate::new();
-        let revoked_from = NodeRevokedFrom::new();
         let mut tx = Transaction::default();
         tx.put(&root_key, root_bytes);
-        tx.delete(&revoked_from);
         if doomed {
             tx.delete(&doomed_key);
             tx.delete(&doomed_certificate);
@@ -905,9 +902,13 @@ impl<'a> NodeDeviceRepository<'a> {
         Ok(())
     }
 
-    /// Forget it: the node has a device or an account of its own again, so the
-    /// question the marker answers has stopped being asked.
-    fn clear_revoked_from(&self) -> EyreResult<()> {
+    /// Forget the withdrawal once the operator has seen it. Nothing else clears
+    /// it: a new device or root does not mean the operator knows why the old one
+    /// went. A no-op when there is nothing recorded.
+    ///
+    /// # Errors
+    /// Propagates the store write failure.
+    pub fn acknowledge_revoked_from(&self) -> EyreResult<()> {
         self.store.handle().delete(&NodeRevokedFrom::new())?;
         Ok(())
     }
@@ -1147,7 +1148,6 @@ impl<'a> NodeDeviceRepository<'a> {
                 kem_secret: *kem_secret.as_bytes(),
             },
         )?;
-        self.clear_revoked_from()?;
 
         Ok(NodeDevice {
             account,
@@ -1535,7 +1535,7 @@ mod tests {
     }
 
     /// The release is silent, so the marker has to outlive the row it released
-    /// and survive until the node pairs again.
+    /// and survive pairing again, until the operator acknowledges it.
     #[test]
     fn a_released_device_leaves_behind_what_revoked_it() {
         let (store, _root_sk, held) = paired_node_holding(0);
@@ -1556,8 +1556,47 @@ mod tests {
             .expect("pair elsewhere");
         assert_eq!(
             repo.revoked_from().expect("read"),
-            None,
-            "pairing again is what answers the question, so the marker goes with it"
+            Some((held.account, held.device())),
+            "pairing again does not tell the operator why the old device went"
+        );
+
+        repo.acknowledge_revoked_from().expect("acknowledge");
+        assert_eq!(repo.revoked_from().expect("read"), None);
+    }
+
+    #[test]
+    fn acknowledging_with_nothing_recorded_is_a_no_op() {
+        let (store, _root_sk, _held) = paired_node_holding(0);
+        let repo = NodeDeviceRepository::new(&store);
+
+        repo.acknowledge_revoked_from().expect("acknowledge");
+        repo.acknowledge_revoked_from().expect("acknowledge again");
+
+        assert_eq!(repo.revoked_from().expect("read"), None);
+    }
+
+    #[test]
+    fn an_imported_root_does_not_acknowledge_the_withdrawal() {
+        let store = test_store_without_account_root();
+        let repo = NodeDeviceRepository::new(&store);
+        let held = repo
+            .adopt_account(AccountGenesis::new(root(0x31)))
+            .expect("adopt");
+        repo.release_revoked_device(held.device()).expect("release");
+
+        let fresh = AccountRoot::from_mnemonic(
+            &NodeDeviceRepository::new(&test_store())
+                .provision_account_root()
+                .expect("generate")
+                .to_mnemonic()
+                .expect("export"),
+        )
+        .expect("import");
+        repo.try_import_account_root(&fresh, false).expect("import");
+
+        assert_eq!(
+            repo.revoked_from().expect("read"),
+            Some((held.account, held.device()))
         );
     }
 
@@ -1579,11 +1618,12 @@ mod tests {
             repo.revoked_from().expect("read"),
             Some((held.account, held.device()))
         );
-        assert!(
-            repo.provision_account_root().is_ok(),
-            "minting a root of its own is the other way out"
+        assert!(repo.provision_account_root().is_ok());
+        assert_eq!(
+            repo.revoked_from().expect("read"),
+            Some((held.account, held.device())),
+            "minting a root of its own does not acknowledge it"
         );
-        assert_eq!(repo.revoked_from().expect("read"), None);
     }
 
     /// A node holding no root has nothing to release into, so the row stays and
