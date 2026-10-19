@@ -11,7 +11,7 @@ auth_mode: embedded
 
 nodes:
   count: 2
-  image: ghcr.io/calimero-network/merod:edge
+  image: merod:local
   prefix: restore-node
 
 steps:
