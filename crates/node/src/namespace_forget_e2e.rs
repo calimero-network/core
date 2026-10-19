@@ -183,7 +183,7 @@ fn a_member_with_a_synced_namespace(store: &Store, namespace: ContextGroupId) {
 
 /// Every key outside [`KEPT`] and the account namespace's own rows that holds one
 /// of `ids` anywhere in it, left and forgotten markers aside.
-fn leftovers(
+pub(crate) fn leftovers(
     store: &Store,
     ids: &[[u8; 32]],
     account_namespace: [u8; 32],
@@ -207,7 +207,7 @@ fn leftovers(
     found
 }
 
-async fn eventually(mut done: impl FnMut() -> bool) -> bool {
+pub(crate) async fn eventually(mut done: impl FnMut() -> bool) -> bool {
     for _ in 0..100 {
         if done() {
             return true;
