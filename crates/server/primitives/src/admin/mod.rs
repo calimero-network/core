@@ -3326,6 +3326,23 @@ impl Validate for JoinGroupApiRequest {
     }
 }
 
+/// Body of `POST namespaces/:id/join`. With no invitation it restores a
+/// namespace this node's user removed while the account stayed a member.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JoinNamespaceApiRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation: Option<SignedGroupOpenInvitation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
+}
+
+impl Validate for JoinNamespaceApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinGroupApiResponse {
@@ -5007,6 +5024,11 @@ pub struct NamespaceApiResponse {
     /// another. Absent when nothing is held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_ops: Option<NamespaceHeldOpsApi>,
+    /// `true` for a namespace this node's user removed from it while the account
+    /// stayed a member, listed only by `for-application`: joining it with no
+    /// invitation restores it. Absent for every namespace held here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forgotten: Option<bool>,
 }
 
 /// The group ops a namespace holds unapplied on this node.

@@ -143,6 +143,7 @@ fn namespaces(store: &Store, app: Option<&ApplicationId>) -> Vec<NamespaceSummar
             member_count: 0,
             context_count: 0,
             subgroup_count: 0,
+            forgotten: false,
         })
         .collect()
 }
@@ -658,6 +659,14 @@ async fn a_bound_key_joins_a_group_this_node_does_not_hold_only_on_a_hint_of_its
             )
             .await;
         assert_ne!(status, StatusCode::FORBIDDEN, "{path} hinting mine: {body}");
+    }
+    // A rejoin names no invitation; it is held to the same rule by the path alone.
+    for namespace in [unknown, node.theirs.namespace] {
+        let path = format!("/namespaces/{}/join", hex::encode(namespace.to_bytes()));
+        let (status, body) = node
+            .call(&token, Method::POST, &path, Some(json!({})))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
     }
     let (status, body) = node
         .call(
