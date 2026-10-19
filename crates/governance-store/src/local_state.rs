@@ -600,14 +600,13 @@ pub fn delete_namespace_local_state(
     // not sit on key material. Scoped to the last departure so it cannot break the
     // namespaces that remain.
     //
-    // A removal the account is still a member after leaves a forgotten marker,
-    // and the device must outlive it: a rejoin on a fresh device is one the
-    // inviter never wrapped a key for.
+    // A forgotten marker keeps the device: a rejoin on a fresh one is a device
+    // the inviter never wrapped a key for.
     let still_participating = NamespaceRepository::new(store)
         .participating_namespaces()?
         .into_iter()
         .any(|other| other != *namespace_id);
-    if !still_participating && crate::ForgottenNamespaces::new(store).list()?.is_empty() {
+    if !still_participating && !crate::ForgottenNamespaces::new(store).any()? {
         crate::NodeDeviceRepository::new(store).delete()?;
     }
     // Last, so a failure above leaves the anchor a rerun finds the namespace by.

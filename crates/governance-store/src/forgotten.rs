@@ -59,6 +59,19 @@ impl<'a> ForgottenNamespaces<'a> {
         Ok(())
     }
 
+    /// Whether any namespace is marked, without decoding the markers.
+    pub fn any(&self) -> EyreResult<bool> {
+        let rows = self.store.raw_scan(
+            calimero_store::db::Column::ContextLocal,
+            &[NAMESPACE_FORGOTTEN_PREFIX],
+            &[NAMESPACE_FORGOTTEN_PREFIX + 1],
+            None,
+        )?;
+        Ok(rows
+            .iter()
+            .any(|(key, _)| key.len() == NAMESPACE_FORGOTTEN_KEY_LEN))
+    }
+
     /// Every removed namespace, in id order.
     pub fn list(&self) -> EyreResult<Vec<ForgottenNamespace>> {
         let prefix = [NAMESPACE_FORGOTTEN_PREFIX];
@@ -112,6 +125,30 @@ mod tests {
 
         forgotten.clear(&ns).unwrap();
         assert!(!forgotten.is_forgotten(&ns).unwrap());
+    }
+
+    #[test]
+    fn any_sees_a_marker_and_ignores_a_left_marker() {
+        let store = test_store();
+        let forgotten = ForgottenNamespaces::new(&store);
+        let context =
+            calimero_primitives::context::ContextId::from([NAMESPACE_FORGOTTEN_PREFIX; 32]);
+        store
+            .handle()
+            .put(
+                &ContextLeftMarker::new(
+                    context,
+                    calimero_primitives::identity::PublicKey::from([0x33; 32]),
+                ),
+                &LeftValue { left_at_ms: 1 },
+            )
+            .unwrap();
+        assert!(!forgotten.any().unwrap());
+
+        forgotten
+            .mark(&ContextGroupId::from(NS_A), None, 2)
+            .unwrap();
+        assert!(forgotten.any().unwrap());
     }
 
     #[test]

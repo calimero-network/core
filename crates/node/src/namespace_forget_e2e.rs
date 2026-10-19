@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::Duration;
 
+use calimero_context::handlers::delete_context::CONTEXT_ROW_COLUMNS;
 use calimero_context::test_support::{enrol, enrol_holder, holder_device_scoped_to};
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
@@ -36,16 +37,6 @@ const MEMBER_SEED: [u8; 32] = [0x22; 32];
 /// The replay ledger outlives a purge on purpose. `ContextLocal` also keeps the
 /// left markers and the forgotten marker; only its 32-byte rows are a context's.
 const KEPT: [Column; 1] = [Column::ContextWarrantNonce];
-
-/// Node-local single-row records keyed by the bare context id.
-const CONTEXT_ROW_COLUMNS: [Column; 6] = [
-    Column::ContextMigrationFailed,
-    Column::ContextExecutingBlob,
-    Column::ContextActivatedBlob,
-    Column::ContextActivatedStateVersion,
-    Column::ContextResyncRequested,
-    Column::ContextLocal,
-];
 
 /// The namespace as a sync leaves it on a member whose admin is someone else:
 /// the group, both members, this node's identity and key, and a context with

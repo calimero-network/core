@@ -229,7 +229,7 @@ pub(crate) fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> e
 
 /// Single-row records keyed by the bare context id; in `ContextLocal` it is the
 /// authored-remaining counter, which a left marker's 64-byte key never matches.
-const CONTEXT_ROW_COLUMNS: [Column; 6] = [
+pub const CONTEXT_ROW_COLUMNS: [Column; 6] = [
     Column::ContextMigrationFailed,
     Column::ContextExecutingBlob,
     Column::ContextActivatedBlob,
