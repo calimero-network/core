@@ -1411,12 +1411,9 @@ pub(crate) mod tests {
         );
         assert!(!held(), "an applied op is no longer listed as held");
     }
-    /// A late key must fold a holder's subgroup create even when the chain behind
-    /// it alternates group and root ops: the join needs the flip and the member
-    /// add, the holder's own group op needs the binding the join records, and the
-    /// create is only judged at its cut once that group op has folded. The live
-    /// rows refuse the create, so a retry that stops after one round of root,
-    /// group, root passes leaves it unfolded.
+    /// A late key must fold a holder's subgroup create even when the chain behind it
+    /// alternates group and root ops: the live rows refuse the create, so it folds only
+    /// if every op is judged after the ops its cut holds, whatever their kind.
     #[test]
     fn a_late_key_folds_a_create_behind_a_chain_of_alternating_ops() {
         use calimero_context_config::MemberCapabilities as Caps;
@@ -1427,8 +1424,7 @@ pub(crate) mod tests {
         let owner_sk = PrivateKey::from([0x71; 32]);
         let holder_sk = PrivateKey::from([0x75; 32]);
         let owner = crate::test_support::enrol(&store, &ns, &owner_sk.public_key());
-        // A member row with no binding: the holder's sealed join records it.
-        let holder = crate::test_support::account_for(&holder_sk.public_key());
+        let holder = crate::test_support::enrol(&store, &ns, &holder_sk.public_key());
         MetaRepository::new(&store).save(&ns, &meta(owner)).unwrap();
         CapabilitiesRepository::new(&store)
             .set_default_capabilities(&ns, Caps::CAN_JOIN_OPEN_SUBGROUPS.bits())
@@ -1454,10 +1450,12 @@ pub(crate) mod tests {
             .unwrap();
         // The cut names the owner as a member through this join.
         let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
+        // An open join records no device, so the holder's arrives by an admitted join first.
+        let holder_joined = land_mallory_join(&store, ns, &owner_sk, &holder_sk);
         let sub_created = SignedNamespaceOp::sign(
             &owner_sk,
             namespace_id.into(),
-            vec![owner_joined],
+            vec![owner_joined, holder_joined],
             2,
             NamespaceOp::Root(RootOp::GroupCreated {
                 admin: owner,
@@ -1468,7 +1466,12 @@ pub(crate) mod tests {
             }),
         )
         .unwrap();
-        land(&store, namespace_id, &sub_created, &[owner_joined]);
+        land(
+            &store,
+            namespace_id,
+            &sub_created,
+            &[owner_joined, holder_joined],
+        );
         let sub_created_id = sub_created.content_hash().unwrap();
 
         let ns_key = [0x6Au8; 32];
@@ -1534,7 +1537,7 @@ pub(crate) mod tests {
         );
         let join = root_op(
             &holder_sk,
-            1,
+            2,
             flip.content_hash().unwrap(),
             RootOp::MemberJoinedOpen {
                 member: holder,
@@ -1545,7 +1548,7 @@ pub(crate) mod tests {
         let follow = group_op(
             &holder_sk,
             ns,
-            2,
+            3,
             join.content_hash().unwrap(),
             GroupOp::MemberSetAutoFollow {
                 target: holder,
@@ -1562,7 +1565,7 @@ pub(crate) mod tests {
         ));
         let create = root_op(
             &holder_sk,
-            3,
+            4,
             follow.content_hash().unwrap(),
             RootOp::GroupCreated {
                 admin: holder,
