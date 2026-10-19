@@ -156,6 +156,20 @@ impl<'a> VoidLedger<'a> {
         Ok(true)
     }
 
+    /// How many parked ops no replay has judged yet.
+    #[cfg(test)]
+    pub(crate) fn undecided_parked(&self) -> EyreResult<usize> {
+        let rows = self.parked_rows(self.parked_scope(), usize::MAX)?;
+        let handle = self.store.handle();
+        let mut undecided = 0;
+        for row in rows {
+            if let Some(data) = handle.get(&row)? {
+                undecided += usize::from(AsRef::<[u8]>::as_ref(&data) != [REFUSED]);
+            }
+        }
+        Ok(undecided)
+    }
+
     pub(crate) fn parked(&self, op: [u8; 32]) -> EyreResult<Option<Parked>> {
         let handle = self.store.handle();
         let Some(data) = handle.get(&self.parked_key(op))? else {
@@ -189,7 +203,7 @@ impl<'a> VoidLedger<'a> {
         drop(handle);
         let scope = self.parked_scope();
         loop {
-            let rows = self.parked_rows(scope)?;
+            let rows = self.parked_rows(scope, DELETE_BATCH)?;
             if rows.is_empty() {
                 return Ok(());
             }
@@ -200,9 +214,9 @@ impl<'a> VoidLedger<'a> {
         }
     }
 
-    /// Up to [`DELETE_BATCH`] parked rows under `scope`. Read as raw keys, since the
+    /// Up to `limit` parked rows under `scope`. Read as raw keys, since the
     /// typed iterator needs a key error type `Generic` does not have.
-    fn parked_rows(&self, scope: [u8; 16]) -> EyreResult<Vec<GenericKey>> {
+    fn parked_rows(&self, scope: [u8; 16], limit: usize) -> EyreResult<Vec<GenericKey>> {
         let handle = self.store.handle();
         let mut iter = handle.iter::<GenericKey>()?;
         let mut start = [0; 48];
@@ -212,7 +226,7 @@ impl<'a> VoidLedger<'a> {
             .and_then(|key| parked_row(scope, key.as_ref()));
         while let Some(row) = next {
             rows.push(row);
-            if rows.len() == DELETE_BATCH {
+            if rows.len() == limit {
                 break;
             }
             next = DBIter::next(&mut iter)?.and_then(|key| parked_row(scope, key.as_ref()));
@@ -367,6 +381,22 @@ mod tests {
         assert_eq!(left.parked([7; 32]).unwrap(), None);
         assert_eq!(left.parked([8; 32]).unwrap(), None);
         assert_eq!(kept.parked([7; 32]).unwrap(), Some(Parked::Undecided));
+    }
+
+    #[test]
+    fn undecided_parked_counts_the_unjudged_ops_of_one_namespace() {
+        let store = test_store();
+        let ledger = VoidLedger::new(&store, NamespaceId::from([1u8; 32]));
+        let other = VoidLedger::new(&store, NamespaceId::from([2u8; 32]));
+        for op in [[1; 32], [2; 32], [3; 32]] {
+            ledger.note_parked(op).unwrap();
+        }
+        other.note_parked([9; 32]).unwrap();
+        assert_eq!(ledger.undecided_parked().unwrap(), 3);
+
+        assert!(ledger.settle_parked([1; 32], true).unwrap());
+        assert!(ledger.settle_parked([2; 32], false).unwrap());
+        assert_eq!(ledger.undecided_parked().unwrap(), 1);
     }
 
     #[test]

@@ -132,6 +132,7 @@ mod tests {
             namespace_id: namespace_id.into(),
             bytecode_id: [0x11; 32].into(),
             target_application_id: ApplicationId::from([0x22; 32]),
+            target_release: None,
             created_at: 1_700_000_000,
             name: None,
             member_count: 1,

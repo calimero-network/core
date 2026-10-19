@@ -7375,6 +7375,84 @@ fn groups_awaiting_key_reports_then_clears() {
     assert!(awaiting.is_empty());
 }
 
+/// A sealed root op names its key in the clear, so a node holding only a later
+/// key still awaits it; after a rotation no group op names the older key.
+#[test]
+fn sealed_root_ops_name_the_key_the_node_awaits() {
+    use calimero_context_client::local_governance::{
+        EncryptedRootOp, NamespaceOp, SignedNamespaceOp,
+    };
+    use calimero_governance_types::EncryptedRelayedOp;
+
+    let store = test_store();
+    let signer_sk = PrivateKey::from([0x41u8; 32]);
+    let namespace_id = [0xD6u8; 32];
+    let subgroup_id = [0xD7u8; 32];
+    let sealed_key = [0xAB; 32];
+    let sealed_key_id = GroupKeyring::key_id_for(&sealed_key);
+    let log = NamespaceOpLogService::new(&store, namespace_id.into());
+
+    let root_sealed = NamespaceOp::RootSealed {
+        key_id: sealed_key_id.into(),
+        encrypted: EncryptedRootOp {
+            nonce: [0; 12],
+            ciphertext: vec![0],
+        },
+    };
+    let relay_sealed = NamespaceOp::RootRelaySealed {
+        key_id: sealed_key_id.into(),
+        encrypted: EncryptedRelayedOp {
+            nonce: [0; 12],
+            ciphertext: vec![0],
+        },
+    };
+    let subgroup_sealed = NamespaceOp::RootSealedForGroup {
+        group_id: subgroup_id.into(),
+        key_id: sealed_key_id.into(),
+        encrypted: EncryptedRootOp {
+            nonce: [0; 12],
+            ciphertext: vec![0],
+        },
+    };
+    for (nonce, op) in [root_sealed, relay_sealed, subgroup_sealed]
+        .into_iter()
+        .enumerate()
+    {
+        let signed = SignedNamespaceOp::sign(
+            &signer_sk,
+            namespace_id.into(),
+            vec![],
+            nonce as u64 + 1,
+            op,
+        )
+        .unwrap();
+        log.store_signed_operation(&signed).unwrap();
+    }
+
+    let mut want = vec![(namespace_id, sealed_key_id), (subgroup_id, sealed_key_id)];
+    want.sort();
+    assert_eq!(
+        namespace_group_keys_awaiting(&store, namespace_id.into()).unwrap(),
+        want
+    );
+
+    GroupKeyring::new(&store, ContextGroupId::from(namespace_id))
+        .store_key(&sealed_key)
+        .unwrap();
+    GroupKeyring::new(&store, ContextGroupId::from(subgroup_id))
+        .store_key(&sealed_key)
+        .unwrap();
+    assert!(namespace_group_keys_awaiting(&store, namespace_id.into())
+        .unwrap()
+        .is_empty());
+    let mut held = vec![namespace_id, subgroup_id];
+    held.sort();
+    assert_eq!(
+        namespace_groups_with_held_key_buffered_ops(&store, namespace_id.into()).unwrap(),
+        held
+    );
+}
+
 /// #3295: `groups_member_but_keyless` reports a group the node is a member of
 /// but holds no key for — even with NO buffered op (the op-driven
 /// `groups_awaiting_key` would miss it) — and clears once the key is stored.

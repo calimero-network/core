@@ -22,7 +22,8 @@
 
 use core::time::Duration;
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::io::{Result as IoResult, Write};
+use std::sync::{Arc, Mutex};
 
 use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, NetworkConfig, RelayConfig,
@@ -30,15 +31,20 @@ use calimero_network_primitives::config::{
 };
 use calimero_network_primitives::messages::{NetworkEvent, NetworkEventDispatcher};
 use futures_util::StreamExt;
+use libp2p::gossipsub::{IdentTopic, Message as GossipMessage, MessageId};
 use libp2p::identity::Keypair;
+use libp2p::kad::store::RecordStore as _;
+use libp2p::kad::{Event as KadEvent, InboundRequest, Record, RecordKey};
 use libp2p::rendezvous::client::Event as RzClientEvent;
 use libp2p::rendezvous::{server as rz_server, Cookie, ErrorCode, Namespace};
-use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::{gossipsub, identify, noise, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
 use prometheus_client::registry::Registry;
 use tokio::time::timeout;
 
 use crate::behaviour::{Behaviour, BehaviourEvent};
+use crate::blob_provider_record::BlobProviderRecord;
+use crate::handlers::stream::swarm::kad::MAX_RECORDS_PER_SOURCE;
 use crate::NetworkManager;
 
 struct NoopDispatcher;
@@ -694,4 +700,123 @@ async fn a_dial_names_the_peer_so_a_second_one_is_recognised_as_a_duplicate() {
         ),
         "a second dial while one is in flight must not start another"
     );
+}
+
+/// A signed provider announcement under the 64-byte key `index` pads out.
+fn provider_record(index: u16) -> Record {
+    let mut key = vec![0u8; 64];
+    key[..2].copy_from_slice(&index.to_be_bytes());
+    let value = BlobProviderRecord::signed_value(&key, &Keypair::generate_ed25519(), 4096)
+        .expect("a signed value");
+    Record::new(RecordKey::new(&key), value)
+}
+
+/// Hands `record` to the manager as `source` replicating it to this node.
+fn replicate(manager: &mut NetworkManager, source: PeerId, record: Record) -> RecordKey {
+    let key = record.key.clone();
+    manager.dispatch_behaviour_event(BehaviourEvent::Kad(KadEvent::InboundRequest {
+        request: InboundRequest::PutRecord {
+            source,
+            connection: ConnectionId::new_unchecked(0),
+            record: Some(record),
+        },
+    }));
+    key
+}
+
+fn kad_stores(manager: &mut NetworkManager, key: &RecordKey) -> bool {
+    manager
+        .swarm
+        .behaviour_mut()
+        .kad
+        .store_mut()
+        .get(key)
+        .is_some()
+}
+
+/// One peer's replicated records stop being stored once it holds its share,
+/// while another peer's are still taken.
+#[tokio::test]
+async fn one_peer_cannot_fill_the_record_store_by_replicating_to_it() {
+    let mut manager = build_manager().await;
+    let (greedy, other) = (PeerId::random(), PeerId::random());
+
+    let within_share: Vec<_> = (0..MAX_RECORDS_PER_SOURCE as u16)
+        .map(|index| replicate(&mut manager, greedy, provider_record(index)))
+        .collect();
+    let beyond_share = replicate(&mut manager, greedy, provider_record(u16::MAX));
+    let from_other = replicate(&mut manager, other, provider_record(u16::MAX - 1));
+
+    assert!(within_share.iter().all(|key| kad_stores(&mut manager, key)));
+    assert!(!kad_stores(&mut manager, &beyond_share));
+    assert!(kad_stores(&mut manager, &from_other));
+}
+
+#[tokio::test]
+async fn a_replicated_record_that_is_not_a_signed_announcement_is_not_stored() {
+    let mut manager = build_manager().await;
+    let source = PeerId::random();
+
+    let unsigned = replicate(
+        &mut manager,
+        source,
+        Record::new(RecordKey::new(&[7u8; 64]), vec![1, 2, 3]),
+    );
+    let signed = replicate(&mut manager, source, provider_record(1));
+
+    assert!(!kad_stores(&mut manager, &unsigned));
+    assert!(kad_stores(&mut manager, &signed));
+}
+
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
+        self.0.lock().expect("log buffer").write(buf)
+    }
+
+    fn flush(&mut self) -> IoResult<()> {
+        Ok(())
+    }
+}
+
+/// What the manager logs, at debug level, while it handles `event`.
+fn logged_while_handling(manager: &mut NetworkManager, event: BehaviourEvent) -> String {
+    let buffer = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&buffer);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer(move || LogCapture(Arc::clone(&sink)))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || manager.dispatch_behaviour_event(event));
+    let bytes = buffer.lock().expect("log buffer").clone();
+    String::from_utf8(bytes).expect("utf-8 logs")
+}
+
+#[tokio::test]
+async fn a_received_gossip_message_is_logged_without_its_payload() {
+    let mut manager = build_manager().await;
+    let payload = vec![0xC0, 0xFF, 0xEE, 0xAB];
+
+    let logs = logged_while_handling(
+        &mut manager,
+        BehaviourEvent::Gossipsub(gossipsub::Event::Message {
+            propagation_source: PeerId::random(),
+            message_id: MessageId::new(b"message"),
+            message: GossipMessage {
+                source: Some(PeerId::random()),
+                data: payload,
+                sequence_number: None,
+                topic: IdentTopic::new("topic").hash(),
+            },
+        }),
+    );
+
+    assert!(
+        logs.contains("payload_len=4"),
+        "the delivery is logged: {logs}"
+    );
+    assert!(!logs.contains("192, 255, 238, 171"), "{logs}");
+    assert!(!logs.to_ascii_lowercase().contains("c0ffeeab"), "{logs}");
 }

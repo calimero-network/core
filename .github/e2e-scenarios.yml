@@ -40,6 +40,13 @@ scenarios:
   - workflow: delegated-session
     file: workflows/delegated-session.yml
     app: scaffolding-e2e
+  # Direct admission on an embedded-auth node: a joiner with no credential is
+  # answered by the admit handler, not the auth guard. Governance only: no
+  # context is created or joined, so the registry is never asked.
+  - workflow: admit-without-credential
+    file: workflows/admit-without-credential.yml
+    app: scaffolding-e2e
+    registry_fetch: "false"
   # The other half of the architecture: no session and no token at all,
   # just a signature on each request. Verified by unit tests and by a
   # byte fixture three implementations agree on, but until this nothing
@@ -154,6 +161,9 @@ scenarios:
     file: workflows/account-namespace-learned-after-pairing.yml
     app: scaffolding-e2e
     registry_fetch: "false"
+  - workflow: account-paired-device-joins-restricted-subgroup
+    file: workflows/account-paired-device-joins-restricted-subgroup.yml
+    app: scaffolding-e2e
   - workflow: account-root-backup-restore
     file: workflows/account-root-backup-restore.yml
     app: scaffolding-e2e

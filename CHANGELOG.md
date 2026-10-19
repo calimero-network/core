@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A refused join says which refusal it was.** `POST /namespaces/{id}/join`
+  and `POST /groups/join` answer a refusal with a `code` beside `error`:
+  `invitation_expired`, `invitation_invalid`, `invitation_already_used`,
+  `removed_from_group`, `reentry_blocked`, `join_refused_by_member`,
+  `no_admitter_reached` or `no_member_reachable`. Several share a status, and
+  apps told every one of them "you can't join with this invitation". A join
+  every answering member refused is now a `503` that quotes the member's reason,
+  not the `504` "could not reach any member" it was answered as before.
+
 - **A node's operator can trust more origins for login callbacks.**
   `trusted_callback_origins` under `[server.embedded_auth.development]` lists
   app origins the node's sign-in page may hand a new token pair to, besides its
@@ -512,6 +521,14 @@
 
 ### Fixed
 
+- **A device link racing a target-application change binds the same way on
+  every replica.** An `AccountDeviceLinked` scoped to some applications is
+  judged against every application the group may have targeted at the link's
+  cut, read from its ancestry, instead of the group's live target. Before, a
+  replica that folded a concurrent `TargetApplicationSet` ahead of the link
+  refused a link another replica bound, and nothing reconciled them.
+  (breaking: namespace ops move to schema 26, so SDKs must sign at 26)
+  (#4603)
 - **A member added to a subgroup while its key recovery is replaying is no
   longer left out.** Once a group's key recovery ends, the node replays that
   group's held ops again, so an add or capability change that arrived by

@@ -2416,7 +2416,10 @@ pub struct SignedNamespaceOp {
 /// and a link's endorser and a descope's signer are named at the op's cut.
 ///
 /// v26: verdicts are reached at the op's cut, and `NamespaceOp::Group` carries the
-/// context id it registers in the clear (`registers`), a layout change.
+/// context id it registers in the clear (`registers`), a layout change. In the same
+/// release, an `AccountDeviceLinked` scope is judged against every application the
+/// group may have targeted at the link's cut, read from its ancestry, not the live
+/// target (core#4603).
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
 
 /// The first schema whose apply refuses owner-level ops that carry no root

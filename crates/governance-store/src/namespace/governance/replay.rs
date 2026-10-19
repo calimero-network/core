@@ -54,18 +54,30 @@ impl NamespaceGovernance<'_> {
             );
             return Ok(Replay::default());
         }
-        // What was folded before the key arrived shows these ops unreadable.
-        self.authorizer.forget();
+        let mut replay = Replay::default();
+        let outcome = self.replay_rounds(target, depth, &mut replay);
+        // A key that arrives late replays ops that may include a removal, or ops a
+        // removal voids; what they wrote is rebuilt once, even if a later round failed.
+        let rebuilt = if replay.applied > 0 {
+            self.reconcile_voided(None)
+        } else {
+            Ok(())
+        };
+        outcome.and(rebuilt).map(|()| replay)
+    }
+
+    fn replay_rounds(&self, target: [u8; 32], depth: u8, replay: &mut Replay) -> EyreResult<()> {
         let ns = self.namespace_id.to_bytes();
         let retry = NamespaceRetryService::new(self.store, self.namespace_id);
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
 
-        let mut replay = Replay::default();
         let mut opened = BTreeSet::from([target]);
         let mut seen: HashSet<[u8; 32]> = HashSet::new();
         let mut settled: HashSet<[u8; 32]> = HashSet::new();
         let mut landed_last_round = false;
         loop {
+            // What was folded before the key arrived, or a round ago, is stale now.
+            self.authorizer.forget();
             let mut groups = opened.clone();
             groups.extend(
                 HeldOps::new(self.store, self.namespace_id)
@@ -95,11 +107,9 @@ impl NamespaceGovernance<'_> {
                 let id = candidate.id()?;
                 let step = match &candidate {
                     ReplayCandidate::Root { signed_op, key } => {
-                        self.replay_root(signed_op, key, depth, &mut replay)?
+                        self.replay_root(signed_op, key, depth, replay)?
                     }
-                    ReplayCandidate::Group(candidate) => {
-                        self.replay_group(candidate, &mut replay)?
-                    }
+                    ReplayCandidate::Group(candidate) => self.replay_group(candidate, replay)?,
                 };
                 if step.settled {
                     let _ = settled.insert(id);
@@ -114,12 +124,7 @@ impl NamespaceGovernance<'_> {
         if seen.is_empty() {
             record_namespace_retry_event("none");
         }
-        // A key that arrives late replays ops that may include a removal, or ops a
-        // removal voids; what they wrote is rebuilt once, after all of them.
-        if replay.applied > 0 {
-            self.reconcile_voided(None)?;
-        }
-        Ok(replay)
+        Ok(())
     }
 
     /// Replay a sealed root op `key` opens, running what its arrival would have run.

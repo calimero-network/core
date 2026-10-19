@@ -88,19 +88,27 @@ pub enum ContextError {
     /// offline), or one answered that the invitation does not name as an
     /// admitter. Both are retryable once an admitter is reachable, which is why
     /// neither is the generic `500` it used to be.
+    ///
+    /// A third reads differently again: a member answered and refused, and said
+    /// why. That reason is carried, because without it the joiner is told to
+    /// wait for the inviter to come online when someone already said no.
     #[error(
         "join could not be endorsed: {}",
-        if *reached_a_peer {
-            "the peer that answered is not an admitter named by this invitation; retry \
-             once one of the invitation's admitters is online"
-        } else {
-            "could not reach any member of this namespace to complete the join; make sure \
-             the inviting node is online and retry"
+        match refusal {
+            Some(reason) => format!("a member of this namespace refused it: {reason}"),
+            None if *reached_a_peer => "the peer that answered is not an admitter named by \
+                 this invitation; retry once one of the invitation's admitters is online"
+                .to_owned(),
+            None => "could not reach any member of this namespace to complete the join; \
+                 make sure the inviting node is online and retry"
+                .to_owned(),
         }
     )]
     JoinNotEndorsed {
         /// Whether any peer answered the join request.
         reached_a_peer: bool,
+        /// What a refusing member said, when every peer that answered refused.
+        refusal: Option<String>,
     },
 
     #[error("node is not a member of group '{group_id}'")]
