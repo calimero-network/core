@@ -8,7 +8,7 @@ use calimero_governance_store::MetaRepository;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_store::Store;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// `true` when a group-upgrade status blocks ALL writes (user calls and
 /// state-ops alike): only `GroupUpgradeStatus::InProgress` blocks. Both
@@ -63,6 +63,26 @@ pub(super) enum LazyUpgradeAction {
     Replay { bound: [u8; 32] },
 }
 
+/// What a lazy upgrade did to its context. A ladder walk that committed a hop
+/// before failing is `Failed`: the context moved, but not to the target.
+#[derive(Debug)]
+pub(super) enum UpgradeOutcome {
+    Advanced,
+    Unchanged,
+    Failed(eyre::Report),
+}
+
+impl UpgradeOutcome {
+    /// How a ladder walk ended, given whether it committed a hop and why it stopped.
+    pub(super) fn of_walk(advanced: bool, failure: Option<eyre::Report>) -> Self {
+        match (advanced, failure) {
+            (_, Some(err)) => Self::Failed(err),
+            (true, None) => Self::Advanced,
+            (false, None) => Self::Unchanged,
+        }
+    }
+}
+
 /// Whether this context needs an upgrade or migration, and via which mode.
 /// Caller loads bytecode by blob key, not app id - the application row may still hold OLD wasm.
 pub(super) fn maybe_lazy_upgrade(
@@ -111,13 +131,13 @@ pub(super) fn maybe_lazy_upgrade(
         // Fall through: activation (migration and/or bytecode swap) pending.
     }
 
-    info!(
+    debug!(
         %context_id,
         ?group_id,
         %current_application_id,
         target_app=%meta.target.application_id,
         marker = activated.is_some(),
-        "lazy upgrade triggered for context"
+        "lazy upgrade pending for context"
     );
 
     Some(match activated {
@@ -561,5 +581,23 @@ mod tests {
             coords.as_ref().map(|c| (&*c.package, &*c.version)),
             Some(("com.acme.app", "2.0.0"))
         );
+    }
+
+    /// A walk that committed a hop and then stopped on a failure has not reached
+    /// the target, so it reports the failure; only a clean walk counts as moved.
+    #[test]
+    fn a_walk_that_fails_after_a_hop_is_a_failure() {
+        assert!(matches!(
+            UpgradeOutcome::of_walk(true, Some(eyre::eyre!("second hop failed"))),
+            UpgradeOutcome::Failed(_)
+        ));
+        assert!(matches!(
+            UpgradeOutcome::of_walk(true, None),
+            UpgradeOutcome::Advanced
+        ));
+        assert!(matches!(
+            UpgradeOutcome::of_walk(false, None),
+            UpgradeOutcome::Unchanged
+        ));
     }
 }

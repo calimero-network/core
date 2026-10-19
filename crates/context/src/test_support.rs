@@ -1104,7 +1104,9 @@ pub(crate) mod actor {
     use calimero_network_primitives::client::NetworkClient;
     use calimero_network_primitives::messages::{MessageId, NetworkMessage};
     use calimero_node_primitives::client::NodeClient;
-    use calimero_node_primitives::test_fixtures::node_client_over;
+    use calimero_node_primitives::messages::NodeMessage;
+    use calimero_node_primitives::test_fixtures::{node_client_over, node_client_switching_over};
+    use calimero_primitives::context::ContextId;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
     use tempfile::TempDir;
@@ -1184,6 +1186,34 @@ pub(crate) mod actor {
         }
     }
 
+    /// Records each absorbed-delta replay asked of the node and answers it. Any
+    /// other message is held unanswered, as an unbound recipient would hold it.
+    struct StubNodeManager {
+        drains: UnboundedSender<ContextId>,
+        held: Vec<NodeMessage>,
+    }
+
+    impl Actor for StubNodeManager {
+        type Context = Context<Self>;
+    }
+
+    impl Handler<NodeMessage> for StubNodeManager {
+        type Result = ();
+
+        fn handle(&mut self, msg: NodeMessage, _ctx: &mut Self::Context) {
+            match msg {
+                NodeMessage::DrainAbsorbed {
+                    context_id,
+                    outcome,
+                } => {
+                    let _ignored = self.drains.send(context_id);
+                    let _ignored = outcome.send(());
+                }
+                other => self.held.push(other),
+            }
+        }
+    }
+
     /// A started `ContextManager`, and a client routed to it for the paths that
     /// are plain functions. Seed the store, drive the path, then assert on the
     /// rows it wrote.
@@ -1194,10 +1224,12 @@ pub(crate) mod actor {
         subscribed: UnboundedReceiver<String>,
         unsubscribed: UnboundedReceiver<String>,
         broadcast: UnboundedReceiver<String>,
+        drains: UnboundedReceiver<ContextId>,
         live: Arc<Mutex<BTreeSet<String>>>,
         // The blob filesystem and the node's data root outlive the manager.
         _dirs: (TempDir, TempDir),
         _network: Addr<StubNetwork>,
+        _node_manager: Addr<StubNodeManager>,
     }
 
     impl Harness {
@@ -1245,10 +1277,16 @@ pub(crate) mod actor {
         pub(crate) fn broadcast_topics(&mut self) -> Vec<String> {
             drain(&mut self.broadcast)
         }
+
+        /// Every context an absorbed-delta replay was asked for, on an
+        /// [`over_switching`] harness. Drains.
+        pub(crate) fn drains(&mut self) -> Vec<ContextId> {
+            drain(&mut self.drains)
+        }
     }
 
     /// Everything a recorder holds, in the order it arrived.
-    fn drain(rx: &mut UnboundedReceiver<String>) -> Vec<String> {
+    fn drain<T>(rx: &mut UnboundedReceiver<T>) -> Vec<T> {
         let mut topics = Vec::new();
         while let Ok(topic) = rx.try_recv() {
             topics.push(topic);
@@ -1269,7 +1307,7 @@ pub(crate) mod actor {
         topic: String,
     ) -> (Harness, Arc<Semaphore>) {
         let gate = Arc::new(Semaphore::new(0));
-        let harness = build(store, None, None, Some((topic, Arc::clone(&gate)))).await;
+        let harness = build(store, None, None, Some((topic, Arc::clone(&gate))), false).await;
         (harness, gate)
     }
 
@@ -1283,7 +1321,7 @@ pub(crate) mod actor {
         store: Store,
         bundle: Option<calimero_node_primitives::join_bundle::JoinBundle>,
     ) -> Harness {
-        build(store, bundle.map(Ok), None, None).await
+        build(store, bundle.map(Ok), None, None, false).await
     }
 
     /// [`over`], with every peer asked refusing the join for `reason`.
@@ -1292,7 +1330,7 @@ pub(crate) mod actor {
             reason: reason.to_owned(),
             refusers: 1,
         };
-        build(store, Some(Err(refused)), None, None).await
+        build(store, Some(Err(refused)), None, None, false).await
     }
 
     /// [`over`], with full-text search turned on.
@@ -1300,7 +1338,13 @@ pub(crate) mod actor {
         store: Store,
         search: std::sync::Arc<calimero_search::SearchService>,
     ) -> Harness {
-        build(store, None, Some(search), None).await
+        build(store, None, Some(search), None, false).await
+    }
+
+    /// [`over`], on a node that can switch a context's release, recording the
+    /// absorbed-delta replays it is asked for.
+    pub(crate) async fn over_switching(store: Store) -> Harness {
+        build(store, None, None, None, true).await
     }
 
     async fn build(
@@ -1313,6 +1357,7 @@ pub(crate) mod actor {
         >,
         search: Option<std::sync::Arc<calimero_search::SearchService>>,
         held: Option<(String, Arc<Semaphore>)>,
+        switching: bool,
     ) -> Harness {
         let (subscribed_tx, subscribed) = unbounded_channel();
         let (unsubscribed_tx, unsubscribed) = unbounded_channel();
@@ -1332,6 +1377,17 @@ pub(crate) mod actor {
             }
         });
 
+        let (drains_tx, drains) = unbounded_channel();
+        let node_manager = LazyRecipient::<NodeMessage>::new();
+        let recipient = node_manager.clone();
+        let stub_node_manager = StubNodeManager::create(move |ctx| {
+            assert!(recipient.init(ctx), "node manager recipient init");
+            StubNodeManager {
+                drains: drains_tx,
+                held: Vec::new(),
+            }
+        });
+
         let (node_client, data_dir, blob_dir) = match joins {
             Some(answer) => {
                 calimero_node_primitives::test_fixtures::node_client_over_join_answer(
@@ -1340,6 +1396,10 @@ pub(crate) mod actor {
                     answer,
                 )
                 .await
+            }
+            None if switching => {
+                node_client_switching_over(store.clone(), NetworkClient::new(network), node_manager)
+                    .await
             }
             None => node_client_over(store.clone(), NetworkClient::new(network)).await,
         };
@@ -1367,9 +1427,11 @@ pub(crate) mod actor {
             subscribed,
             unsubscribed,
             broadcast,
+            drains,
             live,
             _dirs: (data_dir, blob_dir),
             _network: stub,
+            _node_manager: stub_node_manager,
         }
     }
 }
