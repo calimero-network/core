@@ -43,16 +43,16 @@ use crate::group::{
     ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, MigrationStatus,
     NamespaceParticipation, NamespaceSummary, PairDeviceCompleteRequest, PairDeviceInitRequest,
-    RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest, ResyncContextRequest,
-    ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest, RotateGroupKeyRequest,
-    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
-    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, SetTeeAuthoringPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    SyncGroupResponse, TrialUpgradeRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
-    UpgradeGroupResponse,
+    RejoinNamespaceRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
+    ResyncContextRequest, ResyncContextResponse, RetryGroupUpgradeRequest, RevokeDeviceRequest,
+    RotateGroupKeyRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    SetTeeAuthoringPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
+    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, SyncGroupResponse, TrialUpgradeRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -1938,6 +1938,12 @@ impl ContextClient {
         DeleteNamespace,
         DeleteNamespaceRequest,
         eyre::Result<DeleteNamespaceResponse>
+    );
+    forward_to_actor!(
+        rejoin_namespace,
+        RejoinNamespace,
+        RejoinNamespaceRequest,
+        eyre::Result<JoinGroupResponse>
     );
     forward_to_actor!(
         add_group_members,

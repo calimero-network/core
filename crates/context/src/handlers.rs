@@ -52,6 +52,7 @@ pub mod pair_device_complete;
 pub mod pair_device_init;
 pub mod precompile_application;
 pub mod purge_namespace;
+pub mod rejoin_namespace;
 pub mod relay_signed_join;
 pub mod relink_device;
 pub mod remove_group_members;
@@ -118,6 +119,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::DeleteNamespace { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::RejoinNamespace { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::AddGroupMembers { request, outcome } => {

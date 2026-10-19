@@ -1208,19 +1208,21 @@ pub(crate) mod actor {
                         .filter(|(held, _)| *held == topic)
                         .map(|(_, gate)| Arc::clone(gate));
                     let live = Arc::clone(&self.live);
-                    let answer = move || {
+                    let answer = move |accepted: bool| {
+                        if !accepted {
+                            let _ignored =
+                                outcome.send(Err(eyre::eyre!("the swarm refused {topic}")));
+                            return;
+                        }
                         let _ = live.lock().expect("live topics").insert(topic);
                         let _ignored = outcome.send(Ok(request.0));
                     };
                     match gate {
-                        None => answer(),
+                        None => answer(true),
                         Some(gate) => {
+                            // A closed gate refuses the subscribe instead of answering it.
                             let held = async move {
-                                gate.acquire()
-                                    .await
-                                    .expect("the gate is never closed")
-                                    .forget();
-                                answer();
+                                answer(gate.acquire().await.map(|permit| permit.forget()).is_ok());
                             };
                             let _handle = ctx.spawn(actix::fut::wrap_future(held));
                         }
