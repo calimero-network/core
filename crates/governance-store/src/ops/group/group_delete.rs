@@ -3,7 +3,7 @@
 
 use super::context::GroupApplyCtx;
 use crate::{
-    delete_group_local_rows, MembershipError, MetaError, MetaRepository, MetadataRepository,
+    delete_group_and_parent_edge, MembershipError, MetaError, MetaRepository, NamespaceRepository,
 };
 use eyre::{bail, Result as EyreResult};
 
@@ -25,9 +25,14 @@ pub(crate) fn apply(ctx: &mut GroupApplyCtx<'_>) -> EyreResult<()> {
             group_id.to_bytes()
         )));
     }
-    if MetadataRepository::new(store).count_contexts(group_id)? > 0 {
+    // A context anywhere below would be left in a group nobody can reach, so the
+    // whole subtree must be empty; its groups then go with it, children first.
+    let subtree = NamespaceRepository::new(store).collect_subtree_for_cascade(group_id)?;
+    if !subtree.contexts.is_empty() {
         bail!(MetaError::HasRegisteredContexts);
     }
-    delete_group_local_rows(store, group_id)?;
+    for group in subtree.descendant_groups.iter().chain([group_id]) {
+        delete_group_and_parent_edge(store, group)?;
+    }
     Ok(())
 }

@@ -83,16 +83,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                         &ctx,
                     )?;
                 }
-                let parent_for_cleanup = NamespaceRepository::new(&self.datastore).parent(&gid)?;
-                calimero_governance_store::delete_group_local_rows(&self.datastore, &gid)?;
-                if let Some(parent) = parent_for_cleanup {
-                    let mut handle = self.datastore.handle();
-                    handle.delete(&calimero_store::key::GroupParentRef::new(gid.to_bytes()))?;
-                    handle.delete(&calimero_store::key::GroupChildIndex::new(
-                        parent.to_bytes(),
-                        gid.to_bytes(),
-                    ))?;
-                }
+                calimero_governance_store::delete_group_and_parent_edge(&self.datastore, &gid)?;
             }
 
             // Namespace-level rows: identity, DAG head, and every stored

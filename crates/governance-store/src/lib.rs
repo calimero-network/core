@@ -133,9 +133,9 @@ pub use self::group_keys::{
 };
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
-    delete_group_local_rows, delete_namespace_local_state, get_local_gov_nonce,
-    get_member_context_joins, get_op_head, load_nonce_window, read_op_log_after,
-    remove_all_member_context_joins, set_local_gov_nonce, store_nonce_window,
+    delete_group_and_parent_edge, delete_group_local_rows, delete_namespace_local_state,
+    get_local_gov_nonce, get_member_context_joins, get_op_head, load_nonce_window,
+    read_op_log_after, remove_all_member_context_joins, set_local_gov_nonce, store_nonce_window,
     track_member_context_join,
 };
 pub use self::membership::MembershipRepository;

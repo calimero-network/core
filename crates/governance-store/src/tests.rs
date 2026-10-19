@@ -1887,6 +1887,124 @@ fn apply_local_signed_group_op_capabilities_and_delete() {
     assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
 
+/// A namespace `root` with `edges` nested under it, every group owned by the
+/// returned key's account.
+fn owned_tree(
+    store: &Store,
+    root: &ContextGroupId,
+    edges: &[(ContextGroupId, ContextGroupId)],
+) -> calimero_primitives::identity::PrivateKey {
+    let owner_sk = calimero_primitives::identity::PrivateKey::random(
+        &mut rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+    );
+    let owner = enrol_member(store, root, &owner_sk.public_key());
+    MetaRepository::new(store)
+        .save(root, &sample_meta_with_admin(owner))
+        .unwrap();
+    for (parent, child) in edges {
+        MetaRepository::new(store)
+            .save(child, &sample_meta_with_admin(owner))
+            .unwrap();
+        nest_for_test(store, parent, child);
+    }
+    owner_sk
+}
+
+/// The owner's root-guarded `GroupDelete` of `group`, applied locally.
+fn owner_delete(
+    store: &Store,
+    group: &ContextGroupId,
+    owner_sk: &calimero_primitives::identity::PrivateKey,
+) -> eyre::Result<()> {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    let op = SignedGroupOp::sign(
+        owner_sk,
+        group.to_bytes().into(),
+        vec![],
+        1,
+        crate::test_fixtures::guarded_group_op(
+            store,
+            group,
+            &owner_sk.public_key(),
+            GroupOp::GroupDelete,
+        ),
+    )
+    .unwrap();
+    apply_local_signed_group_op(store, &op)
+}
+
+#[test]
+fn owner_delete_leaves_no_ghost_child_under_the_parent() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD0; 32]);
+    let sub = ContextGroupId::from([0xD1; 32]);
+    let owner_sk = owned_tree(&store, &root, &[(root, sub)]);
+
+    owner_delete(&store, &sub, &owner_sk).unwrap();
+
+    let namespaces = NamespaceRepository::new(&store);
+    assert_eq!(
+        namespaces.parent(&sub).unwrap(),
+        None,
+        "parent edge left behind"
+    );
+    assert!(
+        namespaces.list_children(&root).unwrap().is_empty(),
+        "the parent still lists the deleted group as a child"
+    );
+}
+
+#[test]
+fn owner_delete_refuses_a_subtree_that_holds_a_context() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD2; 32]);
+    let sub = ContextGroupId::from([0xD3; 32]);
+    let leaf = ContextGroupId::from([0xD4; 32]);
+    let owner_sk = owned_tree(&store, &root, &[(root, sub), (sub, leaf)]);
+    register_context_in_group(&store, &leaf, &ContextId::from([0xD5; 32])).unwrap();
+
+    let err = owner_delete(&store, &sub, &owner_sk).unwrap_err();
+
+    assert!(
+        matches!(
+            err.downcast_ref::<MetaError>(),
+            Some(MetaError::HasRegisteredContexts)
+        ),
+        "expected HasRegisteredContexts, got {err:?}"
+    );
+    let meta = MetaRepository::new(&store);
+    assert!(meta.load(&sub).unwrap().is_some(), "the group was deleted");
+    assert!(
+        meta.load(&leaf).unwrap().is_some(),
+        "the subgroup was deleted"
+    );
+    assert_eq!(
+        NamespaceRepository::new(&store).parent(&leaf).unwrap(),
+        Some(sub)
+    );
+}
+
+#[test]
+fn owner_delete_takes_an_empty_subtree_with_it() {
+    let store = test_store();
+    let root = ContextGroupId::from([0xD6; 32]);
+    let sub = ContextGroupId::from([0xD7; 32]);
+    let leaf = ContextGroupId::from([0xD8; 32]);
+    let owner_sk = owned_tree(&store, &root, &[(root, sub), (sub, leaf)]);
+
+    owner_delete(&store, &sub, &owner_sk).unwrap();
+
+    let meta = MetaRepository::new(&store);
+    assert!(meta.load(&sub).unwrap().is_none());
+    assert!(
+        meta.load(&leaf).unwrap().is_none(),
+        "the subgroup was orphaned"
+    );
+    let namespaces = NamespaceRepository::new(&store);
+    assert_eq!(namespaces.parent(&leaf).unwrap(), None);
+    assert!(namespaces.list_children(&root).unwrap().is_empty());
+}
+
 #[test]
 fn apply_local_signed_group_op_rejects_last_admin_removal() {
     use calimero_context_client::local_governance::SignedGroupOp;
