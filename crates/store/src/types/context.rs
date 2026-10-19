@@ -203,6 +203,24 @@ impl PredefinedEntry for key::ContextLeftMarker {
     type DataType<'a> = ContextLeftMarker;
 }
 
+/// Value for `key::NamespaceForgotten`: what the user removed and when
+/// (millis since epoch). `application_id` is the application the namespace
+/// targeted, when it named one.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "Marker value - additions would need a migration"
+)]
+pub struct NamespaceForgotten {
+    pub application_id: Option<[u8; 32]>,
+    pub forgotten_at_ms: u64,
+}
+
+impl PredefinedEntry for key::NamespaceForgotten {
+    type Codec = Borsh;
+    type DataType<'a> = NamespaceForgotten;
+}
+
 /// DAG delta data (persisted)
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug)]
 pub struct ContextDagDelta {

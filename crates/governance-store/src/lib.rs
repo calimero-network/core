@@ -55,6 +55,7 @@ mod deny_list;
 pub mod device_link;
 mod errors;
 pub mod first_target_gate;
+mod forgotten;
 mod governance_signer;
 pub mod group_creator;
 mod group_governance_publisher;
@@ -121,6 +122,7 @@ pub use self::device_link::{
     bind_device_everywhere, bind_known_devices, plan_carried_link, publish_carried_link,
     replay_known_revocations, withdraw_device_in, CarriedLink, CarriedLinkRefusal,
 };
+pub use self::forgotten::{ForgottenNamespace, ForgottenNamespaces};
 pub use self::ops::group::shared_writers_rotated::require_context_not_rotated;
 pub use self::pending_rotation::{PendingDeviceRotationRepository, PendingRotationRepository};
 pub use self::reentry::ReentryRepository;
