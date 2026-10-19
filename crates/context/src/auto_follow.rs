@@ -878,7 +878,8 @@ fn should_auto_follow_contexts(
     }
 }
 
-/// Whether the namespace owning `group_id` was removed from this node.
+/// Whether the namespace owning `group_id` was removed from this node; a failed
+/// read counts as removed.
 fn is_namespace_forgotten(store: &Store, group_id: &ContextGroupId) -> bool {
     let forgotten = NamespaceRepository::new(store)
         .resolve(group_id)
@@ -889,9 +890,9 @@ fn is_namespace_forgotten(store: &Store, group_id: &ContextGroupId) -> bool {
             warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 ?err,
-                "auto-follow: failed to read the removal marker - defaulting to not removed"
+                "auto-follow: failed to read the removal marker - not following"
             );
-            false
+            true
         }
     }
 }
