@@ -120,12 +120,16 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
         };
 
         // Dropped on failure too: a purge cut short leaves cached state over missing rows.
-        ActorResponse::r#async(task.into_actor(self).map(|(contexts, outcome), act, _ctx| {
-            for context in contexts {
-                let _ignored = act.contexts.remove(&context);
-            }
-            outcome
-        }))
+        ActorResponse::r#async(
+            task.into_actor(self)
+                .map(move |(contexts, outcome), act, _ctx| {
+                    for context in contexts {
+                        let _ignored = act.contexts.remove(&context);
+                    }
+                    let _ignored = act.namespace_dags.remove(&namespace_id.to_bytes());
+                    outcome
+                }),
+        )
     }
 }
 
@@ -231,6 +235,51 @@ mod tests {
         assert!(ForgottenNamespaces::new(&store)
             .is_forgotten(&namespace)
             .expect("read the marker"));
+    }
+
+    /// The resident governance DAG remembers every op it applied, so one kept
+    /// past the removal turns the op a restore pulls again into a duplicate.
+    #[actix::test]
+    async fn a_removed_namespace_applies_its_genesis_again() {
+        use calimero_context_client::messages::NamespaceApplyOutcome;
+        use calimero_governance_store::NamespaceOpLogService;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the founder's account root");
+        let harness = actor::over(store.clone()).await;
+        let (namespace, _account) = a_namespace_this_node_only_belongs_to(&harness, &store).await;
+        let genesis = NamespaceOpLogService::new(&store, namespace.to_bytes().into())
+            .collect_root_ops()
+            .expect("read the root ops")
+            .into_iter()
+            .next()
+            .expect("the namespace has its genesis");
+        let _held = harness
+            .context_client
+            .apply_signed_namespace_op(genesis.clone())
+            .await
+            .expect("the held genesis is judged");
+
+        let _deleted = harness
+            .manager
+            .send(DeleteNamespaceRequest {
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is removed");
+        let again = harness
+            .context_client
+            .apply_signed_namespace_op(genesis)
+            .await
+            .expect("the genesis is judged again");
+
+        assert!(
+            matches!(again, NamespaceApplyOutcome::Applied { .. }),
+            "{again:?}"
+        );
     }
 
     /// The restore names the namespace by what the user saw, not by its id.
