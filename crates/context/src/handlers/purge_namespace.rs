@@ -23,6 +23,13 @@ pub(crate) async fn purge_namespace(
     namespace: &ContextGroupId,
     payload: &CascadePayload,
 ) -> eyre::Result<()> {
+    // First, so gossip cannot write rows back while they are removed.
+    if let Err(err) = node_client
+        .unsubscribe_namespace(namespace.to_bytes())
+        .await
+    {
+        warn!(?namespace, %err, "failed to unsubscribe a purged namespace");
+    }
     for context in &payload.contexts {
         // Close the index before the purge takes its files away.
         if let Some(search) = search {
@@ -64,12 +71,6 @@ pub(crate) async fn purge_namespace(
     }
     calimero_governance_store::delete_namespace_local_state(datastore, namespace)?;
 
-    if let Err(err) = node_client
-        .unsubscribe_namespace(namespace.to_bytes())
-        .await
-    {
-        warn!(?namespace, %err, "failed to unsubscribe a purged namespace");
-    }
     Ok(())
 }
 
