@@ -192,7 +192,7 @@ async fn delete_context(
 /// - `ContextLocal` and the single-row migration markers: tiny, and they record
 ///   decisions (a `leave_context`, a pinned bytecode) that must not be undone
 ///   by accident.
-fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result<()> {
+pub(crate) fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result<()> {
     let mut handle = datastore.handle();
     handle.delete(&key::ContextMeta::new(*context_id))?;
     handle.delete(&key::ContextConfig::new(*context_id))?;
@@ -225,6 +225,17 @@ fn purge_context_rows(datastore: &Store, context_id: &ContextId) -> eyre::Result
     Ok(())
 }
 
+/// [`purge_context_rows`] plus the context's `Delta` rows: for a node that has
+/// left the namespace and no longer serves the DAG to anyone.
+pub(crate) fn purge_context_with_dag(
+    datastore: &Store,
+    context_id: &ContextId,
+) -> eyre::Result<()> {
+    purge_context_rows(datastore, context_id)?;
+    datastore.raw_delete_prefix(Column::Delta, context_id.as_ref())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -232,7 +243,7 @@ mod tests {
     use calimero_store::db::{Column, InMemoryDB};
     use calimero_store::{key, Store};
 
-    use super::purge_context_rows;
+    use super::{purge_context_rows, purge_context_with_dag};
 
     /// Adjacent ids, so a range that overshot the deleted context's prefix by
     /// one would visibly eat into its neighbour.
@@ -275,6 +286,8 @@ mod tests {
             (Column::ContextWarrantNonce, prefixed(context, &[0x07; 64])),
             (Column::BlobOwner, prefixed(context, &[0x08; 32])),
             (Column::SnapshotStage, prefixed(context, &[0x0b; 33])),
+            // A left marker: context ‖ member key.
+            (Column::ContextLocal, prefixed(context, &[0x0c; 32])),
         ]
     }
 
@@ -301,7 +314,39 @@ mod tests {
         purge_context_rows(&store, &DELETED.into()).expect("purge should succeed");
 
         for row in rows(DELETED) {
-            let expected = matches!(row.0, Column::Delta | Column::ContextWarrantNonce);
+            let expected = matches!(
+                row.0,
+                Column::Delta | Column::ContextWarrantNonce | Column::ContextLocal
+            );
+            assert_eq!(
+                present(&store, &row),
+                expected,
+                "{:?} row of the deleted context: expected present = {expected}",
+                row.0
+            );
+        }
+        for row in rows(KEPT) {
+            assert!(
+                present(&store, &row),
+                "{:?} row of a neighbouring context must survive",
+                row.0
+            );
+        }
+    }
+
+    #[test]
+    fn purging_with_the_dag_also_drops_deltas_but_keeps_the_replay_ledger_and_left_marker() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        for row in rows(DELETED).iter().chain(rows(KEPT).iter()) {
+            store
+                .raw_put(row.0, &row.1, b"value")
+                .expect("write should succeed");
+        }
+
+        purge_context_with_dag(&store, &DELETED.into()).expect("purge should succeed");
+
+        for row in rows(DELETED) {
+            let expected = matches!(row.0, Column::ContextWarrantNonce | Column::ContextLocal);
             assert_eq!(
                 present(&store, &row),
                 expected,
