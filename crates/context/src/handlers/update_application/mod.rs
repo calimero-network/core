@@ -19,6 +19,7 @@ use calimero_primitives::events::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Event as RuntimeEvent;
+use calimero_runtime::store::Storage as _;
 use calimero_storage::address::Id;
 use calimero_storage::delta::clear_pending_delta;
 use calimero_storage::entities::Metadata;
@@ -968,6 +969,18 @@ fn commit_or_abort_migration(
         // restore needed). The root is also untouched (`write_migration_state`
         // never runs). The caller's `?` propagates this out, skipping
         // `finalize_application_update`.
+        //
+        // KNOWN GAP (deferred hardening, tracked as "SortedIndex transactional
+        // staging"): if the aborted migrate wrote a `SortedMap`/`SortedSet`, its
+        // ordered-index rows went straight to the non-synced `Column::SortedIndex`
+        // (not this buffer) and survive the drop. The index validity marker is
+        // state-store-backed, so it rolls back in lockstep with the entities and
+        // (mis)reads as current against the restored v1 state — meaning the
+        // ordinary `ensure_index` self-heal does NOT reconcile the residue. The
+        // authoritative entity set is still correct (v1); only the ordered-read
+        // index can be stale until it is next forced to rebuild. A full fix
+        // (index writes inside the migration transaction, or an abort hook that
+        // invalidates the touched collections' markers) is deferred.
         drop(storage);
         clear_pending_delta();
         // Record the abort so the heartbeat surfaces this member as `failed`
@@ -978,16 +991,18 @@ fn commit_or_abort_migration(
         return Err(MigrationCheckFailed { context_id }.into());
     }
 
-    // Commit decision: promote the staging buffer — flush the migrate's buffered
-    // child-entry writes to the live store — then write the v2 root. The buffer
-    // and the root write target the same Arc-backed datastore.
-    let _committed_store = storage
+    // Commit decision: write the v2 root into the staging buffer, then promote it,
+    // so the migrate's child entries and the root reach the live store together.
+    let (full_hash, storage) = write_migration_state(
+        datastore,
+        storage,
+        context,
+        new_state_bytes,
+        executor_identity,
+    )?;
+    storage
         .commit()
         .map_err(|e| eyre::eyre!("Failed to commit migration storage writes: {e}"))?;
-
-    // Write returned state bytes to root storage key
-    // This uses the storage layer to properly update both Entry and Index
-    let full_hash = write_migration_state(datastore, context, new_state_bytes, executor_identity)?;
 
     // Update root_hash after migration: full_hash is already the Merkle tree hash from
     // the storage layer; wrap the bytes directly (same as create_context/execute).
@@ -1492,25 +1507,47 @@ pub(crate) fn create_storage_callbacks(
     }
 }
 
+/// Callbacks routing `calimero-storage` operations into a staging buffer rather than the live store.
+fn buffer_callbacks(buffer: &Rc<RefCell<ContextStorage>>) -> StorageCallbacks {
+    let read: ReadFn = {
+        let buffer = Rc::clone(buffer);
+        Rc::new(move |key: &Key| buffer.borrow().get(&key.to_bytes().to_vec()))
+    };
+    let write: WriteFn = {
+        let buffer = Rc::clone(buffer);
+        Rc::new(move |key: Key, value: &[u8]| {
+            let _ = buffer
+                .borrow_mut()
+                .set(key.to_bytes().to_vec(), value.to_vec());
+            true
+        })
+    };
+    let remove: RemoveFn = {
+        let buffer = Rc::clone(buffer);
+        Rc::new(move |key: &Key| {
+            let _ = buffer.borrow_mut().remove(&key.to_bytes().to_vec());
+            true
+        })
+    };
+    StorageCallbacks {
+        read,
+        write,
+        remove,
+    }
+}
+
 /// Compute a deterministic [`Metadata`] timestamp from the existing root index.
 ///
 /// Reads the current root entry's [`EntityIndex`] from the store and picks a
 /// timestamp strictly greater than any existing `created_at`/`updated_at` value.
 /// If the index cannot be read or deserialized, a large deterministic fallback
 /// (`u64::MAX / 2`) is used so every node converges on the same value.
-fn compute_deterministic_metadata(
-    datastore: &calimero_store::Store,
-    context_id: ContextId,
-) -> Metadata {
+fn compute_deterministic_metadata(read: &ReadFn, context_id: ContextId) -> Metadata {
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
-    let index_key = Key::Index(root_entry_id);
-    let storage_key = index_key.to_bytes();
-    let state_key = key::ContextState::new(context_id, storage_key);
 
-    let timestamp = match datastore.handle().get(&state_key) {
-        Ok(Some(state_data)) => {
+    let timestamp = match read(&Key::Index(root_entry_id)) {
+        Some(row_bytes) => {
             // The index shares the entity row with the entry (`calimero_storage::row`).
-            let row_bytes = state_data.value.into_boxed().into_vec();
             match calimero_storage::row::decode(root_entry_id, &row_bytes)
                 .and_then(|row| row.index)
                 .ok_or_else(|| std::io::Error::other("not an entity row with an index"))
@@ -1533,19 +1570,9 @@ fn compute_deterministic_metadata(
                 }
             }
         }
-        Ok(None) => {
-            // No existing metadata — use a large deterministic value so the
-            // migration timestamp is newer than any possible prior state.
-            u64::MAX / 2
-        }
-        Err(e) => {
-            error!(
-                %context_id,
-                error = ?e,
-                "Failed to read existing index for deterministic timestamp, using fallback"
-            );
-            u64::MAX / 2
-        }
+        // No existing metadata — use a large deterministic value so the
+        // migration timestamp is newer than any possible prior state.
+        None => u64::MAX / 2,
     };
 
     Metadata::new(timestamp, timestamp)
@@ -1569,14 +1596,18 @@ fn build_entry_bytes(new_state_bytes: &[u8]) -> Vec<u8> {
 /// This function uses the `calimero-storage` layer to ensure the Merkle tree Index is
 /// updated along with the Entry data. This maintains consistency for the sync protocol.
 ///
+/// The write lands in `storage` (the migration's staging buffer), so a later rung reads this
+/// one's output and nothing reaches the live store until the buffer commits.
+///
 /// Returns the Merkle tree root's `full_hash` (from `Id::root()`), matching the hash
-/// computation used by the normal execution flow in `system.rs`.
+/// computation used by the normal execution flow in `system.rs`, and the buffer.
 fn write_migration_state(
     datastore: &calimero_store::Store,
+    storage: ContextStorage,
     context: &Context,
     new_state_bytes: &[u8],
     executor_identity: PublicKey,
-) -> eyre::Result<[u8; 32]> {
+) -> eyre::Result<([u8; 32], ContextStorage)> {
     let context_id = context.id;
 
     debug!(
@@ -1585,8 +1616,9 @@ fn write_migration_state(
         "Writing migrated state via storage layer"
     );
 
-    let callbacks = create_storage_callbacks(datastore, context_id);
-    let metadata = compute_deterministic_metadata(datastore, context_id);
+    let buffer = Rc::new(RefCell::new(storage));
+    let callbacks = buffer_callbacks(&buffer);
+    let metadata = compute_deterministic_metadata(&callbacks.read, context_id);
     let entry_bytes = build_entry_bytes(new_state_bytes);
 
     let context_id_bytes: [u8; 32] = *context_id.as_ref();
@@ -1689,7 +1721,10 @@ fn write_migration_state(
                 root_hash = ?root_hash,
                 "Migrated state written successfully with Index update"
             );
-            Ok(root_hash)
+            let storage = Rc::try_unwrap(buffer)
+                .map_err(|_| eyre::eyre!("migration staging buffer still borrowed"))?
+                .into_inner();
+            Ok((root_hash, storage))
         }
         Ok(None) => {
             error!(
@@ -2902,8 +2937,7 @@ mod tests {
         // flow uses, so it has a genuine Merkle Index + full_hash to compare
         // against. `write_migration_state` is the sole root writer in this file.
         let v1_bytes = borsh::to_vec(&("v1-state".to_owned())).expect("serialize v1 state");
-        let full_hash_v1 = super::write_migration_state(&store, &context, &v1_bytes, executor)
-            .expect("install v1 root");
+        let full_hash_v1 = install_root(&store, &context, &v1_bytes, executor);
         context.root_hash = Hash::from(full_hash_v1);
         context.dag_heads = vec![full_hash_v1];
 
@@ -3049,6 +3083,50 @@ mod tests {
         }
     }
 
+    /// Writes `bytes` as the context's root and commits it, returning the root's `full_hash`.
+    fn install_root(
+        store: &Store,
+        context: &Context,
+        bytes: &[u8],
+        executor: PublicKey,
+    ) -> [u8; 32] {
+        let staging = ContextStorage::from(store.clone(), context.id);
+        let (hash, staging) =
+            super::write_migration_state(store, staging, context, bytes, executor)
+                .expect("write root");
+        staging.commit().expect("commit root");
+        hash
+    }
+
+    /// A root written into a buffer stays out of the live store until the buffer commits, and a
+    /// second write on the same buffer reads the first.
+    #[test]
+    fn migration_state_is_written_into_the_buffer() {
+        let store = create_test_store();
+        let context =
+            create_test_context(ContextId::from([9u8; 32]), ApplicationId::from([13u8; 32]));
+        let executor = PublicKey::from([10u8; 32]);
+
+        let staging = ContextStorage::from(store.clone(), context.id);
+        let (first, staging) =
+            super::write_migration_state(&store, staging, &context, b"rung-1", executor)
+                .expect("first rung");
+        assert_eq!(
+            root_full_hash(&store, context.id),
+            None,
+            "buffered, not live"
+        );
+
+        let (second, staging) =
+            super::write_migration_state(&store, staging, &context, b"rung-2-longer", executor)
+                .expect("second rung reads the first");
+        assert_ne!(first, second);
+        assert_eq!(root_full_hash(&store, context.id), None, "still not live");
+
+        staging.commit().expect("commit");
+        assert_eq!(root_full_hash(&store, context.id), Some(second));
+    }
+
     /// Every SortedIndex row in the store, as the live column holds it.
     fn index_rows(store: &Store) -> Vec<(Vec<u8>, Vec<u8>)> {
         store
@@ -3144,8 +3222,7 @@ mod tests {
         let executor = calimero_primitives::identity::PublicKey::from([6u8; 32]);
 
         let v1_bytes = borsh::to_vec(&("v1-state".to_owned())).expect("serialize v1 state");
-        let full_hash_v1 = super::write_migration_state(&store, &context, &v1_bytes, executor)
-            .expect("install v1 root");
+        let full_hash_v1 = install_root(&store, &context, &v1_bytes, executor);
         context.root_hash = Hash::from(full_hash_v1);
         context.dag_heads = vec![full_hash_v1];
 
