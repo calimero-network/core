@@ -3627,6 +3627,8 @@ mod shared_rotation_tests;
 #[cfg(test)]
 mod state_write_gate_tests;
 #[cfg(test)]
+mod trial_tests;
+#[cfg(test)]
 mod xcall_tests;
 
 #[cfg(test)]

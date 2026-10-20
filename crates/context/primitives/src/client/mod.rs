@@ -51,7 +51,8 @@ use crate::group::{
     StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
     StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
     StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    SyncGroupResponse, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    SyncGroupResponse, TrialUpgradeRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -2361,6 +2362,12 @@ impl ContextClient {
         activate_upgrade,
         ActivateUpgrade,
         ActivateUpgradeRequest,
+        eyre::Result<bool>
+    );
+    forward_to_actor!(
+        trial_upgrade,
+        TrialUpgrade,
+        TrialUpgradeRequest,
         eyre::Result<bool>
     );
     forward_to_actor!(

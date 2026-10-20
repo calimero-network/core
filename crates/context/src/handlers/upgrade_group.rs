@@ -1,11 +1,14 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_app_downloader::registry::{stored_coords, RegistryCoords, RegistryCoordsBuf};
-use calimero_context_client::group::{UpgradeGroupRequest, UpgradeGroupResponse};
+use calimero_context_client::client::ContextClient;
+use calimero_context_client::group::{
+    TrialRung, TrialUpgradeRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+};
 use calimero_context_client::local_governance::GroupOp;
 use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
@@ -32,6 +35,8 @@ use tracing::{debug, error, info, warn};
 use crate::ContextManager;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
+const TRIAL_BUDGET: Duration = Duration::from_secs(300); // for all contexts of one upgrade together
+
 /// Refuse the upgrade as [`crate::error::ContextError::UpgradeRefused`]: a `409`
 /// naming why, where a bare `bail!` would answer the caller's own mistake as a
 /// `500`. For the gate's verdicts only; a failure of this node's I/O stays a
@@ -54,6 +59,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             target_application_id,
             cascade,
             force_code_only,
+            skip_trial,
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -77,6 +83,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 signer,
                 node_sk,
                 force_code_only,
+                skip_trial,
             );
         }
 
@@ -120,6 +127,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         // here would race the lazy path and migrate the same context twice.
         let datastore = self.datastore.clone();
         let ack_router = Arc::clone(&self.ack_router);
+        let context_client = self.context_client.clone();
 
         // Persisted SYNCHRONOUSLY: two concurrent requests would otherwise both
         // clear `validate_upgrade` and emit racing op pairs. The async block
@@ -193,6 +201,24 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         prev_schema = next_schema;
                     }
                 }
+                let (contexts_trialled, contexts_not_held) = if skip_trial {
+                    (0, 0)
+                } else {
+                    let contexts = calimero_governance_store::enumerate_group_contexts(
+                        &datastore,
+                        &group_id,
+                        0,
+                        usize::MAX,
+                    )?;
+                    let ladder = rungs
+                        .iter()
+                        .map(|rung| TrialRung {
+                            bytecode_id: rung.bytecode_id,
+                            migration: rung.migration.clone(),
+                        })
+                        .collect();
+                    trial_contexts(&context_client, contexts, ladder).await?
+                };
                 {
                     let sk = PrivateKey::from(effective_signing_key);
                     // One op pair per rung, in ladder order: the applies
@@ -302,6 +328,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 Ok(UpgradeGroupResponse {
                     group_id,
                     status: completed_status,
+                    contexts_trialled,
+                    contexts_not_held,
                 })
             }
             .into_actor(self)
@@ -322,6 +350,37 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 res
             }),
         )
+    }
+}
+
+/// Trials `ladder` on each of `contexts` this node holds, refusing the upgrade at the first
+/// failure or when the trials together outlast [`TRIAL_BUDGET`]. Returns (trialled, not held).
+async fn trial_contexts(
+    context_client: &ContextClient,
+    contexts: Vec<ContextId>,
+    ladder: Vec<TrialRung>,
+) -> eyre::Result<(u32, u32)> {
+    let run = async {
+        let (mut trialled, mut not_held) = (0, 0);
+        for context_id in contexts {
+            let request = TrialUpgradeRequest {
+                context_id,
+                rungs: ladder.clone(),
+            };
+            match context_client.trial_upgrade(request).await {
+                Ok(true) => trialled += 1,
+                Ok(false) => not_held += 1,
+                Err(err) => refuse!("trial of the upgrade failed on context {context_id}: {err:#}"),
+            }
+        }
+        Ok((trialled, not_held))
+    };
+    match tokio::time::timeout(TRIAL_BUDGET, run).await {
+        Ok(counts) => counts,
+        Err(_) => refuse!(
+            "trial of the upgrade did not finish within {}s; retry with skip_trial to publish without it",
+            TRIAL_BUDGET.as_secs()
+        ),
     }
 }
 
@@ -1396,6 +1455,7 @@ fn dispatch_cascade(
     signer: PublicKey,
     node_sk: [u8; 32],
     force_code_only: bool,
+    skip_trial: bool,
 ) -> ActorResponse<ContextManager, eyre::Result<UpgradeGroupResponse>> {
     // --- Lightweight cascade validation ---
     // Cascade bypasses `validate_upgrade` because that helper requires
@@ -1576,6 +1636,8 @@ fn dispatch_cascade(
     // value verbatim; Task 4 carries it on the wire via CascadeUpgrade).
     let cascade_hlc = calimero_storage::env::hlc_timestamp();
 
+    let matched_for_trial = matched_descendants.clone();
+    let client_for_trial = context_client.clone();
     let publish_task = async move {
         // Resolve the migration from the bundle's embedded ABIs (all services).
         let migration = resolve_upgrade_from_abis(
@@ -1608,6 +1670,25 @@ fn dispatch_cascade(
             verify_no_identity_downgrade(&old, &new)?;
         }
 
+        let (contexts_trialled, contexts_not_held) = if skip_trial {
+            (0, 0)
+        } else {
+            let mut contexts = Vec::new();
+            for gid in &matched_for_trial {
+                contexts.extend(calimero_governance_store::enumerate_group_contexts(
+                    &datastore_for_publish,
+                    gid,
+                    0,
+                    usize::MAX,
+                )?);
+            }
+            let ladder = vec![TrialRung {
+                bytecode_id: new_bytecode_id,
+                migration: migration.clone(),
+            }];
+            trial_contexts(&client_for_trial, contexts, ladder).await?
+        };
+
         let sk = PrivateKey::from(effective_signing_key);
 
         let report = calimero_governance_store::sign_apply_and_publish(
@@ -1633,12 +1714,19 @@ fn dispatch_cascade(
         let from_version =
             running_version(&node_client_for_publish, from_bytecode_id, from_version).await;
 
-        Ok::<_, eyre::Report>((migration, target_state_version, from_version))
+        Ok::<_, eyre::Report>((
+            migration,
+            target_state_version,
+            from_version,
+            contexts_trialled,
+            contexts_not_held,
+        ))
     }
     .into_actor(actor);
 
     ActorResponse::r#async(publish_task.map(move |publish_result, act, ctx| {
-        let (migration, target_state_version, from_version) = publish_result?;
+        let (migration, target_state_version, from_version, contexts_trialled, contexts_not_held) =
+            publish_result?;
         let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
 
         // After successful publish + local apply, spawn one propagator
@@ -1770,6 +1858,8 @@ fn dispatch_cascade(
         Ok(UpgradeGroupResponse {
             group_id,
             status: signed_status,
+            contexts_trialled,
+            contexts_not_held,
         })
     }))
 }

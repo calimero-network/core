@@ -61,6 +61,13 @@ pub struct TriggerUpgradeCommand {
                 the upgrade. Default: false."
     )]
     pub force_code_only: bool,
+
+    #[clap(
+        long,
+        help = "Publish without first trialling the migration on this node's contexts. \
+                Default: false."
+    )]
+    pub skip_trial: bool,
 }
 
 impl TriggerUpgradeCommand {
@@ -69,6 +76,7 @@ impl TriggerUpgradeCommand {
             target_application_id: self.target_application_id,
             cascade: self.cascade,
             force_code_only: self.force_code_only,
+            skip_trial: self.skip_trial,
         };
 
         let client = environment.client()?;

@@ -542,6 +542,8 @@ impl Report for UpgradeGroupApiResponse {
         if let Some(failed) = d.local_contexts_failed {
             let _ = table.add_row(vec!["Local Contexts Failed", &failed.to_string()]);
         }
+        let _ = table.add_row(vec!["Contexts Trialled", &d.contexts_trialled.to_string()]);
+        let _ = table.add_row(vec!["Contexts Not Held", &d.contexts_not_held.to_string()]);
         println!("{table}");
     }
 }
