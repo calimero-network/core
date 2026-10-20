@@ -1061,6 +1061,7 @@ fn group_lifecycle_refusal_status(
         | Refusal::UpgradeNoContexts { .. }
         | Refusal::UpgradeNotRetryable { .. }
         | Refusal::UpgradeTargetMismatch { .. }
+        | Refusal::UpgradeVersionMismatch { .. }
         | Refusal::UpgradeRefused { .. }
         | Refusal::InvitationExpired { .. }
         | Refusal::GroupAlreadyExists { .. }
@@ -2453,6 +2454,11 @@ mod parse_api_error_tests {
                     group_id: group_id(),
                     expected: "app-a".to_owned(),
                     actual: "app-b".to_owned(),
+                },
+                ContextError::UpgradeVersionMismatch {
+                    group_id: group_id(),
+                    expected: "2.0.0".to_owned(),
+                    actual: "3.0.0".to_owned(),
                 },
             ] {
                 let message = err.to_string();

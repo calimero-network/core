@@ -585,6 +585,18 @@ pub enum ContextError {
         actual: String,
     },
 
+    /// A `409`: a namespace being activated targets another version than the
+    /// caller expected, so activating it would switch to a release they did not name.
+    #[error("namespace {group_id} targets version {actual}, not the expected {expected}")]
+    UpgradeVersionMismatch {
+        /// Hex rendering of the namespace whose target differs (for the message only).
+        group_id: String,
+        /// The version the caller expected.
+        expected: String,
+        /// The version the namespace targets.
+        actual: String,
+    },
+
     /// A context's switch to its group's target failed (a migration or a load), so
     /// retrying the same switch fails the same way. Wraps the failure itself.
     #[error("switching context {context_id} to its group's target release failed")]

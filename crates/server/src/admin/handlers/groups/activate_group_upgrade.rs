@@ -35,6 +35,7 @@ pub async fn handler(
         .activate_namespace_upgrade(ActivateNamespaceUpgradeRequest {
             namespace_id,
             expected_application_id: req.expected_application_id,
+            expected_version: req.expected_version,
         })
         .await
         .map_err(parse_api_error);

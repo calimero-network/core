@@ -2175,12 +2175,14 @@ pub struct UpgradeGroupApiResponseData {
 }
 
 /// Switch this node's contexts of a namespace to its stored target release.
-/// `expected_application_id`, when set, must equal that target.
+/// `expected_application_id` and `expected_version`, when set, must each equal that target.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivateGroupUpgradeApiRequest {
     #[serde(default)]
     pub expected_application_id: Option<ApplicationId>,
+    #[serde(default)]
+    pub expected_version: Option<String>,
 }
 
 impl Validate for ActivateGroupUpgradeApiRequest {

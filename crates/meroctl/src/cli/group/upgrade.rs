@@ -132,12 +132,19 @@ pub struct ActivateUpgradeCommand {
         help = "Refuse unless the namespace's stored target is this application ID"
     )]
     pub expect_application_id: Option<ApplicationId>,
+
+    #[clap(
+        long,
+        help = "Refuse unless the namespace's stored target release is this version"
+    )]
+    pub expect_version: Option<String>,
 }
 
 impl ActivateUpgradeCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let request = ActivateGroupUpgradeApiRequest {
             expected_application_id: self.expect_application_id,
+            expected_version: self.expect_version,
         };
 
         let client = environment.client()?;
@@ -190,6 +197,9 @@ mod tests {
         let app_arg = app.to_string();
         let pinned = activate(&["ns1", "--expect-application-id", &app_arg]);
         assert_eq!(pinned.expect_application_id, Some(app));
+
+        let versioned = activate(&["ns1", "--expect-version", "2.0.0"]);
+        assert_eq!(versioned.expect_version.as_deref(), Some("2.0.0"));
     }
 
     #[test]

@@ -1734,11 +1734,13 @@ impl Message for ActivateUpgradeRequest {
 /// Switch every context of a namespace on this node to its group's stored target
 /// release and replay the deltas held back for it. Never installs a release.
 ///
-/// `expected_application_id`, when set, must equal the namespace's stored target.
-#[derive(Clone, Copy, Debug)]
+/// `expected_application_id` and `expected_version`, when set, must each equal the
+/// namespace's stored target.
+#[derive(Clone, Debug)]
 pub struct ActivateNamespaceUpgradeRequest {
     pub namespace_id: ContextGroupId,
     pub expected_application_id: Option<ApplicationId>,
+    pub expected_version: Option<String>,
 }
 
 impl Message for ActivateNamespaceUpgradeRequest {

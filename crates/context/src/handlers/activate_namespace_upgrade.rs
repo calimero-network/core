@@ -197,6 +197,15 @@ fn plan_activation(
     }
     let target_application_id = meta.target.application_id;
     check_expected(request, namespace_id, target_application_id)?;
+    if let Some(expected) = &request.expected_version {
+        if **expected != *meta.target.version {
+            bail!(ContextError::UpgradeVersionMismatch {
+                group_id: namespace_id.to_string(),
+                expected: expected.clone(),
+                actual: meta.target.version.to_string(),
+            });
+        }
+    }
 
     let mut contexts = Vec::new();
     let mut chains = Vec::new();
@@ -373,6 +382,13 @@ mod tests {
         gid
     }
 
+    fn set_target_version(store: &Store, group: &ContextGroupId, version: &str) {
+        let repo = MetaRepository::new(store);
+        let mut meta = repo.load(group).unwrap().unwrap();
+        meta.target.version = version.into();
+        repo.save(group, &meta).unwrap();
+    }
+
     fn seed_context(store: &Store, group: &ContextGroupId, id: u8, local: bool) -> ContextId {
         let context_id = ContextId::from([id; 32]);
         register_context_in_group(store, group, &context_id).unwrap();
@@ -400,6 +416,17 @@ mod tests {
         ActivateNamespaceUpgradeRequest {
             namespace_id: namespace,
             expected_application_id: expected,
+            expected_version: None,
+        }
+    }
+
+    fn request_version(
+        namespace: ContextGroupId,
+        version: &str,
+    ) -> ActivateNamespaceUpgradeRequest {
+        ActivateNamespaceUpgradeRequest {
+            expected_version: Some(version.to_owned()),
+            ..request(namespace, Some(app()))
         }
     }
 
@@ -439,6 +466,26 @@ mod tests {
             refusal(&err),
             ContextError::UpgradeTargetMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn an_expected_version_that_differs_from_the_target_is_refused() {
+        let store = store();
+        let ns = seed_group(&store, 0x10);
+        set_target_version(&store, &ns, "2.0.0");
+        let err = plan_activation(&store, installed, &request_version(ns, "3.0.0")).unwrap_err();
+        assert!(matches!(
+            refusal(&err),
+            ContextError::UpgradeVersionMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn an_expected_version_that_matches_the_target_is_accepted() {
+        let store = store();
+        let ns = seed_group(&store, 0x10);
+        set_target_version(&store, &ns, "2.0.0");
+        plan_activation(&store, installed, &request_version(ns, "2.0.0")).unwrap();
     }
 
     #[test]

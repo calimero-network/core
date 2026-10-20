@@ -756,7 +756,8 @@ async fn activate_group_upgrade() {
     Mock::given(method("POST"))
         .and(path(format!("/admin-api/groups/{GID}/upgrade/activate")))
         .and(body_json(serde_json::json!({
-            "expectedApplicationId": target.to_string()
+            "expectedApplicationId": target.to_string(),
+            "expectedVersion": "2.0.0"
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": {
@@ -780,6 +781,7 @@ async fn activate_group_upgrade() {
             GID,
             ActivateGroupUpgradeApiRequest {
                 expected_application_id: Some(target),
+                expected_version: Some("2.0.0".to_owned()),
             },
         )
         .await
