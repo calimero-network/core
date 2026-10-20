@@ -65,6 +65,45 @@ impl Debug for BlobMeta {
     }
 }
 
+/// Web frontend index of one bundle blob. Keyed by the bundle, not the
+/// application: versions share an app row but not their bundles.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct BundleFrontend(Key<BlobId>);
+
+impl BundleFrontend {
+    #[must_use]
+    pub fn new(bundle_blob_id: PrimitiveBlobId) -> Self {
+        Self(Key((*bundle_blob_id).into()))
+    }
+}
+
+impl AsKeyParts for BundleFrontend {
+    type Components = (BlobId,);
+
+    fn column() -> Column {
+        Column::BundleFrontend
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
+    }
+}
+
+impl FromKeyParts for BundleFrontend {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
+impl Debug for BundleFrontend {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BundleFrontend").finish()
+    }
+}
+
 /// Records that this node holds a blob for a context: added by the context's
 /// app, uploaded for it, or fetched on its behalf. Presence is the signal.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]

@@ -212,6 +212,9 @@ pub enum Column {
     /// so an unchecked snapshot is never read as the context's state. Node-local,
     /// not synchronized, empty between installs.
     SnapshotStage,
+    /// The per-file blobs of an installed bundle's web frontend, keyed by the
+    /// bundle blob id (see `key::BundleFrontend`). Node-local, not synchronized.
+    BundleFrontend,
 }
 
 /// Table-file accounting for a whole store, summed over every column family
