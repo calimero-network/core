@@ -8,7 +8,9 @@ mod context;
 mod generic;
 mod group;
 
-pub use application::{ApplicationMeta, ApplicationPreviousBlob, PackageInfo, ServiceMeta};
+pub use application::{
+    ApplicationMeta, ApplicationPreviousBlob, ApplicationRelease, PackageInfo, ServiceMeta,
+};
 pub use blobs::{BlobMeta, BundleFrontend, FrontendFile};
 pub use context::{
     ContextActivatedBytecode, ContextActivatedStateVersion, ContextAuthoredRemaining,

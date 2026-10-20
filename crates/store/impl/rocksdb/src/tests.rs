@@ -734,6 +734,37 @@ fn a_store_from_before_the_bundle_frontend_column_opens_and_reads_it_as_absent()
 }
 
 #[test]
+fn a_store_from_before_the_application_release_column_opens_and_reads_it_as_absent() {
+    let dir = TempDir::with_prefix("_calimero_store_before_release").expect("tempdir");
+    {
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        let old = rocksdb::DB::open_cf(
+            &options,
+            dir.path(),
+            families_without(&[Column::ApplicationRelease]),
+        )
+        .expect("the old layout opens");
+        let cf = old.cf_handle(Column::State.as_ref()).expect("State family");
+        old.put_cf(cf, b"a state row", b"kept").expect("put");
+        old.flush_cf(cf).expect("flush");
+    }
+    let path = dir.path().to_owned().try_into().expect("utf8 path");
+    let db = RocksDB::open(&StoreConfig::new(path)).expect("the new binary opens the old store");
+    assert_eq!(
+        db.get(Column::State, Slice::from(&b"a state row"[..]))
+            .expect("get")
+            .map(|v| v.as_ref().to_vec()),
+        Some(b"kept".to_vec())
+    );
+    assert!(db
+        .get(Column::ApplicationRelease, Slice::from(&[7_u8; 64][..]))
+        .expect("get")
+        .is_none());
+}
+
+#[test]
 fn a_binary_without_the_search_columns_refuses_a_store_that_has_them() {
     // The downgrade direction, as for every column before them: RocksDB will
     // not open a store while leaving one of its families unopened.
