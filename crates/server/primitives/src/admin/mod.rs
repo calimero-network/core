@@ -5024,9 +5024,8 @@ pub struct NamespaceApiResponse {
     /// another. Absent when nothing is held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_ops: Option<NamespaceHeldOpsApi>,
-    /// `true` for a namespace this node's user removed from it while the account
-    /// stayed a member, listed only by `for-application`: joining it with no
-    /// invitation restores it. Absent for every namespace held here.
+    /// `true` for a namespace the user removed from this node, listed only by
+    /// `for-application`; joining it with no invitation restores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forgotten: Option<bool>,
 }
