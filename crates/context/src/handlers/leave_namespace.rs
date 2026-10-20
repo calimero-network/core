@@ -170,7 +170,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                 if purge && !confirmed {
                     warn!(
                         ?namespace_id,
-                        "no admin confirmed the leave; not purging. The account has left, so remove the namespace with DELETE the namespace on each device"
+                        "no admin confirmed the leave; not purging. The account has left: remove the namespace from each device with DELETE /namespaces/:id"
                     );
                 }
                 let attempt = if purge && confirmed {
@@ -552,6 +552,23 @@ mod tests {
         let (namespace, _account_namespace) =
             a_namespace_this_node_may_leave(&store, &harness).await;
         let _rows = a_context_with_state(&store, &namespace);
+        // The harness really is Degraded (a subscriber, no ack), not Solo.
+        let (_, signer_sk) = NamespaceRepository::new(&store)
+            .identity(&namespace)
+            .expect("read the identity")
+            .expect("this node signs in the namespace");
+        let report = calimero_governance_store::sign_apply_and_publish(
+            &store,
+            &harness.node_client,
+            harness.context_client.ack_router(),
+            &namespace,
+            &PrivateKey::from(signer_sk),
+            calimero_context_client::local_governance::GroupOp::Noop,
+        )
+        .await
+        .expect("the probe publishes")
+        .expect("the probe reached the op log");
+        assert_eq!(report.readiness, PublishReadiness::Degraded);
 
         let left = leave(&harness, namespace, true).await;
 
