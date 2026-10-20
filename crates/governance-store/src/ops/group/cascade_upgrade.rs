@@ -10,7 +10,7 @@
 //! record); a later cascade legitimately advances it to its own newer
 //! `cascade_hlc`.
 
-use super::context::GroupApplyCtx;
+use super::context::{previous_release_version, release_version, GroupApplyCtx};
 use crate::{
     GroupSettingsService, MetaRepository, MetadataRepository, NamespaceRepository,
     UpgradesRepository,
@@ -91,25 +91,17 @@ pub(crate) fn apply(
         .get(&NamespaceGovHead::new(ns.to_bytes()))?
         .map(|head| head.sequence);
 
-    // The signed group's pre-cascade target, for the announcement's `from`
-    // side. Read before the walk below rewrites it. Non-fatal like every other
-    // read the announcement needs: it is observational, so it must not be able
-    // to fail the apply and diverge this replica.
-    let previous_application_id = MetaRepository::new(store)
+    // The signed group's pre-cascade target, for the record's and the
+    // announcement's `from` side. Read before the walk below rewrites it.
+    // Non-fatal: it is observational, so it must not be able to fail the apply
+    // and diverge this replica.
+    let previous_target = MetaRepository::new(store)
         .load(group_id)
         .ok()
         .flatten()
-        .map(|meta| meta.target.application_id);
-
-    // Semver strings for the per-descendant record: the empty strings this used
-    // to write are what a receiver's completion banner renders. Shares the
-    // announcement's reader, so the two cannot fall back differently.
-    let to_version = super::context::application_version(store, target_application_id);
-    let from_version = super::context::migration_from_version(
-        store,
-        previous_application_id.as_ref(),
-        target_application_id,
-    );
+        .map(|meta| meta.target);
+    let from_version = previous_release_version(previous_target.as_ref());
+    let to_version = release_version(coords.package, coords.version);
 
     let mut any_applied = false;
     let mut local_contexts_total: u32 = 0;
@@ -204,7 +196,8 @@ pub(crate) fn apply(
     // target even when it has not fetched the bytecode yet.
     if any_applied {
         ctx.queue_migration_started(
-            previous_application_id.as_ref(),
+            from_version,
+            to_version,
             target_application_id,
             Some(to_state_version),
             local_contexts_total,
