@@ -81,6 +81,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
             .map(|context| context.lock())
             .collect();
 
+        let dag = self.namespace_dags.get(&namespace_id.to_bytes()).cloned();
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let search = self.search.clone();
@@ -93,6 +94,11 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                     Either::Right(task) => task.await,
                 });
             }
+            // An op still applying holds the DAG; it finishes before the rows go.
+            let mut dag_held = match &dag {
+                Some(dag) => Some(dag.lock().await),
+                None => None,
+            };
 
             let outcome = purge_namespace(
                 &datastore,
@@ -102,6 +108,10 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 &payload,
             )
             .await;
+            // Emptied in place, so an op queued on this lock sees no history either.
+            if let Some(dag) = dag_held.as_mut() {
+                **dag = crate::new_namespace_dag();
+            }
 
             if outcome.is_ok() {
                 info!(
