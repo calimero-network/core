@@ -378,11 +378,27 @@ the path parameter — these are reproduced exactly as routed below.
 | GET | `/admin-api/namespaces/:namespace_id` | Get a namespace. |
 | DELETE | `/admin-api/namespaces/:namespace_id` | Remove a namespace from this node. Any member may; nothing is published and the account stays a member. |
 | POST | `/admin-api/namespaces/:namespace_id/invite` | Invite into a namespace. Body may name `admitters` and `admitterAddrs` — see [below](#invitation-body-admitters-and-addresses). |
-| POST | `/admin-api/namespaces/:namespace_id/join` | Join a namespace. A refusal carries a `code` — see [below](#join-refusals). |
+| POST | `/admin-api/namespaces/:namespace_id/join` | Join a namespace with an `invitation`, or restore one removed from this node with none — see [below](#restoring-a-removed-namespace). A refusal carries a `code` — see [below](#join-refusals). |
 | POST | `/admin-api/namespaces/:namespace_id/admit` | Publish a join signed by a keyholder that has no node of its own. Takes **no credential** on any node: the signed op is the authorization, and a node the invitation does not name refuses it `403`. A join already applied here answers `published: false`. See [Direct Admission](/protocol/direct-admission/#served-without-a-credential). |
 | POST | `/admin-api/namespaces/:namespace_id/leave` | Leave a namespace. With `?purge=true`, this node takes it off its disk once an admin has confirmed the leave, and every other device of the account does the same; the response's `purged` says whether this node did. When it is `false` the account has still left: remove the namespace with `DELETE` on each device. The account namespace itself is refused with `409` `AccountNamespaceNotRemovable`. |
 | GET | `/admin-api/namespaces/:namespace_id/revoked-devices` | Device ids revoked in the namespace (`revokedDevices`) and `sha256(account \|\| device)` of devices an account withdrew there (`withdrawnSlots`). Admin only, on a member node. |
-| GET | `/admin-api/namespaces/for-application/:application_id` | List namespaces for an application. |
+| GET | `/admin-api/namespaces/for-application/:application_id` | List namespaces for an application, including the ones removed from this node, flagged `forgotten: true`. |
+
+#### Restoring a removed namespace
+
+`DELETE /admin-api/namespaces/:namespace_id` leaves a node-local marker when this node's account is still a member.
+`GET /admin-api/namespaces/for-application/:application_id` lists those namespaces with `forgotten: true`, and no other field of them is held here.
+`POST /admin-api/namespaces/:namespace_id/join` with no `invitation` (body `{}`) restores one: the node follows the namespace again, waits up to 30 seconds for its group rows and key to arrive from a peer, then lifts the marker and answers as a join does.
+If they do not arrive, the marker stays, the node is left as it was, and the call answers `503` so it can be retried.
+A client key bound to an application may restore a namespace of that application, and a client key bound to a context may not.
+
+| Answer | Meaning |
+| --- | --- |
+| `404` | This node never held the namespace, and its account is not a member. |
+| `403` | The account no longer names the namespace (a sibling device left it), or this device's scope does not reach its application. |
+| `503` | The namespace was followed again but its state has not arrived; retry. |
+
+An invitation join of a removed namespace lifts the marker too.
 
 #### Join refusals
 

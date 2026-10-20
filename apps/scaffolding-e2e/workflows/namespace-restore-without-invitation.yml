@@ -1,16 +1,18 @@
 name: E2E KV Store - Restore a Removed Namespace Without an Invitation
 description: >
-  Node-2 removes a namespace from its own disk while its account stays a
-  member, lists it as forgotten for the application, and rejoins it with no
-  invitation. The state comes back by sync from node-1, including a write made
-  while node-2 was away, and node-2 stays joined across a restart.
+  Node-1, a device of Alice's account, removes a namespace from its own disk
+  while the account stays a member, finds it listed as forgotten for the
+  application, and restores it with no invitation: the group rows and key come
+  back from the owner, with a write made while it was away. Once the account
+  leaves the namespace through its sibling device node-2, the restore is refused
+  and the removal stands.
 
 force_pull_image: false
 
 auth_mode: embedded
 
 nodes:
-  count: 2
+  count: 3
   image: merod:local
   prefix: restore-node
 
@@ -27,63 +29,105 @@ steps:
     username: dev
     password: dev-password
 
-  - name: Install application on node-1
+  - name: Login on restore-node-3
+    type: login
+    node: restore-node-3
+    username: dev
+    password: dev-password
+
+  - name: Install application on node-3
     type: install_application
-    node: restore-node-1
+    node: restore-node-3
     path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
     dev: true
     outputs:
       app_id: applicationId
 
-  - name: Create namespace on node-1
-    type: create_namespace
+  - name: Install application on node-1
+    type: install_application
     node: restore-node-1
+    path: ../../dist/com.calimero.scaffolding-e2e-0.0.0.mpk
+    dev: true
+
+  - name: Create namespace on node-3
+    type: create_namespace
+    node: restore-node-3
     application_id: '{{app_id}}'
     outputs:
       namespace_id: namespaceId
 
-  - name: Create context in namespace on node-1
+  - name: Create context in namespace on node-3
     type: create_context
-    node: restore-node-1
+    node: restore-node-3
     application_id: '{{app_id}}'
     group_id: '{{namespace_id}}'
     outputs:
       ctx_id: contextId
 
-  - name: Node-1 writes before node-2 joins
+  - name: Node-3 writes before node-1 joins
     type: call
-    node: restore-node-1
+    node: restore-node-3
     context_id: '{{ctx_id}}'
     method: set
     args:
       key: "before_removal"
-      value: "written_by_node_1"
+      value: "written_by_node_3"
 
-  - name: Invite node-2
-    type: create_namespace_invitation
+  - name: What node-1 speaks as
+    type: node_identity
     node: restore-node-1
+    outputs:
+      alice_root: accountRootPublicKey
+
+  - name: Pair node-2 onto Alice's account
+    type: account_pair
+    node: restore-node-2
+    holder: restore-node-1
+    root_key: '{{alice_root}}'
+    account_namespace: auto
+    applications:
+      - '{{app_id}}'
+    await_self: true
+
+  - name: Invite node-1
+    type: create_namespace_invitation
+    node: restore-node-3
     namespace_id: '{{namespace_id}}'
     outputs:
       invitation: invitation
 
-  - name: Node-2 joins the namespace
+  - name: Node-1 joins the namespace
     type: join_namespace
-    node: restore-node-2
+    node: restore-node-1
     namespace_id: '{{namespace_id}}'
     invitation: '{{invitation}}'
 
-  - name: Node-2 syncs the context
+  - name: Node-1 syncs the context
     type: wait_for_sync
+    description: >-
+      lint-convergence: ok - node-2 follows the namespace only through the
+      account, so it answers no governance state hash and is read with `retries`.
     context_id: '{{ctx_id}}'
     nodes:
+      - restore-node-3
       - restore-node-1
-      - restore-node-2
     timeout: 90
     trigger_sync: true
 
-  - name: Node-2 reads the state before removing it
-    type: call
+  - name: Node-2 lists the namespace Alice's other device joined
+    type: assert_api_response
     node: restore-node-2
+    path: /admin-api/namespaces
+    where:
+      namespaceId: '{{namespace_id}}'
+    match:
+      targetApplicationId: '{{app_id}}'
+    retries: 45
+    interval: 2
+
+  - name: Node-1 reads the state before removing it
+    type: call
+    node: restore-node-1
     context_id: '{{ctx_id}}'
     method: get
     args:
@@ -91,46 +135,47 @@ steps:
     outputs:
       before_joined: result
 
-  - name: Assert node-2 holds the state
+  - name: Assert node-1 holds the state
     type: json_assert
     statements:
-      - 'json_equal({{before_joined}}, {"output": "written_by_node_1"})'
+      - 'json_equal({{before_joined}}, {"output": "written_by_node_3"})'
 
-  # Removing it from this device publishes nothing: node-1 still counts node-2.
-  - name: Node-2 removes the namespace from its own disk
+  # Removing it from this device publishes nothing: the account stays a member.
+  - name: Node-1 removes the namespace from its own disk
     type: delete_namespace
-    node: restore-node-2
+    node: restore-node-1
     namespace_id: '{{namespace_id}}'
 
-  - name: Node-2 lists the namespace as forgotten for the application
+  - name: Node-1 lists the namespace as forgotten for the application
     type: assert_api_response
-    node: restore-node-2
+    node: restore-node-1
     path: '/admin-api/namespaces/for-application/{{app_id}}'
     where:
       namespaceId: '{{namespace_id}}'
     match:
       forgotten: true
 
-  - name: Node-1 writes while node-2 is away
+  - name: Node-3 writes while node-1 is away
     type: call
-    node: restore-node-1
+    node: restore-node-3
     context_id: '{{ctx_id}}'
     method: set
     args:
       key: "while_removed"
-      value: "written_while_node_2_was_away"
+      value: "written_while_node_1_was_away"
 
-  - name: Node-2 rejoins with no invitation
+  - name: Node-1 restores the namespace with no invitation
     type: script
     script: scripts/rejoin-namespace.sh
     target: local
     args:
-      - restore-node-2
+      - restore-node-1
       - '{{namespace_id}}'
 
-  - name: Node-2 no longer lists the namespace as forgotten
+  # Held again: listed with no forgotten flag, which needs its group rows back.
+  - name: Node-1 lists the namespace as held
     type: assert_api_response
-    node: restore-node-2
+    node: restore-node-1
     path: '/admin-api/namespaces/for-application/{{app_id}}'
     where:
       namespaceId: '{{namespace_id}}'
@@ -139,18 +184,18 @@ steps:
     retries: 45
     interval: 2
 
-  - name: Node-2 syncs the context back
+  - name: Node-1 syncs the context back
     type: wait_for_sync
     context_id: '{{ctx_id}}'
     nodes:
+      - restore-node-3
       - restore-node-1
-      - restore-node-2
     timeout: 120
     trigger_sync: true
 
-  - name: Node-2 reads the state it had before
+  - name: Node-1 reads the state it had before
     type: call
-    node: restore-node-2
+    node: restore-node-1
     context_id: '{{ctx_id}}'
     method: get
     args:
@@ -158,9 +203,9 @@ steps:
     outputs:
       before_restored: result
 
-  - name: Node-2 reads the write made while it was away
+  - name: Node-1 reads the write made while it was away
     type: call
-    node: restore-node-2
+    node: restore-node-1
     context_id: '{{ctx_id}}'
     method: get
     args:
@@ -168,47 +213,49 @@ steps:
     outputs:
       while_restored: result
 
-  - name: Assert node-2 has the state back
+  - name: Assert node-1 has the state back
     type: json_assert
     statements:
-      - 'json_equal({{before_restored}}, {"output": "written_by_node_1"})'
-      - 'json_equal({{while_restored}}, {"output": "written_while_node_2_was_away"})'
+      - 'json_equal({{before_restored}}, {"output": "written_by_node_3"})'
+      - 'json_equal({{while_restored}}, {"output": "written_while_node_1_was_away"})'
 
-  - name: Stop node-2
-    type: stop_node
-    nodes: restore-node-2
+  - name: Node-1 removes the namespace again
+    type: delete_namespace
+    node: restore-node-1
+    namespace_id: '{{namespace_id}}'
 
-  - name: Start node-2 again
-    type: start_node
-    nodes: restore-node-2
-    wait_for_ready: true
-    wait_timeout: 60
-
-  - name: Node-2 still lists the namespace after the restart
+  - name: Node-1 lists it as forgotten again
     type: assert_api_response
-    node: restore-node-2
-    path: /admin-api/namespaces
+    node: restore-node-1
+    path: '/admin-api/namespaces/for-application/{{app_id}}'
     where:
       namespaceId: '{{namespace_id}}'
-    absent:
-      - forgotten
-    retries: 30
-    interval: 2
+    match:
+      forgotten: true
 
-  - name: Node-2 reads the state after the restart
-    type: call
+  - name: Alice's account leaves the namespace through node-2
+    type: leave_namespace
     node: restore-node-2
-    context_id: '{{ctx_id}}'
-    method: get
-    args:
-      key: "while_removed"
-    outputs:
-      after_restart: result
+    namespace_id: '{{namespace_id}}'
 
-  - name: Assert node-2 kept the state across the restart
-    type: json_assert
-    statements:
-      - 'json_equal({{after_restart}}, {"output": "written_while_node_2_was_away"})'
+  # The account no longer names the namespace, so it is no longer Alice's to restore.
+  - name: Node-1's restore is refused
+    type: script
+    script: scripts/rejoin-namespace.sh
+    target: local
+    args:
+      - restore-node-1
+      - '{{namespace_id}}'
+      - '403'
+
+  - name: Node-1 still lists the namespace as forgotten
+    type: assert_api_response
+    node: restore-node-1
+    path: '/admin-api/namespaces/for-application/{{app_id}}'
+    where:
+      namespaceId: '{{namespace_id}}'
+    match:
+      forgotten: true
 
 stop_all_nodes: true
 restart: false
