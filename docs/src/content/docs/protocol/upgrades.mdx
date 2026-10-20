@@ -114,6 +114,23 @@ Identical files across versions share one refcounted blob.
 An upgrade keeps the frontend of every older bundle, because the node does not count the contexts still bound to it.
 Uninstalling an application releases the frontend of every bundle installed under it.
 
+#### Serving the frontend
+
+Each application is served from its own browser origin, `{label}.{base_domain}`, for example `http://{label}.localhost:2428/`.
+`{label}` is the application id as unpadded lowercase base32, 52 characters.
+`base_domain` is `[server.apps] base_domain` and defaults to `localhost`.
+A request whose `Host` is exactly that name is answered before any other route, CORS or auth layer, and every other host reaches the node's normal routes unchanged.
+Admin tokens live in the dashboard origin, so an app host serves nothing but that app's files: `GET` and `HEAD` of `/{version}/` (the entry) and `/{version}/{path}`, and `404` for everything else.
+`{version}` is found by scanning the bundle indexes for that application and release, so an older release keeps its own files after an upgrade.
+`{path}` is only a key into the index's file list and never touches a filesystem, so `..` and encoded dots simply match no file.
+`/` redirects (`302`) to the application row's current version.
+`/?namespace={id}` is not supported yet and answers `404`, because a namespace records the bytecode blob it runs and not the release that blob came from.
+
+Files stream from their blobs, whose chunks are re-hashed as they are read.
+A blob that is missing or fails its hash answers `500` before any header is sent, never other bytes.
+Every response carries the content security policy from `crates/bundle/AGENTS.md`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+A file also carries its `Content-Type`, an `ETag` of its blob id (answered with `304` on a match) and `Cache-Control: public, max-age=31536000, immutable`.
+
 `calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
 The node enforces paths, sizes, hashes and the MIME allowlist at install.
 The HTML rules are build-time feedback that only `cargo mero` runs; at serve time the boundary is the per-app origin plus the CSP.
