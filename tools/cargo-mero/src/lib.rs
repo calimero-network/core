@@ -9,6 +9,7 @@ use clap::Parser;
 mod abi;
 mod build;
 mod bundle;
+mod frontend;
 mod guide;
 mod icon;
 mod logo;
@@ -166,8 +167,23 @@ struct BundleArgs {
     #[arg(long)]
     print_output_path: bool,
 
+    /// Check the web frontend inside an existing .mpk instead of building one
+    #[arg(long, value_name = "MPK")]
+    check_frontend: Option<Utf8PathBuf>,
+
+    /// How frontend problems and the final summary are printed: `json` puts one
+    /// object on stdout, the last line on success and the only line on failure
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
+
     #[command(flatten)]
     features: workspace::FeatureArgs,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum OutputFormat {
+    Human,
+    Json,
 }
 
 /// CLI spelling of `registry::Bump`, kept separate so `registry` stays
@@ -312,7 +328,10 @@ fn dispatch(cmd: Command) -> eyre::Result<()> {
         Command::New(args) => new::run(&args),
         Command::Build(args) => build::run(&args).map(|_| ()),
         Command::Test(args) => test_cmd::run(&args),
-        Command::Bundle(args) => bundle::run(&args).map(|_| ()),
+        Command::Bundle(args) => match &args.check_frontend {
+            Some(mpk) => frontend::report(args.format, frontend::check_mpk(mpk)),
+            None => bundle::run(&args).map(|_| ()),
+        },
         Command::Abi(cmd) => dispatch_abi(cmd),
         Command::Key(cmd) => dispatch_key(cmd),
         Command::Sign(args) => dispatch_sign(&args),

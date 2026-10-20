@@ -436,6 +436,8 @@ mod tests {
             no_icon: false,
             no_logo: false,
             print_output_path: false,
+            check_frontend: None,
+            format: crate::OutputFormat::Human,
             bump: None,
             features: FeatureArgs::default(),
         }
