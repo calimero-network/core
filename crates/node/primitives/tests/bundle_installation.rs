@@ -2425,6 +2425,27 @@ fn frontend_blobs(node_client: &NodeClient, bundle: &BlobId) -> Vec<BlobId> {
 }
 
 #[tokio::test]
+async fn a_release_s_frontend_is_found_by_application_and_version() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let (id, bundles) = install_two_releases(&node_client).await;
+
+    for (version, bundle) in ["1.0.0", "2.0.0"].into_iter().zip(&bundles) {
+        let found = node_client.find_bundle_frontend(&id, version).unwrap();
+        assert_eq!(found, node_client.get_bundle_frontend(bundle).unwrap());
+        assert!(found.is_some());
+    }
+    assert_eq!(
+        node_client.find_bundle_frontend(&id, "3.0.0").unwrap(),
+        None
+    );
+    let other = ApplicationId::from([9; 32]);
+    assert_eq!(
+        node_client.find_bundle_frontend(&other, "1.0.0").unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn uninstall_releases_every_release_s_frontend() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
     let (id, bundles) = install_two_releases(&node_client).await;
