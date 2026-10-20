@@ -502,6 +502,7 @@ request re-stamps it.
 - `app_host::serve_app_hosts` is the outermost layer, so a request whose `Host` is exactly `{label}.{apps.base_domain}` never meets CORS, the origin guard, the sealed envelope or any route.
   Admin tokens live in the dashboard origin's storage, so an app host serves only `GET` and `HEAD` of that app's files, and everything else is `404`.
   Keep it that way: never route an app host to a handler that is not a frontend file.
+  Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never
   count `Sec-Fetch-Mode` alone: Node's built-in `fetch` sends it on every request, so it would

@@ -352,25 +352,27 @@ pub async fn start(
              refused"
         );
     }
-    let app_hosts = app_host::AppHosts {
+    // A browser cannot seal a request, so under `sealed.required` an app host would
+    // be the one way around the envelope: leave it unmounted.
+    let app_hosts = (!config.sealed.required).then(|| app_host::AppHosts {
         node_client: node_client.clone(),
         base_domain: config.apps.base_domain.to_ascii_lowercase(),
-    };
-    let app = ServiceBuilder::new()
-        .layer(axum::middleware::from_fn_with_state(
-            app_hosts,
-            app_host::serve_app_hosts,
-        ))
-        .layer(build_cors_layer(&config.cors, origin_guard.as_ref()))
-        .layer(axum::middleware::from_fn_with_state(
-            origin_guard,
-            origin_guard::refuse_foreign_origins,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            transport,
-            sealed::intercept,
-        ))
-        .service(app);
+    });
+    let app =
+        ServiceBuilder::new()
+            .option_layer(app_hosts.map(|hosts| {
+                axum::middleware::from_fn_with_state(hosts, app_host::serve_app_hosts)
+            }))
+            .layer(build_cors_layer(&config.cors, origin_guard.as_ref()))
+            .layer(axum::middleware::from_fn_with_state(
+                origin_guard,
+                origin_guard::refuse_foreign_origins,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                transport,
+                sealed::intercept,
+            ))
+            .service(app);
 
     let mut set = JoinSet::new();
 
@@ -847,6 +849,54 @@ mod cors_tests {
             .await
             .expect("read the response");
         String::from_utf8_lossy(&response).into_owned()
+    }
+
+    #[actix::test]
+    async fn a_node_requiring_sealed_requests_does_not_serve_app_hosts() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("a free port")
+            .local_addr()
+            .expect("its address")
+            .port();
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let mut config = ServerConfig::new(
+            vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
+            Keypair::generate_ed25519(),
+            Some(AdminConfig::new(true, false)),
+            None,
+            None,
+            None,
+        );
+        config.sealed = crate::config::SealedConfig::new(true);
+        let shutdown = CancellationToken::new();
+        let server = actix::spawn(start(
+            config,
+            state.ctx_client.clone(),
+            state.node_client.clone(),
+            store,
+            Registry::default(),
+            Arc::new(NodeReadiness::new()),
+            shutdown.clone(),
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+        let label = crate::app_host::encode_label(&ApplicationId::from([7; 32]));
+
+        let app_host = post_sign_with_root(port, Some(&format!("{label}.localhost")), None).await;
+
+        shutdown.cancel();
+        server
+            .await
+            .expect("the server task ends")
+            .expect("the server stops cleanly");
+        assert!(app_host.contains("sealed_required"), "{app_host}");
+        assert!(
+            !app_host
+                .to_ascii_lowercase()
+                .contains("content-security-policy"),
+            "{app_host}"
+        );
     }
 
     #[actix::test]
