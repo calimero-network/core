@@ -123,6 +123,7 @@ An older node ignores the field and the app still runs from `links.frontend`.
 | `FRONTEND_ESCAPING_URL` | an HTML file loads a root-absolute URL (`/assets/app.js`, `/vite.svg`; Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root, in any of those attributes; or has any `<base>`; build with `base: './'` |
 | `FRONTEND_INLINE_SCRIPT` | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, or a `javascript:` URL in `href`, `src`, `action` or `formaction`; the served page's CSP forbids inline code |
 | `FRONTEND_INVALID_HTML` | an HTML file is not UTF-8 |
+| `FRONTEND_MISSING_FILE` | a file the manifest lists is not in the archive or the build output |
 
 HTML is read with a spec parser (`html5ever`, through `scraper`), so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
 

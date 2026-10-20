@@ -1,7 +1,11 @@
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
-use std::sync::LazyLock;
 
-use scraper::{ElementRef, Html, Selector};
+use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::states::RawKind;
+use html5ever::tokenizer::{
+    BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -59,12 +63,22 @@ const MIME_TYPES: &[(&str, &str)] = &[
     ("wasm", "application/wasm"),
 ];
 
-/// Elements that load code; a `data:` or `blob:` URL is refused on these only.
-static CODE_LOADERS: LazyLock<Selector> = LazyLock::new(|| {
-    Selector::parse(r#"script, link[rel~="modulepreload"], link[rel~="preload"]"#)
-        // SAFETY: the selector is a constant, and a unit test parses it on every run
-        .expect("static selector parses")
-});
+/// Elements whose content a browser reads as text, not markup, and how.
+const RAW_TEXT: &[(&str, RawKind)] = &[
+    ("script", RawKind::ScriptData),
+    ("style", RawKind::Rawtext),
+    ("xmp", RawKind::Rawtext),
+    ("iframe", RawKind::Rawtext),
+    ("noembed", RawKind::Rawtext),
+    ("noframes", RawKind::Rawtext),
+    ("noscript", RawKind::Rawtext), // the served page runs scripts
+    ("textarea", RawKind::Rcdata),
+    ("title", RawKind::Rcdata),
+];
+
+/// After one of these, markup is never skipped as text: foreign content and
+/// `<select>` change how the tree builder treats the elements in RAW_TEXT.
+const MARKUP_ONLY_AFTER: &[&str] = &["svg", "math", "select"];
 
 /// A static web build shipped inside the bundle and covered by its signature.
 /// Every path is an archive path under `frontend/`; `entry` names one of `files`.
@@ -113,6 +127,8 @@ pub enum FrontendError {
     InlineScript { path: String, what: String },
     #[error("[FRONTEND_ENTRY_NOT_HTML] frontend entry '{0}' is not an HTML file")]
     EntryNotHtml(String),
+    #[error("[FRONTEND_MISSING_FILE] frontend file '{0}' is listed in the manifest but is not in the archive or build output")]
+    MissingFile(String),
 }
 
 impl FrontendError {
@@ -130,6 +146,7 @@ impl FrontendError {
             Self::EscapingUrl { .. } | Self::Base(_) => "FRONTEND_ESCAPING_URL",
             Self::InlineScript { .. } => "FRONTEND_INLINE_SCRIPT",
             Self::EntryNotHtml(_) => "FRONTEND_ENTRY_NOT_HTML",
+            Self::MissingFile(_) => "FRONTEND_MISSING_FILE",
         }
     }
 }
@@ -188,43 +205,139 @@ pub fn verify_frontend_file(file: &BundleArtifact, bytes: &[u8]) -> Result<(), F
 }
 
 /// Refuses what the served page's CSP or its `/apps/{package}/{version}/` path
-/// would break. A spec parser decodes attributes and nests elements as a browser does.
+/// would break. Only the tokenizer runs (linear time); a tree build is quadratic
+/// on deep nesting. It decodes attributes and reads raw-text elements as a browser does.
 fn check_html(path: &str, html: &str) -> Result<(), FrontendError> {
-    let document = Html::parse_document(html);
     let depth = path
         .strip_prefix(FRONTEND_ROOT)
         .unwrap_or(path)
         .matches('/')
         .count();
-    for element in document
-        .root_element()
-        .descendants()
-        .filter_map(ElementRef::wrap)
-    {
-        if let Some(what) = inline_code(element) {
-            return Err(FrontendError::InlineScript {
-                path: path.to_owned(),
-                what,
-            });
+    let input = BufferQueue::default();
+    input.push_back(StrTendril::from(html));
+    let tokenizer = Tokenizer::new(HtmlCheck::new(path, depth), TokenizerOpts::default());
+    let _ = tokenizer.feed(&input);
+    tokenizer.end();
+    tokenizer.sink.error.take().map_or(Ok(()), Err)
+}
+
+struct HtmlCheck<'a> {
+    path: &'a str,
+    depth: usize,
+    markup_only: Cell<bool>,
+    open_scripts: RefCell<Vec<bool>>, // per open `<script>`: does its text run as code
+    running: Cell<usize>,             // how many of them do
+    error: RefCell<Option<FrontendError>>,
+}
+
+impl<'a> HtmlCheck<'a> {
+    fn new(path: &'a str, depth: usize) -> Self {
+        Self {
+            path,
+            depth,
+            markup_only: Cell::new(false),
+            open_scripts: RefCell::default(),
+            running: Cell::new(0),
+            error: RefCell::default(),
         }
-        check_resources(path, element, depth)?;
     }
-    Ok(())
+
+    fn fail(&self, err: FrontendError) {
+        self.error.borrow_mut().get_or_insert(err);
+    }
+
+    fn inline_script(&self, what: &str) {
+        self.fail(FrontendError::InlineScript {
+            path: self.path.to_owned(),
+            what: what.to_owned(),
+        });
+    }
+
+    fn start_tag(&self, tag: &Tag) -> TokenSinkResult<()> {
+        let name: &str = &tag.name;
+        let attrs: Vec<(&str, &str)> = tag
+            .attrs
+            .iter()
+            .map(|a| {
+                let attr: &str = &a.name.local;
+                (attr.strip_prefix("xlink:").unwrap_or(attr), &*a.value)
+            })
+            .collect();
+        if let Some(what) = inline_code(&attrs) {
+            self.inline_script(&what);
+        } else if let Err(err) = check_resources(self.path, name, &attrs, self.depth) {
+            self.fail(err);
+        }
+        if name == "script" && !(tag.self_closing && self.markup_only.get()) {
+            let runs = attr(&attrs, "src").is_none() && is_executable(attr(&attrs, "type"));
+            self.open_scripts.borrow_mut().push(runs);
+            self.running.set(self.running.get() + usize::from(runs));
+        }
+        if MARKUP_ONLY_AFTER.contains(&name) {
+            self.markup_only.set(true);
+        }
+        if self.markup_only.get() {
+            return TokenSinkResult::Continue;
+        }
+        match RAW_TEXT.iter().find(|(raw, _)| *raw == name) {
+            Some((_, kind)) => TokenSinkResult::RawData(*kind),
+            None if name == "plaintext" => TokenSinkResult::Plaintext,
+            None => TokenSinkResult::Continue,
+        }
+    }
+}
+
+impl TokenSink for HtmlCheck<'_> {
+    type Handle = ();
+
+    fn process_token(&self, token: Token, _line: u64) -> TokenSinkResult<()> {
+        match token {
+            Token::TagToken(tag) if tag.kind == TagKind::StartTag => return self.start_tag(&tag),
+            Token::TagToken(tag) if &*tag.name == "script" => {
+                if self.open_scripts.borrow_mut().pop() == Some(true) {
+                    self.running.set(self.running.get() - 1);
+                }
+            }
+            Token::CharacterTokens(text) if self.running.get() > 0 && !text.trim().is_empty() => {
+                self.inline_script("inline script");
+            }
+            Token::NullCharacterToken if self.running.get() > 0 => {
+                self.inline_script("inline script");
+            }
+            _ => {}
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+fn attr<'a>(attrs: &[(&str, &'a str)], name: &str) -> Option<&'a str> {
+    attrs.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
 /// Refuses a URL the element loads that the CSP or the path layout would break.
 /// Navigation (`<a>`, `<area>`) is left alone; `data:` and `blob:` load only as non-code.
-fn check_resources(path: &str, element: ElementRef, depth: usize) -> Result<(), FrontendError> {
-    let name = element.value().name();
+fn check_resources(
+    path: &str,
+    name: &str,
+    attrs: &[(&str, &str)],
+    depth: usize,
+) -> Result<(), FrontendError> {
     if name == "base" {
         return Err(FrontendError::Base(path.to_owned()));
     }
     if matches!(name, "a" | "area") {
         return Ok(());
     }
-    let is_code = CODE_LOADERS.matches(&element);
-    for (attr, value) in element.value().attrs() {
-        let urls: Vec<&str> = match attr {
+    let is_code = name == "script"
+        || (name == "link"
+            && attr(attrs, "rel").is_some_and(|rel| {
+                rel.split_ascii_whitespace().any(|token| {
+                    token.eq_ignore_ascii_case("modulepreload")
+                        || token.eq_ignore_ascii_case("preload")
+                })
+            }));
+    for (attr, value) in attrs {
+        let urls: Vec<&str> = match *attr {
             "src" | "href" | "poster" => vec![value],
             "srcset" => value
                 .split(',')
@@ -256,22 +369,23 @@ fn check_resources(path: &str, element: ElementRef, depth: usize) -> Result<(), 
     Ok(())
 }
 
-/// What makes `element` run code the CSP forbids, if anything.
-fn inline_code(element: ElementRef) -> Option<String> {
-    let value = element.value();
-    for (name, attr) in value.attrs() {
-        let is_url = matches!(name, "href" | "src" | "action" | "formaction");
+/// What makes an element with these attributes run code the CSP forbids, if anything.
+fn inline_code(attrs: &[(&str, &str)]) -> Option<String> {
+    attrs.iter().find_map(|(name, value)| {
+        let is_url = matches!(*name, "href" | "src" | "action" | "formaction");
         if name.starts_with("on") {
-            return Some(format!("event handler '{name}'"));
+            Some(format!("event handler '{name}'"))
+        } else if is_url && has_scheme(&normalize_url(value), "javascript") {
+            Some(format!("{name}=\"{value}\""))
+        } else {
+            None
         }
-        if is_url && has_scheme(&normalize_url(attr), "javascript") {
-            return Some(format!("{name}=\"{attr}\""));
-        }
-    }
-    if value.name() != "script" || value.attr("src").is_some() {
-        return None;
-    }
-    let executable = value.attr("type").is_none_or(|t| {
+    })
+}
+
+/// Whether a `<script>` with this `type` is run by a browser rather than an inert data block.
+fn is_executable(script_type: Option<&str>) -> bool {
+    script_type.is_none_or(|t| {
         let essence = t
             .split(';')
             .next()
@@ -279,9 +393,7 @@ fn inline_code(element: ElementRef) -> Option<String> {
             .trim()
             .to_ascii_lowercase();
         essence.is_empty() || SCRIPT_TYPES.contains(&essence.as_str())
-    });
-    let has_code = element.text().any(|t| !t.trim().is_empty());
-    (executable && has_code).then(|| "inline script".to_owned())
+    })
 }
 
 /// The URL spec's preprocessing: trims spaces and drops tabs and newlines.
@@ -456,6 +568,7 @@ mod tests {
                 what: s(),
             },
             FrontendError::EntryNotHtml(s()),
+            FrontendError::MissingFile(s()),
         ] {
             assert!(
                 err.to_string().starts_with(&format!("[{}]", err.code())),
@@ -609,6 +722,46 @@ mod tests {
         let start = std::time::Instant::now();
         verify_html(&"<span>".repeat(100_000)).unwrap();
         assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn checks_deeply_nested_divs_in_linear_time() {
+        let start = std::time::Instant::now();
+        verify_html(&"<div>".repeat(200_000)).unwrap();
+        assert!(start.elapsed().as_secs() < 2, "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn raw_text_elements_hide_their_content_from_the_scan() {
+        verify_html(
+            r#"<title><img src="https://x/a.png"></title>
+               <style><img src="https://x/a.png"></style>
+               <textarea><img src="https://x/a.png"></textarea>
+               <script type="text/template"><script src="https://x/a.js"></script>"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn foreign_content_and_select_are_scanned_as_markup() {
+        for html in [
+            r#"<svg><script href="a.js"><img src="https://x/a.png"></script></svg>"#,
+            r#"<select><xmp></select><img src="https://x/a.png"></xmp>"#,
+        ] {
+            assert_eq!(
+                verify_html(html).unwrap_err().code(),
+                "FRONTEND_REMOTE_RESOURCE"
+            );
+        }
+        let err = verify_html("<svg><script><b></b>x()</script></svg>").unwrap_err();
+        assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT");
+        verify_html("<svg><script href=a.js /></svg><p>text</p>").unwrap();
+    }
+
+    #[test]
+    fn an_unclosed_script_still_counts_as_inline_code() {
+        let err = verify_html("<script>alert(1)").unwrap_err();
+        assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT");
     }
 
     #[test]

@@ -6,7 +6,7 @@ The `BundleManifest` schema and the RFC 8785 (JCS) canonicalization / Ed25519 si
 
 - **Crate**: `calimero-bundle`
 - **Entry**: `src/lib.rs` (types), `src/signature.rs` (canonicalization, signing, verification)
-- **Key deps**: `serde`/`serde_json` ((de)serialization), `serde_json_canonicalizer` (RFC 8785 JCS), `ed25519-dalek` (sign/verify), `sha2` (bundle hash), `base64`/`bs58`/`hex` (encodings), `eyre` and `thiserror` (errors), `scraper` (spec HTML parsing for the frontend check)
+- **Key deps**: `serde`/`serde_json` ((de)serialization), `serde_json_canonicalizer` (RFC 8785 JCS), `ed25519-dalek` (sign/verify), `sha2` (bundle hash), `base64`/`bs58`/`hex` (encodings), `eyre` and `thiserror` (errors), `html5ever` (HTML tokenizer for the frontend check)
 
 ## Commands
 
@@ -30,7 +30,7 @@ cargo test -p calimero-bundle
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
 | `BundleFrontend::validate()`, `verify_frontend_file()` | fn | The bundled-frontend rules `cargo mero` and the node share: manifest-level (paths, case-insensitive duplicates, HTML entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file (size, hash, and in HTML no remote or bundle-escaping code URL and no inline code) |
-| `FrontendError` | enum | Each refusal, with a stable `code()` (`FRONTEND_*`) that `Display` also prints; tooling matches the code, never the message |
+| `FrontendError` | enum | Each refusal, with a stable `code()` (`FRONTEND_*`) that `Display` also prints, `FRONTEND_MISSING_FILE` included for the node and CLI to raise; tooling matches the code, never the message |
 | `mime_type()` | fn | The `Content-Type` a frontend file is served with; `None` outside the allowlist |
 | `MAX_MANIFEST_BYTES` | const | 1 MiB cap the node enforces on `manifest.json`, before any signature check |
 | `canonicalize_manifest`, `compute_bundle_hash`, `compute_signing_payload` | fn | RFC 8785 canonical bytes (signature and `_`-prefixed transient fields stripped first), then their SHA-256; the signing payload is that SHA-256 over `MANIFEST_SIGNING_DOMAIN` followed by the canonical bytes |
@@ -59,7 +59,7 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **`_`-prefixed fields never reach the signed bytes.** `canonicalize_manifest` strips them unconditionally; don't add a real (signed) field with a leading underscore.
 - **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The aliases do reach `to_metadata_json()`: a node's sign-in page reads them there to trust a login callback to an app's old origin.
 - **A frontend path has one spelling.** `frontend/` then non-empty components of only `A-Za-z0-9._~@+-` (no `.` or `..`), compared ASCII-case-insensitively, so the archive entry, the manifest and a served URL cannot name different files.
-- **HTML is checked with a spec parser, never by substring.** `check_html` reads `scraper`'s decoded attributes; a raw-bytes or rewriter-level scan misses entity-encoded schemes.
+- **HTML is checked with the spec tokenizer, never by substring and never with a tree build.** `check_html` reads `html5ever`'s decoded attributes, so entity-encoded schemes are caught; a tree build is quadratic on deep nesting, and a node runs this on remote bundles. Raw-text elements (`script`, `style`, `title`, ...) hide their content, except after an `svg`, `math` or `select`, where everything is scanned as markup.
 - **The static check mirrors the serving contract.** The page is served at `/apps/{package}/{version}/`, so root-absolute or climbing resource URLs and any `<base>` (`FRONTEND_ESCAPING_URL`), remote resource URLs (`FRONTEND_REMOTE_RESOURCE`) and inline code (`FRONTEND_INLINE_SCRIPT`) are refused here first. `srcdoc` and SVG files are left to the CSP.
 - **The server must send this CSP with the frontend.** `default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'`.
   Loosening it without loosening `check_html` refuses bundles that would work, and tightening it without `check_html` ships pages that break.
