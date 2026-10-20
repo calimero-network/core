@@ -405,19 +405,12 @@ fn a_fifo_in_the_frontend_is_refused_without_reading_it() {
 
 #[cfg(unix)]
 #[test]
-fn files_over_the_cap_fail_before_any_is_read() {
-    use std::os::unix::fs::PermissionsExt;
-
+fn a_file_far_over_the_cap_fails_before_it_is_read() {
     let tmp = tempfile::tempdir().unwrap();
     write_build(tmp.path(), &[("index.html", INDEX_HTML)]);
-    // Unreadable, so reading either file would fail with a different code.
-    for name in ["a.js", "b.js"] {
-        let path = tmp.path().join(name);
-        let file = std::fs::File::create(&path).unwrap();
-        file.set_len(calimero_bundle::MAX_FRONTEND_BYTES / 2 + 1)
-            .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    // Sparse, so it costs no disk; reading it would buffer 64 GiB.
+    let file = std::fs::File::create(tmp.path().join("big.js")).unwrap();
+    file.set_len(64 << 30).unwrap();
 
     let err = stdout_json(&bundle_with_frontend(tmp.path(), &[]));
     assert_eq!(err["code"], "FRONTEND_TOO_LARGE", "{err}");

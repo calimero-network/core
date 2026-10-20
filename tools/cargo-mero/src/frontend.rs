@@ -78,8 +78,7 @@ pub fn collect(dir: &Path) -> Result<Collected> {
     let mut files = Vec::with_capacity(found.len());
     let mut contents = Vec::with_capacity(found.len());
     for (source, rel, _) in found {
-        let bytes =
-            fs::read(&source).wrap_err_with(|| format!("failed to read {}", source.display()))?;
+        let bytes = read_regular(&source, &rel)?;
         files.push(manifest::artifact_from_bytes(rel, &bytes));
         contents.push(bytes);
     }
@@ -93,6 +92,24 @@ pub fn collect(dir: &Path) -> Result<Collected> {
         check_file(file, bytes)?;
     }
     Ok(Collected { frontend, contents })
+}
+
+/// Read one file, judging the handle it was opened as: a path swapped for a
+/// pipe or link after the walk is refused, and a file that grew is cut at its length plus one.
+fn read_regular(source: &Path, rel: &str) -> Result<Vec<u8>> {
+    let read_err = || format!("failed to read {}", source.display());
+    let file = File::open(source).wrap_err_with(read_err)?;
+    let meta = file.metadata().wrap_err_with(read_err)?;
+    if !meta.is_file() {
+        return Err(FrontendError::UnsafePath(rel.to_owned()).into());
+    }
+    let len = meta.len();
+    let mut bytes = Vec::new();
+    let _ = file
+        .take(len.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .wrap_err_with(read_err)?;
+    Ok(bytes)
 }
 
 /// The node's byte checks on one file, plus the build-time HTML lint.
@@ -277,5 +294,25 @@ fn hint(err: &FrontendError) -> &'static str {
         }
         FrontendError::InlineScript { .. } => "move inline scripts and handlers into a script file",
         FrontendError::InvalidHtml(_) => "save the HTML file as UTF-8",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_directory_in_a_files_place_is_refused_as_unsafe() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let err = read_regular(tmp.path(), "frontend/app.js").unwrap_err();
+
+        assert!(
+            matches!(
+                err.downcast_ref::<FrontendError>(),
+                Some(FrontendError::UnsafePath(p)) if p == "frontend/app.js"
+            ),
+            "{err:?}"
+        );
     }
 }
