@@ -2097,18 +2097,31 @@ const FRONTEND_INDEX: &[u8] = b"<html><body>hello</body></html>";
 /// A signed single-service bundle whose manifest lists `listed` as its frontend
 /// (entry `frontend/index.html`) while the archive holds `shipped`.
 fn frontend_bundle(listed: &[(&str, &[u8])], shipped: &[(&str, &[u8])]) -> Vec<u8> {
+    frontend_bundle_declaring_wasm_size(listed, shipped, None)
+}
+
+/// As `frontend_bundle`, but the manifest declares the wasm as `wasm_size` bytes when given.
+fn frontend_bundle_declaring_wasm_size(
+    listed: &[(&str, &[u8])],
+    shipped: &[(&str, &[u8])],
+    wasm_size: Option<usize>,
+) -> Vec<u8> {
     let dir = TempDir::new().unwrap();
     let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm: &[u8] = b"frontend test wasm";
     let artifact = |path: &str, bytes: &[u8]| serde_json::json!({ "path": path, "hash": artifact_hash(bytes), "size": bytes.len() });
     let files: Vec<_> = listed.iter().map(|(p, b)| artifact(p, b)).collect();
+    let mut wasm_artifact = artifact("svc.wasm", wasm);
+    if let Some(size) = wasm_size {
+        wasm_artifact["size"] = size.into();
+    }
     let mut manifest = serde_json::json!({
         "version": "1.0",
         "package": "com.example.frontend",
         "appVersion": "1.0.0",
         "signerId": derive_signer_id_did_key(signing_key.verifying_key().as_bytes()),
         "minRuntimeVersion": "0.1.0",
-        "services": [{ "name": "svc", "wasm": artifact("svc.wasm", wasm) }],
+        "services": [{ "name": "svc", "wasm": wasm_artifact }],
         "frontend": { "entry": "frontend/index.html", "files": files },
     });
     sign_manifest(&mut manifest, &signing_key);
@@ -2213,4 +2226,19 @@ async fn an_invalid_frontend_manifest_refuses_the_install_with_its_code() {
 
     assert!(err.to_string().contains("FRONTEND_UNSAFE_PATH"), "{err}");
     assert_nothing_installed(&node_client);
+}
+
+#[tokio::test]
+async fn a_wasm_artifact_longer_than_its_declared_size_still_installs() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let files: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX)];
+
+    let id = try_install(
+        &node_client,
+        frontend_bundle_declaring_wasm_size(files, files, Some(1)),
+    )
+    .await
+    .expect("the wasm size field was never enforced, so understating it must not refuse");
+
+    assert!(node_client.get_application(&id).unwrap().is_some());
 }

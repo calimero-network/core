@@ -269,6 +269,9 @@ pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
 /// absent from the result. A path that will not decode is a non-match rather than
 /// an abort, as everywhere else.
 ///
+/// A path's bound caps its read at that many bytes plus one, so an overrun is
+/// seen without buffering it; wasm is bounded by `u64::MAX`, i.e. read whole.
+///
 /// One walk for every path, not one per path: skipping an entry still
 /// decompresses it, so a walk per artifact would multiply the archive's whole
 /// decompressed size by the number of artifacts.
@@ -298,18 +301,11 @@ pub(crate) fn extract_bundle_files<'a>(
         if !entry.header().entry_type().is_file() {
             bail!("bundle artifact '{}' is not a regular file", matched[0]);
         }
-        // One byte past the largest declared size, so an overrun is seen without buffering it.
         let limit = matched.iter().map(|w| wanted[w]).max().unwrap_or(0);
         let mut bytes = Vec::new();
         let _ = (&mut entry)
             .take(limit.saturating_add(1))
             .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > limit {
-            bail!(
-                "bundle artifact '{}' is larger than the {limit} bytes the manifest declares",
-                matched[0]
-            );
-        }
         let bytes: Arc<[u8]> = Arc::from(bytes);
         for path in matched {
             if found.insert(path, Arc::clone(&bytes)).is_some() {
@@ -381,14 +377,14 @@ impl VerifiedBundle {
     pub fn wasm(&self, service: Option<&str>) -> eyre::Result<Arc<[u8]>> {
         let artifact = self.wasm_artifact(service)?;
         let path = artifact.path.as_str();
-        let found = extract_bundle_files(&self.data, &BTreeMap::from([(path, artifact.size)]))?;
+        let found = extract_bundle_files(&self.data, &BTreeMap::from([(path, u64::MAX)]))?;
         let bytes = take_artifact(&found, path)?;
         verify_artifact_digest(artifact, &bytes)?;
         Ok(bytes)
     }
 
-    /// Every declared wasm artifact and frontend file, checked against the signed manifest.
-    /// One walk reads each path once, bounded by its declared size; frontend rules run first.
+    /// Every declared wasm artifact and frontend file, checked against the signed manifest in one walk.
+    /// Frontend rules run first; frontend reads are bounded by their declared size, wasm's are not.
     pub fn contents(&self) -> eyre::Result<VerifiedContents> {
         let frontend = self.manifest.frontend.as_ref();
         if let Some(frontend) = frontend {
@@ -397,9 +393,12 @@ impl VerifiedBundle {
         let artifacts = self.manifest.wasm_artifacts();
         let frontend_files = frontend.map_or(&[][..], |f| &f.files[..]);
         let mut wanted = BTreeMap::new();
-        for file in artifacts.iter().map(|a| a.wasm).chain(frontend_files) {
-            let size = wanted.entry(file.path.as_str()).or_insert(0);
-            *size = (*size).max(file.size);
+        for artifact in &artifacts {
+            let _ = wanted.insert(artifact.wasm.path.as_str(), u64::MAX);
+        }
+        for file in frontend_files {
+            let bound = wanted.entry(file.path.as_str()).or_insert(0);
+            *bound = (*bound).max(file.size);
         }
         let found = extract_bundle_files(&self.data, &wanted)?;
 
@@ -419,7 +418,7 @@ impl VerifiedBundle {
         for file in frontend_files {
             let bytes = found
                 .get(file.path.as_str())
-                .map(Arc::clone)
+                .cloned()
                 .ok_or_else(|| FrontendError::MissingFile(file.path.clone()))?;
             verify_frontend_file(file, &bytes)?;
             frontend.insert(file.path.clone(), bytes);

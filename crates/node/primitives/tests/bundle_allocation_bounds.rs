@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use calimero_node_primitives::bundle::{derive_signer_id_did_key, sign_manifest_json};
+use calimero_node_primitives::client::application::bundle::VerifiedBundle;
 use calimero_node_primitives::client::NodeClient;
 use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
@@ -210,17 +211,23 @@ const INDEX_HTML: &[u8] = b"<html></html>"; // the frontend file every bundle he
 
 /// A signed `.mpk` with `services` distinct tiny wasm artifacts, each named by
 /// one service, optionally behind a `padding` byte entry the walk must cross.
-fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> Vec<u8> {
-    bundle_shipping_index(dir, name, services, padding, INDEX_HTML)
+fn padded_bundle(
+    dir: &TempDir,
+    name: &str,
+    services: usize,
+    padding: usize,
+    frontend: bool,
+) -> Vec<u8> {
+    bundle_shipping_index(dir, name, services, padding, frontend.then_some(INDEX_HTML))
 }
 
-/// As `padded_bundle`, but the archive ships `index` where the manifest declares `INDEX_HTML`.
+/// As `padded_bundle`, but a `Some` index is shipped where the manifest declares `INDEX_HTML`.
 fn bundle_shipping_index(
     dir: &TempDir,
     name: &str,
     services: usize,
     padding: usize,
-    index: &[u8],
+    index: Option<&[u8]>,
 ) -> Vec<u8> {
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasms: Vec<Vec<u8>> = (0..services)
@@ -247,16 +254,18 @@ fn bundle_shipping_index(
         "signerId": derive_signer_id_did_key(key.verifying_key().as_bytes()),
         "minRuntimeVersion": "0.1.0",
         "services": declared,
-        "frontend": {
+        "migrations": []
+    });
+    if index.is_some() {
+        manifest["frontend"] = serde_json::json!({
             "entry": "frontend/index.html",
             "files": [{
                 "path": "frontend/index.html",
                 "size": INDEX_HTML.len(),
                 "hash": hex_lower(&Sha256::digest(INDEX_HTML)),
             }],
-        },
-        "migrations": []
-    });
+        });
+    }
     sign_manifest_json(&mut manifest, &key).unwrap();
 
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
@@ -273,7 +282,9 @@ fn bundle_shipping_index(
             .map(|p| p.as_str())
             .zip(wasms.iter().map(Vec::as_slice)),
     );
-    entries.push(("frontend/index.html", index));
+    if let Some(index) = index {
+        entries.push(("frontend/index.html", index));
+    }
     pack_entries(dir, name, &entries)
 }
 
@@ -300,8 +311,14 @@ fn install_elapsed(bundle: Vec<u8>) -> Duration {
 /// the two installs is identical, so the difference isolates the walk from a
 /// fixed cost that would otherwise swamp it.
 fn walk_cost(dir: &TempDir, services: usize) -> Duration {
-    let padded = padded_bundle(dir, &format!("pad{services}.mpk"), services, PADDING_BYTES);
-    let bare = padded_bundle(dir, &format!("bare{services}.mpk"), services, 0);
+    let padded = padded_bundle(
+        dir,
+        &format!("pad{services}.mpk"),
+        services,
+        PADDING_BYTES,
+        true,
+    );
+    let bare = padded_bundle(dir, &format!("bare{services}.mpk"), services, 0, true);
     install_elapsed(padded).saturating_sub(install_elapsed(bare))
 }
 
@@ -326,6 +343,37 @@ fn distinct_artifacts_cost_one_walk() {
     );
 }
 
+/// The frontend files ride the same walk as the wasm: reading a bundle that
+/// ships one must cost about what reading the same bundle without one does.
+#[test]
+fn a_frontend_shares_the_walk() {
+    let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = TempDir::new().unwrap();
+    // Noise only adds time, so the fastest of a few reads is the honest cost.
+    let read_cost = |frontend: bool| {
+        let bundle = padded_bundle(&dir, "read.mpk", 1, PADDING_BYTES, frontend);
+        let verified = VerifiedBundle::open(bundle.into()).unwrap();
+        (0..5)
+            .map(|_| {
+                let started = Instant::now();
+                verified.contents().unwrap();
+                started.elapsed()
+            })
+            .min()
+            .unwrap()
+    };
+    let without = read_cost(false);
+    let with = read_cost(true);
+
+    // A second walk for the frontend would cross the padding twice.
+    assert!(
+        with < without.mul_f64(1.5),
+        "reading {PADDING_BYTES} bytes of padding cost {with:?} with a frontend against \
+         {without:?} without: the frontend is read in a walk of its own"
+    );
+}
+
 /// A frontend file declaring a few bytes but shipping `PADDING_BYTES` must be
 /// refused from a bounded read, not after buffering the whole entry.
 #[test]
@@ -333,7 +381,7 @@ fn an_entry_larger_than_declared_is_refused_without_buffering_it() {
     let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     let huge = vec![b'x'; PADDING_BYTES];
-    let bundle = bundle_shipping_index(&dir, "oversized.mpk", 1, 0, &huge);
+    let bundle = bundle_shipping_index(&dir, "oversized.mpk", 1, 0, Some(&huge));
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (node, _store, _data, _blobs) = runtime.block_on(node_client());
@@ -351,8 +399,10 @@ fn an_entry_larger_than_declared_is_refused_without_buffering_it() {
     });
 
     assert!(
-        installed.is_err(),
-        "an oversized frontend file must not install"
+        installed
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("FRONTEND_SIZE_MISMATCH")),
+        "an oversized frontend file must be refused as FRONTEND_SIZE_MISMATCH: {installed:?}"
     );
     assert!(
         peak < PADDING_BYTES / 2,

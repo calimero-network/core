@@ -55,7 +55,7 @@ fuzz_target!(|data: &[u8]| {
     );
 
     // An artifact is a regular file's bytes, so it must sit verbatim in the archive.
-    let wanted = BTreeMap::from([(path.as_str(), wasm.len() as u64)]);
+    let wanted = BTreeMap::from([(path.as_str(), u64::MAX)]);
     if let Ok(found) = extract_bundle_files(&compressed, &wanted) {
         for bytes in found.values() {
             assert!(
@@ -66,8 +66,8 @@ fuzz_target!(|data: &[u8]| {
             );
         }
     }
-    if let Ok(all) = bundle.all_wasm() {
-        for artifact in all {
+    if let Ok(contents) = bundle.contents() {
+        for artifact in contents.wasm {
             assert_eq!(hex::encode(Sha256::digest(&artifact.bytes)), hash);
         }
     }

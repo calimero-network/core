@@ -45,7 +45,7 @@ fn a_sparse_entry_cannot_expand_past_what_the_archive_holds() {
         bundle.len()
     );
 
-    let extracted = extract_bundle_files(&bundle, &BTreeMap::from([(ARTIFACT, 1)]));
+    let extracted = extract_bundle_files(&bundle, &BTreeMap::from([(ARTIFACT, HOLE)]));
     let expanded = extracted
         .as_ref()
         .ok()
