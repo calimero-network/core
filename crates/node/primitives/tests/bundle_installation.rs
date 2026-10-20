@@ -2386,6 +2386,7 @@ async fn an_upgrade_keeps_every_version_s_frontend_and_shares_identical_files() 
         node_client.get_bundle_frontend(&v1).unwrap().unwrap(),
         node_client.get_bundle_frontend(&v2).unwrap().unwrap(),
     );
+    assert_eq!((&*i1.version, &*i2.version), ("1.0.0", "2.0.0"));
     let js = |i: &calimero_store::types::BundleFrontend| {
         i.files
             .iter()

@@ -135,7 +135,7 @@ impl NodeClient {
         let frontend = match &manifest.frontend {
             Some(frontend) => {
                 match self
-                    .store_frontend(&application_id, frontend, &contents.frontend)
+                    .store_frontend(&application_id, version, frontend, &contents.frontend)
                     .await
                 {
                     Ok(index) => Some(index),
@@ -174,6 +174,7 @@ impl NodeClient {
     async fn store_frontend(
         &self,
         application_id: &ApplicationId,
+        version: &str,
         frontend: &BundleFrontend,
         files: &BTreeMap<String, Arc<[u8]>>,
     ) -> eyre::Result<types::BundleFrontend> {
@@ -197,6 +198,7 @@ impl NodeClient {
         }
         Ok(types::BundleFrontend::new(
             key::ApplicationMeta::new(*application_id),
+            version.into(),
             frontend.entry.as_str().into(),
             stored,
         ))

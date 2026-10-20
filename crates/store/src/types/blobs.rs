@@ -70,12 +70,13 @@ impl FrontendFile {
     }
 }
 
-/// Value for [`key::BundleFrontend`]: the owning application, the entry path
-/// and every stored file. A brand-new key, so a node that never stored one reads `None`.
+/// Value for [`key::BundleFrontend`]: the owning application, the release it
+/// belongs to, the entry path and every stored file. A brand-new key, so a node that never stored one reads `None`.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct BundleFrontend {
     pub application: key::ApplicationMeta,
+    pub version: Box<str>,
     pub entry: Box<str>,
     pub files: Vec<FrontendFile>,
 }
@@ -84,11 +85,13 @@ impl BundleFrontend {
     #[must_use]
     pub const fn new(
         application: key::ApplicationMeta,
+        version: Box<str>,
         entry: Box<str>,
         files: Vec<FrontendFile>,
     ) -> Self {
         Self {
             application,
+            version,
             entry,
             files,
         }
@@ -129,6 +132,7 @@ mod bundle_frontend_tests {
         let bundle = BlobId::from([7; 32]);
         let index = BundleFrontend::new(
             key::ApplicationMeta::new([3; 32].into()),
+            "1.0.0".into(),
             "frontend/index.html".into(),
             vec![FrontendFile::new(
                 "frontend/index.html".into(),
