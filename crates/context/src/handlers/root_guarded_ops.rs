@@ -188,24 +188,30 @@ impl Handler<ChangeNamespaceAdminRequest> for ContextManager {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::collections::HashSet;
 
     use calimero_account::AccountId;
     use calimero_context_client::group::{
-        CreateGroupRequest, OwnerDeleteGroupRequest, SetTeeAdmissionPolicyRequest,
+        AddGroupMembersRequest, CreateGroupRequest, LeaveNamespaceRequest, ListGroupMembersRequest,
+        ListNamespacesRequest, OwnerDeleteGroupRequest, SetTeeAdmissionPolicyRequest,
         SetTeeAuthoringPolicyRequest, SignedReleaseTrust,
     };
-    use calimero_context_client::local_governance::TeeAdmissionMode;
+    use calimero_context_client::local_governance::{SignedNamespaceOp, TeeAdmissionMode};
     use calimero_context_config::types::ContextGroupId;
+    use calimero_dag::DeltaApplier;
     use calimero_governance_store::{
         get_op_head, register_context_in_group, GroupKeyring, KeyringError, MembershipRepository,
-        MetaError, MetaRepository, NodeDeviceRepository,
+        MetaError, MetaRepository, NamespaceOpLogService, NodeDeviceRepository,
     };
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
+    use calimero_primitives::identity::MemberIdentity;
     use calimero_store::db::InMemoryDB;
     use calimero_store::Store;
 
+    use super::*;
+    use crate::governance_dag::{signed_namespace_op_to_delta, NamespaceGovernanceApplier};
+    use crate::scope_projection::ScopeProjections;
     use crate::test_support::{actor, install_application};
 
     const APP: [u8; 32] = [0xE1; 32];
@@ -454,5 +460,179 @@ mod tests {
             "a conversion nobody could be sent was applied here"
         );
         assert!(!harness.published_topics().is_empty());
+    }
+
+    /// The founder's node after she added Bob as an admin and handed him the namespace.
+    struct Transferred {
+        harness: actor::Harness,
+        store: Store,
+        namespace: ContextGroupId,
+        alice: AccountId,
+        bob: AccountId,
+    }
+
+    async fn transferred() -> Transferred {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let alice = NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the founder's root")
+            .account();
+        let bob = AccountId::from([0xB0; 32]);
+        let harness = actor::over(store.clone()).await;
+        let namespace = harness
+            .manager
+            .send(CreateGroupRequest {
+                salt: None,
+                bytecode_id: None,
+                application_id: None,
+                name: None,
+                parent_group_id: None,
+                restricted: true,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespace is created")
+            .group_id;
+        harness
+            .manager
+            .send(AddGroupMembersRequest {
+                group_id: namespace,
+                members: vec![(MemberIdentity::from(bob), GroupMemberRole::Admin)],
+            })
+            .await
+            .expect("the manager answers")
+            .expect("bob is added as an admin");
+        harness
+            .manager
+            .send(TransferOwnershipRequest {
+                group_id: namespace,
+                new_owner: bob,
+                root_proof: None,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the founder transfers ownership");
+        Transferred {
+            harness,
+            store,
+            namespace,
+            alice,
+            bob,
+        }
+    }
+
+    /// A peer holding the namespace key that received every op of `from`, parents first.
+    async fn replayed_on_a_peer(from: &Store, namespace: ContextGroupId) -> Store {
+        let peer = Store::new(Arc::new(InMemoryDB::owned()));
+        let (_, key) = GroupKeyring::new(from, namespace)
+            .load_current_key()
+            .expect("read the keyring")
+            .expect("the namespace is keyed");
+        let _ = GroupKeyring::new(&peer, namespace)
+            .store_key(&key)
+            .expect("the peer holds the key");
+        let log = NamespaceOpLogService::new(from, namespace.to_bytes().into());
+        let mut pending: Vec<SignedNamespaceOp> =
+            ScopeProjections::ops_for_namespace(from, namespace.to_bytes())
+                .expect("the founder's ops")
+                .iter()
+                .map(|op| {
+                    log.get_signed_op(op.id())
+                        .expect("read the op log")
+                        .expect("every folded op is logged")
+                })
+                .collect();
+        let applier = NamespaceGovernanceApplier::new(peer.clone());
+        let mut applied = HashSet::new();
+        while !pending.is_empty() {
+            let (ready, rest): (Vec<_>, Vec<_>) = pending
+                .into_iter()
+                .partition(|op| op.parent_op_hashes.iter().all(|p| applied.contains(p)));
+            assert!(!ready.is_empty(), "the log has a gap");
+            for op in ready {
+                let delta = signed_namespace_op_to_delta(&op).expect("build the delta");
+                applier.apply(&delta).await.expect("the peer applies it");
+                let _ = applied.insert(delta.id);
+            }
+            pending = rest;
+        }
+        peer
+    }
+
+    /// The founder hands the namespace to another admin and stays one, as the
+    /// apply leaves her Admin row: she still lists its members and may leave it.
+    #[actix::test]
+    async fn a_founder_who_transfers_ownership_stays_an_admin() {
+        let Transferred {
+            harness,
+            namespace,
+            alice,
+            bob,
+            ..
+        } = transferred().await;
+
+        let members = harness
+            .manager
+            .send(ListGroupMembersRequest {
+                group_id: namespace,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the former owner is still a member")
+            .members;
+        let roles: Vec<_> = members.into_iter().map(|m| (m.identity, m.role)).collect();
+        assert!(
+            roles.contains(&(alice, GroupMemberRole::Admin))
+                && roles.contains(&(bob, GroupMemberRole::Admin)),
+            "both stay admins after the transfer, got {roles:?}"
+        );
+        let listed = harness
+            .manager
+            .send(ListNamespacesRequest {
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the namespaces list");
+        assert!(listed.iter().any(|ns| ns.namespace_id == namespace));
+
+        let _left = harness
+            .manager
+            .send(LeaveNamespaceRequest {
+                namespace_id: namespace,
+                purge: false,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the former owner may leave");
+    }
+
+    /// The new owner's node folds the same ops to the same members.
+    #[actix::test]
+    async fn a_peer_sees_the_former_owner_as_an_admin() {
+        let Transferred {
+            store,
+            namespace,
+            alice,
+            bob,
+            ..
+        } = transferred().await;
+        let peer = replayed_on_a_peer(&store, namespace).await;
+
+        let (proj, ns, heads) = ScopeProjections::ephemeral_projection(&peer, &namespace)
+            .expect("the peer folds the namespace");
+        let mut members = proj
+            .member_entries_with(&peer, ns, &namespace, &heads)
+            .expect("the peer's cut is complete");
+        members.sort_by_key(|(account, _)| *account);
+        let mut expected = vec![
+            (alice, GroupMemberRole::Admin),
+            (bob, GroupMemberRole::Admin),
+        ];
+        expected.sort_by_key(|(account, _)| *account);
+        assert_eq!(members, expected);
     }
 }

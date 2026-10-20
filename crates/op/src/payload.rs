@@ -411,6 +411,16 @@ pub enum OpPayload {
         bytecode: [u8; 32],
         application: ApplicationId,
     },
+    /// A namespace's genesis: the founder's device link it carries, and the founder's
+    /// Admin row at the root, seated only if `(founder, salt)` derives the id.
+    NamespaceFounded {
+        /// The account that founded the namespace.
+        founder: AccountId,
+        /// The salt the namespace id was derived with from `founder`.
+        salt: [u8; 32],
+        /// What the genesis folds as besides: the founder's device link, or `Noop`.
+        carried: Box<OpPayload>,
+    },
 }
 
 impl OpPayload {
@@ -442,7 +452,8 @@ impl OpPayload {
             | Self::MemberLeft { .. }
             | Self::TargetApplicationSet { .. }
             | Self::CascadeUpgraded { .. }
-            | Self::AccountNamespaceFounded { .. } => true,
+            | Self::AccountNamespaceFounded { .. }
+            | Self::NamespaceFounded { .. } => true,
             Self::Put { .. }
             | Self::Delete { .. }
             | Self::SetWriters { .. }

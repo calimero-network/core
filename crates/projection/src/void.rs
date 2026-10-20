@@ -261,6 +261,10 @@ fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool 
             OpPayload::SubgroupCreated { child, admin, .. } => {
                 let _ = admin_grants.insert((ContextGroupId::from(*child.as_bytes()), *admin));
             }
+            OpPayload::NamespaceFounded { founder, .. }
+            | OpPayload::AccountNamespaceFounded { founder, .. } => {
+                let _ = admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), *founder));
+            }
             OpPayload::MemberAdded { group, member, .. } if author(op) != *member => {
                 role_changes.push((*group, *member));
             }
@@ -333,7 +337,8 @@ fn resolve_unattributed(ops: &[&Op]) -> Resolved {
     let mut linked: HashMap<[u8; 32], Option<(AccountId, DeviceId)>> = HashMap::new();
     for op in ops {
         let payload = match &op.payload {
-            OpPayload::AccountNamespaceFounded { carried, .. } => carried,
+            OpPayload::AccountNamespaceFounded { carried, .. }
+            | OpPayload::NamespaceFounded { carried, .. } => carried,
             payload => payload,
         };
         let (OpPayload::DeviceLinked { cert, .. } | OpPayload::MemberJoinedWithDevice { cert, .. }) =
@@ -428,6 +433,11 @@ impl<'a> Analysis<'a> {
                 }
                 OpPayload::SubgroupCreated { child, admin, .. } => {
                     let _ = admin_grants.insert((ContextGroupId::from(*child.as_bytes()), *admin));
+                }
+                OpPayload::NamespaceFounded { founder, .. }
+                | OpPayload::AccountNamespaceFounded { founder, .. } => {
+                    let _ =
+                        admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), *founder));
                 }
                 _ => {}
             }

@@ -132,6 +132,7 @@ pub fn authorize(op: &Op, acl_at_cut: &AclView) -> Result<(), Rejected> {
             | OpPayload::MemberJoinedWithDevice { .. }
             | OpPayload::RelaySeated { .. }
             | OpPayload::AccountNamespaceFounded { .. }
+            | OpPayload::NamespaceFounded { .. }
     ) {
         check_device_speaks_for_author(op, acl_at_cut)?;
     }
@@ -303,9 +304,10 @@ fn decide(op: &Op, acl_at_cut: &AclView, guard: Guard) -> Result<(), Rejected> {
                 Err(Rejected::MayNotManageApplication)
             }
         }
-        // A genesis is decided as the founder's link it carries; the marker grants
-        // nothing to any account but the founder's own devices.
-        OpPayload::AccountNamespaceFounded { carried, .. } => {
+        // A genesis is decided as the founder's link it carries; the marker and the
+        // seat grant nothing to any account but the founder's own.
+        OpPayload::AccountNamespaceFounded { carried, .. }
+        | OpPayload::NamespaceFounded { carried, .. } => {
             let mut as_carried = op.clone();
             as_carried.payload = (**carried).clone();
             authorize(&as_carried, acl_at_cut)

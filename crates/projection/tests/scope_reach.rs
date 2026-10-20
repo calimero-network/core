@@ -1,10 +1,11 @@
 //! Which device scopes reach a scope: its target application, and the founder's
-//! own account namespace.
+//! own account namespace. Also whom a genesis seats as the root's Admin.
 
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_projection::ScopeState;
 use calimero_storage::logical_clock::HybridTimestamp;
@@ -413,4 +414,138 @@ fn a_stale_cascade_stays_skipped_after_a_later_one_moves_the_root() {
         !live.contains(&on_c.device),
         "the stale cascade never applies"
     );
+}
+
+/// `founder`'s ordinary-namespace genesis under `salt`, carrying its device's link.
+fn namespace_founded(founder: &Linked, salt: [u8; 32]) -> OpPayload {
+    OpPayload::NamespaceFounded {
+        founder: founder.account,
+        salt,
+        carried: Box::new(founder.payload.clone()),
+    }
+}
+
+/// The role `account` holds at `scope`'s root after folding `ops`.
+fn root_role(scope: ScopeId, ops: &[Op], account: AccountId) -> Option<GroupMemberRole> {
+    let mut state = ScopeState::default();
+    for op in ops {
+        state.apply(op);
+    }
+    state
+        .acl_view()
+        .groups
+        .get(&ContextGroupId::from(*scope.as_bytes()))
+        .and_then(|rows| rows.get(&account).cloned())
+}
+
+#[test]
+fn a_genesis_seats_its_founder_as_the_roots_admin() {
+    let founder = linked(0x31, &[]);
+    let ordinary = ScopeId::from(calimero_account::founded_namespace_id(
+        &founder.account,
+        &SALT,
+    ));
+    let ops = [signed_by(
+        founder.device_key,
+        ordinary,
+        1,
+        vec![],
+        namespace_founded(&founder, SALT),
+    )];
+    assert_eq!(
+        root_role(ordinary, &ops, founder.account),
+        Some(GroupMemberRole::Admin)
+    );
+
+    let (account_founder, account_scope) = founder_and_scope();
+    let ops = [signed_by(
+        account_founder.device_key,
+        account_scope,
+        1,
+        vec![],
+        founded(&account_founder, SALT),
+    )];
+    assert_eq!(
+        root_role(account_scope, &ops, account_founder.account),
+        Some(GroupMemberRole::Admin)
+    );
+}
+
+/// A parented one, one the founder's device did not sign, or one whose salt does not
+/// derive the scope: a member could publish any of them, and none may seat anybody.
+#[test]
+fn a_genesis_that_is_not_the_founding_one_seats_nobody() {
+    let founder = linked(0x41, &[]);
+    let ordinary = ScopeId::from(calimero_account::founded_namespace_id(
+        &founder.account,
+        &SALT,
+    ));
+    let forger = PrivateKey::from([0x42; 32]).public_key();
+    for ops in [
+        vec![signed_by(
+            founder.device_key,
+            ordinary,
+            2,
+            vec![[1; 32]],
+            namespace_founded(&founder, SALT),
+        )],
+        vec![signed_by(
+            forger,
+            ordinary,
+            1,
+            vec![],
+            namespace_founded(&founder, SALT),
+        )],
+        vec![signed_by(
+            founder.device_key,
+            ordinary,
+            1,
+            vec![],
+            namespace_founded(&founder, [0x0B; 32]),
+        )],
+    ] {
+        assert_eq!(root_role(ordinary, &ops, founder.account), None);
+    }
+}
+
+/// The founder's seat and the transfer of the root admin to her heir fold to one state
+/// in every delivery order.
+#[test]
+fn a_founders_seat_folds_alike_in_every_order() {
+    let founder = linked(0x51, &[]);
+    let scope = ScopeId::from(calimero_account::founded_namespace_id(
+        &founder.account,
+        &SALT,
+    ));
+    let root_group = ContextGroupId::from(*scope.as_bytes());
+    let heir = AccountId::from([0x52; 32]);
+    let added = |member, role| OpPayload::MemberAdded {
+        group: root_group,
+        member,
+        role,
+    };
+    let after_genesis = |id, payload| op(scope, id, vec![[1; 32]], payload);
+    let ops = vec![
+        signed_by(
+            founder.device_key,
+            scope,
+            1,
+            vec![],
+            namespace_founded(&founder, SALT),
+        ),
+        after_genesis(2, added(heir, GroupMemberRole::Admin)),
+        after_genesis(3, OpPayload::AdminChanged { new_admin: heir }),
+    ];
+    let in_order = root(&ops);
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    for _ in 0..64 {
+        let mut shuffled = ops.clone();
+        for i in (1..shuffled.len()).rev() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            shuffled.swap(i, (state % (i as u64 + 1)) as usize);
+        }
+        assert_eq!(root(&shuffled), in_order);
+    }
 }

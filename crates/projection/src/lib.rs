@@ -62,6 +62,19 @@ fn wins(incoming: Stamp, current: Option<&Stamp>) -> bool {
     current.is_none_or(|cur| incoming > *cur)
 }
 
+/// Whether `op` is a parentless genesis signed by `founder`'s own credential key, the
+/// device link `carried` names.
+fn is_genesis_by(op: &Op, founder: &AccountId, carried: &OpPayload) -> bool {
+    op.parents.is_empty()
+        && matches!(
+            carried,
+            OpPayload::DeviceLinked { genesis, chain, cert, .. }
+                if calimero_authz::founder_signed(
+                    founder, genesis, chain, cert, &op.authorship.device_key,
+                )
+        )
+}
+
 /// Set an LWW register `slot` to `value` iff `stamp` beats the stored stamp.
 /// Shares the single comparison rule with [`wins`] so the two cannot diverge.
 fn lww_set<T>(slot: &mut Option<(Stamp, T)>, stamp: Stamp, value: T) {
@@ -787,18 +800,23 @@ impl ScopeState {
                 salt,
                 carried,
             } => {
-                let signed_by_founder = matches!(
-                    carried.as_ref(),
-                    OpPayload::DeviceLinked { genesis, chain, cert, .. }
-                        if calimero_authz::founder_signed(
-                            founder, genesis, chain, cert, &op.authorship.device_key,
-                        )
-                );
-                if signed_by_founder
-                    && op.parents.is_empty()
+                if is_genesis_by(op, founder, carried)
                     && calimero_account::is_account_namespace_of(op.scope.as_bytes(), founder, salt)
                 {
                     self.account_namespace = Some(*founder);
+                    self.seat_founder(op, *founder, stamp);
+                }
+                self.fold_payload(op, carried, stamp);
+            }
+            OpPayload::NamespaceFounded {
+                founder,
+                salt,
+                carried,
+            } => {
+                if is_genesis_by(op, founder, carried)
+                    && calimero_account::is_founded_by(op.scope.as_bytes(), founder, salt)
+                {
+                    self.seat_founder(op, *founder, stamp);
                 }
                 self.fold_payload(op, carried, stamp);
             }
@@ -923,6 +941,13 @@ impl ScopeState {
 
     /// LWW-set `member`'s role in `group`: an admin's add or role change, or a
     /// TEE admission. Every join it beats is spent.
+    /// The founder's Admin row at the scope root, as the genesis apply writes it: a row
+    /// like any other, so it outlives a transfer of the root admin and a removal ends it.
+    fn seat_founder(&mut self, op: &Op, founder: AccountId, stamp: Stamp) {
+        let root = ContextGroupId::from(*op.scope.as_bytes());
+        self.fold_member_added(root, founder, &GroupMemberRole::Admin, stamp);
+    }
+
     fn fold_member_added(
         &mut self,
         group: ContextGroupId,
