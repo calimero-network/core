@@ -2,9 +2,7 @@
 //! nothing; shared by every handler that ends this node's part in one.
 
 use calimero_context_config::types::ContextGroupId;
-use calimero_governance_store::{
-    CapabilitiesRepository, CascadePayload, MetadataRepository, NamespaceRepository,
-};
+use calimero_governance_store::{CapabilitiesRepository, CascadePayload, MetadataRepository};
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use tracing::warn;
@@ -58,16 +56,7 @@ pub(crate) async fn purge_namespace(
             MetadataRepository::new(datastore).delete_context(&group, &context)?;
             CapabilitiesRepository::new(datastore).delete_context_members(&group, &context)?;
         }
-        let parent = NamespaceRepository::new(datastore).parent(&group)?;
-        calimero_governance_store::delete_group_local_rows(datastore, &group)?;
-        if let Some(parent) = parent {
-            let mut handle = datastore.handle();
-            handle.delete(&calimero_store::key::GroupParentRef::new(group.to_bytes()))?;
-            handle.delete(&calimero_store::key::GroupChildIndex::new(
-                parent.to_bytes(),
-                group.to_bytes(),
-            ))?;
-        }
+        calimero_governance_store::delete_group_and_parent_edge(datastore, &group)?;
     }
     calimero_governance_store::delete_namespace_local_state(datastore, namespace)?;
 
