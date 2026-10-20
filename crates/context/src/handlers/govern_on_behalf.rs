@@ -647,6 +647,10 @@ mod tests {
     #[actix::test]
     async fn an_open_subgroup_inside_a_restricted_one_is_effectively_restricted() {
         let fx = fixture_with(MemberCapabilities::CAN_CREATE_SUBGROUP, true).await;
+        // Below the root only a namespace admin creates subgroups.
+        MembershipRepository::new(&fx.store)
+            .add_member(&fx.ns, &fx.author, GroupMemberRole::Admin)
+            .expect("the author administers the namespace");
         let outer = fx
             .create_subgroup(0xD4)
             .await
