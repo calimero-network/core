@@ -2434,8 +2434,9 @@ pub struct SignedNamespaceOp {
 /// the same account stalls on it until it upgrades, so it ships in a batched release.
 ///
 /// v27: a namespace genesis folds its founder's Admin row at the root, so a founder
-/// who transfers ownership stays an admin at every cut. Nothing moves on the wire, but
-/// a v26 node folds her out: a coordinated upgrade.
+/// who transfers ownership stays an admin at every cut. No layout moves, but every
+/// signer, the SDK included, signs at 27, a v26 node folds a different scope root, and
+/// an older build cannot read the op-store rows this one writes: a coordinated upgrade.
 pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 27;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
