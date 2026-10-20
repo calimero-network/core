@@ -39,8 +39,8 @@ pub(super) async fn derive_bundle_id(bundle_data: Arc<[u8]>) -> eyre::Result<App
 }
 
 impl NodeClient {
-    /// Install a `.mpk`. The signature is mandatory and every wasm artifact is
-    /// digest-checked before any bytes are stored.
+    /// Install a `.mpk`. The signature is mandatory, and every wasm artifact and
+    /// frontend file is verified before any application row or service blob is written.
     ///
     /// `expected` is what the caller asked for, on coordinate-addressed paths.
     /// A remote install older than the row's release keeps the row as it is.
@@ -53,9 +53,8 @@ impl NodeClient {
         expected: Option<RegistryCoords<'_>>,
         origin: InstallOrigin,
     ) -> eyre::Result<ApplicationId> {
-        // Every artifact, including the unnamed single-service one that gets no
-        // blob of its own, so substituted bytes are refused before first execution.
-        // A bad frontend refuses the install here, before anything is written.
+        // Every artifact, including the unnamed single-service one, so substituted
+        // bytes are refused before first execution; a bad frontend is refused here too.
         let (verified, contents) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
             let verified = bundle::VerifiedBundle::open(bundle_data)?;
             let contents = verified.contents()?;

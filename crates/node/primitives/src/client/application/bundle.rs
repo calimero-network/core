@@ -3,13 +3,13 @@
 //! Pure functions for working with `.mpk` bundle archives - no
 //! `NodeClient` or blob manager state needed.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read};
 use std::path::{Component, Path};
 use std::sync::Arc;
 
 use crate::bundle::{
-    verify_frontend_file, verify_manifest_signature, BundleArtifact, BundleManifest,
+    verify_frontend_file, verify_manifest_signature, BundleArtifact, BundleManifest, FrontendError,
     ManifestVerification, MAX_MANIFEST_BYTES,
 };
 use eyre::bail;
@@ -274,7 +274,7 @@ pub fn is_bundle_blob(blob_bytes: &[u8]) -> bool {
 /// decompressed size by the number of artifacts.
 pub(crate) fn extract_bundle_files<'a>(
     bundle_data: &[u8],
-    wanted: &BTreeSet<&'a str>,
+    wanted: &BTreeMap<&'a str, u64>,
 ) -> eyre::Result<HashMap<&'a str, Arc<[u8]>>> {
     let mut archive = bounded_archive(bundle_data, MAX_ARCHIVE_BYTES);
     let mut found = HashMap::new();
@@ -286,7 +286,7 @@ pub(crate) fn extract_bundle_files<'a>(
         // Every match, not the first: a manifest may spell one path two ways,
         // and each declaration carries its own digest.
         let matched = wanted
-            .iter()
+            .keys()
             .copied()
             .filter(|w| same_archive_path(Path::new(w), &entry_path))
             .collect::<Vec<_>>();
@@ -298,8 +298,18 @@ pub(crate) fn extract_bundle_files<'a>(
         if !entry.header().entry_type().is_file() {
             bail!("bundle artifact '{}' is not a regular file", matched[0]);
         }
+        // One byte past the largest declared size, so an overrun is seen without buffering it.
+        let limit = matched.iter().map(|w| wanted[w]).max().unwrap_or(0);
         let mut bytes = Vec::new();
-        let _ = entry.read_to_end(&mut bytes)?;
+        let _ = (&mut entry)
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            bail!(
+                "bundle artifact '{}' is larger than the {limit} bytes the manifest declares",
+                matched[0]
+            );
+        }
         let bytes: Arc<[u8]> = Arc::from(bytes);
         for path in matched {
             if found.insert(path, Arc::clone(&bytes)).is_some() {
@@ -371,15 +381,14 @@ impl VerifiedBundle {
     pub fn wasm(&self, service: Option<&str>) -> eyre::Result<Arc<[u8]>> {
         let artifact = self.wasm_artifact(service)?;
         let path = artifact.path.as_str();
-        let found = extract_bundle_files(&self.data, &BTreeSet::from([path]))?;
+        let found = extract_bundle_files(&self.data, &BTreeMap::from([(path, artifact.size)]))?;
         let bytes = take_artifact(&found, path)?;
         verify_artifact_digest(artifact, &bytes)?;
         Ok(bytes)
     }
 
-    /// Every declared wasm artifact and frontend file, checked against the
-    /// signed manifest. One walk covers every path, and a path named twice is
-    /// read once and shared. The frontend's manifest rules run before any read.
+    /// Every declared wasm artifact and frontend file, checked against the signed manifest.
+    /// One walk reads each path once, bounded by its declared size; frontend rules run first.
     pub fn contents(&self) -> eyre::Result<VerifiedContents> {
         let frontend = self.manifest.frontend.as_ref();
         if let Some(frontend) = frontend {
@@ -387,11 +396,11 @@ impl VerifiedBundle {
         }
         let artifacts = self.manifest.wasm_artifacts();
         let frontend_files = frontend.map_or(&[][..], |f| &f.files[..]);
-        let wanted = artifacts
-            .iter()
-            .map(|a| a.wasm.path.as_str())
-            .chain(frontend_files.iter().map(|f| f.path.as_str()))
-            .collect::<BTreeSet<_>>();
+        let mut wanted = BTreeMap::new();
+        for file in artifacts.iter().map(|a| a.wasm).chain(frontend_files) {
+            let size = wanted.entry(file.path.as_str()).or_insert(0);
+            *size = (*size).max(file.size);
+        }
         let found = extract_bundle_files(&self.data, &wanted)?;
 
         let mut wasm = Vec::new();
@@ -408,7 +417,10 @@ impl VerifiedBundle {
 
         let mut frontend = BTreeMap::new();
         for file in frontend_files {
-            let bytes = take_artifact(&found, &file.path)?;
+            let bytes = found
+                .get(file.path.as_str())
+                .map(Arc::clone)
+                .ok_or_else(|| FrontendError::MissingFile(file.path.clone()))?;
             verify_frontend_file(file, &bytes)?;
             frontend.insert(file.path.clone(), bytes);
         }

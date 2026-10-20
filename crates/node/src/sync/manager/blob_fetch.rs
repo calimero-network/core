@@ -7,7 +7,7 @@ use calimero_app_downloader::{AppRequest, Outcome};
 use calimero_context::handlers::upgrade_group::registry_coords;
 use calimero_primitives::context::ContextId;
 use calimero_store::key;
-use eyre::bail;
+use eyre::{bail, WrapErr};
 
 use super::SyncManager;
 
@@ -88,12 +88,8 @@ impl SyncManager {
             .node_client
             .install_expected_bundle_blob(&context.application_id, blob_id, &source)
             .await
-            .map_err(|e| {
-                eyre::eyre!(
-                    "Failed to install bundle application from blob {}: {}",
-                    blob_id,
-                    e
-                )
+            .wrap_err_with(|| {
+                format!("Failed to install bundle application from blob {blob_id}")
             })?;
 
         // Verify installation succeeded by fetching the installed application

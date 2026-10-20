@@ -2196,6 +2196,7 @@ async fn a_frontend_file_missing_from_the_archive_refuses_the_install() {
         .await
         .expect_err("a listed file the archive lacks must not install");
 
+    assert!(err.to_string().contains("FRONTEND_MISSING_FILE"), "{err}");
     assert!(err.to_string().contains("frontend/index.html"), "{err}");
     assert_nothing_installed(&node_client);
 }

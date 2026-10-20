@@ -206,9 +206,22 @@ fn services_sharing_one_artifact_cost_one_copy() {
 /// an entry still decompresses it, so this is what a redundant walk pays for.
 const PADDING_BYTES: usize = 64 * 1024 * 1024;
 
+const INDEX_HTML: &[u8] = b"<html></html>"; // the frontend file every bundle here declares
+
 /// A signed `.mpk` with `services` distinct tiny wasm artifacts, each named by
 /// one service, optionally behind a `padding` byte entry the walk must cross.
 fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> Vec<u8> {
+    bundle_shipping_index(dir, name, services, padding, INDEX_HTML)
+}
+
+/// As `padded_bundle`, but the archive ships `index` where the manifest declares `INDEX_HTML`.
+fn bundle_shipping_index(
+    dir: &TempDir,
+    name: &str,
+    services: usize,
+    padding: usize,
+    index: &[u8],
+) -> Vec<u8> {
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasms: Vec<Vec<u8>> = (0..services)
         .map(|i| format!("wasm for service {i}").into_bytes())
@@ -234,6 +247,14 @@ fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> 
         "signerId": derive_signer_id_did_key(key.verifying_key().as_bytes()),
         "minRuntimeVersion": "0.1.0",
         "services": declared,
+        "frontend": {
+            "entry": "frontend/index.html",
+            "files": [{
+                "path": "frontend/index.html",
+                "size": INDEX_HTML.len(),
+                "hash": hex_lower(&Sha256::digest(INDEX_HTML)),
+            }],
+        },
         "migrations": []
     });
     sign_manifest_json(&mut manifest, &key).unwrap();
@@ -252,6 +273,7 @@ fn padded_bundle(dir: &TempDir, name: &str, services: usize, padding: usize) -> 
             .map(|p| p.as_str())
             .zip(wasms.iter().map(Vec::as_slice)),
     );
+    entries.push(("frontend/index.html", index));
     pack_entries(dir, name, &entries)
 }
 
@@ -301,5 +323,41 @@ fn distinct_artifacts_cost_one_walk() {
         many < one * 3,
         "crossing {PADDING_BYTES} bytes of padding cost {many:?} for {DISTINCT} distinct \
          artifacts against {one:?} for one: the archive is being walked per artifact"
+    );
+}
+
+/// A frontend file declaring a few bytes but shipping `PADDING_BYTES` must be
+/// refused from a bounded read, not after buffering the whole entry.
+#[test]
+fn an_entry_larger_than_declared_is_refused_without_buffering_it() {
+    let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new().unwrap();
+    let huge = vec![b'x'; PADDING_BYTES];
+    let bundle = bundle_shipping_index(&dir, "oversized.mpk", 1, 0, &huge);
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (node, _store, _data, _blobs) = runtime.block_on(node_client());
+    let (blob_id, _) = runtime
+        .block_on(node.add_blob(
+            Cursor::new(bundle.as_slice()),
+            Some(bundle.len() as u64),
+            None,
+        ))
+        .unwrap();
+    let source = "https://registry.example.com/app.mpk".parse().unwrap();
+
+    let (installed, peak) = peak_while(|| {
+        runtime.block_on(node.install_application_from_bundle_blob(&blob_id, &source))
+    });
+
+    assert!(
+        installed.is_err(),
+        "an oversized frontend file must not install"
+    );
+    assert!(
+        peak < PADDING_BYTES / 2,
+        "peak allocation {peak} bytes for a file declaring {} bytes and shipping {PADDING_BYTES}: \
+         the entry was buffered",
+        INDEX_HTML.len()
     );
 }
