@@ -99,7 +99,7 @@ mod tests {
         let mut harness = actor::over(store.clone()).await;
         let namespace = ContextGroupId::from(NS);
         ForgottenNamespaces::new(&store)
-            .mark(&namespace, None, 1)
+            .mark(&namespace, None, 1, None)
             .expect("record the removal");
 
         let err = follow(&store, &harness.node_client, &namespace)

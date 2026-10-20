@@ -204,8 +204,9 @@ impl PredefinedEntry for key::ContextLeftMarker {
 }
 
 /// Value for `key::NamespaceForgotten`: the namespace's target application, if it
-/// named one, and when it was removed (millis since epoch).
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+/// named one, when it was removed (millis since epoch), and its display name.
+/// A marker written before the name existed ends after the time and reads as unnamed.
+#[derive(BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[expect(
     clippy::exhaustive_structs,
     reason = "Marker value - additions would need a migration"
@@ -213,6 +214,26 @@ impl PredefinedEntry for key::ContextLeftMarker {
 pub struct NamespaceForgotten {
     pub application_id: Option<[u8; 32]>,
     pub forgotten_at_ms: u64,
+    pub name: Option<String>,
+}
+
+impl BorshDeserialize for NamespaceForgotten {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let application_id = BorshDeserialize::deserialize_reader(reader)?;
+        let forgotten_at_ms = BorshDeserialize::deserialize_reader(reader)?;
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest)?;
+        let name = if rest.is_empty() {
+            None
+        } else {
+            borsh::from_slice(&rest)?
+        };
+        Ok(Self {
+            application_id,
+            forgotten_at_ms,
+            name,
+        })
+    }
 }
 
 impl PredefinedEntry for key::NamespaceForgotten {

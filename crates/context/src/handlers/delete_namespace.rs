@@ -3,7 +3,7 @@ use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResp
 use calimero_context_config::types::ContextGroupId;
 use calimero_governance_store::{
     member_account_in_namespace, ForgottenNamespaces, MembershipRepository, MetaRepository,
-    NamespaceRepository, NodeDeviceRepository,
+    MetadataRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_primitives::application::ZERO_APPLICATION_ID;
 use calimero_primitives::identity::PublicKey;
@@ -54,10 +54,15 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                     .load(&namespace_id)?
                     .map(|meta| meta.target.application_id)
                     .filter(|application| *application != ZERO_APPLICATION_ID);
+                // Read before the purge, which drops the namespace's metadata row.
+                let name = MetadataRepository::new(&self.datastore)
+                    .group_metadata(&namespace_id)?
+                    .and_then(|record| record.name);
                 ForgottenNamespaces::new(&self.datastore).mark(
                     &namespace_id,
                     application,
                     now_ms(),
+                    name,
                 )?;
             }
 
@@ -151,6 +156,7 @@ mod tests {
         MembershipRepository, NamespaceRepository, NodeDeviceRepository,
     };
     use calimero_primitives::context::GroupMemberRole;
+    use calimero_primitives::metadata::MetadataRecord;
     use calimero_store::db::{Column, InMemoryDB};
     use calimero_store::Store;
 
@@ -225,6 +231,44 @@ mod tests {
         assert!(ForgottenNamespaces::new(&store)
             .is_forgotten(&namespace)
             .expect("read the marker"));
+    }
+
+    /// The restore names the namespace by what the user saw, not by its id.
+    #[actix::test]
+    async fn the_marker_keeps_the_namespace_name_the_purge_drops() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("the founder's account root");
+        let harness = actor::over(store.clone()).await;
+        let (namespace, _account) = a_namespace_this_node_only_belongs_to(&harness, &store).await;
+        MetadataRepository::new(&store)
+            .set_group(
+                &namespace,
+                &MetadataRecord {
+                    name: Some("Team chat".into()),
+                    data: Default::default(),
+                    updated_at: 1,
+                    updated_by: PublicKey::from([1; 32]),
+                },
+            )
+            .expect("name the namespace");
+
+        harness
+            .manager
+            .send(DeleteNamespaceRequest {
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("remove the namespace");
+
+        assert!(MetadataRepository::new(&store)
+            .group_metadata(&namespace)
+            .expect("read the metadata")
+            .is_none());
+        let marker = ForgottenNamespaces::new(&store).list().expect("list");
+        assert_eq!(marker[0].name.as_deref(), Some("Team chat"));
     }
 
     /// A node that soft-left keeps its residue, and may clear it. It is no

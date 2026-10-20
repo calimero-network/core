@@ -1288,7 +1288,7 @@ mod tests {
 
     fn forget(store: &Store, namespace: ContextGroupId) {
         ForgottenNamespaces::new(store)
-            .mark(&namespace, None, 1)
+            .mark(&namespace, None, 1, None)
             .expect("record the removal");
     }
 

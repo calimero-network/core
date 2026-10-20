@@ -424,7 +424,7 @@ mod tests {
             ContextGroupId::from([0x02; 32]),
         );
         ForgottenNamespaces::new(&store)
-            .mark(&removed, None, 1)
+            .mark(&removed, None, 1, None)
             .expect("remove the namespace");
 
         assert!(follows_at_startup(&store, &kept));

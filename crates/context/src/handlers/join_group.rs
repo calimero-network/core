@@ -1599,6 +1599,7 @@ mod tests {
                     &group,
                     Some(calimero_primitives::application::ApplicationId::from(APP)),
                     1,
+                    None,
                 )
                 .expect("remove the namespace");
         };

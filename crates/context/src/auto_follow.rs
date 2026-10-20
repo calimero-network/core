@@ -1206,7 +1206,7 @@ mod tests {
             let (store, _sk, _pk, _account) = seed_self_member(&mut rng, gid);
             let context_id = ContextId::from([0x89u8; 32]);
             ForgottenNamespaces::new(&store)
-                .mark(&gid, None, 1)
+                .mark(&gid, None, 1, None)
                 .expect("record the removal");
 
             assert_eq!(

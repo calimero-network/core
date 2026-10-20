@@ -5902,7 +5902,7 @@ fn the_device_outlives_the_last_namespace_while_a_removal_is_remembered() {
         .expect("provision");
     let device = repo.ensure_enrolled(&namespace).expect("mint").device();
     ForgottenNamespaces::new(&store)
-        .mark(&namespace, None, 1)
+        .mark(&namespace, None, 1, None)
         .expect("remember the removal");
 
     delete_namespace_local_state(&store, &namespace).expect("remove the only namespace");

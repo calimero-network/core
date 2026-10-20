@@ -400,7 +400,7 @@ mod tests {
     async fn a_removed_namespace_is_skipped_rather_than_failing_the_pairing() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         ForgottenNamespaces::new(&store)
-            .mark(&ContextGroupId::from(ONE), None, 1)
+            .mark(&ContextGroupId::from(ONE), None, 1, None)
             .expect("remove the namespace");
         let mut harness = actor::over(store.clone()).await;
 
@@ -430,7 +430,7 @@ mod tests {
     async fn a_pairing_whose_namespaces_were_all_removed_is_refused_as_removed() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         ForgottenNamespaces::new(&store)
-            .mark(&ContextGroupId::from(ONE), None, 1)
+            .mark(&ContextGroupId::from(ONE), None, 1, None)
             .expect("remove the namespace");
         let harness = actor::over(store.clone()).await;
 

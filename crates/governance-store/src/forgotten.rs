@@ -11,11 +11,12 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 /// One removed namespace, as listed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForgottenNamespace {
     pub namespace_id: ContextGroupId,
     pub application_id: Option<ApplicationId>,
     pub forgotten_at_ms: u64,
+    pub name: Option<String>,
 }
 
 /// Typed repository for the removed-namespace records.
@@ -29,18 +30,20 @@ impl<'a> ForgottenNamespaces<'a> {
     }
 
     /// Record that `namespace` was removed from this node. Idempotent; the
-    /// latest call's application and time stand.
+    /// latest call's application, time and name stand.
     pub fn mark(
         &self,
         namespace: &ContextGroupId,
         application_id: Option<ApplicationId>,
         forgotten_at_ms: u64,
+        name: Option<String>,
     ) -> EyreResult<()> {
         self.store.handle().put(
             &Key::new(namespace.to_bytes()),
             &Value {
                 application_id: application_id.map(|app| *app),
                 forgotten_at_ms,
+                name,
             },
         )?;
         Ok(())
@@ -94,6 +97,7 @@ impl<'a> ForgottenNamespaces<'a> {
                 namespace_id: ContextGroupId::from(id),
                 application_id: value.application_id.map(ApplicationId::from),
                 forgotten_at_ms: value.forgotten_at_ms,
+                name: value.name,
             });
         }
         Ok(out)
@@ -119,7 +123,7 @@ mod tests {
         let ns = ContextGroupId::from(NS_A);
 
         assert!(!forgotten.is_forgotten(&ns).unwrap());
-        forgotten.mark(&ns, None, 5).unwrap();
+        forgotten.mark(&ns, None, 5, None).unwrap();
         assert!(forgotten.is_forgotten(&ns).unwrap());
         assert!(!forgotten.is_forgotten(&ContextGroupId::from(NS_B)).unwrap());
 
@@ -146,7 +150,7 @@ mod tests {
         assert!(!forgotten.any().unwrap());
 
         forgotten
-            .mark(&ContextGroupId::from(NS_A), None, 2)
+            .mark(&ContextGroupId::from(NS_A), None, 2, None)
             .unwrap();
         assert!(forgotten.any().unwrap());
     }
@@ -157,9 +161,9 @@ mod tests {
         let forgotten = ForgottenNamespaces::new(&store);
         let (a, b) = (ContextGroupId::from(NS_A), ContextGroupId::from(NS_B));
 
-        forgotten.mark(&b, None, 9).unwrap();
+        forgotten.mark(&b, None, 9, None).unwrap();
         forgotten
-            .mark(&a, Some(ApplicationId::from(APP)), 7)
+            .mark(&a, Some(ApplicationId::from(APP)), 7, Some("Chat".into()))
             .unwrap();
 
         assert_eq!(
@@ -169,11 +173,13 @@ mod tests {
                     namespace_id: a,
                     application_id: Some(ApplicationId::from(APP)),
                     forgotten_at_ms: 7,
+                    name: Some("Chat".into()),
                 },
                 ForgottenNamespace {
                     namespace_id: b,
                     application_id: None,
                     forgotten_at_ms: 9,
+                    name: None,
                 },
             ]
         );
@@ -202,8 +208,29 @@ mod tests {
             .unwrap());
 
         forgotten
-            .mark(&ContextGroupId::from(NS_A), None, 2)
+            .mark(&ContextGroupId::from(NS_A), None, 2, None)
             .unwrap();
         assert_eq!(forgotten.list().unwrap().len(), 1);
+    }
+
+    /// A marker written before the name existed has no trailing option byte.
+    #[test]
+    fn a_marker_written_without_a_name_still_lists_as_unnamed() {
+        let store = test_store();
+        let mut old = Vec::new();
+        borsh::to_writer(&mut old, &Some([0x77u8; 32])).unwrap();
+        borsh::to_writer(&mut old, &11u64).unwrap();
+        store
+            .raw_put(
+                calimero_store::db::Column::ContextLocal,
+                &[&[NAMESPACE_FORGOTTEN_PREFIX][..], &NS_A].concat(),
+                &old,
+            )
+            .unwrap();
+
+        let listed = ForgottenNamespaces::new(&store).list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].forgotten_at_ms, 11);
+        assert_eq!(listed[0].name, None);
     }
 }
