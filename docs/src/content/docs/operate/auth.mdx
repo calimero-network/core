@@ -317,6 +317,8 @@ desktop app edits it under **Settings → Advanced → Trusted App Origins**
 `trusted_callback_origins`, and the login page reads it from its own node only,
 never from a URL parameter, so a link cannot add to it.
 
+An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
+
 Each entry must be an exact `http` or `https` origin (`scheme://host[:port]`):
 an entry with a path, query, credentials or a wildcard is dropped with a
 warning. Changes take effect when the node restarts.

@@ -135,6 +135,21 @@ A node that sets `[server.sealed] required` mounts no app host, because a browse
 A page on an app's origin is third-party code, so the node answers it `403` on every route of its own, in every auth mode, and never counts it as a loopback page.
 A file also carries its `Content-Type`, an `ETag` of its blob id (answered with `304` on a match) and `Cache-Control: public, max-age=31536000, immutable`.
 
+#### The apps port and app origins
+
+A browser that cannot resolve `{label}.{base_domain}` cannot open an app's own origin.
+Safari does not resolve wildcard `localhost` subdomains, and a remote node reached by IP has no name to put a label under.
+For those, set `[server.apps] port`, which binds a second listener on each address the node listens on.
+It serves `/{label}/{version}/{path}` with the same files and headers, redirects `/{label}/` to the current version and `/{label}/{version}` to `/{label}/{version}/`, and answers `404` for everything else, admin, auth and API paths included.
+Every app on that port shares one origin with the others, and that origin is never the dashboard's.
+It is not bound when `[server.sealed] required` is set.
+Port 0, 80 and 443 are refused: a browser leaves out 80 and 443, so every default-port origin would be an app's, the node's own dashboard included.
+
+Use the subdomain wherever it resolves, because it gives each app an origin of its own.
+Use the port only where it does not, because apps on it can read each other's storage.
+
+An app page logs in through a callback origin the operator lists in the auth config until the login page binds app origins to the requested app.
+
 `calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
 The node enforces paths, sizes, hashes and the MIME allowlist at install.
 The HTML rules are build-time feedback that only `cargo mero` runs; at serve time the boundary is the per-app origin plus the CSP.
