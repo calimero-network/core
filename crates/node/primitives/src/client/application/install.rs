@@ -55,16 +55,17 @@ impl NodeClient {
     ) -> eyre::Result<ApplicationId> {
         // Every artifact, including the unnamed single-service one that gets no
         // blob of its own, so substituted bytes are refused before first execution.
-        let (verified, wasm) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
+        // A bad frontend refuses the install here, before anything is written.
+        let (verified, contents) = tokio::task::spawn_blocking(move || -> eyre::Result<_> {
             let verified = bundle::VerifiedBundle::open(bundle_data)?;
-            let wasm = verified.all_wasm()?;
-            Ok((verified, wasm))
+            let contents = verified.contents()?;
+            Ok((verified, contents))
         })
         .await??;
 
         // Otherwise the application row is written with no bytecode and the
         // bundle only reads as malformed at its first execution.
-        if wasm.is_empty() {
+        if contents.wasm.is_empty() {
             bail!("bundle manifest declares no wasm artifact: expected a top-level 'wasm' or a non-empty 'services' list");
         }
 
@@ -92,7 +93,7 @@ impl NodeClient {
 
         let mut services = Vec::new();
         let mut max_state_version = 0;
-        for artifact in &wasm {
+        for artifact in &contents.wasm {
             // Before the name guard: an unnamed single-service artifact still
             // carries a state version.
             if let Some(schema) =

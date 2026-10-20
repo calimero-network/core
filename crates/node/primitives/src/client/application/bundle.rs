@@ -3,14 +3,14 @@
 //! Pure functions for working with `.mpk` bundle archives - no
 //! `NodeClient` or blob manager state needed.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, Read};
 use std::path::{Component, Path};
 use std::sync::Arc;
 
 use crate::bundle::{
-    verify_manifest_signature, BundleArtifact, BundleManifest, ManifestVerification,
-    MAX_MANIFEST_BYTES,
+    verify_frontend_file, verify_manifest_signature, BundleArtifact, BundleManifest,
+    ManifestVerification, MAX_MANIFEST_BYTES,
 };
 use eyre::bail;
 use flate2::read::GzDecoder;
@@ -326,6 +326,13 @@ pub struct VerifiedWasm {
     pub bytes: Arc<[u8]>,
 }
 
+/// Everything a [`VerifiedBundle`] ships, digest-checked: the wasm per service
+/// and the frontend files by archive path (empty when it ships none).
+pub struct VerifiedContents {
+    pub wasm: Vec<VerifiedWasm>,
+    pub frontend: BTreeMap<String, Arc<[u8]>>,
+}
+
 /// A bundle whose manifest signature has been verified. The only way to obtain
 /// artifact bytes: every accessor checks the artifact digest against the signed
 /// manifest first, so unverified bytes have no representation.
@@ -370,29 +377,42 @@ impl VerifiedBundle {
         Ok(bytes)
     }
 
-    /// Every declared wasm artifact, digest-checked, paired with its service
-    /// name. One walk covers every path, and a path named by several services
-    /// is read once and shared.
-    pub fn all_wasm(&self) -> eyre::Result<Vec<VerifiedWasm>> {
+    /// Every declared wasm artifact and frontend file, checked against the
+    /// signed manifest. One walk covers every path, and a path named twice is
+    /// read once and shared. The frontend's manifest rules run before any read.
+    pub fn contents(&self) -> eyre::Result<VerifiedContents> {
+        let frontend = self.manifest.frontend.as_ref();
+        if let Some(frontend) = frontend {
+            frontend.validate()?;
+        }
         let artifacts = self.manifest.wasm_artifacts();
+        let frontend_files = frontend.map_or(&[][..], |f| &f.files[..]);
         let wanted = artifacts
             .iter()
             .map(|a| a.wasm.path.as_str())
+            .chain(frontend_files.iter().map(|f| f.path.as_str()))
             .collect::<BTreeSet<_>>();
         let found = extract_bundle_files(&self.data, &wanted)?;
 
-        let mut all = Vec::new();
+        let mut wasm = Vec::new();
         for artifact in &artifacts {
             let bytes = take_artifact(&found, &artifact.wasm.path)?;
             // Per artifact, never per read: two services may declare different
             // digests for one path, and sharing the bytes must not share the check.
             verify_artifact_digest(artifact.wasm, &bytes)?;
-            all.push(VerifiedWasm {
+            wasm.push(VerifiedWasm {
                 name: artifact.name.map(str::to_owned),
                 bytes,
             });
         }
-        Ok(all)
+
+        let mut frontend = BTreeMap::new();
+        for file in frontend_files {
+            let bytes = take_artifact(&found, &file.path)?;
+            verify_frontend_file(file, &bytes)?;
+            frontend.insert(file.path.clone(), bytes);
+        }
+        Ok(VerifiedContents { wasm, frontend })
     }
 
     fn wasm_artifact(&self, service: Option<&str>) -> eyre::Result<&BundleArtifact> {

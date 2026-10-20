@@ -2026,17 +2026,7 @@ async fn install_from_path_rejects_a_file_over_the_bundle_cap() {
 }
 
 async fn install_bundle_bytes(node_client: &NodeClient, bytes: Vec<u8>) -> ApplicationId {
-    let (blob_id, _size) = node_client
-        .add_blob(
-            Cursor::new(bytes.as_slice()),
-            Some(bytes.len() as u64),
-            None,
-        )
-        .await
-        .expect("add the bundle blob");
-    let source = "file:///test/bundle.mpk".parse().unwrap();
-    node_client
-        .install_application_from_bundle_blob(&blob_id, &source)
+    try_install(node_client, bytes)
         .await
         .expect("install the bundle")
 }
@@ -2100,4 +2090,126 @@ async fn a_service_blob_counts_as_an_application_artifact() {
             .is_blob_application_artifact(&service.bytecode)
             .expect("artifact check"));
     }
+}
+
+const FRONTEND_INDEX: &[u8] = b"<html><body>hello</body></html>";
+
+/// A signed single-service bundle whose manifest lists `listed` as its frontend
+/// (entry `frontend/index.html`) while the archive holds `shipped`.
+fn frontend_bundle(listed: &[(&str, &[u8])], shipped: &[(&str, &[u8])]) -> Vec<u8> {
+    let dir = TempDir::new().unwrap();
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let wasm: &[u8] = b"frontend test wasm";
+    let artifact = |path: &str, bytes: &[u8]| serde_json::json!({ "path": path, "hash": artifact_hash(bytes), "size": bytes.len() });
+    let files: Vec<_> = listed.iter().map(|(p, b)| artifact(p, b)).collect();
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "com.example.frontend",
+        "appVersion": "1.0.0",
+        "signerId": derive_signer_id_did_key(signing_key.verifying_key().as_bytes()),
+        "minRuntimeVersion": "0.1.0",
+        "services": [{ "name": "svc", "wasm": artifact("svc.wasm", wasm) }],
+        "frontend": { "entry": "frontend/index.html", "files": files },
+    });
+    sign_manifest(&mut manifest, &signing_key);
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+
+    let mut entries = vec![
+        ("manifest.json", manifest_bytes.as_slice()),
+        ("svc.wasm", wasm),
+    ];
+    entries.extend_from_slice(shipped);
+    pack_entries(&dir, "frontend.mpk", &entries)
+}
+
+/// Install through the real entry point, returning the refusal if any.
+async fn try_install(node_client: &NodeClient, bytes: Vec<u8>) -> eyre::Result<ApplicationId> {
+    let (blob_id, _size) = node_client
+        .add_blob(
+            Cursor::new(bytes.as_slice()),
+            Some(bytes.len() as u64),
+            None,
+        )
+        .await
+        .expect("add the bundle blob");
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    node_client
+        .install_application_from_bundle_blob(&blob_id, &source)
+        .await
+}
+
+/// A refused install leaves only the caller's bundle blob: no application row
+/// and no per-service blob.
+fn assert_nothing_installed(node_client: &NodeClient) {
+    assert!(node_client.list_applications().unwrap().is_empty());
+    assert_eq!(node_client.list_blobs().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_bundle_with_a_valid_frontend_installs() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let files: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX)];
+
+    let id = try_install(&node_client, frontend_bundle(files, files))
+        .await
+        .expect("a valid frontend installs");
+
+    assert!(node_client.get_application(&id).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_resized_frontend_file_refuses_the_install() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let listed: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX)];
+    let shipped: &[(&str, &[u8])] = &[("frontend/index.html", b"<html>evil</html>")];
+
+    let err = try_install(&node_client, frontend_bundle(listed, shipped))
+        .await
+        .expect_err("tampered frontend bytes must not install");
+
+    assert!(err.to_string().contains("FRONTEND_SIZE_MISMATCH"), "{err}");
+    assert_nothing_installed(&node_client);
+}
+
+#[tokio::test]
+async fn a_frontend_file_with_a_wrong_hash_refuses_the_install() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let listed: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX)];
+    let same_size: &[(&str, &[u8])] =
+        &[("frontend/index.html", b"<html><body>HELLO</body></html>")];
+    assert_eq!(FRONTEND_INDEX.len(), same_size[0].1.len());
+
+    let err = try_install(&node_client, frontend_bundle(listed, same_size))
+        .await
+        .expect_err("tampered frontend bytes must not install");
+
+    assert!(err.to_string().contains("FRONTEND_HASH_MISMATCH"), "{err}");
+    assert_nothing_installed(&node_client);
+}
+
+#[tokio::test]
+async fn a_frontend_file_missing_from_the_archive_refuses_the_install() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let listed: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX)];
+
+    let err = try_install(&node_client, frontend_bundle(listed, &[]))
+        .await
+        .expect_err("a listed file the archive lacks must not install");
+
+    assert!(err.to_string().contains("frontend/index.html"), "{err}");
+    assert_nothing_installed(&node_client);
+}
+
+#[tokio::test]
+async fn an_invalid_frontend_manifest_refuses_the_install_with_its_code() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let listed: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX), ("svc.wasm", b"x")];
+    let shipped: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX)];
+
+    let err = try_install(&node_client, frontend_bundle(listed, shipped))
+        .await
+        .expect_err("an unsafe frontend path must not install");
+
+    assert!(err.to_string().contains("FRONTEND_UNSAFE_PATH"), "{err}");
+    assert_nothing_installed(&node_client);
 }
