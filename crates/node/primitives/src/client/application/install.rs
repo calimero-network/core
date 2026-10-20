@@ -236,6 +236,15 @@ impl NodeClient {
             // A dangling index is worse than a leaked blob: keep the files if it stays.
             kept = handle.delete(&index_key).is_err();
         }
+        if let (Some(index), Ok(true)) = (frontend, &written) {
+            let release = key::ApplicationRelease::new(*application_id, &index.version);
+            let pointer = types::ApplicationRelease {
+                bundle: **bundle_blob_id,
+            };
+            if let Err(err) = handle.put(&release, &pointer) {
+                return (kept, Err(err.into()));
+            }
+        }
         (kept, written)
     }
 
@@ -259,6 +268,10 @@ impl NodeClient {
         handle.delete(&key::ApplicationMeta::new(*application_id))?;
         let mut released = Vec::new();
         for (index_key, index) in owned {
+            let release = key::ApplicationRelease::new(*application_id, &index.version);
+            if let Err(err) = handle.delete(&release) {
+                warn!(%application_id, %err, "failed to delete a release pointer");
+            }
             match handle.delete(&index_key) {
                 Ok(()) => released.push(index),
                 Err(err) => warn!(%application_id, %err, "failed to delete a frontend index"),

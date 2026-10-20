@@ -289,11 +289,19 @@ mod tests {
                 FrontendFile::new("frontend/app.js".into(), key::BlobMeta::new(js)),
             ],
         );
-        store
-            .handle()
+        let mut handle = store.handle();
+        handle
             .put(
                 &key::BundleFrontend::new(BlobId::from([bundle; 32])),
                 &index,
+            )
+            .unwrap();
+        handle
+            .put(
+                &key::ApplicationRelease::new(ApplicationId::from(APP), version),
+                &types::ApplicationRelease {
+                    bundle: [bundle; 32],
+                },
             )
             .unwrap();
         js

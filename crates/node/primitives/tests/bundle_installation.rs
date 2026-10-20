@@ -2375,6 +2375,10 @@ async fn a_refused_remote_downgrade_stores_no_frontend() {
         .unwrap();
 
     assert_eq!(node_client.get_bundle_frontend(&older_blob).unwrap(), None);
+    assert_eq!(
+        node_client.find_bundle_frontend(&id, "1.0.0").unwrap(),
+        None
+    );
     assert_eq!(node_client.list_blobs().unwrap().len(), before);
 }
 
@@ -2443,6 +2447,53 @@ async fn a_release_s_frontend_is_found_by_application_and_version() {
         node_client.find_bundle_frontend(&other, "1.0.0").unwrap(),
         None
     );
+}
+
+#[tokio::test]
+async fn two_bundles_of_one_release_resolve_to_the_latest() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let mut blobs = Vec::new();
+    let mut id = None;
+    for files in [&FILES_1_0_0, &FILES_2_0_0] {
+        let bytes = frontend_bundle_by(&key, "1.0.0", files, files);
+        let blob = blob_id_in(&node_client, &bytes).await;
+        id = Some(
+            node_client
+                .install_application_from_bundle_blob(&blob, &source)
+                .await
+                .unwrap(),
+        );
+        blobs.push(blob);
+    }
+    let id = id.unwrap();
+
+    let found = node_client.find_bundle_frontend(&id, "1.0.0").unwrap();
+
+    assert_eq!(found, node_client.get_bundle_frontend(&blobs[1]).unwrap());
+    let release = calimero_store::key::ApplicationRelease::new(id, "1.0.0");
+    let stored = store.handle().get(&release).unwrap().unwrap();
+    assert_eq!(stored.bundle, *blobs[1]);
+}
+
+#[tokio::test]
+async fn uninstall_drops_the_release_pointers() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
+    let (id, _) = install_two_releases(&node_client).await;
+    let pointer = |version| {
+        store
+            .handle()
+            .has(&calimero_store::key::ApplicationRelease::new(id, version))
+            .unwrap()
+    };
+    assert!(pointer("1.0.0") && pointer("2.0.0"));
+
+    node_client.uninstall_application(&id).await.unwrap();
+
+    assert!(!pointer("1.0.0") && !pointer("2.0.0"));
 }
 
 #[tokio::test]
