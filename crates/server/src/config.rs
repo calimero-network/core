@@ -128,6 +128,9 @@ impl SealedConfig {
 #[serde(default, deny_unknown_fields)]
 #[non_exhaustive]
 pub struct AppsConfig {
+    /// Must be `localhost` or have at least two labels: a bare public suffix
+    /// would put every app under a name anyone can register.
+    #[serde(deserialize_with = "deserialize_base_domain")]
     pub base_domain: String,
     /// Serve every app from this port too, at `/{label}/{version}/{path}`, for
     /// clients that cannot resolve `{label}.{base_domain}`.
@@ -151,6 +154,18 @@ fn deserialize_apps_port<'de, D: serde::Deserializer<'de>>(
         ))),
         port => Ok(port),
     }
+}
+
+fn deserialize_base_domain<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let domain = String::deserialize(deserializer)?;
+    if domain.contains('.') || domain.eq_ignore_ascii_case(DEFAULT_APPS_BASE_DOMAIN) {
+        return Ok(domain);
+    }
+    Err(serde::de::Error::custom(format!(
+        "apps base_domain {domain:?} must be `localhost` or have at least two labels"
+    )))
 }
 
 impl Default for AppsConfig {

@@ -854,6 +854,22 @@ mod tests {
         }
     }
 
+    /// A one-label base domain other than `localhost` is a public suffix, which
+    /// would put every app under a name anyone can register.
+    #[test]
+    fn server_apps_base_domain_must_not_be_a_public_suffix() {
+        for bad in ["com", "", "Com"] {
+            let parsed: Result<super::ServerConfig, _> =
+                toml::from_str(&format!("listen = []\n[apps]\nbase_domain = \"{bad}\"\n"));
+            assert!(parsed.is_err(), "{bad:?}");
+        }
+        for good in ["localhost", "apps.example", "Apps.Example"] {
+            let parsed: Result<super::ServerConfig, _> =
+                toml::from_str(&format!("listen = []\n[apps]\nbase_domain = \"{good}\"\n"));
+            assert!(parsed.is_ok(), "{good:?}");
+        }
+    }
+
     /// `forward_auth` is opt-in too, round-trips, and a config without it is
     /// written back without it.
     #[test]
