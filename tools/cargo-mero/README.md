@@ -77,6 +77,9 @@ Other `bundle` flags:
 | `--bump <patch\|minor\|major>` | Fetch the next `appVersion` from the registry instead: a bump over the highest version published for this package. Mutually exclusive with `--app-version`. |
 | `--package <id>` | Override the manifest's `package` id, e.g. to build a migration-target bundle under a distinct identity. |
 | `-o, --output <path>` | Override the output path (defaults to `dist/<package>-<appVersion>.mpk`). |
+| `--frontend-dir <dir>` | Ship a built web frontend (see [Shipping a web frontend](#shipping-a-web-frontend)). |
+| `--check-frontend <mpk>` | Check the frontend inside an existing `.mpk`; builds and signs nothing. |
+| `--format <human\|json>` | Print frontend failures and the final summary as one JSON object. |
 | `--no-abi` | Omit the ABI artifact; the bundle cannot be migrated. |
 | `--no-icon` | Ship without an icon. |
 | `--no-logo` | Suppress the icon preview printed above the summary. |
@@ -86,6 +89,42 @@ Other `bundle` flags:
 **5. `meroctl app install --path dist/<package>-<appVersion>.mpk`**
 Installs the bundle on a running `merod` node.
 The node derives the `ApplicationId` from the bundle's `package` and signer (see [SIGNING.md](SIGNING.md)); `bundle` prints it in the post-bundle summary.
+
+### Shipping a web frontend
+
+An app's built web frontend can ship inside its signed `.mpk`.
+Point `cargo mero bundle` at the build output with `--frontend-dir <dir>`, or set `frontend-dir = "<dir>"` in `[package.metadata.calimero]`.
+The flag is resolved against the working directory and wins over the key, which is resolved against the table that declares it.
+The key is `frontend-dir` rather than `frontend`, which already holds the external `links.frontend` URL.
+
+The directory must hold an `index.html`, which becomes the entry.
+Every file is staged under `frontend/<relative path>` and recorded in `manifest.json` with its size and SHA-256, so the signature covers it.
+Files are sorted, so the same build gives the same bundle.
+Source maps (`*.map`) are skipped, and a symlink anywhere in the directory is refused.
+
+The CLI applies the same rules as the node, from the same code.
+A file type the node does not serve, HTML that loads a script from outside the bundle, or more than 32 MiB in total fails the bundle.
+This check runs before the wasm build, so a bad frontend fails in seconds.
+
+`cargo mero bundle --check-frontend <path.mpk>` runs the same checks over an existing bundle: its manifest, then every file's bytes.
+It does not build or sign anything, and needs no signing method.
+
+With `--format json`, the command prints one JSON object on stdout.
+On failure it is the only line, and the exit code is non-zero.
+On success it is the last line, after `--print-output-path`'s path if that is set.
+
+```json
+{"code":"FRONTEND_REMOTE_SCRIPT","message":"[FRONTEND_REMOTE_SCRIPT] frontend file 'frontend/index.html' loads code from 'https://cdn.example/x.js'; ship it in the bundle","path":"frontend/index.html","hint":"bundle the script and load it from a relative path instead of a remote URL"}
+```
+
+```json
+{"ok":true,"output":"dist/com.example.my-app-0.1.0.mpk","frontend":{"entry":"frontend/index.html","files":12,"bytes":482113}}
+```
+
+`code` is stable, so match on it and not on `message`.
+The codes are `FRONTEND_UNSAFE_PATH`, `FRONTEND_DUPLICATE_PATH`, `FRONTEND_NO_ENTRY`, `FRONTEND_UNSUPPORTED_TYPE`, `FRONTEND_TOO_LARGE`, `FRONTEND_SIZE_MISMATCH`, `FRONTEND_HASH_MISMATCH`, `FRONTEND_REMOTE_SCRIPT` and `FRONTEND_INVALID_HTML`.
+A symlink or a non-UTF-8 file name reports `FRONTEND_UNSAFE_PATH`.
+Any other failure, such as an unreadable file or an archive that lacks a listed file, reports `BUNDLE_ERROR` with `path` and `hint` set to `null`.
 
 ## Publishing to the registry
 
@@ -148,6 +187,7 @@ The workspace table wins over the package table when both are present.
 | `slug`                | `handlers.slug`        | `package`                        |
 | `frontend`            | `links.frontend`       | omitted                          |
 | `frontend-aliases`    | `frontendAliases`      | empty (see below)                |
+| `frontend-dir`        | `frontend`             | omitted (see [Shipping a web frontend](#shipping-a-web-frontend)) |
 | `github`              | `links.github`         | omitted                          |
 | `docs`                | `links.docs`           | omitted                          |
 | `services`            | `services[]`           | empty (see [Multi-service workspaces](#multi-service-workspaces)) |
