@@ -236,13 +236,18 @@ impl NodeClient {
             // A dangling index is worse than a leaked blob: keep the files if it stays.
             kept = handle.delete(&index_key).is_err();
         }
-        if let (Some(index), Ok(true)) = (frontend, &written) {
-            let release = key::ApplicationRelease::new(*application_id, &index.version);
+        if matches!(written, Ok(true)) {
+            // A missing pointer only makes the release a 404, so a failure here never fails the install.
+            let release = key::ApplicationRelease::new(*application_id, &application.version);
             let pointer = types::ApplicationRelease {
                 bundle: **bundle_blob_id,
             };
-            if let Err(err) = handle.put(&release, &pointer) {
-                return (kept, Err(err.into()));
+            let updated = match frontend {
+                Some(_) => handle.put(&release, &pointer),
+                None => handle.delete(&release),
+            };
+            if let Err(err) = updated {
+                warn!(%application_id, %err, "failed to update a release pointer");
             }
         }
         (kept, written)

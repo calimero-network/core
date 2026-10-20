@@ -2356,7 +2356,8 @@ async fn reinstalling_a_bundle_takes_no_second_reference_on_its_frontend() {
 
 #[tokio::test]
 async fn a_refused_remote_downgrade_stores_no_frontend() {
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let source = "file:///test/bundle.mpk".parse().unwrap();
     let newer = frontend_bundle_by(&key, "2.0.0", &FILES_2_0_0, &FILES_2_0_0);
@@ -2375,10 +2376,8 @@ async fn a_refused_remote_downgrade_stores_no_frontend() {
         .unwrap();
 
     assert_eq!(node_client.get_bundle_frontend(&older_blob).unwrap(), None);
-    assert_eq!(
-        node_client.find_bundle_frontend(&id, "1.0.0").unwrap(),
-        None
-    );
+    let release = calimero_store::key::ApplicationRelease::new(id, "1.0.0");
+    assert!(!store.handle().has(&release).unwrap());
     assert_eq!(node_client.list_blobs().unwrap().len(), before);
 }
 
@@ -2494,6 +2493,132 @@ async fn uninstall_drops_the_release_pointers() {
     node_client.uninstall_application(&id).await.unwrap();
 
     assert!(!pointer("1.0.0") && !pointer("2.0.0"));
+}
+
+/// A signed bundle of `com.example.frontend` that ships no frontend at all.
+fn bundle_without_frontend_by(signing_key: &SigningKey, version: &str) -> Vec<u8> {
+    let dir = TempDir::new().unwrap();
+    let wasm: &[u8] = b"frontend test wasm";
+    let mut manifest = serde_json::json!({
+        "version": "1.0",
+        "package": "com.example.frontend",
+        "appVersion": version,
+        "signerId": derive_signer_id_did_key(signing_key.verifying_key().as_bytes()),
+        "minRuntimeVersion": "0.1.0",
+        "services": [{ "name": "svc", "wasm": { "path": "svc.wasm", "hash": artifact_hash(wasm), "size": wasm.len() } }],
+    });
+    sign_manifest(&mut manifest, signing_key);
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    pack_entries(
+        &dir,
+        "plain.mpk",
+        &[
+            ("manifest.json", manifest_bytes.as_slice()),
+            ("svc.wasm", wasm),
+        ],
+    )
+}
+
+#[tokio::test]
+async fn reinstalling_a_release_without_a_frontend_drops_its_pointer() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let with = frontend_bundle_by(&key, "1.0.0", &FILES_1_0_0, &FILES_1_0_0);
+    let with_blob = blob_id_in(&node_client, &with).await;
+    let id = node_client
+        .install_application_from_bundle_blob(&with_blob, &source)
+        .await
+        .unwrap();
+    assert!(node_client
+        .find_bundle_frontend(&id, "1.0.0")
+        .unwrap()
+        .is_some());
+
+    let plain = bundle_without_frontend_by(&key, "1.0.0");
+    let plain_blob = blob_id_in(&node_client, &plain).await;
+    node_client
+        .install_application_from_bundle_blob(&plain_blob, &source)
+        .await
+        .unwrap();
+
+    let release = calimero_store::key::ApplicationRelease::new(id, "1.0.0");
+    assert!(!store.handle().has(&release).unwrap());
+    assert_eq!(
+        node_client.find_bundle_frontend(&id, "1.0.0").unwrap(),
+        None
+    );
+}
+
+/// A datastore that cannot write a release pointer.
+#[derive(Debug)]
+struct ReleasePointerUnwritable(Arc<dyn for<'x> Database<'x>>);
+
+impl<'a> Database<'a> for ReleasePointerUnwritable {
+    fn open(_config: &StoreConfig) -> eyre::Result<Self> {
+        eyre::bail!("test double: not openable")
+    }
+
+    fn has(&self, col: Column, key: Slice<'_>) -> eyre::Result<bool> {
+        self.0.has(col, key)
+    }
+
+    fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
+        self.0.get(col, key)
+    }
+
+    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
+        if matches!(col, Column::ApplicationRelease) {
+            eyre::bail!("release pointer write failed");
+        }
+        self.0.put(col, key, value)
+    }
+
+    fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
+        self.0.delete(col, key)
+    }
+
+    fn iter(&self, col: Column) -> eyre::Result<Iter<'_>> {
+        self.0.iter(col)
+    }
+
+    fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()> {
+        self.0.apply(tx)
+    }
+}
+
+#[tokio::test]
+async fn a_release_pointer_that_cannot_be_written_does_not_undo_the_install() {
+    let store = Store::new(Arc::new(ReleasePointerUnwritable(Arc::new(
+        InMemoryDB::owned(),
+    ))));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store)).await;
+    let bytes = frontend_bundle(&FILES_1_0_0, &FILES_1_0_0);
+    let bundle = blob_id_in(&node_client, &bytes).await;
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+
+    let id = node_client
+        .install_application_from_bundle_blob(&bundle, &source)
+        .await
+        .expect("the install stands without its pointer");
+
+    let row = node_client.get_application(&id).unwrap().unwrap();
+    assert_eq!(row.package, "com.example.frontend");
+    assert!(node_client.has_blob(&bundle).unwrap());
+    assert_eq!(
+        node_client.find_bundle_frontend(&id, "1.0.0").unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_blob_s_size_is_a_point_read() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let blob = blob_id_in(&node_client, b"twelve bytes").await;
+
+    assert_eq!(node_client.blob_size(&blob).unwrap(), Some(12));
+    assert_eq!(node_client.blob_size(&BlobId::from([9; 32])).unwrap(), None);
 }
 
 #[tokio::test]
@@ -2645,6 +2770,9 @@ async fn a_row_write_refused_after_the_files_were_stored_releases_them() {
 
     assert_eq!(node_client.get_bundle_frontend(&v15_blob).unwrap(), None);
     assert_eq!(node_client.list_blobs().unwrap().len(), before);
+    let id = node_client.list_applications().unwrap()[0].id;
+    let release = calimero_store::key::ApplicationRelease::new(id, "1.5.0");
+    assert!(!store.handle().has(&release).unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
