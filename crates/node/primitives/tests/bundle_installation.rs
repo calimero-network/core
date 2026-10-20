@@ -1,13 +1,19 @@
 //! Tests for bundle installation
 
 use std::fs;
+use std::sync::Arc;
+use std::time::Duration;
 
 use calimero_node_primitives::bundle::{
     derive_signer_id_did_key, sign_manifest_json, BundleManifest,
 };
 use calimero_node_primitives::client::application::bundle::MAX_ARCHIVE_BYTES;
+use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
+use calimero_store::db::InMemoryDB;
+use calimero_store::Store;
 use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
 use flate2::write::GzEncoder;
@@ -2093,21 +2099,55 @@ async fn a_service_blob_counts_as_an_application_artifact() {
 }
 
 const FRONTEND_INDEX: &[u8] = b"<html><body>hello</body></html>";
+const FRONTEND_APP_JS: &[u8] = b"console.log('app');";
+const F1: [(&str, &[u8]); 2] = [
+    ("frontend/index.html", FRONTEND_INDEX),
+    ("frontend/app.js", FRONTEND_APP_JS),
+];
+const F2: [(&str, &[u8]); 2] = [
+    ("frontend/index.html", b"<html>v2</html>"),
+    ("frontend/app.js", FRONTEND_APP_JS),
+];
+const F3: [(&str, &[u8]); 2] = [
+    ("frontend/index.html", b"<html>v1.5</html>"),
+    ("frontend/app.js", FRONTEND_APP_JS),
+];
 
 /// A signed single-service bundle whose manifest lists `listed` as its frontend
 /// (entry `frontend/index.html`) while the archive holds `shipped`.
 fn frontend_bundle(listed: &[(&str, &[u8])], shipped: &[(&str, &[u8])]) -> Vec<u8> {
-    frontend_bundle_declaring_wasm_size(listed, shipped, None)
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    frontend_bundle_by(&signing_key, "1.0.0", listed, shipped)
 }
 
-/// As `frontend_bundle`, but the manifest declares the wasm as `wasm_size` bytes when given.
+/// As `frontend_bundle`, but the manifest declares the wasm as `wasm_size` bytes.
 fn frontend_bundle_declaring_wasm_size(
+    listed: &[(&str, &[u8])],
+    shipped: &[(&str, &[u8])],
+    wasm_size: usize,
+) -> Vec<u8> {
+    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    signed_frontend_bundle(&signing_key, "1.0.0", listed, shipped, Some(wasm_size))
+}
+
+/// As [`frontend_bundle`], under a caller-held key, so releases share an id.
+fn frontend_bundle_by(
+    signing_key: &SigningKey,
+    version: &str,
+    listed: &[(&str, &[u8])],
+    shipped: &[(&str, &[u8])],
+) -> Vec<u8> {
+    signed_frontend_bundle(signing_key, version, listed, shipped, None)
+}
+
+fn signed_frontend_bundle(
+    signing_key: &SigningKey,
+    version: &str,
     listed: &[(&str, &[u8])],
     shipped: &[(&str, &[u8])],
     wasm_size: Option<usize>,
 ) -> Vec<u8> {
     let dir = TempDir::new().unwrap();
-    let signing_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let wasm: &[u8] = b"frontend test wasm";
     let artifact = |path: &str, bytes: &[u8]| serde_json::json!({ "path": path, "hash": artifact_hash(bytes), "size": bytes.len() });
     let files: Vec<_> = listed.iter().map(|(p, b)| artifact(p, b)).collect();
@@ -2118,13 +2158,13 @@ fn frontend_bundle_declaring_wasm_size(
     let mut manifest = serde_json::json!({
         "version": "1.0",
         "package": "com.example.frontend",
-        "appVersion": "1.0.0",
+        "appVersion": version,
         "signerId": derive_signer_id_did_key(signing_key.verifying_key().as_bytes()),
         "minRuntimeVersion": "0.1.0",
         "services": [{ "name": "svc", "wasm": wasm_artifact }],
         "frontend": { "entry": "frontend/index.html", "files": files },
     });
-    sign_manifest(&mut manifest, &signing_key);
+    sign_manifest(&mut manifest, signing_key);
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
 
     let mut entries = vec![
@@ -2235,10 +2275,266 @@ async fn a_wasm_artifact_longer_than_its_declared_size_still_installs() {
 
     let id = try_install(
         &node_client,
-        frontend_bundle_declaring_wasm_size(files, files, Some(1)),
+        frontend_bundle_declaring_wasm_size(files, files, 1),
     )
     .await
     .expect("the wasm size field was never enforced, so understating it must not refuse");
 
     assert!(node_client.get_application(&id).unwrap().is_some());
+}
+
+/// Installs `frontend_bundle(files, files)` and returns the bundle blob id.
+async fn install_frontend(
+    node_client: &NodeClient,
+    files: &[(&str, &[u8])],
+) -> (ApplicationId, BlobId) {
+    let bytes = frontend_bundle(files, files);
+    let blob_id = blob_id_in(node_client, &bytes).await;
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let id = node_client
+        .install_application_from_bundle_blob(&blob_id, &source)
+        .await
+        .expect("frontend bundle installs");
+    (id, blob_id)
+}
+
+async fn blob_id_in(node_client: &NodeClient, bytes: &[u8]) -> BlobId {
+    node_client
+        .add_blob(Cursor::new(bytes), Some(bytes.len() as u64), None)
+        .await
+        .expect("add the bundle blob")
+        .0
+}
+
+async fn read_blob(node_client: &NodeClient, blob_id: BlobId) -> Vec<u8> {
+    node_client
+        .get_blob_bytes(&blob_id, None)
+        .await
+        .unwrap()
+        .expect("blob present")
+        .to_vec()
+}
+
+#[tokio::test]
+async fn an_installed_frontend_is_stored_file_by_file() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let files: &[(&str, &[u8])] = &[
+        ("frontend/index.html", FRONTEND_INDEX),
+        ("frontend/app.js", FRONTEND_APP_JS),
+    ];
+
+    let (id, bundle) = install_frontend(&node_client, files).await;
+
+    let index = node_client.get_bundle_frontend(&bundle).unwrap().unwrap();
+    assert_eq!(index.application.application_id(), id);
+    assert_eq!(&*index.entry, "frontend/index.html");
+    assert_eq!(index.files.len(), files.len());
+    for (path, bytes) in files {
+        let file = index.files.iter().find(|f| &*f.path == *path).unwrap();
+        assert_eq!(read_blob(&node_client, file.blob.blob_id()).await, *bytes);
+    }
+}
+
+#[tokio::test]
+async fn a_bundle_without_a_frontend_writes_no_frontend_key() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let (bytes, _id) = common::minimal_signed_bundle_bytes("com.example.plain", "1.0.0");
+    let bundle = blob_id_in(&node_client, &bytes).await;
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+
+    node_client
+        .install_application_from_bundle_blob(&bundle, &source)
+        .await
+        .unwrap();
+
+    assert_eq!(node_client.get_bundle_frontend(&bundle).unwrap(), None);
+    assert_eq!(node_client.list_blobs().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn reinstalling_a_bundle_takes_no_second_reference_on_its_frontend() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let files: &[(&str, &[u8])] = &[("frontend/index.html", FRONTEND_INDEX)];
+    let (id, bundle) = install_frontend(&node_client, files).await;
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    node_client
+        .install_application_from_bundle_blob(&bundle, &source)
+        .await
+        .unwrap();
+
+    node_client.uninstall_application(&id).await.unwrap();
+
+    assert_eq!(node_client.get_bundle_frontend(&bundle).unwrap(), None);
+    // Only the bundle blob and the service wasm remain.
+    assert_eq!(node_client.list_blobs().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_refused_remote_downgrade_stores_no_frontend() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let newer = frontend_bundle_by(&key, "2.0.0", &F2, &F2);
+    let newer_blob = blob_id_in(&node_client, &newer).await;
+    let id = node_client
+        .install_application_from_bundle_blob(&newer_blob, &source)
+        .await
+        .unwrap();
+    let older = frontend_bundle_by(&key, "1.0.0", &F1, &F1);
+    let older_blob = blob_id_in(&node_client, &older).await;
+    let before = node_client.list_blobs().unwrap().len();
+
+    node_client
+        .install_expected_bundle_blob(&id, &older_blob, &source)
+        .await
+        .unwrap();
+
+    assert_eq!(node_client.get_bundle_frontend(&older_blob).unwrap(), None);
+    assert_eq!(node_client.list_blobs().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn an_upgrade_keeps_every_version_s_frontend_and_shares_identical_files() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let mut blobs = Vec::new();
+    for (version, files) in [("1.0.0", &F1), ("2.0.0", &F2)] {
+        let bytes = frontend_bundle_by(&key, version, files, files);
+        let blob = blob_id_in(&node_client, &bytes).await;
+        node_client
+            .install_application_from_bundle_blob(&blob, &source)
+            .await
+            .unwrap();
+        blobs.push(blob);
+    }
+
+    let [v1, v2] = [blobs[0], blobs[1]];
+    let (i1, i2) = (
+        node_client.get_bundle_frontend(&v1).unwrap().unwrap(),
+        node_client.get_bundle_frontend(&v2).unwrap().unwrap(),
+    );
+    let js = |i: &calimero_store::types::BundleFrontend| {
+        i.files
+            .iter()
+            .find(|f| &*f.path == "frontend/app.js")
+            .unwrap()
+            .blob
+            .blob_id()
+    };
+    assert_eq!(js(&i1), js(&i2));
+    assert_eq!(read_blob(&node_client, js(&i1)).await, FRONTEND_APP_JS);
+}
+
+/// Installs v1 then v2 of one app (partly shared files); returns the app id and both bundle blobs.
+async fn install_two_releases(node_client: &NodeClient) -> (ApplicationId, [BlobId; 2]) {
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let mut blobs = Vec::new();
+    let mut id = None;
+    for (version, files) in [("1.0.0", &F1), ("2.0.0", &F2)] {
+        let bytes = frontend_bundle_by(&key, version, files, files);
+        let blob = blob_id_in(node_client, &bytes).await;
+        id = Some(
+            node_client
+                .install_application_from_bundle_blob(&blob, &source)
+                .await
+                .unwrap(),
+        );
+        blobs.push(blob);
+    }
+    (id.unwrap(), [blobs[0], blobs[1]])
+}
+
+fn frontend_blobs(node_client: &NodeClient, bundle: &BlobId) -> Vec<BlobId> {
+    let index = node_client.get_bundle_frontend(bundle).unwrap().unwrap();
+    index.files.iter().map(|f| f.blob.blob_id()).collect()
+}
+
+#[tokio::test]
+async fn uninstall_releases_every_release_s_frontend() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let (id, bundles) = install_two_releases(&node_client).await;
+    let blobs: Vec<_> = bundles
+        .iter()
+        .flat_map(|b| frontend_blobs(&node_client, b))
+        .collect();
+
+    node_client.uninstall_application(&id).await.unwrap();
+
+    for bundle in &bundles {
+        assert_eq!(node_client.get_bundle_frontend(bundle).unwrap(), None);
+    }
+    for blob in blobs {
+        assert!(!node_client.has_blob(&blob).unwrap());
+    }
+}
+
+#[tokio::test]
+async fn installing_one_bundle_twice_at_once_leaks_no_frontend_blob() {
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
+    let bytes = frontend_bundle(&F1, &F1);
+    let bundle = blob_id_in(&node_client, &bytes).await;
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+
+    let (first, second) = tokio::join!(
+        node_client.install_application_from_bundle_blob(&bundle, &source),
+        node_client.install_application_from_bundle_blob(&bundle, &source),
+    );
+    let id = first.unwrap();
+    assert_eq!(second.unwrap(), id);
+    let blobs = frontend_blobs(&node_client, &bundle);
+
+    node_client.uninstall_application(&id).await.unwrap();
+
+    assert_eq!(node_client.get_bundle_frontend(&bundle).unwrap(), None);
+    for blob in blobs {
+        assert!(!node_client.has_blob(&blob).unwrap());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_row_write_refused_after_the_files_were_stored_releases_them() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let v1 = frontend_bundle_by(&key, "1.0.0", &F1, &F1);
+    let v1_blob = blob_id_in(&node_client, &v1).await;
+    let id = node_client
+        .install_application_from_bundle_blob(&v1_blob, &source)
+        .await
+        .unwrap();
+    let v15 = frontend_bundle_by(&key, "1.5.0", &F3, &F3);
+    let v15_blob = blob_id_in(&node_client, &v15).await;
+    let before = node_client.list_blobs().unwrap().len();
+
+    // The remote install passes the version check against the 1.0.0 row, stores
+    // its files, then waits on the row lock while a 2.0.0 row lands.
+    let rows = lock_application_rows();
+    let install = tokio::spawn({
+        let node_client = node_client.clone();
+        async move {
+            node_client
+                .install_expected_bundle_blob(&id, &v15_blob, &source)
+                .await
+        }
+    });
+    for _ in 0..500 {
+        if node_client.list_blobs().unwrap().len() > before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10)); // the lock guard may not cross an await
+    }
+    let row_key = calimero_store::key::ApplicationMeta::new(id);
+    let mut handle = store.handle();
+    let mut row = handle.get(&row_key).unwrap().unwrap();
+    row.version = "2.0.0".into();
+    handle.put(&row_key, &row).unwrap();
+    drop(rows);
+
+    install.await.unwrap().unwrap();
+
+    assert_eq!(node_client.get_bundle_frontend(&v15_blob).unwrap(), None);
+    assert_eq!(node_client.list_blobs().unwrap().len(), before);
 }
