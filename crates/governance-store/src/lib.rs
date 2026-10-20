@@ -77,6 +77,7 @@ mod op_budget;
 mod ops;
 mod owner_guard;
 mod pending_admission;
+mod pending_namespace_purge;
 mod pending_rotation;
 mod pending_self_purge;
 mod permission_checker;
@@ -177,6 +178,7 @@ pub use self::node_device::{
 };
 pub use self::owner_guard::{check_root_proof, owner_op_counter, GuardedOp, OwnerGuardRefusal};
 pub use self::pending_admission::{pending_standing, PendingStanding};
+pub use self::pending_namespace_purge::PendingNamespacePurges;
 pub use self::pending_self_purge::PendingSelfPurgeRepository;
 pub use self::permission_checker::{ActingPrincipal, PermissionChecker};
 
