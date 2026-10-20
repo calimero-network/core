@@ -1,6 +1,5 @@
-//! A bundle's web frontend: checking one inside an `.mpk` and reporting the
-//! result for humans or, with `--format json`, for CI. Paths, sizes, hashes and
-//! types are `calimero_bundle`'s, shared with the node; the HTML lint is build-time only.
+//! Checking a bundle's web frontend and reporting it for humans or, with `--format json`, CI.
+//! Paths, sizes, hashes and types are `calimero_bundle`'s, shared with the node.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -8,8 +7,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use calimero_bundle::{
-    check_frontend_html, verify_frontend_file, verify_manifest_signature, BundleFrontend,
-    BundleManifest, FrontendError, MAX_FRONTEND_BYTES, MAX_MANIFEST_BYTES,
+    check_frontend_html, mime_type, verify_frontend_file, verify_manifest_signature,
+    BundleArtifact, BundleFrontend, BundleManifest, FrontendError, MAX_FRONTEND_BYTES,
+    MAX_MANIFEST_BYTES,
 };
 use camino::Utf8Path;
 use eyre::{bail, eyre, Context, Result};
@@ -21,7 +21,7 @@ use crate::OutputFormat;
 
 const GENERIC_ERROR_CODE: &str = "BUNDLE_ERROR"; // any failure that is not a `FrontendError`
 const ARCHIVE_ROOT: &str = "frontend"; // where the frontend sits in the bundle
-const ENTRY: &str = "frontend/index.html";
+const ENTRY: &str = "frontend/index.html"; // the page a node serves at the app root
 const SOURCE_MAP_SUFFIX: &str = ".map"; // never shipped: it only helps a debugger
 const HIDDEN_PREFIX: char = '.'; // editor and tool litter such as .DS_Store and .vite/
 
@@ -71,10 +71,13 @@ pub fn collect(dir: &Path) -> Result<Collected> {
     let mut found = Vec::new();
     walk(dir, ARCHIVE_ROOT, &mut found)?;
     found.sort_by(|a, b| a.1.cmp(&b.1));
+    if found.iter().map(|f| f.2).sum::<u64>() > MAX_FRONTEND_BYTES {
+        return Err(FrontendError::TooLarge.into());
+    }
 
     let mut files = Vec::with_capacity(found.len());
     let mut contents = Vec::with_capacity(found.len());
-    for (source, rel) in found {
+    for (source, rel, _) in found {
         let bytes =
             fs::read(&source).wrap_err_with(|| format!("failed to read {}", source.display()))?;
         files.push(manifest::artifact_from_bytes(rel, &bytes));
@@ -87,22 +90,23 @@ pub fn collect(dir: &Path) -> Result<Collected> {
     };
     frontend.validate()?;
     for (file, bytes) in frontend.files.iter().zip(&contents) {
-        verify_frontend_file(file, bytes)?;
-        if is_html(&file.path) {
-            check_frontend_html(&file.path, bytes)?;
-        }
+        check_file(file, bytes)?;
     }
     Ok(Collected { frontend, contents })
 }
 
-fn is_html(path: &str) -> bool {
-    path.rsplit_once('.')
-        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("html"))
+/// The node's byte checks on one file, plus the build-time HTML lint.
+fn check_file(file: &BundleArtifact, bytes: &[u8]) -> Result<()> {
+    verify_frontend_file(file, bytes)?;
+    if mime_type(&file.path) == mime_type(ENTRY) {
+        check_frontend_html(&file.path, bytes)?;
+    }
+    Ok(())
 }
 
-/// Every regular file under `dir` as (source, archive path), dot-entries aside.
-/// A symlink could point outside the build, so it is refused rather than followed.
-fn walk(dir: &Path, rel: &str, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
+/// Every regular file under `dir` as (source, archive path, size), dot-entries aside.
+/// A symlink could point outside the build and a pipe or device could block a read, so both are refused.
+fn walk(dir: &Path, rel: &str, out: &mut Vec<(PathBuf, String, u64)>) -> Result<()> {
     for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed to read {}", dir.display()))? {
         let entry = entry?;
         let name = entry.file_name();
@@ -110,14 +114,14 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
             continue;
         }
         let rel = format!("{rel}/{}", name.to_string_lossy());
-        let kind = entry.file_type()?;
-        if kind.is_symlink() || name.to_str().is_none() {
+        let meta = entry.metadata()?;
+        if name.to_str().is_none() || !(meta.is_dir() || meta.is_file()) {
             return Err(FrontendError::UnsafePath(rel).into());
         }
-        if kind.is_dir() {
+        if meta.is_dir() {
             walk(&entry.path(), &rel, out)?;
         } else if !rel.ends_with(SOURCE_MAP_SUFFIX) {
-            out.push((entry.path(), rel));
+            out.push((entry.path(), rel, meta.len()));
         }
     }
     Ok(())
@@ -149,6 +153,9 @@ pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
         let mut bytes = Vec::new();
         entry.take(cap + 1).read_to_end(&mut bytes)?;
         if is_manifest {
+            if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+                bail!("manifest.json exceeds {MAX_MANIFEST_BYTES} bytes");
+            }
             manifest = Some(bytes);
         } else {
             files.insert(path, bytes);
@@ -170,10 +177,7 @@ pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
         let bytes = files
             .get(&file.path)
             .ok_or_else(|| FrontendError::MissingFile(file.path.clone()))?;
-        verify_frontend_file(file, bytes)?;
-        if is_html(&file.path) {
-            check_frontend_html(&file.path, bytes)?;
-        }
+        check_file(file, bytes)?;
     }
     Ok(FrontendSummary::of(&frontend))
 }
@@ -252,7 +256,7 @@ fn error_path(err: &FrontendError) -> Option<&str> {
 fn hint(err: &FrontendError) -> &'static str {
     match err {
         FrontendError::UnsafePath(_) => {
-            "use plain files with names of letters, digits and . _ ~ @ + -; symlinks are not allowed"
+            "use plain files with names of letters, digits and . _ ~ @ + -; symlinks, pipes and devices are not allowed"
         }
         FrontendError::DuplicatePath(_) => "list each file once, ignoring letter case",
         FrontendError::NoEntry(_) => "the build must contain an index.html at its top level",

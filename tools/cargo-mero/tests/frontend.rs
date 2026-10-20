@@ -255,6 +255,14 @@ fn check_frontend_rejects_a_manifest_over_the_manifest_cap() {
 
     let err = check_failure(&mpk);
     assert_eq!(err["code"], "BUNDLE_ERROR", "{err}");
+    let expected = format!(
+        "manifest.json exceeds {} bytes",
+        calimero_bundle::MAX_MANIFEST_BYTES
+    );
+    assert!(
+        err["message"].as_str().unwrap().contains(&expected),
+        "{err}"
+    );
 }
 
 #[test]
@@ -374,10 +382,49 @@ fn a_symlink_in_the_frontend_is_refused() {
     assert!(err["hint"]
         .as_str()
         .unwrap()
-        .contains("symlinks are not allowed"));
+        .contains("symlinks, pipes and devices"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_in_the_frontend_is_refused_without_reading_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_build(tmp.path(), &[("index.html", INDEX_HTML)]);
+    let fifo = tmp.path().join("pipe.txt");
+    assert!(Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+
+    let err = stdout_json(&bundle_with_frontend(tmp.path(), &[]));
+    assert_eq!(err["code"], "FRONTEND_UNSAFE_PATH", "{err}");
+    assert_eq!(err["path"], "frontend/pipe.txt");
+    assert!(err["hint"].as_str().unwrap().contains("pipes"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn files_over_the_cap_fail_before_any_is_read() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    write_build(tmp.path(), &[("index.html", INDEX_HTML)]);
+    // Unreadable, so reading either file would fail with a different code.
+    for name in ["a.js", "b.js"] {
+        let path = tmp.path().join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(calimero_bundle::MAX_FRONTEND_BYTES / 2 + 1)
+            .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    let err = stdout_json(&bundle_with_frontend(tmp.path(), &[]));
+    assert_eq!(err["code"], "FRONTEND_TOO_LARGE", "{err}");
 }
 
 #[test]
+#[ignore = "slow: compiles the fixture app; cargo-mero-e2e runs it"]
 fn a_valid_frontend_is_packed_and_passes_the_check() {
     let tmp = tempfile::tempdir().unwrap();
     let build = tmp.path().join("web");

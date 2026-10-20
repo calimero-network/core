@@ -280,7 +280,8 @@ The key is `frontend-dir` rather than `frontend`, which already holds the extern
 The directory must hold an `index.html`, which becomes the entry.
 Every file is staged under `frontend/<relative path>` and recorded in `manifest.json` with its size and SHA-256, so the signature covers it.
 Files are sorted, so the same build gives the same bundle.
-Source maps (`*.map`) and dot-entries such as `.DS_Store` and `.vite/` are skipped, and a symlink anywhere in the directory is refused.
+Source maps (`*.map`) and dot-entries such as `.DS_Store` and `.vite/` are skipped.
+A symlink, pipe or device anywhere in the directory is refused, and the sizes are summed against the 32 MiB cap before any file is read.
 The bytes that are hashed are the bytes that are packed, even if the directory changes during the wasm build.
 
 The node checks each file's path, size, SHA-256 and file type, and the 32 MiB total.
@@ -306,7 +307,7 @@ Progress lines and the summary go to stderr in both formats, and `--print-output
 
 `code` is stable, so match on it and not on `message`.
 The codes are `FRONTEND_UNSAFE_PATH`, `FRONTEND_DUPLICATE_PATH`, `FRONTEND_NO_ENTRY`, `FRONTEND_ENTRY_NOT_HTML`, `FRONTEND_UNSUPPORTED_TYPE`, `FRONTEND_TOO_LARGE`, `FRONTEND_SIZE_MISMATCH`, `FRONTEND_HASH_MISMATCH`, `FRONTEND_MISSING_FILE`, `FRONTEND_REMOTE_RESOURCE`, `FRONTEND_ESCAPING_URL`, `FRONTEND_INLINE_SCRIPT` and `FRONTEND_INVALID_HTML`.
-A symlink or a non-UTF-8 file name reports `FRONTEND_UNSAFE_PATH`.
+A symlink, pipe, device or non-UTF-8 file name reports `FRONTEND_UNSAFE_PATH`.
 Any other failure, such as an unreadable file, a missing frontend directory or a bad signature, reports `BUNDLE_ERROR` with `path` and `hint` set to `null`.
 
 ## Signing
