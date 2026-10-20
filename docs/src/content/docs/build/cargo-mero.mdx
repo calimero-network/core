@@ -280,21 +280,24 @@ The key is `frontend-dir` rather than `frontend`, which already holds the extern
 The directory must hold an `index.html`, which becomes the entry.
 Every file is staged under `frontend/<relative path>` and recorded in `manifest.json` with its size and SHA-256, so the signature covers it.
 Files are sorted, so the same build gives the same bundle.
-Source maps (`*.map`) are skipped, and a symlink anywhere in the directory is refused.
+Source maps (`*.map`) and dot-entries such as `.DS_Store` and `.vite/` are skipped, and a symlink anywhere in the directory is refused.
+The bytes that are hashed are the bytes that are packed, even if the directory changes during the wasm build.
 
-The CLI applies the same rules as the node, from the same code.
-A file type the node does not serve, HTML that loads a script from outside the bundle, or more than 32 MiB in total fails the bundle.
-This check runs before the wasm build, so a bad frontend fails in seconds.
+The node checks each file's path, size, SHA-256 and file type, and the 32 MiB total.
+The CLI applies the same checks from the same code.
+It also lints each HTML file, which the node never does: a remote resource, a URL outside the bundle's folder, a `<base>` element or inline script fails the bundle.
+That lint is a build-time aid for trusted build output and not a security boundary.
+These checks run before the wasm build, so a bad frontend fails in seconds.
 
-`cargo mero bundle --check-frontend <path.mpk>` runs the same checks over an existing bundle: its manifest, then every file's bytes.
-It does not build or sign anything, and needs no signing method.
+`cargo mero bundle --check-frontend <path.mpk>` runs the same checks over an existing bundle.
+It verifies the manifest signature first, then the manifest entries and every file's bytes.
+It does not build or sign anything, needs no signing method, and cannot be combined with the flags that build a bundle.
 
-With `--format json`, the command prints one JSON object on stdout.
-On failure it is the only line, and the exit code is non-zero.
-On success it is the last line, after `--print-output-path`'s path if that is set.
+With `--format json`, stdout holds exactly one JSON object and the exit code is non-zero on failure.
+Progress lines and the summary go to stderr in both formats, and `--print-output-path` prints to stdout only in human mode.
 
 ```json
-{"code":"FRONTEND_REMOTE_SCRIPT","message":"[FRONTEND_REMOTE_SCRIPT] frontend file 'frontend/index.html' loads code from 'https://cdn.example/x.js'; ship it in the bundle","path":"frontend/index.html","hint":"bundle the script and load it from a relative path instead of a remote URL"}
+{"code":"FRONTEND_REMOTE_RESOURCE","message":"[FRONTEND_REMOTE_RESOURCE] frontend file 'frontend/index.html' loads 'https://cdn.example/x.js' from another origin; the served page only allows its own files, ship it in the bundle","path":"frontend/index.html","hint":"bundle the file and load it from a relative path instead of a remote URL"}
 ```
 
 ```json
@@ -302,9 +305,9 @@ On success it is the last line, after `--print-output-path`'s path if that is se
 ```
 
 `code` is stable, so match on it and not on `message`.
-The codes are `FRONTEND_UNSAFE_PATH`, `FRONTEND_DUPLICATE_PATH`, `FRONTEND_NO_ENTRY`, `FRONTEND_UNSUPPORTED_TYPE`, `FRONTEND_TOO_LARGE`, `FRONTEND_SIZE_MISMATCH`, `FRONTEND_HASH_MISMATCH`, `FRONTEND_REMOTE_SCRIPT` and `FRONTEND_INVALID_HTML`.
+The codes are `FRONTEND_UNSAFE_PATH`, `FRONTEND_DUPLICATE_PATH`, `FRONTEND_NO_ENTRY`, `FRONTEND_ENTRY_NOT_HTML`, `FRONTEND_UNSUPPORTED_TYPE`, `FRONTEND_TOO_LARGE`, `FRONTEND_SIZE_MISMATCH`, `FRONTEND_HASH_MISMATCH`, `FRONTEND_MISSING_FILE`, `FRONTEND_REMOTE_RESOURCE`, `FRONTEND_ESCAPING_URL`, `FRONTEND_INLINE_SCRIPT` and `FRONTEND_INVALID_HTML`.
 A symlink or a non-UTF-8 file name reports `FRONTEND_UNSAFE_PATH`.
-Any other failure, such as an unreadable file or an archive that lacks a listed file, reports `BUNDLE_ERROR` with `path` and `hint` set to `null`.
+Any other failure, such as an unreadable file, a missing frontend directory or a bad signature, reports `BUNDLE_ERROR` with `path` and `hint` set to `null`.
 
 ## Signing
 
