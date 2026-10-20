@@ -399,8 +399,11 @@ async fn drain_pending_application(input: &StateDeltaContext, context_id: &Conte
                     %context_id,
                     delta_id = ?delta_id,
                     %err,
-                    "absorb drain: corrupt parked record — cannot reconstruct delta; skipping"
+                    "absorb drain: corrupt parked record — cannot reconstruct delta; deleting"
                 );
+                if let Err(err) = repo.delete(context_id, key_application, delta_id) {
+                    warn!(%context_id, delta_id = ?delta_id, %err, "absorb drain: failed to delete corrupt parked record");
+                }
                 continue;
             }
         };
@@ -543,8 +546,9 @@ async fn drain_absorbed_leaves(input: &StateDeltaContext, context_id: &ContextId
                     %context_id,
                     delta_id = ?delta_id,
                     %err,
-                    "absorb leaf drain: corrupt buffered leaf bytes — skipping"
+                    "absorb leaf drain: corrupt buffered leaf bytes — deleting"
                 );
+                repo.delete(context_id, producing_bytecode_id, delta_id)?;
                 continue;
             }
         };
@@ -661,8 +665,9 @@ where
                     %context_id,
                     delta_id = ?delta_id,
                     %err,
-                    "absorb drain: corrupt AbsorbRecord — cannot reconstruct buffered delta; skipping"
+                    "absorb drain: corrupt AbsorbRecord — cannot reconstruct buffered delta; deleting"
                 );
+                repo.delete(context_id, producing_bytecode_id, delta_id)?;
                 continue;
             }
         };
