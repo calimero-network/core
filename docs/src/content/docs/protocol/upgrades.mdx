@@ -119,8 +119,8 @@ An older node ignores the field and the app still runs from `links.frontend`.
 | `FRONTEND_UNSUPPORTED_TYPE` | a file's extension is outside the served MIME allowlist (source maps included) |
 | `FRONTEND_TOO_LARGE` | the declared sizes sum past `MAX_FRONTEND_BYTES` (32 MiB) |
 | `FRONTEND_SIZE_MISMATCH` / `FRONTEND_HASH_MISMATCH` | a file's bytes differ from its manifest entry |
-| `FRONTEND_REMOTE_SCRIPT` | an HTML file loads code from another origin: a `script`, `modulepreload` or `preload` URL with a scheme or `//host`, or any `<base href>` |
-| `FRONTEND_ESCAPING_URL` | an HTML file loads code from a root-absolute URL (`/assets/app.js`, Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root; build with `base: './'` |
+| `FRONTEND_REMOTE_RESOURCE` | an HTML file loads a URL from another origin: a `src`, `href`, `srcset` or `poster` with a scheme or `//host` on any element except `<a>` and `<area>`; `data:` and `blob:` are refused only on `script`, `modulepreload` and `preload` loaders |
+| `FRONTEND_ESCAPING_URL` | an HTML file loads a root-absolute URL (`/assets/app.js`, `/vite.svg`; Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root, in any of those attributes; or has any `<base>`; build with `base: './'` |
 | `FRONTEND_INLINE_SCRIPT` | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, or a `javascript:` URL in `href`, `src`, `action` or `formaction`; the served page's CSP forbids inline code |
 | `FRONTEND_INVALID_HTML` | an HTML file is not UTF-8 |
 

@@ -59,10 +59,9 @@ const MIME_TYPES: &[(&str, &str)] = &[
     ("wasm", "application/wasm"),
 ];
 
-/// Elements that load code, by every attribute a browser would load it from;
-/// `base` re-points every relative URL in the document, so any value counts.
+/// Elements that load code; a `data:` or `blob:` URL is refused on these only.
 static CODE_LOADERS: LazyLock<Selector> = LazyLock::new(|| {
-    Selector::parse(r#"script, link[rel~="modulepreload"], link[rel~="preload"], base"#)
+    Selector::parse(r#"script, link[rel~="modulepreload"], link[rel~="preload"]"#)
         // SAFETY: the selector is a constant, and a unit test parses it on every run
         .expect("static selector parses")
 });
@@ -102,11 +101,13 @@ pub enum FrontendError {
     },
     #[error("[FRONTEND_HASH_MISMATCH] frontend file '{0}' does not match its manifest hash")]
     HashMismatch(String),
-    #[error("[FRONTEND_REMOTE_SCRIPT] frontend file '{path}' loads code from '{url}'; ship it in the bundle")]
-    RemoteScript { path: String, url: String },
+    #[error("[FRONTEND_REMOTE_RESOURCE] frontend file '{path}' loads '{url}' from another origin; the served page only allows its own files, ship it in the bundle")]
+    RemoteResource { path: String, url: String },
     #[error("[FRONTEND_INVALID_HTML] frontend file '{0}' is not UTF-8")]
     InvalidHtml(String),
-    #[error("[FRONTEND_ESCAPING_URL] frontend file '{path}' loads code from '{url}', outside the bundle's own folder; build with a relative base (Vite `base: './'`)")]
+    #[error("[FRONTEND_ESCAPING_URL] frontend file '{0}' has a <base>; <base> changes how every relative URL resolves; remove it")]
+    Base(String),
+    #[error("[FRONTEND_ESCAPING_URL] frontend file '{path}' loads '{url}', outside the bundle's own folder; build with a relative base (Vite `base: './'`)")]
     EscapingUrl { path: String, url: String },
     #[error("[FRONTEND_INLINE_SCRIPT] frontend file '{path}' runs inline code ({what}); the served page forbids it, move it to a script file")]
     InlineScript { path: String, what: String },
@@ -124,9 +125,9 @@ impl FrontendError {
             Self::TooLarge => "FRONTEND_TOO_LARGE",
             Self::SizeMismatch { .. } => "FRONTEND_SIZE_MISMATCH",
             Self::HashMismatch(_) => "FRONTEND_HASH_MISMATCH",
-            Self::RemoteScript { .. } => "FRONTEND_REMOTE_SCRIPT",
+            Self::RemoteResource { .. } => "FRONTEND_REMOTE_RESOURCE",
             Self::InvalidHtml(_) => "FRONTEND_INVALID_HTML",
-            Self::EscapingUrl { .. } => "FRONTEND_ESCAPING_URL",
+            Self::EscapingUrl { .. } | Self::Base(_) => "FRONTEND_ESCAPING_URL",
             Self::InlineScript { .. } => "FRONTEND_INLINE_SCRIPT",
             Self::EntryNotHtml(_) => "FRONTEND_ENTRY_NOT_HTML",
         }
@@ -195,27 +196,6 @@ fn check_html(path: &str, html: &str) -> Result<(), FrontendError> {
         .unwrap_or(path)
         .matches('/')
         .count();
-    for element in document.select(&CODE_LOADERS) {
-        let is_base = element.value().name() == "base";
-        for (name, value) in element.value().attrs() {
-            if !matches!(name, "src" | "href") {
-                continue;
-            }
-            let url = normalize_url(value);
-            if is_base || is_remote_url(&url) {
-                return Err(FrontendError::RemoteScript {
-                    path: path.to_owned(),
-                    url: value.to_owned(),
-                });
-            }
-            if escapes_bundle(&url, depth) {
-                return Err(FrontendError::EscapingUrl {
-                    path: path.to_owned(),
-                    url: value.to_owned(),
-                });
-            }
-        }
-    }
     for element in document
         .root_element()
         .descendants()
@@ -226,6 +206,51 @@ fn check_html(path: &str, html: &str) -> Result<(), FrontendError> {
                 path: path.to_owned(),
                 what,
             });
+        }
+        check_resources(path, element, depth)?;
+    }
+    Ok(())
+}
+
+/// Refuses a URL the element loads that the CSP or the path layout would break.
+/// Navigation (`<a>`, `<area>`) is left alone; `data:` and `blob:` load only as non-code.
+fn check_resources(path: &str, element: ElementRef, depth: usize) -> Result<(), FrontendError> {
+    let name = element.value().name();
+    if name == "base" {
+        return Err(FrontendError::Base(path.to_owned()));
+    }
+    if matches!(name, "a" | "area") {
+        return Ok(());
+    }
+    let is_code = CODE_LOADERS.matches(&element);
+    for (attr, value) in element.value().attrs() {
+        let urls: Vec<&str> = match attr {
+            "src" | "href" | "poster" => vec![value],
+            "srcset" => value
+                .split(',')
+                .filter_map(|c| c.split_whitespace().next())
+                .collect(),
+            _ => continue,
+        };
+        for raw in urls {
+            let url = normalize_url(raw);
+            if !is_code && (has_scheme(&url, "data") || has_scheme(&url, "blob")) {
+                continue;
+            }
+            let err = if is_remote_url(&url) {
+                FrontendError::RemoteResource {
+                    path: path.to_owned(),
+                    url: raw.to_owned(),
+                }
+            } else if escapes_bundle(&url, depth) {
+                FrontendError::EscapingUrl {
+                    path: path.to_owned(),
+                    url: raw.to_owned(),
+                }
+            } else {
+                continue;
+            };
+            return Err(err);
         }
     }
     Ok(())
@@ -243,6 +268,9 @@ fn inline_code(element: ElementRef) -> Option<String> {
             return Some(format!("{name}=\"{attr}\""));
         }
     }
+    if value.name() != "script" || value.attr("src").is_some() {
+        return None;
+    }
     let executable = value.attr("type").is_none_or(|t| {
         let essence = t
             .split(';')
@@ -253,8 +281,7 @@ fn inline_code(element: ElementRef) -> Option<String> {
         essence.is_empty() || SCRIPT_TYPES.contains(&essence.as_str())
     });
     let has_code = element.text().any(|t| !t.trim().is_empty());
-    (value.name() == "script" && value.attr("src").is_none() && executable && has_code)
-        .then(|| "inline script".to_owned())
+    (executable && has_code).then(|| "inline script".to_owned())
 }
 
 /// The URL spec's preprocessing: trims spaces and drops tabs and newlines.
@@ -414,10 +441,11 @@ mod tests {
                 actual: 2,
             },
             FrontendError::HashMismatch(s()),
-            FrontendError::RemoteScript {
+            FrontendError::RemoteResource {
                 path: s(),
                 url: s(),
             },
+            FrontendError::Base(s()),
             FrontendError::InvalidHtml(s()),
             FrontendError::EscapingUrl {
                 path: s(),
@@ -515,12 +543,16 @@ mod tests {
             r#"<script src="data:text/javascript,alert(1)"></script>"#,
             r#"<link rel="modulepreload" href="https://cdn.example/x.js">"#,
             r#"<link rel="preload stylesheet" as="script" href="https://cdn.example/x.js">"#,
-            r#"<base href="https://cdn.example/">"#,
+            r#"<link rel="stylesheet" href="https://fonts.googleapis.com/css">"#,
+            r#"<img src="https://cdn.example/a.png">"#,
+            r#"<img srcset="a.png 1x, https://cdn.example/b.png 2x">"#,
+            r#"<video poster="//cdn.example/p.png"></video>"#,
+            r#"<iframe src="http://cdn.example/"></iframe>"#,
             r#"<svg><script href="https://cdn.example/x.js"></script></svg>"#,
             r#"<svg><script xlink:href="https://cdn.example/x.js"></script></svg>"#,
         ] {
             let err = verify_html(&format!("<!doctype html><head>{tag}</head>")).unwrap_err();
-            assert_eq!(err.code(), "FRONTEND_REMOTE_SCRIPT", "{tag}");
+            assert_eq!(err.code(), "FRONTEND_REMOTE_RESOURCE", "{tag}");
         }
     }
 
@@ -535,16 +567,48 @@ mod tests {
             "a/../../app.js",
             "%2e%2e/app.js",
             "a/%2E%2e/../app.js",
+            "a\\..\\..\\x.js",
         ] {
             let tag = format!(r#"<script src="{url}"></script>"#);
             let err = verify_html(&tag).unwrap_err();
             assert_eq!(err.code(), "FRONTEND_ESCAPING_URL", "{url}");
         }
-        let tag = r#"<link rel="modulepreload" href="/c.js">"#;
-        assert_eq!(
-            verify_html(tag).unwrap_err().code(),
-            "FRONTEND_ESCAPING_URL"
-        );
+        for tag in [
+            r#"<link rel="modulepreload" href="/c.js">"#,
+            r#"<link rel="icon" href="/vite.svg">"#,
+            r#"<img src="/a.png">"#,
+            r#"<img srcset="a.png 1x, /b.png 2x">"#,
+            r#"<video poster="../../p.png"></video>"#,
+        ] {
+            let err = verify_html(tag).unwrap_err();
+            assert_eq!(err.code(), "FRONTEND_ESCAPING_URL", "{tag}");
+        }
+    }
+
+    #[test]
+    fn refuses_any_base_element() {
+        for tag in [
+            r#"<base href="./">"#,
+            r#"<base href="https://cdn.example/">"#,
+        ] {
+            let err = verify_html(tag).unwrap_err();
+            assert_eq!(err.code(), "FRONTEND_ESCAPING_URL", "{tag}");
+            assert!(err.to_string().contains("<base>"), "{err}");
+        }
+    }
+
+    #[test]
+    fn refuses_data_urls_on_code_loaders_only() {
+        let err =
+            verify_html(r#"<link rel="modulepreload" href="data:text/javascript,1">"#).unwrap_err();
+        assert_eq!(err.code(), "FRONTEND_REMOTE_RESOURCE");
+    }
+
+    #[test]
+    fn accepts_deeply_nested_html_quickly() {
+        let start = std::time::Instant::now();
+        verify_html(&"<span>".repeat(100_000)).unwrap();
+        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
     }
 
     #[test]
@@ -584,7 +648,13 @@ mod tests {
         verify_html(
             r##"<script type="application/json">{"a":1}</script>
                <script type="text/template">x</script>
+               <script src="a.js">x</script>
                <script src="a.js">  </script>
+               <img src="data:image/png;base64,AAAA" srcset="a.png 1x, b.png 2x">
+               <img src="blob:null/1">
+               <link rel="stylesheet" href="style.css">
+               <style>body { color: red }</style>
+               <p style="color: red">x</p>
                <script>   </script>
                <a href="#top" title="onclick">x</a>"##,
         )
@@ -604,6 +674,8 @@ mod tests {
             r#"<!doctype html><head>
                 <script type="module" src="./assets/app.js"></script>
                 <script src="./vendor.js"></script>
+                <script src="app.js?p=/../../x"></script>
+                <script src="app.js#/../../x"></script>
                 <link rel="modulepreload" href="assets/chunk.js">
                 <a href="https://docs.example/">docs</a>
                 <a href="/elsewhere">same-origin link</a>

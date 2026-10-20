@@ -60,7 +60,9 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The aliases do reach `to_metadata_json()`: a node's sign-in page reads them there to trust a login callback to an app's old origin.
 - **A frontend path has one spelling.** `frontend/` then non-empty components of only `A-Za-z0-9._~@+-` (no `.` or `..`), compared ASCII-case-insensitively, so the archive entry, the manifest and a served URL cannot name different files.
 - **HTML is checked with a spec parser, never by substring.** `check_html` reads `scraper`'s decoded attributes; a raw-bytes or rewriter-level scan misses entity-encoded schemes.
-- **The static check mirrors the serving contract.** The page is served at `/apps/{package}/{version}/` under a CSP of `default-src 'self'` with no `'unsafe-inline'`, so root-absolute or climbing URLs (`FRONTEND_ESCAPING_URL`) and inline code (`FRONTEND_INLINE_SCRIPT`) are refused here first. `srcdoc` and SVG files are left to the CSP.
+- **The static check mirrors the serving contract.** The page is served at `/apps/{package}/{version}/`, so root-absolute or climbing resource URLs and any `<base>` (`FRONTEND_ESCAPING_URL`), remote resource URLs (`FRONTEND_REMOTE_RESOURCE`) and inline code (`FRONTEND_INLINE_SCRIPT`) are refused here first. `srcdoc` and SVG files are left to the CSP.
+- **The server must send this CSP with the frontend.** `default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'`.
+  Loosening it without loosening `check_html` refuses bundles that would work, and tightening it without `check_html` ships pages that break.
 - **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` - see `handlers_does_not_affect_metadata` in `lib.rs`.
 
 Part of [crates/](../AGENTS.md).
