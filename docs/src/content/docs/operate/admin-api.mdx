@@ -388,7 +388,7 @@ the path parameter — these are reproduced exactly as routed below.
 
 `DELETE /admin-api/namespaces/:namespace_id` leaves a node-local marker when this node's account is still a member.
 `GET /admin-api/namespaces/for-application/:application_id` lists those namespaces with `forgotten: true`, and no other field of them is held here.
-`POST /admin-api/namespaces/:namespace_id/join` with no `invitation` (body `{}`) restores one: the node follows the namespace again, waits up to 30 seconds for its group rows and key to arrive from a peer, then lifts the marker and answers as a join does.
+`POST /admin-api/namespaces/:namespace_id/join` with no `invitation` (body `{}`) restores one: the node follows the namespace again, waits up to 30 seconds for its group rows and key to arrive from a peer and for its own account to be a member again, then lifts the marker and answers as a join does.
 If they do not arrive, the marker stays, the node is left as it was, and the call answers `503` so it can be retried.
 A client key bound to an application may restore a namespace of that application, and a client key bound to a context may not.
 

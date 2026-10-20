@@ -4,11 +4,13 @@
 use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
+use calimero_account::AccountId;
 use calimero_context_client::group::{JoinGroupResponse, RejoinNamespaceRequest};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::op_events::{notify, OpEvent};
 use calimero_governance_store::{
-    AccountNamespaceSet, ForgottenNamespace, ForgottenNamespaces, GroupKeyring, MetaRepository,
-    NamespaceRepository, NodeDeviceRepository,
+    member_account_in_namespace, AccountNamespaceSet, ForgottenNamespace, ForgottenNamespaces,
+    GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
@@ -21,7 +23,7 @@ use tracing::warn;
 use crate::account_follow::{reaches, require_reach};
 use crate::account_namespace::account_is_member;
 use crate::error::ContextError;
-use crate::handlers::follow_namespace::follow;
+use crate::handlers::follow_namespace::{follow, follow_marked};
 use crate::ContextManager;
 
 const LANDING_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 }); // bounds one restore request
@@ -80,37 +82,65 @@ async fn rejoin(
     })
 }
 
-/// Follow a removed namespace and wait for its group rows and key to land. The
-/// marker is lifted for the follow, which refuses a marked namespace, and put
-/// back with the follow undone if the state does not arrive.
+/// Follow a removed namespace and wait until this node is a member of it again,
+/// holding the marker meanwhile, so no other path follows it and the replay
+/// re-applies this node's own ops. The follow is undone if the wait runs out.
 async fn restore(
     store: &Store,
     node_client: &NodeClient,
     removed: ForgottenNamespace,
 ) -> EyreResult<(PublicKey, [u8; 32])> {
     let namespace = removed.namespace_id;
-    let forgotten = ForgottenNamespaces::new(store);
-    forgotten.clear(&namespace)?;
-    let restored = match follow(store, node_client, &namespace).await {
-        Ok(identity) => wait_until_landed(store, namespace).await.map(|()| identity),
+    let restored = match follow_marked(store, node_client, &namespace).await {
+        Ok(identity) => wait_until_restored(store, namespace)
+            .await
+            .map(|account| (identity, account)),
         Err(err) => Err(err),
     };
-    if restored.is_err() {
-        undo_follow(store, node_client, &namespace).await;
-        forgotten.mark(&namespace, removed.application_id, removed.forgotten_at_ms)?;
+    match restored {
+        Ok((identity, account)) => {
+            ForgottenNamespaces::new(store).clear(&namespace)?;
+            // Auto-follow refused the namespace's contexts while it was marked.
+            notify(OpEvent::AutoFollowSet {
+                group_id: namespace.to_bytes(),
+                member: account,
+                contexts: true,
+                subgroups: false,
+            });
+            Ok(identity)
+        }
+        Err(err) => {
+            undo_follow(store, node_client, &namespace).await;
+            Err(err)
+        }
     }
-    restored
 }
 
-async fn wait_until_landed(store: &Store, namespace: ContextGroupId) -> EyreResult<()> {
-    let landed = || -> EyreResult<bool> {
-        Ok(MetaRepository::new(store).load(&namespace)?.is_some()
-            && GroupKeyring::new(store, namespace)
+/// The group rows and key are back and this node's own key speaks for a member.
+async fn wait_until_restored(store: &Store, namespace: ContextGroupId) -> EyreResult<AccountId> {
+    let restored = || -> EyreResult<Option<AccountId>> {
+        if MetaRepository::new(store).load(&namespace)?.is_none()
+            || GroupKeyring::new(store, namespace)
                 .load_current_key_record()?
-                .is_some())
+                .is_none()
+        {
+            return Ok(None);
+        }
+        let Some((identity, _)) = NamespaceRepository::new(store).identity(&namespace)? else {
+            return Ok(None);
+        };
+        let Some(account) = member_account_in_namespace(store, &namespace, &identity)? else {
+            return Ok(None);
+        };
+        Ok(MembershipRepository::new(store)
+            .is_member(&namespace, &account)?
+            .then_some(account))
     };
     let deadline = tokio::time::Instant::now() + LANDING_TIMEOUT;
-    while !landed()? {
+    loop {
+        if let Some(account) = restored()? {
+            return Ok(account);
+        }
         if tokio::time::Instant::now() >= deadline {
             return Err(ContextError::NamespaceNotRestored {
                 namespace_id: hex::encode(namespace.to_bytes()),
@@ -119,7 +149,6 @@ async fn wait_until_landed(store: &Store, namespace: ContextGroupId) -> EyreResu
         }
         tokio::time::sleep(LANDING_POLL).await;
     }
-    Ok(())
 }
 
 async fn undo_follow(store: &Store, node_client: &NodeClient, namespace: &ContextGroupId) {
@@ -172,14 +201,16 @@ fn require_account_still_holds(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     use calimero_context_client::group::{CreateGroupRequest, ListNamespacesForApplicationRequest};
     use calimero_governance_store::test_fixtures::test_meta;
+    use calimero_primitives::context::GroupMemberRole;
     use calimero_store::db::InMemoryDB;
 
     use super::*;
-    use crate::test_support::{actor, paired_device_scoped_to};
+    use crate::test_support::{actor, enrol, paired_device_scoped_to};
 
     const NS: [u8; 32] = [0x3C; 32];
     const ACCOUNT_NS: [u8; 32] = [0x3D; 32];
@@ -190,18 +221,36 @@ mod tests {
         Store::new(Arc::new(InMemoryDB::owned()))
     }
 
-    /// What a peer's pull brings back: the group rows and the group key.
-    fn land_state_soon(store: &Store, namespace: ContextGroupId) {
+    /// What a peer's pull brings back: the group rows, the key and this node's
+    /// own membership. The flag says the removal was still marked when it landed.
+    fn land_state_soon(store: &Store, namespace: ContextGroupId) -> Arc<AtomicBool> {
         let store = store.clone();
+        let marked = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&marked);
         actix::spawn(async move {
             tokio::time::sleep(Duration::from_millis(150)).await;
+            seen.store(
+                ForgottenNamespaces::new(&store)
+                    .is_forgotten(&namespace)
+                    .expect("read the marker"),
+                Ordering::SeqCst,
+            );
             MetaRepository::new(&store)
                 .save(&namespace, &test_meta())
                 .expect("the group rows arrive");
             let _key_id = GroupKeyring::new(&store, namespace)
                 .store_key(&[0x42; 32])
                 .expect("the group key arrives");
+            let (identity, _) = NamespaceRepository::new(&store)
+                .identity(&namespace)
+                .expect("read this node's identity")
+                .expect("the follow gave this node an identity");
+            let account = enrol(&store, &namespace, &identity);
+            MembershipRepository::new(&store)
+                .add_member(&namespace, &account, GroupMemberRole::Member)
+                .expect("this node's account is a member");
         });
+        marked
     }
 
     fn topic() -> String {
@@ -266,10 +315,14 @@ mod tests {
             .expect("this node's account root");
         let mut harness = actor::over(store.clone()).await;
         let namespace = removed(&store);
-        land_state_soon(&store, namespace);
+        let marked_until_landed = land_state_soon(&store, namespace);
 
         let joined = rejoin(&harness, namespace).await.expect("a member rejoins");
 
+        assert!(
+            marked_until_landed.load(Ordering::SeqCst),
+            "the removal stays marked until the state lands"
+        );
         assert_eq!(joined.group_id, namespace);
         assert!(!ForgottenNamespaces::new(&store)
             .is_forgotten(&namespace)
@@ -279,6 +332,39 @@ mod tests {
             .participating_namespaces()
             .expect("read participation")
             .contains(&namespace));
+    }
+
+    /// Auto-follow refused the namespace's contexts while it was marked, so the
+    /// restore announces that this member follows once it is lifted.
+    #[actix::test]
+    async fn a_restored_namespace_has_its_contexts_followed_again() {
+        let store = store();
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("this node's account root");
+        let harness = actor::over(store.clone()).await;
+        let namespace = removed(&store);
+        let mut events = calimero_governance_store::op_events::subscribe();
+        let _marked = land_state_soon(&store, namespace);
+
+        let _joined = rejoin(&harness, namespace).await.expect("a member rejoins");
+
+        let announced = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match events.recv().await {
+                    Ok(OpEvent::AutoFollowSet {
+                        group_id,
+                        contexts: true,
+                        ..
+                    }) if group_id == namespace.to_bytes() => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(announced, "the restore re-announces auto-follow");
     }
 
     #[actix::test]
