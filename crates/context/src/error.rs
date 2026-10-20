@@ -573,6 +573,50 @@ pub enum ContextError {
         reason: &'static str,
     },
 
+    /// A `409`: a group being activated targets another application than the
+    /// caller expected, so activating it would switch to a release they did not name.
+    #[error("group {group_id} targets application {actual}, not the expected {expected}")]
+    UpgradeTargetMismatch {
+        /// Hex rendering of the group whose target differs (for the message only).
+        group_id: String,
+        /// The application the caller expected.
+        expected: String,
+        /// The application the group targets.
+        actual: String,
+    },
+
+    /// A `409`: a namespace being activated targets another version than the
+    /// caller expected, so activating it would switch to a release they did not name.
+    #[error("namespace {group_id} targets version {actual}, not the expected {expected}")]
+    UpgradeVersionMismatch {
+        /// Hex rendering of the namespace whose target differs (for the message only).
+        group_id: String,
+        /// The version the caller expected.
+        expected: String,
+        /// The version the namespace targets.
+        actual: String,
+    },
+
+    /// A context's switch to its group's target failed (a migration or a load), so
+    /// retrying the same switch fails the same way. Wraps the failure itself.
+    #[error("switching context {context_id} to its group's target release failed")]
+    UpgradeSwitchFailed {
+        /// The context that did not switch.
+        context_id: String,
+    },
+
+    /// A `400`: the group an activation names is a subgroup. Activation switches a
+    /// whole namespace, so it names the root.
+    #[error(
+        "{group_id} is a subgroup of namespace {namespace_id}; activate the namespace instead"
+    )]
+    NotANamespaceRoot {
+        /// Hex rendering of the group the caller named (for the message only).
+        group_id: String,
+        /// Hex rendering of the namespace it belongs to.
+        namespace_id: String,
+    },
+
     /// A `400`: the group a leave names is a namespace root. Leaving it here
     /// would apply the cascade without unsubscribing from the namespace topic,
     /// which only the namespace leave does.

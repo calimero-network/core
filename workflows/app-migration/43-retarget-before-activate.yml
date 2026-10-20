@@ -1,0 +1,232 @@
+name: 43 - Activation refuses a release the admin retargeted after the member looked (2-node)
+description: >
+  Node 1 cascades the namespace v1 to v2. Node 2's member reads that target
+  (v2) and is about to activate it, but the admin retargets the namespace to
+  v3 first. v2 and v3 share one application id, so only the version tells
+  them apart: the member's activation naming v2 is refused with 409, and
+  after re-reading the target the activation of v3 succeeds.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-retarget
+  base_port: 10280
+  base_rpc_port: 10380
+
+steps:
+  - name: Install scenario-pure-bugfix-v1 on node 1
+    type: install_application
+    node: app-migration-retarget-1
+    path: dist/com.calimero.scenario-pure-bugfix-1.0.0.mpk
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-retarget-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-retarget-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "retarget-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-retarget-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-retarget-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-retarget-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-retarget-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-retarget-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-retarget-2
+    context_id: "{{ctx_id}}"
+
+  - name: Write v1 item k1=10 on node 1
+    type: call
+    node: app-migration-retarget-1
+    context_id: "{{ctx_id}}"
+    method: add_value
+    args:
+      key: "k1"
+      value: 10
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-retarget-1
+      - app-migration-retarget-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Install scenario-pure-bugfix-v2 on node 1
+    type: install_application
+    node: app-migration-retarget-1
+    path: dist/com.calimero.scenario-pure-bugfix-2.0.0.mpk
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Cascade namespace v1 to v2 (initiated by node 1)
+    type: upgrade_group
+    node: app-migration-retarget-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    cascade: true
+
+  - name: Wait for the cascade to reach node 2
+    type: wait
+    seconds: 15
+
+  - name: Node 2's member reads the target and sees v2
+    type: assert_api_response
+    node: app-migration-retarget-2
+    path: /admin-api/groups/{{namespace_id}}
+    match:
+      data.targetApplicationId: "{{app_v2}}"
+      data.appVersion: 2.0.0
+
+  # Same package and signer as v2, so the application id does not change.
+  - name: The admin retargets the namespace to v3
+    type: install_application
+    node: app-migration-retarget-1
+    path: dist/com.calimero.scenario-pure-bugfix-3.0.0.mpk
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+  - name: Cascade namespace to v3 (initiated by node 1)
+    type: upgrade_group
+    node: app-migration-retarget-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v3}}"
+    cascade: true
+
+  - name: Both releases share one application id
+    type: json_assert
+    statements:
+      - 'equal("{{app_v3}}", "{{app_v2}}")'
+
+  - name: Wait for the retarget to reach node 2
+    type: wait
+    seconds: 15
+
+  - name: Node 2 installs v3
+    type: install_application
+    node: app-migration-retarget-2
+    path: dist/com.calimero.scenario-pure-bugfix-3.0.0.mpk
+    dev: true
+
+  - name: Node 2 sees the namespace now targets v3
+    type: assert_api_response
+    node: app-migration-retarget-2
+    path: /admin-api/groups/{{namespace_id}}
+    match:
+      data.targetApplicationId: "{{app_v3}}"
+      data.appVersion: 3.0.0
+
+  - name: The member's activation naming v2 is refused
+    type: script
+    script: workflows/app-migration/activate-upgrade.sh
+    target: local
+    args:
+      - app-migration-retarget-2
+      - "{{namespace_id}}"
+      - '{"expectedApplicationId": "{{app_v2}}", "expectedVersion": "2.0.0"}'
+      - "409"
+      - '(.error | contains("targets version 3.0.0")) and (.error | contains("expected 2.0.0"))'
+
+  - name: After re-reading the target, node 2 activates v3
+    type: script
+    script: workflows/app-migration/activate-upgrade.sh
+    target: local
+    args:
+      - app-migration-retarget-2
+      - "{{namespace_id}}"
+      - "from-target"
+      - "200"
+      - '.data.targetApplicationId == "{{app_v3}}" and .data.switchedContexts <= 1 and .data.failedContexts == []'
+
+  - name: Read k1 on node 2 (v1 state survives the switch)
+    type: call
+    node: app-migration-retarget-2
+    context_id: "{{ctx_id}}"
+    method: get_value
+    args:
+      key: "k1"
+    outputs:
+      read_k1: result
+
+  - name: Assert k1 = 10 on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{read_k1}}, {"output": 10})'
+
+  # v1's sum is off by one, so the right total proves the fixed release runs here,
+  # whether activate or node 2's own sync made the switch.
+  - name: Node 2 runs the fixed release
+    type: call
+    node: app-migration-retarget-2
+    context_id: "{{ctx_id}}"
+    method: sum_all_values
+    outputs:
+      sum_after: result
+
+  - name: Assert the fixed sum on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{sum_after}}, {"output": 10})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-retarget-1
+    context_id: "{{ctx_id}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-retarget-1
+    group_id: "{{group_id}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-retarget-1
+    namespace_id: "{{namespace_id}}"
+
+stop_all_nodes: false

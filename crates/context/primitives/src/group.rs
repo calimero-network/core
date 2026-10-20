@@ -1731,6 +1731,43 @@ impl Message for ActivateUpgradeRequest {
     type Result = eyre::Result<bool>;
 }
 
+/// Switch every context of a namespace on this node to its group's stored target
+/// release and replay the deltas held back for it. Never installs a release.
+///
+/// `expected_application_id` and `expected_version`, when set, must each equal the
+/// namespace's stored target.
+#[derive(Clone, Debug)]
+pub struct ActivateNamespaceUpgradeRequest {
+    pub namespace_id: ContextGroupId,
+    pub expected_application_id: Option<ApplicationId>,
+    pub expected_version: Option<String>,
+}
+
+impl Message for ActivateNamespaceUpgradeRequest {
+    type Result = eyre::Result<ActivateNamespaceUpgradeResponse>;
+}
+
+/// Outcome of an [`ActivateNamespaceUpgradeRequest`].
+#[derive(Clone, Debug)]
+pub struct ActivateNamespaceUpgradeResponse {
+    pub target_application_id: ApplicationId,
+    /// Contexts this request moved; `0` when every one was already current.
+    pub switched_contexts: u32,
+    /// Held deltas replayed into the namespace's contexts.
+    pub replayed_deltas: u32,
+    /// Contexts left unswitched or unreplayed; the others went ahead regardless.
+    pub failed_contexts: Vec<FailedContext>,
+}
+
+/// A context an [`ActivateNamespaceUpgradeRequest`] could not finish.
+#[derive(Clone, Debug)]
+pub struct FailedContext {
+    pub context_id: ContextId,
+    pub error: String,
+    /// `false` when the switch itself failed (a migration or load), which a retry repeats.
+    pub retryable: bool,
+}
+
 /// Outcome of a [`ResyncContextRequest`].
 #[derive(Clone, Copy, Debug)]
 pub struct ResyncContextResponse {

@@ -9,16 +9,17 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AbortMigrationRequest, ActivateUpgradeRequest, AddGroupMembersRequest, AdmitTeeNodeRequest,
-    AttestFoundingRelayRequest, BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest,
-    CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest,
-    DetachContextFromGroupRequest, GetCascadeStatusRequest, GetContextMetadataRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberMetadataRequest,
-    GetMigrationStatusRequest, GetNamespaceIdentityRequest, GovernOnBehalfRequest,
-    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, JoinContextRequest,
-    JoinGroupRequest, JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest,
-    LeaveGroupRequest, LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
+    AbortMigrationRequest, ActivateNamespaceUpgradeRequest, ActivateUpgradeRequest,
+    AddGroupMembersRequest, AdmitTeeNodeRequest, AttestFoundingRelayRequest,
+    BroadcastGroupLocalStateRequest, ChangeNamespaceAdminRequest, CreateGroupInvitationRequest,
+    CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
+    GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetMigrationStatusRequest,
+    GetNamespaceIdentityRequest, GovernOnBehalfRequest, IssueNamespaceOwnershipProofRequest,
+    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
+    JoinSubgroupInheritanceRequest, LabelDeviceRequest, LeaveContextRequest, LeaveGroupRequest,
+    LeaveNamespaceRequest, LinkAccountDeviceRequest, ListAllGroupsRequest,
     ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, OwnerDeleteGroupRequest, PairDeviceCompleteRequest,
     PairDeviceInitRequest, RelinkDeviceRequest, RemoveGroupMembersRequest, RescopeDeviceRequest,
@@ -984,6 +985,10 @@ pub enum ContextMessage {
     ActivateUpgrade {
         request: ActivateUpgradeRequest,
         outcome: oneshot::Sender<<ActivateUpgradeRequest as Message>::Result>,
+    },
+    ActivateNamespaceUpgrade {
+        request: ActivateNamespaceUpgradeRequest,
+        outcome: oneshot::Sender<<ActivateNamespaceUpgradeRequest as Message>::Result>,
     },
 }
 

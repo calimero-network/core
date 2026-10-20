@@ -147,6 +147,7 @@ impl SyncManager {
             network_client: self.network_client.clone(),
             sync_timeout: self.sync_config.timeout,
         };
-        crate::handlers::state_delta::drain_absorbed(&drain_input, context_id).await;
+        let _replayed =
+            crate::handlers::state_delta::drain_absorbed(&drain_input, context_id).await;
     }
 }

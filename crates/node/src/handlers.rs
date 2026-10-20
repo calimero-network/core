@@ -52,8 +52,8 @@ impl Handler<NodeMessage> for NodeManager {
                 };
                 let _ignored = ctx.spawn(
                     async move {
-                        state_delta::drain_absorbed(&input, &context_id).await;
-                        let _ignored = outcome.send(());
+                        let replayed = state_delta::drain_absorbed(&input, &context_id).await;
+                        let _ignored = outcome.send(replayed);
                     }
                     .into_actor(self),
                 );

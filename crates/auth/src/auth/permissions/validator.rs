@@ -2175,7 +2175,7 @@ mod tests {
     ///
     /// They take the narrow `group:list-own`, as the group's other reads do,
     /// and the handlers refuse a group outside the caller's scope as missing.
-    /// Starting, retrying or aborting an upgrade stays `group:manage`.
+    /// Starting, retrying, activating or aborting an upgrade stays `group:manage`.
     #[test]
     fn a_delegated_session_reads_its_groups_upgrade_state_but_does_not_drive_it() {
         let validator = PermissionValidator::new();
@@ -2203,6 +2203,7 @@ mod tests {
         for path in [
             "/admin-api/groups/grp-1/upgrade",
             "/admin-api/groups/grp-1/upgrade/retry",
+            "/admin-api/groups/grp-1/upgrade/activate",
             "/admin-api/groups/grp-1/migration/abort",
         ] {
             assert!(

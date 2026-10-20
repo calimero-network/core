@@ -24,6 +24,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{MemberIdentity, PublicKey};
+use calimero_server_primitives::admin::ActivateGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::AddGroupMembersApiRequest;
 use calimero_server_primitives::admin::CreateGroupInvitationApiRequest;
 use calimero_server_primitives::admin::CreateNamespaceApiRequest;
@@ -745,6 +746,76 @@ async fn retry_group_upgrade() {
     assert_eq!(resp.data.local_contexts_total, Some(4));
     assert_eq!(resp.data.local_contexts_swapped, Some(2));
     assert_eq!(resp.data.local_contexts_failed, Some(1));
+}
+
+#[tokio::test]
+async fn activate_group_upgrade() {
+    let target = ApplicationId::from([0xAA; 32]);
+    let failed = ContextId::from([0x21; 32]);
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/groups/{GID}/upgrade/activate")))
+        .and(body_json(serde_json::json!({
+            "expectedApplicationId": target.to_string(),
+            "expectedVersion": "2.0.0"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "targetApplicationId": target.to_string(),
+                "switchedContexts": 2,
+                "replayedDeltas": 5,
+                "failedContexts": [{
+                    "contextId": failed.to_string(),
+                    "error": "migration trapped",
+                    "retryable": false
+                }]
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client
+        .activate_group_upgrade(
+            GID,
+            ActivateGroupUpgradeApiRequest {
+                expected_application_id: Some(target),
+                expected_version: Some("2.0.0".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.data.target_application_id, target);
+    assert_eq!(resp.data.switched_contexts, 2);
+    assert_eq!(resp.data.replayed_deltas, 5);
+    let [only] = resp.data.failed_contexts.as_slice() else {
+        panic!("one failed context, got {:?}", resp.data.failed_contexts);
+    };
+    assert_eq!(only.context_id, failed);
+    assert!(!only.retryable);
+}
+
+#[tokio::test]
+async fn activate_group_upgrade_refused_is_an_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/admin-api/groups/{GID}/upgrade/activate")))
+        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+            "error": "namespace targets another application"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let err = client
+        .activate_group_upgrade(GID, ActivateGroupUpgradeApiRequest::default())
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("409"), "got: {err}");
 }
 
 #[tokio::test]

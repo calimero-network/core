@@ -277,11 +277,12 @@ pub(crate) async fn drain_all_governance_pending(input: &StateDeltaContext) {
 /// [`apply_authorized_state_delta`]; bytes are never translated (that would
 /// break each `Action`'s `payload_for_signing` signature). The record is
 /// deleted only after a successful replay (idempotent via the `delta_id` key).
+/// Returns how many deltas were replayed.
 ///
 /// Replays with `bypass_fence == true` so the fence isn't re-evaluated: the
 /// drain has already decided the delta is readable, and re-fencing a stale
 /// straggler would re-absorb it instead of applying it (infinite no-op).
-pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &ContextId) {
+pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &ContextId) -> usize {
     let store = input.node_clients.context.datastore();
     let drained = drain_absorbed_records(store, context_id, |buffered| {
         let input = input.clone();
@@ -298,19 +299,25 @@ pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &Conte
     })
     .await;
 
-    match drained {
-        Ok(0) => {}
-        Ok(n) => info!(
-            %context_id,
-            drained = n,
-            "absorb drain: replayed buffered straggler deltas verbatim after binary advance"
-        ),
-        Err(err) => warn!(
-            %context_id,
-            %err,
-            "absorb drain: failed to enumerate absorb buffer"
-        ),
-    }
+    let replayed = match drained {
+        Ok(0) => 0,
+        Ok(n) => {
+            info!(
+                %context_id,
+                drained = n,
+                "absorb drain: replayed buffered straggler deltas verbatim after binary advance"
+            );
+            n
+        }
+        Err(err) => {
+            warn!(
+                %context_id,
+                %err,
+                "absorb drain: failed to enumerate absorb buffer"
+            );
+            0
+        }
+    };
 
     // Buffered sync-repair leaves/entities drain on a separate tag.
     if let Err(err) = drain_absorbed_leaves(input, context_id).await {
@@ -324,6 +331,8 @@ pub(crate) async fn drain_absorbed(input: &StateDeltaContext, context_id: &Conte
     // an operator installing it over the admin API). The prompt path is the
     // install hook in the sync manager; this catches whatever that misses.
     drain_pending_application(input, context_id).await;
+
+    replayed
 }
 
 /// Replay deltas parked because their application was not runnable locally,
@@ -714,7 +723,7 @@ pub(crate) async fn drain_all_absorbed(input: &StateDeltaContext) {
         "absorb drain: binary-advance hook draining absorb buffers across contexts"
     );
     for context_id in context_ids {
-        drain_absorbed(input, &context_id).await;
+        let _replayed = drain_absorbed(input, &context_id).await;
     }
 }
 

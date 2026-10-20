@@ -88,6 +88,7 @@
   "POST /admin-api/groups/{group_id}/upgrade",
   "POST /admin-api/groups/{group_id}/upgrade/retry",
   "POST /admin-api/groups/{namespace_id}/migration/abort",
+  "POST /admin-api/groups/{namespace_id}/upgrade/activate",
   "POST /admin-api/identity/context",
   "POST /admin-api/install-application",
   "POST /admin-api/install-dev-application",

@@ -379,6 +379,10 @@ pub(crate) fn setup(
             post(groups::retry_group_upgrade::handler),
         )
         .route(
+            "/groups/{namespace_id}/upgrade/activate",
+            post(groups::activate_group_upgrade::handler),
+        )
+        .route(
             "/groups/{group_id}/issue-ownership-proof",
             post(groups::issue_ownership_proof::handler),
         )
@@ -1045,6 +1049,7 @@ fn group_lifecycle_refusal_status(
 
     Some(match err {
         Refusal::LeaveGroupIsNamespace { .. }
+        | Refusal::NotANamespaceRoot { .. }
         | Refusal::InvitationInvalid { .. }
         | Refusal::TeePolicyInvalid { .. }
         | Refusal::OwnershipProofInvalid { .. }
@@ -1055,6 +1060,8 @@ fn group_lifecycle_refusal_status(
         | Refusal::UpgradeAlreadyTargeting { .. }
         | Refusal::UpgradeNoContexts { .. }
         | Refusal::UpgradeNotRetryable { .. }
+        | Refusal::UpgradeTargetMismatch { .. }
+        | Refusal::UpgradeVersionMismatch { .. }
         | Refusal::UpgradeRefused { .. }
         | Refusal::InvitationExpired { .. }
         | Refusal::GroupAlreadyExists { .. }
@@ -2443,12 +2450,36 @@ mod parse_api_error_tests {
                     group_id: group_id(),
                     reason: "is already completed",
                 },
+                ContextError::UpgradeTargetMismatch {
+                    group_id: group_id(),
+                    expected: "app-a".to_owned(),
+                    actual: "app-b".to_owned(),
+                },
+                ContextError::UpgradeVersionMismatch {
+                    group_id: group_id(),
+                    expected: "2.0.0".to_owned(),
+                    actual: "3.0.0".to_owned(),
+                },
             ] {
                 let message = err.to_string();
                 let api = parse_api_error(err.into());
                 assert_eq!(api.status_code, StatusCode::CONFLICT, "{message}");
                 assert_eq!(api.message, message);
             }
+        }
+
+        /// Activating a subgroup rather than its namespace. `400`: the request
+        /// names the wrong group, and the message names the namespace to use.
+        #[test]
+        fn activating_a_subgroup_maps_to_400() {
+            let api = parse_api_error(
+                ContextError::NotANamespaceRoot {
+                    group_id: "ContextGroupId(b2)".to_owned(),
+                    namespace_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
         }
 
         /// The upgrade gate refusing a target. `409`, with the gate's own message
