@@ -2432,7 +2432,11 @@ pub struct SignedNamespaceOp {
 ///
 /// `GroupOp::AccountNamespacePurged` is appended without a bump: an older device of
 /// the same account stalls on it until it upgrades, so it ships in a batched release.
-pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 26;
+///
+/// v27: a namespace genesis folds its founder's Admin row at the root, so a founder
+/// who transfers ownership stays an admin at every cut. Nothing moves on the wire, but
+/// a v26 node folds her out: a coordinated upgrade.
+pub const SIGNED_NAMESPACE_OP_SCHEMA_VERSION: u8 = 27;
 
 /// The first schema whose apply refuses owner-level ops that carry no root
 /// proof. An op signed under an earlier schema was applied under the old rule,
