@@ -6,7 +6,8 @@ description: >
   switch with POST /groups/{namespace}/upgrade/activate. The switch moves
   node 2's context to v2 and replays the held write, so node 2's first read
   returns it. A repeated activation moves nothing; a wrong expected
-  application is refused with 409; an unknown namespace with 404.
+  application or a stale expected version is refused with 409;
+  an unknown namespace with 404.
 
   Topology mirrors a chat channel: namespace + one Open subgroup + one
   context in the subgroup, upgraded with one cascade from the namespace.
@@ -109,6 +110,12 @@ steps:
     outputs:
       app_v2: applicationId
 
+  # Same package and signer: only the version tells the releases apart.
+  - name: Both releases share one application id
+    type: json_assert
+    statements:
+      - 'equal("{{app_v2}}", "{{app_v1}}")'
+
   - name: Cascade namespace v1 to v2 (initiated by node 1)
     type: upgrade_group
     node: app-migration-activate-1
@@ -131,6 +138,15 @@ steps:
     type: wait
     seconds: 15
 
+  # What a popup or sidecar on node 2 reads to learn the target it will activate.
+  - name: Node 2 names the target release before holding it
+    type: assert_api_response
+    node: app-migration-activate-2
+    path: /admin-api/groups/{{namespace_id}}
+    match:
+      data.targetApplicationId: "{{app_v2}}"
+      data.appVersion: 2.0.0
+
   # The release must be installed before it can be activated: activation never
   # installs one.
   - name: Install scenario-pure-bugfix-v2 on node 2
@@ -150,6 +166,18 @@ steps:
       - '{"expectedApplicationId": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}'
       - "409"
 
+  # What a member saw before the upgrade: same id, old version.
+  - name: A stale expected version is refused
+    type: script
+    script: workflows/app-migration/activate-upgrade.sh
+    target: local
+    args:
+      - app-migration-activate-2
+      - "{{namespace_id}}"
+      - '{"expectedApplicationId": "{{app_v1}}", "expectedVersion": "1.0.0"}'
+      - "409"
+      - '(.error | contains("targets version 2.0.0")) and (.error | contains("expected 1.0.0"))'
+
   - name: An unknown namespace is refused
     type: script
     script: workflows/app-migration/activate-upgrade.sh
@@ -168,7 +196,7 @@ steps:
     args:
       - app-migration-activate-2
       - "{{namespace_id}}"
-      - '{"expectedApplicationId": "{{app_v2}}"}'
+      - "from-target"
       - "200"
       - '.data.targetApplicationId == "{{app_v2}}" and .data.switchedContexts == 1 and .data.replayedDeltas >= 1 and .data.failedContexts == []'
 

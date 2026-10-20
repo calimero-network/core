@@ -9135,6 +9135,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario-pure-bugfix-v3"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "scenario-shared-storage-v1"
 version = "0.0.0"
 dependencies = [
