@@ -182,7 +182,7 @@ steps:
       - "{{namespace_id}}"
       - "from-target"
       - "200"
-      - '.data.targetApplicationId == "{{app_v3}}" and .data.switchedContexts == 1 and .data.failedContexts == []'
+      - '.data.targetApplicationId == "{{app_v3}}" and .data.switchedContexts <= 1 and .data.failedContexts == []'
 
   - name: Read k1 on node 2 (v1 state survives the switch)
     type: call
@@ -198,6 +198,21 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{read_k1}}, {"output": 10})'
+
+  # v1's sum is off by one, so the right total proves the fixed release runs here,
+  # whether activate or node 2's own sync made the switch.
+  - name: Node 2 runs the fixed release
+    type: call
+    node: app-migration-retarget-2
+    context_id: "{{ctx_id}}"
+    method: sum_all_values
+    outputs:
+      sum_after: result
+
+  - name: Assert the fixed sum on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{sum_after}}, {"output": 10})'
 
   - name: Delete context
     type: delete_context
