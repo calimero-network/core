@@ -352,12 +352,7 @@ pub async fn start(
              refused"
         );
     }
-    // A browser cannot seal a request, so under `sealed.required` an app host would
-    // be the one way around the envelope: leave it unmounted.
-    let app_hosts = (!config.sealed.required).then(|| app_host::AppHosts {
-        node_client: node_client.clone(),
-        origins: app_host::AppOrigins::new(&config.apps),
-    });
+    let app_hosts = app_hosts(&config, &node_client);
     let apps_port = match (app_hosts.clone(), config.apps.port) {
         (Some(hosts), Some(port)) => {
             let router = Router::new()
@@ -425,6 +420,15 @@ pub async fn start(
     }
 
     Ok(())
+}
+
+/// A browser cannot seal a request, so under `sealed.required` an app host would
+/// be the one way around the envelope: there is none.
+fn app_hosts(config: &ServerConfig, node_client: &NodeClient) -> Option<app_host::AppHosts> {
+    (!config.sealed.required).then(|| app_host::AppHosts {
+        node_client: node_client.clone(),
+        origins: app_host::AppOrigins::new(&config.apps),
+    })
 }
 
 /// Binds `port` on each address the server listens on; one that cannot bind is
@@ -557,6 +561,7 @@ mod cors_tests {
     //!
     //! Do not delete `expose_headers` without also breaking these tests.
 
+    use core::net::SocketAddr;
     use core::time::Duration;
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -962,6 +967,47 @@ mod cors_tests {
             false,
         ));
         (shutdown, server)
+    }
+
+    #[actix::test]
+    async fn a_node_requiring_sealed_requests_has_no_app_hosts() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let mut config =
+            ServerConfig::new(vec![], Keypair::generate_ed25519(), None, None, None, None);
+
+        assert!(super::app_hosts(&config, &state.node_client).is_some());
+        config.sealed = crate::config::SealedConfig::new(true);
+        assert!(super::app_hosts(&config, &state.node_client).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_apps_port_binds_on_the_address_of_each_listener() {
+        let main = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let apps_port = free_port();
+
+        let bound = super::bind_apps_port(&[main], apps_port).await.unwrap();
+
+        let addrs: Vec<_> = bound.iter().map(|l| l.local_addr().unwrap()).collect();
+        assert_eq!(addrs, [SocketAddr::from(([127, 0, 0, 1], apps_port))]);
+    }
+
+    #[tokio::test]
+    async fn an_occupied_apps_port_is_skipped_but_one_that_binds_nowhere_is_an_error() {
+        let v4 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = occupied.local_addr().unwrap().port();
+
+        let none = super::bind_apps_port(&[v4], port).await;
+        assert!(none.is_err(), "no listen address could bind the apps port");
+
+        let Ok(v6) = tokio::net::TcpListener::bind("[::1]:0").await else {
+            return;
+        };
+        let v4 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound = super::bind_apps_port(&[v4, v6], port).await.unwrap();
+        let ips: Vec<_> = bound.iter().map(|l| l.local_addr().unwrap().ip()).collect();
+        assert_eq!(ips, ["::1".parse::<core::net::IpAddr>().unwrap()]);
     }
 
     #[actix::test]
