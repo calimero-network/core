@@ -203,6 +203,7 @@ mod tests {
         get_op_head, register_context_in_group, GroupKeyring, KeyringError, MembershipRepository,
         MetaError, MetaRepository, NamespaceOpLogService, NodeDeviceRepository,
     };
+    use calimero_op::{OpPayload, ScopeId};
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::MemberIdentity;
@@ -634,5 +635,44 @@ mod tests {
         ];
         expected.sort_by_key(|(account, _)| *account);
         assert_eq!(members, expected);
+    }
+
+    /// A namespace founded by an older build stored its genesis as the bare device
+    /// link; the founder's row is still folded from it.
+    #[actix::test]
+    async fn a_genesis_stored_before_it_seated_the_founder_still_seats_her() {
+        let Transferred {
+            harness,
+            store,
+            namespace,
+            alice,
+            ..
+        } = transferred().await;
+        let scope = ScopeId::from(namespace.to_bytes());
+        let mut genesis = crate::unified_op_store::load_scope_ops(&store, &scope)
+            .expect("read the op store")
+            .into_iter()
+            .find(|op| op.parents.is_empty())
+            .expect("the genesis is stored");
+        let OpPayload::NamespaceFounded { carried, .. } = genesis.payload else {
+            panic!("a genesis folds as a founding, got {:?}", genesis.payload);
+        };
+        genesis.payload = *carried;
+        crate::unified_op_store::persist_op(&store, &genesis).expect("store the old row");
+
+        let members = harness
+            .manager
+            .send(ListGroupMembersRequest {
+                group_id: namespace,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the former owner is still a member")
+            .members;
+        assert!(members
+            .iter()
+            .any(|m| m.identity == alice && m.role == GroupMemberRole::Admin));
     }
 }

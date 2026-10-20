@@ -738,6 +738,9 @@ impl ScopeProjections {
     /// `RootGuarded`, if guarded), and only the root's own transfer names the
     /// root admin.
     ///
+    /// So is a namespace genesis stored as its bare device link, from before it
+    /// also seated the founder.
+    ///
     /// Other rows carrying a real payload are untouched, so steady state costs
     /// nothing and the work shrinks as holes are filled.
     fn reclassify_stored_holes(store: &Store, namespace_id: [u8; 32], ops: &mut [Op]) {
@@ -749,6 +752,7 @@ impl ScopeProjections {
                 OpPayload::RootGuarded { carried, .. } => {
                     matches!(**carried, OpPayload::AdminChanged { .. })
                 }
+                OpPayload::DeviceLinked { .. } => op.parents.is_empty(),
                 _ => false,
             })
             .map(|(i, _)| i)
@@ -765,7 +769,9 @@ impl ScopeProjections {
             };
             // A cleartext root op that models nothing is a genuine `Noop`, then
             // and now.
-            if matches!(signed.op, calimero_governance_types::NamespaceOp::Root(_)) {
+            if matches!(signed.op, calimero_governance_types::NamespaceOp::Root(_))
+                && !matches!(ops[i].payload, OpPayload::DeviceLinked { .. })
+            {
                 continue;
             }
             // Every sealed and encrypted shape is re-attempted, and for the same
