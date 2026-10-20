@@ -1,10 +1,14 @@
 mod frontend;
+#[cfg(feature = "html")]
+mod html;
 mod signature;
 
 pub use frontend::{
-    check_frontend_html, mime_type, verify_frontend_file, BundleFrontend, FrontendError,
+    mime_type, verify_frontend_file, BundleFrontend, FrontendError, FRONTEND_ROOT,
     MAX_FRONTEND_BYTES,
 };
+#[cfg(feature = "html")]
+pub use html::check_frontend_html;
 pub use signature::{
     canonicalize_manifest, compute_bundle_hash, compute_signing_payload, decode_public_key,
     decode_signature, derive_signer_id_did_key, format_bundle_hash, sign_manifest_json,

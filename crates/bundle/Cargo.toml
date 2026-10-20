@@ -13,12 +13,15 @@ bs58.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 hex.workspace = true
-html5ever.workspace = true
+html5ever = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+
+[features]
+html = ["dep:html5ever"]
 
 [dev-dependencies]
 calimero-primitives = { workspace = true, features = ["borsh"] }

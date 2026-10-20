@@ -30,8 +30,9 @@ cargo test -p calimero-bundle
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
 | `BundleFrontend::validate()`, `verify_frontend_file()` | fn | What the node enforces at install and `cargo mero` shares: manifest-level (paths, case-insensitive duplicates, HTML entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file size and hash |
-| `check_frontend_html()` | fn | Build-time HTML feedback for `cargo mero` only (size cap, UTF-8, no remote or bundle-escaping URL, no inline code); the node never calls it |
+| `check_frontend_html()` | fn (feature `html`) | Build-time HTML feedback for `cargo mero` only (UTF-8, no remote or bundle-escaping URL, no inline code); the node never calls it |
 | `FrontendError` | enum | Each refusal, with a stable `code()` (`FRONTEND_*`) that `Display` also prints, `FRONTEND_MISSING_FILE` included for the node and CLI to raise; tooling matches the code, never the message |
+| `FRONTEND_ROOT` | const | The `frontend/` prefix every frontend archive path starts with |
 | `mime_type()` | fn | The `Content-Type` a frontend file is served with; `None` outside the allowlist |
 | `MAX_MANIFEST_BYTES` | const | 1 MiB cap the node enforces on `manifest.json`, before any signature check |
 | `canonicalize_manifest`, `compute_bundle_hash`, `compute_signing_payload` | fn | RFC 8785 canonical bytes (signature and `_`-prefixed transient fields stripped first), then their SHA-256; the signing payload is that SHA-256 over `MANIFEST_SIGNING_DOMAIN` followed by the canonical bytes |
@@ -63,9 +64,14 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **The node enforces paths, sizes, hashes and the MIME allowlist.** The HTML rules are build-time feedback in `cargo mero`, not a security boundary.
   The serve-time boundary is the per-app origin (`{label}.{base_domain}`, serving only that app's files) plus the CSP below.
 - **HTML is checked with the spec tokenizer, never by substring and never with a tree build.** `check_html` reads `html5ever`'s decoded attributes, so entity-encoded schemes are caught; a tree build is quadratic on deep nesting.
-  The tokenizer's duplicate-attribute scan is quadratic in one tag's attributes and `check_frontend_html` has no size cap, so it is for trusted build output only; bound the input before running it on anything untrusted.
+  The tokenizer's duplicate-attribute scan is quadratic in one tag's attributes and `check_frontend_html` has no size cap, so it is for trusted build output only.
+  Bound the input before running it on anything untrusted.
+- **The HTML lint is behind the `html` feature, which only `cargo-mero` enables.**
+  `html5ever` is therefore absent from the node's dependency tree, so the node cannot parse HTML.
 - **Raw-text elements hide their content, except after an `svg`, `math` or `select`.** There everything is scanned as markup, and any tag or comment inside a raw-text element (or any CDATA comment) is refused, so a browser's text reading and ours cannot disagree.
-- **The static check mirrors the serving contract.** The page is served at `/apps/{package}/{version}/`, so root-absolute or climbing resource URLs and any `<base>` (`FRONTEND_ESCAPING_URL`), remote resource URLs (`FRONTEND_REMOTE_RESOURCE`), and inline code including `srcdoc` (`FRONTEND_INLINE_SCRIPT`) are refused. SVG files are left to the CSP.
+- **The static check mirrors the serving contract.** Each app is served from its own origin `{label}.{base_domain}` under `/{version}/`, so a root-absolute URL resolves outside that version's folder.
+  Root-absolute or climbing resource URLs and any `<base>` (`FRONTEND_ESCAPING_URL`), remote resource URLs (`FRONTEND_REMOTE_RESOURCE`), and inline code including `srcdoc` (`FRONTEND_INLINE_SCRIPT`) are refused.
+  SVG files are left to the CSP.
 - **The server must send this CSP with the frontend.** `default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'`.
   Loosening it without loosening `check_html` refuses bundles that would work, and tightening it without `check_html` ships pages that break.
 - **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` - see `handlers_does_not_affect_metadata` in `lib.rs`.
