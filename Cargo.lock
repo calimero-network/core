@@ -1714,6 +1714,7 @@ dependencies = [
  "calimero-app-downloader",
  "calimero-blobstore",
  "calimero-build-utils",
+ "calimero-bundle",
  "calimero-context",
  "calimero-context-client",
  "calimero-context-config",
