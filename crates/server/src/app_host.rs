@@ -160,8 +160,8 @@ impl AppHosts {
             error!(%blob_id, %why, "refusing to serve a frontend blob");
             StatusCode::INTERNAL_SERVER_ERROR
         };
-        let size = match self.node_client.get_blob_info(blob_id).await {
-            Ok(Some(info)) => info.size,
+        let size = match self.node_client.blob_size(&blob_id) {
+            Ok(Some(size)) => size,
             Ok(None) => return Err(failed(&"blob is missing")),
             Err(err) => return Err(failed(&err)),
         };
