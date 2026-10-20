@@ -85,8 +85,12 @@ impl AppHosts {
         if path == "/" {
             return self.redirect_to_current(app, request.uri.query());
         }
-        let Some((version, rest)) = path.strip_prefix('/').and_then(|p| p.split_once('/')) else {
+        let Some(rest_of_path) = path.strip_prefix('/') else {
             return status(StatusCode::NOT_FOUND);
+        };
+        let (version, rest) = match rest_of_path.split_once('/') {
+            Some((version, rest)) => (version, Some(rest)),
+            None => (rest_of_path, None),
         };
         let index = match self.node_client.find_bundle_frontend(app, version) {
             Ok(Some(index)) => index,
@@ -95,6 +99,9 @@ impl AppHosts {
                 error!(%err, "failed to read a frontend index");
                 return status(StatusCode::INTERNAL_SERVER_ERROR);
             }
+        };
+        let Some(rest) = rest else {
+            return redirect(&format!("/{version}/"));
         };
         let wanted = if rest.is_empty() {
             index.entry.to_string()
@@ -113,8 +120,8 @@ impl AppHosts {
         if matches_etag(&request.headers, &etag) {
             return with_file_headers(status(StatusCode::NOT_MODIFIED), mime, &etag);
         }
-        let body = match self.open_blob(blob_id).await {
-            Ok(body) => body,
+        let (body, size) = match self.open_blob(blob_id).await {
+            Ok(opened) => opened,
             Err(code) => return status(code),
         };
         let body = if request.method == Method::HEAD {
@@ -122,7 +129,13 @@ impl AppHosts {
         } else {
             body
         };
-        with_file_headers(hardened(Response::new(body)), mime, &etag)
+        let mut response = with_file_headers(hardened(Response::new(body)), mime, &etag);
+        drop(
+            response
+                .headers_mut()
+                .insert(header::CONTENT_LENGTH, HeaderValue::from(size)),
+        );
+        response
     }
 
     fn redirect_to_current(&self, app: &ApplicationId, query: Option<&str>) -> Response {
@@ -132,13 +145,7 @@ impl AppHosts {
                 .any(|p| p.split('=').next() == Some("namespace"))
         });
         match self.current_version(app) {
-            Some(version) if !names_namespace => {
-                let mut response = status(StatusCode::FOUND);
-                if let Ok(location) = HeaderValue::from_str(&format!("/{version}/")) {
-                    drop(response.headers_mut().insert(header::LOCATION, location));
-                }
-                response
-            }
+            Some(version) if !names_namespace => redirect(&format!("/{version}/")),
             _ => status(StatusCode::NOT_FOUND),
         }
     }
@@ -148,10 +155,15 @@ impl AppHosts {
     async fn open_blob(
         &self,
         blob_id: calimero_primitives::blobs::BlobId,
-    ) -> Result<Body, StatusCode> {
+    ) -> Result<(Body, u64), StatusCode> {
         let failed = |why: &dyn core::fmt::Display| {
             error!(%blob_id, %why, "refusing to serve a frontend blob");
             StatusCode::INTERNAL_SERVER_ERROR
+        };
+        let size = match self.node_client.get_blob_info(blob_id).await {
+            Ok(Some(info)) => info.size,
+            Ok(None) => return Err(failed(&"blob is missing")),
+            Err(err) => return Err(failed(&err)),
         };
         let mut blob = match self.node_client.get_blob(&blob_id, None).await {
             Ok(Some(blob)) => blob,
@@ -164,9 +176,8 @@ impl AppHosts {
             None => None,
         };
         let chunks = stream::iter(first.map(Ok)).chain(blob);
-        Ok(Body::from_stream(chunks.map(|chunk| {
-            chunk.map(Bytes::from).map_err(std::io::Error::other)
-        })))
+        let chunks = chunks.map(|chunk| chunk.map(Bytes::from).map_err(std::io::Error::other));
+        Ok((Body::from_stream(chunks), size))
     }
 }
 
@@ -186,6 +197,14 @@ fn status(code: StatusCode) -> Response {
     let mut response = Response::new(Body::empty());
     *response.status_mut() = code;
     hardened(response)
+}
+
+fn redirect(to: &str) -> Response {
+    let mut response = status(StatusCode::FOUND);
+    if let Ok(location) = HeaderValue::from_str(to) {
+        drop(response.headers_mut().insert(header::LOCATION, location));
+    }
+    response
 }
 
 fn hardened(mut response: Response) -> Response {
@@ -244,7 +263,7 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    use super::{encode_label, serve_app_hosts, AppHosts, ApplicationId};
+    use super::{decode_label, encode_label, serve_app_hosts, AppHosts, ApplicationId, BASE32};
     use crate::test_support::{stub_node_manager, test_node_client};
 
     const BASE: &str = "localhost";
@@ -254,6 +273,7 @@ mod tests {
     struct Fixture {
         router: Router,
         node_client: calimero_node_primitives::client::NodeClient,
+        store: Store,
         blob_dir: TempDir,
         host: String,
         js_v1: BlobId,
@@ -270,24 +290,16 @@ mod tests {
             .0
     }
 
-    async fn release(
-        store: &Store,
-        node_client: &calimero_node_primitives::client::NodeClient,
-        version: &str,
-        bundle: u8,
-        index_html: &[u8],
-        app_js: &[u8],
-    ) -> BlobId {
-        let html = add(node_client, index_html).await;
-        let js = add(node_client, app_js).await;
+    fn publish(store: &Store, version: &str, bundle: u8, files: Vec<(&str, BlobId)>) {
+        let files = files
+            .into_iter()
+            .map(|(path, blob)| FrontendFile::new(path.into(), key::BlobMeta::new(blob)))
+            .collect();
         let index = BundleFrontend::new(
             key::ApplicationMeta::new(ApplicationId::from(APP)),
             version.into(),
             "frontend/index.html".into(),
-            vec![
-                FrontendFile::new("frontend/index.html".into(), key::BlobMeta::new(html)),
-                FrontendFile::new("frontend/app.js".into(), key::BlobMeta::new(js)),
-            ],
+            files,
         );
         let mut handle = store.handle();
         handle
@@ -304,6 +316,25 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    async fn release(
+        store: &Store,
+        node_client: &calimero_node_primitives::client::NodeClient,
+        version: &str,
+        bundle: u8,
+        index_html: &[u8],
+        app_js: &[u8],
+    ) -> BlobId {
+        let html = add(node_client, index_html).await;
+        let js = add(node_client, app_js).await;
+        let notes = add(node_client, b"notes").await;
+        let files = vec![
+            ("frontend/index.html", html),
+            ("frontend/app.js", js),
+            ("frontend/notes.xyz", notes),
+        ];
+        publish(store, version, bundle, files);
         js
     }
 
@@ -344,6 +375,7 @@ mod tests {
         Fixture {
             router,
             node_client,
+            store,
             blob_dir,
             host: format!("{}.{BASE}:2428", encode_label(&ApplicationId::from(APP))),
             js_v1,
@@ -498,6 +530,7 @@ mod tests {
             "localhost:2428".to_owned(),
             "127.0.0.1:2428".to_owned(),
             format!("{label}.other.example"),
+            format!("{}.localhost", non_canonical(&label)),
             format!("x.{label}.localhost"),
             format!("{label}localhost"),
             "short.localhost".to_owned(),
@@ -525,7 +558,7 @@ mod tests {
             "/1.0.0/..%2fapp.js",
             "/1.0.0/frontend/app.js",
             "/1.0.0/app.js/",
-            "/1.0.0",
+            "/9.9.9",
             "/../",
         ];
 
@@ -594,6 +627,123 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(!body.contains(&b'X'));
+    }
+
+    fn non_canonical(label: &str) -> String {
+        let (head, last) = label.split_at(label.len() - 1);
+        let next = BASE32[BASE32
+            .iter()
+            .position(|&c| c == last.as_bytes()[0])
+            .unwrap()
+            + 1];
+        format!("{head}{}", char::from(next))
+    }
+
+    #[actix::test]
+    async fn a_label_with_stray_padding_bits_names_no_app() {
+        let id = ApplicationId::from(APP);
+        let label = encode_label(&id);
+
+        assert_eq!(decode_label(&label), Some(id));
+        assert_eq!(decode_label(&non_canonical(&label)), None);
+    }
+
+    #[actix::test]
+    async fn an_uppercase_host_names_the_app() {
+        let f = fixture().await;
+        let host = f.host.to_ascii_uppercase();
+
+        let (response, body) = send(&f.router, Method::GET, &host, "/1.0.0/", &[]).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body, b"<p>v1</p>");
+    }
+
+    #[actix::test]
+    async fn a_wildcard_or_weak_etag_gets_304() {
+        let f = fixture().await;
+        let weak = format!("W/\"{}\"", f.js_v1);
+
+        for value in ["*", weak.as_str()] {
+            let headers = [("if-none-match", value)];
+            let (response, _) =
+                send(&f.router, Method::GET, &f.host, "/1.0.0/app.js", &headers).await;
+            assert_eq!(response.status(), StatusCode::NOT_MODIFIED, "{value}");
+        }
+    }
+
+    #[actix::test]
+    async fn a_stored_file_outside_the_mime_allowlist_is_404() {
+        let f = fixture().await;
+
+        let (response, _) = get(&f, "/1.0.0/notes.xyz").await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_hardened(&response);
+    }
+
+    #[actix::test]
+    async fn a_version_without_its_slash_redirects_when_it_exists() {
+        let f = fixture().await;
+
+        let (found, _) = get(&f, "/1.0.0").await;
+
+        assert_eq!(found.status(), StatusCode::FOUND);
+        assert_eq!(header_of(&found, "location"), "/1.0.0/");
+        assert_hardened(&found);
+    }
+
+    #[actix::test]
+    async fn a_file_declares_its_length_and_head_matches() {
+        let f = fixture().await;
+
+        let (get_response, _) = get(&f, "/1.0.0/app.js").await;
+        let (head_response, _) = send(&f.router, Method::HEAD, &f.host, "/1.0.0/app.js", &[]).await;
+
+        assert_eq!(header_of(&get_response, "content-length"), "5");
+        assert_eq!(header_of(&head_response, "content-length"), "5");
+    }
+
+    #[actix::test]
+    async fn a_chunk_corrupted_after_the_first_breaks_the_body() {
+        let f = fixture().await;
+        let big: Vec<u8> = (0..3 * (1 << 20))
+            .map(|i: u32| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let blob = add(&f.node_client, &big).await;
+        publish(
+            &f.store,
+            "3.0.0",
+            3,
+            vec![("frontend/index.html", blob), ("frontend/big.js", blob)],
+        );
+        let second = &big[1 << 20..2 << 20];
+        let chunk_file = walk(f.blob_dir.path())
+            .into_iter()
+            .find(|path| std::fs::read(path).is_ok_and(|bytes| bytes == second))
+            .expect("the second chunk's file");
+        std::fs::write(chunk_file, vec![b'X'; 1 << 20]).unwrap();
+
+        let response = f
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/3.0.0/big.js")
+                    .header(header::HOST, &f.host)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let declared = header_of(&response, "content-length").to_owned();
+        let read = to_bytes(response.into_body(), usize::MAX).await;
+
+        assert_eq!(declared, big.len().to_string());
+        assert!(
+            read.is_err(),
+            "a complete body was delivered over a corrupt chunk"
+        );
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
