@@ -173,3 +173,39 @@ async fn an_executor_this_node_cannot_sign_for_switches_nothing() {
     assert!(!moved, "the stranger switched the context");
     assert_eq!(marker(&fx), None);
 }
+
+/// Two views racing on a stale context share its read lock, so the switch they
+/// each decided on must not run twice.
+#[actix::test]
+async fn concurrent_views_switch_a_stale_context_once() {
+    let mut fx = fixture_switching(LocalRole::Role(GroupMemberRole::Member)).await;
+    let view = || {
+        fx.harness.manager.send(ExecuteRequest {
+            context: fx.context_id,
+            executor: fx.executor,
+            method: calimero_primitives::search::SCAN_EXPORT.to_owned(),
+            payload: Vec::new(),
+            atomic: None,
+            xcall_origin: None,
+            xcall_depth: 0,
+            delegation: None,
+            read_as: None,
+            tee_trigger: None,
+            event_handler: false,
+            write_source: WriteSource::Local,
+            governance_position: None,
+        })
+    };
+
+    let (first, second) = futures_util::future::join(view(), view()).await;
+    let _first = first.expect("mailbox");
+    let _second = second.expect("mailbox");
+
+    let mut drains = Vec::new();
+    let _settled = eventually(|| {
+        drains.extend(fx.harness.drains());
+        drains.len() >= 2
+    })
+    .await;
+    assert_eq!(drains.len(), 1, "each view ran the switch: {drains:?}");
+}
