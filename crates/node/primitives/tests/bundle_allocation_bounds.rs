@@ -27,6 +27,7 @@ use calimero_node_primitives::test_fixtures::{hex_lower, node_client, pack_entri
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+static TOTAL: AtomicUsize = AtomicUsize::new(0); // bytes ever requested, never decremented
 
 fn record(live: usize) {
     let _ = PEAK.fetch_max(live, Ordering::Relaxed);
@@ -38,6 +39,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
+            let _ = TOTAL.fetch_add(layout.size(), Ordering::Relaxed);
             record(LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size());
         }
         ptr
@@ -46,6 +48,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc_zeroed(layout) };
         if !ptr.is_null() {
+            let _ = TOTAL.fetch_add(layout.size(), Ordering::Relaxed);
             record(LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size());
         }
         ptr
@@ -61,6 +64,7 @@ unsafe impl GlobalAlloc for Counting {
         if !new.is_null() {
             if new_size >= layout.size() {
                 let grew = new_size - layout.size();
+                let _ = TOTAL.fetch_add(grew, Ordering::Relaxed);
                 record(LIVE.fetch_add(grew, Ordering::Relaxed) + grew);
             } else {
                 let _ = LIVE.fetch_sub(layout.size() - new_size, Ordering::Relaxed);
@@ -207,22 +211,12 @@ fn services_sharing_one_artifact_cost_one_copy() {
 /// an entry still decompresses it, so this is what a redundant walk pays for.
 const PADDING_BYTES: usize = 64 * 1024 * 1024;
 
+const WALK_BYTES: usize = 32 * 1024; // lower bound of one walk's decoder and buffers
 const INDEX_HTML: &[u8] = b"<html></html>"; // the frontend file every bundle here declares
 
-/// A signed `.mpk` with `services` distinct tiny wasm artifacts, each named by
-/// one service, optionally behind a `padding` byte entry the walk must cross.
+/// A signed `.mpk` with `services` distinct tiny wasm artifacts behind an optional `padding` entry;
+/// a `Some` index declares `INDEX_HTML` as the frontend and ships the given bytes in its place.
 fn padded_bundle(
-    dir: &TempDir,
-    name: &str,
-    services: usize,
-    padding: usize,
-    frontend: bool,
-) -> Vec<u8> {
-    bundle_shipping_index(dir, name, services, padding, frontend.then_some(INDEX_HTML))
-}
-
-/// As `padded_bundle`, but a `Some` index is shipped where the manifest declares `INDEX_HTML`.
-fn bundle_shipping_index(
     dir: &TempDir,
     name: &str,
     services: usize,
@@ -311,14 +305,15 @@ fn install_elapsed(bundle: Vec<u8>) -> Duration {
 /// the two installs is identical, so the difference isolates the walk from a
 /// fixed cost that would otherwise swamp it.
 fn walk_cost(dir: &TempDir, services: usize) -> Duration {
+    let index = Some(INDEX_HTML);
     let padded = padded_bundle(
         dir,
         &format!("pad{services}.mpk"),
         services,
         PADDING_BYTES,
-        true,
+        index,
     );
-    let bare = padded_bundle(dir, &format!("bare{services}.mpk"), services, 0, true);
+    let bare = padded_bundle(dir, &format!("bare{services}.mpk"), services, 0, index);
     install_elapsed(padded).saturating_sub(install_elapsed(bare))
 }
 
@@ -343,34 +338,28 @@ fn distinct_artifacts_cost_one_walk() {
     );
 }
 
-/// The frontend files ride the same walk as the wasm: reading a bundle that
-/// ships one must cost about what reading the same bundle without one does.
+/// The frontend files ride the same walk as the wasm. A walk builds its own
+/// gzip decoder and read buffer, tens of KiB, so a walk of its own for the
+/// frontend shows up as bytes allocated, which unlike a clock does not flake.
 #[test]
 fn a_frontend_shares_the_walk() {
     let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
 
     let dir = TempDir::new().unwrap();
-    // Noise only adds time, so the fastest of a few reads is the honest cost.
-    let read_cost = |frontend: bool| {
-        let bundle = padded_bundle(&dir, "read.mpk", 1, PADDING_BYTES, frontend);
+    let allocated = |frontend: bool| {
+        let bundle = padded_bundle(&dir, "read.mpk", 1, 0, frontend.then_some(INDEX_HTML));
         let verified = VerifiedBundle::open(bundle.into()).unwrap();
-        (0..5)
-            .map(|_| {
-                let started = Instant::now();
-                verified.contents().unwrap();
-                started.elapsed()
-            })
-            .min()
-            .unwrap()
+        let before = TOTAL.load(Ordering::Relaxed);
+        verified.contents().unwrap();
+        TOTAL.load(Ordering::Relaxed) - before
     };
-    let without = read_cost(false);
-    let with = read_cost(true);
+    let without = allocated(false);
+    let with = allocated(true);
 
-    // A second walk for the frontend would cross the padding twice.
     assert!(
-        with < without.mul_f64(1.5),
-        "reading {PADDING_BYTES} bytes of padding cost {with:?} with a frontend against \
-         {without:?} without: the frontend is read in a walk of its own"
+        with < without + WALK_BYTES / 2,
+        "reading a bundle allocated {with} bytes with a frontend against {without} without: \
+         the frontend is read in a walk of its own"
     );
 }
 
@@ -381,7 +370,7 @@ fn an_entry_larger_than_declared_is_refused_without_buffering_it() {
     let _probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     let huge = vec![b'x'; PADDING_BYTES];
-    let bundle = bundle_shipping_index(&dir, "oversized.mpk", 1, 0, Some(&huge));
+    let bundle = padded_bundle(&dir, "oversized.mpk", 1, 0, Some(&huge));
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (node, _store, _data, _blobs) = runtime.block_on(node_client());
