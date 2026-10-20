@@ -133,10 +133,19 @@ impl NodeClient {
         application.services = services;
 
         let frontend = match &manifest.frontend {
-            Some(frontend) => Some(
-                self.store_frontend(&application_id, frontend, &contents.frontend)
-                    .await?,
-            ),
+            Some(frontend) => {
+                match self
+                    .store_frontend(&application_id, frontend, &contents.frontend)
+                    .await
+                {
+                    Ok(index) => Some(index),
+                    Err(err) => {
+                        let bytecode = application.services.iter().map(|s| s.bytecode.blob_id());
+                        self.release_blobs(bytecode).await;
+                        return Err(err);
+                    }
+                }
+            }
             None => None,
         };
 
@@ -164,8 +173,7 @@ impl NodeClient {
         frontend: &BundleFrontend,
         files: &BTreeMap<String, Arc<[u8]>>,
     ) -> eyre::Result<types::BundleFrontend> {
-        let mut stored = Vec::new();
-        let mut failed = None;
+        let mut stored: Vec<types::FrontendFile> = Vec::new();
         for file in &frontend.files {
             let bytes = &files[&file.path];
             match self
@@ -177,27 +185,21 @@ impl NodeClient {
                     key::BlobMeta::new(blob_id),
                 )),
                 Err(err) => {
-                    failed = Some(err);
-                    break;
+                    self.release_blobs(stored.iter().map(|f| f.blob.blob_id()))
+                        .await;
+                    return Err(err);
                 }
             }
         }
-
-        let index = types::BundleFrontend::new(
+        Ok(types::BundleFrontend::new(
             key::ApplicationMeta::new(*application_id),
             frontend.entry.as_str().into(),
             stored,
-        );
-        if let Some(err) = failed {
-            self.release_frontend_files(&index).await;
-            return Err(err);
-        }
-        Ok(index)
+        ))
     }
 
-    /// Write the frontend index and the row together under the row lock.
-    /// Returns whether the index is now the stored one (the caller releases the
-    /// files otherwise), and whether the row was written.
+    /// Write the frontend index and the row under the row lock; returns whether
+    /// the index stays (else the caller releases its files) and whether the row was written.
     fn commit_install(
         &self,
         bundle_blob_id: &BlobId,
@@ -260,10 +262,14 @@ impl NodeClient {
     }
 
     async fn release_frontend_files(&self, index: &types::BundleFrontend) {
-        for file in &index.files {
-            let blob_id = file.blob.blob_id();
+        self.release_blobs(index.files.iter().map(|f| f.blob.blob_id()))
+            .await;
+    }
+
+    async fn release_blobs(&self, blobs: impl Iterator<Item = BlobId>) {
+        for blob_id in blobs {
             if let Err(err) = self.delete_blob(blob_id).await {
-                warn!(%blob_id, %err, "failed to release a frontend blob");
+                warn!(%blob_id, %err, "failed to release an install blob");
             }
         }
     }
