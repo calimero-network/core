@@ -7,6 +7,7 @@ use axum::http::uri::Authority;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
+use calimero_bundle::FRONTEND_ROOT;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use futures_util::{stream, StreamExt as _};
@@ -16,7 +17,6 @@ const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; font-src 'sel
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567"; // RFC 4648 alphabet, lowercase
 const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
-const FRONTEND_DIR: &str = "frontend/"; // where a bundle's frontend paths live
 
 #[derive(Clone)]
 pub(crate) struct AppHosts {
@@ -99,7 +99,7 @@ impl AppHosts {
         let wanted = if rest.is_empty() {
             index.entry.to_string()
         } else {
-            format!("{FRONTEND_DIR}{rest}")
+            format!("{FRONTEND_ROOT}{rest}")
         };
         let Some(file) = index.files.iter().find(|file| *file.path == *wanted) else {
             return status(StatusCode::NOT_FOUND);
