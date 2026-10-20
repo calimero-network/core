@@ -1202,35 +1202,6 @@ impl ContextClient {
         self.registry.has_context(context_id)
     }
 
-    /// The version of the blob this context actually EXECUTES, when it
-    /// differs from the application row's. The activation marker is the
-    /// per-context truth; the row is a download cache holding the latest
-    /// install, so under multi-version coexistence the two diverge.
-    /// `None` ⇒ the row's version already tells the truth.
-    pub async fn executing_application_version(&self, context_id: &ContextId) -> Option<String> {
-        let marker = {
-            let handle = self.registry.datastore.handle();
-            let marker = handle
-                .get(&key::ContextActivatedBytecode::new(*context_id))
-                .ok()
-                .flatten()?
-                .blob;
-            let row_blob = handle
-                .get(&key::ContextMeta::new(*context_id))
-                .ok()
-                .flatten()
-                .and_then(|m| handle.get(&m.application).ok().flatten())
-                .map(|app| *app.bytecode.blob_id().as_ref());
-            if row_blob == Some(marker) {
-                return None;
-            }
-            marker
-        };
-        self.node_client
-            .blob_app_version(&calimero_primitives::blobs::BlobId::from(marker))
-            .await
-    }
-
     /// Retrieves a context metadata from the local datastore.
     pub fn get_context(&self, context_id: &ContextId) -> eyre::Result<Option<Context>> {
         self.registry.get_context(context_id)
