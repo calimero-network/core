@@ -19,7 +19,7 @@ use crate::frontend::{self, Collected, FrontendSummary, Summary};
 use crate::manifest::{self, StagedArtifact};
 use crate::meta::{self, BundleMeta};
 use crate::{icon, logo, registry, sdk, workspace};
-use crate::{BuildArgs, BundleArgs};
+use crate::{BuildArgs, BundleArgs, OutputFormat};
 
 /// Environment variable naming a signing-key JSON file, used when none of
 /// `--key`/`--dev` is passed.
@@ -62,17 +62,17 @@ pub fn run(args: &BundleArgs) -> Result<Summary> {
     })?;
 
     let staging = prepare_staging(&base)?;
-    println!("• staging bundle files in {staging}");
+    eprintln!("• staging bundle files in {staging}");
     let staged = stage(&bundle_meta, &built, &staging, args.no_abi)?;
 
     if let Some(Collected { frontend, sources }) = &frontend {
-        println!("• staging {} frontend files", sources.len());
+        eprintln!("• staging {} frontend files", sources.len());
         for (source, file) in sources.iter().zip(&frontend.files) {
             stage_file(source, &staging, &file.path)?;
         }
     }
 
-    println!("• writing manifest.json");
+    eprintln!("• writing manifest.json");
     // Read off the same resolve graph the build just used, so the stamp cannot
     // describe a different SDK than the wasm was compiled against.
     let sdk = sdk::resolve(&metadata);
@@ -87,7 +87,7 @@ pub fn run(args: &BundleArgs) -> Result<Summary> {
     let application_id = ApplicationId::for_bundle(&bundle_meta.package, &signer_id)?;
 
     let output = output_path(args, &base, &bundle_meta.package, &bundle_meta.app_version);
-    println!("• packaging {output}");
+    eprintln!("• packaging {output}");
     package(
         &output,
         &manifest_path,
@@ -104,7 +104,10 @@ pub fn run(args: &BundleArgs) -> Result<Summary> {
         args.no_logo,
     )?;
     if args.print_output_path {
-        println!("{output}");
+        match args.format {
+            OutputFormat::Human => println!("{output}"),
+            OutputFormat::Json => eprintln!("{output}"),
+        }
     }
 
     Ok(Summary {
@@ -199,9 +202,9 @@ pub fn resolve_signing_key(key: Option<&Path>, dev: bool) -> Result<SigningKey> 
 fn sign(manifest_path: &Utf8Path, key: &SigningKey) -> Result<String> {
     if mero_sign::is_dev_key(key) {
         print_dev_warning();
-        println!("• signing manifest.json with the DEV key");
+        eprintln!("• signing manifest.json with the DEV key");
     } else {
-        println!("• signing manifest.json");
+        eprintln!("• signing manifest.json");
     }
     mero_sign::sign_manifest(manifest_path.as_std_path(), key)?;
     Ok(signer_id_of(key))
@@ -376,9 +379,9 @@ fn print_summary(
 
     // The path goes on its own full-width line: beside the art it would wrap at
     // the terminal edge and the continuation would run back through the logo.
-    println!();
-    println!("\u{2713} {}  ({})", short_path(output), human_size(size));
-    println!();
+    eprintln!();
+    eprintln!("\u{2713} {}  ({})", short_path(output), human_size(size));
+    eprintln!();
     match logo {
         Some(logo) => {
             // Vertically centre the text against a logo that is usually taller.
@@ -390,10 +393,10 @@ fn print_summary(
                     .checked_sub(pad)
                     .and_then(|d| details.get(d))
                     .map_or("", String::as_str);
-                println!("{art}   {text}");
+                eprintln!("{art}   {text}");
             }
         }
-        None => details.iter().for_each(|line| println!("  {line}")),
+        None => details.iter().for_each(|line| eprintln!("  {line}")),
     }
     Ok(())
 }

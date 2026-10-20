@@ -176,8 +176,8 @@ struct BundleArgs {
     #[arg(long, value_name = "MPK")]
     check_frontend: Option<Utf8PathBuf>,
 
-    /// How frontend problems and the final summary are printed: `json` puts one
-    /// object on stdout, the last line on success and the only line on failure
+    /// How the result is printed: `json` puts exactly one object on stdout and
+    /// every progress line on stderr
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     format: OutputFormat,
 

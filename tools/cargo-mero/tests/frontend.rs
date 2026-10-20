@@ -301,14 +301,16 @@ fn a_valid_frontend_is_packed_and_passes_the_check() {
     );
     let mpk = tmp.path().join("out.mpk");
 
-    let out = bundle_with_frontend(&build, &["--output", mpk.to_str().unwrap()]);
+    let out = bundle_with_frontend(
+        &build,
+        &["--output", mpk.to_str().unwrap(), "--print-output-path"],
+    );
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let summary: serde_json::Value =
-        serde_json::from_str(String::from_utf8_lossy(&out.stdout).lines().last().unwrap()).unwrap();
+    let summary = stdout_json(&out);
     assert_eq!(summary["ok"], true);
     assert_eq!(summary["frontend"]["files"], 3);
     assert_eq!(summary["output"], mpk.to_str().unwrap());
