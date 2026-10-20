@@ -11315,6 +11315,85 @@ fn cascade_upgrade_carries_the_target_state_version_to_receivers() {
     }
 }
 
+/// A bundle keeps one application id across releases, so the receiver's local
+/// row still names the release it installed. The record's versions must come
+/// from the op and the group's previous target, not from that row.
+#[test]
+fn cascade_upgrade_record_names_the_released_versions_not_the_local_row() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+
+    let mut rng = UnwrapErr(SysRng);
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let root = ContextGroupId::from([0xE3; 32]);
+    let from_bytecode_id = [0x11u8; 32];
+    let to_bytecode_id = [0x22u8; 32];
+    let app = ApplicationId::from([0x33u8; 32]);
+
+    let store = test_store();
+    let admin = enrol_member(&store, &root, &admin_pk);
+    let mut meta = sample_meta_with_admin(admin);
+    meta.target.bytecode_id = from_bytecode_id;
+    meta.target.application_id = app;
+    meta.target.package = "com.example.app".into();
+    meta.target.version = "1.0.0".into();
+    MetaRepository::new(&store).save(&root, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&root, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    store
+        .handle()
+        .put(
+            &calimero_store::key::ApplicationMeta::new(app),
+            &calimero_store::types::ApplicationMeta::new(
+                calimero_store::key::BlobMeta::new(from_bytecode_id.into()),
+                0,
+                "".into(),
+                Box::new([]),
+                calimero_store::key::BlobMeta::new([0x02; 32].into()),
+                calimero_store::types::PackageInfo {
+                    package: "com.example.app".into(),
+                    version: "1.0.0".into(),
+                    signer_id: "".into(),
+                    state_version: 1,
+                },
+            ),
+        )
+        .unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        root.to_bytes().into(),
+        vec![],
+        1,
+        GroupOp::CascadeUpgrade {
+            from_bytecode_id: from_bytecode_id.into(),
+            bytecode_id: to_bytecode_id.into(),
+            target_application_id: app,
+            to_state_version: 2,
+            migration: None,
+            cascade_hlc: HybridTimestamp::zero(),
+            package: "com.example.app".to_owned(),
+            version: "2.0.0".to_owned(),
+        },
+    )
+    .expect("sign CascadeUpgrade");
+    apply_local_signed_group_op(&store, &op).expect("cascade applies");
+
+    let record = UpgradesRepository::new(&store)
+        .load(&root)
+        .unwrap()
+        .expect("upgrade record");
+    assert_eq!(
+        (record.from_version.as_str(), record.to_version.as_str()),
+        ("1.0.0", "2.0.0")
+    );
+}
+
 // -----------------------------------------------------------------------
 // Apply-time authority must resolve at the op's causal cut, not against the
 // receiver's live rows.
