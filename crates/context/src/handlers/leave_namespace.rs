@@ -173,19 +173,24 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                         "no admin confirmed the leave; not purging, retry the purge later"
                     );
                 }
-                let purged = purge
-                    && confirmed
-                    && match manager.send(PurgeNamespace { namespace: namespace_id }).await {
-                        Ok(Ok(())) => true,
-                        Ok(Err(err)) => {
-                            warn!(?namespace_id, %err, "the local purge failed; announcing a plain leave");
-                            false
-                        }
-                        Err(err) => {
-                            warn!(?namespace_id, %err, "the local purge was not delivered");
-                            false
-                        }
-                    };
+                let attempt = if purge && confirmed {
+                    Some(
+                        manager
+                            .send(PurgeNamespace {
+                                namespace: namespace_id,
+                            })
+                            .await
+                            .map_err(eyre::Report::from)
+                            .and_then(|purged| purged),
+                    )
+                } else {
+                    None
+                };
+                if let Some(Err(err)) = &attempt {
+                    warn!(?namespace_id, %err, "the local purge failed; announcing a plain leave");
+                }
+                let change = change_after(attempt.as_ref());
+                let purged = matches!(change, AccountNamespaceChange::Purged);
 
                 // The account left, so every other device of it has to stop
                 // following the namespace too, or purge it with this one.
@@ -194,11 +199,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                     &node_client,
                     &ack_router,
                     namespace_id,
-                    if purged {
-                        AccountNamespaceChange::Purged
-                    } else {
-                        AccountNamespaceChange::Left
-                    },
+                    change,
                     "leave_namespace",
                 )
                 .await;
@@ -224,6 +225,15 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
             }
             .into_actor(self),
         )
+    }
+}
+
+/// What to tell the account's other devices: a purge only if this node's own
+/// purge ran and succeeded, else a plain leave.
+fn change_after(attempt: Option<&eyre::Result<()>>) -> AccountNamespaceChange {
+    match attempt {
+        Some(Ok(())) => AccountNamespaceChange::Purged,
+        Some(Err(_)) | None => AccountNamespaceChange::Left,
     }
 }
 
@@ -363,6 +373,20 @@ mod tests {
     /// The second admin's key, which acks as the reachable owner would.
     fn the_other_admin() -> PrivateKey {
         PrivateKey::from([0xF2; 32])
+    }
+
+    /// Only a purge that ran and succeeded is announced as one.
+    #[test]
+    fn a_failed_or_skipped_purge_is_announced_as_a_plain_leave() {
+        assert!(matches!(
+            change_after(Some(&Ok(()))),
+            AccountNamespaceChange::Purged
+        ));
+        assert!(matches!(
+            change_after(Some(&Err(eyre::eyre!("the store failed")))),
+            AccountNamespaceChange::Left
+        ));
+        assert!(matches!(change_after(None), AccountNamespaceChange::Left));
     }
 
     /// Neither leave may end the account namespace, how the devices find each other.
