@@ -464,7 +464,7 @@ mod tests {
         use calimero_primitives::blobs::BlobId;
         use calimero_store::key::BlobMeta;
         use calimero_store::key::{
-            ApplicationMeta as AppKey, ContextGroupRef, ContextMeta as CtxKey,
+            ApplicationMeta as ApplicationMetaKey, ContextGroupRef, ContextMeta as CtxKey,
         };
         use calimero_store::types::{ApplicationMeta, ContextMeta, PackageInfo};
 
@@ -495,11 +495,11 @@ mod tests {
                 },
             );
             let mut handle = store.handle();
-            handle.put(&AppKey::new(app_id), &app).unwrap();
+            handle.put(&ApplicationMetaKey::new(app_id), &app).unwrap();
             handle
                 .put(
                     &CtxKey::new(ctx()),
-                    &ContextMeta::new(AppKey::new(app_id), [0u8; 32], vec![], None),
+                    &ContextMeta::new(ApplicationMetaKey::new(app_id), [0u8; 32], vec![], None),
                 )
                 .unwrap();
         }
