@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use bytes::Bytes;
 use calimero_context_client::messages::{ExecuteError, SharedRotationRefusal};
@@ -33,7 +33,9 @@ use crate::admin::handlers::context::{
     leave_context, perform_intent, presence_intent, query_context, resync_context, sync,
     update_context_application,
 };
-use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
+use crate::admin::handlers::identity::{
+    acknowledge_revoked_from, generate_context_identity, get_node_identity,
+};
 use crate::admin::handlers::network;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
 use crate::admin::handlers::peers::get_peers_count_handler;
@@ -259,6 +261,10 @@ pub(crate) fn setup(
             post(generate_context_identity::handler),
         )
         .route("/identity", get(get_node_identity::handler))
+        .route(
+            "/identity/revoked-from",
+            delete(acknowledge_revoked_from::handler),
+        )
         .nest(
             "/contexts/sync",
             Router::new()

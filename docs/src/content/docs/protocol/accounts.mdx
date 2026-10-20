@@ -457,7 +457,7 @@ Renames are also spaced out per device by a node-local cooldown, answered as `42
 **A revoked device can say why it is unpaired.**
 Folding its own withdrawal is what releases a device's row, after which the node simply stops being paired and has nothing to point at.
 So the release records the account and device it lost, and `GET /admin-api/identity` reports it as `revokedFrom`.
-The field is absent on a node no revocation has reached, and it is dropped the moment the node pairs again or gets an account root of its own, since the question it answers has stopped being asked.
+The field is absent on a node no revocation has reached, and it stays through pairing again or minting a new root, until `DELETE /admin-api/identity/revoked-from` acknowledges it.
 
 **A device paired before all this has to learn the id once.**
 The desktop shows a link code carrying the root key and the account namespace id; running the idempotent `pair-init` on it mints nothing and starts the device following the account namespace.
