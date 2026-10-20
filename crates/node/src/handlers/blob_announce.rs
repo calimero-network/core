@@ -462,7 +462,7 @@ fn is_availability_member(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use calimero_context_config::types::ContextGroupId;
@@ -478,7 +478,11 @@ mod tests {
     use calimero_primitives::blobs::BlobId;
     use calimero_primitives::context::GroupMemberRole;
     use calimero_primitives::identity::{PrivateKey, PublicKey};
-    use calimero_store::db::InMemoryDB;
+    use calimero_store::config::StoreConfig;
+    use calimero_store::db::{Column, Database, InMemoryDB};
+    use calimero_store::iter::DBIter;
+    use calimero_store::slice::Slice;
+    use calimero_store::tx::Transaction;
     use calimero_store::Store;
     use calimero_utils_actix::LazyRecipient;
     use futures_util::SinkExt;
@@ -1413,29 +1417,81 @@ mod tests {
         }
     }
 
-    /// A blob announce asks about ONE announcer, so its cost must not grow with
-    /// the namespace: it used to list every member of the context's group and
-    /// each ancestor. One bound TEE and `n` other members; reading one member
-    /// row per level grows ~1x from 250 to 2000 members, listing them ~8x.
-    ///
-    /// On RocksDB, because the in-memory test store clones a whole column per
-    /// iterator and would charge the binding scan for the member rows.
+    /// Wraps the in-memory DB and counts every point read and iterator step.
+    #[derive(Debug)]
+    struct CountingDb {
+        inner: Box<dyn for<'a> Database<'a>>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    struct CountingIter<'a> {
+        inner: calimero_store::iter::Iter<'a>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl DBIter for CountingIter<'_> {
+        fn seek(&mut self, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.seek(key)
+        }
+
+        fn next(&mut self) -> eyre::Result<Option<Slice<'_>>> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.next()
+        }
+
+        fn read(&self) -> eyre::Result<Slice<'_>> {
+            self.inner.read()
+        }
+    }
+
+    impl<'a> Database<'a> for CountingDb {
+        fn open(_: &StoreConfig) -> eyre::Result<Self> {
+            unreachable!("built directly")
+        }
+
+        fn has(&self, col: Column, key: Slice<'_>) -> eyre::Result<bool> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.has(col, key)
+        }
+
+        fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.get(col, key)
+        }
+
+        fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
+            self.inner.put(col, key, value)
+        }
+
+        fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
+            self.inner.delete(col, key)
+        }
+
+        fn iter(&self, col: Column) -> eyre::Result<calimero_store::iter::Iter<'_>> {
+            Ok(calimero_store::iter::Iter::new(CountingIter {
+                inner: self.inner.iter(col)?,
+                reads: Arc::clone(&self.reads),
+            }))
+        }
+
+        fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()> {
+            self.inner.apply(tx)
+        }
+    }
+
+    /// A blob announce asks about ONE announcer, so its reads must not grow
+    /// with the namespace: it used to list every member of the context's group
+    /// and each ancestor. One bound TEE and `n` other members; the number of
+    /// point reads and iterator steps must be the same for any `n`.
     #[test]
     fn an_announce_check_does_not_grow_with_the_member_count() {
-        use std::time::Instant;
-
-        const SMALL: usize = 250;
-        const LARGE: usize = 8 * SMALL;
-        const MAX_GROWTH: f64 = 4.0;
-        const CALLS: usize = 50;
-
-        let measure = |n: usize| {
-            let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().to_owned().try_into().expect("utf-8 path");
-            let store = Store::open::<calimero_store_rocksdb::RocksDB>(
-                &calimero_store::config::StoreConfig::new(path),
-            )
-            .expect("open rocksdb");
+        let reads_for = |n: usize| {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let store = Store::new(Arc::new(CountingDb {
+                inner: Box::new(InMemoryDB::owned()),
+                reads: Arc::clone(&reads),
+            }));
             let group = ContextGroupId::from([0xA0; 32]);
             let members = MembershipRepository::new(&store);
             for i in 0..n {
@@ -1456,26 +1512,16 @@ mod tests {
                 .expect("add the tee");
             register_context_in_group(&store, &group, &context()).expect("register context");
 
-            (0..3)
-                .map(|_| {
-                    let start = Instant::now();
-                    for _ in 0..CALLS {
-                        assert!(is_availability_member(&store, &context(), &key).expect("decide"));
-                    }
-                    start.elapsed()
-                })
-                .min()
-                .expect("three runs")
+            reads.store(0, Ordering::Relaxed);
+            assert!(is_availability_member(&store, &context(), &key).expect("decide"));
+            reads.load(Ordering::Relaxed)
         };
 
-        let _warm = measure(SMALL);
-        let small = measure(SMALL);
-        let large = measure(LARGE);
-        let growth = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
-        assert!(
-            growth <= MAX_GROWTH,
-            "{SMALL} -> {LARGE} members took {small:?} -> {large:?} for {CALLS} checks, \
-             {growth:.1}x; one member row per level is ~1x, listing them ~8x"
+        let (small, large) = (reads_for(10), reads_for(500));
+        assert!(small > 0, "the check must read the store at all");
+        assert_eq!(
+            small, large,
+            "reads grew with the member count: {small} at 10 members, {large} at 500"
         );
     }
 
