@@ -8,7 +8,9 @@ description: >
   `{label}.localhost:{port}`, with the content security policy, `nosniff`, an
   ETag and a Content-Length. `/` redirects to the newest release. The app host
   answers 404 for the dashboard, admin API, auth and RPC paths, and the normal
-  host still serves the dashboard.
+  host still serves the dashboard. A request to the node's own host that
+  carries the app host as its `Origin` is refused with 403, and the same request
+  without an `Origin` is refused by auth with 401.
 
   Serving is keyed by release, not namespace (`/?namespace=` is not supported
   yet), so the assertions run per release on the one app host.

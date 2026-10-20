@@ -72,4 +72,13 @@ case "${status}" in
     *) fail "the normal host answered ${status} for /admin-dashboard/" ;;
 esac
 
+# An app's page is third-party code: its origin gets 403 on the node's own routes
+# before auth is consulted, while the same request without an Origin reaches auth and gets 401.
+status=$(curl -sS -o /dev/null -w '%{http_code}' -H "Origin: http://${app_host}" "${url}/admin-api/applications") \
+    || fail "request for /admin-api/applications from the app origin failed"
+[ "${status}" = 403 ] || fail "/admin-api/applications from http://${app_host} answered ${status}, wanted 403"
+status=$(curl -sS -o /dev/null -w '%{http_code}' "${url}/admin-api/applications") \
+    || fail "request for /admin-api/applications without an Origin failed"
+[ "${status}" = 401 ] || fail "/admin-api/applications without an Origin answered ${status}, wanted 401"
+
 echo "OK: ${app_host} serves releases ${release_a} and ${release_b}"
