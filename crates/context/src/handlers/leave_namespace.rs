@@ -170,7 +170,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                 if purge && !confirmed {
                     warn!(
                         ?namespace_id,
-                        "no admin confirmed the leave; not purging, retry the purge later"
+                        "no admin confirmed the leave; not purging. The account has left, so remove the namespace with DELETE the namespace on each device"
                     );
                 }
                 let attempt = if purge && confirmed {
@@ -507,7 +507,7 @@ mod tests {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
         holder(&store);
         let harness = actor::over(store.clone()).await;
-        let (namespace, account_namespace) =
+        let (namespace, _account_namespace) =
             a_namespace_this_node_may_leave(&store, &harness).await;
         let rows = a_context_with_state(&store, &namespace);
         let mut events = op_events::subscribe();
@@ -541,7 +541,25 @@ mod tests {
             vec![(namespace, false)],
             "the other devices are told of a plain leave, not a purge"
         );
-        let _ = account_namespace;
+    }
+
+    /// A subscriber is known but none acks: `Degraded`, not `Solo`, and still no purge.
+    #[actix::test]
+    async fn a_purging_leave_whose_publish_is_degraded_is_a_plain_leave() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        holder(&store);
+        let harness = actor::over_with_a_subscriber(store.clone()).await;
+        let (namespace, _account_namespace) =
+            a_namespace_this_node_may_leave(&store, &harness).await;
+        let _rows = a_context_with_state(&store, &namespace);
+
+        let left = leave(&harness, namespace, true).await;
+
+        assert!(!left.purged);
+        assert!(MetaRepository::new(&store)
+            .load(&namespace)
+            .unwrap()
+            .is_some());
     }
 
     /// A purging leave takes the namespace and its contexts off this node, and

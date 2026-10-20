@@ -384,9 +384,8 @@ pub fn holder_device_scoped_to(
     (account_namespace, device)
 }
 
-/// Acks every publish awaiting one as `signer`, an admin of the namespace: what a
-/// reachable admin does, and what lifts a publish to `PublishReadiness::Ready`.
-/// Abort the handle when done.
+/// Acks every publish awaiting one as `signer`, an admin of the namespace, which
+/// lifts it to `PublishReadiness::Ready`. Abort the handle when done.
 pub fn ack_every_publish(
     router: std::sync::Arc<calimero_context_client::local_governance::AckRouter>,
     signer: PrivateKey,
