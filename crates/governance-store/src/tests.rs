@@ -851,9 +851,8 @@ fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
     );
 }
 
-/// A window is keyed by the key that signed, and a signer the member list does
-/// not resolve (a peer's device) must not outlive the group: its replayed ops
-/// would be skipped as done.
+/// A signer the member list does not resolve (a peer's device) must not keep its
+/// window past the group: its replayed ops would be skipped as done.
 #[test]
 fn deleting_a_groups_rows_drops_every_signers_nonce_window_and_no_other_groups() {
     use crate::nonce_window::NonceWindow;

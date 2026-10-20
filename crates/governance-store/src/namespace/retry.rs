@@ -417,16 +417,13 @@ impl<'a> NamespaceRetryService<'a> {
         // (the "re-added leaver can't author" bug). A node's own op is never
         // buffered-awaiting-key in the first place (it held the key to encrypt
         // it), so it never needs re-driving here — skip it.
+        // A removed namespace holds none of what its own ops did: they replay.
+        let removed = crate::ForgottenNamespaces::new(self.store).is_forgotten(&ns_typed)?;
         let own_identity = super::NamespaceRepository::new(self.store)
             .identity(&ns_typed)
             .map_err(|e| eyre::eyre!("resolve own namespace identity: {e}"))?
             .map(|(pk, _sk)| pk)
-            // A removed namespace holds none of what its own ops did: they replay.
-            .filter(|_| {
-                !crate::ForgottenNamespaces::new(self.store)
-                    .is_forgotten(&ns_typed)
-                    .unwrap_or(false)
-            });
+            .filter(|_| !removed);
 
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         let entries = op_log
