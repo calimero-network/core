@@ -303,6 +303,15 @@ impl Deref for StateRef<'_> {
     }
 }
 
+/// A genesis stored before it seated its founder: her bare device link, alone or in a relay's seat.
+fn is_seatless_genesis(op: &Op) -> bool {
+    let link = match &op.payload {
+        OpPayload::RelaySeated { carried, .. } => carried.as_ref(),
+        payload => payload,
+    };
+    op.parents.is_empty() && matches!(link, OpPayload::DeviceLinked { .. })
+}
+
 /// The facts about `namespace_id` the void analysis reads that no op carries. `None`
 /// when the store cannot be read: without the owner, an owner's ops could read as void.
 pub(crate) fn authority_base(store: &Store, namespace_id: [u8; 32]) -> Option<AuthorityBase> {
@@ -738,14 +747,13 @@ impl ScopeProjections {
     /// `RootGuarded`, if guarded), and only the root's own transfer names the
     /// root admin.
     ///
-    /// So is a namespace genesis stored as its bare device link, from before it
-    /// also seated the founder. That row is written back: a cleartext genesis
-    /// re-derives the same on every load, so the next load reads it as stored.
+    /// So is a namespace genesis stored as its bare device link, bare or seated by a
+    /// relay, from before it also seated the founder.
     ///
-    /// Other rows carrying a real payload are untouched. A re-derived placeholder
-    /// is not written back, as a key arriving meanwhile writes the decrypted row
-    /// this would overwrite; it is re-derived on each load until that key lands.
-    fn reclassify_stored_holes(store: &Store, namespace_id: [u8; 32], ops: &mut [Op]) {
+    /// Other rows carrying a real payload are untouched. Nothing re-derived is
+    /// written back: a purge or a key arriving meanwhile would see its row rewritten,
+    /// so an old genesis costs one signed-op read per load.
+    pub(crate) fn reclassify_stored_holes(store: &Store, namespace_id: [u8; 32], ops: &mut [Op]) {
         let stale: Vec<usize> = ops
             .iter()
             .enumerate()
@@ -754,8 +762,7 @@ impl ScopeProjections {
                 OpPayload::RootGuarded { carried, .. } => {
                     matches!(**carried, OpPayload::AdminChanged { .. })
                 }
-                OpPayload::DeviceLinked { .. } => op.parents.is_empty(),
-                _ => false,
+                _ => is_seatless_genesis(op),
             })
             .map(|(i, _)| i)
             .collect();
@@ -772,7 +779,7 @@ impl ScopeProjections {
             // A cleartext root op that models nothing is a genuine `Noop`, then
             // and now.
             if matches!(signed.op, calimero_governance_types::NamespaceOp::Root(_))
-                && !matches!(ops[i].payload, OpPayload::DeviceLinked { .. })
+                && !is_seatless_genesis(&ops[i])
             {
                 continue;
             }
@@ -804,13 +811,7 @@ impl ScopeProjections {
                     op = ?ops[i].id(),
                     "op-store: re-derived a stored placeholder written before holes were distinguishable"
                 );
-                let genesis = matches!(ops[i].payload, OpPayload::DeviceLinked { .. });
                 ops[i] = rebuilt;
-                if genesis {
-                    if let Err(err) = crate::unified_op_store::persist_op(store, &ops[i]) {
-                        tracing::warn!(%err, namespace = ?namespace_id, "op-store: could not write back a re-derived genesis");
-                    }
-                }
             }
         }
     }

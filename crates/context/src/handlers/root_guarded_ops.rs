@@ -209,6 +209,7 @@ mod tests {
     use calimero_primitives::context::{ContextId, GroupMemberRole};
     use calimero_primitives::identity::MemberIdentity;
     use calimero_store::db::InMemoryDB;
+    use calimero_store::key::ScopeUnifiedOp as ScopeUnifiedOpKey;
     use calimero_store::Store;
 
     use super::*;
@@ -675,15 +676,6 @@ mod tests {
         assert!(members
             .iter()
             .any(|m| m.identity == alice && m.role == GroupMemberRole::Admin));
-        let restored = crate::unified_op_store::load_scope_ops(&store, &scope)
-            .expect("read the op store")
-            .into_iter()
-            .find(|op| op.id() == genesis.id())
-            .expect("the genesis is stored");
-        assert!(
-            matches!(restored.payload, OpPayload::NamespaceFounded { .. }),
-            "the re-derived genesis is written back, so the next load reads it as stored"
-        );
     }
 
     /// A founder who left cannot seat herself again by signing a second genesis: the
@@ -774,5 +766,40 @@ mod tests {
             None,
             "the leaver is seated again in the streaming fold"
         );
+    }
+
+    /// A purge that lands between a load and its re-derivation leaves no row behind:
+    /// a stored genesis is re-derived in memory only, so nothing recreates what it deleted.
+    #[actix::test]
+    async fn a_re_derived_genesis_does_not_outlive_a_purge() {
+        let Transferred {
+            store, namespace, ..
+        } = transferred().await;
+        let scope = ScopeId::from(namespace.to_bytes());
+        let mut genesis = crate::unified_op_store::load_scope_ops(&store, &scope)
+            .expect("read the op store")
+            .into_iter()
+            .find(|op| op.parents.is_empty())
+            .expect("the genesis is stored");
+        let OpPayload::NamespaceFounded { carried, .. } = genesis.payload else {
+            panic!("a genesis folds as a founding, got {:?}", genesis.payload);
+        };
+        genesis.payload = *carried;
+        crate::unified_op_store::persist_op(&store, &genesis).expect("store the old row");
+
+        let mut loaded =
+            crate::unified_op_store::load_scope_ops(&store, &scope).expect("read the op store");
+        // The purge itself is not on this branch: it deletes the namespace's op rows.
+        let mut handle = store.handle();
+        for op in &loaded {
+            handle
+                .delete(&ScopeUnifiedOpKey::new(namespace.to_bytes(), op.id()))
+                .expect("purge the row");
+        }
+        ScopeProjections::reclassify_stored_holes(&store, namespace.to_bytes(), &mut loaded);
+
+        assert!(crate::unified_op_store::load_scope_ops(&store, &scope)
+            .expect("read the op store")
+            .is_empty());
     }
 }

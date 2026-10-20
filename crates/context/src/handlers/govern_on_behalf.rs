@@ -868,6 +868,114 @@ mod tests {
             .expect("the founding relay may read the namespace");
     }
 
+    /// A namespace founded through a relay before the genesis seated its founder holds
+    /// the relay's seat around her bare device link; once she hands the namespace over,
+    /// she is still its admin.
+    #[actix::test]
+    async fn a_relay_founded_namespace_stored_before_the_seat_keeps_its_founder() {
+        use calimero_op::{OpPayload, ScopeId};
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        NodeDeviceRepository::new(&store)
+            .provision_account_root()
+            .expect("account root");
+        let harness = actor::over(store.clone()).await;
+        let author_sk = PrivateKey::from([0x44; 32]);
+        let author_proof = credential(&author_sk.public_key());
+        let author = author_proof.statement.account;
+        let salt = [0x5E; 32];
+        let ns = ContextGroupId::from(calimero_account::founded_namespace_id(&author, &salt));
+        let (_ns, relay_pk, _sk) = NamespaceRepository::new(&store)
+            .participate_in(&ns)
+            .expect("the relay takes an identity in the new namespace");
+        let executor_proof =
+            crate::join_credential::build(&store, &ns, &relay_pk).expect("relay credential");
+        let genesis = RootOp::NamespaceCreatedV2 {
+            founder: author,
+            account: author_proof.clone(),
+            salt,
+        };
+        let form = borsh::to_vec(&genesis).expect("encode");
+        let kind = GovernanceOpKind::Root;
+        let _ = harness
+            .context_client
+            .govern_on_behalf(GovernOnBehalfRequest {
+                delegation: GovernanceDelegation {
+                    warrant: Box::new(
+                        GovernanceWarrant::sign(
+                            &author_sk,
+                            GovernanceTerms {
+                                scope: ns.to_bytes(),
+                                kind,
+                                author_account: author,
+                                executor: executor_proof.statement.account,
+                                executor_key: relay_pk,
+                                op_hash: GovernanceWarrant::op_hash(kind, &form),
+                                account_heads: vec![],
+                                governance_floor: vec![],
+                                nonce: 0,
+                                not_after: u64::MAX,
+                            },
+                        )
+                        .expect("sign"),
+                    ),
+                    author_proof,
+                    executor_proof,
+                    executor_key: relay_pk,
+                },
+                op: DelegatedGovernanceOp::Root { op: genesis },
+            })
+            .await
+            .expect("founded");
+
+        let scope = ScopeId::from(ns.to_bytes());
+        let mut stored = crate::unified_op_store::load_scope_ops(&store, &scope)
+            .expect("read the op store")
+            .into_iter()
+            .find(|op| op.parents.is_empty())
+            .expect("the genesis is stored");
+        let OpPayload::RelaySeated { carried, .. } = &mut stored.payload else {
+            panic!(
+                "a relayed genesis folds as the relay's seat, got {:?}",
+                stored.payload
+            );
+        };
+        let OpPayload::NamespaceFounded { carried: link, .. } = carried.as_ref().clone() else {
+            panic!("the seat carries the founding, got {carried:?}");
+        };
+        *carried = link;
+        crate::unified_op_store::persist_op(&store, &stored).expect("store the old row");
+        // The transfer's effect on the base: the root meta names the new owner.
+        let heir = AccountId::from([0x66; 32]);
+        let meta = MetaRepository::new(&store);
+        let mut row = meta
+            .load(&ns)
+            .expect("read the meta")
+            .expect("the namespace has one");
+        row.admin_identity = heir;
+        row.owner_identity = heir;
+        meta.save(&ns, &row).expect("hand it over");
+
+        let members = harness
+            .manager
+            .send(calimero_context_client::group::ListGroupMembersRequest {
+                group_id: ns,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the founding relay may list the members");
+        assert!(
+            members
+                .members
+                .iter()
+                .any(|m| m.identity == author && m.role == GroupMemberRole::Admin),
+            "the founder is gone: {:?}",
+            members.members
+        );
+    }
+
     /// A member founds a namespace through the relay: the relay takes an
     /// identity in it, publishes the genesis as the member, is seated to serve
     /// it, then admits itself as the namespace's first TEE with a (mock) quote.
