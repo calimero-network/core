@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 type Files<'a> = &'a [(&'a str, &'a str)];
 
-const INDEX_HTML: &str = r#"<!doctype html><script src="/app.js"></script>"#;
+const INDEX_HTML: &str = r#"<!doctype html><script src="app.js"></script>"#;
 
 fn cargo_mero(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cargo-mero"))
@@ -145,7 +145,7 @@ fn check_frontend_reports_each_rule_with_its_code() {
     let cases: [(Files, &str, &str); 5] = [
         (
             &[("frontend/index.html", remote)],
-            "FRONTEND_REMOTE_SCRIPT",
+            "FRONTEND_REMOTE_RESOURCE",
             "frontend/index.html",
         ),
         (
@@ -163,7 +163,11 @@ fn check_frontend_reports_each_rule_with_its_code() {
             "FRONTEND_DUPLICATE_PATH",
             "frontend/index.html",
         ),
-        (&[("frontend/app.js", "1")], "FRONTEND_NO_ENTRY", ""),
+        (
+            &[("frontend/app.js", "1")],
+            "FRONTEND_NO_ENTRY",
+            "frontend/index.html",
+        ),
     ];
     for (files, code, path) in cases {
         let err = check_code(files, files);
@@ -256,7 +260,7 @@ fn an_invalid_frontend_fails_before_the_wasm_build() {
     ]);
     assert!(!out.status.success());
     let err = stdout_json(&out);
-    assert_eq!(err["code"], "FRONTEND_REMOTE_SCRIPT");
+    assert_eq!(err["code"], "FRONTEND_REMOTE_RESOURCE");
     assert_eq!(err["path"], "frontend/index.html");
 }
 

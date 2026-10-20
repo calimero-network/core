@@ -8,7 +8,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use calimero_bundle::{
-    verify_frontend_file, BundleFrontend, BundleManifest, FrontendError, MAX_FRONTEND_BYTES,
+    check_frontend_html, verify_frontend_file, BundleFrontend, BundleManifest, FrontendError,
+    MAX_FRONTEND_BYTES,
 };
 use camino::Utf8Path;
 use eyre::{bail, eyre, Context, Result};
@@ -83,8 +84,16 @@ pub fn collect(dir: &Path) -> Result<Collected> {
     frontend.validate()?;
     for (file, bytes) in frontend.files.iter().zip(&contents) {
         verify_frontend_file(file, bytes)?;
+        if is_html(&file.path) {
+            check_frontend_html(&file.path, bytes)?;
+        }
     }
     Ok(Collected { frontend, sources })
+}
+
+fn is_html(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("html"))
 }
 
 /// Every regular file under `dir` as (source, archive path). A symlink could
@@ -147,6 +156,9 @@ pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
             .get(&file.path)
             .ok_or_else(|| eyre!("'{}' is in the manifest but not in the archive", file.path))?;
         verify_frontend_file(file, bytes)?;
+        if is_html(&file.path) {
+            check_frontend_html(&file.path, bytes)?;
+        }
     }
     Ok(FrontendSummary::of(&frontend))
 }
@@ -207,23 +219,29 @@ fn error_path(err: &FrontendError) -> Option<&str> {
     match err {
         FrontendError::UnsafePath(path)
         | FrontendError::DuplicatePath(path)
+        | FrontendError::NoEntry(path)
         | FrontendError::UnsupportedType(path)
         | FrontendError::HashMismatch(path)
-        | FrontendError::InvalidHtml(path) => Some(path),
-        FrontendError::SizeMismatch { path, .. } | FrontendError::RemoteScript { path, .. } => {
-            Some(path)
-        }
-        FrontendError::NoEntry(_) | FrontendError::TooLarge => None,
+        | FrontendError::InvalidHtml(path)
+        | FrontendError::Base(path)
+        | FrontendError::EntryNotHtml(path)
+        | FrontendError::MissingFile(path)
+        | FrontendError::SizeMismatch { path, .. }
+        | FrontendError::RemoteResource { path, .. }
+        | FrontendError::EscapingUrl { path, .. }
+        | FrontendError::InlineScript { path, .. } => Some(path),
+        FrontendError::TooLarge => None,
     }
 }
 
 fn hint(err: &FrontendError) -> &'static str {
     match err {
         FrontendError::UnsafePath(_) => {
-            "ship plain files only: no symlinks, no `..`, no absolute or backslash paths"
+            "use plain files with names of letters, digits and . _ ~ @ + -; symlinks are not allowed"
         }
-        FrontendError::DuplicatePath(_) => "list each file once",
+        FrontendError::DuplicatePath(_) => "list each file once, ignoring letter case",
         FrontendError::NoEntry(_) => "the build must contain an index.html at its top level",
+        FrontendError::EntryNotHtml(_) => "the entry must be an .html file",
         FrontendError::UnsupportedType(_) => {
             "remove the file or use a served type (html, js, css, json, images, fonts, wasm)"
         }
@@ -231,9 +249,14 @@ fn hint(err: &FrontendError) -> &'static str {
         FrontendError::SizeMismatch { .. } | FrontendError::HashMismatch(_) => {
             "the file changed after the manifest was written; rebuild the bundle"
         }
-        FrontendError::RemoteScript { .. } => {
-            "bundle the script and load it from a relative path instead of a remote URL"
+        FrontendError::MissingFile(_) => "rebuild the bundle; the archive lacks a file it lists",
+        FrontendError::RemoteResource { .. } => {
+            "bundle the file and load it from a relative path instead of a remote URL"
         }
+        FrontendError::EscapingUrl { .. } | FrontendError::Base(_) => {
+            "build with relative URLs (Vite `base: './'`) and no <base> element"
+        }
+        FrontendError::InlineScript { .. } => "move inline scripts and handlers into a script file",
         FrontendError::InvalidHtml(_) => "save the HTML file as UTF-8",
     }
 }
