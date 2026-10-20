@@ -564,4 +564,36 @@ mod tests {
 
         assert_eq!(forgotten_listed(&harness).await, vec![]);
     }
+
+    #[actix::test]
+    async fn a_removed_namespace_is_listed_by_the_name_it_had() {
+        let store = store();
+        let harness = actor::over(store.clone()).await;
+        let namespace = ContextGroupId::from([0x41; 32]);
+        ForgottenNamespaces::new(&store)
+            .mark(
+                &namespace,
+                Some(ApplicationId::from(APP)),
+                7,
+                Some("Team".to_owned()),
+            )
+            .expect("the removal");
+
+        let names: Vec<_> = harness
+            .manager
+            .send(ListNamespacesForApplicationRequest {
+                application_id: ApplicationId::from(APP),
+                offset: 0,
+                limit: usize::MAX,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the listing")
+            .into_iter()
+            .filter(|summary| summary.forgotten)
+            .map(|summary| summary.name)
+            .collect();
+
+        assert_eq!(names, vec![Some("Team".to_owned())]);
+    }
 }

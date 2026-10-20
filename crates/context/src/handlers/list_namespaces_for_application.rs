@@ -44,7 +44,7 @@ impl Handler<ListNamespacesForApplicationRequest> for ContextManager {
                         target_application_id: application_id,
                         target_release: None,
                         created_at: 0,
-                        name: None,
+                        name: removed.name,
                         member_count: 0,
                         context_count: 0,
                         subgroup_count: 0,
