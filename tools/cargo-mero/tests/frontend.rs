@@ -90,8 +90,8 @@ fn check_frontend_accepts_a_valid_bundle() {
     );
     let summary = stdout_json(&out);
     assert_eq!(summary["ok"], true);
-    assert_eq!(summary["entry"], "frontend/index.html");
-    assert_eq!(summary["files"], 2);
+    assert_eq!(summary["frontend"]["entry"], "frontend/index.html");
+    assert_eq!(summary["frontend"]["files"], 2);
 }
 
 #[test]
@@ -196,4 +196,142 @@ fn check_frontend_reports_a_missing_file_as_a_generic_error() {
     ];
     let err = check_code(&declared, &declared[..1]);
     assert_eq!(err["code"], "BUNDLE_ERROR", "{err}");
+}
+
+fn demo_manifest() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-app/Cargo.toml")
+}
+
+fn write_build(dir: &Path, files: &[(&str, &str)]) {
+    for (path, body) in files {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+}
+
+fn bundle_with_frontend(build: &Path, extra: &[&str]) -> Output {
+    let mut args = vec!["bundle", "--dev", "--format", "json", "--manifest-path"];
+    let manifest = demo_manifest();
+    args.push(manifest.to_str().unwrap());
+    args.extend(["--frontend-dir", build.to_str().unwrap()]);
+    args.extend(extra);
+    cargo_mero(&args)
+}
+
+#[test]
+fn an_invalid_frontend_fails_before_the_wasm_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    // This crate cannot compile, so reaching the build would give another error.
+    let app = tmp.path().join("app");
+    write_build(
+        &app,
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"broken\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+                 [package.metadata.calimero]\npackage = \"com.example.broken\"\nicon = \"default\"\n[workspace]\n",
+            ),
+            ("src/lib.rs", "compile_error!(\"build ran\");"),
+        ],
+    );
+    let build = tmp.path().join("web");
+    write_build(
+        &build,
+        &[(
+            "index.html",
+            r#"<script src="https://cdn.example/x.js"></script>"#,
+        )],
+    );
+
+    let out = cargo_mero(&[
+        "bundle",
+        "--dev",
+        "--format",
+        "json",
+        "--manifest-path",
+        app.join("Cargo.toml").to_str().unwrap(),
+        "--frontend-dir",
+        build.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    let err = stdout_json(&out);
+    assert_eq!(err["code"], "FRONTEND_REMOTE_SCRIPT");
+    assert_eq!(err["path"], "frontend/index.html");
+}
+
+#[test]
+fn a_build_without_an_index_fails_with_no_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_build(tmp.path(), &[("app.js", "1")]);
+    assert_eq!(
+        stdout_json(&bundle_with_frontend(tmp.path(), &[]))["code"],
+        "FRONTEND_NO_ENTRY"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_in_the_frontend_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_build(tmp.path(), &[("index.html", INDEX_HTML)]);
+    std::os::unix::fs::symlink("/etc/hosts", tmp.path().join("hosts.txt")).unwrap();
+
+    let err = stdout_json(&bundle_with_frontend(tmp.path(), &[]));
+    assert_eq!(err["code"], "FRONTEND_UNSAFE_PATH", "{err}");
+    assert_eq!(err["path"], "frontend/hosts.txt");
+}
+
+#[test]
+fn a_valid_frontend_is_packed_and_passes_the_check() {
+    let tmp = tempfile::tempdir().unwrap();
+    let build = tmp.path().join("web");
+    write_build(
+        &build,
+        &[
+            ("index.html", INDEX_HTML),
+            ("app.js", "1"),
+            ("app.js.map", "{}"),
+            ("assets/logo.svg", "<svg/>"),
+        ],
+    );
+    let mpk = tmp.path().join("out.mpk");
+
+    let out = bundle_with_frontend(&build, &["--output", mpk.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let summary: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).lines().last().unwrap()).unwrap();
+    assert_eq!(summary["ok"], true);
+    assert_eq!(summary["frontend"]["files"], 3);
+    assert_eq!(summary["output"], mpk.to_str().unwrap());
+
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
+        std::fs::File::open(&mpk).unwrap(),
+    ));
+    let mut names: Vec<_> = archive
+        .entries()
+        .unwrap()
+        .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+        .filter(|p| p.starts_with("frontend/"))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "frontend/app.js",
+            "frontend/assets/logo.svg",
+            "frontend/index.html"
+        ]
+    );
+
+    let check = cargo_mero(&["bundle", "--check-frontend", mpk.to_str().unwrap()]);
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
 }

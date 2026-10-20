@@ -167,6 +167,11 @@ struct BundleArgs {
     #[arg(long)]
     print_output_path: bool,
 
+    /// Directory holding a built web frontend (with an index.html) to ship in the
+    /// bundle; overrides `frontend-dir` in `[package.metadata.calimero]`
+    #[arg(long, value_name = "DIR")]
+    frontend_dir: Option<PathBuf>,
+
     /// Check the web frontend inside an existing .mpk instead of building one
     #[arg(long, value_name = "MPK")]
     check_frontend: Option<Utf8PathBuf>,
@@ -329,8 +334,8 @@ fn dispatch(cmd: Command) -> eyre::Result<()> {
         Command::Build(args) => build::run(&args).map(|_| ()),
         Command::Test(args) => test_cmd::run(&args),
         Command::Bundle(args) => match &args.check_frontend {
-            Some(mpk) => frontend::report(args.format, frontend::check_mpk(mpk)),
-            None => bundle::run(&args).map(|_| ()),
+            Some(mpk) => frontend::run_check(mpk, args.format),
+            None => frontend::report(args.format, bundle::run(&args)),
         },
         Command::Abi(cmd) => dispatch_abi(cmd),
         Command::Key(cmd) => dispatch_key(cmd),

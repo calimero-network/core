@@ -3,8 +3,9 @@
 //! live in `calimero_bundle`, so the CLI and the node cannot disagree.
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use calimero_bundle::{
     verify_frontend_file, BundleFrontend, BundleManifest, FrontendError, MAX_FRONTEND_BYTES,
@@ -14,23 +15,35 @@ use eyre::{bail, eyre, Context, Result};
 use flate2::read::GzDecoder;
 use serde::Serialize;
 
+use crate::manifest;
 use crate::OutputFormat;
 
 /// Reported for any failure that is not a `FrontendError`.
 const GENERIC_ERROR_CODE: &str = "BUNDLE_ERROR";
+const ARCHIVE_ROOT: &str = "frontend"; // where the frontend sits in the bundle
+const ENTRY: &str = "frontend/index.html";
+const SOURCE_MAP_SUFFIX: &str = ".map"; // never shipped: it only helps a debugger
 
+/// What `--format json` prints on success.
 #[derive(Serialize)]
 pub struct Summary {
     pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend: Option<FrontendSummary>,
+}
+
+#[derive(Serialize)]
+pub struct FrontendSummary {
     pub entry: String,
     pub files: usize,
     pub bytes: u64,
 }
 
-impl Summary {
-    fn of(frontend: &BundleFrontend) -> Self {
+impl FrontendSummary {
+    pub fn of(frontend: &BundleFrontend) -> Self {
         Self {
-            ok: true,
             entry: frontend.entry.clone(),
             files: frontend.files.len(),
             bytes: frontend.files.iter().map(|f| f.size).sum(),
@@ -38,8 +51,64 @@ impl Summary {
     }
 }
 
+/// A built frontend directory, validated, with each file's source path
+/// alongside its entry in `frontend.files`.
+pub struct Collected {
+    pub frontend: BundleFrontend,
+    pub sources: Vec<PathBuf>,
+}
+
+/// Walk a build directory and apply the node's frontend rules to it, so a bad
+/// build fails here, before the wasm build, with the code the node would use.
+pub fn collect(dir: &Path) -> Result<Collected> {
+    let mut found = Vec::new();
+    walk(dir, ARCHIVE_ROOT, &mut found)?;
+    found.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut files = Vec::with_capacity(found.len());
+    let mut contents = Vec::with_capacity(found.len());
+    let mut sources = Vec::with_capacity(found.len());
+    for (source, rel) in found {
+        let bytes =
+            fs::read(&source).wrap_err_with(|| format!("failed to read {}", source.display()))?;
+        files.push(manifest::artifact_from_bytes(rel, &bytes));
+        contents.push(bytes);
+        sources.push(source);
+    }
+
+    let frontend = BundleFrontend {
+        entry: ENTRY.to_owned(),
+        files,
+    };
+    frontend.validate()?;
+    for (file, bytes) in frontend.files.iter().zip(&contents) {
+        verify_frontend_file(file, bytes)?;
+    }
+    Ok(Collected { frontend, sources })
+}
+
+/// Every regular file under `dir` as (source, archive path). A symlink could
+/// point outside the build, so it is refused rather than followed.
+fn walk(dir: &Path, rel: &str, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
+    for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let rel = format!("{rel}/{}", name.to_string_lossy());
+        let kind = entry.file_type()?;
+        if kind.is_symlink() || name.to_str().is_none() {
+            return Err(FrontendError::UnsafePath(rel).into());
+        }
+        if kind.is_dir() {
+            walk(&entry.path(), &rel, out)?;
+        } else if !rel.ends_with(SOURCE_MAP_SUFFIX) {
+            out.push((entry.path(), rel));
+        }
+    }
+    Ok(())
+}
+
 /// Open an `.mpk` and run the node's frontend checks over its manifest and every file's bytes.
-pub fn check_mpk(mpk: &Utf8Path) -> Result<Summary> {
+pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
     let file = File::open(mpk).wrap_err_with(|| format!("failed to open {mpk}"))?;
     let mut archive = tar::Archive::new(GzDecoder::new(file));
 
@@ -79,25 +148,37 @@ pub fn check_mpk(mpk: &Utf8Path) -> Result<Summary> {
             .ok_or_else(|| eyre!("'{}' is in the manifest but not in the archive", file.path))?;
         verify_frontend_file(file, bytes)?;
     }
-    Ok(Summary::of(&frontend))
+    Ok(FrontendSummary::of(&frontend))
 }
 
-/// Print a command's outcome in the chosen format. In JSON mode a failure goes
-/// to stdout as an object and exits non-zero here, instead of returning.
+/// `--check-frontend`: print the verdict in the chosen format.
+pub fn run_check(mpk: &Utf8Path, format: OutputFormat) -> Result<()> {
+    let result = check_mpk(mpk);
+    if let (OutputFormat::Human, Ok(summary)) = (format, &result) {
+        println!(
+            "frontend ok: {} files, {} bytes",
+            summary.files, summary.bytes
+        );
+    }
+    report(
+        format,
+        result.map(|frontend| Summary {
+            ok: true,
+            output: None,
+            frontend: Some(frontend),
+        }),
+    )
+}
+
+/// In JSON mode print the outcome as one object on stdout; a failure then exits
+/// non-zero here, instead of returning. Human mode leaves printing to the caller.
 pub fn report(format: OutputFormat, result: Result<Summary>) -> Result<()> {
     match (format, result) {
-        (OutputFormat::Human, Ok(summary)) => {
-            println!(
-                "frontend ok: {} files, {} bytes",
-                summary.files, summary.bytes
-            );
-            Ok(())
-        }
+        (OutputFormat::Human, result) => result.map(|_| ()),
         (OutputFormat::Json, Ok(summary)) => {
             println!("{}", serde_json::to_string(&summary)?);
             Ok(())
         }
-        (OutputFormat::Human, Err(err)) => Err(err),
         (OutputFormat::Json, Err(err)) => {
             println!("{}", error_json(&err));
             std::process::exit(1);

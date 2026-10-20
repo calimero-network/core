@@ -6,7 +6,7 @@ use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use calimero_bundle::BundleArtifact;
+use calimero_bundle::{BundleArtifact, BundleFrontend};
 use calimero_primitives::application::ApplicationId;
 use camino::{Utf8Path, Utf8PathBuf};
 use ed25519_dalek::SigningKey;
@@ -15,6 +15,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 
 use crate::build::{self, BuiltWasm};
+use crate::frontend::{self, Collected, FrontendSummary, Summary};
 use crate::manifest::{self, StagedArtifact};
 use crate::meta::{self, BundleMeta};
 use crate::{icon, logo, registry, sdk, workspace};
@@ -24,7 +25,7 @@ use crate::{BuildArgs, BundleArgs};
 /// `--key`/`--dev` is passed.
 const SIGN_KEY_ENV: &str = "MERO_SIGN_KEY";
 
-pub fn run(args: &BundleArgs) -> Result<PathBuf> {
+pub fn run(args: &BundleArgs) -> Result<Summary> {
     // Resolve signing first: a missing or bad key must fail before a long build.
     let signing_key = resolve_signing_key(args.key.as_deref(), args.dev)?;
 
@@ -34,6 +35,10 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     // Resolved before the build so a missing icon or guide fails fast, same as signing.
     bundle_meta.icon = icon::resolve(&bundle_meta, args.no_icon)?;
     bundle_meta.guide = meta::read_guide(&bundle_meta)?;
+    // Checked before the build too: a bad frontend is the likelier failure and the cheaper one.
+    let frontend = frontend_dir(&bundle_meta, args)
+        .map(|dir| frontend::collect(&dir))
+        .transpose()?;
     if args.no_abi {
         eprintln!("warning: bundling without an ABI; this app cannot be migrated");
     }
@@ -60,17 +65,35 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
     println!("• staging bundle files in {staging}");
     let staged = stage(&bundle_meta, &built, &staging, args.no_abi)?;
 
+    if let Some(Collected { frontend, sources }) = &frontend {
+        println!("• staging {} frontend files", sources.len());
+        for (source, file) in sources.iter().zip(&frontend.files) {
+            stage_file(source, &staging, &file.path)?;
+        }
+    }
+
     println!("• writing manifest.json");
     // Read off the same resolve graph the build just used, so the stamp cannot
     // describe a different SDK than the wasm was compiled against.
     let sdk = sdk::resolve(&metadata);
-    let manifest_path = write_manifest(&staging, &bundle_meta, &staged, sdk.as_ref())?;
+    let manifest_path = write_manifest(
+        &staging,
+        &bundle_meta,
+        &staged,
+        frontend.as_ref().map(|f| &f.frontend),
+        sdk.as_ref(),
+    )?;
     let signer_id = sign(&manifest_path, &signing_key)?;
     let application_id = ApplicationId::for_bundle(&bundle_meta.package, &signer_id)?;
 
     let output = output_path(args, &base, &bundle_meta.package, &bundle_meta.app_version);
     println!("• packaging {output}");
-    package(&output, &manifest_path, &staged)?;
+    package(
+        &output,
+        &manifest_path,
+        &staged,
+        frontend.as_ref().map(|f| &f.frontend),
+    )?;
     fs::remove_dir_all(&staging).wrap_err_with(|| format!("failed to remove {staging}"))?;
 
     print_summary(
@@ -84,7 +107,20 @@ pub fn run(args: &BundleArgs) -> Result<PathBuf> {
         println!("{output}");
     }
 
-    Ok(output.into_std_path_buf())
+    Ok(Summary {
+        ok: true,
+        output: Some(output.to_string()),
+        frontend: frontend.map(|f| FrontendSummary::of(&f.frontend)),
+    })
+}
+
+/// The `--frontend-dir` flag (relative to the working directory), else the
+/// `frontend-dir` key (relative to the manifest that set it).
+fn frontend_dir(meta: &BundleMeta, args: &BundleArgs) -> Option<PathBuf> {
+    args.frontend_dir.clone().or_else(|| {
+        let dir = meta.frontend_dir.as_deref()?;
+        Some(meta.manifest_dir.join(dir).into_std_path_buf())
+    })
 }
 
 /// Bundle metadata with the `--package` / `--app-version` overrides applied.
@@ -129,10 +165,11 @@ fn write_manifest(
     staging: &Utf8Path,
     meta: &BundleMeta,
     staged: &[StagedArtifact],
+    frontend: Option<&BundleFrontend>,
     sdk: Option<&manifest::SdkResolution>,
 ) -> Result<Utf8PathBuf> {
     let path = staging.join("manifest.json");
-    let value = manifest::render(meta, staged, sdk)?;
+    let value = manifest::render(meta, staged, frontend, sdk)?;
     fs::write(&path, serde_json::to_string_pretty(&value)?)
         .wrap_err_with(|| format!("failed to write {path}"))?;
     Ok(path)
@@ -285,6 +322,9 @@ fn abi_of(build: &BuiltWasm) -> Result<&std::path::Path> {
 /// Copy one source file to `staging/<rel>` and describe it (path, size, hash).
 fn stage_file(src: &std::path::Path, staging: &Utf8Path, rel: &str) -> Result<BundleArtifact> {
     let dest = staging.join(rel);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).wrap_err_with(|| format!("failed to create {parent}"))?;
+    }
     let bytes = fs::read(src).wrap_err_with(|| format!("failed to read {}", src.display()))?;
     fs::write(&dest, &bytes).wrap_err_with(|| format!("failed to write {dest}"))?;
     Ok(manifest::artifact_from_bytes(rel, &bytes))
@@ -386,7 +426,12 @@ fn human_size(bytes: u64) -> String {
 
 /// Write the tar.gz `.mpk`: `manifest.json` at the root plus each artifact at the
 /// same relative path recorded in the manifest, so the two never disagree.
-fn package(output: &Utf8Path, manifest_path: &Utf8Path, staged: &[StagedArtifact]) -> Result<()> {
+fn package(
+    output: &Utf8Path,
+    manifest_path: &Utf8Path,
+    staged: &[StagedArtifact],
+    frontend: Option<&BundleFrontend>,
+) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).wrap_err_with(|| format!("failed to create {parent}"))?;
     }
@@ -409,6 +454,11 @@ fn package(output: &Utf8Path, manifest_path: &Utf8Path, staged: &[StagedArtifact
             tar.append_path_with_name(staging.join(rel), rel)
                 .wrap_err_with(|| format!("failed to add {rel} to the bundle"))?;
         }
+    }
+
+    for file in frontend.iter().flat_map(|f| &f.files) {
+        tar.append_path_with_name(staging.join(&file.path), &file.path)
+            .wrap_err_with(|| format!("failed to add {} to the bundle", file.path))?;
     }
 
     tar.into_inner()
@@ -436,6 +486,7 @@ mod tests {
             no_icon: false,
             no_logo: false,
             print_output_path: false,
+            frontend_dir: None,
             check_frontend: None,
             format: crate::OutputFormat::Human,
             bump: None,
