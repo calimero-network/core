@@ -111,11 +111,7 @@ pub async fn handler(
             Ok(Some(mut context)) => {
                 // Per-context executing version (activation marker) wins over
                 // the application row's latest-installed version.
-                if let Some(v) = state
-                    .ctx_client
-                    .executing_application_version(&context_id)
-                    .await
-                {
+                if let Some(v) = super::executing_application_version(&state, &context_id).await {
                     context.application_version = Some(v);
                 }
                 let group_id = match state

@@ -26,6 +26,21 @@ pub fn activated_bytecode(store: &Store, context_id: &ContextId) -> Option<[u8; 
         .map(|v| v.blob)
 }
 
+/// The blob `context_id` executes, when it is not the application row's blob
+/// (the row names the latest install, so equal means the row already tells
+/// the truth).
+pub fn executing_blob_off_row(store: &Store, context_id: &ContextId) -> Option<[u8; 32]> {
+    let marker = activated_bytecode(store, context_id)?;
+    let handle = store.handle();
+    let row_blob = handle
+        .get(&calimero_store::key::ContextMeta::new(*context_id))
+        .ok()
+        .flatten()
+        .and_then(|m| handle.get(&m.application).ok().flatten())
+        .map(|app| *app.bytecode.blob_id().as_ref());
+    (row_blob != Some(marker)).then_some(marker)
+}
+
 /// Record that `context_id` now executes `blob` (migration committed or
 /// code-only activation applied). Best-effort: a failed write means the
 /// context re-runs its (idempotent) activation on next access.
@@ -440,5 +455,101 @@ mod tests {
             group_registers_bytecode(&store, &unset, [0xEE; 32]),
             "a group with no recorded release has nothing to judge by"
         );
+    }
+
+    /// What the context executes, per case: the row is only the latest install.
+    mod executing {
+        use calimero_primitives::blobs::BlobId;
+        use calimero_store::key::BlobMeta;
+        use calimero_store::key::{
+            ApplicationMeta as AppKey, ContextGroupRef, ContextMeta as CtxKey,
+        };
+        use calimero_store::types::{ApplicationMeta, ContextMeta, PackageInfo};
+
+        use super::*;
+
+        const V1: [u8; 32] = [0x01; 32];
+        const V2: [u8; 32] = [0x02; 32];
+
+        fn ctx() -> ContextId {
+            ContextId::from([0x41; 32])
+        }
+
+        /// A context whose application row holds `row_blob`.
+        fn context_on_row(store: &Store, row_blob: [u8; 32]) {
+            let app_id = ApplicationId::from([0xAA; 32]);
+            let blob = BlobMeta::new(BlobId::from(row_blob));
+            let app = ApplicationMeta::new(
+                blob,
+                1,
+                "test://executing".to_owned().into_boxed_str(),
+                Box::new([]),
+                blob,
+                PackageInfo {
+                    package: "pkg".to_owned().into_boxed_str(),
+                    version: "1.0.0".to_owned().into_boxed_str(),
+                    signer_id: "signer".to_owned().into_boxed_str(),
+                    state_version: 0,
+                },
+            );
+            let mut handle = store.handle();
+            handle.put(&AppKey::new(app_id), &app).unwrap();
+            handle
+                .put(
+                    &CtxKey::new(ctx()),
+                    &ContextMeta::new(AppKey::new(app_id), [0u8; 32], vec![], None),
+                )
+                .unwrap();
+        }
+
+        /// Put the context in a group whose target (and ladder) is `target`.
+        fn in_group_on(store: &Store, target: [u8; 32]) {
+            let gid = ContextGroupId::from([0x42; 32]);
+            group_on(store, gid, target, &[target[0]]);
+            store
+                .handle()
+                .put(&ContextGroupRef::new((*ctx()).into()), &gid.to_bytes())
+                .unwrap();
+        }
+
+        #[test]
+        fn a_marker_naming_another_blob_than_the_row_wins() {
+            let store = store();
+            context_on_row(&store, V2);
+            record_activation(&store, &ctx(), V1);
+            assert_eq!(executing_blob_off_row(&store, &ctx()), Some(V1));
+        }
+
+        #[test]
+        fn a_marker_matching_the_row_needs_no_override() {
+            let store = store();
+            context_on_row(&store, V2);
+            record_activation(&store, &ctx(), V2);
+            assert_eq!(executing_blob_off_row(&store, &ctx()), None);
+        }
+
+        /// A joiner that installed v2 ahead of its group runs the group's v1.
+        #[test]
+        fn without_a_marker_an_unregistered_row_yields_to_the_group_release() {
+            let store = store();
+            context_on_row(&store, V2);
+            in_group_on(&store, V1);
+            assert_eq!(executing_blob_off_row(&store, &ctx()), Some(V1));
+        }
+
+        #[test]
+        fn without_a_marker_a_registered_row_is_what_runs() {
+            let store = store();
+            context_on_row(&store, V1);
+            in_group_on(&store, V1);
+            assert_eq!(executing_blob_off_row(&store, &ctx()), None);
+        }
+
+        #[test]
+        fn without_a_marker_or_group_the_row_is_what_runs() {
+            let store = store();
+            context_on_row(&store, V1);
+            assert_eq!(executing_blob_off_row(&store, &ctx()), None);
+        }
     }
 }
