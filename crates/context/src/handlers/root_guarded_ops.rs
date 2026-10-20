@@ -201,7 +201,8 @@ mod tests {
     use calimero_dag::DeltaApplier;
     use calimero_governance_store::{
         get_op_head, register_context_in_group, GroupKeyring, KeyringError, MembershipRepository,
-        MetaError, MetaRepository, NamespaceOpLogService, NodeDeviceRepository,
+        MetaError, MetaRepository, NamespaceGovernance, NamespaceOpLogService,
+        NodeDeviceRepository,
     };
     use calimero_op::{OpPayload, ScopeId};
     use calimero_primitives::application::ApplicationId;
@@ -674,5 +675,95 @@ mod tests {
         assert!(members
             .iter()
             .any(|m| m.identity == alice && m.role == GroupMemberRole::Admin));
+    }
+
+    /// A founder who left cannot seat herself again by signing a second genesis: the
+    /// apply logs it as a no-op on the established namespace, and the fold must too.
+    #[actix::test]
+    async fn a_founder_who_left_cannot_reseat_herself() {
+        let Transferred {
+            harness,
+            store,
+            namespace,
+            alice,
+            ..
+        } = transferred().await;
+        let (_, sk) = NamespaceRepository::new(&store)
+            .identity(&namespace)
+            .expect("read the identity")
+            .expect("the founder signs here");
+        let _left = harness
+            .manager
+            .send(LeaveNamespaceRequest {
+                purge: false,
+                namespace_id: namespace,
+            })
+            .await
+            .expect("the manager answers")
+            .expect("the former owner leaves");
+
+        let log = NamespaceOpLogService::new(&store, namespace.to_bytes().into());
+        let genesis = ScopeProjections::ops_for_namespace(&store, namespace.to_bytes())
+            .expect("the namespace's ops")
+            .into_iter()
+            .find(|op| op.parents.is_empty())
+            .and_then(|op| log.get_signed_op(op.id()).expect("read the op log"))
+            .expect("the genesis is logged");
+        let leave = ScopeProjections::ops_for_namespace(&store, namespace.to_bytes())
+            .expect("the namespace's ops")
+            .into_iter()
+            .find(|op| matches!(op.payload, OpPayload::MemberLeft { .. }))
+            .expect("the leave is logged")
+            .id();
+        // Governance ops tie on clock and generation in the streaming fold, so the op id
+        // decides; a founder can grind the nonce until hers outranks the leave.
+        let mut nonce = NamespaceGovernance::new(&store, namespace.to_bytes().into())
+            .read_head_record()
+            .expect("read the head")
+            .next_nonce;
+        let second = loop {
+            let signed = SignedNamespaceOp::sign(
+                &PrivateKey::from(sk),
+                namespace.to_bytes().into(),
+                vec![],
+                nonce,
+                genesis.op.clone(),
+            )
+            .expect("sign a second genesis");
+            if signed_namespace_op_to_delta(&signed)
+                .expect("build the delta")
+                .id
+                > leave
+            {
+                break signed;
+            }
+            nonce += 1;
+        };
+        NamespaceGovernanceApplier::new(store.clone())
+            .apply(&signed_namespace_op_to_delta(&second).expect("build the delta"))
+            .await
+            .expect("an established namespace takes a second genesis as a no-op");
+
+        let (proj, ns, heads) =
+            ScopeProjections::ephemeral_projection(&store, &namespace).expect("fold the namespace");
+        let members = proj
+            .member_entries_with(&store, ns, &namespace, &heads)
+            .expect("the cut is complete");
+        assert!(
+            members.iter().all(|(account, _)| *account != alice),
+            "the leaver is seated again at the cut: {members:?}"
+        );
+        let ops = ScopeProjections::ops_for_namespace(&store, namespace.to_bytes())
+            .expect("the namespace's ops");
+        assert_eq!(ops.iter().filter(|op| op.parents.is_empty()).count(), 2);
+        let streamed = calimero_projection::ScopeState::from_ops(&ops).acl_view();
+        assert_eq!(
+            streamed
+                .groups
+                .get(&namespace)
+                .and_then(|rows| rows.get(&alice)),
+            None,
+            "the leaver is seated again in the streaming fold"
+        );
     }
 }

@@ -3,6 +3,7 @@
 
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
@@ -506,6 +507,89 @@ fn a_genesis_that_is_not_the_founding_one_seats_nobody() {
     ] {
         assert_eq!(root_role(ordinary, &ops, founder.account), None);
     }
+
+    let (account_founder, account_scope) = founder_and_scope();
+    for ops in [
+        vec![signed_by(
+            account_founder.device_key,
+            account_scope,
+            2,
+            vec![[1; 32]],
+            founded(&account_founder, SALT),
+        )],
+        vec![signed_by(
+            forger,
+            account_scope,
+            1,
+            vec![],
+            founded(&account_founder, SALT),
+        )],
+        vec![signed_by(
+            account_founder.device_key,
+            account_scope,
+            1,
+            vec![],
+            founded(&account_founder, [0x0B; 32]),
+        )],
+    ] {
+        assert_eq!(
+            root_role(account_scope, &ops, account_founder.account),
+            None
+        );
+    }
+}
+
+/// A genesis a relay published on the founder's behalf folds as her own and seats her.
+#[test]
+fn a_relayed_genesis_seats_its_founder() {
+    let founder = linked(0x61, &[]);
+    let ordinary = ScopeId::from(calimero_account::founded_namespace_id(
+        &founder.account,
+        &SALT,
+    ));
+    let relayed = OpPayload::RelaySeated {
+        carried: Box::new(namespace_founded(&founder, SALT)),
+        group: ContextGroupId::from(*ordinary.as_bytes()),
+        relay: AccountId::from([0x62; 32]),
+        capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+        device: None,
+        tee_role_from: None,
+    };
+    let ops = [signed_by(founder.device_key, ordinary, 1, vec![], relayed)];
+    assert_eq!(
+        root_role(ordinary, &ops, founder.account),
+        Some(GroupMemberRole::Admin)
+    );
+}
+
+/// A founder who left cannot seat herself again with a second genesis, however its id
+/// compares with her leave's.
+#[test]
+fn a_second_genesis_does_not_reseat_a_founder_who_left() {
+    let founder = linked(0x71, &[]);
+    let scope = ScopeId::from(calimero_account::founded_namespace_id(
+        &founder.account,
+        &SALT,
+    ));
+    let left = OpPayload::MemberLeft {
+        group: ContextGroupId::from(*scope.as_bytes()),
+        member: founder.account,
+    };
+    let genesis = |id| {
+        signed_by(
+            founder.device_key,
+            scope,
+            id,
+            vec![],
+            namespace_founded(&founder, SALT),
+        )
+    };
+    let ops = [
+        genesis(1),
+        signed_by(founder.device_key, scope, 2, vec![[1; 32]], left),
+        genesis(0xF0),
+    ];
+    assert_eq!(root_role(scope, &ops, founder.account), None);
 }
 
 /// The founder's seat and the transfer of the root admin to her heir fold to one state
@@ -536,10 +620,69 @@ fn a_founders_seat_folds_alike_in_every_order() {
         after_genesis(2, added(heir, GroupMemberRole::Admin)),
         after_genesis(3, OpPayload::AdminChanged { new_admin: heir }),
     ];
-    let in_order = root(&ops);
+    let _converged = root_in_every_order(&ops);
+    assert_eq!(
+        root_role(scope, &ops, founder.account),
+        Some(GroupMemberRole::Admin)
+    );
+}
+
+/// Her removal, her own leave and a second genesis of hers fold to one state in every
+/// order, and none of those orders seats her.
+#[test]
+fn a_founder_removed_or_gone_folds_out_in_every_order() {
+    let founder = linked(0x53, &[]);
+    let scope = ScopeId::from(calimero_account::founded_namespace_id(
+        &founder.account,
+        &SALT,
+    ));
+    let root_group = ContextGroupId::from(*scope.as_bytes());
+    let heir = AccountId::from([0x54; 32]);
+    let genesis = |id| {
+        signed_by(
+            founder.device_key,
+            scope,
+            id,
+            vec![],
+            namespace_founded(&founder, SALT),
+        )
+    };
+    let after_genesis = |id, payload| op(scope, id, vec![[1; 32]], payload);
+    for gone in [
+        OpPayload::MemberRemoved {
+            group: root_group,
+            member: founder.account,
+        },
+        OpPayload::MemberLeft {
+            group: root_group,
+            member: founder.account,
+        },
+    ] {
+        let ops = vec![
+            genesis(1),
+            after_genesis(
+                2,
+                OpPayload::MemberAdded {
+                    group: root_group,
+                    member: heir,
+                    role: GroupMemberRole::Admin,
+                },
+            ),
+            after_genesis(3, OpPayload::AdminChanged { new_admin: heir }),
+            after_genesis(4, gone),
+            genesis(0xF0),
+        ];
+        let _converged = root_in_every_order(&ops);
+        assert_eq!(root_role(scope, &ops, founder.account), None);
+    }
+}
+
+/// The root `ops` fold to, the same in 64 shuffled orders.
+fn root_in_every_order(ops: &[Op]) -> [u8; 32] {
+    let in_order = root(ops);
     let mut state = 0x2545_F491_4F6C_DD1Du64;
     for _ in 0..64 {
-        let mut shuffled = ops.clone();
+        let mut shuffled = ops.to_vec();
         for i in (1..shuffled.len()).rev() {
             state ^= state << 13;
             state ^= state >> 7;
@@ -548,4 +691,5 @@ fn a_founders_seat_folds_alike_in_every_order() {
         }
         assert_eq!(root(&shuffled), in_order);
     }
+    in_order
 }

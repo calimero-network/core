@@ -3,6 +3,7 @@
 
 use calimero_account::{AccountGenesis, AccountId, DeviceCert, DeviceId, KemPublicKey};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::MemberCapabilities;
 use calimero_op::{Authorship, Op, OpPayload, ScopeId};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
@@ -629,6 +630,25 @@ fn a_revocation_cited_from_a_cut_before_the_link_is_entitled_to_an_admin_only() 
 /// demoted by the new owner, she loses the ops she made concurrently.
 #[test]
 fn a_founder_demoted_after_a_transfer_loses_her_concurrent_ops() {
+    founder_demoted_after_a_transfer(|founding, _| founding);
+}
+
+/// The same for a founder whose genesis a relay published on her behalf.
+#[test]
+fn a_relayed_founder_demoted_after_a_transfer_loses_her_concurrent_ops() {
+    founder_demoted_after_a_transfer(|founding, root| OpPayload::RelaySeated {
+        carried: Box::new(founding),
+        group: root,
+        relay: Person::new(9).id,
+        capabilities: MemberCapabilities::CAN_AUTHOR_ON_BEHALF,
+        device: None,
+        tee_role_from: None,
+    });
+}
+
+/// Alice founds the namespace with `published(founding, root)`, makes Bob an admin and
+/// hands it to him; Bob demotes her while she adds Zed as an admin.
+fn founder_demoted_after_a_transfer(published: impl Fn(OpPayload, ContextGroupId) -> OpPayload) {
     let alice = Person::new(1);
     let bob = Person::new(2);
     let zed = Person::new(4);
@@ -647,11 +667,14 @@ fn a_founder_demoted_after_a_transfer_loses_her_concurrent_ops() {
         founded,
         10,
         &[],
-        OpPayload::NamespaceFounded {
-            founder: alice.id,
-            salt,
-            carried: Box::new(alice_device.link_payload()),
-        },
+        published(
+            OpPayload::NamespaceFounded {
+                founder: alice.id,
+                salt,
+                carried: Box::new(alice_device.link_payload()),
+            },
+            root,
+        ),
     );
     let bob_admin = alice_device.op_in(
         founded,

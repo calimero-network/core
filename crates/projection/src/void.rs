@@ -192,7 +192,7 @@ fn removes_account(op: &Op) -> Option<AccountId> {
 /// Does `ops` hold an op that takes authority away from someone else: a member
 /// removal, a device revocation, a role change for an account granted `Admin`, or a
 /// capability set leaving out a bit the member could have held?
-fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool {
+pub(crate) fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool {
     let author = |op: &Op| {
         resolved
             .get(&op.id())
@@ -210,6 +210,9 @@ fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool 
     let mut defaults: HashMap<ContextGroupId, u32> = HashMap::new();
     let mut capability_sets: Vec<(ContextGroupId, AccountId, u32)> = Vec::new();
     for op in ops {
+        if let Some(founder) = crate::seated_founder(op, &op.payload) {
+            let _ = admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), founder));
+        }
         match &op.payload {
             OpPayload::MemberCapabilitySet {
                 group,
@@ -260,10 +263,6 @@ fn holds_removal(ops: &[&Op], resolved: &Resolved, base: AuthorityBase) -> bool 
             }
             OpPayload::SubgroupCreated { child, admin, .. } => {
                 let _ = admin_grants.insert((ContextGroupId::from(*child.as_bytes()), *admin));
-            }
-            OpPayload::NamespaceFounded { founder, .. }
-            | OpPayload::AccountNamespaceFounded { founder, .. } => {
-                let _ = admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), *founder));
             }
             OpPayload::MemberAdded { group, member, .. } if author(op) != *member => {
                 role_changes.push((*group, *member));
@@ -323,7 +322,7 @@ fn transfer_to(op: &Op) -> Option<AccountId> {
 }
 
 /// The account and device of each op built without an author, by op id.
-type Resolved = HashMap<[u8; 32], (AccountId, DeviceId)>;
+pub(crate) type Resolved = HashMap<[u8; 32], (AccountId, DeviceId)>;
 
 /// The account and device of each op built without an author, from the log's device
 /// links (a revocation drops the binding, not the link). A key linked twice names none.
@@ -417,6 +416,9 @@ impl<'a> Analysis<'a> {
 
         let mut admin_grants: HashSet<(ContextGroupId, AccountId)> = HashSet::new();
         for op in ops {
+            if let Some(founder) = crate::seated_founder(op, &op.payload) {
+                let _ = admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), founder));
+            }
             match &op.payload {
                 OpPayload::MemberAdded {
                     group,
@@ -433,11 +435,6 @@ impl<'a> Analysis<'a> {
                 }
                 OpPayload::SubgroupCreated { child, admin, .. } => {
                     let _ = admin_grants.insert((ContextGroupId::from(*child.as_bytes()), *admin));
-                }
-                OpPayload::NamespaceFounded { founder, .. }
-                | OpPayload::AccountNamespaceFounded { founder, .. } => {
-                    let _ =
-                        admin_grants.insert((ContextGroupId::from(*op.scope.as_bytes()), *founder));
                 }
                 _ => {}
             }
