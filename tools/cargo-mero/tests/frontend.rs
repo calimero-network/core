@@ -28,33 +28,37 @@ fn stdout_json(out: &Output) -> serde_json::Value {
     })
 }
 
-/// A `.mpk` holding a manifest that declares `files` (path, bytes the manifest
-/// was built from) and an archive that holds `archived` instead.
-fn write_mpk(dir: &Path, files: &[(&str, &str)], archived: &[(&str, &str)]) -> PathBuf {
-    let declared: Vec<_> = files
-        .iter()
-        .map(|(path, body)| {
-            serde_json::json!({
-                "path": path,
-                "hash": hex::encode(Sha256::digest(body.as_bytes())),
-                "size": body.len(),
-            })
-        })
-        .collect();
-    let manifest = serde_json::json!({
+fn declared(path: &str, body: &str) -> serde_json::Value {
+    serde_json::json!({
+        "path": path,
+        "hash": hex::encode(Sha256::digest(body.as_bytes())),
+        "size": body.len(),
+    })
+}
+
+fn manifest_declaring(entries: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
         "version": "1.0",
         "package": "com.example.web",
         "appVersion": "0.1.0",
         "minRuntimeVersion": "0.1.0",
-        "frontend": { "entry": "frontend/index.html", "files": declared },
-    });
+        "frontend": { "entry": "frontend/index.html", "files": entries },
+    })
+}
 
+fn signed(mut manifest: serde_json::Value) -> serde_json::Value {
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    calimero_bundle::sign_manifest_json(&mut manifest, &key).unwrap();
+    manifest
+}
+
+fn write_archive(dir: &Path, manifest: &serde_json::Value, archived: Files) -> PathBuf {
     let mpk = dir.join("app.mpk");
     let mut tar = tar::Builder::new(GzEncoder::new(
         std::fs::File::create(&mpk).unwrap(),
         Compression::default(),
     ));
-    let manifest = serde_json::to_vec(&manifest).unwrap();
+    let manifest = serde_json::to_vec(manifest).unwrap();
     let mut entries = vec![("manifest.json", manifest.as_slice())];
     entries.extend(archived.iter().map(|(p, b)| (*p, b.as_bytes())));
     for (path, bytes) in entries {
@@ -65,6 +69,13 @@ fn write_mpk(dir: &Path, files: &[(&str, &str)], archived: &[(&str, &str)]) -> P
     }
     tar.into_inner().unwrap().finish().unwrap();
     mpk
+}
+
+/// A signed `.mpk` whose manifest declares `files` (path, bytes the manifest
+/// was built from) and whose archive holds `archived` instead.
+fn write_mpk(dir: &Path, files: Files, archived: Files) -> PathBuf {
+    let entries = files.iter().map(|(p, b)| declared(p, b)).collect();
+    write_archive(dir, &signed(manifest_declaring(entries)), archived)
 }
 
 #[test]
@@ -124,18 +135,25 @@ fn check_frontend_reports_a_tampered_file_as_json() {
     );
 }
 
-fn check_code(files: &[(&str, &str)], archived: &[(&str, &str)]) -> serde_json::Value {
-    let tmp = tempfile::tempdir().unwrap();
-    let mpk = write_mpk(tmp.path(), files, archived);
-    let out = cargo_mero(&[
+fn check_json(mpk: &Path) -> Output {
+    cargo_mero(&[
         "bundle",
         "--check-frontend",
         mpk.to_str().unwrap(),
         "--format",
         "json",
-    ]);
+    ])
+}
+
+fn check_failure(mpk: &Path) -> serde_json::Value {
+    let out = check_json(mpk);
     assert!(!out.status.success());
     stdout_json(&out)
+}
+
+fn check_code(files: Files, archived: Files) -> serde_json::Value {
+    let tmp = tempfile::tempdir().unwrap();
+    check_failure(&write_mpk(tmp.path(), files, archived))
 }
 
 #[test]
@@ -193,13 +211,82 @@ fn check_frontend_reports_a_resized_file() {
 }
 
 #[test]
-fn check_frontend_reports_a_missing_file_as_a_generic_error() {
+fn check_frontend_reports_a_missing_file() {
     let declared = [
         ("frontend/index.html", INDEX_HTML),
         ("frontend/app.js", "1"),
     ];
     let err = check_code(&declared, &declared[..1]);
+    assert_eq!(err["code"], "FRONTEND_MISSING_FILE", "{err}");
+    assert_eq!(err["path"], "frontend/app.js");
+}
+
+#[test]
+fn check_frontend_rejects_a_manifest_changed_after_signing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let entries = vec![
+        declared("frontend/index.html", INDEX_HTML),
+        declared("frontend/app.js", "1"),
+    ];
+    let mut manifest = signed(manifest_declaring(entries));
+    manifest["frontend"]["files"][1] = declared("frontend/app.js", "evil");
+    let files = [
+        ("frontend/index.html", INDEX_HTML),
+        ("frontend/app.js", "evil"),
+    ];
+    let mpk = write_archive(tmp.path(), &manifest, &files);
+
+    let err = check_failure(&mpk);
     assert_eq!(err["code"], "BUNDLE_ERROR", "{err}");
+}
+
+#[test]
+fn check_frontend_rejects_a_manifest_over_the_manifest_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut manifest = manifest_declaring(vec![declared("frontend/index.html", INDEX_HTML)]);
+    manifest["padding"] = "x"
+        .repeat(calimero_bundle::MAX_MANIFEST_BYTES as usize)
+        .into();
+    let mpk = write_archive(
+        tmp.path(),
+        &signed(manifest),
+        &[("frontend/index.html", INDEX_HTML)],
+    );
+
+    let err = check_failure(&mpk);
+    assert_eq!(err["code"], "BUNDLE_ERROR", "{err}");
+}
+
+#[test]
+fn check_frontend_reports_declared_sizes_over_the_cap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let half = calimero_bundle::MAX_FRONTEND_BYTES / 2 + 1;
+    let mut entries = vec![declared("frontend/index.html", INDEX_HTML)];
+    for name in ["frontend/a.js", "frontend/b.js"] {
+        let mut entry = declared(name, "1");
+        entry["size"] = half.into();
+        entries.push(entry);
+    }
+    let mpk = write_archive(
+        tmp.path(),
+        &signed(manifest_declaring(entries)),
+        &[("frontend/index.html", INDEX_HTML)],
+    );
+
+    assert_eq!(check_failure(&mpk)["code"], "FRONTEND_TOO_LARGE");
+}
+
+#[test]
+fn check_frontend_refuses_the_flags_that_build_a_bundle() {
+    for flag in [
+        ["--frontend-dir", "web"],
+        ["--output", "x.mpk"],
+        ["--key", "k.json"],
+    ] {
+        let out = cargo_mero(&["bundle", "--check-frontend", "a.mpk", flag[0], flag[1]]);
+        assert_eq!(out.status.code(), Some(2), "{flag:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
+    }
 }
 
 fn demo_manifest() -> PathBuf {
@@ -284,6 +371,10 @@ fn a_symlink_in_the_frontend_is_refused() {
     let err = stdout_json(&bundle_with_frontend(tmp.path(), &[]));
     assert_eq!(err["code"], "FRONTEND_UNSAFE_PATH", "{err}");
     assert_eq!(err["path"], "frontend/hosts.txt");
+    assert!(err["hint"]
+        .as_str()
+        .unwrap()
+        .contains("symlinks are not allowed"));
 }
 
 #[test]
@@ -294,9 +385,11 @@ fn a_valid_frontend_is_packed_and_passes_the_check() {
         &build,
         &[
             ("index.html", INDEX_HTML),
+            ("assets/logo.svg", "<svg/>"),
             ("app.js", "1"),
             ("app.js.map", "{}"),
-            ("assets/logo.svg", "<svg/>"),
+            (".DS_Store", "junk"),
+            (".vite/manifest.json", "{}"),
         ],
     );
     let mpk = tmp.path().join("out.mpk");
@@ -318,15 +411,21 @@ fn a_valid_frontend_is_packed_and_passes_the_check() {
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
         std::fs::File::open(&mpk).unwrap(),
     ));
-    let mut names: Vec<_> = archive
+    let manifest = archive
         .entries()
         .unwrap()
-        .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
-        .filter(|p| p.starts_with("frontend/"))
+        .map(Result::unwrap)
+        .find(|e| e.path().unwrap().to_str() == Some("manifest.json"))
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_reader(manifest).unwrap();
+    let listed: Vec<_> = manifest["frontend"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
         .collect();
-    names.sort();
     assert_eq!(
-        names,
+        listed,
         [
             "frontend/app.js",
             "frontend/assets/logo.svg",
@@ -334,10 +433,73 @@ fn a_valid_frontend_is_packed_and_passes_the_check() {
         ]
     );
 
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(
+        std::fs::File::open(&mpk).unwrap(),
+    ));
+    let mut names: Vec<_> = archive
+        .entries()
+        .unwrap()
+        .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+        .filter(|p| p.starts_with("frontend/"))
+        .collect();
+    names.sort();
+    assert_eq!(names, listed);
+
     let check = cargo_mero(&["bundle", "--check-frontend", mpk.to_str().unwrap()]);
     assert!(
         check.status.success(),
         "{}",
         String::from_utf8_lossy(&check.stderr)
     );
+}
+
+#[test]
+fn a_frontend_dir_that_is_a_file_or_missing_is_a_clear_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("index.html");
+    std::fs::write(&file, INDEX_HTML).unwrap();
+    let missing = tmp.path().join("nope");
+
+    for (dir, what) in [(&file, "is not a directory"), (&missing, "does not exist")] {
+        let out = bundle_with_frontend(dir, &[]);
+        assert!(!out.status.success());
+        let err = stdout_json(&out);
+        assert_eq!(err["code"], "BUNDLE_ERROR", "{err}");
+        let message = err["message"].as_str().unwrap();
+        assert!(message.contains(what), "{message}");
+        assert!(message.contains(dir.to_str().unwrap()), "{message}");
+    }
+}
+
+#[test]
+fn the_frontend_dir_key_is_resolved_against_the_manifest_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = tmp.path().join("app");
+    write_build(
+        &app,
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"broken\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+                 [package.metadata.calimero]\npackage = \"com.example.broken\"\nicon = \"default\"\n\
+                 frontend-dir = \"web\"\n[workspace]\n",
+            ),
+            ("src/lib.rs", "compile_error!(\"build ran\");"),
+            (
+                "web/index.html",
+                r#"<script src="https://cdn.example/x.js"></script>"#,
+            ),
+        ],
+    );
+
+    // The working directory is not the manifest's, so a cwd-relative lookup would miss `web`.
+    let out = cargo_mero(&[
+        "bundle",
+        "--dev",
+        "--format",
+        "json",
+        "--manifest-path",
+        app.join("Cargo.toml").to_str().unwrap(),
+    ]);
+    assert_eq!(stdout_json(&out)["code"], "FRONTEND_REMOTE_RESOURCE");
 }

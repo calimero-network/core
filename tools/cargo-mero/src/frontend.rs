@@ -1,6 +1,6 @@
 //! A bundle's web frontend: checking one inside an `.mpk` and reporting the
-//! result for humans or, with `--format json`, for CI. The rules themselves
-//! live in `calimero_bundle`, so the CLI and the node cannot disagree.
+//! result for humans or, with `--format json`, for CI. Paths, sizes, hashes and
+//! types are `calimero_bundle`'s, shared with the node; the HTML lint is build-time only.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -8,8 +8,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use calimero_bundle::{
-    check_frontend_html, verify_frontend_file, BundleFrontend, BundleManifest, FrontendError,
-    MAX_FRONTEND_BYTES,
+    check_frontend_html, verify_frontend_file, verify_manifest_signature, BundleFrontend,
+    BundleManifest, FrontendError, MAX_FRONTEND_BYTES, MAX_MANIFEST_BYTES,
 };
 use camino::Utf8Path;
 use eyre::{bail, eyre, Context, Result};
@@ -19,11 +19,11 @@ use serde::Serialize;
 use crate::manifest;
 use crate::OutputFormat;
 
-/// Reported for any failure that is not a `FrontendError`.
-const GENERIC_ERROR_CODE: &str = "BUNDLE_ERROR";
+const GENERIC_ERROR_CODE: &str = "BUNDLE_ERROR"; // any failure that is not a `FrontendError`
 const ARCHIVE_ROOT: &str = "frontend"; // where the frontend sits in the bundle
 const ENTRY: &str = "frontend/index.html";
 const SOURCE_MAP_SUFFIX: &str = ".map"; // never shipped: it only helps a debugger
+const HIDDEN_PREFIX: char = '.'; // editor and tool litter such as .DS_Store and .vite/
 
 /// What `--format json` prints on success.
 #[derive(Serialize)]
@@ -59,9 +59,15 @@ pub struct Collected {
     pub contents: Vec<Vec<u8>>,
 }
 
-/// Walk a build directory and apply the node's frontend rules to it, so a bad
-/// build fails here, before the wasm build, with the code the node would use.
+/// Walk a build directory and check it, so a bad build fails here, before the
+/// wasm build, with the code `--check-frontend` would give.
 pub fn collect(dir: &Path) -> Result<Collected> {
+    if !dir.exists() {
+        bail!("frontend directory {} does not exist", dir.display());
+    }
+    if !dir.is_dir() {
+        bail!("frontend directory {} is not a directory", dir.display());
+    }
     let mut found = Vec::new();
     walk(dir, ARCHIVE_ROOT, &mut found)?;
     found.sort_by(|a, b| a.1.cmp(&b.1));
@@ -94,12 +100,15 @@ fn is_html(path: &str) -> bool {
         .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("html"))
 }
 
-/// Every regular file under `dir` as (source, archive path). A symlink could
-/// point outside the build, so it is refused rather than followed.
+/// Every regular file under `dir` as (source, archive path), dot-entries aside.
+/// A symlink could point outside the build, so it is refused rather than followed.
 fn walk(dir: &Path, rel: &str, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
     for entry in fs::read_dir(dir).wrap_err_with(|| format!("failed to read {}", dir.display()))? {
         let entry = entry?;
         let name = entry.file_name();
+        if name.to_string_lossy().starts_with(HIDDEN_PREFIX) {
+            continue;
+        }
         let rel = format!("{rel}/{}", name.to_string_lossy());
         let kind = entry.file_type()?;
         if kind.is_symlink() || name.to_str().is_none() {
@@ -114,7 +123,7 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
     Ok(())
 }
 
-/// Open an `.mpk` and run the node's frontend checks over its manifest and every file's bytes.
+/// Open an `.mpk`, verify its signature, then check the frontend's manifest entries and every file's bytes.
 pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
     let file = File::open(mpk).wrap_err_with(|| format!("failed to open {mpk}"))?;
     let mut archive = tar::Archive::new(GzDecoder::new(file));
@@ -132,8 +141,13 @@ pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
             continue;
         }
         // One byte past the cap, so an oversized file fails its size check.
+        let cap = if is_manifest {
+            MAX_MANIFEST_BYTES
+        } else {
+            MAX_FRONTEND_BYTES
+        };
         let mut bytes = Vec::new();
-        entry.take(MAX_FRONTEND_BYTES + 1).read_to_end(&mut bytes)?;
+        entry.take(cap + 1).read_to_end(&mut bytes)?;
         if is_manifest {
             manifest = Some(bytes);
         } else {
@@ -142,8 +156,11 @@ pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
     }
 
     let manifest = manifest.ok_or_else(|| eyre!("{mpk} has no manifest.json"))?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest).wrap_err("manifest.json is not valid JSON")?;
+    verify_manifest_signature(&manifest).wrap_err("the manifest signature does not verify")?;
     let manifest: BundleManifest =
-        serde_json::from_slice(&manifest).wrap_err("manifest.json is not a bundle manifest")?;
+        serde_json::from_value(manifest).wrap_err("manifest.json is not a bundle manifest")?;
     let Some(frontend) = manifest.frontend else {
         bail!("the manifest declares no frontend");
     };
@@ -152,7 +169,7 @@ pub fn check_mpk(mpk: &Utf8Path) -> Result<FrontendSummary> {
     for file in &frontend.files {
         let bytes = files
             .get(&file.path)
-            .ok_or_else(|| eyre!("'{}' is in the manifest but not in the archive", file.path))?;
+            .ok_or_else(|| FrontendError::MissingFile(file.path.clone()))?;
         verify_frontend_file(file, bytes)?;
         if is_html(&file.path) {
             check_frontend_html(&file.path, bytes)?;
