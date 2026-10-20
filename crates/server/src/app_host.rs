@@ -70,16 +70,18 @@ fn decode_label(label: &str) -> Option<ApplicationId> {
 #[derive(Clone, Debug)]
 pub(crate) struct AppOrigins {
     base_domain: String,
+    port: Option<u16>,
 }
 
 impl AppOrigins {
     pub(crate) fn new(apps: &AppsConfig) -> Self {
         Self {
             base_domain: apps.base_domain.to_ascii_lowercase(),
+            port: apps.port,
         }
     }
 
-    /// Whether `origin` is `http(s)://{label}.{base_domain}`.
+    /// Whether `origin` is `http(s)://{label}.{base_domain}`, or any page on the apps port.
     pub(crate) fn is_app_origin(&self, origin: &str) -> bool {
         let Some((scheme, rest)) = origin.split_once("://") else {
             return false;
@@ -87,10 +89,19 @@ impl AppOrigins {
         let Ok(authority) = rest.parse::<Authority>() else {
             return false;
         };
+        // A browser omits the scheme's default port from `Origin`.
+        let default_port = if scheme.eq_ignore_ascii_case("https") {
+            443
+        } else {
+            80
+        };
         ["http", "https"]
             .iter()
             .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
-            && self.app_at(authority.host()).is_some()
+            && (self.app_at(authority.host()).is_some()
+                || self
+                    .port
+                    .is_some_and(|port| authority.port_u16().unwrap_or(default_port) == port))
     }
 
     /// The app whose host is exactly `{label}.{base_domain}`.
@@ -107,13 +118,20 @@ impl AppHosts {
         self.origins.app_at(host.parse::<Authority>().ok()?.host())
     }
 
-    async fn respond(&self, app: &ApplicationId, request: &Parts) -> Response {
+    /// Answers `path`, relative to the app's root; `prefix` is where that root
+    /// sits on the host, for redirects.
+    async fn respond(
+        &self,
+        app: &ApplicationId,
+        request: &Parts,
+        path: &str,
+        prefix: &str,
+    ) -> Response {
         if !matches!(request.method, Method::GET | Method::HEAD) {
             return status(StatusCode::NOT_FOUND);
         }
-        let path = request.uri.path();
         if path == "/" {
-            return self.redirect_to_current(app, request.uri.query());
+            return self.redirect_to_current(app, request.uri.query(), prefix);
         }
         let Some(rest_of_path) = path.strip_prefix('/') else {
             return status(StatusCode::NOT_FOUND);
@@ -131,7 +149,7 @@ impl AppHosts {
             }
         };
         let Some(rest) = rest else {
-            return redirect(&format!("/{version}/"));
+            return redirect(&format!("{prefix}/{version}/"));
         };
         let wanted = if rest.is_empty() {
             index.entry.to_string()
@@ -168,7 +186,12 @@ impl AppHosts {
         response
     }
 
-    fn redirect_to_current(&self, app: &ApplicationId, query: Option<&str>) -> Response {
+    fn redirect_to_current(
+        &self,
+        app: &ApplicationId,
+        query: Option<&str>,
+        prefix: &str,
+    ) -> Response {
         // A namespace's release is not recorded against the app, so it names nothing here.
         let names_namespace = query.is_some_and(|q| {
             q.split('&')
@@ -176,7 +199,7 @@ impl AppHosts {
         });
         let current = self.node_client.get_application(app).ok().flatten();
         match current.and_then(|row| row.version) {
-            Some(version) if !names_namespace => redirect(&format!("/{version}/")),
+            Some(version) if !names_namespace => redirect(&format!("{prefix}/{version}/")),
             _ => status(StatusCode::NOT_FOUND),
         }
     }
@@ -213,7 +236,21 @@ pub(crate) async fn serve_app_hosts(
         return next.run(request).await;
     };
     let (parts, _body) = request.into_parts();
-    hosts.respond(&app, &parts).await
+    hosts.respond(&app, &parts, parts.uri.path(), "").await
+}
+
+/// The apps port: `/{label}/{version}/{path}`, and nothing else.
+pub(crate) async fn serve_apps_port(State(hosts): State<AppHosts>, request: Request) -> Response {
+    let (parts, _body) = request.into_parts();
+    let rest = parts.uri.path().strip_prefix('/').unwrap_or_default();
+    let (label, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    let Some(app) = decode_label(label) else {
+        return status(StatusCode::NOT_FOUND);
+    };
+    let prefix = format!("/{label}");
+    hosts
+        .respond(&app, &parts, &format!("/{tail}"), &prefix)
+        .await
 }
 
 fn status(code: StatusCode) -> Response {
@@ -287,7 +324,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        decode_label, encode_label, serve_app_hosts, AppHosts, AppOrigins, ApplicationId, BASE32,
+        decode_label, encode_label, serve_app_hosts, serve_apps_port, AppHosts, AppOrigins,
+        ApplicationId, BASE32,
     };
     use crate::config::AppsConfig;
     use crate::test_support::{stub_node_manager, test_node_client};
@@ -298,6 +336,7 @@ mod tests {
 
     struct Fixture {
         router: Router,
+        port_router: Router,
         node_client: calimero_node_primitives::client::NodeClient,
         store: Store,
         blob_dir: TempDir,
@@ -394,14 +433,19 @@ mod tests {
             node_client: node_client.clone(),
             origins: AppOrigins::new(&AppsConfig {
                 base_domain: BASE.to_owned(),
+                ..AppsConfig::default()
             }),
         };
+        let port_router = Router::new()
+            .fallback(serve_apps_port)
+            .with_state(hosts.clone());
         let router = Router::new()
             .route("/{*rest}", any(|| async { "normal router" }))
             .route("/", any(|| async { "normal router" }))
             .layer(from_fn_with_state(hosts, serve_app_hosts));
         Fixture {
             router,
+            port_router,
             node_client,
             store,
             blob_dir,
@@ -657,6 +701,73 @@ mod tests {
         assert!(!body.contains(&b'X'));
     }
 
+    async fn on_port(f: &Fixture, method: Method, uri: &str) -> (Response, Vec<u8>) {
+        send(&f.port_router, method, "127.0.0.1:2429", uri, &[]).await
+    }
+
+    #[actix::test]
+    async fn the_apps_port_serves_each_apps_files_under_its_label() {
+        let f = fixture().await;
+        let label = encode_label(&ApplicationId::from(APP));
+
+        let (page, html) = on_port(&f, Method::GET, &format!("/{label}/1.0.0/")).await;
+        let (_, js) = on_port(&f, Method::GET, &format!("/{label}/2.0.0/app.js")).await;
+        let (head, _) = on_port(&f, Method::HEAD, &format!("/{label}/1.0.0/app.js")).await;
+
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!((html, js), (b"<p>v1</p>".to_vec(), b"v2();".to_vec()));
+        assert_hardened(&page);
+        assert_eq!(header_of(&head, "content-length"), "5");
+    }
+
+    #[actix::test]
+    async fn the_apps_port_redirects_within_the_label() {
+        let f = fixture().await;
+        let label = encode_label(&ApplicationId::from(APP));
+
+        for (uri, to) in [
+            (format!("/{label}"), format!("/{label}/2.0.0/")),
+            (format!("/{label}/"), format!("/{label}/2.0.0/")),
+            (format!("/{label}/1.0.0"), format!("/{label}/1.0.0/")),
+        ] {
+            let (response, _) = on_port(&f, Method::GET, &uri).await;
+            assert_eq!(response.status(), StatusCode::FOUND, "{uri}");
+            assert_eq!(header_of(&response, "location"), to, "{uri}");
+            assert_hardened(&response);
+        }
+    }
+
+    #[actix::test]
+    async fn the_apps_port_serves_nothing_else() {
+        let f = fixture().await;
+        let label = encode_label(&ApplicationId::from(APP));
+        let unknown = encode_label(&ApplicationId::from([9; 32]));
+        let paths = [
+            "/".to_owned(),
+            "/admin-dashboard".to_owned(),
+            "/admin-api/applications".to_owned(),
+            "/auth/login".to_owned(),
+            "/jsonrpc".to_owned(),
+            "/1.0.0/app.js".to_owned(),
+            format!("/{}/1.0.0/", non_canonical(&label)),
+            format!("/{unknown}/1.0.0/"),
+            format!("/{label}/9.9.9/"),
+            format!("/{label}/1.0.0/../2.0.0/app.js"),
+            format!("/{label}/1.0.0/%2e%2e/2.0.0/app.js"),
+        ];
+
+        for path in paths {
+            for method in [Method::GET, Method::POST] {
+                let (response, body) = on_port(&f, method.clone(), &path).await;
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+                assert!(body.is_empty(), "{path}");
+                assert_hardened(&response);
+            }
+        }
+        let (post, _) = on_port(&f, Method::POST, &format!("/{label}/1.0.0/app.js")).await;
+        assert_eq!(post.status(), StatusCode::NOT_FOUND);
+    }
+
     fn non_canonical(label: &str) -> String {
         let (head, last) = label.split_at(label.len() - 1);
         let next = BASE32[BASE32
@@ -679,12 +790,17 @@ mod tests {
     #[test]
     fn only_a_canonical_label_under_the_base_domain_is_an_app_origin() {
         let label = encode_label(&ApplicationId::from(APP));
-        let origins = AppOrigins::new(&AppsConfig::default());
-        let base = &AppsConfig::default().base_domain;
+        let apps = AppsConfig {
+            port: Some(2429),
+            ..AppsConfig::default()
+        };
+        let origins = AppOrigins::new(&apps);
+        let base = &apps.base_domain;
 
         for origin in [
             format!("http://{label}.{base}:2428"),
             format!("HTTPS://{}.{base}", label.to_ascii_uppercase()),
+            "http://203.0.113.9:2429".to_owned(),
         ] {
             assert!(origins.is_app_origin(&origin), "{origin}");
         }
@@ -693,6 +809,7 @@ mod tests {
             format!("ftp://{label}.{base}"),
             format!("http://{label}.evil.example"),
             format!("http://{label}{base}"),
+            "http://203.0.113.9:2430".to_owned(),
             "http://localhost:5173".to_owned(),
             "null".to_owned(),
         ] {

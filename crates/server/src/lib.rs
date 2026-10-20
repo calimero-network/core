@@ -358,6 +358,15 @@ pub async fn start(
         node_client: node_client.clone(),
         origins: app_host::AppOrigins::new(&config.apps),
     });
+    let apps_port = match (app_hosts.clone(), config.apps.port) {
+        (Some(hosts), Some(port)) => {
+            let router = Router::new()
+                .fallback(app_host::serve_apps_port)
+                .with_state(hosts);
+            Some((router, bind_apps_port(&listeners, port).await?))
+        }
+        _ => None,
+    };
     let app =
         ServiceBuilder::new()
             .option_layer(app_hosts.map(|hosts| {
@@ -399,11 +408,43 @@ pub async fn start(
         }));
     }
 
+    if let Some((router, listeners)) = apps_port {
+        for listener in listeners {
+            let router = router.clone();
+            let shutdown = shutdown.clone();
+            drop(set.spawn(async move {
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                    .await
+            }));
+        }
+    }
+
     while let Some(result) = set.join_next().await {
         result??;
     }
 
     Ok(())
+}
+
+/// Binds `port` on each address the server listens on; one that cannot bind is
+/// skipped, but at least one must.
+async fn bind_apps_port(listeners: &[TcpListener], port: u16) -> EyreResult<Vec<TcpListener>> {
+    let mut bound = Vec::new();
+    for listener in listeners {
+        let addr = SocketAddr::from((listener.local_addr()?.ip(), port));
+        match TcpListener::bind(addr).await {
+            Ok(listener) => bound.push(listener),
+            Err(err) => warn!(%addr, %err, "cannot serve apps on this address"),
+        }
+    }
+    if bound.is_empty() {
+        bail!("cannot bind the apps port {port} on any listen address");
+    }
+    for listener in &bound {
+        info!(addr = %listener.local_addr()?, "Serving apps on their own port");
+    }
+    Ok(bound)
 }
 
 /// CORS layer applied to every mounted route.
@@ -853,6 +894,122 @@ mod cors_tests {
             .await
             .expect("read the response");
         String::from_utf8_lossy(&response).into_owned()
+    }
+
+    /// `GET path` from the node on `port`, once it accepts connections.
+    async fn get_path(port: u16, path: &str) -> String {
+        let mut attempts = 0;
+        let mut stream = loop {
+            match TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(stream) => break stream,
+                Err(err) if attempts >= 100 => panic!("the node never accepted: {err}"),
+                Err(_) => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        };
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("send the request");
+        let mut response = Vec::new();
+        let _read = stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read the response");
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    fn free_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .expect("a free port")
+            .local_addr()
+            .expect("its address")
+            .port()
+    }
+
+    /// A node with admin on `port` and apps on `apps_port`, sealed or not.
+    async fn start_with_apps_port(
+        port: u16,
+        apps_port: u16,
+        sealed: bool,
+    ) -> (CancellationToken, tokio::task::JoinHandle<eyre::Result<()>>) {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let (state, _blobs) = admin_state(&store).await;
+        let mut config = ServerConfig::new(
+            vec![format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()],
+            Keypair::generate_ed25519(),
+            Some(AdminConfig::new(true, false)),
+            None,
+            None,
+            None,
+        );
+        config.sealed = crate::config::SealedConfig::new(sealed);
+        config.apps.port = Some(apps_port);
+        let shutdown = CancellationToken::new();
+        let server = actix::spawn(start(
+            config,
+            state.ctx_client.clone(),
+            state.node_client.clone(),
+            store,
+            Registry::default(),
+            Arc::new(NodeReadiness::new()),
+            shutdown.clone(),
+            #[cfg(feature = "mock-attestation")]
+            false,
+        ));
+        (shutdown, server)
+    }
+
+    #[actix::test]
+    async fn the_apps_port_answers_app_paths_only() {
+        let (port, apps_port) = (free_port(), free_port());
+        let (shutdown, server) = start_with_apps_port(port, apps_port, false).await;
+
+        let admin = get_path(apps_port, "/admin-api/applications").await;
+        let auth = get_path(apps_port, "/auth/providers").await;
+        let health = get_path(apps_port, "/health").await;
+        let main = get_path(port, "/health").await;
+
+        shutdown.cancel();
+        server
+            .await
+            .expect("the server task ends")
+            .expect("the server stops cleanly");
+        for response in [&admin, &auth, &health] {
+            assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+            assert!(
+                response
+                    .to_ascii_lowercase()
+                    .contains("content-security-policy"),
+                "{response}"
+            );
+        }
+        assert!(
+            !main
+                .to_ascii_lowercase()
+                .contains("content-security-policy"),
+            "{main}"
+        );
+    }
+
+    #[actix::test]
+    async fn a_node_requiring_sealed_requests_does_not_open_the_apps_port() {
+        let (port, apps_port) = (free_port(), free_port());
+        let (shutdown, server) = start_with_apps_port(port, apps_port, true).await;
+
+        let _up = get_path(port, "/health").await;
+        let apps = TcpStream::connect(("127.0.0.1", apps_port)).await;
+
+        shutdown.cancel();
+        server
+            .await
+            .expect("the server task ends")
+            .expect("the server stops cleanly");
+        assert!(apps.is_err(), "the apps port must not be bound");
     }
 
     #[actix::test]

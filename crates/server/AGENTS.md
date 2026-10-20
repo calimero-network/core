@@ -504,7 +504,8 @@ request re-stamps it.
   Keep it that way: never route an app host to a handler that is not a frontend file.
   Under `sealed.required` the layer is not mounted at all, so an app host cannot get around the envelope.
 - An app's page runs on `{label}.{base_domain}`, which is a loopback name for `base_domain = localhost`, so an app is third-party code that must not count as a loopback page.
-  `app_host::AppOrigins::is_app_origin` names such an origin: `OriginGuard::admits` never treats it as a loopback page, and `origin_guard::refuse_app_origins` answers `403` to it on every route in every auth mode.
+  `app_host::AppOrigins::is_app_origin` names such an origin, and any page on the apps port, which shares one origin for every app: `OriginGuard::admits` never treats it as a loopback page, and `origin_guard::refuse_app_origins` answers `403` to it on every route in every auth mode.
+  Never re-expose the apps port under a loopback name on a different port (a reverse proxy, a port forward): its pages would no longer be recognised as app origins and would pass as loopback pages.
 - In proxy auth mode, `origin_guard::OriginGuard::admits` judges every HTTP request a browser
   sent: one with `Origin` or `Sec-Fetch-Site` (a same-origin `GET` has no `Origin`). Never
   count `Sec-Fetch-Mode` alone: Node's built-in `fetch` sends it on every request, so it would
