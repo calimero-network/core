@@ -132,6 +132,7 @@ A file declares its `Content-Length` from the blob size.
 A blob that is missing or fails its hash in the first chunk answers `500` before any header is sent, and one that fails later breaks the body, never delivering other bytes.
 Every response carries the content security policy from `crates/bundle/AGENTS.md`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
 A node that sets `[server.sealed] required` mounts no app host, because a browser cannot seal a request.
+A page on an app's origin is third-party code, so the node answers it `403` on every route of its own, in every auth mode, and never counts it as a loopback page.
 A file also carries its `Content-Type`, an `ETag` of its blob id (answered with `304` on a match) and `Cache-Control: public, max-age=31536000, immutable`.
 
 `calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.

@@ -10,8 +10,11 @@ use axum::response::Response;
 use calimero_bundle::FRONTEND_ROOT;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use futures_util::{stream, StreamExt as _};
 use tracing::error;
+
+use crate::config::AppsConfig;
 
 const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"; // see crates/bundle/AGENTS.md
 const IMMUTABLE: &str = "public, max-age=31536000, immutable"; // a file's URL names its release
@@ -21,7 +24,7 @@ const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
 #[derive(Clone)]
 pub(crate) struct AppHosts {
     pub(crate) node_client: NodeClient,
-    pub(crate) base_domain: String,
+    pub(crate) origins: AppOrigins,
 }
 
 /// An app's DNS label: its id as unpadded lowercase base32.
@@ -63,18 +66,45 @@ fn decode_label(label: &str) -> Option<ApplicationId> {
     (encode_label(&id) == label).then_some(id)
 }
 
+/// The browser origins an app's page runs from.
+#[derive(Clone, Debug)]
+pub(crate) struct AppOrigins {
+    base_domain: String,
+}
+
+impl AppOrigins {
+    pub(crate) fn new(apps: &AppsConfig) -> Self {
+        Self {
+            base_domain: apps.base_domain.to_ascii_lowercase(),
+        }
+    }
+
+    /// Whether `origin` is `http(s)://{label}.{base_domain}`.
+    pub(crate) fn is_app_origin(&self, origin: &str) -> bool {
+        let Some((scheme, rest)) = origin.split_once("://") else {
+            return false;
+        };
+        let Ok(authority) = rest.parse::<Authority>() else {
+            return false;
+        };
+        ["http", "https"]
+            .iter()
+            .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+            && self.app_at(authority.host()).is_some()
+    }
+
+    /// The app whose host is exactly `{label}.{base_domain}`.
+    fn app_at(&self, host: &str) -> Option<ApplicationId> {
+        let host = host.to_ascii_lowercase();
+        decode_label(host.strip_suffix(&self.base_domain)?.strip_suffix('.')?)
+    }
+}
+
 impl AppHosts {
     /// The app a `Host` header names: exactly `{label}.{base_domain}`.
     fn app_for(&self, headers: &HeaderMap) -> Option<ApplicationId> {
         let host = headers.get(header::HOST)?.to_str().ok()?;
-        let host = host.parse::<Authority>().ok()?.host().to_ascii_lowercase();
-        let label = host.strip_suffix(&self.base_domain)?.strip_suffix('.')?;
-        decode_label(label)
-    }
-
-    fn current_version(&self, app: &ApplicationId) -> Option<String> {
-        let row = self.node_client.get_application(app).ok()??;
-        Some(row.version?.to_string())
+        self.origins.app_at(host.parse::<Authority>().ok()?.host())
     }
 
     async fn respond(&self, app: &ApplicationId, request: &Parts) -> Response {
@@ -144,7 +174,8 @@ impl AppHosts {
             q.split('&')
                 .any(|p| p.split('=').next() == Some("namespace"))
         });
-        match self.current_version(app) {
+        let current = self.node_client.get_application(app).ok().flatten();
+        match current.and_then(|row| row.version) {
             Some(version) if !names_namespace => redirect(&format!("/{version}/")),
             _ => status(StatusCode::NOT_FOUND),
         }
@@ -152,29 +183,21 @@ impl AppHosts {
 
     /// Streams the blob, reading its first chunk first so a blob that is gone
     /// or fails its hash is a 500 before any header is sent.
-    async fn open_blob(
-        &self,
-        blob_id: calimero_primitives::blobs::BlobId,
-    ) -> Result<(Body, u64), StatusCode> {
+    async fn open_blob(&self, blob_id: BlobId) -> Result<(Body, u64), StatusCode> {
         let failed = |why: &dyn core::fmt::Display| {
             error!(%blob_id, %why, "refusing to serve a frontend blob");
             StatusCode::INTERNAL_SERVER_ERROR
         };
-        let size = match self.node_client.blob_size(&blob_id) {
-            Ok(Some(size)) => size,
-            Ok(None) => return Err(failed(&"blob is missing")),
-            Err(err) => return Err(failed(&err)),
-        };
-        let mut blob = match self.node_client.get_blob(&blob_id, None).await {
-            Ok(Some(blob)) => blob,
-            Ok(None) => return Err(failed(&"blob is missing")),
-            Err(err) => return Err(failed(&err)),
-        };
-        let first = match blob.next().await {
-            Some(Ok(chunk)) => Some(chunk),
-            Some(Err(err)) => return Err(failed(&err)),
-            None => None,
-        };
+        let size = self
+            .node_client
+            .blob_size(&blob_id)
+            .map_err(|e| failed(&e))?;
+        let size = size.ok_or_else(|| failed(&"blob is missing"))?;
+        let blob = self.node_client.get_blob(&blob_id, None).await;
+        let mut blob = blob
+            .map_err(|e| failed(&e))?
+            .ok_or_else(|| failed(&"blob is missing"))?;
+        let first = blob.next().await.transpose().map_err(|e| failed(&e))?;
         let chunks = stream::iter(first.map(Ok)).chain(blob);
         let chunks = chunks.map(|chunk| chunk.map(Bytes::from).map_err(std::io::Error::other));
         Ok((Body::from_stream(chunks), size))
@@ -263,7 +286,10 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    use super::{decode_label, encode_label, serve_app_hosts, AppHosts, ApplicationId, BASE32};
+    use super::{
+        decode_label, encode_label, serve_app_hosts, AppHosts, AppOrigins, ApplicationId, BASE32,
+    };
+    use crate::config::AppsConfig;
     use crate::test_support::{stub_node_manager, test_node_client};
 
     const BASE: &str = "localhost";
@@ -366,7 +392,9 @@ mod tests {
 
         let hosts = AppHosts {
             node_client: node_client.clone(),
-            base_domain: BASE.to_owned(),
+            origins: AppOrigins::new(&AppsConfig {
+                base_domain: BASE.to_owned(),
+            }),
         };
         let router = Router::new()
             .route("/{*rest}", any(|| async { "normal router" }))
@@ -646,6 +674,30 @@ mod tests {
 
         assert_eq!(decode_label(&label), Some(id));
         assert_eq!(decode_label(&non_canonical(&label)), None);
+    }
+
+    #[test]
+    fn only_a_canonical_label_under_the_base_domain_is_an_app_origin() {
+        let label = encode_label(&ApplicationId::from(APP));
+        let origins = AppOrigins::new(&AppsConfig::default());
+        let base = &AppsConfig::default().base_domain;
+
+        for origin in [
+            format!("http://{label}.{base}:2428"),
+            format!("HTTPS://{}.{base}", label.to_ascii_uppercase()),
+        ] {
+            assert!(origins.is_app_origin(&origin), "{origin}");
+        }
+        for origin in [
+            format!("http://{}.{base}", non_canonical(&label)),
+            format!("ftp://{label}.{base}"),
+            format!("http://{label}.evil.example"),
+            format!("http://{label}{base}"),
+            "http://localhost:5173".to_owned(),
+            "null".to_owned(),
+        ] {
+            assert!(!origins.is_app_origin(&origin), "{origin}");
+        }
     }
 
     #[actix::test]

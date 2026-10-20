@@ -356,7 +356,7 @@ pub async fn start(
     // be the one way around the envelope: leave it unmounted.
     let app_hosts = (!config.sealed.required).then(|| app_host::AppHosts {
         node_client: node_client.clone(),
-        base_domain: config.apps.base_domain.to_ascii_lowercase(),
+        origins: app_host::AppOrigins::new(&config.apps),
     });
     let app =
         ServiceBuilder::new()
@@ -364,6 +364,10 @@ pub async fn start(
                 axum::middleware::from_fn_with_state(hosts, app_host::serve_app_hosts)
             }))
             .layer(build_cors_layer(&config.cors, origin_guard.as_ref()))
+            .layer(axum::middleware::from_fn_with_state(
+                app_host::AppOrigins::new(&config.apps),
+                origin_guard::refuse_app_origins,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 origin_guard,
                 origin_guard::refuse_foreign_origins,
