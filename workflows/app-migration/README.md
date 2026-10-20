@@ -36,7 +36,7 @@ and the namespace-cascade additions designed in
 | `12-scenario-field-remove-archive.yml` | **Remove with archive** — v2 drops `legacy_note` but stashes the value in `archived_legacy: UnorderedMap<String, String>` under key `"latest"`. Companion to `03` (which discards). | Yes |
 | `13-scenario-invariant-reshuffle.yml` | **Invariant reshuffle** — v1 has denormalized `global_count` + `per_item_counts` (invariant easy to violate via two independent setters). v2 funnels both updates through a single `record()` method; migrate re-derives `total` from the per-item map (does NOT trust v1's `global_count`). | Yes |
 
-### Collection-coverage + engine-feature workflows (14–39)
+### Collection-coverage + engine-feature workflows (14–42)
 
 | File | What it covers |
 | --- | --- |
@@ -61,6 +61,9 @@ and the namespace-cascade additions designed in
 | `37-stranded-resync.yml` | Stranded context recovers via resync — an intermediate upgrade-ladder rung's blob is deleted on every holder, the behind member hits `NoMigrationPath`, and `resync_context force=true` adopts a peer's full-state snapshot (2-node). |
 | `38-namespace-invite-join-regression.yml` | Namespace invite + join regression guard for the `MemberJoinedAt` invitation-expiry wire change (2-node). |
 | `39-missing-abi-refused.yml` | Negative path: an upgrade whose target build has no embedded ABI is REFUSED (missing migration evidence) rather than silently proceeding code-only (1-node, core#3285). |
+| `41-reader-sees-post-upgrade-writes.yml` | A member whose first call after a cascade is a read sees what was written on the new release: the switch replays the deltas the node held back before serving the read (2-node). |
+| `42-activate-upgrade-on-an-idle-node.yml` | A node that never ran the app switches on `POST /groups/{namespace}/upgrade/activate`: the held post-upgrade write is replayed so its first read returns it, a repeat activation moves nothing, a wrong expected application or a stale expected version is 409 and an unknown namespace 404 (2-node). |
+| `43-retarget-before-activate.yml` | The admin retargets the namespace from v2 to v3 (same application id) after a member read v2: the member's activation naming v2 is 409 naming the version, and activating the re-read target v3 succeeds (2-node). |
 
 ### Out of scope
 

@@ -9,10 +9,14 @@
 
 use std::sync::Arc;
 
+use calimero_account::AccountId;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::messages::ContextMessage;
+use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::test_fixtures::sample_meta_with_admin;
+use calimero_governance_store::{register_context_in_group, MetaRepository};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_node_primitives::client::{BlobManager, NodeClient, SyncClient};
 use calimero_primitives::context::ContextId;
@@ -149,4 +153,21 @@ pub(crate) async fn context_client_over_with_manager(
 /// Build a standalone `DeltaStore` over a fresh in-memory store.
 pub(crate) async fn build_delta_store() -> (DeltaStore, tempfile::TempDir, KeepAlive) {
     delta_store_over(Store::new(Arc::new(InMemoryDB::owned()))).await
+}
+
+/// Seat `context` in a group that targets `target` while the context still runs `loaded`.
+pub(crate) fn seed_context_release(
+    store: &Store,
+    context: &ContextId,
+    loaded: [u8; 32],
+    target: [u8; 32],
+) {
+    let group = ContextGroupId::from([0x7A; 32]);
+    let mut meta = sample_meta_with_admin(AccountId::from([0xEE; 32]));
+    meta.target.bytecode_id = target;
+    MetaRepository::new(store)
+        .save(&group, &meta)
+        .expect("save group meta");
+    register_context_in_group(store, &group, context).expect("register the context");
+    calimero_context::activation::record_activation(store, context, loaded);
 }

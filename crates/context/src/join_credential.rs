@@ -228,7 +228,8 @@ pub fn presented(
 /// The same account [`build`] certifies, resolved the same way and in the same
 /// order — an imported certificate first, the node's account root otherwise —
 /// but without minting a device. A root's id is derived from its founder
-/// (`calimero_account::founded_namespace_id`), and the id has to exist before
+/// (`calimero_account::founded_namespace_id`, or `account_namespace_id` for the
+/// account namespace), and the id has to exist before
 /// anything is enrolled under it, so the founder has to be known first.
 ///
 /// `create_group` checks the credential it later builds names this same

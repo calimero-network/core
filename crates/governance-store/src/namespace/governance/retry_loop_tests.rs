@@ -113,7 +113,8 @@ impl<'s> Probe<'s> {
     fn retry(&self, depth: u8) -> EyreResult<Option<crate::DivergenceReport>> {
         NamespaceGovernance::new(self.store, NS.into())
             .with_apply_auth(&[], self)
-            .retry_encrypted_ops_for_group_at_depth(NS, depth)
+            .replay(NS, depth)
+            .map(|replay| replay.divergence)
     }
 }
 
@@ -252,24 +253,21 @@ fn a_round_that_settles_no_parked_op_is_the_last() {
 }
 
 #[test]
-fn a_reentrant_retry_runs_one_round_and_does_not_rebuild() {
-    let reference = keyed_after_parking(crate::test_fixtures::test_store());
-    let one_round = Probe::new(&reference.store);
-    let _ = one_round.retry(0).expect("retry");
-    assert_eq!(
-        one_round.reconciles(),
-        1,
-        "depth zero rebuilds what it applied"
-    );
-
+fn a_reentrant_retry_joins_the_running_one_and_does_not_rebuild() {
     let replica = keyed_after_parking(crate::test_fixtures::test_store());
-    // Still undecided after the first round, so the loop would go on if it could.
-    let _ = park_stand_ins(&replica.store, 1);
     let probe = Probe::new(&replica.store);
     let _ = probe.retry(1).expect("retry");
 
-    assert_eq!(probe.forgets(), one_round.forgets(), "one round");
+    assert_eq!(probe.forgets(), 0, "no round of its own");
     assert_eq!(probe.reconciles(), 0, "no rebuild below depth zero");
+    assert_eq!(
+        probe.ledger().undecided_parked().unwrap(),
+        3,
+        "left to the outer replay"
+    );
+
+    let _ = probe.retry(0).expect("retry");
+    assert_eq!(probe.reconciles(), 1, "depth zero rebuilds what it applied");
 }
 
 #[test]
@@ -289,8 +287,7 @@ fn a_failed_round_after_a_productive_one_still_rebuilds_and_returns_its_error() 
         let err = probe.retry(0).expect_err("the second round fails");
 
         assert!(
-            err.to_string()
-                .starts_with("collect_retry_candidates_for_group"),
+            err.to_string().ends_with("injected group read failure"),
             "{err:#} (voided: {voided:?})"
         );
         assert_eq!(

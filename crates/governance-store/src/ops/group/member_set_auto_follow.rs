@@ -22,11 +22,8 @@ pub(crate) fn apply(
     if !ctx.permissions().is_admin(signer)? && !ctx.signer_is(target)? {
         bail!(MembershipError::AutoFollowAuthFailed);
     }
-    // Target must already be a group member.
-    if MembershipRepository::new(store)
-        .role_of(group_id, target)?
-        .is_none()
-    {
+    // Target must already be a group member at the op's cut.
+    if ctx.direct_role(target)?.is_none() {
         bail!(MembershipError::NotMember {
             group_id: group_id.to_string(),
             identity: target.to_string(),
@@ -36,7 +33,12 @@ pub(crate) fn apply(
         contexts: *auto_follow_contexts,
         subgroups: *auto_follow_subgroups,
     };
-    MembershipRepository::new(store).set_auto_follow(group_id, target, flags)?;
+    // A target removed concurrently keeps no row to set them on.
+    let membership = MembershipRepository::new(store);
+    if membership.role_of(group_id, target)?.is_none() {
+        return Ok(());
+    }
+    membership.set_auto_follow(group_id, target, flags)?;
     ctx.queue_event(crate::op_events::OpEvent::AutoFollowSet {
         group_id: group_id.to_bytes(),
         member: *target,

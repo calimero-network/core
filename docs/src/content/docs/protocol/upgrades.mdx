@@ -552,6 +552,7 @@ The cascade is driven and observed through the admin API
 | `POST /groups/:group_id/upgrade` | trigger the upgrade (set `cascade: true` for the whole subtree) |
 | `GET /groups/:group_id/upgrade/status` | signed-group upgrade status |
 | `POST /groups/:group_id/upgrade/retry` | re-drive a stalled upgrade |
+| `POST /groups/:namespace_id/upgrade/activate` | switch this node's contexts to the stored target now and replay the held deltas (`meroctl group upgrade activate`); every release a context steps through, each upgrade rung and the target, must already be installed |
 | `GET /groups/:namespace_id/cascade-status` | per-subgroup cascade rollout rollup |
 | `GET /groups/:namespace_id/migration-status` | cohort migration rollup (incl. `authored_remaining`), admin-only |
 | `POST /groups/:namespace_id/migration/abort` | admin stop of a rolling migration |
@@ -561,6 +562,13 @@ marker, cascading to every descendant carrying the same pending migration. It is
 forward "stop" (un-migrated contexts stop switching), **not** a rewind of any context
 that already migrated. Operationally these are reachable via
 [meroctl](/operate/meroctl/) and the admin surface.
+
+`activate` answers `200` with `targetApplicationId`, `switchedContexts`, `replayedDeltas` and `failedContexts`.
+One context failing does not stop the others: each failure is listed as `{contextId, error, retryable}`, and the list is empty when every context finished.
+The node itself retries a failure of its own (a store read, a dropped message) a few times before listing it with `retryable: true`.
+`retryable: false` means the switch itself failed (a migration or a load), which another call repeats until the release or the state changes.
+Calling `activate` again retries only what failed, since contexts already on the target switch nothing.
+`meroctl group upgrade activate` exits non-zero when `failedContexts` is not empty.
 
 ### Identity-gated data: owner-driven follow-up
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use bytes::Bytes;
 use calimero_context_client::messages::{ExecuteError, SharedRotationRefusal};
@@ -33,7 +33,9 @@ use crate::admin::handlers::context::{
     leave_context, perform_intent, presence_intent, query_context, resync_context, sync,
     update_context_application,
 };
-use crate::admin::handlers::identity::{generate_context_identity, get_node_identity};
+use crate::admin::handlers::identity::{
+    acknowledge_revoked_from, generate_context_identity, get_node_identity,
+};
 use crate::admin::handlers::network;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
 use crate::admin::handlers::peers::get_peers_count_handler;
@@ -259,6 +261,10 @@ pub(crate) fn setup(
             post(generate_context_identity::handler),
         )
         .route("/identity", get(get_node_identity::handler))
+        .route(
+            "/identity/revoked-from",
+            delete(acknowledge_revoked_from::handler),
+        )
         .nest(
             "/contexts/sync",
             Router::new()
@@ -371,6 +377,10 @@ pub(crate) fn setup(
         .route(
             "/groups/{group_id}/upgrade/retry",
             post(groups::retry_group_upgrade::handler),
+        )
+        .route(
+            "/groups/{namespace_id}/upgrade/activate",
+            post(groups::activate_group_upgrade::handler),
         )
         .route(
             "/groups/{group_id}/issue-ownership-proof",
@@ -1039,6 +1049,7 @@ fn group_lifecycle_refusal_status(
 
     Some(match err {
         Refusal::LeaveGroupIsNamespace { .. }
+        | Refusal::NotANamespaceRoot { .. }
         | Refusal::InvitationInvalid { .. }
         | Refusal::TeePolicyInvalid { .. }
         | Refusal::OwnershipProofInvalid { .. }
@@ -1049,6 +1060,8 @@ fn group_lifecycle_refusal_status(
         | Refusal::UpgradeAlreadyTargeting { .. }
         | Refusal::UpgradeNoContexts { .. }
         | Refusal::UpgradeNotRetryable { .. }
+        | Refusal::UpgradeTargetMismatch { .. }
+        | Refusal::UpgradeVersionMismatch { .. }
         | Refusal::UpgradeRefused { .. }
         | Refusal::InvitationExpired { .. }
         | Refusal::GroupAlreadyExists { .. }
@@ -1201,7 +1214,8 @@ fn apply_refusal_status(err: &ApplyError) -> Option<StatusCode> {
             MemberJoinedOpenRejection::SignerMismatch { .. }
             | MemberJoinedOpenRejection::WrongNamespace { .. },
         )
-        | ApplyError::NamespaceCreatedRejected(_) => return None,
+        | ApplyError::NamespaceCreatedRejected(_)
+        | ApplyError::RegisteredContextMismatch { .. } => return None,
     })
 }
 
@@ -1533,13 +1547,17 @@ pub fn parse_api_error(err: Report) -> ApiError {
             message: format!("{err:#}"),
         };
     }
-    if let Some(ContextRegistrationError::NotInGroup { .. }) =
-        err.downcast_ref::<ContextRegistrationError>()
-    {
-        return ApiError {
-            status_code: StatusCode::NOT_FOUND,
-            message: format!("{err:#}"),
-        };
+    if let Some(refusal) = err.downcast_ref::<ContextRegistrationError>() {
+        if let Some(status_code) = match refusal {
+            ContextRegistrationError::NotInGroup { .. } => Some(StatusCode::NOT_FOUND),
+            ContextRegistrationError::RegisteredElsewhere { .. } => Some(StatusCode::CONFLICT),
+            ContextRegistrationError::HasRotatedCells { .. } => None,
+        } {
+            return ApiError {
+                status_code,
+                message: format!("{err:#}"),
+            };
+        }
     }
     if let Some(refusal) = err.downcast_ref::<MetaError>() {
         return ApiError {
@@ -2432,12 +2450,36 @@ mod parse_api_error_tests {
                     group_id: group_id(),
                     reason: "is already completed",
                 },
+                ContextError::UpgradeTargetMismatch {
+                    group_id: group_id(),
+                    expected: "app-a".to_owned(),
+                    actual: "app-b".to_owned(),
+                },
+                ContextError::UpgradeVersionMismatch {
+                    group_id: group_id(),
+                    expected: "2.0.0".to_owned(),
+                    actual: "3.0.0".to_owned(),
+                },
             ] {
                 let message = err.to_string();
                 let api = parse_api_error(err.into());
                 assert_eq!(api.status_code, StatusCode::CONFLICT, "{message}");
                 assert_eq!(api.message, message);
             }
+        }
+
+        /// Activating a subgroup rather than its namespace. `400`: the request
+        /// names the wrong group, and the message names the namespace to use.
+        #[test]
+        fn activating_a_subgroup_maps_to_400() {
+            let api = parse_api_error(
+                ContextError::NotANamespaceRoot {
+                    group_id: "ContextGroupId(b2)".to_owned(),
+                    namespace_id: "ContextGroupId(a1)".to_owned(),
+                }
+                .into(),
+            );
+            assert_eq!(api.status_code, StatusCode::BAD_REQUEST);
         }
 
         /// The upgrade gate refusing a target. `409`, with the gate's own message
@@ -3076,6 +3118,19 @@ mod parse_api_error_tests {
             );
             assert_eq!(
                 status(MetaError::HasRegisteredContexts.into()),
+                StatusCode::CONFLICT
+            );
+        }
+
+        #[test]
+        fn a_context_another_group_registered_first_is_409() {
+            assert_eq!(
+                status(
+                    ContextRegistrationError::RegisteredElsewhere {
+                        context_id: "c".to_owned(),
+                    }
+                    .into()
+                ),
                 StatusCode::CONFLICT
             );
         }

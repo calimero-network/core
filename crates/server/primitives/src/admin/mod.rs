@@ -2143,6 +2143,10 @@ pub struct UpgradeGroupApiRequest {
     /// when `false` (default), a missing target ABI refuses the upgrade.
     #[serde(default)]
     pub force_code_only: bool,
+    /// When `true`, the migration is not trialled on this node's contexts before
+    /// the upgrade is published; when `false` (default), a failing trial refuses it.
+    #[serde(default)]
+    pub skip_trial: bool,
 }
 
 impl Validate for UpgradeGroupApiRequest {
@@ -2172,6 +2176,56 @@ pub struct UpgradeGroupApiResponseData {
     /// Contexts whose swap failed on this node; a non-zero value is what
     /// `retry_group_upgrade` picks up.
     pub local_contexts_failed: Option<u32>,
+    /// Contexts this node trialled the migration on before publishing.
+    #[serde(default)]
+    pub contexts_trialled: u32,
+    /// Contexts this node knows of but does not hold, so did not trial.
+    #[serde(default)]
+    pub contexts_not_held: u32,
+}
+
+/// Switch this node's contexts of a namespace to its stored target release.
+/// `expected_application_id` and `expected_version`, when set, must each equal that target.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivateGroupUpgradeApiRequest {
+    #[serde(default)]
+    pub expected_application_id: Option<ApplicationId>,
+    #[serde(default)]
+    pub expected_version: Option<String>,
+}
+
+impl Validate for ActivateGroupUpgradeApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeApiResponse {
+    pub data: ActivateGroupUpgradeApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeApiResponseData {
+    pub target_application_id: ApplicationId,
+    /// Contexts this request moved to the target; `0` when all were current.
+    pub switched_contexts: u32,
+    /// Held deltas replayed into the namespace's contexts.
+    pub replayed_deltas: u32,
+    /// Contexts this request could not finish; calling again retries only these.
+    pub failed_contexts: Vec<ActivateGroupUpgradeFailedContext>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateGroupUpgradeFailedContext {
+    pub context_id: ContextId,
+    pub error: String,
+    /// `false` when the switch itself failed (a migration or load), which a retry repeats.
+    pub retryable: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -5030,9 +5084,16 @@ pub struct NodeIdentityApiResponseData {
     pub account_namespace_id: Option<String>,
 
     /// The account that withdrew this node's device, absent on a node no
-    /// revocation has reached.
+    /// revocation has reached or whose operator has acknowledged it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_from: Option<RevokedFromApiEntry>,
+}
+
+/// Acknowledging the withdrawal carries nothing back.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeRevokedFromApiResponse {
+    pub data: Empty,
 }
 
 /// Which account withdrew this node's device, and which device it was.

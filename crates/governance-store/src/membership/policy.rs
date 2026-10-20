@@ -1,3 +1,4 @@
+use crate::authorizer::ensure_cut_resolvable;
 use crate::MembershipRepository;
 use calimero_account::AccountId;
 use calimero_context_config::types::ContextGroupId;
@@ -5,9 +6,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::super::{
-    read_tee_admission_policy, MembershipError, TeeAdmissionPolicy, TeeAdmissionPolicyRead,
-};
+use super::super::{MembershipError, TeeAdmissionPolicy, TeeAdmissionPolicyRead};
 use super::policy_rules::{
     tcb_status_allowed, validate_tee_attestation_allowlists, MembershipPolicyRejection,
     MembershipPolicyValidationError, TeeAllowlistPolicy, TeeAttestationClaims, TEE_REJECT_MRTD,
@@ -17,6 +16,7 @@ use super::policy_rules::{
 };
 use super::view::GroupMembershipView;
 use crate::metrics::record_membership_policy_rejection;
+use crate::tee::read_tee_admission_policy_at_cut;
 
 /// Membership policy service for governance mutations.
 ///
@@ -79,15 +79,7 @@ impl<'a> MembershipPolicy<'a> {
         {
             return Ok(blocks);
         }
-        if !self
-            .authorizer
-            .can_resolve_cut(&self.group_id, self.parents)
-        {
-            bail!(crate::ApplyError::AuthorityUndecidable {
-                group_id: self.group_id.to_string(),
-                signer: format!("{member}"),
-            });
-        }
+        ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, member)?;
         Ok(self.membership.is_admin(member)? && !self.membership.has_another_admin(member)?)
     }
 
@@ -149,8 +141,13 @@ impl<'a> MembershipPolicy<'a> {
         Ok(())
     }
 
+    /// The TEE admission policy at this policy's cut.
+    pub fn read_tee_admission_policy(&self) -> EyreResult<TeeAdmissionPolicyRead> {
+        read_tee_admission_policy_at_cut(self.store, &self.group_id, self.parents, self.authorizer)
+    }
+
     pub fn read_required_tee_admission_policy(&self) -> EyreResult<TeeAdmissionPolicy> {
-        match read_tee_admission_policy(self.store, &self.group_id)? {
+        match self.read_tee_admission_policy()? {
             TeeAdmissionPolicyRead::Set(policy) => Ok(policy),
             TeeAdmissionPolicyRead::NotSet => bail!(MembershipError::NoTeeAdmissionPolicy),
             TeeAdmissionPolicyRead::Unreadable { undecodable } => {

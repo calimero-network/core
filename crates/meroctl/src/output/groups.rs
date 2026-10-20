@@ -1,19 +1,19 @@
 use calimero_context_config::MemberCapabilities;
 use calimero_server_primitives::admin::{
-    AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
-    CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
-    DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GetTeeAdmissionPolicyApiResponse,
-    GroupInfoApiResponse, JoinContextApiResponse, JoinGroupApiResponse, JoinNamespaceApiResponse,
-    LeaveContextApiResponse, LeaveGroupApiResponse, LeaveNamespaceApiResponse,
-    ListGroupContextsApiResponse, ListGroupMembersApiResponse, ListMemberDevicesApiResponse,
-    ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
-    NamespaceApiResponse, NodeIdentityApiResponse, PairDeviceCompleteApiResponse,
-    PairDeviceInitApiResponse, RemoveGroupMembersApiResponse, ReparentGroupApiResponse,
-    RevokeDeviceApiResponse, SealToAccountApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
-    SetTeeAdmissionPolicyApiResponse, SyncGroupApiResponse, TeeAdmissionMode,
-    UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    ActivateGroupUpgradeApiResponse, AddGroupMembersApiResponse, CreateGroupApiResponse,
+    CreateGroupInvitationApiResponse, CreateNamespaceApiResponse, DeleteGroupApiResponse,
+    DeleteNamespaceApiResponse, DetachContextFromGroupApiResponse,
+    GetGroupUpgradeStatusApiResponse, GetMemberCapabilitiesApiResponse, GetMetadataApiResponse,
+    GetTeeAdmissionPolicyApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
+    JoinGroupApiResponse, JoinNamespaceApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
+    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
+    ListMemberDevicesApiResponse, ListNamespaceGroupsApiResponse, ListNamespacesApiResponse,
+    ListSubgroupsApiResponse, NamespaceApiResponse, NodeIdentityApiResponse,
+    PairDeviceCompleteApiResponse, PairDeviceInitApiResponse, RemoveGroupMembersApiResponse,
+    ReparentGroupApiResponse, RevokeDeviceApiResponse, SealToAccountApiResponse,
+    SetDefaultCapabilitiesApiResponse, SetMemberCapabilitiesApiResponse, SetMetadataApiResponse,
+    SetSubgroupVisibilityApiResponse, SetTeeAdmissionPolicyApiResponse, SyncGroupApiResponse,
+    TeeAdmissionMode, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -541,6 +541,38 @@ impl Report for UpgradeGroupApiResponse {
         }
         if let Some(failed) = d.local_contexts_failed {
             let _ = table.add_row(vec!["Local Contexts Failed", &failed.to_string()]);
+        }
+        let _ = table.add_row(vec!["Contexts Trialled", &d.contexts_trialled.to_string()]);
+        let _ = table.add_row(vec!["Contexts Not Held", &d.contexts_not_held.to_string()]);
+        println!("{table}");
+    }
+}
+
+impl Report for ActivateGroupUpgradeApiResponse {
+    fn report(&self) {
+        let d = &self.data;
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Upgrade Activated").fg(Color::Green),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Application ID", &d.target_application_id.to_string()]);
+        let _ = table.add_row(vec!["Contexts Switched", &d.switched_contexts.to_string()]);
+        let _ = table.add_row(vec!["Deltas Replayed", &d.replayed_deltas.to_string()]);
+        let _ = table.add_row(vec![
+            "Contexts Failed",
+            &d.failed_contexts.len().to_string(),
+        ]);
+        for failed in &d.failed_contexts {
+            let retry = if failed.retryable {
+                "retryable"
+            } else {
+                "not retryable"
+            };
+            let _ = table.add_row(vec![
+                format!("Failed {}", failed.context_id),
+                format!("{} ({retry})", failed.error),
+            ]);
         }
         println!("{table}");
     }

@@ -24,6 +24,7 @@ SUITES=(
     "apps/migrations/scenario-new-enum-variant-v2"
     "apps/migrations/scenario-pure-bugfix-v1"
     "apps/migrations/scenario-pure-bugfix-v2"
+    "apps/migrations/scenario-pure-bugfix-v3"
     "apps/migrations/scenario-crdt-native-v1"
     "apps/migrations/scenario-crdt-native-v2"
     "apps/migrations/scenario-struct-to-enum-v1"

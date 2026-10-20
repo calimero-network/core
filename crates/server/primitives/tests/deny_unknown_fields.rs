@@ -46,6 +46,7 @@ fn every_request_body_is_a_closed_set() {
         admin::DetachContextFromGroupApiRequest,
         admin::UpgradeGroupApiRequest,
         admin::RetryGroupUpgradeApiRequest,
+        admin::ActivateGroupUpgradeApiRequest,
         admin::IssueOwnershipProofApiRequest,
         admin::IssueNamespaceOwnershipProofApiRequest,
         admin::SyncGroupApiRequest,

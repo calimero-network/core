@@ -2,7 +2,8 @@
 
 use core::cell::RefCell;
 use core::mem;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
 use std::sync::Arc;
 
 use calimero_primitives::context::ContextId;
@@ -45,6 +46,8 @@ pub struct ContextStorage {
     keys: RefCell<HashMap<[u8; key::STATE_KEY_LEN], Arc<key::ContextState>>>,
     // Where cells' writers come from; with none, every cell stands at genesis.
     shared_writers: Option<SharedWritersResolver>,
+    // Ordered-index rows staged until `commit` (`None` writes them through); a `None` value is a delete.
+    index_overlay: Option<BTreeMap<Vec<u8>, Option<Vec<u8>>>>,
 }
 
 /// Node-local private storage that is NOT synchronized across nodes.
@@ -100,8 +103,60 @@ impl ContextStorage {
             inner_builder: |store| Temporal::new(store),
             keys: RefCell::default(),
             shared_writers,
+            index_overlay: None,
         }
         .build()
+    }
+
+    /// Stage ordered-index writes with the rest of the run, so dropping the storage drops them.
+    pub fn buffer_index(mut self) -> Self {
+        self.with_index_overlay_mut(|overlay| *overlay = Some(BTreeMap::new()));
+        self
+    }
+
+    /// The live rows over `[lo, hi)` as the staged writes leave them; `None` when writes go through.
+    fn staged_index_range(&self, lo: &[u8], hi: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+        let overlay = self.borrow_index_overlay().as_ref()?;
+        let mut rows: BTreeMap<_, _> = self.live_index_scan(lo, hi, None).into_iter().collect();
+        for (key, row) in overlay.range::<[u8], _>((Bound::Included(lo), Bound::Excluded(hi))) {
+            match row {
+                Some(row) => rows.insert(key.clone(), row.clone()),
+                None => rows.remove(key),
+            };
+        }
+        Some(rows.into_iter().collect())
+    }
+
+    /// Stages `row` (`None` deletes) under `full`; false when index writes go through.
+    fn stage_index_write(&mut self, full: Vec<u8>, row: Option<&[u8]>) -> bool {
+        self.with_index_overlay_mut(|overlay| {
+            overlay
+                .as_mut()
+                .map(|overlay| overlay.insert(full, row.map(<[u8]>::to_vec)))
+                .is_some()
+        })
+    }
+
+    fn live_index_scan(&self, lo: &[u8], hi: &[u8], max: Option<usize>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        // A scan error must not masquerade as "no entries": log it loudly so a
+        // backend fault is visible rather than silently dropping rows. The
+        // authoritative entity set is untouched, and the next ordered read
+        // rebuilds the index via the validity marker, so an empty page here is a
+        // recoverable degradation, not data loss.
+        match self
+            .borrow_index_store()
+            .raw_scan(Column::SortedIndex, lo, hi, max)
+        {
+            Ok(pairs) => pairs,
+            Err(error) => {
+                tracing::error!(
+                    target: "calimero_context::sorted_index",
+                    %error,
+                    "ordered-index scan failed; returning an empty page (entities intact, index self-heals on next read)"
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Byte length of the context-id prefix stamped onto every index key.
@@ -165,6 +220,15 @@ impl ContextStorage {
 
     pub fn commit(mut self) -> eyre::Result<Store> {
         self.with_inner_mut(|inner| inner.commit())?;
+        if let Some(overlay) = self.with_index_overlay_mut(Option::take) {
+            let index = self.borrow_index_store();
+            for (key, row) in overlay {
+                match row {
+                    Some(row) => index.raw_put(Column::SortedIndex, &key, &row)?,
+                    None => index.raw_delete(Column::SortedIndex, &key)?,
+                }
+            }
+        }
 
         Ok(self.into_heads().store)
     }
@@ -272,6 +336,9 @@ impl Storage for ContextStorage {
 
     fn index_set(&mut self, key: &[u8], value: &[u8]) -> bool {
         let full = self.index_key(key);
+        if self.stage_index_write(full.clone(), Some(value)) {
+            return true;
+        }
         self.borrow_index_store()
             .raw_put(Column::SortedIndex, &full, value)
             .is_ok()
@@ -279,6 +346,9 @@ impl Storage for ContextStorage {
 
     fn index_del(&mut self, key: &[u8]) -> bool {
         let full = self.index_key(key);
+        if self.stage_index_write(full.clone(), None) {
+            return true;
+        }
         self.borrow_index_store()
             .raw_delete(Column::SortedIndex, &full)
             .is_ok()
@@ -287,6 +357,12 @@ impl Storage for ContextStorage {
     fn index_del_prefix(&mut self, prefix: &[u8]) -> bool {
         let lo = self.index_key(prefix);
         let hi = prefix_upper_bound(&lo);
+        if let Some(rows) = self.staged_index_range(&lo, &hi) {
+            for (key, _) in rows {
+                self.stage_index_write(key, None);
+            }
+            return true;
+        }
         // One range tombstone over the prefix slice — no scan, no per-key
         // delete, no unbounded buffer of the collection's keys.
         self.borrow_index_store()
@@ -306,27 +382,9 @@ impl Storage for ContextStorage {
         // Stop the seek after `offset + limit` items so a bounded read walks
         // O(offset + limit), not the whole range.
         let max = limit.map(|n| offset.saturating_add(n));
-        // A scan error must not masquerade as "no entries": log it loudly so a
-        // backend fault is visible rather than silently dropping rows. The
-        // authoritative entity set is untouched, and the next ordered read
-        // rebuilds the index via the validity marker, so an empty page here is a
-        // recoverable degradation, not data loss.
-        let pairs = match self.borrow_index_store().raw_scan(
-            Column::SortedIndex,
-            &full_lo,
-            &full_hi,
-            max,
-        ) {
-            Ok(pairs) => pairs,
-            Err(error) => {
-                tracing::error!(
-                    target: "calimero_context::sorted_index",
-                    %error,
-                    "ordered-index scan failed; returning an empty page (entities intact, index self-heals on next read)"
-                );
-                Vec::new()
-            }
-        };
+        let pairs = self
+            .staged_index_range(&full_lo, &full_hi)
+            .unwrap_or_else(|| self.live_index_scan(&full_lo, &full_hi, max));
         // Strip the context-id prefix to hand back the adaptor-level key.
         let plen = self.index_prefix_len();
         let stripped = pairs
@@ -342,10 +400,13 @@ impl Storage for ContextStorage {
     fn index_last(&self, lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         let full_lo = self.index_key(lo);
         let full_hi = self.index_key(hi);
-        let (k, v) = self
-            .borrow_index_store()
-            .raw_last(Column::SortedIndex, &full_lo, &full_hi)
-            .ok()??;
+        let (k, v) = match self.staged_index_range(&full_lo, &full_hi) {
+            Some(rows) => rows.into_iter().next_back()?,
+            None => self
+                .borrow_index_store()
+                .raw_last(Column::SortedIndex, &full_lo, &full_hi)
+                .ok()??,
+        };
         // Strip the context-id prefix.
         Some((k.get(self.index_prefix_len()..)?.to_vec(), v))
     }

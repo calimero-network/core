@@ -80,6 +80,7 @@ use eyre::{bail, Result as EyreResult};
 
 use super::collect_keys_with_prefix;
 use super::MembershipError;
+use crate::authorizer::ReentryAtCut;
 
 /// Typed Repository for the re-entry block and the consumed-invitation set.
 /// See the module docs for the policy these two columns implement together.
@@ -211,13 +212,26 @@ impl<'a> ReentryRepository<'a> {
         identity: &AccountId,
         invitation_nonce: [u8; 32],
     ) -> EyreResult<()> {
-        if let Some(GroupExitReason::Removed) = self.block_of(group_id, identity)? {
+        let live = ReentryAtCut {
+            exit: self.block_of(group_id, identity)?,
+            spent: self.is_invitation_consumed(group_id, identity, invitation_nonce)?,
+        };
+        Self::require_admits(group_id, identity, live)
+    }
+
+    /// [`Self::require_invitation_admits`] over what the join meets, read at its cut or live.
+    pub fn require_admits(
+        group_id: &ContextGroupId,
+        identity: &AccountId,
+        reentry: ReentryAtCut,
+    ) -> EyreResult<()> {
+        if reentry.exit == Some(GroupExitReason::Removed) {
             bail!(MembershipError::RemovedFromGroup {
                 group_id: group_id.to_string(),
                 identity: identity.to_string(),
             });
         }
-        if self.is_invitation_consumed(group_id, identity, invitation_nonce)? {
+        if reentry.spent {
             bail!(MembershipError::InvitationAlreadyConsumed {
                 group_id: group_id.to_string(),
                 identity: identity.to_string(),

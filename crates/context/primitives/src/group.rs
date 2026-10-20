@@ -17,6 +17,8 @@ use thiserror::Error as ThisError;
 
 use calimero_store::key::GroupTarget;
 
+use crate::messages::MigrationParams;
+
 pub use calimero_store::key::GroupUpgradeStatus;
 
 /// The release a group's target names, read from the group itself so it is
@@ -65,7 +67,8 @@ pub struct CreateGroupRequest {
     /// The salt a namespace root's id is derived with
     /// (`calimero_account::founded_namespace_id(founder, salt)`); `None` draws
     /// a random one. Only the account namespace passes one, derived from the
-    /// account root so every device computes the same id. There is no way to
+    /// account root so every device computes the same id; its id is
+    /// `calimero_account::account_namespace_id(founder, salt)` instead. There is no way to
     /// choose an id outright, and a subgroup's id is always random, so this is
     /// refused with a parent.
     pub salt: Option<[u8; 32]>,
@@ -87,14 +90,15 @@ impl Message for CreateGroupRequest {
 pub struct CreateGroupResponse {
     pub group_id: ContextGroupId,
     /// Set when this created a namespace root, whose id is derived from its
-    /// founder (`calimero_account::founded_namespace_id`). `None` for a
-    /// subgroup.
+    /// founder (`calimero_account::founded_namespace_id`, or `account_namespace_id`
+    /// for the account namespace). `None` for a subgroup.
     pub founding: Option<NamespaceFounding>,
 }
 
 /// What a derived namespace id was derived from: `founded_namespace_id(founder,
-/// salt) == group_id`. Showing both lets a third party confirm who founded the
-/// namespace without holding any of its governance state.
+/// salt) == group_id`, or `account_namespace_id` for the account namespace.
+/// Showing both lets a third party confirm who founded the namespace without
+/// holding any of its governance state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct NamespaceFounding {
     pub founder: AccountId,
@@ -316,6 +320,9 @@ pub struct UpgradeGroupRequest {
     /// being refused. Never bypasses the declared-incompatibility bails
     /// (downgrade, missing edge) or the unknowable-current-side refusal.
     pub force_code_only: bool,
+    /// When `true`, the upgrade is published without first trialling the
+    /// migration on this node's own contexts.
+    pub skip_trial: bool,
 }
 
 impl UpgradeGroupRequest {
@@ -329,6 +336,7 @@ impl UpgradeGroupRequest {
             target_application_id,
             cascade: false,
             force_code_only: false,
+            skip_trial: false,
         }
     }
 }
@@ -341,6 +349,30 @@ impl Message for UpgradeGroupRequest {
 pub struct UpgradeGroupResponse {
     pub group_id: ContextGroupId,
     pub status: GroupUpgradeStatus,
+    /// Contexts this node held and trialled the upgrade on before publishing.
+    pub contexts_trialled: u32,
+    /// Contexts this node knows of but does not hold, so it could not trial them.
+    pub contexts_not_held: u32,
+}
+
+/// One release a context steps through, in ladder order.
+#[derive(Clone, Debug)]
+pub struct TrialRung {
+    pub bytecode_id: [u8; 32],
+    pub migration: Option<MigrationParams>,
+}
+
+/// Run an upgrade's migrations on this node's copy of a context in a buffer that is
+/// thrown away. Answers `true` when it trialled the context and `false` when this node
+/// does not hold it; a migration or check that fails is the error.
+#[derive(Clone, Debug)]
+pub struct TrialUpgradeRequest {
+    pub context_id: ContextId,
+    pub rungs: Vec<TrialRung>,
+}
+
+impl Message for TrialUpgradeRequest {
+    type Result = eyre::Result<bool>;
 }
 
 #[derive(Debug)]
@@ -1713,6 +1745,57 @@ pub struct ResyncContextRequest {
 
 impl Message for ResyncContextRequest {
     type Result = eyre::Result<ResyncContextResponse>;
+}
+
+/// Switch a context to its group's target release now, as its next call would.
+///
+/// `executor` is who the switch runs as, as for that call. Answers `true` when this
+/// request moved the context, `false` when nothing moved it, and the error when it failed.
+#[derive(Clone, Copy, Debug)]
+pub struct ActivateUpgradeRequest {
+    pub context_id: ContextId,
+    pub executor: PublicKey,
+}
+
+impl Message for ActivateUpgradeRequest {
+    type Result = eyre::Result<bool>;
+}
+
+/// Switch every context of a namespace on this node to its group's stored target
+/// release and replay the deltas held back for it. Never installs a release.
+///
+/// `expected_application_id` and `expected_version`, when set, must each equal the
+/// namespace's stored target.
+#[derive(Clone, Debug)]
+pub struct ActivateNamespaceUpgradeRequest {
+    pub namespace_id: ContextGroupId,
+    pub expected_application_id: Option<ApplicationId>,
+    pub expected_version: Option<String>,
+}
+
+impl Message for ActivateNamespaceUpgradeRequest {
+    type Result = eyre::Result<ActivateNamespaceUpgradeResponse>;
+}
+
+/// Outcome of an [`ActivateNamespaceUpgradeRequest`].
+#[derive(Clone, Debug)]
+pub struct ActivateNamespaceUpgradeResponse {
+    pub target_application_id: ApplicationId,
+    /// Contexts this request moved; `0` when every one was already current.
+    pub switched_contexts: u32,
+    /// Held deltas replayed into the namespace's contexts.
+    pub replayed_deltas: u32,
+    /// Contexts left unswitched or unreplayed; the others went ahead regardless.
+    pub failed_contexts: Vec<FailedContext>,
+}
+
+/// A context an [`ActivateNamespaceUpgradeRequest`] could not finish.
+#[derive(Clone, Debug)]
+pub struct FailedContext {
+    pub context_id: ContextId,
+    pub error: String,
+    /// `false` when the switch itself failed (a migration or load), which a retry repeats.
+    pub retryable: bool,
 }
 
 /// Outcome of a [`ResyncContextRequest`].

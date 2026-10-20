@@ -1,0 +1,21 @@
+[package]
+name = "scenario-pure-bugfix-v3"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+
+[package.metadata.workspaces]
+independent = true
+
+[package.metadata.calimero]
+package = "com.calimero.scenario-pure-bugfix"

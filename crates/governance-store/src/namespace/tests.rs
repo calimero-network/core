@@ -21,6 +21,7 @@ use calimero_store::types;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
+use super::retry::{order_causally, ReplayCandidate, RetryCandidate};
 use super::NamespaceGovernance;
 use crate::ops::group::context::seed_target_application_row;
 use crate::{
@@ -948,6 +949,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
             key_id: [0x01; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xA1; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1018,6 +1020,7 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
             key_id: [0x12; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1095,6 +1098,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
             key_id: [0x11; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1109,6 +1113,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
             key_id: [0x22; 32].into(),
             encrypted: GroupKeyring::encrypt_op(&[0xBB; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1138,6 +1143,28 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
         op_a.content_hash().unwrap()
     );
     assert_eq!(selected[0].key_id.to_bytes(), [0x11; 32]);
+}
+
+/// The readable ops of `group` a replay would re-drive, in the order it applies them.
+fn group_retry_candidates(
+    store: &Store,
+    namespace_id: NamespaceId,
+    group: [u8; 32],
+) -> Vec<RetryCandidate> {
+    let candidates = NamespaceRetryService::new(store, namespace_id)
+        .collect_replay_candidates(&std::collections::BTreeSet::from([group]))
+        .unwrap()
+        .into_iter()
+        .filter(|candidate| matches!(candidate, ReplayCandidate::Group(_)))
+        .collect();
+    order_causally(&NamespaceOpLogService::new(store, namespace_id), candidates)
+        .unwrap()
+        .into_iter()
+        .filter_map(|candidate| match candidate {
+            ReplayCandidate::Group(candidate) => Some(candidate),
+            ReplayCandidate::Root { .. } => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -1172,6 +1199,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
             key_id: key_id.into(),
             encrypted: encrypted_a,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1186,6 +1214,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
             key_id: key_id.into(),
             encrypted: encrypted_b,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1206,10 +1235,7 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
     governance.store_operation(&group_b_op).unwrap();
     governance.store_operation(&root_op).unwrap();
 
-    let retry = NamespaceRetryService::new(&store, namespace_id.into());
-    let retryable = retry
-        .collect_retry_candidates_for_group(group_a.to_bytes())
-        .unwrap();
+    let retryable = group_retry_candidates(&store, namespace_id.into(), group_a.to_bytes());
 
     assert_eq!(retryable.len(), 1, "expected only one retryable op");
     match &retryable[0].signed_op.op {
@@ -1264,6 +1290,7 @@ fn namespace_retry_service_skips_the_nodes_own_ops() {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap()
@@ -1273,9 +1300,7 @@ fn namespace_retry_service_skips_the_nodes_own_ops() {
     gov.store_operation(&mk(&own_sk, 1)).unwrap();
     gov.store_operation(&mk(&peer_sk, 1)).unwrap();
 
-    let candidates = NamespaceRetryService::new(&store, namespace_id.into())
-        .collect_retry_candidates_for_group(group.to_bytes())
-        .unwrap();
+    let candidates = group_retry_candidates(&store, namespace_id.into(), group.to_bytes());
 
     assert_eq!(
         candidates.len(),
@@ -1351,6 +1376,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
                         key_id: key_id.into(),
                         encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
                         key_rotation: None,
+                        registers: None,
                     },
                 )
                 .unwrap()
@@ -1402,10 +1428,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
          sort from a missing sort, so this test would silently pass on a regression."
     );
 
-    let retry = NamespaceRetryService::new(&store, namespace_id.into());
-    let candidates = retry
-        .collect_retry_candidates_for_group(group.to_bytes())
-        .unwrap();
+    let candidates = group_retry_candidates(&store, namespace_id.into(), group.to_bytes());
 
     assert_eq!(candidates.len(), 4, "expected 4 retry candidates");
 
@@ -1931,6 +1954,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -1975,6 +1999,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
             key_id: key_id.into(),
             encrypted: join_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -2071,6 +2096,7 @@ fn tee_admission_is_vouched_only_by_admin_or_admitted_tee() {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, op).unwrap(),
                 key_rotation: None,
+                registers: op.registered_context(),
             },
         )
         .unwrap()
@@ -2260,6 +2286,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -2296,6 +2323,7 @@ fn tee_replica_seed_bootstrap_admits_tee_with_open_join_cap() {
             key_id: key_id.into(),
             encrypted: join_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -3556,6 +3584,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
+            registers: inner_a.registered_context(),
         },
     )
     .unwrap();
@@ -3583,6 +3612,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
+            registers: inner_b.registered_context(),
         },
     )
     .unwrap();
@@ -3685,6 +3715,7 @@ fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, inner).unwrap(),
                 key_rotation: None,
+                registers: inner.registered_context(),
             },
         )
         .unwrap()
@@ -3796,6 +3827,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
+            registers: inner_a.registered_context(),
         },
     )
     .unwrap();
@@ -3821,6 +3853,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
+            registers: inner_b.registered_context(),
         },
     )
     .unwrap();
@@ -4508,7 +4541,9 @@ fn governance_rejects_non_admin_signer() {
     )
     .expect("sign op");
 
-    let result = gov.apply_signed_op(&op);
+    let result = gov
+        .apply_signed_op(&op)
+        .and_then(crate::ApplyNamespaceOpResult::verdict);
     assert!(result.is_err(), "non-admin signer should be rejected");
 }
 
@@ -4769,6 +4804,7 @@ fn build_rotation_op(
             key_id: old_key_id.into(),
             encrypted,
             key_rotation: Some(rotation),
+            registers: None,
         },
     )
     .unwrap()
@@ -5461,6 +5497,7 @@ impl ExistingGroupFixture {
         .expect("sign GroupCreated");
         super::NamespaceGovernance::new(&self.store, self.ns_id.into())
             .apply_signed_op(&op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .map(|_| ())
     }
 
@@ -5682,7 +5719,9 @@ fn concurrent_creates_of_one_group_converge_in_either_apply_order() {
             let genuine = sign(&store, &owner_sk, genuine_op.clone());
             let racer = sign(&store, &other_sk, racer_op.clone());
             let apply = |op: &SignedNamespaceOp| {
-                super::NamespaceGovernance::new(&store, RACE_NS.into()).apply_signed_op(op)
+                super::NamespaceGovernance::new(&store, RACE_NS.into())
+                    .apply_signed_op(op)
+                    .and_then(crate::ApplyNamespaceOpResult::verdict)
             };
             let (genuine_verdict, racer_verdict) = if genuine_first {
                 let g = apply(&genuine);
@@ -6853,6 +6892,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     );
     let err = gov
         .apply_signed_op(&create(&stranger_sk, 0xB1, ns_id, 1))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .unwrap_err();
     assert!(
         matches!(
@@ -6872,6 +6912,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     // Member without the cap cannot create a subgroup, even under the root.
     assert!(gov
         .apply_signed_op(&create(&member_sk, 0xB1, ns_id, 2))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .is_err());
     assert!(MetaRepository::new(&store)
         .load(&ContextGroupId::from(chan))
@@ -6912,6 +6953,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         .expect("admin creates an intermediate subgroup");
     assert!(
         gov.apply_signed_op(&create(&member_sk, 0xB3, nested_parent, 5))
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
             .is_err(),
         "CAN_CREATE_SUBGROUP is honored only directly under the namespace root"
     );
@@ -7026,7 +7068,10 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
             .unwrap(),
         "precondition: the stranger must not be enrolled in the namespace"
     );
-    let err = gov.apply_signed_op(&del(&stranger_sk, s1, 1)).unwrap_err();
+    let err = gov
+        .apply_signed_op(&del(&stranger_sk, s1, 1))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
+        .unwrap_err();
     assert!(
         matches!(
             err.downcast_ref::<ApplyError>(),
@@ -7043,6 +7088,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     // again by the authorization check.
     let err = gov
         .apply_signed_op(&del(&plain_member_sk, s1, 2))
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .unwrap_err();
     assert!(
         matches!(
@@ -7309,6 +7355,7 @@ fn groups_awaiting_key_reports_then_clears() {
             key_id: GroupKeyring::key_id_for(&[0xAA; 32]).into(),
             encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -7955,6 +8002,7 @@ fn restricted_subgroup_awaits_key_despite_holding_namespace_key() {
             key_id: GroupKeyring::key_id_for(&subgroup_key).into(),
             encrypted: GroupKeyring::encrypt_op(&subgroup_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -8073,6 +8121,7 @@ fn a_responder_serving_a_key_other_than_the_awaited_one_is_refused() {
             key_id: real_key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -8246,6 +8295,7 @@ fn responder_delivery_round_trips_key_to_joiner_cross_store() {
             key_id: GroupKeyring::key_id_for(&group_key).into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -8385,6 +8435,7 @@ fn responder_delivery_round_trips_key_to_read_only_tee_joiner() {
             key_id: GroupKeyring::key_id_for(&group_key).into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -8740,6 +8791,7 @@ fn curative_sweep_redrives_stranded_context() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: inner_op.registered_context(),
         },
     )
     .unwrap();
@@ -8847,6 +8899,7 @@ fn curative_sweep_redrives_stranded_context() {
             key_id: GroupKeyring::key_id_for(&nokey_key).into(),
             encrypted: nokey_encrypted,
             key_rotation: None,
+            registers: nokey_inner.registered_context(),
         },
     )
     .unwrap();
@@ -8972,6 +9025,7 @@ fn namespace_key_delivery_redrives_open_subgroup_visibility_flip() {
             key_id: ns_key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -9199,6 +9253,7 @@ fn held_flip_setup() -> HeldFlipSetup {
             )
             .expect("seal the flip"),
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("owner signs the flip to Restricted");
@@ -9510,6 +9565,7 @@ fn group_created_honors_at_cut_denial_over_live_grant() {
     let err = NamespaceGovernance::new(&store, namespace_id.into())
         .with_apply_auth(&TEST_CUT, &FixedAuthorizer(false))
         .apply_signed_op(&signed)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
         .expect_err("at-cut denial must reject GroupCreated even though live rows grant");
     let _ = err;
 
@@ -9543,7 +9599,9 @@ fn apply_open_join_with(
     account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 ) -> eyre::Result<crate::namespace::governance::ApplyNamespaceOpResult> {
     let join = sign_open_join(store, namespace_id, subgroup_id, joiner_sk, account);
-    super::NamespaceGovernance::new(store, namespace_id.into()).apply_signed_op(&join)
+    super::NamespaceGovernance::new(store, namespace_id.into())
+        .apply_signed_op(&join)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
 }
 
 /// An open self-join into `subgroup_id` carrying `account`, on the current head.
@@ -9620,7 +9678,7 @@ fn namespace_with_open_subgroup(
 }
 
 #[test]
-fn a_join_records_the_joiners_binding_and_endorsement() {
+fn an_open_join_by_a_device_its_account_never_linked_is_refused() {
     let store = test_store();
     let namespace_id = [0xC1u8; 32];
     let subgroup_id = [0xD1u8; 32];
@@ -9635,24 +9693,42 @@ fn a_join_records_the_joiners_binding_and_endorsement() {
     );
 
     let account = crate::test_fixtures::real_join_account(&joiner);
-    let account_id = account.statement.account;
-    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, account)
-        .expect("the join applies");
-
-    let bindings = crate::AccountBindingRepository::new(&store);
-    let binding = bindings
-        .binding_for_sign_pk(&ns_gid, &joiner)
-        .expect("read bindings")
-        .expect("joining binds the device in the same apply as the membership");
-    assert_eq!(binding.account, account_id);
-
-    assert_eq!(
-        crate::member_account_in_namespace(&store, &ns_gid, &joiner)
-            .expect("resolve the joiner's account"),
-        Some(account_id),
-        "a bound joiner must resolve to its account, or it gets no scope keys \
-         and cannot be selected as an executing identity"
+    let err = apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, account)
+        .expect_err("a device no link brought in does not join for its account");
+    assert!(
+        err.chain().any(|c| matches!(
+            c.downcast_ref::<crate::ApplyError>(),
+            Some(crate::ApplyError::MemberJoinedOpenRejected(
+                crate::MemberJoinedOpenRejection::SignerMismatch { .. }
+            ))
+        )),
+        "{err:?}"
     );
+    let binding = crate::AccountBindingRepository::new(&store)
+        .binding_for_sign_pk(&ns_gid, &joiner)
+        .expect("read bindings");
+    assert!(
+        binding.is_none(),
+        "a refused open join bound its device: {binding:?}"
+    );
+}
+
+/// Bind `account`'s device in the namespace, as the link that carried it in would.
+fn link_device(
+    store: &Store,
+    namespace_id: [u8; 32],
+    account: &calimero_context_client::local_governance::JoinAccountCredential,
+) {
+    let _bound = crate::AccountBindingRepository::new(store)
+        .apply_link(
+            &ContextGroupId::from(namespace_id),
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+            crate::JOIN_SCOPE_EPOCH,
+        )
+        .expect("store the binding")
+        .expect("the binding is admissible");
 }
 
 #[test]
@@ -9676,6 +9752,7 @@ fn a_member_removed_from_an_open_group_cannot_join_its_child() {
         NamespaceGovernance::new(&store, ns.into())
             .with_apply_auth(&TEST_CUT, &InheritsAtCut)
             .apply_signed_op(&op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
     };
 
     let err = join(&f.kicked.0).expect_err("a removal from an ancestor ends inheritance");
@@ -9720,66 +9797,6 @@ fn a_member_removed_from_an_open_group_is_served_no_key_for_its_child() {
         "a removal from an ancestor ends the right to the child's key"
     );
     assert!(served(&f.honest.0), "an honest inheritor is still served");
-}
-
-#[test]
-fn a_refused_credential_leaves_the_membership_intact() {
-    let store = test_store();
-    let namespace_id = [0xC2u8; 32];
-    let subgroup_id = [0xD2u8; 32];
-    let ns_gid = ContextGroupId::from(namespace_id);
-    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
-    let joiner = joiner_sk.public_key();
-    let joiner_account = crate::test_fixtures::account_for(&joiner);
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &joiner_account);
-
-    // A credential that is genuinely the joiner's — it certifies the joiner's
-    // key and names the joiner's account, so the op itself is well formed — but
-    // at a device epoch this group already spent on another key of the same
-    // device. `apply_link` refuses it as not advancing the epoch.
-    //
-    // A credential for somebody ELSE is rejected outright a step earlier (see
-    // `a_credential_certified_for_another_key_is_refused`), because naming an
-    // account means claiming to BE it.
-    let credential = crate::test_fixtures::real_join_account(&joiner);
-    let fork = calimero_account::DeviceCert::sign(
-        &PrivateKey::from(*joiner),
-        credential.statement.account,
-        credential.statement.device,
-        &PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key(),
-        &credential.statement.kem_pk,
-        0,
-        0,
-    )
-    .expect("sign the fork");
-    let _ = crate::AccountBindingRepository::new(&store)
-        .apply_link(&ns_gid, &credential.genesis, &[], &fork, 0)
-        .expect("seed the conflicting key at the same epoch");
-
-    apply_open_join_with(
-        &store,
-        namespace_id,
-        subgroup_id,
-        &joiner_sk,
-        crate::test_fixtures::real_join_account(&joiner),
-    )
-    .expect("a credential this group cannot admit must not orphan the membership op");
-
-    assert!(
-        crate::AccountBindingRepository::new(&store)
-            .binding_for_sign_pk(&ns_gid, &joiner)
-            .expect("read bindings")
-            .is_none(),
-        "a refused credential records no binding"
-    );
-    assert_ne!(
-        MembershipRepository::new(&store)
-            .check_path(&ns_gid, &joiner_account)
-            .expect("check path"),
-        crate::membership::MembershipPath::None,
-        "and costs the joiner nothing: a member without a binding is survivable, \
-         a member the DAG cannot apply is not"
-    );
 }
 
 #[test]
@@ -9833,54 +9850,6 @@ fn a_credential_certified_for_another_key_is_refused() {
     );
 }
 
-#[test]
-fn rejoining_reuses_the_device_rather_than_refusing_it() {
-    let store = test_store();
-    let namespace_id = [0xC4u8; 32];
-    let subgroup_id = [0xD4u8; 32];
-    let ns_gid = ContextGroupId::from(namespace_id);
-    let joiner_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
-    let joiner = joiner_sk.public_key();
-    // The credential comes first: it decides which account the joiner speaks
-    // for, and the anchor membership has to be seeded for THAT account. This one
-    // pins its own device id rather than deriving it, which is the point of the
-    // test — the same device arriving twice must be reused, not refused.
-    let (root_sk, genesis) = crate::test_fixtures::test_account_root();
-    let device = [0x7C; 32];
-    let first = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
-    let account_id = first.statement.account;
-    namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &account_id);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, first)
-        .expect("first join applies");
-
-    // The same machine presenting the same credential again — a rejoin, and also
-    // exactly what an ordinary re-apply looks like, since every handler re-runs
-    // its mutation before the op-log dedup fires.
-    let again = crate::test_fixtures::join_account_for(&root_sk, genesis, &joiner, device, 0);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &joiner_sk, again)
-        .expect("rejoin applies");
-
-    // This joiner's rows only — the namespace admin is enrolled here too, and
-    // this assertion is about how many devices ONE account ended up with.
-    let live: Vec<_> = crate::AccountBindingRepository::new(&store)
-        .live_bindings(&ns_gid)
-        .expect("read bindings")
-        .into_iter()
-        .filter(|b| b.account == account_id)
-        .collect();
-    assert_eq!(
-        live.len(),
-        1,
-        "a rejoin must reuse its device, not mint a second replica id and strand \
-         the CRDT state held under the first"
-    );
-    assert_eq!(
-        live[0].device,
-        crate::test_fixtures::device_for(account_id, device)
-    );
-    assert_eq!(live[0].account, account_id);
-}
-
 /// An open-subgroup joiner's device withdrawn from the namespace before it signs a join.
 struct WithdrawnJoiner {
     store: Store,
@@ -9930,6 +9899,14 @@ impl WithdrawnJoiner {
             device,
             0,
         );
+        // Linked as the op that brought it in would, which a withdrawn device refuses.
+        let _refused = crate::AccountBindingRepository::new(&self.store).apply_link(
+            &ContextGroupId::from(self.namespace_id),
+            &account.genesis,
+            &account.chain,
+            &account.statement,
+            crate::JOIN_SCOPE_EPOCH,
+        )?;
         apply_open_join_with(
             &self.store,
             self.namespace_id,
@@ -10004,8 +9981,8 @@ fn another_device_of_the_account_still_joins_after_one_is_revoked() {
         .expect("the account's live device still joins");
 }
 
-/// An open-subgroup joiner whose device was re-keyed: it joined under `old_sk` at
-/// epoch 0, then again under `new_sk` at epoch 1, which retires `old_sk`.
+/// An open-subgroup joiner whose device was re-keyed: linked under `old_sk` at
+/// epoch 0, then under `new_sk` at epoch 1, which retires `old_sk`.
 struct RekeyedJoiner {
     store: Store,
     namespace_id: [u8; 32],
@@ -10026,12 +10003,10 @@ fn rekeyed_joiner(namespace_id: [u8; 32], subgroup_id: [u8; 32]) -> RekeyedJoine
     let first =
         crate::test_fixtures::join_account_for(&root_sk, genesis, &old_sk.public_key(), device, 0);
     namespace_with_open_subgroup(&store, namespace_id, subgroup_id, &first.statement.account);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &old_sk, first)
-        .expect("the first join applies");
+    link_device(&store, namespace_id, &first);
     let rekeyed =
         crate::test_fixtures::join_account_for(&root_sk, genesis, &new_sk.public_key(), device, 1);
-    apply_open_join_with(&store, namespace_id, subgroup_id, &new_sk, rekeyed)
-        .expect("a join under the device's next key applies");
+    link_device(&store, namespace_id, &rekeyed);
     RekeyedJoiner {
         store,
         namespace_id,
@@ -10144,6 +10119,7 @@ fn a_tee_admission_binds_the_replicas_device() {
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("verifier signs the policy op");
@@ -10264,6 +10240,7 @@ fn a_tee_admission_with_a_stranger_credential_binds_nothing() {
             key_id: key_id.into(),
             encrypted: policy_op,
             key_rotation: None,
+            registers: None,
         },
     )
     .expect("verifier signs the policy op");
@@ -10340,71 +10317,154 @@ struct TeeAdmissionFixture {
     namespace_id: [u8; 32],
     ns_gid: ContextGroupId,
     verifier_sk: PrivateKey,
+    replica_sk: PrivateKey,
     replica: PublicKey,
     account: Box<calimero_context_client::local_governance::JoinAccountCredential>,
 }
 
 impl TeeAdmissionFixture {
     fn new(ns_byte: u8) -> Self {
-        use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+        let fixture = Self::without_policy(ns_byte);
+        let _policy = fixture.set_policy();
+        fixture
+    }
 
-        use super::NamespaceGovernance;
-
+    /// The namespace, its key and the replica, with no admission policy applied yet.
+    fn without_policy(ns_byte: u8) -> Self {
         let store = test_store();
         let namespace_id = [ns_byte; 32];
         let ns_gid = ContextGroupId::from(namespace_id);
         let (verifier_sk, _) = bootstrap_namespace_with_admin(&store, namespace_id);
-        let group_key = [0x9Au8; 32];
-        let key_id = GroupKeyring::new(&store, ns_gid)
-            .store_key(&group_key)
+        let _key_id = GroupKeyring::new(&store, ns_gid)
+            .store_key(&[0x9Au8; 32])
             .expect("store the group key");
-        let replica =
-            PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng)).public_key();
+        let replica_sk = PrivateKey::random(&mut rand::rand_core::UnwrapErr(rand::rngs::SysRng));
+        let replica = replica_sk.public_key();
         let account = crate::test_fixtures::real_join_account(&replica);
-
-        let gov = NamespaceGovernance::new(&store, namespace_id.into());
-        let policy_op = GroupKeyring::encrypt_op(
-            &group_key,
-            &crate::test_fixtures::guarded_group_op(
-                &store,
-                &ns_gid,
-                &verifier_sk.public_key(),
-                GroupOp::TeeAdmissionPolicySet {
-                    allowed_mrtd: vec!["m1".to_owned()],
-                    allowed_rtmr0: vec![],
-                    allowed_rtmr1: vec!["r1".to_owned()],
-                    allowed_rtmr2: vec!["r2".to_owned()],
-                    allowed_rtmr3: vec!["r3".to_owned()],
-                    allowed_tcb_statuses: vec!["ok".to_owned()],
-                    accept_mock: true,
-                },
-            ),
-        )
-        .expect("encrypt the policy op");
-        let head = gov.read_head_record().expect("read head");
-        let policy_ns_op = SignedNamespaceOp::sign(
-            &verifier_sk,
-            namespace_id.into(),
-            head.parent_hashes.clone(),
-            head.next_nonce,
-            NamespaceOp::Group {
-                group_id: namespace_id.into(),
-                key_id: key_id.into(),
-                encrypted: policy_op,
-                key_rotation: None,
-            },
-        )
-        .expect("verifier signs the policy op");
-        gov.apply_signed_op(&policy_ns_op)
-            .expect("the policy op applies");
         Self {
             store,
             namespace_id,
             ns_gid,
             verifier_sk,
+            replica_sk,
             replica,
             account,
         }
+    }
+
+    /// Apply the admission policy that accepts mock measurements; the signed op.
+    fn set_policy(&self) -> SignedNamespaceOp {
+        let policy = self.policy_signed_at("m1", &self.heads(), self.next_nonce());
+        self.apply(&policy);
+        policy
+    }
+
+    /// An admission policy allowing only `mrtd`, signed by the verifier at `parents`.
+    fn policy_signed_at(&self, mrtd: &str, parents: &[[u8; 32]], nonce: u64) -> SignedNamespaceOp {
+        let policy = crate::test_fixtures::guarded_group_op(
+            &self.store,
+            &self.ns_gid,
+            &self.verifier_sk.public_key(),
+            GroupOp::TeeAdmissionPolicySet {
+                allowed_mrtd: vec![mrtd.to_owned()],
+                allowed_rtmr0: vec![],
+                allowed_rtmr1: vec!["r1".to_owned()],
+                allowed_rtmr2: vec!["r2".to_owned()],
+                allowed_rtmr3: vec!["r3".to_owned()],
+                allowed_tcb_statuses: vec!["ok".to_owned()],
+                accept_mock: true,
+            },
+        );
+        self.group_op_signed_at(&self.verifier_sk, parents, nonce, &policy)
+    }
+
+    /// `op` sealed under the namespace's current key, signed by `signer` at `parents`.
+    fn group_op_signed_at(
+        &self,
+        signer: &PrivateKey,
+        parents: &[[u8; 32]],
+        nonce: u64,
+        op: &GroupOp,
+    ) -> SignedNamespaceOp {
+        let (key_id, group_key) = GroupKeyring::new(&self.store, self.ns_gid)
+            .load_current_key()
+            .expect("read the group key")
+            .expect("the fixture keys the namespace");
+        SignedNamespaceOp::sign(
+            signer,
+            self.namespace_id.into(),
+            parents.to_vec(),
+            nonce,
+            NamespaceOp::Group {
+                group_id: self.namespace_id.into(),
+                key_id: key_id.into(),
+                encrypted: GroupKeyring::encrypt_op(&group_key, op).expect("encrypt the op"),
+                key_rotation: None,
+                registers: op.registered_context(),
+            },
+        )
+        .expect("sign the group op")
+    }
+
+    fn heads(&self) -> Vec<[u8; 32]> {
+        NamespaceGovernance::new(&self.store, self.namespace_id.into())
+            .read_head_record()
+            .expect("read head")
+            .parent_hashes
+    }
+
+    fn next_nonce(&self) -> u64 {
+        NamespaceGovernance::new(&self.store, self.namespace_id.into())
+            .read_head_record()
+            .expect("read head")
+            .next_nonce
+    }
+
+    /// Apply `op` on this node, which holds every key, and require it to land.
+    fn apply(&self, op: &SignedNamespaceOp) {
+        let _applied = NamespaceGovernance::new(&self.store, self.namespace_id.into())
+            .apply_signed_op(op)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .expect("the op applies on a node holding every key");
+    }
+
+    /// The TEE fleet's chain, applied here: policy (group), admission (root), the vault key the
+    /// TEE delivers (group), a second TEE it vouches for (root); after the policy, under `rekey`.
+    fn fleet_chain(&self, rekey: Option<&[u8; 32]>) -> Vec<SignedNamespaceOp> {
+        let policy = self.set_policy();
+        if let Some(key) = rekey {
+            let _key_id = GroupKeyring::new(&self.store, self.ns_gid)
+                .store_key(key)
+                .expect("the namespace moves to a new key");
+        }
+        let quote = self.honest_quote();
+        let quote_hash = crate::tee::sha256(&quote);
+        let admission = self.admission_signed_by(&self.verifier_sk, quote, quote_hash);
+        self.apply(&admission);
+        let delivery = self.group_op_signed_at(
+            &self.replica_sk,
+            &self.heads(),
+            self.next_nonce(),
+            &GroupOp::TeeVaultKeyDelivered {
+                vault_key: PublicKey::from([0x71; 32]),
+                recipient_key: self.replica,
+                envelope: vec![0x72; 8],
+            },
+        );
+        self.apply(&delivery);
+        let second = PrivateKey::random(&mut UnwrapErr(SysRng)).public_key();
+        let second_account = crate::test_fixtures::real_join_account(&second);
+        let quote = crate::tee::tests::admission_quote_with(&self.ns_gid, &second, &second_account);
+        let quote_hash = crate::tee::sha256(&quote);
+        let vouched = self.admission_of(
+            &self.replica_sk,
+            &second,
+            &second_account,
+            quote,
+            quote_hash,
+        );
+        self.apply(&vouched);
+        vec![policy, admission, delivery, vouched]
     }
 
     /// The honest joiner's quote for this replica's own credential.
@@ -10424,13 +10484,37 @@ impl TeeAdmissionFixture {
         quote: Vec<u8>,
         quote_hash: [u8; 32],
     ) -> eyre::Result<()> {
-        use calimero_context_client::local_governance::{RootOp, SignedNamespaceOp};
+        let admit = self.admission_signed_by(signer, quote, quote_hash);
+        NamespaceGovernance::new(&self.store, self.namespace_id.into())
+            .apply_signed_op(&admit)
+            .and_then(crate::ApplyNamespaceOpResult::verdict)
+            .map(|_| ())
+    }
 
-        use super::NamespaceGovernance;
+    /// The sealed admission of the replica, signed at the current heads.
+    fn admission_signed_by(
+        &self,
+        signer: &PrivateKey,
+        quote: Vec<u8>,
+        quote_hash: [u8; 32],
+    ) -> SignedNamespaceOp {
+        self.admission_of(signer, &self.replica, &self.account, quote, quote_hash)
+    }
+
+    /// The sealed admission of `member`, signed by `signer` at the current heads.
+    fn admission_of(
+        &self,
+        signer: &PrivateKey,
+        member: &PublicKey,
+        account: &calimero_context_client::local_governance::JoinAccountCredential,
+        quote: Vec<u8>,
+        quote_hash: [u8; 32],
+    ) -> SignedNamespaceOp {
+        use calimero_context_client::local_governance::RootOp;
 
         let gov = NamespaceGovernance::new(&self.store, self.namespace_id.into());
         let head = gov.read_head_record().expect("read head");
-        let admit = SignedNamespaceOp::sign(
+        SignedNamespaceOp::sign(
             signer,
             self.namespace_id.into(),
             head.parent_hashes.clone(),
@@ -10440,7 +10524,7 @@ impl TeeAdmissionFixture {
                 self.ns_gid,
                 RootOp::MemberJoinedViaTeeAttestation {
                     group_id: self.ns_gid,
-                    member: self.replica,
+                    member: *member,
                     quote_hash,
                     mrtd: "m1".to_owned(),
                     rtmr0: String::new(),
@@ -10449,13 +10533,12 @@ impl TeeAdmissionFixture {
                     rtmr3: "r3".to_owned(),
                     tcb_status: "ok".to_owned(),
                     role: GroupMemberRole::ReadOnlyTee,
-                    account: self.account.clone(),
+                    account: Box::new(account.clone()),
                     quote,
                 },
             ),
         )
-        .expect("verifier signs the admission");
-        gov.apply_signed_op(&admit).map(|_| ())
+        .expect("verifier signs the admission")
     }
 
     fn is_member(&self) -> bool {
@@ -10463,6 +10546,587 @@ impl TeeAdmissionFixture {
             .is_member(&self.ns_gid, &self.account.statement.account)
             .expect("membership")
     }
+}
+
+/// A copy of the fixture's node as another node that holds no namespace key yet, and
+/// the key it will receive.
+fn keyless_replica(f: &TeeAdmissionFixture) -> (Store, [u8; 32]) {
+    let replica = crate::test_fixtures::fork_store(&f.store);
+    let keyring = GroupKeyring::new(&replica, f.ns_gid);
+    let (key_id, key) = keyring
+        .load_current_key()
+        .expect("read the key")
+        .expect("the fixture keys the namespace");
+    keyring
+        .delete_key_by_id(&key_id)
+        .expect("the replica holds no key yet");
+    // Another node's identity: a node never re-drives the ops it signed.
+    let local: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
+    NamespaceRepository::new(&replica)
+        .replace_identity(&f.ns_gid, &PrivateKey::from(local).public_key(), &local)
+        .expect("the replica's own identity");
+    (replica, key)
+}
+
+/// Hand `ops` to `replica` unread, then deliver `key` and replay at each op's cut.
+fn replay_after_late_key(
+    f: &TeeAdmissionFixture,
+    replica: &Store,
+    key: &[u8; 32],
+    ops: &[&SignedNamespaceOp],
+) {
+    let mut arrivals: Vec<Arrival<'_>> = ops.iter().map(|op| Arrival::Op(op)).collect();
+    arrivals.push(Arrival::Key(*key));
+    play(f, replica, &arrivals);
+}
+
+/// What reaches a node, in the order it arrives.
+#[derive(Clone, Copy)]
+enum Arrival<'a> {
+    Op(&'a SignedNamespaceOp),
+    Key([u8; 32]),
+}
+
+/// Play `arrivals` on `replica`: an op applies at its cut once its parents are logged, one
+/// turned away is offered again, as in the DAG, and a key is stored and replays what it opens.
+fn play(f: &TeeAdmissionFixture, replica: &Store, arrivals: &[Arrival<'_>]) {
+    let judge = crate::test_fixtures::LiveCutJudge {
+        store: replica,
+        namespace: f.namespace_id.into(),
+    };
+    let mut pending: Vec<&SignedNamespaceOp> = Vec::new();
+    for arrival in arrivals {
+        match arrival {
+            Arrival::Op(op) => pending.push(op),
+            Arrival::Key(key) => {
+                let _key_id = GroupKeyring::new(replica, f.ns_gid)
+                    .store_key(key)
+                    .expect("the key arrives");
+                let _divergence = retry_encrypted_ops_for_group_with(
+                    replica,
+                    f.namespace_id.into(),
+                    f.namespace_id,
+                    &judge,
+                )
+                .expect("the key arrival replays the namespace");
+            }
+        }
+        let log = NamespaceOpLogService::new(replica, f.namespace_id.into());
+        while let Some(at) = pending.iter().position(|op| {
+            op.parent_op_hashes
+                .iter()
+                .all(|parent| log.contains_op(*parent).expect("read the op log"))
+                && apply_signed_namespace_op_at_cut(replica, op, &op.parent_op_hashes, &judge)
+                    .is_ok()
+        }) {
+            let _taken = pending.remove(at);
+        }
+    }
+}
+
+/// `replica` ends where the fixture's own node, which read every op as it came,
+/// stands: the same verdict on each op of `chain` and the same replica membership.
+fn assert_lands_as_on_the_keyed_node(
+    f: &TeeAdmissionFixture,
+    replica: &Store,
+    chain: &[SignedNamespaceOp],
+    schedule: &str,
+) {
+    for (at, op) in chain.iter().enumerate() {
+        let id = op.content_hash().expect("content hash");
+        assert!(
+            NamespaceOpLogService::new(replica, f.namespace_id.into())
+                .contains_op(id)
+                .expect("read the op log"),
+            "op {at} of the chain never reached the replica's log ({schedule})"
+        );
+        let verdict =
+            |store: &Store| crate::void_ledger::parked_op(store, f.namespace_id.into(), id);
+        assert_eq!(
+            verdict(replica).expect("read the replica's mark"),
+            verdict(&f.store).expect("read the keyed node's mark"),
+            "op {at} of the chain lands differently ({schedule})"
+        );
+    }
+    assert_eq!(
+        MembershipRepository::new(replica)
+            .role_of(&f.ns_gid, &f.account.statement.account)
+            .expect("role"),
+        MembershipRepository::new(&f.store)
+            .role_of(&f.ns_gid, &f.account.statement.account)
+            .expect("role"),
+        "the replica's admission lands differently ({schedule})"
+    );
+}
+
+/// A replica that took the namespace key late replays the policy before the
+/// admission that cites it, so the admission applies as it did on a keyed node.
+#[test]
+fn a_tee_admission_replayed_before_its_policy_folds_applies_once_the_policy_does() {
+    let f = TeeAdmissionFixture::without_policy(0xD9);
+    let (replica, key) = keyless_replica(&f);
+    let policy = f.set_policy();
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+
+    replay_after_late_key(&f, &replica, &key, &[&policy, &admission]);
+
+    assert!(
+        MembershipRepository::new(&replica)
+            .is_member(&f.ns_gid, &f.account.statement.account)
+            .expect("membership"),
+        "the admission stayed refused after its policy folded"
+    );
+}
+
+/// The key arrival records the refusal of an admission no policy admits.
+#[test]
+fn a_tee_admission_without_a_policy_is_refused_by_the_key_arrival() {
+    let f = TeeAdmissionFixture::without_policy(0xDA);
+    let (replica, key) = keyless_replica(&f);
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+
+    replay_after_late_key(&f, &replica, &key, &[&admission]);
+
+    assert_eq!(
+        crate::void_ledger::parked_op(
+            &replica,
+            f.namespace_id.into(),
+            admission.content_hash().expect("content hash"),
+        )
+        .expect("read the parked mark"),
+        Some(crate::void_ledger::Parked::Refused),
+        "the key arrival never recorded the refusal"
+    );
+}
+
+/// The fleet chain alternates kinds: policy (group), admission (root), the delivery the TEE
+/// signs (group). A node taking the key after all of them lands them as a live reader did.
+#[test]
+fn a_tee_fleet_chain_replayed_after_a_late_key_lands_as_it_did_live() {
+    let f = TeeAdmissionFixture::without_policy(0xDB);
+    let (replica, key) = keyless_replica(&f);
+    let chain = f.fleet_chain(None);
+
+    replay_after_late_key(&f, &replica, &key, &chain.iter().collect::<Vec<_>>());
+
+    assert_lands_as_on_the_keyed_node(&f, &replica, &chain, "every op before the key");
+}
+
+/// Where the key falls among the chain's ops decides which ops a replay judges and
+/// which arrive readable; it must not decide what lands.
+#[test]
+fn a_tee_fleet_chain_lands_the_same_wherever_the_key_arrives_in_it() {
+    for key_at in 0..=4 {
+        let f = TeeAdmissionFixture::without_policy(0xDC);
+        let (replica, key) = keyless_replica(&f);
+        let chain = f.fleet_chain(None);
+        let mut arrivals: Vec<Arrival<'_>> = chain.iter().map(Arrival::Op).collect();
+        arrivals.insert(key_at, Arrival::Key(key));
+
+        play(&f, &replica, &arrivals);
+
+        assert_lands_as_on_the_keyed_node(
+            &f,
+            &replica,
+            &chain,
+            &format!("the key after {key_at} ops"),
+        );
+    }
+}
+
+/// A node holding the admission's key but not its policy's reads the admission while the
+/// policy is a hole in its cut; that is no verdict, and it lands once the policy does.
+#[test]
+fn an_admission_read_while_its_policy_is_still_sealed_lands_once_the_policy_does() {
+    let f = TeeAdmissionFixture::without_policy(0xDD);
+    let (replica, old_key) = keyless_replica(&f);
+    let new_key = [0x9B; 32];
+    let chain = f.fleet_chain(Some(&new_key));
+
+    play(
+        &f,
+        &replica,
+        &[
+            Arrival::Key(new_key),
+            Arrival::Op(&chain[0]),
+            Arrival::Op(&chain[1]),
+            Arrival::Op(&chain[2]),
+            Arrival::Op(&chain[3]),
+            Arrival::Key(old_key),
+        ],
+    );
+
+    assert_lands_as_on_the_keyed_node(&f, &replica, &chain, "the newer key first");
+}
+
+/// Neither the order two keys arrive in nor where they fall among the chain's ops
+/// decides what lands.
+#[test]
+fn a_tee_fleet_chain_across_a_rekey_lands_the_same_in_every_arrival_order() {
+    for first in 0..6 {
+        for second in first + 1..6 {
+            for newer_first in [false, true] {
+                let f = TeeAdmissionFixture::without_policy(0xDE);
+                let (replica, old_key) = keyless_replica(&f);
+                let new_key = [0x9C; 32];
+                let chain = f.fleet_chain(Some(&new_key));
+                let (a, b) = if newer_first {
+                    (new_key, old_key)
+                } else {
+                    (old_key, new_key)
+                };
+                let mut ops = chain.iter();
+                let arrivals: Vec<Arrival<'_>> = (0..6)
+                    .map(|slot| match slot {
+                        s if s == first => Arrival::Key(a),
+                        s if s == second => Arrival::Key(b),
+                        _ => Arrival::Op(ops.next().expect("four ops fill four slots")),
+                    })
+                    .collect();
+
+                play(&f, &replica, &arrivals);
+
+                assert_lands_as_on_the_keyed_node(
+                    &f,
+                    &replica,
+                    &chain,
+                    &format!("keys at {first} and {second}, newer first: {newer_first}"),
+                );
+            }
+        }
+    }
+}
+
+/// A copy of the fixture's node as another node holding every key.
+fn keyed_replica(f: &TeeAdmissionFixture) -> Store {
+    let replica = crate::test_fixtures::fork_store(&f.store);
+    // Another node's identity: a node never re-drives the ops it signed.
+    let local: [u8; 32] = rand::RngExt::random(&mut UnwrapErr(SysRng));
+    NamespaceRepository::new(&replica)
+        .replace_identity(&f.ns_gid, &PrivateKey::from(local).public_key(), &local)
+        .expect("the replica's own identity");
+    replica
+}
+
+/// An admission is judged by the policy its cut holds. A stricter policy concurrent
+/// with it does not refuse it on a node that applied that policy first.
+#[test]
+fn an_admission_is_judged_by_the_policy_at_its_cut_not_a_concurrent_one() {
+    let f = TeeAdmissionFixture::new(0xDF);
+    let replica = keyed_replica(&f);
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+    let stricter = f.policy_signed_at("m2", &admission.parent_op_hashes, admission.nonce + 1);
+
+    play(
+        &f,
+        &f.store,
+        &[Arrival::Op(&admission), Arrival::Op(&stricter)],
+    );
+    play(
+        &f,
+        &replica,
+        &[Arrival::Op(&stricter), Arrival::Op(&admission)],
+    );
+
+    for store in [&f.store, &replica] {
+        assert!(
+            MembershipRepository::new(store)
+                .is_member(&f.ns_gid, &f.account.statement.account)
+                .expect("membership"),
+            "the admission lands whichever concurrent policy a node applied first"
+        );
+    }
+}
+
+/// A policy op refused at its cut set no policy, so it is not the one an admission
+/// after it is judged by.
+#[test]
+fn a_refused_policy_in_an_admissions_cut_is_not_its_policy() {
+    let f = TeeAdmissionFixture::new(0xE0);
+    let by_a_member = f.group_op_signed_at(
+        &f.replica_sk,
+        &f.heads(),
+        f.next_nonce(),
+        &GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m2".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec![],
+            accept_mock: true,
+        },
+    );
+    let refused = NamespaceGovernance::new(&f.store, f.namespace_id.into())
+        .apply_signed_op(&by_a_member)
+        .expect("the refusal is logged");
+    assert!(
+        refused.refused.is_some(),
+        "precondition: only an admin sets a policy"
+    );
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+
+    play(&f, &f.store, &[Arrival::Op(&admission)]);
+
+    assert!(f.is_member(), "the refused policy refused the admission");
+}
+
+/// A policy op judged void set no policy either.
+#[test]
+fn a_void_policy_in_an_admissions_cut_is_not_its_policy() {
+    let f = TeeAdmissionFixture::new(0xE1);
+    let stricter = f.policy_signed_at("m2", &f.heads(), f.next_nonce());
+    f.apply(&stricter);
+    crate::void_ledger::VoidLedger::new(&f.store, f.namespace_id.into())
+        .note_voided(stricter.content_hash().expect("content hash"))
+        .expect("judge the stricter policy void");
+    let quote = f.honest_quote();
+    let quote_hash = crate::tee::sha256(&quote);
+    let admission = f.admission_signed_by(&f.verifier_sk, quote, quote_hash);
+
+    play(&f, &f.store, &[Arrival::Op(&admission)]);
+
+    assert!(f.is_member(), "the void policy refused the admission");
+}
+
+/// A cut whose policy op is still parked has no policy to read: undecidable where the
+/// authorizer cannot read the cut, the live rows where it says they are sound.
+#[test]
+fn a_policy_still_parked_in_the_cut_is_undecidable_unless_live_is_sound() {
+    let f = TeeAdmissionFixture::without_policy(0xE2);
+    let (replica, _key) = keyless_replica(&f);
+    let policy = f.set_policy();
+    play(&f, &replica, &[Arrival::Op(&policy)]);
+    let parents = [policy.content_hash().expect("content hash")];
+    let judge = crate::test_fixtures::LiveCutJudge {
+        store: &replica,
+        namespace: f.namespace_id.into(),
+    };
+
+    let at_cut =
+        crate::tee::read_tee_admission_policy_at_cut(&replica, &f.ns_gid, &parents, &judge);
+    assert!(
+        at_cut
+            .as_ref()
+            .is_err_and(super::governance::is_undecidable),
+        "a parked policy is no verdict: {at_cut:?}"
+    );
+    assert!(matches!(
+        crate::tee::read_tee_admission_policy_at_cut(
+            &replica,
+            &f.ns_gid,
+            &parents,
+            &crate::authorizer::LIVE_FALLBACK_AUTHORIZER,
+        ),
+        Ok(crate::TeeAdmissionPolicyRead::NotSet)
+    ));
+}
+
+/// Two concurrent ops, each applied first on one of two nodes holding every key,
+/// must land the same on both.
+fn assert_concurrent_ops_land_the_same(
+    f: &TeeAdmissionFixture,
+    first: &SignedNamespaceOp,
+    second: &SignedNamespaceOp,
+) -> Store {
+    let replica = keyed_replica(f);
+    play(f, &f.store, &[Arrival::Op(first), Arrival::Op(second)]);
+    play(f, &replica, &[Arrival::Op(second), Arrival::Op(first)]);
+    assert_lands_as_on_the_keyed_node(
+        f,
+        &replica,
+        &[first.clone(), second.clone()],
+        "the concurrent ops in the other order",
+    );
+    replica
+}
+
+/// A context capability grant concurrent with its context's detach, in both orders, with
+/// the context registered by `registration`, an op the fixture signs, or outside the log.
+fn assert_a_grant_and_a_detach_land_the_same(seed: u8, logged: bool) {
+    let (f, context) = registered_context(seed, logged);
+    let member =
+        crate::test_fixtures::account_for(&PrivateKey::random(&mut UnwrapErr(SysRng)).public_key());
+    let add = f.group_op_signed_at(
+        &f.verifier_sk,
+        &f.heads(),
+        f.next_nonce(),
+        &GroupOp::MemberAdded {
+            member,
+            role: GroupMemberRole::Member,
+        },
+    );
+    f.apply(&add);
+    let (heads, nonce) = (f.heads(), f.next_nonce());
+    let grant = f.group_op_signed_at(
+        &f.verifier_sk,
+        &heads,
+        nonce,
+        &GroupOp::ContextCapabilityGranted {
+            context_id: context,
+            member,
+            capability: calimero_governance_types::ContextCapabilityBits::new(1)
+                .expect("a non-zero capability"),
+        },
+    );
+    let detach = f.group_op_signed_at(
+        &f.verifier_sk,
+        &heads,
+        nonce + 1,
+        &GroupOp::ContextDetached {
+            context_id: context,
+        },
+    );
+
+    assert_concurrent_ops_land_the_same(&f, &grant, &detach);
+    assert_eq!(
+        crate::void_ledger::parked_op(
+            &f.store,
+            f.namespace_id.into(),
+            grant.content_hash().unwrap()
+        )
+        .expect("read the verdict"),
+        None,
+        "the grant was refused at a cut that holds its context"
+    );
+}
+
+/// A fixture whose namespace group holds a context, registered by an op the verifier signs
+/// or outside the log.
+fn registered_context(seed: u8, logged: bool) -> (TeeAdmissionFixture, ContextId) {
+    let f = TeeAdmissionFixture::new(seed);
+    let context = ContextId::from([seed; 32]);
+    if logged {
+        let register = f.group_op_signed_at(
+            &f.verifier_sk,
+            &f.heads(),
+            f.next_nonce(),
+            &GroupOp::ContextRegistered {
+                context_id: context,
+                application_id: calimero_primitives::application::ZERO_APPLICATION_ID,
+                blob_id: calimero_primitives::blobs::BlobId::from([0; 32]),
+                source: String::new(),
+                service_name: None,
+                package: String::new(),
+                version: String::new(),
+            },
+        );
+        f.apply(&register);
+    } else {
+        register_context_in_group(&f.store, &f.ns_gid, &context).expect("register the context");
+    }
+    (f, context)
+}
+
+/// The verifier's detach of `context`, signed at `heads` with `nonce`.
+fn detach_of(
+    f: &TeeAdmissionFixture,
+    context: ContextId,
+    heads: &[[u8; 32]],
+    nonce: u64,
+) -> SignedNamespaceOp {
+    f.group_op_signed_at(
+        &f.verifier_sk,
+        heads,
+        nonce,
+        &GroupOp::ContextDetached {
+            context_id: context,
+        },
+    )
+}
+
+/// The context's group and metadata on `store`.
+fn context_rows(f: &TeeAdmissionFixture, store: &Store, context: &ContextId) -> String {
+    format!(
+        "{:?} {:?}",
+        crate::get_group_for_context(store, context).expect("read the registration"),
+        crate::MetadataRepository::new(store)
+            .context_metadata(&f.ns_gid, context)
+            .expect("read the metadata")
+            .map(|record| record.name)
+    )
+}
+
+/// A context's metadata set concurrent with its detach lands the same in either order.
+#[test]
+fn a_context_metadata_set_concurrent_with_its_detach_lands_the_same_in_either_order() {
+    for logged in [true, false] {
+        let (f, context) = registered_context(0xE7, logged);
+        let (heads, nonce) = (f.heads(), f.next_nonce());
+        let metadata = f.group_op_signed_at(
+            &f.verifier_sk,
+            &heads,
+            nonce,
+            &GroupOp::ContextMetadataSet {
+                context_id: context,
+                name: Some("ctx".to_owned()),
+                data: std::collections::BTreeMap::new(),
+            },
+        );
+        let detach = detach_of(&f, context, &heads, nonce + 1);
+
+        let replica = assert_concurrent_ops_land_the_same(&f, &metadata, &detach);
+
+        assert_eq!(
+            context_rows(&f, &f.store, &context),
+            context_rows(&f, &replica, &context),
+            "the two orders left different rows (logged: {logged})"
+        );
+    }
+}
+
+/// Two detaches of one context from one cut land the same in either order.
+#[test]
+fn two_detaches_of_one_context_land_the_same_in_either_order() {
+    for logged in [true, false] {
+        let (f, context) = registered_context(0xE8, logged);
+        let (heads, nonce) = (f.heads(), f.next_nonce());
+        let first = detach_of(&f, context, &heads, nonce);
+        let second = detach_of(&f, context, &heads, nonce + 1);
+
+        let replica = assert_concurrent_ops_land_the_same(&f, &first, &second);
+
+        for store in [&f.store, &replica] {
+            for op in [&first, &second] {
+                assert_eq!(
+                    crate::void_ledger::parked_op(
+                        store,
+                        f.namespace_id.into(),
+                        op.content_hash().unwrap()
+                    )
+                    .expect("read the verdict"),
+                    None,
+                    "a detach was refused at a cut that holds its context (logged: {logged})"
+                );
+            }
+        }
+        assert_eq!(
+            context_rows(&f, &f.store, &context),
+            context_rows(&f, &replica, &context)
+        );
+    }
+}
+
+/// A context capability grant is judged by where the context was registered at its
+/// cut, not after a concurrent detach.
+#[test]
+fn a_context_grant_concurrent_with_its_contexts_detach_lands_the_same_in_either_order() {
+    assert_a_grant_and_a_detach_land_the_same(0xE5, true);
+}
+
+/// The same, for a context whose registration predates the log: the concurrent detach
+/// tells a node that took it first what the rows began as.
+#[test]
+fn a_grant_on_a_context_registered_outside_the_log_lands_the_same_in_either_order() {
+    assert_a_grant_and_a_detach_land_the_same(0xE6, false);
 }
 
 /// The honest admission still applies: a quote that commits to the credential
@@ -11006,6 +11670,7 @@ fn a_registered_applications_coordinates_ride_onto_the_stub_row() {
                     key_id: key_id.into(),
                     encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
                     key_rotation: None,
+                    registers: inner.registered_context(),
                 },
             )
             .unwrap();
@@ -11089,6 +11754,7 @@ fn context_registered_records_its_coordinates_on_a_zeroed_target() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
             key_rotation: None,
+            registers: inner.registered_context(),
         },
     )
     .unwrap();
@@ -11200,6 +11866,7 @@ fn a_registered_context_stub_waits_for_an_install_of_the_same_application() {
             key_id: key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&group_key, &inner).unwrap(),
             key_rotation: None,
+            registers: inner.registered_context(),
         },
     )
     .unwrap();
@@ -11394,6 +12061,7 @@ fn the_key_arrival_redrive_folds_a_buffered_account_device_linked() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -11502,6 +12170,7 @@ fn the_live_path_folds_an_account_device_linked_when_the_key_is_already_held() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -11855,7 +12524,7 @@ fn a_sealed_root_op_is_given_the_ack_budget_its_cleartext_variant_earns() {
 /// This also pins that the chain TERMINATES, and that is not incidental. The
 /// replay has no nonce dedup — it re-feeds every sealed root op in the log — so
 /// a `KeyDelivery` whose effect re-drives its own group reaches this same op
-/// again one level down, forever. Raise `MAX_RETRY_REENTRY` and this test does
+/// again one level down, forever. Let a replay at `depth > 0` nest and this test does
 /// not fail, it aborts the process on a stack overflow, from an op any peer can
 /// send. That is why #3850 deferred wiring these effects in rather than adding
 /// the call and moving on.
@@ -12813,6 +13482,7 @@ fn an_inherited_tee_that_left_and_re_attested_is_a_live_member_again() {
                 key_id: key_id.into(),
                 encrypted: policy,
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap(),
@@ -13018,6 +13688,7 @@ fn a_direct_member_adopts_the_key_riding_a_flip_to_restricted() {
                     .build_rotation(&new_key, &admin_sk, &recipients)
                     .unwrap(),
             ),
+            registers: flip.registered_context(),
         },
     )
     .unwrap();
@@ -13100,6 +13771,7 @@ fn a_relayed_flip_to_restricted_rotates_on_the_authors_authority() {
             encrypted: GroupKeyring::encrypt_op(&[0; 32], &relayed(VisibilityMode::Restricted))
                 .unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -14033,6 +14705,7 @@ fn an_anchors_key_delivery_is_refused_when_it_is_not_the_awaited_key() {
             key_id: real_key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -14130,6 +14803,7 @@ fn a_key_delivery_matching_the_awaited_key_is_applied() {
             key_id: real_key_id.into(),
             encrypted: GroupKeyring::encrypt_op(&real_key, &GroupOp::Noop).unwrap(),
             key_rotation: None,
+            registers: None,
         },
     )
     .unwrap();
@@ -14364,6 +15038,7 @@ fn causally_independent_retry_candidates_fold_by_signer_then_nonce() {
                 key_id: key_id.into(),
                 encrypted: GroupKeyring::encrypt_op(&group_key, op).unwrap(),
                 key_rotation: None,
+                registers: op.registered_context(),
             },
         )
         .unwrap()
@@ -14402,9 +15077,7 @@ fn causally_independent_retry_candidates_fold_by_signer_then_nonce() {
     ))
     .unwrap();
 
-    let candidates = NamespaceRetryService::new(&store, namespace_id.into())
-        .collect_retry_candidates_for_group(namespace_id)
-        .unwrap();
+    let candidates = group_retry_candidates(&store, namespace_id.into(), namespace_id);
 
     assert_eq!(
         candidates.len(),
@@ -14461,6 +15134,7 @@ fn the_retry_replay_order_is_causal_then_signer_and_nonce() {
                     ciphertext: Vec::new(),
                 },
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap()
@@ -14485,17 +15159,11 @@ fn the_retry_replay_order_is_causal_then_signer_and_nonce() {
         vec![&descendant, &second, &ancestor, &first],
         vec![&first, &ancestor, &second, &descendant],
     ] {
-        let candidates = input
-            .iter()
-            .map(|op| super::retry::RetryCandidate {
-                signed_op: (*op).clone(),
-                group_key: [0u8; 32],
-            })
-            .collect();
-        let ordered: Vec<_> = super::retry::order_causally(&op_log, candidates)
+        let candidates = input.into_iter().cloned().collect();
+        let ordered: Vec<_> = order_causally(&op_log, candidates)
             .unwrap()
             .iter()
-            .map(|c| c.signed_op.content_hash().unwrap())
+            .map(|op| op.content_hash().unwrap())
             .collect();
         assert_eq!(
             ordered, expected,
@@ -14608,6 +15276,7 @@ fn replay_link_after_target_application(link_signer_sorts_first: bool, via_inter
                     key_id: key_id.into(),
                     encrypted: GroupKeyring::encrypt_op(&namespace_key, op).unwrap(),
                     key_rotation: None,
+                    registers: op.registered_context(),
                 },
             )
             .unwrap()

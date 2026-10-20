@@ -42,6 +42,7 @@ pub async fn handler(
             target_application_id: req.target_application_id,
             cascade: req.cascade,
             force_code_only: req.force_code_only,
+            skip_trial: req.skip_trial,
         })
         .await
         .map_err(parse_api_error);
@@ -58,6 +59,8 @@ pub async fn handler(
                         local_contexts_total: total,
                         local_contexts_swapped: completed,
                         local_contexts_failed: failed,
+                        contexts_trialled: resp.contexts_trialled,
+                        contexts_not_held: resp.contexts_not_held,
                     },
                 },
             }

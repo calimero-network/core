@@ -1,8 +1,10 @@
-use crate::authorizer::AtCutAuthorizer;
+use crate::authorizer::{ensure_cut_resolvable, AtCutAuthorizer};
+use crate::first_target_gate::{applications_at_cut, ApplicationsAtCut};
 use crate::MembershipRepository;
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
+use calimero_primitives::application::{ApplicationId, ZERO_APPLICATION_ID};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
@@ -123,31 +125,13 @@ impl<'a> PermissionChecker<'a> {
     /// In the second case, refuse to answer rather than guess. The op is retried once
     /// the missing history arrives.
     fn ensure_live_fallback_is_sound(&self, identity: &PublicKey) -> EyreResult<()> {
-        if self
-            .authorizer
-            .can_resolve_cut(&self.group_id, self.parents)
-        {
-            return Ok(());
-        }
-        bail!(ApplyError::AuthorityUndecidable {
-            group_id: self.group_id.to_string(),
-            signer: format!("{identity}"),
-        });
+        ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, identity)
     }
 
     /// [`ensure_live_fallback_is_sound`](Self::ensure_live_fallback_is_sound)
     /// for a gate whose subject is an account rather than a signing key.
     fn ensure_live_fallback_is_sound_for_account(&self, member: &AccountId) -> EyreResult<()> {
-        if self
-            .authorizer
-            .can_resolve_cut(&self.group_id, self.parents)
-        {
-            return Ok(());
-        }
-        bail!(ApplyError::AuthorityUndecidable {
-            group_id: self.group_id.to_string(),
-            signer: member.to_string(),
-        });
+        ensure_cut_resolvable(self.authorizer, &self.group_id, self.parents, member)
     }
 
     /// The account `identity` speaks for on the live path, or `None`.
@@ -234,6 +218,65 @@ impl<'a> PermissionChecker<'a> {
     pub fn account_for_signer(&self, signer: &PublicKey) -> EyreResult<Option<AccountId>> {
         self.ensure_live_fallback_is_sound(signer)?;
         self.live_account_or_park(signer)
+    }
+
+    /// [`account_for_signer`](Self::account_for_signer) answered at the op's cut, for
+    /// a gate whose refusal every replica must reach alike; live only where it is sound.
+    pub fn account_for_signer_at_cut(&self, signer: &PublicKey) -> EyreResult<Option<AccountId>> {
+        if let Some(account) = self.principal_account(signer) {
+            return Ok(Some(account));
+        }
+        if let Some(answer) =
+            self.authorizer
+                .signer_account_at_cut(&self.group_id, signer, self.parents)
+        {
+            return Ok(answer);
+        }
+        self.account_for_signer(signer)
+    }
+
+    /// Does a device of `account` scoped to `applications` reach this namespace at
+    /// the op's cut: its own account namespace, or a scope covering the target?
+    pub fn scope_reaches(
+        &self,
+        account: &AccountId,
+        applications: &[ApplicationId],
+    ) -> EyreResult<bool> {
+        if let Some(verdict) = self.authorizer.scope_reaches_at_cut(
+            &self.group_id,
+            account,
+            applications,
+            self.parents,
+        ) {
+            return Ok(verdict);
+        }
+        let root = crate::NamespaceRepository::new(self.store).resolve(&self.group_id)?;
+        let founder =
+            crate::NamespaceFoundingRepository::new(self.store).account_namespace_founder(&root)?;
+        let own_namespace = founder == Some(*account);
+        // Without the projection, the cut's ancestry names every target the root may run then.
+        if let ApplicationsAtCut::Known(targets) =
+            applications_at_cut(self.store, &root, self.parents)?
+        {
+            return Ok(targets.into_iter().all(|target| {
+                calimero_authz::scope_reaches(applications, Some(target), own_namespace)
+            }));
+        }
+        self.ensure_live_fallback_is_sound_for_account(account)?;
+        let target = crate::MetaRepository::new(self.store)
+            .load(&root)?
+            .map(|meta| meta.target.application_id)
+            .filter(|application| *application != ZERO_APPLICATION_ID);
+        let reaches = calimero_authz::scope_reaches(applications, target, own_namespace);
+        // A replica's meta names the zero placeholder until the sealed op setting its
+        // target folds; a refusal then would spend the nonce the later replay needs.
+        if !reaches && target.is_none() {
+            bail!(ApplyError::AuthorityUndecidable {
+                group_id: self.group_id.to_string(),
+                signer: account.to_string(),
+            });
+        }
+        Ok(reaches)
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {

@@ -11,8 +11,8 @@ use calimero_context_client::tee_trigger::TeeTriggerCause;
 use calimero_context_config::types::ContextGroupId;
 use calimero_crypto::SharedKey;
 use calimero_governance_store::{
-    register_context_in_group, GroupKeyring, MembershipRepository, MetaRepository,
-    NamespaceRepository, NodeDeviceRepository,
+    register_context_in_group, AbsorbRecord, AbsorbRepository, AbsorbedLeaf, GroupKeyring,
+    MembershipRepository, MetaRepository, NamespaceRepository, NodeDeviceRepository,
 };
 use calimero_node_primitives::sync::delta_auth::delta_signature_payload;
 use calimero_node_primitives::sync::SealedDeltaPayload;
@@ -332,11 +332,8 @@ impl Fixture {
         }
     }
 
-    /// Hand `message` to the apply path a peer's delta takes, and return the DAG
-    /// row it left under `delta_id`, if any.
-    async fn apply(&self, message: StateDeltaMessage) -> Option<types::ContextDagDelta> {
-        let delta_id = message.delta_id;
-        let input = StateDeltaContext {
+    fn input(&self) -> StateDeltaContext {
+        StateDeltaContext {
             node_clients: crate::NodeClients {
                 context: self.node.context_client.clone(),
                 node: self.node.node_client.clone(),
@@ -344,7 +341,36 @@ impl Fixture {
             node_state: crate::NodeState::new(),
             network_client: self.node.node_client.network_client().clone(),
             sync_timeout: Duration::from_secs(5),
-        };
+        }
+    }
+
+    /// An absorb record whose `source_peer` is not a valid `PeerId`.
+    fn undecodable_record(&self) -> AbsorbRecord {
+        AbsorbRecord {
+            id: [0xD4; 32],
+            parents: vec![[0; 32]],
+            hlc: HybridTimestamp::zero(),
+            payload: vec![1, 2, 3],
+            nonce: [0; 12],
+            author_id: PrivateKey::from(ADMIN_KEY).public_key(),
+            source_peer: vec![0xFF],
+            key_id: [0; 32],
+            governance_position: None,
+            delta_signature: None,
+            governance_drain_attempts: 0,
+            producing_bytecode_id: Some(self.blob),
+            delegation: None,
+            leaf: None,
+            entity: None,
+            pending_application: None,
+        }
+    }
+
+    /// Hand `message` to the apply path a peer's delta takes, and return the DAG
+    /// row it left under `delta_id`, if any.
+    async fn apply(&self, message: StateDeltaMessage) -> Option<types::ContextDagDelta> {
+        let delta_id = message.delta_id;
+        let input = self.input();
         // Judged by what reached the DAG: a refusal returns `Ok` too.
         let _outcome = apply_authorized_state_delta(input, message, false).await;
         self.node
@@ -512,4 +538,47 @@ async fn a_refused_handler_waits_while_this_node_runs_an_older_version() {
         !fx.receive(&[event("transfer")]).await,
         "an undeclared handler ran while waiting"
     );
+}
+
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn drain_deletes_a_parked_record_it_cannot_reconstruct() {
+    let fx = fixture(boot_test_node().await, module_declaring_on_event()).await;
+    let repo = AbsorbRepository::new(&fx.node.store);
+    let record = AbsorbRecord {
+        pending_application: Some(*fx.application_id),
+        ..fx.undecodable_record()
+    };
+    repo.save(&fx.context_id, *fx.application_id, &record)
+        .expect("park the record");
+
+    super::buffering::drain_absorbed(&fx.input(), &fx.context_id).await;
+
+    assert!(repo
+        .enumerate_pending(&fx.context_id)
+        .expect("read the buffer")
+        .is_empty());
+}
+
+#[tokio::test]
+#[serial(boot_test_node)]
+async fn drain_deletes_a_leaf_record_it_cannot_decode() {
+    let fx = fixture(boot_test_node().await, module_declaring_on_event()).await;
+    let repo = AbsorbRepository::new(&fx.node.store);
+    let record = AbsorbRecord {
+        leaf: Some(AbsorbedLeaf {
+            leaf_bytes: vec![0xFF],
+            schema_bytecode_id: fx.blob,
+        }),
+        ..fx.undecodable_record()
+    };
+    repo.save(&fx.context_id, fx.blob, &record)
+        .expect("buffer the leaf");
+
+    super::buffering::drain_absorbed(&fx.input(), &fx.context_id).await;
+
+    assert!(repo
+        .enumerate_pending(&fx.context_id)
+        .expect("read the buffer")
+        .is_empty());
 }

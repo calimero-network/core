@@ -17,12 +17,16 @@
 //! [`NamespaceApplyCtx::require_namespace_admin`]: crate::ops::namespace::NamespaceApplyCtx
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Display;
 
 use calimero_account::{AccountId, DeviceId};
 use calimero_context_config::types::ContextGroupId;
 use calimero_op::Op;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
+use calimero_store::key::GroupExitReason;
+use eyre::{bail, Result as EyreResult};
 
 /// The apply-gate decision source, resolved at an op's causal cut (its parent op
 /// hashes). Implemented in `crates/context` over the unified projection; this
@@ -140,6 +144,51 @@ pub trait AtCutAuthorizer: Send + Sync {
         member: &AccountId,
         parents: &[[u8; 32]],
     ) -> Option<Option<GroupMemberRole>>;
+
+    /// `member`'s direct role in `group` at the cut, inheritance aside: `Some(None)` is no
+    /// direct row, `None` defers. Default `None`: an authorizer with no projection has no cut.
+    fn direct_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    /// What a join of `member` into `group` with the invitation `nonce` meets at the cut.
+    /// `None` defers. Default `None`, as for [`Self::direct_role_at_cut`].
+    fn reentry_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _nonce: &[u8; 32],
+        _parents: &[[u8; 32]],
+    ) -> Option<ReentryAtCut> {
+        None
+    }
+
+    /// The exit among `member`'s latest changes in `group` at the cut: `Some(None)` is none,
+    /// `None` defers.
+    fn exit_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupExitReason>> {
+        None
+    }
+
+    /// Where `member`'s inheritance into `group` stops at the cut, `group` itself included
+    /// (see `MembershipRepository::exited_ancestor`): `Some(None)` is no wall, `None` defers.
+    fn inheritance_wall_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
 
     /// The group `context`'s cells were rotated in if it is `group`, at the cut. `Some(None)` =
     /// not there; `None` = defer to live. Judged in `group` only: a registration elsewhere rests on live.
@@ -274,6 +323,46 @@ pub trait AtCutAuthorizer: Send + Sync {
     ) -> Option<bool> {
         None
     }
+
+    /// The account `signer` speaks for at the cut, `Some(None)` when nothing binds
+    /// it there. `None` when the cut cannot be resolved here.
+    fn signer_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<AccountId>> {
+        None
+    }
+
+    /// Does a device of `account` scoped to `applications` reach `group`'s namespace
+    /// at the cut? `None` when the cut cannot be resolved here.
+    fn scope_reaches_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _account: &AccountId,
+        _applications: &[ApplicationId],
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+}
+
+/// Refuse a live read for a real cut `authorizer` cannot resolve; `subject` names the
+/// undecidable authority in the error.
+pub(crate) fn ensure_cut_resolvable(
+    authorizer: &dyn AtCutAuthorizer,
+    group: &ContextGroupId,
+    parents: &[[u8; 32]],
+    subject: impl Display,
+) -> EyreResult<()> {
+    if authorizer.can_resolve_cut(group, parents) {
+        return Ok(());
+    }
+    bail!(crate::ApplyError::AuthorityUndecidable {
+        group_id: group.to_string(),
+        signer: subject.to_string(),
+    });
 }
 
 /// A group's direct rows as the log minus its void ops leaves them.
@@ -288,6 +377,15 @@ pub struct GroupRows {
     /// Accounts whose standing in the group needs no member row in the log: its
     /// genesis admin and the namespace owner. Their stored rows are never taken back.
     pub anchored: BTreeSet<AccountId>,
+}
+
+/// What a re-entering joiner meets in a group, at a cut or in the live rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReentryAtCut {
+    /// The exit among the joiner's latest changes there; `Removed` outranks `Left`.
+    pub exit: Option<GroupExitReason>,
+    /// Whether a join of the joiner already admitted it there with this invitation.
+    pub spent: bool,
 }
 
 /// How an identity reaches membership of a group at a cut — the at-cut analogue of

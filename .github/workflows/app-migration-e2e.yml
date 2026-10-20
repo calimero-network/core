@@ -217,6 +217,9 @@ jobs:
           - 37-stranded-resync
           - 38-namespace-invite-join-regression
           - 39-missing-abi-refused
+          - 41-reader-sees-post-upgrade-writes
+          - 42-activate-upgrade-on-an-idle-node
+          - 43-retarget-before-activate
         # Scenarios that depend on a group's registry coordinates; dht ignores them,
         # so they need an http lane to exercise them.
         include:

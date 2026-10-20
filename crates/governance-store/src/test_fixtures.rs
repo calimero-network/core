@@ -14,11 +14,12 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::db::InMemoryDB;
+use calimero_store::db::{Column, InMemoryDB};
 use calimero_store::key::{GroupMetaValue, GroupParentRef, GroupTarget};
 use calimero_store::Store;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
+use strum::IntoEnumIterator;
 
 pub const FOUNDER_DEVICE_SEED: [u8; 32] = [0x3E; 32]; // the device a founder credential certifies
 pub const STAMPED_AT: u64 = 1_700_000_000; // when a test relay stamps a delegated op
@@ -214,6 +215,21 @@ pub fn sample_meta_with_admin(admin: AccountId) -> GroupMetaValue {
         migration: None,
         auto_join: true,
     }
+}
+
+/// A private copy of `store`, row for row.
+pub fn fork_store(store: &Store) -> Store {
+    let copy = Store::new(Arc::new(InMemoryDB::owned()));
+    let top = vec![0xFF; 4096];
+    for column in Column::iter() {
+        let rows = store
+            .raw_scan(column, &[], &top, None)
+            .expect("scan a column");
+        for (key, value) in rows {
+            copy.raw_put(column, &key, &value).expect("copy a row");
+        }
+    }
+    copy
 }
 
 /// Bootstrap a namespace root with a freshly-generated admin: writes the
@@ -521,6 +537,13 @@ impl crate::authorizer::AtCutAuthorizer for FixedAuthorizer {
     ) -> Option<Option<ContextGroupId>> {
         None
     }
+}
+
+/// The [`crate::BindingRejected`] anywhere in an apply error's chain.
+pub fn binding_rejection(err: &eyre::Report) -> Option<crate::BindingRejected> {
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<crate::BindingRejected>())
+        .copied()
 }
 
 /// A non-empty causal cut for apply-auth tests. Value is irrelevant — only
@@ -945,6 +968,114 @@ impl crate::authorizer::AtCutAuthorizer for SealedSubgroupAuthorizer {
 
     fn can_resolve_cut(&self, group: &ContextGroupId, _parents: &[[u8; 32]]) -> bool {
         *group != self.0
+    }
+}
+
+/// An at-cut judge whose gates defer to this node's rows and which, like the projection,
+/// cannot resolve a cut missing an op or holding one still parked.
+pub struct LiveCutJudge<'a> {
+    pub store: &'a Store,
+    pub namespace: calimero_governance_types::NamespaceId,
+}
+
+impl crate::authorizer::AtCutAuthorizer for LiveCutJudge<'_> {
+    fn can_resolve_cut(&self, _group: &ContextGroupId, parents: &[[u8; 32]]) -> bool {
+        let log = crate::NamespaceOpLogService::new(self.store, self.namespace);
+        let mut seen = std::collections::HashSet::new();
+        let mut queue: Vec<[u8; 32]> = parents.to_vec();
+        while let Some(id) = queue.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let parked = crate::void_ledger::parked_op(self.store, self.namespace, id)
+                .expect("read the parked mark");
+            if parked == Some(crate::void_ledger::Parked::Undecided) {
+                return false;
+            }
+            let Some(op) = log.get_signed_op(id).expect("read the op log") else {
+                return false;
+            };
+            queue.extend(op.parent_op_hashes);
+        }
+        true
+    }
+
+    fn is_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _signer: &PublicKey,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_or_capability_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _capability: u32,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_admin_account_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn is_last_admin_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<bool> {
+        None
+    }
+
+    fn membership_path_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<crate::authorizer::AtCutMembershipPath> {
+        None
+    }
+
+    fn effective_role_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _member: &AccountId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<GroupMemberRole>> {
+        None
+    }
+
+    fn context_rotation_group_at_cut(
+        &self,
+        _group: &ContextGroupId,
+        _context: &calimero_primitives::context::ContextId,
+        _parents: &[[u8; 32]],
+    ) -> Option<Option<ContextGroupId>> {
+        None
+    }
+
+    fn at_cut(&self) -> Option<&dyn crate::authorizer::AtCutAuthorizer> {
+        Some(self)
     }
 }
 
@@ -1574,5 +1705,20 @@ pub fn apply_member_joined(
     // On the envelope, after signing — see above.
     let mut signed = signed;
     signed.admitter_endorsement = Some(admitter_endorsement);
-    crate::apply_signed_namespace_op(store, &signed).map(|_result| ())
+    crate::apply_signed_namespace_op(store, &signed)
+        .and_then(crate::ApplyNamespaceOpResult::verdict)
+        .map(|_result| ())
+}
+
+/// A mock admission quote for `credential` admitted as `key` into `namespace`.
+pub fn admission_quote_with(
+    namespace: &ContextGroupId,
+    key: &PublicKey,
+    credential: &JoinAccountCredential,
+) -> Vec<u8> {
+    let namespace = namespace.to_bytes();
+    let binding =
+        calimero_op_adapter::tee_admission_binding(&namespace, &namespace, key, credential);
+    let report_data = calimero_tee_attestation::admission_report_data(&[0x01; 32], &binding);
+    calimero_tee_attestation::generate_mock_attestation(report_data).quote_bytes
 }

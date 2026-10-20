@@ -290,6 +290,8 @@ pub(crate) struct TestNode {
 /// publish becomes a local-only apply). Sufficient for governance handlers
 /// that just need the actor mailbox and the datastore.
 pub(crate) async fn boot_test_node() -> TestNode {
+    // An upgrade trials its migrations in wasm, which runs on the global runtime.
+    crate::registered_bytecode_e2e::global_runtime();
     let mut pool = ArbiterPool::new().await.expect("arbiter pool");
     let tmp = tempfile::tempdir().expect("tempdir");
 

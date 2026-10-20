@@ -14,11 +14,11 @@ use super::{
     assert_covered, assert_matches, observe, Actor, ActorState, GatedOp, Home, OpTable, Outcome,
     Row, World, NAMESPACE_MEMBERS, SUBJECT_MEMBERS,
 };
-use crate::test_fixtures::{device_kem_secret, device_scope};
+use crate::test_fixtures::{binding_rejection, device_kem_secret, device_scope};
 use crate::warrant_gate::{check_delegated_delta, WarrantRefusal};
 use crate::{
     build_group_key_delivery, sign_apply_local_group_op_borsh, AccountBindingRepository,
-    AdmissionCut, GroupKeyring,
+    AdmissionCut, BindingRejected, GroupKeyring,
 };
 use ActorState::*;
 
@@ -117,13 +117,30 @@ fn open_chain_key_pull(world: &World, actor: &Actor) -> Outcome {
     key_pull(world, actor, world.open_chain)
 }
 
-/// Sign and apply `op` in the world's namespace on a private copy. A refused op
-/// is logged and records nothing, so each row reads the effect it wanted.
-fn publish(world: &World, signer: &PrivateKey, op: GroupOp) -> Store {
+/// Sign and apply `op` in the world's namespace on a private copy, and the apply's
+/// result, so each row reads the effect it wanted and checks how it was refused.
+fn publish(world: &World, signer: &PrivateKey, op: GroupOp) -> (Store, eyre::Result<()>) {
     let store = world.fork();
-    let _signed = sign_apply_local_group_op_borsh(&store, &world.namespace, signer, op)
-        .expect("the apply records or declines the op; it does not fail");
-    store
+    let applied = sign_apply_local_group_op_borsh(&store, &world.namespace, signer, op);
+    (store, applied.map(|_| ()))
+}
+
+/// A row's verdict: the effect of an op that applied, or a refusal `refused` names.
+/// Any other failure is the harness's, never a refusal.
+fn verdict(
+    applied: eyre::Result<()>,
+    effect: bool,
+    refused: fn(&BindingRejected) -> bool,
+) -> Outcome {
+    let Err(err) = applied else {
+        return effect.into();
+    };
+    assert!(
+        binding_rejection(&err).as_ref().is_some_and(refused),
+        "not the refusal this row expects: {err:#}"
+    );
+    assert!(!effect, "a refused op wrote its effect");
+    Outcome::Refuse
 }
 
 /// The actor pairs a new device of its own account, vouching for it itself.
@@ -152,13 +169,15 @@ fn device_link(world: &World, actor: &Actor) -> Outcome {
             .expect("endorse the account"),
         scope: Box::new(device_scope(&actor.root, &cert, vec![], 0)),
     };
-    let store = publish(world, &actor.sign_sk, op);
-    AccountBindingRepository::new(&store)
+    let (store, applied) = publish(world, &actor.sign_sk, op);
+    let linked = AccountBindingRepository::new(&store)
         .live_bindings(&world.namespace)
         .expect("read live bindings")
         .iter()
-        .any(|binding| binding.device == device)
-        .into()
+        .any(|binding| binding.device == device);
+    verdict(applied, linked, |reason| {
+        matches!(reason, BindingRejected::AccountNotMember)
+    })
 }
 
 /// The actor withdraws another member's device, with no proof from its account.
@@ -168,11 +187,13 @@ fn device_revoke(world: &World, actor: &Actor) -> Outcome {
         device: world.victim.peer,
         proof: None,
     };
-    let store = publish(world, &actor.sign_sk, op);
-    AccountBindingRepository::new(&store)
+    let (store, applied) = publish(world, &actor.sign_sk, op);
+    let revoked = AccountBindingRepository::new(&store)
         .is_revoked(&world.namespace, world.victim.peer)
-        .expect("read a tombstone")
-        .into()
+        .expect("read a tombstone");
+    verdict(applied, revoked, |reason| {
+        matches!(reason, BindingRejected::WithdrawalUnauthorised)
+    })
 }
 
 /// `signer` narrows `account`'s `device` out of the world's application, under a
@@ -209,13 +230,15 @@ fn descope(world: &World, signer: &Actor, account: &Actor, device: DeviceId) -> 
             .iter()
             .any(|binding| binding.device == device)
     };
-    let store = publish(world, &signer.sign_sk, op);
+    let (store, applied) = publish(world, &signer.sign_sk, op);
     let narrowed = floor(&store) > floor(&world.store);
     assert!(
         !narrowed || (live(&world.store) && !live(&store)),
         "a recorded narrowing drops the device's live binding"
     );
-    narrowed.into()
+    verdict(applied, narrowed, |reason| {
+        matches!(reason, BindingRejected::SignerNotTheAccount)
+    })
 }
 
 /// The actor narrows the other device of its own account.

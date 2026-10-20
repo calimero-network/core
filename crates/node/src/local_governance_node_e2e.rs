@@ -3119,6 +3119,7 @@ async fn restricted_ctx_redriven_after_group_created() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: Some(context_id),
         },
     )
     .expect("sign NamespaceOp::Group(ContextRegistered)");
@@ -3303,7 +3304,7 @@ async fn restricted_ctx_redriven_after_group_created() {
 /// holds the namespace key but no subgroup current key — exactly the Open case —
 /// was skipped and the buffered op stayed stranded. The fixed gate
 /// (`group_has_resolvable_buffered_op`) resolves through BOTH keyrings, matching
-/// `collect_retry_candidates_for_group`.
+/// `collect_replay_candidates`.
 ///
 /// This drives the bug-triggering order (buffer → KeyDelivery of the *namespace*
 /// key → GroupCreated{restricted:false}) and asserts the Open op is re-driven on
@@ -3406,6 +3407,7 @@ async fn open_ctx_redriven_after_group_created_via_namespace_key() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: Some(context_id),
         },
     )
     .expect("sign NamespaceOp::Group(ContextRegistered)");
@@ -3783,6 +3785,7 @@ async fn tee_matrix_restricted_late_join() {
             key_id: key_id.into(),
             encrypted,
             key_rotation: None,
+            registers: Some(context_id),
         },
     )
     .expect("sign NamespaceOp::Group(ContextRegistered)");

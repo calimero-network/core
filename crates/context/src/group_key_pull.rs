@@ -193,8 +193,8 @@ pub(crate) mod tests {
     /// membership path" from a fold that is missing the flip would be a decision
     /// about a history this node cannot see, and a keyed peer would contradict
     /// it. The recovery has to fold the flip and THEN the join, in that order,
-    /// which is the ordering `retry_encrypted_ops_for_group` closes by running
-    /// its sealed-root pass on both sides of the group phase.
+    /// which `retry_encrypted_ops_for_group` does by replaying root and group ops
+    /// in one causal order.
     #[test]
     fn a_pulled_key_unwedges_another_members_open_subgroup_join() {
         let store = Store::new(Arc::new(InMemoryDB::owned()));
@@ -291,6 +291,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap();
@@ -401,9 +402,9 @@ pub(crate) mod tests {
             "the re-drive must apply the buffered flip to the live store"
         );
         // The whole point. The sealed join is only admissible once the flip it
-        // parents onto has been folded, so a single sealed-root pass that ran
-        // before the group phase would have refused it and logged the refusal —
-        // leaving this node the only one that does not see the joiner.
+        // parents onto has been folded, so replaying it ahead of the flip would
+        // have refused it and logged the refusal — leaving this node the only one
+        // that does not see the joiner.
         //
         // Read through the deny list rather than `is_member`, which would pass
         // whether or not the join applied: an inherited membership is DERIVED
@@ -555,6 +556,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap();
@@ -735,6 +737,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap()
@@ -911,6 +914,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: None,
+                registers: None,
             },
         )
         .unwrap();
@@ -1033,6 +1037,7 @@ pub(crate) mod tests {
                 )
                 .unwrap(),
                 key_rotation: Some(rotation),
+                registers: None,
             },
         )
         .unwrap();
@@ -1056,10 +1061,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// A parked op whose cut cannot be resolved is judged by this pass's gates, and an
-    /// apply is all it records.
+    /// A parked op whose cut cannot be resolved is not judged: the live rows are another
+    /// cut, so neither an apply nor a refusal there is the verdict at its own.
     #[test]
-    fn a_parked_op_with_an_unresolvable_cut_is_judged_live_and_records_only_an_apply() {
+    fn a_parked_op_with_an_unresolvable_cut_stays_unjudged() {
         let ns = ContextGroupId::from([0x53; 32]);
         let (store, owner_sk, mallory_sk) = keyless_namespace(ns);
         let mallory = crate::test_support::account_for(&mallory_sk.public_key());
@@ -1083,25 +1088,21 @@ pub(crate) mod tests {
         let members = MembershipRepository::new(&store);
         assert_eq!(
             members.role_of(&ns, &yara).unwrap(),
-            Some(GroupMemberRole::Admin),
-            "the live gates admit the owner's op"
-        );
-        assert_eq!(
-            calimero_governance_store::parked_op(&store, by_owner.namespace_id, owner_op).unwrap(),
-            None,
-            "an apply clears the mark"
+            Some(GroupMemberRole::Member),
+            "the owner's op is not applied on the live rows"
         );
         assert_eq!(
             members.role_of(&ns, &mallory).unwrap(),
             Some(GroupMemberRole::Member),
-            "the live gates refuse Mallory's op"
+            "nor is Mallory's"
         );
-        assert_eq!(
-            calimero_governance_store::parked_op(&store, by_mallory.namespace_id, mallory_op)
-                .unwrap(),
-            Some(calimero_governance_store::Parked::Undecided),
-            "a live refusal on an unresolvable cut is no verdict at the cut"
-        );
+        for (op, id) in [(&by_owner, owner_op), (&by_mallory, mallory_op)] {
+            assert_eq!(
+                calimero_governance_store::parked_op(&store, op.namespace_id, id).unwrap(),
+                Some(calimero_governance_store::Parked::Undecided),
+                "an op whose cut is unresolvable stays parked"
+            );
+        }
     }
 
     /// An op a replay refused at its cut stays refused when a later replay cannot
@@ -1311,11 +1312,13 @@ pub(crate) mod tests {
         MembershipRepository::new(&store)
             .add_member(&sub, &owner, GroupMemberRole::Admin)
             .unwrap();
+        // The owner's key speaks for its account at the cut only through a folded credential.
+        let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
         let created = SignedNamespaceOp::sign(
             &owner_sk,
             namespace_id.into(),
-            vec![],
-            1,
+            vec![owner_joined],
+            2,
             NamespaceOp::Root(RootOp::GroupCreated {
                 admin: owner,
                 group_id: sub.to_bytes().into(),
@@ -1325,7 +1328,7 @@ pub(crate) mod tests {
             }),
         )
         .unwrap();
-        land(&store, namespace_id, &created, &[]);
+        land(&store, namespace_id, &created, &[owner_joined]);
         let created_id = created.content_hash().unwrap();
 
         // Sealed under the subgroup's own key, which this node does not hold
@@ -1342,12 +1345,13 @@ pub(crate) mod tests {
                     key_id: GroupKeyring::key_id_for(&sub_key).into(),
                     encrypted: GroupKeyring::encrypt_op(&sub_key, &op).unwrap(),
                     key_rotation: None,
+                    registers: op.registered_context(),
                 },
             )
             .unwrap()
         };
         let named = sealed(
-            2,
+            3,
             vec![created_id],
             GroupOp::GroupMetadataSet {
                 name: Some("K".to_owned()),
@@ -1361,7 +1365,7 @@ pub(crate) mod tests {
         // as a hole. The add arrives in this window, readable, and is held.
         let _ = GroupKeyring::new(&store, sub).store_key(&sub_key).unwrap();
         let add = sealed(
-            3,
+            4,
             vec![named_id],
             GroupOp::MemberAdded {
                 member: bob,
@@ -1407,12 +1411,9 @@ pub(crate) mod tests {
         );
         assert!(!held(), "an applied op is no longer listed as held");
     }
-    /// A late key must fold a holder's subgroup create even when the chain behind
-    /// it alternates group and root ops: the join needs the flip and the member
-    /// add, the holder's own group op needs the binding the join records, and the
-    /// create is only judged at its cut once that group op has folded. The live
-    /// rows refuse the create, so a retry that stops after one round of root,
-    /// group, root passes leaves it unfolded.
+    /// A late key must fold a holder's subgroup create even when the chain behind it
+    /// alternates group and root ops: the live rows refuse the create, so it folds only
+    /// if every op is judged after the ops its cut holds, whatever their kind.
     #[test]
     fn a_late_key_folds_a_create_behind_a_chain_of_alternating_ops() {
         use calimero_context_config::MemberCapabilities as Caps;
@@ -1423,8 +1424,7 @@ pub(crate) mod tests {
         let owner_sk = PrivateKey::from([0x71; 32]);
         let holder_sk = PrivateKey::from([0x75; 32]);
         let owner = crate::test_support::enrol(&store, &ns, &owner_sk.public_key());
-        // A member row with no binding: the holder's sealed join records it.
-        let holder = crate::test_support::account_for(&holder_sk.public_key());
+        let holder = crate::test_support::enrol(&store, &ns, &holder_sk.public_key());
         MetaRepository::new(&store).save(&ns, &meta(owner)).unwrap();
         CapabilitiesRepository::new(&store)
             .set_default_capabilities(&ns, Caps::CAN_JOIN_OPEN_SUBGROUPS.bits())
@@ -1450,10 +1450,12 @@ pub(crate) mod tests {
             .unwrap();
         // The cut names the owner as a member through this join.
         let owner_joined = land_mallory_join(&store, ns, &owner_sk, &owner_sk);
+        // An open join records no device, so the holder's arrives by an admitted join first.
+        let holder_joined = land_mallory_join(&store, ns, &owner_sk, &holder_sk);
         let sub_created = SignedNamespaceOp::sign(
             &owner_sk,
             namespace_id.into(),
-            vec![owner_joined],
+            vec![owner_joined, holder_joined],
             2,
             NamespaceOp::Root(RootOp::GroupCreated {
                 admin: owner,
@@ -1464,7 +1466,12 @@ pub(crate) mod tests {
             }),
         )
         .unwrap();
-        land(&store, namespace_id, &sub_created, &[owner_joined]);
+        land(
+            &store,
+            namespace_id,
+            &sub_created,
+            &[owner_joined, holder_joined],
+        );
         let sub_created_id = sub_created.content_hash().unwrap();
 
         let ns_key = [0x6Au8; 32];
@@ -1480,6 +1487,7 @@ pub(crate) mod tests {
                     key_id: key_id.into(),
                     encrypted: GroupKeyring::encrypt_op(&ns_key, &op).unwrap(),
                     key_rotation: None,
+                    registers: op.registered_context(),
                 },
             )
             .unwrap()
@@ -1529,7 +1537,7 @@ pub(crate) mod tests {
         );
         let join = root_op(
             &holder_sk,
-            1,
+            2,
             flip.content_hash().unwrap(),
             RootOp::MemberJoinedOpen {
                 member: holder,
@@ -1540,7 +1548,7 @@ pub(crate) mod tests {
         let follow = group_op(
             &holder_sk,
             ns,
-            2,
+            3,
             join.content_hash().unwrap(),
             GroupOp::MemberSetAutoFollow {
                 target: holder,
@@ -1557,7 +1565,7 @@ pub(crate) mod tests {
         ));
         let create = root_op(
             &holder_sk,
-            3,
+            4,
             follow.content_hash().unwrap(),
             RootOp::GroupCreated {
                 admin: holder,
@@ -1685,6 +1693,7 @@ pub(crate) mod tests {
                     )
                     .unwrap(),
                     key_rotation: None,
+                    registers: None,
                 },
             )
             .unwrap();

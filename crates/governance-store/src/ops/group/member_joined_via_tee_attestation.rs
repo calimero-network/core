@@ -4,7 +4,7 @@
 use super::super::super::build_auto_follow_set_if_enabled;
 use super::context::GroupApplyCtx;
 use crate::membership::TeeAttestationClaims;
-use crate::{DenyListRepository, MembershipError, ReentryRepository};
+use crate::{DenyListRepository, MembershipError, MembershipRepository};
 use calimero_account::AccountId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupExitReason;
@@ -44,13 +44,19 @@ pub(crate) fn apply(
     //
     // A `Left` block does not stop re-admission here: re-attesting is itself a
     // fresh authorization, unlike passively re-inheriting into an Open subgroup.
-    if let Some(GroupExitReason::Removed) =
-        ReentryRepository::new(store).block_of(group_id, member)?
-    {
+    if let Some(GroupExitReason::Removed) = ctx.exit_at_cut(member)? {
         bail!(MembershipError::RemovedFromGroup {
             group_id: group_id.to_string(),
             identity: member.to_string(),
         });
+    }
+    // A re-attestation of a node the cut seats writes no row a concurrent removal took.
+    if ctx.direct_role(member)?.is_some()
+        && MembershipRepository::new(store)
+            .role_of(group_id, member)?
+            .is_none()
+    {
+        return Ok(());
     }
     ctx.membership_policy()
         .admit_or_convert_tee_member(member, role)?;
