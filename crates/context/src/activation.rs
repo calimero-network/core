@@ -30,7 +30,9 @@ pub fn activated_bytecode(store: &Store, context_id: &ContextId) -> Option<[u8; 
 /// (the row names the latest install, so equal means the row already tells
 /// the truth).
 pub fn executing_blob_off_row(store: &Store, context_id: &ContextId) -> Option<[u8; 32]> {
-    let marker = activated_bytecode(store, context_id)?;
+    let blob = crate::hlc_fence::loaded_reader_bytecode_id(store, context_id)
+        .ok()
+        .flatten()?;
     let handle = store.handle();
     let row_blob = handle
         .get(&calimero_store::key::ContextMeta::new(*context_id))
@@ -38,7 +40,7 @@ pub fn executing_blob_off_row(store: &Store, context_id: &ContextId) -> Option<[
         .flatten()
         .and_then(|m| handle.get(&m.application).ok().flatten())
         .map(|app| *app.bytecode.blob_id().as_ref());
-    (row_blob != Some(marker)).then_some(marker)
+    (row_blob != Some(blob)).then_some(blob)
 }
 
 /// Record that `context_id` now executes `blob` (migration committed or
