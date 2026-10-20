@@ -108,24 +108,27 @@ A bundle may carry its own web build, so the UI a namespace loads can match the 
 Every file is listed in the manifest with its hash, so the manifest signature covers the UI as it covers the WASM.
 An older node ignores the field and the app still runs from `links.frontend`.
 
-`calimero-bundle` holds the one set of rules (`crates/bundle/src/frontend.rs`) that `cargo mero` and the node both apply, and each refusal carries a stable code:
+`calimero-bundle` holds the rules (`crates/bundle/src/frontend.rs`), and each refusal carries a stable code.
+The node enforces paths, sizes, hashes and the MIME allowlist at install.
+The HTML rules are build-time feedback that only `cargo mero` runs; at serve time the boundary is the per-app origin plus the CSP.
 
-| Code | Refused when |
-| --- | --- |
-| `FRONTEND_UNSAFE_PATH` | a path is not under `frontend/`, or has an empty, `.` or `..` component, or any character outside `A-Z a-z 0-9 . _ ~ @ + -` |
-| `FRONTEND_DUPLICATE_PATH` | a path is listed twice, ignoring ASCII case |
-| `FRONTEND_NO_ENTRY` | `entry` is not one of the listed files |
-| `FRONTEND_ENTRY_NOT_HTML` | `entry` is not an HTML file |
-| `FRONTEND_UNSUPPORTED_TYPE` | a file's extension is outside the served MIME allowlist (source maps included) |
-| `FRONTEND_TOO_LARGE` | the declared sizes sum past `MAX_FRONTEND_BYTES` (32 MiB) |
-| `FRONTEND_SIZE_MISMATCH` / `FRONTEND_HASH_MISMATCH` | a file's bytes differ from its manifest entry |
-| `FRONTEND_REMOTE_RESOURCE` | an HTML file loads a URL from another origin: a `src`, `href`, `srcset` or `poster` with a scheme or `//host` on any element except `<a>` and `<area>`; `data:` and `blob:` are refused only on `script`, `modulepreload` and `preload` loaders |
-| `FRONTEND_ESCAPING_URL` | an HTML file loads a root-absolute URL (`/assets/app.js`, `/vite.svg`; Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root, in any of those attributes; or has any `<base>`; build with `base: './'` |
-| `FRONTEND_INLINE_SCRIPT` | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, or a `javascript:` URL in `href`, `src`, `action` or `formaction`; the served page's CSP forbids inline code |
-| `FRONTEND_INVALID_HTML` | an HTML file is not UTF-8 |
-| `FRONTEND_MISSING_FILE` | a file the manifest lists is not in the archive or the build output |
+| Code | Raised by | Refused when |
+| --- | --- | --- |
+| `FRONTEND_UNSAFE_PATH` | both | a path is not under `frontend/`, or has an empty, `.` or `..` component, or any character outside `A-Z a-z 0-9 . _ ~ @ + -` |
+| `FRONTEND_DUPLICATE_PATH` | both | a path is listed twice, ignoring ASCII case |
+| `FRONTEND_NO_ENTRY` | both | `entry` is not one of the listed files |
+| `FRONTEND_ENTRY_NOT_HTML` | both | `entry` is not an HTML file |
+| `FRONTEND_UNSUPPORTED_TYPE` | both | a file's extension is outside the served MIME allowlist (source maps included) |
+| `FRONTEND_TOO_LARGE` | both | the declared sizes sum past `MAX_FRONTEND_BYTES` (32 MiB) |
+| `FRONTEND_SIZE_MISMATCH` / `FRONTEND_HASH_MISMATCH` | both | a file's bytes differ from its manifest entry |
+| `FRONTEND_REMOTE_RESOURCE` | CLI | an HTML file loads a URL from another origin: a `src`, `href`, `srcset` or `poster` with a scheme or `//host` on any element except `<a>` and `<area>`; `data:` and `blob:` are refused only on `script`, `modulepreload` and `preload` loaders |
+| `FRONTEND_ESCAPING_URL` | CLI | an HTML file loads a root-absolute URL (`/assets/app.js`, `/vite.svg`; Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root, in any of those attributes; or has any `<base>`; build with `base: './'` |
+| `FRONTEND_INLINE_SCRIPT` | CLI | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, a `javascript:` URL in `href`, `src`, `action` or `formaction`, a `srcdoc` attribute, or markup a browser could read as text inside a raw-text element; the served page's CSP forbids inline code |
+| `FRONTEND_INVALID_HTML` | CLI | an HTML file is not UTF-8 |
+| `FRONTEND_HTML_TOO_LARGE` | CLI | an HTML file is over `MAX_FRONTEND_HTML_BYTES` (64 KiB) |
+| `FRONTEND_MISSING_FILE` | both | a file the manifest lists is not in the archive or the build output |
 
-HTML is read with a spec parser (`html5ever`, through `scraper`), so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
+`cargo mero` reads HTML with the `html5ever` tokenizer, so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
 
 ### Signing
 

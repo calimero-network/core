@@ -14,6 +14,7 @@ use crate::BundleArtifact;
 
 const FRONTEND_ROOT: &str = "frontend/"; // every frontend file's archive path starts here
 pub const MAX_FRONTEND_BYTES: u64 = 32 * 1024 * 1024; // sum of every frontend file's declared size
+const MAX_FRONTEND_HTML_BYTES: usize = 64 * 1024; // bounds html5ever's quadratic duplicate-attribute scan
 const HTML_MIME: &str = "text/html; charset=utf-8";
 const PATH_PUNCTUATION: &str = "._~@+-"; // the only non-alphanumerics a path component may hold
 
@@ -119,6 +120,8 @@ pub enum FrontendError {
     RemoteResource { path: String, url: String },
     #[error("[FRONTEND_INVALID_HTML] frontend file '{0}' is not UTF-8")]
     InvalidHtml(String),
+    #[error("[FRONTEND_HTML_TOO_LARGE] frontend file '{0}' is more than {MAX_FRONTEND_HTML_BYTES} bytes of HTML")]
+    HtmlTooLarge(String),
     #[error("[FRONTEND_ESCAPING_URL] frontend file '{0}' has a <base>; <base> changes how every relative URL resolves; remove it")]
     Base(String),
     #[error("[FRONTEND_ESCAPING_URL] frontend file '{path}' loads '{url}', outside the bundle's own folder; build with a relative base (Vite `base: './'`)")]
@@ -143,6 +146,7 @@ impl FrontendError {
             Self::HashMismatch(_) => "FRONTEND_HASH_MISMATCH",
             Self::RemoteResource { .. } => "FRONTEND_REMOTE_RESOURCE",
             Self::InvalidHtml(_) => "FRONTEND_INVALID_HTML",
+            Self::HtmlTooLarge(_) => "FRONTEND_HTML_TOO_LARGE",
             Self::EscapingUrl { .. } | Self::Base(_) => "FRONTEND_ESCAPING_URL",
             Self::InlineScript { .. } => "FRONTEND_INLINE_SCRIPT",
             Self::EntryNotHtml(_) => "FRONTEND_ENTRY_NOT_HTML",
@@ -181,9 +185,8 @@ impl BundleFrontend {
     }
 }
 
-/// Check one file's bytes against its signed manifest entry, and that an HTML
-/// file loads no code from outside the bundle. Size first: the cap in
-/// [`BundleFrontend::validate`] trusts the declared sizes.
+/// Check one file's bytes against its signed manifest entry, size first: the cap in
+/// [`BundleFrontend::validate`] trusts the declared sizes. The node calls this at install.
 pub fn verify_frontend_file(file: &BundleArtifact, bytes: &[u8]) -> Result<(), FrontendError> {
     let actual = bytes.len() as u64;
     if actual != file.size {
@@ -196,17 +199,22 @@ pub fn verify_frontend_file(file: &BundleArtifact, bytes: &[u8]) -> Result<(), F
     if !hex::encode(Sha256::digest(bytes)).eq_ignore_ascii_case(&file.hash) {
         return Err(FrontendError::HashMismatch(file.path.clone()));
     }
-    if mime_type(&file.path) == Some(HTML_MIME) {
-        let html = std::str::from_utf8(bytes)
-            .map_err(|_| FrontendError::InvalidHtml(file.path.clone()))?;
-        check_html(&file.path, html)?;
-    }
     Ok(())
 }
 
-/// Refuses what the served page's CSP or its `/apps/{package}/{version}/` path
-/// would break. Only the tokenizer runs (linear time); a tree build is quadratic
-/// on deep nesting. It decodes attributes and reads raw-text elements as a browser does.
+/// Build-time feedback on an HTML file, called by `cargo mero` only; the node does not run it.
+/// Serving security is the per-app origin plus the CSP, not these rules.
+pub fn check_frontend_html(path: &str, bytes: &[u8]) -> Result<(), FrontendError> {
+    if bytes.len() > MAX_FRONTEND_HTML_BYTES {
+        return Err(FrontendError::HtmlTooLarge(path.to_owned()));
+    }
+    let html =
+        std::str::from_utf8(bytes).map_err(|_| FrontendError::InvalidHtml(path.to_owned()))?;
+    check_html(path, html)
+}
+
+/// Refuses what the served page's CSP or its `/apps/{package}/{version}/` path would break.
+/// Only the tokenizer runs, since a tree build is quadratic on deep nesting.
 fn check_html(path: &str, html: &str) -> Result<(), FrontendError> {
     let depth = path
         .strip_prefix(FRONTEND_ROOT)
@@ -225,8 +233,9 @@ struct HtmlCheck<'a> {
     path: &'a str,
     depth: usize,
     markup_only: Cell<bool>,
-    open_scripts: RefCell<Vec<bool>>, // per open `<script>`: does its text run as code
-    running: Cell<usize>,             // how many of them do
+    raw_open: Cell<Option<&'static str>>, // raw-text element a browser may still be inside
+    open_scripts: RefCell<Vec<bool>>,     // per open `<script>`: does its text run as code
+    running: Cell<usize>,                 // how many of them do
     error: RefCell<Option<FrontendError>>,
 }
 
@@ -236,6 +245,7 @@ impl<'a> HtmlCheck<'a> {
             path,
             depth,
             markup_only: Cell::new(false),
+            raw_open: Cell::new(None),
             open_scripts: RefCell::default(),
             running: Cell::new(0),
             error: RefCell::default(),
@@ -268,7 +278,10 @@ impl<'a> HtmlCheck<'a> {
         } else if let Err(err) = check_resources(self.path, name, &attrs, self.depth) {
             self.fail(err);
         }
-        if name == "script" && !(tag.self_closing && self.markup_only.get()) {
+        if self.raw_open.get().is_some() {
+            self.inline_script("markup inside a raw-text element");
+        }
+        if name == "script" {
             let runs = attr(&attrs, "src").is_none() && is_executable(attr(&attrs, "type"));
             self.open_scripts.borrow_mut().push(runs);
             self.running.set(self.running.get() + usize::from(runs));
@@ -276,10 +289,15 @@ impl<'a> HtmlCheck<'a> {
         if MARKUP_ONLY_AFTER.contains(&name) {
             self.markup_only.set(true);
         }
+        let raw = RAW_TEXT.iter().find(|(raw, _)| *raw == name);
         if self.markup_only.get() {
+            self.raw_open.set(
+                raw.map(|(raw, _)| *raw)
+                    .or((name == "plaintext").then_some("plaintext")),
+            );
             return TokenSinkResult::Continue;
         }
-        match RAW_TEXT.iter().find(|(raw, _)| *raw == name) {
+        match raw {
             Some((_, kind)) => TokenSinkResult::RawData(*kind),
             None if name == "plaintext" => TokenSinkResult::Plaintext,
             None => TokenSinkResult::Continue,
@@ -293,10 +311,22 @@ impl TokenSink for HtmlCheck<'_> {
     fn process_token(&self, token: Token, _line: u64) -> TokenSinkResult<()> {
         match token {
             Token::TagToken(tag) if tag.kind == TagKind::StartTag => return self.start_tag(&tag),
-            Token::TagToken(tag) if &*tag.name == "script" => {
-                if self.open_scripts.borrow_mut().pop() == Some(true) {
+            Token::TagToken(tag) => {
+                match self.raw_open.get() {
+                    Some(open) if open == &*tag.name && open != "plaintext" => {
+                        self.raw_open.set(None);
+                    }
+                    Some(_) => self.inline_script("markup inside a raw-text element"),
+                    None => {}
+                }
+                if &*tag.name == "script" && self.open_scripts.borrow_mut().pop() == Some(true) {
                     self.running.set(self.running.get() - 1);
                 }
+            }
+            Token::CommentToken(text)
+                if self.raw_open.get().is_some() || text.starts_with("[CDATA[") =>
+            {
+                self.inline_script("a comment or CDATA section a browser may read as text");
             }
             Token::CharacterTokens(text) if self.running.get() > 0 && !text.trim().is_empty() => {
                 self.inline_script("inline script");
@@ -375,6 +405,8 @@ fn inline_code(attrs: &[(&str, &str)]) -> Option<String> {
         let is_url = matches!(*name, "href" | "src" | "action" | "formaction");
         if name.starts_with("on") {
             Some(format!("event handler '{name}'"))
+        } else if *name == "srcdoc" {
+            Some("srcdoc".to_owned())
         } else if is_url && has_scheme(&normalize_url(value), "javascript") {
             Some(format!("{name}=\"{value}\""))
         } else {
@@ -559,6 +591,7 @@ mod tests {
             },
             FrontendError::Base(s()),
             FrontendError::InvalidHtml(s()),
+            FrontendError::HtmlTooLarge(s()),
             FrontendError::EscapingUrl {
                 path: s(),
                 url: s(),
@@ -637,11 +670,8 @@ mod tests {
         assert_eq!(err.code(), "FRONTEND_SIZE_MISMATCH");
     }
 
-    fn verify_html(html: &str) -> Result<(), FrontendError> {
-        verify_frontend_file(
-            &declared("frontend/index.html", html.as_bytes()),
-            html.as_bytes(),
-        )
+    fn html_check(html: &str) -> Result<(), FrontendError> {
+        check_frontend_html("frontend/index.html", html.as_bytes())
     }
 
     #[test]
@@ -664,7 +694,7 @@ mod tests {
             r#"<svg><script href="https://cdn.example/x.js"></script></svg>"#,
             r#"<svg><script xlink:href="https://cdn.example/x.js"></script></svg>"#,
         ] {
-            let err = verify_html(&format!("<!doctype html><head>{tag}</head>")).unwrap_err();
+            let err = html_check(&format!("<!doctype html><head>{tag}</head>")).unwrap_err();
             assert_eq!(err.code(), "FRONTEND_REMOTE_RESOURCE", "{tag}");
         }
     }
@@ -683,7 +713,7 @@ mod tests {
             "a\\..\\..\\x.js",
         ] {
             let tag = format!(r#"<script src="{url}"></script>"#);
-            let err = verify_html(&tag).unwrap_err();
+            let err = html_check(&tag).unwrap_err();
             assert_eq!(err.code(), "FRONTEND_ESCAPING_URL", "{url}");
         }
         for tag in [
@@ -693,7 +723,7 @@ mod tests {
             r#"<img srcset="a.png 1x, /b.png 2x">"#,
             r#"<video poster="../../p.png"></video>"#,
         ] {
-            let err = verify_html(tag).unwrap_err();
+            let err = html_check(tag).unwrap_err();
             assert_eq!(err.code(), "FRONTEND_ESCAPING_URL", "{tag}");
         }
     }
@@ -704,7 +734,7 @@ mod tests {
             r#"<base href="./">"#,
             r#"<base href="https://cdn.example/">"#,
         ] {
-            let err = verify_html(tag).unwrap_err();
+            let err = html_check(tag).unwrap_err();
             assert_eq!(err.code(), "FRONTEND_ESCAPING_URL", "{tag}");
             assert!(err.to_string().contains("<base>"), "{err}");
         }
@@ -713,27 +743,51 @@ mod tests {
     #[test]
     fn refuses_data_urls_on_code_loaders_only() {
         let err =
-            verify_html(r#"<link rel="modulepreload" href="data:text/javascript,1">"#).unwrap_err();
+            html_check(r#"<link rel="modulepreload" href="data:text/javascript,1">"#).unwrap_err();
         assert_eq!(err.code(), "FRONTEND_REMOTE_RESOURCE");
     }
 
     #[test]
     fn accepts_deeply_nested_html_quickly() {
         let start = std::time::Instant::now();
-        verify_html(&"<span>".repeat(100_000)).unwrap();
+        html_check(&"<span>".repeat(10_000)).unwrap();
         assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
     }
 
     #[test]
-    fn checks_deeply_nested_divs_in_linear_time() {
+    fn checks_a_tag_with_the_most_attributes_that_fit_quickly() {
+        let mut html = String::from("<p ");
+        let mut i = 0;
+        while html.len() + 12 < MAX_FRONTEND_HTML_BYTES {
+            html.push_str(&format!("a{i} "));
+            i += 1;
+        }
         let start = std::time::Instant::now();
-        verify_html(&"<div>".repeat(200_000)).unwrap();
-        assert!(start.elapsed().as_secs() < 2, "{:?}", start.elapsed());
+        html_check(&html).unwrap();
+        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn refuses_html_over_the_size_cap() {
+        let html = " ".repeat(MAX_FRONTEND_HTML_BYTES + 1);
+        assert_eq!(
+            html_check(&html).unwrap_err().code(),
+            "FRONTEND_HTML_TOO_LARGE"
+        );
+        html_check(&html[1..]).unwrap();
+    }
+
+    #[test]
+    fn install_verification_does_not_read_the_html() {
+        let html = br#"<script src="https://cdn.example/x.js"></script><body onload="x()">"#;
+        verify_frontend_file(&declared("frontend/index.html", html), html).unwrap();
+        let err = check_frontend_html("frontend/index.html", html).unwrap_err();
+        assert_eq!(err.code(), "FRONTEND_REMOTE_RESOURCE");
     }
 
     #[test]
     fn raw_text_elements_hide_their_content_from_the_scan() {
-        verify_html(
+        html_check(
             r#"<title><img src="https://x/a.png"></title>
                <style><img src="https://x/a.png"></style>
                <textarea><img src="https://x/a.png"></textarea>
@@ -744,34 +798,72 @@ mod tests {
 
     #[test]
     fn foreign_content_and_select_are_scanned_as_markup() {
-        for html in [
-            r#"<svg><script href="a.js"><img src="https://x/a.png"></script></svg>"#,
-            r#"<select><xmp></select><img src="https://x/a.png"></xmp>"#,
-        ] {
-            assert_eq!(
-                verify_html(html).unwrap_err().code(),
-                "FRONTEND_REMOTE_RESOURCE"
-            );
-        }
-        let err = verify_html("<svg><script><b></b>x()</script></svg>").unwrap_err();
+        let html = r#"<svg><script href="a.js"><img src="https://x/a.png"></script></svg>"#;
+        assert_eq!(
+            html_check(html).unwrap_err().code(),
+            "FRONTEND_REMOTE_RESOURCE"
+        );
+        let err = html_check("<svg><script><b></b>x()</script></svg>").unwrap_err();
         assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT");
-        verify_html("<svg><script href=a.js /></svg><p>text</p>").unwrap();
+        html_check("<svg><style>.a{fill:red}</style><title>t</title></svg><p>text</p>").unwrap();
+    }
+
+    #[test]
+    fn markup_inside_a_raw_text_element_is_refused_once_readings_can_differ() {
+        for html in [
+            r#"<svg></svg><style><!--</style><script src="/other-app/x.js"></script>-->"#,
+            r#"<select><textarea><!--</textarea><script src="../../x.js"></script>--></textarea>"#,
+            r#"<math><mtext><title><x a="</title><script src=../../x.js></script>"></title>"#,
+            "<select><xmp></select><img src=https://x/a.png></xmp>",
+            "<svg></svg><plaintext><b>",
+        ] {
+            let err = html_check(html).unwrap_err();
+            assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT", "{html}");
+        }
+    }
+
+    #[test]
+    fn plaintext_hides_the_rest_of_the_file() {
+        html_check(r#"<plaintext><script src="https://x/a.js"></script>"#).unwrap();
+    }
+
+    #[test]
+    fn a_null_in_a_script_counts_as_inline_code() {
+        let err = html_check("<select><script>\0</script>").unwrap_err();
+        assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT");
+    }
+
+    #[test]
+    fn a_cdata_comment_is_refused() {
+        let err =
+            html_check(r#"<svg><![CDATA[ > <!-- ]]><script href="/elsewhere/x.js"/> --></svg>"#)
+                .unwrap_err();
+        assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT");
+    }
+
+    #[test]
+    fn a_self_closing_script_still_opens_one() {
+        for html in [
+            "<select><script/>alert(1)</script>",
+            "<svg></svg><script/>x()</script>",
+        ] {
+            let err = html_check(html).unwrap_err();
+            assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT", "{html}");
+        }
     }
 
     #[test]
     fn an_unclosed_script_still_counts_as_inline_code() {
-        let err = verify_html("<script>alert(1)").unwrap_err();
+        let err = html_check("<script>alert(1)").unwrap_err();
         assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT");
     }
 
     #[test]
     fn climbing_is_measured_from_the_html_files_own_folder() {
         let html = r#"<script src="../app.js"></script>"#;
-        let art = declared("frontend/sub/index.html", html.as_bytes());
-        verify_frontend_file(&art, html.as_bytes()).unwrap();
+        check_frontend_html("frontend/sub/index.html", html.as_bytes()).unwrap();
         let html = r#"<script src="../../app.js"></script>"#;
-        let art = declared("frontend/sub/index.html", html.as_bytes());
-        let err = verify_frontend_file(&art, html.as_bytes()).unwrap_err();
+        let err = check_frontend_html("frontend/sub/index.html", html.as_bytes()).unwrap_err();
         assert_eq!(err.code(), "FRONTEND_ESCAPING_URL");
     }
 
@@ -790,15 +882,16 @@ mod tests {
             r#"<form action="JavaScript:x()"></form>"#,
             r#"<button formaction="javascript:x()"></button>"#,
             r#"<iframe src="javascript:x()"></iframe>"#,
+            r#"<iframe srcdoc="<script>x()</script>"></iframe>"#,
         ] {
-            let err = verify_html(&format!("<!doctype html>{html}")).unwrap_err();
+            let err = html_check(&format!("<!doctype html>{html}")).unwrap_err();
             assert_eq!(err.code(), "FRONTEND_INLINE_SCRIPT", "{html}");
         }
     }
 
     #[test]
     fn allows_data_blocks_and_empty_script_elements() {
-        verify_html(
+        html_check(
             r##"<script type="application/json">{"a":1}</script>
                <script type="text/template">x</script>
                <script src="a.js">x</script>
@@ -817,13 +910,13 @@ mod tests {
     #[test]
     fn refuses_html_that_is_not_utf8() {
         let bytes = b"<script src=\"/a.js\"></script>\xff";
-        let err = verify_frontend_file(&declared("frontend/index.html", bytes), bytes).unwrap_err();
+        let err = check_frontend_html("frontend/index.html", bytes).unwrap_err();
         assert_eq!(err.code(), "FRONTEND_INVALID_HTML");
     }
 
     #[test]
     fn accepts_html_that_loads_code_from_the_bundle() {
-        verify_html(
+        html_check(
             r#"<!doctype html><head>
                 <script type="module" src="./assets/app.js"></script>
                 <script src="./vendor.js"></script>

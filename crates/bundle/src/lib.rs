@@ -2,7 +2,8 @@ mod frontend;
 mod signature;
 
 pub use frontend::{
-    mime_type, verify_frontend_file, BundleFrontend, FrontendError, MAX_FRONTEND_BYTES,
+    check_frontend_html, mime_type, verify_frontend_file, BundleFrontend, FrontendError,
+    MAX_FRONTEND_BYTES,
 };
 pub use signature::{
     canonicalize_manifest, compute_bundle_hash, compute_signing_payload, decode_public_key,
