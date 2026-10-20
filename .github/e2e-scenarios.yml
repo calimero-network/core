@@ -164,6 +164,21 @@ scenarios:
   - workflow: account-paired-device-joins-restricted-subgroup
     file: workflows/account-paired-device-joins-restricted-subgroup.yml
     app: scaffolding-e2e
+  - workflow: account-paired-device-after-repeated-rotations
+    file: workflows/account-paired-device-after-repeated-rotations.yml
+    app: scaffolding-e2e
+  - workflow: account-paired-device-offline-through-rotation
+    file: workflows/account-paired-device-offline-through-rotation.yml
+    app: scaffolding-e2e
+  - workflow: account-paired-device-nested-restricted-subgroup
+    file: workflows/account-paired-device-nested-restricted-subgroup.yml
+    app: scaffolding-e2e
+  - workflow: account-revoked-device-misses-new-restricted-subgroup
+    file: workflows/account-revoked-device-misses-new-restricted-subgroup.yml
+    app: scaffolding-e2e
+  - workflow: account-removed-member-paired-device-loses-subgroup
+    file: workflows/account-removed-member-paired-device-loses-subgroup.yml
+    app: scaffolding-e2e
   - workflow: account-root-backup-restore
     file: workflows/account-root-backup-restore.yml
     app: scaffolding-e2e
