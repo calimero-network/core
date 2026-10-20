@@ -29,7 +29,7 @@ cargo test -p calimero-bundle
 | `BundleManifest::to_metadata_json()` | fn | Flattens `package`/`app_version`/`metadata.*`/`links.*`/`frontendAliases` to JSON for on-disk storage, keeping only web URLs (`is_web_url`) |
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
-| `BundleFrontend::validate()`, `verify_frontend_file()` | fn | The bundled-frontend rules `cargo mero` and the node share: manifest-level (paths, duplicates, entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file (size, hash, no remote code in HTML) |
+| `BundleFrontend::validate()`, `verify_frontend_file()` | fn | The bundled-frontend rules `cargo mero` and the node share: manifest-level (paths, case-insensitive duplicates, HTML entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file (size, hash, and in HTML no remote or bundle-escaping code URL and no inline code) |
 | `FrontendError` | enum | Each refusal, with a stable `code()` (`FRONTEND_*`) that `Display` also prints; tooling matches the code, never the message |
 | `mime_type()` | fn | The `Content-Type` a frontend file is served with; `None` outside the allowlist |
 | `MAX_MANIFEST_BYTES` | const | 1 MiB cap the node enforces on `manifest.json`, before any signature check |
@@ -58,8 +58,9 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **No `..` in `BundleManifest::artifacts()`.** Keep the exhaustive destructure; it is the trip-wire that forces every new field through a deliberate classification instead of silently being skipped.
 - **`_`-prefixed fields never reach the signed bytes.** `canonicalize_manifest` strips them unconditionally; don't add a real (signed) field with a leading underscore.
 - **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The aliases do reach `to_metadata_json()`: a node's sign-in page reads them there to trust a login callback to an app's old origin.
-- **A frontend path has one spelling.** `frontend/` then non-empty components with no `.`, `..`, backslash or control character, so the archive entry, the manifest and a served URL cannot name different files.
-- **HTML is checked with a spec parser, never by substring.** `remote_script_url` reads `scraper`'s decoded attributes; a raw-bytes or rewriter-level scan misses entity-encoded schemes.
+- **A frontend path has one spelling.** `frontend/` then non-empty components of only `A-Za-z0-9._~@+-` (no `.` or `..`), compared ASCII-case-insensitively, so the archive entry, the manifest and a served URL cannot name different files.
+- **HTML is checked with a spec parser, never by substring.** `check_html` reads `scraper`'s decoded attributes; a raw-bytes or rewriter-level scan misses entity-encoded schemes.
+- **The static check mirrors the serving contract.** The page is served at `/apps/{package}/{version}/` under a CSP of `default-src 'self'` with no `'unsafe-inline'`, so root-absolute or climbing URLs (`FRONTEND_ESCAPING_URL`) and inline code (`FRONTEND_INLINE_SCRIPT`) are refused here first. `srcdoc` and SVG files are left to the CSP.
 - **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` - see `handlers_does_not_affect_metadata` in `lib.rs`.
 
 Part of [crates/](../AGENTS.md).

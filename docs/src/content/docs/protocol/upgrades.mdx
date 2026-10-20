@@ -112,13 +112,16 @@ An older node ignores the field and the app still runs from `links.frontend`.
 
 | Code | Refused when |
 | --- | --- |
-| `FRONTEND_UNSAFE_PATH` | a path is not under `frontend/`, or has an empty, `.`, `..`, backslash or control-character component |
-| `FRONTEND_DUPLICATE_PATH` | a path is listed twice |
+| `FRONTEND_UNSAFE_PATH` | a path is not under `frontend/`, or has an empty, `.` or `..` component, or any character outside `A-Z a-z 0-9 . _ ~ @ + -` |
+| `FRONTEND_DUPLICATE_PATH` | a path is listed twice, ignoring ASCII case |
 | `FRONTEND_NO_ENTRY` | `entry` is not one of the listed files |
+| `FRONTEND_ENTRY_NOT_HTML` | `entry` is not an HTML file |
 | `FRONTEND_UNSUPPORTED_TYPE` | a file's extension is outside the served MIME allowlist (source maps included) |
 | `FRONTEND_TOO_LARGE` | the declared sizes sum past `MAX_FRONTEND_BYTES` (32 MiB) |
 | `FRONTEND_SIZE_MISMATCH` / `FRONTEND_HASH_MISMATCH` | a file's bytes differ from its manifest entry |
 | `FRONTEND_REMOTE_SCRIPT` | an HTML file loads code from another origin: a `script`, `modulepreload` or `preload` URL with a scheme or `//host`, or any `<base href>` |
+| `FRONTEND_ESCAPING_URL` | an HTML file loads code from a root-absolute URL (`/assets/app.js`, Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root; build with `base: './'` |
+| `FRONTEND_INLINE_SCRIPT` | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, or a `javascript:` URL in `href`, `src`, `action` or `formaction`; the served page's CSP forbids inline code |
 | `FRONTEND_INVALID_HTML` | an HTML file is not UTF-8 |
 
 HTML is read with a spec parser (`html5ever`, through `scraper`), so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
