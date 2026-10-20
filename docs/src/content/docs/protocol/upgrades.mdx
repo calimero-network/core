@@ -88,6 +88,7 @@ content. A blob is treated as a bundle when it contains a `manifest.json` entry
 | `wasm` + `abi` | single-service artifacts, each a `{path, hash, size}` record; `hash` is required |
 | `services` | named multi-service modules; overrides `wasm` / `abi` when present and non-empty |
 | `migrations` | migration artifacts |
+| `frontend` | the app's static web build: `entry` plus `files`, each a `{path, hash, size}` record under `frontend/` (below) |
 | `links` | `frontend` / `github` / `docs` URLs |
 | `signature` | the Ed25519 signature object (below) |
 
@@ -100,6 +101,27 @@ That path check runs over *every* artifact the manifest declares - `wasm`, `abi`
 single exhaustive destructure of the manifest, so a new artifact field stops compiling
 until it is classified
 (`crates/node/primitives/src/client/application/bundle.rs`).
+
+### The bundled frontend
+
+A bundle may carry its own web build, so the UI a namespace loads can match the contract it runs instead of one externally hosted latest build.
+Every file is listed in the manifest with its hash, so the manifest signature covers the UI as it covers the WASM.
+An older node ignores the field and the app still runs from `links.frontend`.
+
+`calimero-bundle` holds the one set of rules (`crates/bundle/src/frontend.rs`) that `cargo mero` and the node both apply, and each refusal carries a stable code:
+
+| Code | Refused when |
+| --- | --- |
+| `FRONTEND_UNSAFE_PATH` | a path is not under `frontend/`, or has an empty, `.`, `..`, backslash or control-character component |
+| `FRONTEND_DUPLICATE_PATH` | a path is listed twice |
+| `FRONTEND_NO_ENTRY` | `entry` is not one of the listed files |
+| `FRONTEND_UNSUPPORTED_TYPE` | a file's extension is outside the served MIME allowlist (source maps included) |
+| `FRONTEND_TOO_LARGE` | the declared sizes sum past `MAX_FRONTEND_BYTES` (32 MiB) |
+| `FRONTEND_SIZE_MISMATCH` / `FRONTEND_HASH_MISMATCH` | a file's bytes differ from its manifest entry |
+| `FRONTEND_REMOTE_SCRIPT` | an HTML file loads code from another origin: a `script`, `modulepreload` or `preload` URL with a scheme or `//host`, or any `<base href>` |
+| `FRONTEND_INVALID_HTML` | an HTML file is not UTF-8 |
+
+HTML is read with a spec parser (`html5ever`, through `scraper`), so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
 
 ### Signing
 

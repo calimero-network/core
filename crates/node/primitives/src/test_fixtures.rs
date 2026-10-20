@@ -420,6 +420,7 @@ fn pack_signed(package: &str, version: &str, wasm: &[u8], signing_key: &SigningK
         }),
         abi: None,
         links: None,
+        frontend: None,
         frontend_aliases: Vec::new(),
         services: None,
         signature: None,

@@ -307,6 +307,7 @@ rocksdb = { version = "0.25.0", default-features = false, features = ["bindgen-r
 rpassword = "7.3"
 rust-embed = "8.5.0"
 rustc_version = "0.4"
+scraper = { version = "0.27.0", default-features = false }
 semver = "1.0.22"
 serde = "1.0.196"
 serde_json = "1.0.113"

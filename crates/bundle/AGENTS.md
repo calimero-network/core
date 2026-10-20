@@ -6,7 +6,7 @@ The `BundleManifest` schema and the RFC 8785 (JCS) canonicalization / Ed25519 si
 
 - **Crate**: `calimero-bundle`
 - **Entry**: `src/lib.rs` (types), `src/signature.rs` (canonicalization, signing, verification)
-- **Key deps**: `serde`/`serde_json` ((de)serialization), `serde_json_canonicalizer` (RFC 8785 JCS), `ed25519-dalek` (sign/verify), `sha2` (bundle hash), `base64`/`bs58`/`hex` (encodings), `eyre` (errors)
+- **Key deps**: `serde`/`serde_json` ((de)serialization), `serde_json_canonicalizer` (RFC 8785 JCS), `ed25519-dalek` (sign/verify), `sha2` (bundle hash), `base64`/`bs58`/`hex` (encodings), `eyre` and `thiserror` (errors), `scraper` (spec HTML parsing for the frontend check)
 
 ## Commands
 
@@ -22,13 +22,16 @@ cargo test -p calimero-bundle
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
-| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi` (single-service) or `services` (multi-service), `links`, `frontend_aliases`, `signature` |
+| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `signature` |
 | `BundleManifest::artifacts()` | fn | Every artifact the manifest declares, paired with its field name; a `..`-free destructure, so a new `BundleManifest` field is a compile error here until classified |
 | `BundleManifest::wasm_artifacts()` | fn | Iterates wasm artifacts uniformly across single- and multi-service bundles |
 | `BundleManifest::service_names()` / `is_multi_service()` | fn | Shape queries over `services` |
 | `BundleManifest::to_metadata_json()` | fn | Flattens `package`/`app_version`/`metadata.*`/`links.*`/`frontendAliases` to JSON for on-disk storage, keeping only web URLs (`is_web_url`) |
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
+| `BundleFrontend::validate()`, `verify_frontend_file()` | fn | The bundled-frontend rules `cargo mero` and the node share: manifest-level (paths, duplicates, entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file (size, hash, no remote code in HTML) |
+| `FrontendError` | enum | Each refusal, with a stable `code()` (`FRONTEND_*`) that `Display` also prints; tooling matches the code, never the message |
+| `mime_type()` | fn | The `Content-Type` a frontend file is served with; `None` outside the allowlist |
 | `MAX_MANIFEST_BYTES` | const | 1 MiB cap the node enforces on `manifest.json`, before any signature check |
 | `canonicalize_manifest`, `compute_bundle_hash`, `compute_signing_payload` | fn | RFC 8785 canonical bytes (signature and `_`-prefixed transient fields stripped first), then their SHA-256; the signing payload is that SHA-256 over `MANIFEST_SIGNING_DOMAIN` followed by the canonical bytes |
 | `sign_manifest_json`, `verify_manifest_signature`, `verify_ed25519` | fn | Sign/verify a manifest `Value` in place; `ManifestVerification` carries the result |
@@ -47,6 +50,7 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 | Path | What's there |
 | --- | --- |
 | `src/lib.rs` | `BundleManifest` and its nested types, `MAX_MANIFEST_BYTES`, and the manifest-shape tests |
+| `src/frontend.rs` | `BundleFrontend`, `FrontendError` and the shared frontend rules |
 | `src/signature.rs` | Canonicalization, hashing, Ed25519 sign/verify, `did:key` derivation, and their tests |
 
 ## Invariants and Gotchas
@@ -54,6 +58,8 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **No `..` in `BundleManifest::artifacts()`.** Keep the exhaustive destructure; it is the trip-wire that forces every new field through a deliberate classification instead of silently being skipped.
 - **`_`-prefixed fields never reach the signed bytes.** `canonicalize_manifest` strips them unconditionally; don't add a real (signed) field with a leading underscore.
 - **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The aliases do reach `to_metadata_json()`: a node's sign-in page reads them there to trust a login callback to an app's old origin.
+- **A frontend path has one spelling.** `frontend/` then non-empty components with no `.`, `..`, backslash or control character, so the archive entry, the manifest and a served URL cannot name different files.
+- **HTML is checked with a spec parser, never by substring.** `remote_script_url` reads `scraper`'s decoded attributes; a raw-bytes or rewriter-level scan misses entity-encoded schemes.
 - **`handlers` is a sibling of `metadata`, on purpose.** Keep it out of `to_metadata_json()` - see `handlers_does_not_affect_metadata` in `lib.rs`.
 
 Part of [crates/](../AGENTS.md).

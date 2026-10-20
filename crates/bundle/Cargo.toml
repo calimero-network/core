@@ -13,10 +13,12 @@ bs58.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 hex.workspace = true
+scraper.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
 sha2.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 calimero-primitives = { workspace = true, features = ["borsh"] }
