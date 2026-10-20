@@ -14,7 +14,6 @@ use crate::BundleArtifact;
 
 const FRONTEND_ROOT: &str = "frontend/"; // every frontend file's archive path starts here
 pub const MAX_FRONTEND_BYTES: u64 = 32 * 1024 * 1024; // sum of every frontend file's declared size
-const MAX_FRONTEND_HTML_BYTES: usize = 64 * 1024; // bounds html5ever's quadratic duplicate-attribute scan
 const HTML_MIME: &str = "text/html; charset=utf-8";
 const PATH_PUNCTUATION: &str = "._~@+-"; // the only non-alphanumerics a path component may hold
 
@@ -120,8 +119,6 @@ pub enum FrontendError {
     RemoteResource { path: String, url: String },
     #[error("[FRONTEND_INVALID_HTML] frontend file '{0}' is not UTF-8")]
     InvalidHtml(String),
-    #[error("[FRONTEND_HTML_TOO_LARGE] frontend file '{0}' is more than {MAX_FRONTEND_HTML_BYTES} bytes of HTML")]
-    HtmlTooLarge(String),
     #[error("[FRONTEND_ESCAPING_URL] frontend file '{0}' has a <base>; <base> changes how every relative URL resolves; remove it")]
     Base(String),
     #[error("[FRONTEND_ESCAPING_URL] frontend file '{path}' loads '{url}', outside the bundle's own folder; build with a relative base (Vite `base: './'`)")]
@@ -146,7 +143,6 @@ impl FrontendError {
             Self::HashMismatch(_) => "FRONTEND_HASH_MISMATCH",
             Self::RemoteResource { .. } => "FRONTEND_REMOTE_RESOURCE",
             Self::InvalidHtml(_) => "FRONTEND_INVALID_HTML",
-            Self::HtmlTooLarge(_) => "FRONTEND_HTML_TOO_LARGE",
             Self::EscapingUrl { .. } | Self::Base(_) => "FRONTEND_ESCAPING_URL",
             Self::InlineScript { .. } => "FRONTEND_INLINE_SCRIPT",
             Self::EntryNotHtml(_) => "FRONTEND_ENTRY_NOT_HTML",
@@ -204,10 +200,8 @@ pub fn verify_frontend_file(file: &BundleArtifact, bytes: &[u8]) -> Result<(), F
 
 /// Build-time feedback on an HTML file, called by `cargo mero` only; the node does not run it.
 /// Serving security is the per-app origin plus the CSP, not these rules.
+/// For trusted build output only: input size is unbounded, so bound it before wiring this to untrusted input.
 pub fn check_frontend_html(path: &str, bytes: &[u8]) -> Result<(), FrontendError> {
-    if bytes.len() > MAX_FRONTEND_HTML_BYTES {
-        return Err(FrontendError::HtmlTooLarge(path.to_owned()));
-    }
     let html =
         std::str::from_utf8(bytes).map_err(|_| FrontendError::InvalidHtml(path.to_owned()))?;
     check_html(path, html)
@@ -591,7 +585,6 @@ mod tests {
             },
             FrontendError::Base(s()),
             FrontendError::InvalidHtml(s()),
-            FrontendError::HtmlTooLarge(s()),
             FrontendError::EscapingUrl {
                 path: s(),
                 url: s(),
@@ -750,31 +743,8 @@ mod tests {
     #[test]
     fn accepts_deeply_nested_html_quickly() {
         let start = std::time::Instant::now();
-        html_check(&"<span>".repeat(10_000)).unwrap();
+        html_check(&"<span>".repeat(100_000)).unwrap();
         assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
-    }
-
-    #[test]
-    fn checks_a_tag_with_the_most_attributes_that_fit_quickly() {
-        let mut html = String::from("<p ");
-        let mut i = 0;
-        while html.len() + 12 < MAX_FRONTEND_HTML_BYTES {
-            html.push_str(&format!("a{i} "));
-            i += 1;
-        }
-        let start = std::time::Instant::now();
-        html_check(&html).unwrap();
-        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
-    }
-
-    #[test]
-    fn refuses_html_over_the_size_cap() {
-        let html = " ".repeat(MAX_FRONTEND_HTML_BYTES + 1);
-        assert_eq!(
-            html_check(&html).unwrap_err().code(),
-            "FRONTEND_HTML_TOO_LARGE"
-        );
-        html_check(&html[1..]).unwrap();
     }
 
     #[test]

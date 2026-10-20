@@ -125,7 +125,6 @@ The HTML rules are build-time feedback that only `cargo mero` runs; at serve tim
 | `FRONTEND_ESCAPING_URL` | CLI | an HTML file loads a root-absolute URL (`/assets/app.js`, `/vite.svg`; Vite's default `base: '/'`), or a relative one whose `..` climbs above the frontend root, in any of those attributes; or has any `<base>`; build with `base: './'` |
 | `FRONTEND_INLINE_SCRIPT` | CLI | an HTML file has an executable inline `<script>`, an `on*` event-handler attribute, a `javascript:` URL in `href`, `src`, `action` or `formaction`, a `srcdoc` attribute, or markup a browser could read as text inside a raw-text element; the served page's CSP forbids inline code |
 | `FRONTEND_INVALID_HTML` | CLI | an HTML file is not UTF-8 |
-| `FRONTEND_HTML_TOO_LARGE` | CLI | an HTML file is over `MAX_FRONTEND_HTML_BYTES` (64 KiB) |
 | `FRONTEND_MISSING_FILE` | both | a file the manifest lists is not in the archive or the build output |
 
 `cargo mero` reads HTML with the `html5ever` tokenizer, so attribute values are decoded and URLs normalised the way a browser does them: `h&#116;tps://`, a tab inside the scheme and `\\host` are all caught.
