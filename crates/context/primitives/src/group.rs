@@ -203,6 +203,12 @@ pub struct GroupInfoResponse {
     pub active_upgrade: Option<GroupUpgradeInfo>,
     pub default_capabilities: u32,
     pub subgroup_visibility: String,
+    /// `"restricted"` when this group or any group above it, short of the
+    /// namespace root, is Restricted; `"open"` only on an Open chain to the
+    /// namespace. `subgroup_visibility` says how the group takes its members,
+    /// this says who outside it can reach it: an Open subgroup inside a
+    /// Restricted one is `"open"` there and `"restricted"` here.
+    pub effective_visibility: String,
     /// Full metadata record for the group (name + opaque `data` map).
     /// The group's metadata record, or `None` if none has been set.
     pub metadata: Option<MetadataRecord>,

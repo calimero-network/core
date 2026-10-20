@@ -3,6 +3,7 @@
     "appKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "contextCount": 2,
     "defaultCapabilities": 0,
+    "effectiveVisibility": "restricted",
     "groupId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "groupStateHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "memberCount": 3,

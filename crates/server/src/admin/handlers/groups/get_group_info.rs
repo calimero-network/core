@@ -65,6 +65,7 @@ pub async fn handler(
                         active_upgrade,
                         default_capabilities: info.default_capabilities,
                         subgroup_visibility: info.subgroup_visibility,
+                        effective_visibility: info.effective_visibility,
                         metadata: info.metadata,
                         group_state_hash: hex::encode(info.state_hash),
                         namespace_id: hex::encode(info.namespace_id.to_bytes()),

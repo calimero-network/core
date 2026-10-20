@@ -1479,6 +1479,13 @@ pub struct GroupInfoApiResponseData {
     pub active_upgrade: Option<GroupUpgradeStatusApiData>,
     pub default_capabilities: u32,
     pub subgroup_visibility: String,
+    /// `"restricted"` when this group or any group above it, short of the
+    /// namespace root, is Restricted; `"open"` only on an Open chain to the
+    /// namespace. Show privacy from this, not `subgroupVisibility`: an Open
+    /// subgroup inside a Restricted one takes the parent's members and is
+    /// closed to everyone else. Empty from a server that predates it.
+    #[serde(default)]
+    pub effective_visibility: String,
     /// Full metadata record for the group (name + opaque `data` map), or
     /// omitted if none has ever been set.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -5080,6 +5087,7 @@ mod naming_back_compat_tests {
             active_upgrade: None,
             default_capabilities: 0,
             subgroup_visibility: String::new(),
+            effective_visibility: String::new(),
             metadata: None,
             group_state_hash: String::new(),
             namespace_id: String::new(),
