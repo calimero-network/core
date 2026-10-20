@@ -10,9 +10,13 @@ use calimero_node_primitives::bundle::{
 use calimero_node_primitives::client::application::bundle::MAX_ARCHIVE_BYTES;
 use calimero_node_primitives::client::application::lock_application_rows;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::application::ApplicationId;
+use calimero_primitives::application::{ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
-use calimero_store::db::InMemoryDB;
+use calimero_store::config::StoreConfig;
+use calimero_store::db::{Column, Database, InMemoryDB};
+use calimero_store::iter::Iter;
+use calimero_store::slice::Slice;
+use calimero_store::tx::Transaction;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
@@ -27,6 +31,21 @@ use tempfile::TempDir;
 
 mod common;
 use common::{create_test_bundle, create_test_node_client, pack_entries, signed_bundle_bytes};
+
+const FRONTEND_INDEX: &[u8] = b"<html><body>hello</body></html>";
+const FRONTEND_APP_JS: &[u8] = b"console.log('app');";
+const FILES_1_0_0: [(&str, &[u8]); 2] = [
+    ("frontend/index.html", FRONTEND_INDEX),
+    ("frontend/app.js", FRONTEND_APP_JS),
+];
+const FILES_2_0_0: [(&str, &[u8]); 2] = [
+    ("frontend/index.html", b"<html>v2</html>"),
+    ("frontend/app.js", FRONTEND_APP_JS),
+];
+const FILES_1_5_0: [(&str, &[u8]); 2] = [
+    ("frontend/index.html", b"<html>v1.5</html>"),
+    ("frontend/app.js", FRONTEND_APP_JS),
+];
 
 /// Signs a manifest JSON value and adds the signature field.
 /// This is a convenience wrapper around the shared sign_manifest_json function.
@@ -2098,21 +2117,6 @@ async fn a_service_blob_counts_as_an_application_artifact() {
     }
 }
 
-const FRONTEND_INDEX: &[u8] = b"<html><body>hello</body></html>";
-const FRONTEND_APP_JS: &[u8] = b"console.log('app');";
-const F1: [(&str, &[u8]); 2] = [
-    ("frontend/index.html", FRONTEND_INDEX),
-    ("frontend/app.js", FRONTEND_APP_JS),
-];
-const F2: [(&str, &[u8]); 2] = [
-    ("frontend/index.html", b"<html>v2</html>"),
-    ("frontend/app.js", FRONTEND_APP_JS),
-];
-const F3: [(&str, &[u8]); 2] = [
-    ("frontend/index.html", b"<html>v1.5</html>"),
-    ("frontend/app.js", FRONTEND_APP_JS),
-];
-
 /// A signed single-service bundle whose manifest lists `listed` as its frontend
 /// (entry `frontend/index.html`) while the archive holds `shipped`.
 fn frontend_bundle(listed: &[(&str, &[u8])], shipped: &[(&str, &[u8])]) -> Vec<u8> {
@@ -2374,13 +2378,13 @@ async fn a_refused_remote_downgrade_stores_no_frontend() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let source = "file:///test/bundle.mpk".parse().unwrap();
-    let newer = frontend_bundle_by(&key, "2.0.0", &F2, &F2);
+    let newer = frontend_bundle_by(&key, "2.0.0", &FILES_2_0_0, &FILES_2_0_0);
     let newer_blob = blob_id_in(&node_client, &newer).await;
     let id = node_client
         .install_application_from_bundle_blob(&newer_blob, &source)
         .await
         .unwrap();
-    let older = frontend_bundle_by(&key, "1.0.0", &F1, &F1);
+    let older = frontend_bundle_by(&key, "1.0.0", &FILES_1_0_0, &FILES_1_0_0);
     let older_blob = blob_id_in(&node_client, &older).await;
     let before = node_client.list_blobs().unwrap().len();
 
@@ -2399,7 +2403,7 @@ async fn an_upgrade_keeps_every_version_s_frontend_and_shares_identical_files() 
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let source = "file:///test/bundle.mpk".parse().unwrap();
     let mut blobs = Vec::new();
-    for (version, files) in [("1.0.0", &F1), ("2.0.0", &F2)] {
+    for (version, files) in [("1.0.0", &FILES_1_0_0), ("2.0.0", &FILES_2_0_0)] {
         let bytes = frontend_bundle_by(&key, version, files, files);
         let blob = blob_id_in(&node_client, &bytes).await;
         node_client
@@ -2432,7 +2436,7 @@ async fn install_two_releases(node_client: &NodeClient) -> (ApplicationId, [Blob
     let source = "file:///test/bundle.mpk".parse().unwrap();
     let mut blobs = Vec::new();
     let mut id = None;
-    for (version, files) in [("1.0.0", &F1), ("2.0.0", &F2)] {
+    for (version, files) in [("1.0.0", &FILES_1_0_0), ("2.0.0", &FILES_2_0_0)] {
         let bytes = frontend_bundle_by(&key, version, files, files);
         let blob = blob_id_in(node_client, &bytes).await;
         id = Some(
@@ -2470,19 +2474,24 @@ async fn uninstall_releases_every_release_s_frontend() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn installing_one_bundle_twice_at_once_leaks_no_frontend_blob() {
     let (node_client, _data_dir, _blob_dir) = create_test_node_client(None).await;
-    let bytes = frontend_bundle(&F1, &F1);
+    let bytes = frontend_bundle(&FILES_1_0_0, &FILES_1_0_0);
     let bundle = blob_id_in(&node_client, &bytes).await;
-    let source = "file:///test/bundle.mpk".parse().unwrap();
+    let source: ApplicationSource = "file:///test/bundle.mpk".parse().unwrap();
 
-    let (first, second) = tokio::join!(
-        node_client.install_application_from_bundle_blob(&bundle, &source),
-        node_client.install_application_from_bundle_blob(&bundle, &source),
-    );
-    let id = first.unwrap();
-    assert_eq!(second.unwrap(), id);
+    let install = || {
+        let (node_client, source) = (node_client.clone(), source.clone());
+        tokio::spawn(async move {
+            node_client
+                .install_application_from_bundle_blob(&bundle, &source)
+                .await
+        })
+    };
+    let (first, second) = (install(), install());
+    let id = first.await.unwrap().unwrap();
+    assert_eq!(second.await.unwrap().unwrap(), id);
     let blobs = frontend_blobs(&node_client, &bundle);
 
     node_client.uninstall_application(&id).await.unwrap();
@@ -2493,24 +2502,63 @@ async fn installing_one_bundle_twice_at_once_leaks_no_frontend_blob() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_row_write_refused_after_the_files_were_stored_releases_them() {
-    let store = Store::new(Arc::new(InMemoryDB::owned()));
-    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
+/// A datastore whose frontend index cannot be deleted, so the cleanup of a
+/// refused install fails after the index was written.
+#[derive(Debug)]
+struct FrontendIndexUndeletable(Arc<dyn for<'x> Database<'x>>);
+
+impl<'a> Database<'a> for FrontendIndexUndeletable {
+    fn open(_config: &StoreConfig) -> eyre::Result<Self> {
+        eyre::bail!("test double: not openable")
+    }
+
+    fn has(&self, col: Column, key: Slice<'_>) -> eyre::Result<bool> {
+        self.0.has(col, key)
+    }
+
+    fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
+        self.0.get(col, key)
+    }
+
+    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
+        self.0.put(col, key, value)
+    }
+
+    fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
+        if matches!(col, Column::BundleFrontend) {
+            eyre::bail!("frontend index delete failed");
+        }
+        self.0.delete(col, key)
+    }
+
+    fn iter(&self, col: Column) -> eyre::Result<Iter<'_>> {
+        self.0.iter(col)
+    }
+
+    fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()> {
+        self.0.apply(tx)
+    }
+}
+
+/// Installs 1.0.0, then a remote 1.5.0 that stores its frontend and waits on the
+/// row lock while a 2.0.0 row lands, so the row write is refused. Returns the
+/// 1.5.0 bundle blob and the blob count before that install.
+async fn install_a_release_whose_row_write_is_refused(
+    node_client: &NodeClient,
+    store: &Store,
+) -> (BlobId, usize) {
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let source = "file:///test/bundle.mpk".parse().unwrap();
-    let v1 = frontend_bundle_by(&key, "1.0.0", &F1, &F1);
-    let v1_blob = blob_id_in(&node_client, &v1).await;
+    let v1 = frontend_bundle_by(&key, "1.0.0", &FILES_1_0_0, &FILES_1_0_0);
+    let v1_blob = blob_id_in(node_client, &v1).await;
     let id = node_client
         .install_application_from_bundle_blob(&v1_blob, &source)
         .await
         .unwrap();
-    let v15 = frontend_bundle_by(&key, "1.5.0", &F3, &F3);
-    let v15_blob = blob_id_in(&node_client, &v15).await;
+    let v15 = frontend_bundle_by(&key, "1.5.0", &FILES_1_5_0, &FILES_1_5_0);
+    let v15_blob = blob_id_in(node_client, &v15).await;
     let before = node_client.list_blobs().unwrap().len();
 
-    // The remote install passes the version check against the 1.0.0 row, stores
-    // its files, then waits on the row lock while a 2.0.0 row lands.
     let rows = lock_application_rows();
     let install = tokio::spawn({
         let node_client = node_client.clone();
@@ -2534,7 +2582,35 @@ async fn a_row_write_refused_after_the_files_were_stored_releases_them() {
     drop(rows);
 
     install.await.unwrap().unwrap();
+    (v15_blob, before)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_row_write_refused_after_the_files_were_stored_releases_them() {
+    let store = Store::new(Arc::new(InMemoryDB::owned()));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
+
+    let (v15_blob, before) =
+        install_a_release_whose_row_write_is_refused(&node_client, &store).await;
 
     assert_eq!(node_client.get_bundle_frontend(&v15_blob).unwrap(), None);
     assert_eq!(node_client.list_blobs().unwrap().len(), before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_that_cannot_be_deleted_keeps_its_files() {
+    let store = Store::new(Arc::new(FrontendIndexUndeletable(Arc::new(
+        InMemoryDB::owned(),
+    ))));
+    let (node_client, _data_dir, _blob_dir) = create_test_node_client(Some(store.clone())).await;
+
+    let (v15_blob, before) =
+        install_a_release_whose_row_write_is_refused(&node_client, &store).await;
+
+    // The index stays, so the files it names must stay with it. 1.5.0's
+    // index.html is the one file no earlier release shares.
+    assert!(node_client.list_blobs().unwrap().len() > before);
+    for blob in frontend_blobs(&node_client, &v15_blob) {
+        assert!(node_client.has_blob(&blob).unwrap());
+    }
 }
