@@ -184,6 +184,26 @@ steps:
     retries: 45
     interval: 2
 
+  - name: Node-3, the owner, lists the namespace
+    type: assert_api_response
+    node: restore-node-3
+    path: '/admin-api/namespaces/for-application/{{app_id}}'
+    where:
+      namespaceId: '{{namespace_id}}'
+    absent:
+      - forgotten
+
+  - name: Node-2, the sibling device, lists the namespace
+    type: assert_api_response
+    node: restore-node-2
+    path: '/admin-api/namespaces/for-application/{{app_id}}'
+    where:
+      namespaceId: '{{namespace_id}}'
+    absent:
+      - forgotten
+    retries: 30
+    interval: 2
+
   - name: Node-1 syncs the context back
     type: wait_for_sync
     context_id: '{{ctx_id}}'

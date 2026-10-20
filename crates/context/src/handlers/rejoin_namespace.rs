@@ -82,9 +82,8 @@ async fn rejoin(
     })
 }
 
-/// Follow a removed namespace and wait until this node is a member of it again,
-/// holding the marker meanwhile, so no other path follows it and the replay
-/// re-applies this node's own ops. The follow is undone if the wait runs out.
+/// Follow a removed namespace with its marker held, so only the replay of this node's
+/// own ops runs, and wait until it is a member again; the follow is undone otherwise.
 async fn restore(
     store: &Store,
     node_client: &NodeClient,
