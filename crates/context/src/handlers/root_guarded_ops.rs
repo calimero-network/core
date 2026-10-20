@@ -675,6 +675,15 @@ mod tests {
         assert!(members
             .iter()
             .any(|m| m.identity == alice && m.role == GroupMemberRole::Admin));
+        let restored = crate::unified_op_store::load_scope_ops(&store, &scope)
+            .expect("read the op store")
+            .into_iter()
+            .find(|op| op.id() == genesis.id())
+            .expect("the genesis is stored");
+        assert!(
+            matches!(restored.payload, OpPayload::NamespaceFounded { .. }),
+            "the re-derived genesis is written back, so the next load reads it as stored"
+        );
     }
 
     /// A founder who left cannot seat herself again by signing a second genesis: the

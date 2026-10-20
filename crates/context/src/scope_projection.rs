@@ -739,10 +739,12 @@ impl ScopeProjections {
     /// root admin.
     ///
     /// So is a namespace genesis stored as its bare device link, from before it
-    /// also seated the founder.
+    /// also seated the founder. That row is written back: a cleartext genesis
+    /// re-derives the same on every load, so the next load reads it as stored.
     ///
-    /// Other rows carrying a real payload are untouched, so steady state costs
-    /// nothing and the work shrinks as holes are filled.
+    /// Other rows carrying a real payload are untouched. A re-derived placeholder
+    /// is not written back, as a key arriving meanwhile writes the decrypted row
+    /// this would overwrite; it is re-derived on each load until that key lands.
     fn reclassify_stored_holes(store: &Store, namespace_id: [u8; 32], ops: &mut [Op]) {
         let stale: Vec<usize> = ops
             .iter()
@@ -802,7 +804,13 @@ impl ScopeProjections {
                     op = ?ops[i].id(),
                     "op-store: re-derived a stored placeholder written before holes were distinguishable"
                 );
+                let genesis = matches!(ops[i].payload, OpPayload::DeviceLinked { .. });
                 ops[i] = rebuilt;
+                if genesis {
+                    if let Err(err) = crate::unified_op_store::persist_op(store, &ops[i]) {
+                        tracing::warn!(%err, namespace = ?namespace_id, "op-store: could not write back a re-derived genesis");
+                    }
+                }
             }
         }
     }
