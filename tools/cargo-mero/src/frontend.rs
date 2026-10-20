@@ -52,11 +52,11 @@ impl FrontendSummary {
     }
 }
 
-/// A built frontend directory, validated, with each file's source path
-/// alongside its entry in `frontend.files`.
+/// A built frontend directory, validated, with the exact bytes each entry in
+/// `frontend.files` was hashed from; packaging writes these, never a re-read.
 pub struct Collected {
     pub frontend: BundleFrontend,
-    pub sources: Vec<PathBuf>,
+    pub contents: Vec<Vec<u8>>,
 }
 
 /// Walk a build directory and apply the node's frontend rules to it, so a bad
@@ -68,13 +68,11 @@ pub fn collect(dir: &Path) -> Result<Collected> {
 
     let mut files = Vec::with_capacity(found.len());
     let mut contents = Vec::with_capacity(found.len());
-    let mut sources = Vec::with_capacity(found.len());
     for (source, rel) in found {
         let bytes =
             fs::read(&source).wrap_err_with(|| format!("failed to read {}", source.display()))?;
         files.push(manifest::artifact_from_bytes(rel, &bytes));
         contents.push(bytes);
-        sources.push(source);
     }
 
     let frontend = BundleFrontend {
@@ -88,7 +86,7 @@ pub fn collect(dir: &Path) -> Result<Collected> {
             check_frontend_html(&file.path, bytes)?;
         }
     }
-    Ok(Collected { frontend, sources })
+    Ok(Collected { frontend, contents })
 }
 
 fn is_html(path: &str) -> bool {

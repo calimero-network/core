@@ -65,13 +65,6 @@ pub fn run(args: &BundleArgs) -> Result<Summary> {
     eprintln!("• staging bundle files in {staging}");
     let staged = stage(&bundle_meta, &built, &staging, args.no_abi)?;
 
-    if let Some(Collected { frontend, sources }) = &frontend {
-        eprintln!("• staging {} frontend files", sources.len());
-        for (source, file) in sources.iter().zip(&frontend.files) {
-            stage_file(source, &staging, &file.path)?;
-        }
-    }
-
     eprintln!("• writing manifest.json");
     // Read off the same resolve graph the build just used, so the stamp cannot
     // describe a different SDK than the wasm was compiled against.
@@ -88,12 +81,7 @@ pub fn run(args: &BundleArgs) -> Result<Summary> {
 
     let output = output_path(args, &base, &bundle_meta.package, &bundle_meta.app_version);
     eprintln!("• packaging {output}");
-    package(
-        &output,
-        &manifest_path,
-        &staged,
-        frontend.as_ref().map(|f| &f.frontend),
-    )?;
+    package(&output, &manifest_path, &staged, frontend.as_ref())?;
     fs::remove_dir_all(&staging).wrap_err_with(|| format!("failed to remove {staging}"))?;
 
     print_summary(
@@ -325,9 +313,6 @@ fn abi_of(build: &BuiltWasm) -> Result<&std::path::Path> {
 /// Copy one source file to `staging/<rel>` and describe it (path, size, hash).
 fn stage_file(src: &std::path::Path, staging: &Utf8Path, rel: &str) -> Result<BundleArtifact> {
     let dest = staging.join(rel);
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).wrap_err_with(|| format!("failed to create {parent}"))?;
-    }
     let bytes = fs::read(src).wrap_err_with(|| format!("failed to read {}", src.display()))?;
     fs::write(&dest, &bytes).wrap_err_with(|| format!("failed to write {dest}"))?;
     Ok(manifest::artifact_from_bytes(rel, &bytes))
@@ -433,7 +418,7 @@ fn package(
     output: &Utf8Path,
     manifest_path: &Utf8Path,
     staged: &[StagedArtifact],
-    frontend: Option<&BundleFrontend>,
+    frontend: Option<&Collected>,
 ) -> Result<()> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).wrap_err_with(|| format!("failed to create {parent}"))?;
@@ -459,8 +444,15 @@ fn package(
         }
     }
 
-    for file in frontend.iter().flat_map(|f| &f.files) {
-        tar.append_path_with_name(staging.join(&file.path), &file.path)
+    // From memory, so the bundle holds the bytes that were hashed even if the build dir changed since.
+    for (file, bytes) in frontend
+        .iter()
+        .flat_map(|f| f.frontend.files.iter().zip(&f.contents))
+    {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        tar.append_data(&mut header, &file.path, bytes.as_slice())
             .wrap_err_with(|| format!("failed to add {} to the bundle", file.path))?;
     }
 
@@ -473,6 +465,10 @@ fn package(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
+    use flate2::read::GzDecoder;
+
     use super::*;
     use crate::workspace::FeatureArgs;
 
@@ -495,6 +491,43 @@ mod tests {
             bump: None,
             features: FeatureArgs::default(),
         }
+    }
+
+    #[test]
+    fn packaged_frontend_bytes_are_the_hashed_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("web");
+        fs::create_dir(&build).unwrap();
+        fs::write(build.join("index.html"), "<!doctype html>").unwrap();
+        let collected = frontend::collect(&build).unwrap();
+
+        // A watch build rewriting dist/ while the wasm builds.
+        fs::write(build.join("index.html"), "<!doctype html><p>changed").unwrap();
+        let dir = Utf8PathBuf::from_path_buf(tmp.path().to_owned()).unwrap();
+        fs::write(dir.join("manifest.json"), "{}").unwrap();
+        package(
+            &dir.join("app.mpk"),
+            &dir.join("manifest.json"),
+            &[],
+            Some(&collected),
+        )
+        .unwrap();
+
+        let file = &collected.frontend.files[0];
+        let mut archive =
+            tar::Archive::new(GzDecoder::new(File::open(dir.join("app.mpk")).unwrap()));
+        let mut packed = archive
+            .entries()
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|e| e.path().unwrap().to_str() == Some(file.path.as_str()))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let _ = packed.read_to_end(&mut bytes).unwrap();
+        assert_eq!(
+            manifest::artifact_from_bytes(&file.path, &bytes).hash,
+            file.hash
+        );
     }
 
     #[test]
