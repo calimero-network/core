@@ -23,10 +23,13 @@ const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567"; // RFC 4648 alpha
 const LABEL_LEN: usize = 52; // 32 bytes in unpadded base32
 const NATIVE_SCHEME: &str = "calimero-app"; // the desktop webview's app scheme on macOS and Linux
 const WINDOWS_HOST_PREFIX: &str = "calimero-app."; // its host form on Windows: `http(s)://calimero-app.{label}`
-pub(crate) const AUTH_REFRESH: &str = "/auth/refresh"; // the one login-side route an app origin reaches: a JSON token exchange
+pub(crate) const AUTH_REFRESH: &str = "/auth/refresh"; // a login-side route an app origin reaches: a JSON token exchange
+const AUTH_VALIDATE: &str = "/auth/validate"; // the other: a token check that reads nothing but the token
+const ADMIN_API: &str = "/admin-api"; // where the node mounts its admin routes, under `NODE_PATH_PREFIX`
 const NO_APP_API: &str = "the app API on an app origin needs the node's embedded auth"; // body of the 403 where this node does not verify tokens
 const FILES_ONLY: &str =
     "the fallback apps port serves files only; the app API needs the app's own subdomain origin"; // body of the 403 to an API path on the apps port
+const ADMIN_REFUSED: &str = "an app's origin may use only the admin routes an app needs"; // body of the 403 to any other admin route
 const FOREIGN_ORIGIN: &str = "an app's API answers a page of its own origin only"; // body of the 403 to another origin
 
 #[derive(Clone)]
@@ -274,8 +277,12 @@ pub(crate) async fn serve_app_hosts(
     let Some(app) = hosts.app_for(request.headers()) else {
         return next.run(request).await;
     };
-    if is_app_api(request.method(), request.uri().path(), node_prefix()) {
+    let (method, path) = (request.method(), request.uri().path());
+    if is_app_api(method, path, node_prefix()) {
         return hosts.hand_over(app, request, next).await;
+    }
+    if is_admin_api(path, node_prefix()) {
+        return refusal(StatusCode::FORBIDDEN, ADMIN_REFUSED);
     }
     let (parts, _body) = request.into_parts();
     hosts.respond(&app, &parts, parts.uri.path(), "").await
@@ -303,15 +310,52 @@ fn node_prefix() -> &'static str {
     crate::admin::service::node_path_prefix().unwrap_or_default()
 }
 
-/// The routes an app's own origin passes on to the node: RPC, sockets, events
-/// and the token refresh. Never login or the admin surface.
+/// The routes an app's own origin passes on to the node: RPC, sockets, events,
+/// the token exchange and the admin routes an app needs. Never login.
 fn is_app_api(method: &Method, path: &str, prefix: &str) -> bool {
     let path = path.trim_end_matches('/');
-    path.strip_prefix(prefix)
-        .is_some_and(|route| route == "/jsonrpc" || route == "/ws")
-        || (path == AUTH_REFRESH && method == Method::POST)
+    path.strip_prefix(prefix).is_some_and(|route| {
+        route == "/jsonrpc" || route == "/ws" || is_app_admin_route(method, route)
+    }) || (path == AUTH_REFRESH && method == Method::POST)
+        || (path == AUTH_VALIDATE && matches!(*method, Method::GET | Method::HEAD))
         || path == "/sse"
         || path.starts_with("/sse/")
+}
+
+/// The admin routes an app uses to find and make its contexts and namespaces,
+/// matched by method and exact segment shape.
+fn is_app_admin_route(method: &Method, route: &str) -> bool {
+    let Some(route) = route
+        .strip_prefix(ADMIN_API)
+        .and_then(|rest| rest.strip_prefix('/'))
+    else {
+        return false;
+    };
+    let segments: Vec<&str> = route.split('/').collect();
+    matches!(
+        (method, segments.as_slice()),
+        (
+            &Method::GET,
+            ["contexts" | "namespaces" | "applications" | "health" | "is-authed"]
+        ) | (&Method::GET, ["contexts", _])
+            | (&Method::GET, ["applications", _])
+            | (&Method::GET, ["namespaces", "for-application", _])
+            | (&Method::GET, ["contexts", "for-application", _])
+            | (&Method::GET, ["contexts", _, "identities-owned" | "group"])
+            | (&Method::GET, ["groups", _, "members"])
+            | (&Method::POST, ["contexts" | "namespaces"])
+            | (&Method::POST, ["contexts", _, "join"])
+            | (
+                &Method::POST,
+                ["namespaces", _, "invite" | "join" | "groups"]
+            )
+    )
+}
+
+fn is_admin_api(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .and_then(|route| route.strip_prefix(ADMIN_API))
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
 /// Whether `path` is under a route the node answers with an API: RPC, sockets,
@@ -430,6 +474,28 @@ mod tests {
     const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
     const APP: [u8; 32] = [7; 32];
     const API_PATHS: [&str; 5] = ["/jsonrpc", "/ws", "/sse", "/sse/subscribe", "/auth/refresh"];
+    const ID: &str = "0123abcd";
+    const ALLOWED_ADMIN: [(Method, &str); 16] = [
+        (Method::GET, "/admin-api/applications"),
+        (Method::GET, "/admin-api/applications/0123abcd"),
+        (
+            Method::GET,
+            "/admin-api/namespaces/for-application/0123abcd",
+        ),
+        (Method::GET, "/admin-api/contexts"),
+        (Method::GET, "/admin-api/contexts/0123abcd"),
+        (Method::GET, "/admin-api/contexts/for-application/0123abcd"),
+        (Method::GET, "/admin-api/contexts/0123abcd/identities-owned"),
+        (Method::GET, "/admin-api/contexts/0123abcd/group"),
+        (Method::POST, "/admin-api/contexts"),
+        (Method::POST, "/admin-api/contexts/0123abcd/join"),
+        (Method::GET, "/admin-api/namespaces"),
+        (Method::POST, "/admin-api/namespaces"),
+        (Method::POST, "/admin-api/namespaces/0123abcd/invite"),
+        (Method::POST, "/admin-api/namespaces/0123abcd/join"),
+        (Method::POST, "/admin-api/namespaces/0123abcd/groups"),
+        (Method::GET, "/admin-api/groups/0123abcd/members"),
+    ];
 
     struct Fixture {
         router: Router,
@@ -682,12 +748,7 @@ mod tests {
     #[actix::test]
     async fn an_app_host_serves_nothing_but_its_files() {
         let f = fixture().await;
-        let paths = [
-            "/admin-dashboard",
-            "/admin-api/applications",
-            "/auth/login",
-            "/health",
-        ];
+        let paths = ["/admin-dashboard", "/auth/login", "/health"];
 
         for path in paths {
             for method in [Method::GET, Method::POST] {
@@ -719,6 +780,89 @@ mod tests {
     }
 
     #[actix::test]
+    async fn an_app_host_hands_over_the_admin_routes_an_app_needs() {
+        let f = fixture_with(true).await;
+        let mut routes = ALLOWED_ADMIN.to_vec();
+        routes.extend([
+            (Method::GET, "/admin-api/health"),
+            (Method::GET, "/admin-api/is-authed"),
+            (Method::GET, "/auth/validate"),
+            (Method::HEAD, "/auth/validate"),
+        ]);
+
+        for (method, path) in routes {
+            let (response, body) = send(&f.router, method.clone(), &f.host, path, &[]).await;
+            assert_eq!(response.status(), StatusCode::OK, "{method} {path}");
+            if method != Method::HEAD {
+                assert_eq!(body, b"app api", "{method} {path}");
+            }
+            assert_hardened(&response);
+        }
+    }
+
+    #[actix::test]
+    async fn an_app_host_refuses_every_other_admin_route() {
+        let f = fixture_with(true).await;
+        let refused = [
+            (Method::DELETE, format!("/admin-api/contexts/{ID}")),
+            (Method::PUT, format!("/admin-api/contexts/{ID}")),
+            (Method::DELETE, format!("/admin-api/blobs/{ID}")),
+            (Method::GET, "/admin-api/blobs".to_owned()),
+            (Method::POST, "/admin-api/install-application".to_owned()),
+            (Method::DELETE, format!("/admin-api/applications/{ID}")),
+            (Method::GET, format!("/admin-api/applications/{ID}/abi")),
+            (
+                Method::GET,
+                format!("/admin-api/applications/{ID}/versions"),
+            ),
+            (Method::POST, "/admin-api/applications".to_owned()),
+            (Method::POST, format!("/admin-api/groups/{ID}/members")),
+            (
+                Method::DELETE,
+                format!("/admin-api/groups/{ID}/members/{ID}"),
+            ),
+            (Method::GET, format!("/admin-api/groups/{ID}/members/{ID}")),
+            (Method::GET, format!("/admin-api/groups/{ID}")),
+            (Method::POST, "/admin-api/alias/create/context".to_owned()),
+            (Method::GET, "/admin-api/alias/list/context".to_owned()),
+            (Method::DELETE, format!("/admin-api/namespaces/{ID}")),
+            (Method::GET, format!("/admin-api/namespaces/{ID}")),
+            (Method::POST, format!("/admin-api/namespaces/{ID}/leave")),
+            (Method::GET, format!("/admin-api/contexts/{ID}/identities")),
+            (Method::GET, format!("/admin-api/contexts/{ID}/group/extra")),
+            (Method::POST, format!("/admin-api/contexts/{ID}/group")),
+            (Method::POST, format!("/admin-api/contexts/{ID}/join/extra")),
+            (Method::GET, format!("/admin-api/contexts/{ID}/join")),
+            (Method::POST, "/admin-api/contexts/sync".to_owned()),
+            (Method::HEAD, "/admin-api/contexts".to_owned()),
+            (Method::POST, "/admin-api/health".to_owned()),
+            (Method::GET, "/admin-api".to_owned()),
+            (Method::GET, "/admin-api/".to_owned()),
+            (Method::GET, "/admin-api/tee/attest".to_owned()),
+            (Method::POST, "/auth/validate".to_owned()),
+            (Method::DELETE, "/auth/validate".to_owned()),
+        ];
+
+        for app_api in [true, false] {
+            let f = if app_api { &f } else { &fixture().await };
+            for (method, path) in &refused {
+                let (response, body) = send(&f.router, method.clone(), &f.host, path, &[]).await;
+                if path.starts_with("/auth") {
+                    assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+                    continue;
+                }
+                assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {path}");
+                assert_ne!(body, b"app api", "{method} {path}");
+                assert!(
+                    *method == Method::HEAD || !body.is_empty(),
+                    "{method} {path}"
+                );
+                assert_hardened(&response);
+            }
+        }
+    }
+
+    #[actix::test]
     async fn the_token_refresh_is_handed_over_for_a_post_only() {
         let f = fixture_with(true).await;
 
@@ -744,6 +888,36 @@ mod tests {
             (Method::POST, "/node1/auth/refresh", "/node1", false),
             (Method::GET, "/node1/node1/ws", "/node1", false),
             (Method::GET, "/auth/refresh", "", false),
+            (Method::GET, "/node1/admin-api/contexts", "/node1", true),
+            (
+                Method::POST,
+                "/node1/admin-api/contexts/c/join",
+                "/node1",
+                true,
+            ),
+            (Method::GET, "/admin-api/contexts", "/node1", false),
+            (
+                Method::GET,
+                "/node1/node1/admin-api/contexts",
+                "/node1",
+                false,
+            ),
+            (
+                Method::GET,
+                "/node1/admin-api/contexts/c/extra",
+                "/node1",
+                false,
+            ),
+            (
+                Method::DELETE,
+                "/node1/admin-api/contexts/c",
+                "/node1",
+                false,
+            ),
+            (Method::GET, "/admin-apix/contexts", "", false),
+            (Method::GET, "/auth/validate", "/node1", true),
+            (Method::HEAD, "/auth/validate", "", true),
+            (Method::POST, "/auth/validate", "", false),
         ] {
             assert_eq!(is_app_api(&method, path, prefix), api, "{method} {path}");
         }
@@ -798,7 +972,6 @@ mod tests {
         let f = fixture_with(true).await;
         let paths = [
             "/admin-dashboard",
-            "/admin-api/applications",
             "/auth/login",
             "/auth/token",
             "/auth/providers",

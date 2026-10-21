@@ -1146,10 +1146,17 @@ mod cors_tests {
             &[("Origin", "https://evil.example")],
         )
         .await;
-        let own_routes = [
-            get_path_as(port, &app_host, "/admin-api/applications").await,
-            get_path_as(port, &app_host, "/auth/login").await,
-        ];
+        let admin_route = get_path_as(port, &app_host, "/admin-api/blobs").await;
+        let app_route = get_path_as(port, &app_host, "/admin-api/contexts").await;
+        let deleted = send_as(
+            "DELETE",
+            port,
+            &app_host,
+            "/admin-api/contexts/abc",
+            &[("Origin", &app_origin)],
+        )
+        .await;
+        let own_routes = [get_path_as(port, &app_host, "/auth/login").await];
         let apps_port_api = get_path_as(apps_port, &port_host, "/admin-api/applications").await;
         let from_app = [
             send_as(
@@ -1184,7 +1191,7 @@ mod cors_tests {
             .await
             .expect("the server task ends")
             .expect("the server stops cleanly");
-        for response in [&on_app_host, &unauthenticated] {
+        for response in [&on_app_host, &app_route, &unauthenticated] {
             assert!(response.starts_with("HTTP/1.1 401"), "{response}");
         }
         for response in [&on_apps_port, &apps_port_api] {
@@ -1193,6 +1200,9 @@ mod cors_tests {
         }
         assert!(!refresh.starts_with("HTTP/1.1 404"), "{refresh}");
         assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
+        for response in [&admin_route, &deleted] {
+            assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        }
         for response in &own_routes {
             assert!(response.starts_with("HTTP/1.1 404"), "{response}");
         }
@@ -1362,7 +1372,7 @@ mod cors_tests {
             .expect("the server stops cleanly");
         assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
         assert!(foreign.contains("browser request refused"), "{foreign}");
-        assert!(app_host.starts_with("HTTP/1.1 404"), "{app_host}");
+        assert!(app_host.starts_with("HTTP/1.1 403"), "{app_host}");
         assert!(
             app_host
                 .to_ascii_lowercase()

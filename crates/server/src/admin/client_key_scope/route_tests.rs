@@ -31,7 +31,8 @@ use tempfile::TempDir;
 use tower::ServiceExt as _;
 
 use crate::admin::service::{setup, AdminConfig};
-use crate::config::ServerConfig;
+use crate::app_host::{encode_label, serve_app_hosts, AppHosts, AppOrigins};
+use crate::config::{AppsConfig, ServerConfig};
 use crate::service_mounts::with_optional_auth;
 use crate::{AdminState, NodeReadiness};
 
@@ -128,6 +129,7 @@ fn namespaces(store: &Store, app: Option<&ApplicationId>) -> Vec<NamespaceSummar
 
 struct Node {
     router: Router,
+    app_hosts: Router,
     proxied: Router,
     proxied_with_identity: Router,
     store: Store,
@@ -224,9 +226,18 @@ impl Node {
             &path,
             with_optional_auth(protected, Some(auth), None, false),
         );
+        let hosts = AppHosts {
+            node_client: node_client.clone(),
+            origins: AppOrigins::new(&AppsConfig::default()),
+            app_api: true,
+        };
+        let app_hosts = router
+            .clone()
+            .layer(axum::middleware::from_fn_with_state(hosts, serve_app_hosts));
 
         Self {
             router,
+            app_hosts,
             proxied,
             proxied_with_identity,
             store,
@@ -286,6 +297,25 @@ impl Node {
             .uri(format!("/admin-api{path}"))
             .header("Authorization", format!("Bearer {token}"));
         Self::send(&self.router, request, body).await
+    }
+
+    /// A request to `app`'s own origin, which the app host answers before the router.
+    async fn call_on_origin_of(
+        &self,
+        app: &ApplicationId,
+        token: Option<&str>,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(format!("/admin-api{path}"))
+            .header("Host", format!("{}.localhost:2428", encode_label(app)));
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        Self::send(&self.app_hosts, request, body).await
     }
 
     /// A request as forward-auth hands it on: the token's permissions in `X-Auth-Permissions`.
@@ -1192,5 +1222,210 @@ async fn an_account_session_with_a_context_binding_lists_only_its_context() {
             vec![node.mine.context.to_string()],
             "{path}"
         );
+    }
+}
+
+#[actix::test]
+async fn an_app_origin_lists_only_its_own_applications_contexts_and_namespaces() {
+    let node = Node::new().await;
+    let token = node.unbound().await;
+
+    for tenant in [&node.mine, &node.theirs] {
+        let (status, body) = node
+            .call_on_origin_of(&tenant.app, Some(&token), Method::GET, "/contexts", None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            ids(&body, "contexts", "id"),
+            vec![tenant.context.to_string()]
+        );
+
+        let (status, body) = node
+            .call_on_origin_of(&tenant.app, Some(&token), Method::GET, "/namespaces", None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            ids(&body, "namespaces", "namespaceId"),
+            vec![hex::encode(tenant.namespace.to_bytes())]
+        );
+    }
+}
+
+#[actix::test]
+async fn an_app_origin_cannot_reach_another_applications_namespace_or_context() {
+    let node = Node::new().await;
+    let token = node.unbound().await;
+    let ns = hex::encode(node.theirs.namespace.to_bytes());
+    let theirs = node.theirs.app;
+
+    for (method, path) in [
+        (Method::POST, format!("/namespaces/{ns}/join")),
+        (Method::POST, format!("/namespaces/{ns}/invite")),
+        (Method::POST, format!("/namespaces/{ns}/groups")),
+        (Method::GET, format!("/groups/{ns}/members")),
+        (Method::GET, format!("/contexts/for-application/{theirs}")),
+        (Method::GET, format!("/namespaces/for-application/{theirs}")),
+        (Method::GET, format!("/applications/{theirs}")),
+        (Method::GET, format!("/contexts/{}", node.theirs.context)),
+        (
+            Method::GET,
+            format!("/contexts/{}/group", node.theirs.context),
+        ),
+    ] {
+        let (status, body) = node
+            .call_on_origin_of(
+                &node.mine.app,
+                Some(&token),
+                method.clone(),
+                &path,
+                Some(json!({})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}: {body}");
+    }
+}
+
+#[actix::test]
+async fn an_app_origin_reaches_its_own_applications_routes() {
+    let node = Node::new().await;
+    seed_application(&node, node.mine.app, node.mine.blob);
+    let token = node.unbound().await;
+    let own = node.mine.app;
+
+    for path in [
+        format!("/contexts/{}", node.mine.context),
+        format!("/contexts/for-application/{own}"),
+        format!("/namespaces/for-application/{own}"),
+        format!("/applications/{own}"),
+        format!("/contexts/{}/group", node.mine.context),
+    ] {
+        let (status, body) = node
+            .call_on_origin_of(&own, Some(&token), Method::GET, &path, None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+    }
+}
+
+#[actix::test]
+async fn an_app_origin_refuses_an_admin_token_and_a_token_bound_to_another_app() {
+    let node = Node::new().await;
+    let admin = node
+        .tokens
+        .generate_token_pair("root".to_owned(), vec!["admin".to_owned()], None, None)
+        .await
+        .unwrap()
+        .0;
+    let theirs = node
+        .client_token({
+            let mut permissions: Vec<String> = APP_TOKEN.iter().map(|p| (*p).to_owned()).collect();
+            permissions.push(application_binding(&node.theirs.app.to_string()));
+            permissions
+        })
+        .await;
+
+    for token in [&admin, &theirs] {
+        let (status, body) = node
+            .call_on_origin_of(&node.mine.app, Some(token), Method::GET, "/contexts", None)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+    let (status, _) = node.call(&admin, Method::GET, "/contexts", None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the admin token still works on the node's own origin"
+    );
+}
+
+#[actix::test]
+async fn an_app_origin_needs_a_token_and_refuses_the_rest_of_the_admin_api() {
+    let node = Node::new().await;
+    let token = node.unbound().await;
+    let blob = node.mine.blob;
+    let context = node.mine.context;
+
+    let (status, _) = node
+        .call_on_origin_of(&node.mine.app, None, Method::GET, "/contexts", None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    for (method, path) in [
+        (Method::DELETE, format!("/contexts/{context}")),
+        (Method::DELETE, format!("/blobs/{blob}")),
+        (Method::GET, "/blobs".to_owned()),
+        (Method::POST, "/install-application".to_owned()),
+        (Method::GET, format!("/applications/{}/abi", node.mine.app)),
+    ] {
+        let (status, _) = node
+            .call_on_origin_of(&node.mine.app, Some(&token), method.clone(), &path, None)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+}
+
+#[actix::test]
+async fn an_app_origin_lists_only_its_own_application() {
+    let node = Node::new().await;
+    seed_application(&node, node.mine.app, node.mine.blob);
+    seed_application(&node, node.theirs.app, node.theirs.blob);
+    let token = node.unbound().await;
+
+    for tenant in [&node.mine, &node.theirs] {
+        let (status, body) = node
+            .call_on_origin_of(
+                &tenant.app,
+                Some(&token),
+                Method::GET,
+                "/applications",
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(ids(&body, "apps", "id"), vec![tenant.app.to_string()]);
+    }
+}
+
+#[actix::test]
+async fn an_unbound_key_on_the_nodes_own_host_lists_every_application() {
+    let node = Node::new().await;
+    seed_application(&node, node.mine.app, node.mine.blob);
+    seed_application(&node, node.theirs.app, node.theirs.blob);
+    let token = node.unbound().await;
+
+    let (status, body) = node.call(&token, Method::GET, "/applications", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(ids(&body, "apps", "id").len(), 2, "{body}");
+}
+
+#[actix::test]
+async fn an_app_origin_cannot_create_in_another_application() {
+    let node = Node::new().await;
+    let token = node.unbound().await;
+    let theirs = node.theirs.app;
+    let (their_ns, my_ns) = (
+        hex::encode(node.theirs.namespace.to_bytes()),
+        hex::encode(node.mine.namespace.to_bytes()),
+    );
+
+    for (path, body) in [
+        (
+            "/contexts",
+            json!({ "applicationId": theirs, "groupId": their_ns, "initializationParams": [] }),
+        ),
+        (
+            "/contexts",
+            json!({ "applicationId": theirs, "groupId": my_ns, "initializationParams": [] }),
+        ),
+        ("/namespaces", json!({ "applicationId": theirs })),
+    ] {
+        let (status, response) = node
+            .call_on_origin_of(
+                &node.mine.app,
+                Some(&token),
+                Method::POST,
+                path,
+                Some(body.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path} {body}: {response}");
     }
 }
