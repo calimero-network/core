@@ -16,7 +16,10 @@ use super::context::GroupApplyCtx;
 use crate::authorizer::AtCutMembershipPath;
 use crate::membership::MembershipPath;
 use crate::op_events::OpEvent;
-use crate::{AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository};
+use crate::{
+    AccountBindingRepository, AccountNamespaceSet, BindingRejected, MembershipRepository,
+    NodeDeviceRepository, PendingNamespacePurges,
+};
 use calimero_account::{
     AccountGenesis, AccountId, AccountMemberEndorsement, AccountProof, DeviceCert, DeviceId,
     DeviceLabel, DeviceScope, RootKeyHandoff, SignedDeviceRevocation,
@@ -278,6 +281,16 @@ pub(crate) fn apply_device_certified(
     Ok(())
 }
 
+/// A rejoin or plain leave is the account's latest word, so a purge armed on this node
+/// for `namespace` no longer applies. Only this node's own account namespace arms one.
+fn disarm_own_purge(ctx: &GroupApplyCtx<'_>, namespace: &ContextGroupId) -> EyreResult<()> {
+    let own = NodeDeviceRepository::new(ctx.store()).account_namespace()?;
+    if own.as_ref() == Some(ctx.group_id()) {
+        PendingNamespacePurges::new(ctx.store()).disarm(namespace)?;
+    }
+    Ok(())
+}
+
 /// `GroupOp::AccountNamespaceGained` - record a namespace this account is in.
 /// A gain that read a target replaces the recorded one; one that read none keeps it.
 pub(crate) fn apply_namespace_gained(
@@ -291,6 +304,7 @@ pub(crate) fn apply_namespace_gained(
     }
 
     AccountNamespaceSet::new(ctx.store(), group_id).record(*namespace, application)?;
+    disarm_own_purge(ctx, namespace)?;
     ctx.queue_event(OpEvent::AccountNamespaceGained {
         group_id: group_id.to_bytes(),
         namespace: *namespace,
@@ -314,6 +328,9 @@ pub(crate) fn apply_namespace_left(
     }
 
     AccountNamespaceSet::new(ctx.store(), group_id).forget(*namespace)?;
+    if !purge {
+        disarm_own_purge(ctx, namespace)?;
+    }
     ctx.queue_event(OpEvent::AccountNamespaceLeft {
         group_id: group_id.to_bytes(),
         namespace: *namespace,
